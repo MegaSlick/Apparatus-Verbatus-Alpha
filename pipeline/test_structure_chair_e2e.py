@@ -12,10 +12,18 @@ after it.
 Nothing here starts a pod, opens a socket, loads a model or reaches a network.
 Every chair answers through `operations/serving/fakes.py`, and the structure
 chair's answers are built by that module's own scripted-answer builders, which
-invert `common.structure_answer.to_page_bounds` and then parse what they built
-through the contract that will parse it live — so a rectangle this file names
-in page pixels is the rectangle the run will mint, or the builder refuses
-before the run starts.
+invert `common.structure_answer.to_page_bounds` and then read what they built
+through the grammar that will read it live — so a rectangle this file names in
+page pixels is the rectangle the run will mint, or the builder refuses before
+the run starts.
+
+**The structure chair answers in Chandra's own layout HTML** since
+`verbatus-structure-prompt.v3` carried the vendor's `OCR_LAYOUT_PROMPT` bytes.
+That is what the scripted bodies here speak, and it is why this suite's
+stand-in serving row states a larger `max_model_len` than the shared one: the
+carried prompt is 593 tokens against v2's 325 and its dense answer 1,645
+against 1,575, both re-measured, and the row moves rather than the arithmetic
+(`write_catalogue`).
 
 **What makes it live is the sealed row kind, on every chair at once.** No flag
 selects the structure pass; the run binds a catalogue whose
@@ -26,12 +34,20 @@ fixture rows: there the live seam is read against declared acts, here against
 proposed ones, and the fixture path's declared-act machinery is not consulted
 anywhere in between.
 
-**The export is held for review, and the reason is not the structure chair.**
-Every act is minted, witnessed and read; Churro publishes no native layout, so
-it never attaches to an act by geometry on a live path, and two witnesses of a
-floor of three count. That limit belongs to `pipeline/3_attestatores/HANDOFF.md`
-and is measured identically by the live-seam suite over declared acts. The
-structure chair changes which acts exist, not how many witnesses reach them.
+**The export is delivered, and the witness floor is met by three chairs.**
+Every act is minted, witnessed and read; the Churro chair here answers in the
+retired `<output>` envelope, which carries no geometry. Since U10 that is a
+property of THE CHAIR and not only of the scripted body: `HistoricalDocument`
+has no coordinate vocabulary anywhere, so this chair reports no geometry in any
+framing it can be asked in. While attachment came from geometry alone it reached
+no act, and two witnesses of a floor of three counted. What closed that is U12,
+admitting the Perlector's existing `anchor-line` basis — its page text is
+aligned to the act's own anchor line — and not a body scripted with boxes. The
+envelope is kept here on purpose: the vendor's own reader still reads it, as
+retained history under a `retired-output-envelope` finding, and this module is
+about which acts exist rather than about how many witnesses reach them, so
+pinning the witness floor to a shape this suite does not vary keeps the two
+questions apart.
 """
 
 from __future__ import annotations
@@ -107,9 +123,11 @@ from operations.serving.fakes import (  # noqa: E402
     FakeLauncher,
     FakePackages,
     ScriptedAnswer,
+    scriptable_structure_refusals,
     scripted_structure_answer,
     scripted_structure_cut_off,
     scripted_structure_refusal,
+    structure_blank_page_body,
     structure_box_1000,
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
@@ -180,6 +198,19 @@ def write_catalogue(path: Path, registry) -> Path:
             row = _vllm_row(
                 recipe=identity.serving_recipe, chair=chair, tier=tier, port=8400 + index
             )
+            if chair == "designator_structure":
+                # The row moves, never the arithmetic and never the pixels --
+                # the same correction the reading seam's own stand-in made for
+                # Churro when Unit 12 changed what that chair is asked. This
+                # chair is now asked in Chandra's carried `OCR_LAYOUT_PROMPT`
+                # (`verbatus-structure-prompt.v3`), so its two sealed constants
+                # were re-measured at 593 prompt tokens and a 1,645-token dense
+                # answer; with this fixture's 48 image tokens that needs 2,286
+                # and the shared stand-in's 2,048 refuses it before anything is
+                # sent. The shipped real catalogue states 8,192 for this chair
+                # at every tier, so the stand-in states it here too rather than
+                # shrinking a measured cost to fit a test's number.
+                row["max_model_len"] = 8192
             row["preflight_identity_digest"] = identity_digest
             row["preflight_digest"] = profile_preflight_digest(row)
             rows.append(row)
@@ -288,21 +319,24 @@ def mark_out(designated: SimpleNamespace, run_root: Path, work: Path, answers=No
 
 
 def chandra_page(blocks) -> str:
-    """One page's Chandra answer in the shape its own prompt asks for.
+    """One page's Chandra answer in the vendor's own layout grammar.
 
-    The block geometry is built from the same page-pixel rectangles the
-    structure chair drew, through the same normalized conversion both readings
-    of a page share (`common.structure_answer`), so a block lands exactly on
-    the act it reports rather than approximately near it.
+    Top-level divs carrying a `data-bbox` normalized 0-1000, which is what
+    `chandra/prompts.py::OCR_LAYOUT_PROMPT` asks for and what
+    `common/chandra_layout.py` reads. The block geometry is built from the same
+    page-pixel rectangles the structure chair drew, through the same normalized
+    conversion both readings of a page share (`common.structure_answer`), so a
+    block lands exactly on the act it reports rather than approximately near it.
+
+    Only newlines separate the divs: character data outside every top-level
+    block is ink no block carries, and the grammar reports it as a finding
+    rather than silently dropping it.
     """
-    return json.dumps(
-        {
-            "schema": "verbatus-chandra-page-response.v1",
-            "blocks": [
-                {"box_1000": structure_box_1000(bounds, PAGE_WIDTH, PAGE_HEIGHT), "text": text}
-                for bounds, text in blocks
-            ],
-        }
+    return "\n".join(
+        '<div data-bbox="{} {} {} {}" data-label="Text">{}</div>'.format(
+            *structure_box_1000(bounds, PAGE_WIDTH, PAGE_HEIGHT), text
+        )
+        for bounds, text in blocks
     )
 
 
@@ -706,27 +740,41 @@ def test_the_page_witness_transcription_is_retained_and_anchors_the_alignment(wh
 def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
     """Every stage after the Designator reads a tree whose acts a model drew.
 
-    The export is **held for review, not delivered**, and the shortfall is the
-    one the live-seam suite measures over declared acts: Churro publishes no
-    native layout, so it never attaches by geometry live, and two witnesses of
-    a floor of three count. Nothing about that is a fact about the structure
-    chair — every act it proposed was read — which is the point of asserting it
-    here as well: replacing declared acts with proposed ones moved the
-    denominator, not the coverage.
+    The export is **delivered**, and nothing in that is a fact about the
+    structure chair: every act it proposed was marked out, read by all three
+    witness chairs, and established. Replacing declared acts with proposed ones
+    moved the denominator, not the coverage.
+
+    The shortfall the assertions here once described is gone, and this module's
+    scripted body is not what closed it. The body here is the retired
+    `<output>` envelope, which carries no geometry, and since U10 no framing
+    this chair can be asked in carries geometry either -- `HistoricalDocument`
+    has no coordinate vocabulary. While attachment came from geometry alone that
+    chair reached no act, so each act stood at two witnesses of a floor of three
+    and the run held on a shortfall that had not happened. U12 gave exactly that
+    chair the `anchor-line` basis, and this test was left describing the run the
+    change replaced -- red on its own branch, and found while fixing that unit's
+    hostile review rather than by the suite that should have caught it. Keeping
+    the envelope here is still deliberate: this suite is about which acts exist,
+    and a witness floor pinned to a shape it does not vary keeps that question
+    separate from how many witnesses reach them.
+
+    What the third witness costs is stated where the floor is counted
+    (`pipeline/test_live_reading_seam_e2e.py`), not here: it counts because the
+    first chair's response located its text, so "three witnesses" is two
+    independent readings and one dependent placement.
     """
     assert whole_run.tail == {
-        "pipeline/5_recensor/run.py": EXIT_HELD,
+        "pipeline/5_recensor/run.py": EXIT_COMPLETE,
         "pipeline/6_archetypus/run.py": EXIT_COMPLETE,
-        "pipeline/7_armarium/run.py": EXIT_HELD,
+        "pipeline/7_armarium/run.py": EXIT_COMPLETE,
     }
     export = verify_final_seal(RunTree(whole_run.run_root, RUN_ID))
-    assert export["outcome"] == ArmariumCategory.HELD_FOR_REVIEW.value
+    assert export["outcome"] == ArmariumCategory.DELIVERED.value
     aggregate = export["payload"]["aggregate"]
-    assert aggregate["status"] == "partial"
-    assert sorted(aggregate["reasons"]) == sorted(
-        [f"act {key} is held-for-review" for key in ACT_KEYS]
-        + [f"act {key} is under-witnessed (2 of a floor of 3)" for key in ACT_KEYS]
-    )
+    assert aggregate["status"] == "complete"
+    assert aggregate["reasons"] == []
+    assert aggregate["by_category"] == {ArmariumCategory.DELIVERED.value: len(ACT_KEYS)}
     readings = published_readings(whole_run.run_root)
     assert len(readings) == len(ACT_KEYS)
     assert {record["outcome"] for record in readings} == {"read"}
@@ -735,12 +783,17 @@ def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
 # =============================== the other answers ===============================
 
 
-def test_a_zero_act_answer_falls_back_to_the_predetermined_tiles(designated, tmp_path):
+def test_a_blank_page_answer_falls_back_to_the_predetermined_tiles(designated, tmp_path):
     """The chair saw no text on a page, so the page is cut on the sealed grid.
 
     Tyrel, 2026-08-11: a page the Designator sees nothing on is still sent
     downstream as predetermined crops. The page is `scanned`, not held: an
     answer that says "no acts" is an answer.
+
+    In Chandra's grammar that answer is a `Blank-Page` block, which the vendor's
+    own parser discards and this one retains: a page the model declared blank is
+    otherwise indistinguishable in the record from a page it never answered
+    about (`chandra_layout`'s second departure).
     """
     run_root = fresh_tree(designated, tmp_path)
     _world, exit_code = mark_out(
@@ -749,7 +802,13 @@ def test_a_zero_act_answer_falls_back_to_the_predetermined_tiles(designated, tmp
         tmp_path / "world",
         [
             scripted_structure_answer(PAGE_ONE_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
-            scripted_structure_answer((), PAGE_WIDTH, PAGE_HEIGHT),
+            scripted_structure_answer(
+                (),
+                PAGE_WIDTH,
+                PAGE_HEIGHT,
+                body=structure_blank_page_body(),
+                expect_proposals=(),
+            ),
         ],
     )
     assert exit_code == EXIT_COMPLETE
@@ -773,8 +832,11 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
     SPEC_D §7 names this as the likeliest first real failure: a page's whole
     transcription overruns `max_model_len`. The body is truncated mid-object
     and the stop word is `length`, and the hold must name the context window
-    rather than blaming the chair's JSON — otherwise the one measurement this
-    design exists to obtain reads as a model that cannot write JSON.
+    rather than blaming the chair's answer — otherwise the one measurement this
+    design exists to obtain reads as a model that cannot answer in its own
+    grammar. Chandra's layout grammar closes an unclosed block and keeps its
+    bytes, so the truncated body here *parses* and is held anyway, which is the
+    row stated as it means it.
     """
     run_root = fresh_tree(designated, tmp_path)
     _world, exit_code = mark_out(
@@ -792,8 +854,9 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
     assert statuses[2]["payload"]["reason_code"] == "structure-answer-cut-off"
     answers = by_page_ordinal(artifacts(run_root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
     payload = answers[2]["payload"]
-    assert payload["parse_state"] == "refused"
+    assert payload["parse_state"] == "parsed"
     assert payload["finish_reason"] == "length"
+    assert [f["kind"] for f in payload["findings"]] == ["unclosed-block"]
     # The bytes are retained whatever the disposition: they are the evidence.
     tree = RunTree(run_root, RUN_ID)
     retained = tree.read_bytes(payload["raw_response_ref"]["relative_path"])
@@ -803,19 +866,20 @@ def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
     assert not any(key.startswith("proposal:2:") for key in rows)
 
 
-@pytest.mark.parametrize(
-    "outcome",
-    (
-        "invalid-json",
-        "top-level-not-object",
-        "unverified-response-schema",
-        "missing-act-list",
-        "malformed-act",
-        "malformed-act-geometry",
-        "malformed-act-text",
-    ),
-)
-def test_an_answer_the_contract_refuses_holds_the_page_by_that_name(designated, tmp_path, outcome):
+_SCRIPTABLE_STRUCTURE_REFUSALS = scriptable_structure_refusals()
+
+
+def test_the_scripted_refusal_set_is_the_two_shapes_this_suite_documents():
+    """A parametrize decorator over an empty sequence collects zero cases and
+    passes silently rather than failing loudly, so the coverage this suite
+    documents is asserted here, as an ordinary test, rather than a module-level
+    assert that would surface as a collection error instead of a test failure.
+    """
+    assert len(_SCRIPTABLE_STRUCTURE_REFUSALS) == 2, _SCRIPTABLE_STRUCTURE_REFUSALS
+
+
+@pytest.mark.parametrize("outcome", _SCRIPTABLE_STRUCTURE_REFUSALS)
+def test_an_answer_the_grammar_refuses_holds_the_page_by_that_name(designated, tmp_path, outcome):
     """The refusal codes `_STRUCTURE_REFUSALS` can script, held under their own code.
 
     A page whose answer this system cannot read is held with the outcome that
@@ -823,16 +887,20 @@ def test_an_answer_the_contract_refuses_holds_the_page_by_that_name(designated, 
     never re-asked, and never quietly tiled as though the chair had answered
     (GOVERNANCE 7).
 
-    This covers 7 of `structure_answer.PARSE_OUTCOMES`' 11 codes — every one
+    This covers 2 of `chandra_layout.PARSE_OUTCOMES`' 6 codes — the two an
+    answer's *shape* can reach, and every one
     `operations/serving/fakes.py::_STRUCTURE_REFUSALS` builds a scripted body
-    for. `raw-response-not-bytes` and `response-too-large` describe the wire
-    itself, not a body the fake endpoint hands back, so no scripted answer can
-    reach them here. `excessive-json-nesting` and `too-many-acts` are
-    constructible over this real chain but have no scripted body yet; all of
-    them, and the full 11, are exercised at the parser level in
-    `common/test_structure_answer.py`, whose
-    `test_no_outcome_can_be_added_to_the_contract_without_a_test_above` pins
-    the declared set so a new code cannot be added there in silence.
+    for. The other four are properties of the wire bytes rather than of a body
+    the fake endpoint hands back: `raw-response-not-bytes`,
+    `response-too-large` and `invalid-utf8` describe bytes a `ScriptedAnswer`'s
+    `str` cannot carry, and `too-many-layout-blocks` needs ten thousand divs to
+    prove a ceiling. All four are exercised over the bytes, where they happen,
+    in `common/test_chandra_layout.py`.
+
+    It is a smaller set than the seven the retired JSON contract could script,
+    and the drop is a real narrowing of what an answer can be wrong *about*
+    rather than a loss of coverage: five of those seven named ways a JSON
+    envelope could be malformed, and there is no envelope now.
     """
     run_root = fresh_tree(designated, tmp_path)
     _world, exit_code = mark_out(

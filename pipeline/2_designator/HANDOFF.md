@@ -611,39 +611,121 @@ replaces the fixture's declared acts is one call per sealed page through
 (`main(serving_factory=...)`) exactly as the Attestatores and the Perlector
 inject theirs.
 
-**What is sent.** One `chat-completions` request per sealed page, the whole
-page, the exact sealed PNG bytes as one `data:image/png;base64` block, with
+**What is sent.** One `chat-completions` request per sealed page, as a single
+`user` turn with no system turn -- Chandra's own inference code sends exactly
+that, and this chair's occupant is Chandra -- carrying the exact sealed PNG
+bytes as one `data:image/png;base64` block **before** the instruction text,
+which is the order that model was fine-tuned in, with
 `image_sha256s=(source_sha256,)` so the client's digest check binds the request
-to the Exemplar. The prompt is code, sealed by digest
-(`structure_prompt.py`, `verbatus-structure-prompt.v1`); it asks for every act as
-one rectangle in normalized 0–1000 coordinates of the image as shown, its
-transcription as written, an optional label, in reading order, and states no
-preference, severity floor or confidence budget. No `max_tokens` and no
+to the Exemplar. **The instruction is Chandra's own**
+(`structure_prompt.py`, `verbatus-structure-prompt.v3`): the vendor's
+`OCR_LAYOUT_PROMPT` bytes, carried in `common/chandra_layout.py` under their
+Apache-2.0 citation and sealed there against the sha256 recorded for
+`github.com/datalab-to/chandra @ d4f7467435…`, on tonight's ruling (Tyrel,
+2026-09-06) that each witness is asked in its developers' own bytes. Both
+Chandra chairs — this one and `attestator_1` — send the same constant, so one
+model in two roles is asked one way. It asks for HTML layout blocks, each a
+`<div>` with a `data-bbox` in normalized 0–1000 coordinates of the image as
+shown and a `data-label` from the nineteen it lists, and it states no
+preference, severity floor or confidence budget. What that costs is the freedom
+to tune it: trimming a byte would stop it being the vendor's prompt, and that
+trade is recorded rather than discovered later. No `max_tokens` and no
 generation knobs of the stage's own: the engine bounds generation by
 `max_model_len`, and a `"length"` stop then honestly means the answer did not
 fit.
 
-**What comes back** is parsed with `common/structure_answer.py`'s closed
-contract — one accepted wire shape, every other key a named refusal, floats
-quantized under a declared rule, coordinates converted to page pixels once by
-this repository's own arithmetic. Nothing is repaired, reordered, or re-asked.
+**v2 was this repository's own instruction** and asked for the closed JSON
+object `common/structure_answer.py` accepted. Nothing about its wording was
+wrong; the premise was — a chair asked outside its own grammar reports what it
+can improvise. Its JSON acceptance (`STRUCTURE_ANSWER_SCHEMA`,
+`decode_json_body`, `validate_box_1000`, `parse`) has no live caller left after
+this unit; the module's shared geometry and page-text rules (`to_page_bounds`,
+`join_delivered_texts`, `text_digest`) are untouched and still the only
+conversion either Chandra reading uses, which is why the record's
+`quantization` and `page_text_rule` keep their `structure-answer.v1` names for
+arithmetic that did not move.
+
+**What comes back** is read by `common/chandra_layout.py::parse_layout_html`,
+the one reader of that grammar in this tree and the same one the page witness
+uses — so two readings of one page cannot disagree about what a `data-bbox`
+means. Each top-level block whose geometry resolves becomes one **structure
+proposal**: its rectangle through `to_page_bounds` against the sealed page, its
+vendor label, its text as a digest and a length. A block whose `data-bbox` is
+malformed or absent, and a block labelled `Blank-Page`, propose nothing and are
+**recorded** in `blocks_without_proposal` with the reason — never minted, and
+never given the `[0, 0, 1, 1]` the vendor's own parser substitutes while
+printing "defaulting to full image" to a stdout nobody retains. Character data
+the answer wrote outside every block is counted and carried as a
+`content-outside-blocks` finding: it is in no proposal and in no span, and a
+page that parsed clean without it would be a missed act under a successful
+status. Nothing is repaired, reordered, or re-asked.
 
 **What each answer does to the page** (`structure_pass.ask_page`):
 
 | Answer | Page | Acts |
 |---|---|---|
-| parsed, complete stop (or unreported), ≥1 act | `scanned`, `structure_evidence="detected"` | minted, one per distinct rectangle |
-| parsed, complete stop, zero acts | `scanned`, `structure_evidence="fallback-tiles"` | one page-fallback act over the predetermined grid |
+| parsed, complete stop (or unreported), ≥1 proposal | `scanned`, `structure_evidence="detected"` | minted, one per distinct rectangle |
+| parsed, complete stop, no proposal at all | `scanned`, `structure_evidence="fallback-tiles"` | one page-fallback act over the predetermined grid |
 | `finish_reason ∈ {"length"}`, parsed or not | `held`, `structure-answer-cut-off` | none; ink → residual holds |
 | parse refused | `held`, `structure-answer-<parse_outcome>` | as above |
 | the client could not read the body (`parse_problem`) | `held`, `structure-call-unusable` | as above |
 | custody refused the response (`common/chandra_custody.py`) | `held`, `structure-response-not-retained` | as above; checked before the body |
+| the request does not fit the sealed serving row | `held`, `structure-request-too-large` | as above; checked *before* the request is built, and nothing is sent |
 | parsed, the scan found ink, and no rectangle touches any ink pixel | `held`, `structure-answer-no-ink-overlap` | as above |
 | serving or transport refusal | **fatal**, nothing published for the page | — |
 | an engine stop word outside the closed vocabulary | **fatal** | — |
 
+The capacity row is the only one decided before a request exists. U15 retired
+the per-tier pixel ladder for this chair: a whole 300-dpi page costs 6,045
+image tokens at every tier now, not a value that grows with the tier's own
+`max_pixels` (`common/request_capacity.py`); with the measured 593-token
+prompt and a measured dense-page answer budget of 1,645 that is 8,283 against
+the 18,000 every shipped `designator_structure` row states
+(`config/serving_recipes_real.toml`), so **every shipped row holds a dense
+page**, by the same 9,717-token margin at every tier — no longer a narrowest
+tier to name, since the geometry no longer varies by tier — and
+`operations/serving/test_serving_catalogue_capacity.py` asserts it row by row
+rather than leaving it to this paragraph. **Both the prompt and the answer
+numbers moved with v3 and both were re-measured** by the harness of
+`TOKEN_COST_REPORT_2026-09-05.md` §3 and §8, at the same pinned tokenizer, in
+the message shape `page_request` builds: 325 → 593 for the prompt, because the
+carried instruction is 2,161 characters against v2's 1,192 and carries the
+vendor's 36 tags, 14 attributes and 19 labels; 1,575 → 1,645 for the dense-page
+answer, which is **not** the cost of the layout grammar's tags — the same six
+blocks written literally measure 1,506, sixty-nine tokens *fewer* than the JSON
+they replace. The 1,645 is measured over a fixture whose prose is
+entity-escaped, where the act's thirty-two apostrophes cost `&#x27;` at five
+tokens each rather than `'` at one, and it is sealed that way on purpose:
+`parse_layout_html` resolves character references, so an escaped body is a
+valid answer under this grammar and the reserve covers the dearer of the two
+spellings it admits (`common/request_capacity.py` records both). The same runs
+reproduce the superseded 325 and 1,575 exactly, which is what says the pairs
+are comparable rather than merely both present. The dearer prompt is not a
+regression to be tuned away — trimming the carried bytes is what would stop
+them being the vendor's — and it is weighed where it belongs, in
+`page_capacity`, on every page, before anything is sent. A request that does
+not fit its row is one vLLM answers with HTTP 400 and no reading at all, so
+`ask_page` computes the arithmetic first and holds the page rather than paying
+a card to be refused. The page is never downscaled to make it fit: 300 dpi is
+what `config/pdf_render.toml` argues is needed to read the ink, and trading a
+measurable refusal for an unmeasurable misreading is not this pass's decision.
+Every live page record carries its `capacity` block, held or not, and the same
+record travels on the request onto the retained `chair-call-record.v1`.
+
 A cut-off answer is held even though it parsed: a truncated act list is a
-missed act (GOALS 1). The custody row is held before the body is looked at and
+missed act (GOALS 1). Under the layout grammar that row states itself: an
+unclosed block is closed and its bytes kept, with an `unclosed-block` finding,
+so a truncated body *does* read and is held on the engine's stop word alone —
+where the retired JSON contract could not tell the two facts apart, because a
+cut object was also invalid JSON.
+
+**A page whose blocks all failed to place is tiled, not held.** What
+`fallback-tiles` claims is "no rectangle was proposed", which is true both of a
+`Blank-Page` answer and of one whose every `data-bbox` was unreadable; the
+record tells them apart (`block_count`, `blocks_without_proposal`, the
+findings) rather than the disposition. Tiling keeps the page covered by
+predetermined crops, which is what GOALS 1 asks for; holding it would cost
+every act on it until a reviewer looked. The custody row is held before the body is looked at and
 is *one page's* outcome, not the run's: the client retained the bytes and the
 call record before custody was reached, so what a refusal costs is the binding
 that proves which call they came from — and a rectangle minted without it would
@@ -673,25 +755,51 @@ below.
 **`kind="structure-answer"`**, one per sealed page, subject the page identity,
 validated against its own closed field set before publication and then swept
 for content fields (`_validate_structure_answer_payload`, which closes the
-payload, each act entry, the decoding block and each finding, and calls
-`_refuse_text_fields` last). Both of the chair's free strings are reduced the
-same way: `text_digest`/`text_length` and
+payload, each act entry, each unproposed block, the vendor block, the decoding
+block and each finding, and calls `_refuse_text_fields` last). Both of the
+chair's free strings are reduced the same way: `text_digest`/`text_length` and
 `label_digest`/`label_length` are what let a later reader prove it derived the
 same strings from the same retained bytes, and a `label` — the chair's word for
 a rectangle, which in these books can be a whole act — is published no more
-than a transcription is:
+than a transcription is.
+
+Three fields the vendor grammar added sit inside that rule rather than beside
+it. `label_vocabulary` is **not** the chair's string: it names which of the
+twenty words the grammar admits — the prompt's nineteen labels plus the `block`
+the vendor's parser defaults an undeclared one to — the answer used, and `null`
+where it used something outside them, which is itself the signal that the model
+answered outside the list it was given. A closed range is a membership answer,
+not a reading. `nested_bbox_count` is how many `data-bbox` attributes a block
+carried below its own top level: the vendor deletes those, `chandra_layout`
+keeps them as evidence and derives no geometry from them, and a count is the
+part of that evidence a text-free record can carry. And `malformed-bbox`'s
+`data_bbox_digest` replaces the quoted attribute the grammar hands up: a
+`data-bbox` is a string the chair wrote, freely, and the finding exists
+precisely because it was not four integers — so it is published as a digest
+(null exactly where the attribute was absent, which is how "drew no box" is
+told from "drew one nobody could read") with `data_bbox_truncated` saying
+whether that digest covers the whole value:
 
 ```text
 schema = "designator-structure-answer.v1"
 page_id, page_ordinal, page_w, page_h
-prompt_version, prompt_sha256, answer_schema = "verbatus-structure-answer.v1"
+prompt_version, prompt_sha256, answer_schema = "chandra-layout-html.v1"
+text_view = "chandra-layout-text.v1"
+vendor = {repository, commit, licence, prompt_source, parser_source,
+          prompt_sha256}
 call_record_ref, raw_response_ref | null, custody_ref | null,
 custody_problem | null, receipt_ref, request_sha256
 finish_reason (verbatim | null), served_model_id, call_problem | null
 parse_state ("parsed" | "refused"), parse_outcome | null
 disposition ("detected" | "fallback-tiles" | "held"), reason_code | null
-act_count, acts = [{ordinal, box_1000, raw_bounds, text_digest, text_length,
-                    label_digest | null, label_length | null}]
+block_count, act_count
+acts = [{ordinal, box_1000, raw_bounds, text_digest, text_length,
+         label_vocabulary | null, label_declared, label_digest | null,
+         label_length | null, nested_bbox_count}]
+blocks_without_proposal = [{ordinal, reason, blank_page, label_vocabulary | null,
+                            label_declared, label_digest | null,
+                            label_length | null, text_digest, text_length,
+                            nested_bbox_count}]
 findings = [{kind, ...}]
 quantization, page_text_rule
 decoding = {policy = "structure", temperature, decoding_config_sha256}
@@ -758,26 +866,78 @@ every answer record, that no Designator artifact carries a byte of the chair's
 transcription, and that a second attempt whose rectangles moved is an ordinary
 run — different acts on the page that changed, the same act on the page that
 did not, because identity is content-addressed rather than positional. The
-zero-act and cut-off answers, and 7 of the 11 named parse refusals
+blank-page and cut-off answers, and 2 of the grammar's 6 named refusals
 (`_STRUCTURE_REFUSALS` in `operations/serving/fakes.py`), are exercised there
-over the real chain as well as in this stage's own suite; the remaining four
-refusal codes are exercised only at the parser level
-(`common/test_structure_answer.py`). The export it reaches
-is *held*, for the reason the live seam suite measures over declared acts:
-Churro publishes no native layout, so two witnesses of a floor of three count
-(`pipeline/3_attestatores/HANDOFF.md`). That is a witness-coverage fact, not a
-fact about this stage — every act the chair proposed was read.
+over the real chain as well as in this stage's own suite. The other four are
+properties of the wire bytes rather than of a body a `ScriptedAnswer` can
+carry — `raw-response-not-bytes`, `response-too-large` and `invalid-utf8`
+describe bytes a `str` cannot hold, and `too-many-layout-blocks` needs ten
+thousand divs to prove a ceiling — and all four are measured over the bytes, in
+`common/test_chandra_layout.py`. That is a smaller set than the seven the JSON
+contract could script, and it is a narrowing of what an answer can be wrong
+*about* rather than a loss of coverage: five of those seven named ways a JSON
+envelope could be malformed, and there is no envelope now. This stage's own
+suite covers what the grammar added in its place — a malformed `data-bbox`, an
+absent one, a `Blank-Page`, ink written outside every block, and a page whose
+every block failed to place. The export it reaches
+is *held*, and the reason is not this stage: the Churro chair is scripted there
+in the retired `<output>` envelope, which carries no geometry, so it never
+attaches to an act and two witnesses of a floor of three count. Since U10 that
+is a property of the chair rather than only of the scripted body -- its
+`HistoricalDocument` grammar has no coordinate vocabulary anywhere, so it
+reports no geometry in any framing it can be asked in, and
+`pipeline/test_live_reading_seam_e2e.py` reaches the same held export over
+declared acts (`pipeline/3_attestatores/HANDOFF.md`); U12 closes it at the
+Perlector, on the `anchor-line` basis. The envelope is kept in this suite on
+purpose: pinning the witness floor to a shape this suite does not vary keeps
+"which acts exist" and "how many witnesses reach them" apart. Either way it is a
+witness-coverage fact, not a fact about this stage -- every act the chair
+proposed was read.
 
 **Named risks.** The real `designator_structure` rows' `max_model_len` is a
 planning value, and a whole-page transcription plus geometry may not fit it;
 `structure-answer-cut-off` on every page of the first real run is the
-measurement that says so. The engine resizes the page internally, so the exact
+measurement that says so. **v3 made that risk larger, measurably**: the request
+costs 268 more prompt tokens, and that is 268 fewer left for the reading on
+every row, since what the engine leaves generation is `max_model_len` less the
+image and the prompt (`sendable_max_tokens`). The 70 extra reserved for the
+answer does not come off the reading as well — the reserve is an admission
+term at the capacity check, not a bound sent on the wire, and this chair still
+sends none. U15 (Tyrel's ruling, hard rule 1; merged into this branch) moved
+the shipped rows off the per-tier pixel ladder this paragraph used to describe:
+`max_model_len` now states 18,000 at every tier, and a whole A4 page now costs
+the same 6,045 + 593 + 1,645 = 8,283 at every tier rather than a figure that
+grows with the tier's own pixel cap, so no shipped row refuses the request
+(the arithmetic is `page_capacity`'s, per page, before anything is sent). What
+18,000 does not promise is that a real page's transcription fits the 1,645
+reserved for it: that reserve is a measurement over one 800-word, six-block
+page, and a denser page is where `structure-answer-cut-off` would appear.
+
+**`generation_declared` on this chair's request is still `{}`, and no longer
+because there is nothing to declare.** Chandra's `chandra/settings.py` sets
+`MAX_OUTPUT_TOKENS = 12384`, which `sendable_max_tokens` already weighs. What
+is unsettled is the record shape that bound is retained under, and that shape
+is one shape for both Chandra chairs — the other is set in
+`pipeline/3_attestatores/live_witness.py`'s Chandra branch. Filling it in from
+this side alone would give one model two vendor views, so it is left to the
+unit that sets both. The engine resizes the page internally, so the exact
 image the model saw is not the sealed page (ARCHITECTURE invariant 3): the
 request binds the sealed bytes, the receipt records `pixel_cap`, and normalized
 coordinates keep geometry resolution-independent — a residual gap, named, not
 closed. Bounded recovery from a structural hold stays unbuilt (below).
 `excluded` stays unproduced: it exists only with a Tyrel approval reference,
 and no Designator path resolves one.
+
+**What is still on the retired module, and whose it is.** After this unit the
+Designator calls `common/structure_answer.py` for `to_page_bounds`,
+`join_delivered_texts` and `text_digest` only — the shared rules, which are
+unchanged. Its JSON *acceptance* (`STRUCTURE_ANSWER_SCHEMA`, `parse`) has no
+live caller anywhere. `decode_json_body` and `validate_box_1000` still have two,
+`pipeline/3_attestatores/chandra_response.py` and `common/churro_response.py`,
+which are the two page-witness JSON readers the Chandra and Churro adapter units
+delete; the acceptance itself is removed once they are gone. Nothing here waits
+on that: this stage does not import it, and no answer this stage reads goes
+through it.
 
 **The fixture path is unchanged and re-pinned once.** Under the committed
 catalogue `initial_pass` runs as before: no answer record, no `engine_call`, no

@@ -11,6 +11,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from PIL import Image
 
+from common import chandra_layout, native_witness
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -20,6 +21,7 @@ from common.native_witness import validate_presented_page_binding
 from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
 
 STAGE = Path(__file__).resolve().parent
+ROOT = STAGE.parent.parent
 
 
 def _load_local_adapters():
@@ -46,23 +48,52 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
     assert set(adapters.RUNNABLE_ADAPTERS) == KNOWN_WITNESS_ADAPTER_NAMES
     spec = adapters.resolve_runnable_adapter("churro.v1")
     assert spec is adapters.RUNNABLE_ADAPTERS["churro.v1"]
-    assert set(spec.prompt()) == {"system", "user"}
+    # The vendor's own registry-resolved system string, system-only: both
+    # attested profiles set the user prompt to `None`, so the user turn carries
+    # the image alone and `live_witness._page_messages` builds exactly that.
+    # The fixture posture asks the adapter the same question -- there is no
+    # separate declaration to keep frozen, because the fixture's rows are
+    # answers in shapes the vendor grammar actually reads.
+    assert set(spec.prompt()) == {"system"}
+    assert spec.prompt()["system"] == (
+        "Transcribe the entirety of this historical document to XML format."
+    )
+    # All three legal answer shapes parse to text through the one grammar: the
+    # vendor's own document, the plain reading-order text the paper-era harness
+    # expected, and the retired `<output>` envelope kept as retained history.
+    assert (
+        spec.parse(
+            b"<HistoricalDocument><Page><Body><Line>text</Line></Body></Page></HistoricalDocument>"
+        )
+        == "text"
+    )
+    assert spec.parse(b"plain reading") == "plain reading"
     assert spec.parse(b"<output>text</output>") == "text"
     # Bound by identity, not by "is not None": the point of the slot is which
     # function answers there, and a rebinding to a different one is exactly the
     # change a later adapter unit must not make silently. Churro's slot binds
     # the relabel-proof wrapper the test below proves out.
-    assert spec.retain is adapters._retain_churro_model_view
+    assert spec.retain is adapters.churro.retain
     chandra = adapters.resolve_runnable_adapter("chandra.v1")
-    assert set(chandra.prompt()) == {"instruction"}
-    # Both declared shapes parse to text: the wire contract the prompt asks for
-    # and the committed fixture's placeholder.
+    # One user turn carrying the vendor's own carried prompt bytes, and no
+    # system turn -- the shape `chandra/model/vllm.py` builds.
+    assert set(chandra.prompt()) == {"user"}
+    assert chandra.prompt() == {"user": chandra_layout.OCR_LAYOUT_PROMPT}
+    # The registry slot binds the LIVE grammar and only that: the vendor layout
+    # answer parses to its page text here, while the committed fixture's JSON
+    # placeholder is a shape this reader can place nothing in and is read only
+    # through the separate `parse_fixture_placeholder` the fixture posture names.
     assert (
-        chandra.parse(b'{"schema":"verbatus-chandra-page-response.v1","text":"wire text"}')
-        == "wire text"
+        chandra.parse(b'<div data-bbox="0 0 500 500" data-label="Text">layout text</div>')
+        == "layout text"
     )
+    assert chandra.parse(
+        b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}'
+    ) == {"parse_outcome": "no-layout-blocks"}
     assert (
-        chandra.parse(b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}')
+        adapters.chandra.parse_fixture_placeholder(
+            b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}'
+        )
         == "text"
     )
     assert chandra.retain is adapters.chandra.retain
@@ -275,14 +306,78 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     """Every adapter exposes the closed native and derived intake seams."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
-    # Quantization is data beside the five operations; no-layout adapters must
-    # explicitly remain without a conversion rule.
-    assert fields == {"prompt", "parse", "retain", "present", "observe", "quantization"}
-    assert adapters.RUNNABLE_ADAPTERS["churro.v1"].quantization is None
+    # Quantization is data beside the five operations; `takes_page_size` says
+    # whether this adapter's `observe` accepts the sealed page's own size, and
+    # `resolve_framing` how it resolves a declared framing name (`None` where it
+    # has one framing and a run has nothing to choose) -- all three read off the
+    # registry entry rather than off the adapter's name.
+    assert fields == {
+        "prompt",
+        "parse",
+        "retain",
+        "present",
+        "observe",
+        "quantization",
+        "takes_page_size",
+        "resolve_framing",
+        "format_capabilities",
+        "fixture_parse",
+    }
+    # The reader each adapter's fixture posture uses where its declared rows are
+    # not in the grammar a served chair answers in. Chandra alone has one until
+    # U16 re-declares `proof/skeleton_fixture.toml`'s rows in the vendor
+    # grammar; the other two read their fixture rows through the same parser
+    # their live answers take, so they declare none rather than an alias.
+    assert {name: entry.fixture_parse for name, entry in adapters.RUNNABLE_ADAPTERS.items()} == {
+        "chandra.v1": adapters.chandra.parse_fixture_placeholder,
+        "churro.v1": None,
+        "dai.v1": None,
+    }
+    # What each adapter's own grammar can carry, read off the registry entry the
+    # same way. All three now declare their own (`chandra.FORMAT_CAPABILITIES`,
+    # `churro.FORMAT_CAPABILITIES`, `feeding.DAI_FORMAT_CAPABILITIES`); none of
+    # them fall back to the shared blanket default any more, and none of the
+    # three still coincides with it: Chandra carries layout and no uncertainty
+    # notation, and Churro and DAI carry a notation for doubt and no geometry.
+    # Each binding is asserted by identity as well as by value, so that a flip
+    # of an adapter's own flag moves the registry with the adapter rather than
+    # only the adapter.
+    assert {
+        name: dict(entry.format_capabilities) for name, entry in adapters.RUNNABLE_ADAPTERS.items()
+    } == {
+        "chandra.v1": {"can_express_uncertainty": False, "can_express_layout": True},
+        "churro.v1": {"can_express_uncertainty": True, "can_express_layout": False},
+        "dai.v1": {"can_express_uncertainty": True, "can_express_layout": False},
+    }
+    assert (
+        adapters.RUNNABLE_ADAPTERS["churro.v1"].format_capabilities
+        is adapters.churro.FORMAT_CAPABILITIES
+    )
+    assert (
+        adapters.RUNNABLE_ADAPTERS["dai.v1"].format_capabilities
+        is adapters.feeding.DAI_FORMAT_CAPABILITIES
+    )
+    assert (
+        adapters.RUNNABLE_ADAPTERS["churro.v1"].resolve_framing is adapters.churro.resolve_framing
+    )
+    assert adapters.RUNNABLE_ADAPTERS["chandra.v1"].resolve_framing is None
+    assert adapters.RUNNABLE_ADAPTERS["dai.v1"].resolve_framing is None
+    # A rule is declared only where there is normalized geometry to convert.
+    # Chandra's `data-bbox` is 0-1000 against the sealed page; Churro's
+    # `HistoricalDocument` carries no coordinate anywhere, so it declares none
+    # rather than inheriting one by omission -- and `takes_page_size` says the
+    # same fact at the other seam.
     assert (
         adapters.RUNNABLE_ADAPTERS["chandra.v1"].quantization == adapters.chandra.QUANTIZATION_RULE
     )
-    assert adapters.declared_quantization_rules() == {adapters.chandra.QUANTIZATION_RULE}
+    assert adapters.RUNNABLE_ADAPTERS["churro.v1"].quantization is None
+    assert adapters.RUNNABLE_ADAPTERS["dai.v1"].quantization is None
+    assert adapters.declared_quantization_rules() == frozenset({adapters.chandra.QUANTIZATION_RULE})
+    assert {name: entry.takes_page_size for name, entry in adapters.RUNNABLE_ADAPTERS.items()} == {
+        "chandra.v1": True,
+        "churro.v1": False,
+        "dai.v1": False,
+    }
     presented = {
         "kind": "page",
         "source_page_id": "page-1",
@@ -296,8 +391,21 @@ def test_the_registry_binds_the_native_intake_contract_seams():
             "bounds": {"x": 0, "y": 0, "w": 20, "h": 10},
         },
     }
-    assert adapters.resolve_runnable_adapter("churro.v1").present(object(), presented) is presented
-    assert adapters.resolve_runnable_adapter("churro.v1").observe(presented, "retained text") == [
+    # An act compatibility view is returned unchanged: no chair was shown those
+    # pixels, so minting the vendor's recipe over them would record a step that
+    # never ran. A whole *page* presentation is prepared instead, and that path
+    # needs a run tree; `test_attestatores_retention.py` exercises it there.
+    region = {
+        **presented,
+        "kind": "region",
+        "region_ref": {"region_id": "r1"},
+        "transform": {**presented["transform"], "operation": "crop"},
+    }
+    assert adapters.resolve_runnable_adapter("churro.v1").present(object(), region) is region
+    # Churro reports no geometry at all -- `HistoricalDocument` carries no
+    # coordinate anywhere -- so every body derives the honest presented echo
+    # that routing and coverage exclude, and no page size is needed or accepted.
+    echo = [
         {
             "ordinal": 0,
             "bounds": {"x": 0, "y": 0, "w": 20, "h": 10},
@@ -305,6 +413,26 @@ def test_the_registry_binds_the_native_intake_contract_seams():
             "span": None,
         }
     ]
+    churro_spec = adapters.resolve_runnable_adapter("churro.v1")
+    assert churro_spec.observe(presented, "retained text") == echo
+    assert churro_spec.observe(presented, b"<output>retained text</output>") == echo
+    assert (
+        churro_spec.observe(
+            presented,
+            b"<HistoricalDocument><Page><Body><Line>x</Line></Body></Page></HistoricalDocument>",
+        )
+        == echo
+    )
+    with pytest.raises(TypeError):
+        churro_spec.observe(presented, b"x", page_size=(200, 260))
+    # Nothing is lost by that echo: the capture written from the same bytes says
+    # what the parser could not place, by name and beside the retained response.
+    unplaceable = b"<transcription>x</transcription>"
+    capture = native_witness.derive_churro_capture(unplaceable, "eos", parser="xml")
+    assert capture["parse"]["state"] == "unrecognized-shape"
+    assert capture["parse"]["parser"] == "xml"
+    assert "transcription" in capture["parse"]["outcome"]
+    assert capture["stop_reason"] == "partial-parse-unrecognized-shape"
 
 
 def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(monkeypatch):
@@ -318,7 +446,11 @@ def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(
     exploding.__getattr__ = broken_binding
     monkeypatch.setitem(sys.modules, "feeding", exploding)
 
-    with pytest.raises(RuntimeError, match="fixture callable import failed at churro_prompt"):
+    # `dai_prompt`: the Churro and Chandra slots bind their own modules'
+    # callables, which reach `feeding` lazily, so DAI's is the first eager
+    # attribute this module takes off `feeding`. What is pinned is unchanged --
+    # a broken binding propagates out of import with no fallback.
+    with pytest.raises(RuntimeError, match="fixture callable import failed at dai_prompt"):
         _load_local_adapters()
 
 
@@ -408,42 +540,43 @@ def _dai_region(width, height, x=0, y=0):
             "crop-resize-preserve-aspect",
             id="one-past-the-width-ceiling",
         ),
-        # 1536x1536 is the total-pixel ceiling exactly, and it is the width
-        # ceiling that binds there rather than the pixel budget.
+        # `v3` recorded this as bound by the width ceiling alone (1,536 > 1,500)
+        # and left it at (1,500, 1,500) -- 2,250,000px. Under U15's raised
+        # `DAI_MAX_TOTAL_PIXELS` (2,359,296, the shipped catalogue's own
+        # max_pixels at every tier now the ladder is retired) that no longer
+        # exceeds the total-pixel ceiling, so the width pass alone is what
+        # the second pass agrees with: no further scale-down.
         pytest.param(
             1_536,
             1_536,
             "L",
             (1_500, 1_500),
             "crop-resize-preserve-aspect",
-            id="at-the-total-pixel-ceiling",
+            id="square-crop-also-bound-by-the-total-pixel-ceiling",
         ),
-        # 576x4096 = 2359296 exactly: all three ceilings meet on this one shape,
-        # which `DAI_LIMIT_SOURCES` names as the reason the height ceiling is 4096.
-        pytest.param(
-            576,
-            4_096,
-            "L",
-            (576, 4_096),
-            "crop",
-            id="where-all-three-ceilings-meet",
-        ),
+        # `v3`'s bug: a width this far under 1,500 was recorded as an identity
+        # view "however tall the crop or however many total pixels it
+        # carries" -- but 576x4,097 is 2,359,872px, over U15's own
+        # `DAI_MAX_TOTAL_PIXELS` (2,359,296) by 576px, so the engine would have
+        # resized it again with nothing here to say so. `v4`'s second pass
+        # catches it: beta = sqrt(2,359,872 / 2,359,296) ~= 1.000122, floored.
         pytest.param(
             576,
             4_097,
             "L",
-            (575, 4_089),
+            (575, 4_096),
             "crop-resize-preserve-aspect",
-            id="one-past-the-height-ceiling",
+            id="tall-crop-past-the-restored-total-pixel-ceiling",
         ),
-        # Nested flooring undercuts the largest feasible width in this aspect band.
+        # One pixel-row further past the same ceiling; the floored result
+        # lands on the same target as the case above.
         pytest.param(
-            581,
-            4_212,
+            576,
+            4_098,
             "L",
-            (565, 4_096),
+            (575, 4_096),
             "crop-resize-preserve-aspect",
-            id="in-the-rounding-band",
+            id="tall-crop-one-row-past-the-restored-total-pixel-ceiling",
         ),
         pytest.param(1, 1, "L", (1, 1), "crop", id="one-pixel"),
         # A bilevel scan, which the door seals as mode `1` rather than promoting.
@@ -478,7 +611,9 @@ def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
         resize = presented["transform"]["resize"]
         assert (resize["target_width_px"], resize["target_height_px"]) == target
         assert resize["target_width_px"] <= 1_500
-        assert resize["target_height_px"] <= 4_096
+        # U15: `DAI_MAX_TOTAL_PIXELS` is 2,359,296 now that the per-tier pixel
+        # ladder is retired and every shipped DAI row states the same
+        # `max_pixels`.
         assert resize["target_width_px"] * resize["target_height_px"] <= 2_359_296
     validate_presented_page_binding(
         presented,
@@ -512,4 +647,187 @@ def test_a_proposal_box_past_the_page_edge_is_refused_by_name(width, height, x, 
         adapters.resolve_runnable_adapter("dai.v1").present(
             context, _dai_region(width, height, x, y)
         )
+    assert context.tree.blobs == {}, "a refused presentation published adapter bytes"
+
+
+# --- the roster's declared framing, resolved once and refused early -----------
+
+
+def _roster(framings: dict[str, str] | None = None):
+    """The real roster, optionally re-declaring which framing a chair is asked in."""
+
+    from common.chairs.config import load_models_toml
+
+    config = load_models_toml(ROOT / "config" / "models-real.toml")
+    if framings is None:
+        return config
+    return dataclasses.replace(config, witness_framings=framings)
+
+
+def test_the_shipped_roster_declares_the_framing_it_is_already_asking_in():
+    """The declaration is explicit and it names one of the vendor's own two.
+
+    Both framings are a vendor artifact's bytes now, so what the roster picks
+    between is which attested string a run sends, never a wording of this
+    repository's.
+    """
+
+    adapters = _load_local_adapters()
+    config = _roster()
+    assert dict(config.witness_framings) == {"attestator_3": "registry-v0.3.0"}
+    assert adapters.framing_for(config, "attestator_3") == "registry-v0.3.0"
+    assert config.witness_framings["attestator_3"] in adapters.churro.FRAMINGS
+
+
+def test_a_chair_whose_adapter_has_one_framing_names_none():
+    """`None` rather than an invented name: there is nothing to choose, and the
+    capture's own prompt bytes already say what was asked."""
+
+    adapters = _load_local_adapters()
+    assert adapters.framing_for(_roster(), "attestator_1") is None
+    assert adapters.framing_for(_roster(), "attestator_2") is None
+
+
+def test_the_default_is_resolved_and_recorded_even_when_the_roster_names_none():
+    """A Testimonium that recorded a framing only when someone happened to name
+    one could not be compared across runs."""
+
+    adapters = _load_local_adapters()
+    assert adapters.framing_for(_roster({}), "attestator_3") == "registry-v0.3.0"
+
+
+def test_a_roster_naming_a_framing_no_adapter_declares_is_refused_before_the_run_opens():
+    adapters = _load_local_adapters()
+    with pytest.raises(SchemaRefusal, match="has no framing named"):
+        adapters.validate_runnable_adapter_bindings(
+            _roster({"attestator_3": "churro-xml-template.v1"})
+        )
+
+
+def test_a_roster_framing_a_single_framing_adapter_is_refused_by_name():
+    adapters = _load_local_adapters()
+    with pytest.raises(SchemaRefusal, match="declares only one framing"):
+        adapters.validate_runnable_adapter_bindings(_roster({"attestator_2": "registry-v0.3.0"}))
+
+
+# --- Churro prepares its page the way `prepare_ocr_image` does ----------------
+
+
+def _churro_page_presentation(width: int, height: int, page_bytes: bytes) -> dict:
+    """The whole-page presentation `run.py::presentation_for_page` hands an adapter."""
+    return {
+        "kind": "page",
+        "source_page_id": "page-1",
+        "source_page_ordinal": 1,
+        "image_path": "1_exemplar/page-1.png",
+        "image_sha256": digest_bytes(page_bytes),
+        "transform": {
+            "operation": "whole",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "bounds": {"x": 0, "y": 0, "w": width, "h": height},
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "target"),
+    [
+        # Inside the vendor's 2,500-pixel square: `resize_image_to_fit` returns
+        # the size it was given, and `ensure_rgb` still runs.
+        (20, 10, (20, 10)),
+        # Over it on one side: one isotropic scale, truncated by `int()`.
+        (3_000, 2, (2_500, 1)),
+    ],
+)
+def test_churro_presents_the_vendors_own_prepared_page_and_it_re_derives(width, height, target):
+    """The full recipe, replayed from the sealed page: crop, LANCZOS, then RGB.
+
+    `validate_presented_page_binding` performs those three steps in that order
+    and refuses a digest that does not come back, so this is the assertion that
+    the exact image the chair saw is reproducible from the Exemplar plus the
+    record (ARCHITECTURE invariant 3). The colour step is recorded rather than
+    left to the engine's own `do_convert_rgb`, which would happen server-side
+    and unrecorded.
+    """
+    page = _dai_page(width, height)
+    context = _DaiContext(page)
+    source = _churro_page_presentation(width, height, page)
+    adapters = _load_local_adapters()
+
+    presented = adapters.resolve_runnable_adapter("churro.v1").present(context, source)
+
+    assert presented["kind"] == "adapter-crop"
+    assert presented["transform"]["operation"] == "churro-prepare-ocr-image.v1"
+    assert presented["transform"]["colour_mode"] == "rgb"
+    assert presented["transform"]["resize"] == {
+        "resampler": "pillow-lanczos",
+        "dimension_rounding": "floor",
+        "source_width_px": width,
+        "source_height_px": height,
+        "target_width_px": target[0],
+        "target_height_px": target[1],
+    }
+    # The published blob is not the sealed page: the colour step alone changes
+    # it even where the resize is identity.
+    assert presented["image_sha256"] != digest_bytes(page)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=1,
+        page_image_path="1_exemplar/page-1.png",
+        page_sha256=digest_bytes(page),
+        page_size=(width, height),
+        page_bytes=page,
+    )
+    # And the readback seam re-derives the same recipe from the source alone.
+    adapters.validate_adapter_presentation("churro.v1", source, presented)
+
+
+def test_a_churro_presentation_the_vendors_fit_rule_cannot_produce_is_refused_at_readback():
+    """Two walls, and the record has to clear both.
+
+    The closed presentation schema holds the recorded target to the vendor's own
+    closed-form fit rule (`native_witness.churro_fit_target`, the same port the
+    adapter sized through), and the readback seam then holds the whole transform
+    to what this adapter could have written. A target that merely fits the
+    square and does not enlarge would pass a weaker check and still re-derive,
+    because re-derivation replays whatever target the record asks for.
+    """
+    page = _dai_page(3_000, 2)
+    context = _DaiContext(page)
+    source = _churro_page_presentation(3_000, 2, page)
+    adapters = _load_local_adapters()
+    presented = adapters.resolve_runnable_adapter("churro.v1").present(context, source)
+
+    forged = copy.deepcopy(presented)
+    forged["transform"]["resize"]["target_width_px"] = 2_499
+    with pytest.raises(SchemaRefusal, match="not the size the vendor's fit rule produces"):
+        adapters.validate_adapter_presentation("churro.v1", source, forged)
+
+    # And an adapter that did nothing at all -- the presentation returned
+    # unchanged, which is exactly what this adapter did before U10 -- is refused
+    # by the seam's own sentence rather than passing as "no crop of its own".
+    with pytest.raises(SchemaRefusal, match="prepare_ocr_image rule"):
+        adapters.validate_adapter_presentation("churro.v1", source, source)
+
+
+def test_a_colour_conversion_that_cannot_run_is_named_rather_than_raised_through(monkeypatch):
+    """`ensure_rgb` is half the vendor operation, so its failure is a refusal.
+
+    A bare `ValueError` out of an adapter boundary is the failure mode the
+    bounds check beside it already exists to prevent: a caller that could have
+    held this attempt with a reason gets an unclassified traceback instead
+    (GOVERNANCE 2).
+    """
+    page = _dai_page(20, 10)
+    context = _DaiContext(page)
+    source = _churro_page_presentation(20, 10, page)
+    adapters = _load_local_adapters()
+
+    def refusing_conversion(_png_bytes):
+        raise ValueError("image mode 'CMYK' is not a mode a sealed crop arrives in")
+
+    monkeypatch.setattr(adapters.churro, "convert_png_to_rgb", refusing_conversion)
+    with pytest.raises(SchemaRefusal, match="cannot be converted to RGB"):
+        adapters.resolve_runnable_adapter("churro.v1").present(context, source)
     assert context.tree.blobs == {}, "a refused presentation published adapter bytes"

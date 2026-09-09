@@ -13,24 +13,18 @@
 # preferred order -- spec_08's "witness identity and factual context only... never
 # pipeline-asserted worth."
 #
-# **Every sentence below is what this repository can actually cite, and says so
-# where it can cite nothing.** None of the three pinned repositories has been
-# fetched, so no training corpus has been inspected here; what is known is the
-# vendor's own published framing (Chandra's README, read 2026-08-22, recorded in
-# `pipeline/3_attestatores/chandra.py`), the trained prompt bytes each fine-tune
-# carries in its own repository (`pipeline/3_attestatores/feeding.py::dai_prompt`
-# and `::churro_prompt`), and the base models named on the cards
-# (`operations/pod/README.md`). A domain we do not know is written as not known,
-# never filled in with a plausible one.
+# Every sentence below is the researched vendor fact formerly kept in the
+# default declaration. It is selected only with the real roster; no fixture
+# dossier presents it as a fact about a local snapshot.
 
 # datalab-to/chandra-ocr-2 (config/models-real.toml).
 [attestator_1]
-training_domain = "Chandra-2, a general document-OCR model that converts page images to structured text with block identification and layout; its vendor publishes no statement of what it was trained on, so no more specific training domain is known to this project."
+training_domain = "Chandra-2, a Qwen3.5-VL vision-language model fine-tuned by Datalab for general document OCR to an HTML layout grammar (data-bbox/data-label blocks over a closed label set); the vendor's own model card publishes no description of the training-page composition or resolution beyond a benchmark comparison against olmOCR, so no more specific training domain is known to this project."
 
 # Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR (config/models-real.toml).
 [attestator_2]
-training_domain = "A Qwen2.5-VL-7B fine-tune whose own trained system prompt frames it as an archivist reading acts from French parish registers of the sixteenth to eighteenth centuries; the corpus behind that framing is not published, so the framing is all this project knows of its training."
+training_domain = "a Qwen2.5-VL-7B fine-tune by Teklia whose own trained system prompt frames it as an archivist reading acts from French parish registers of the sixteenth to eighteenth centuries; its training data is two published, ungated Hugging Face Hub datasets linked from the model card and spanning the sixteenth through nineteenth centuries -- Teklia/DAI-CReTDHI-RecordGold-ATR (about 7,000 single-record IIIF-region crops, released under the MIT license) and Teklia/DAI-CReTDHI-RecordGeneanet-ATR (about 30,000 crops linked from geneanet.org page records, no license stated); neither has been inspected here beyond its dataset card."
 
 # stanford-oval/churro-3B (config/models-real.toml).
 [attestator_3]
-training_domain = "A Qwen2.5-VL-3B-Instruct fine-tune whose own trained system prompt frames it as diplomatic transcription of historical documents in various languages; its training dataset is declared research-use-only and has not been inspected here, so nothing more specific about it is known."
+training_domain = "a Qwen2.5-VL-3B-Instruct model fine-tuned (standard supervised fine-tuning, per the paper) by Stanford OVAL; the vendor's own model registry gives it a single system instruction to transcribe the entirety of the historical document to XML format, with no separate user message -- not the library's other, model-agnostic diplomatic-transcription default that this project previously mistook for the trained framing; the paper states it was fine-tuned for 5 epochs over roughly 100,000 pages on a training target with no layout geometry, a single continuous text string per page, and its training dataset is declared research-use-only and has not been inspected here beyond that."

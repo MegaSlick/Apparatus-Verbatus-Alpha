@@ -261,7 +261,9 @@ def _autopsia(
     )
 
 
-def _not_measured_basis(armarium_export) -> dict[str, Any]:
+def _not_measured_basis(
+    armarium_export, *, acts_total: int = 1, pages_sealed: int = 2
+) -> dict[str, Any]:
     """The declared shape a hand-built projection carries.
 
     The real basis is derived from a run's own records; nothing here is a run,
@@ -271,17 +273,17 @@ def _not_measured_basis(armarium_export) -> dict[str, Any]:
     return {
         "schema": armarium_export.NOT_MEASURED_BASIS_SCHEMA,
         "page-testimony-content-coverage": {
-            "acts_total": 1,
+            "acts_total": acts_total,
             "acts_unmeasured": [],
             "reasons": [],
         },
         "page-ink-conservation": {
-            "pages_sealed": 0,
+            "pages_sealed": pages_sealed,
             "pages_not_reconciled": [],
             "reasons": [],
         },
         "act-visibility-survey": {
-            "acts_total": 1,
+            "acts_total": acts_total,
             "acts_with_capture_presentation": 0,
             "capture_rows": 0,
             "rows_with_named_absence": 0,
@@ -292,7 +294,25 @@ def _not_measured_basis(armarium_export) -> dict[str, Any]:
             "acts_delivered": 0,
             "acts_with_uncertain_spans": 0,
         },
-        "designator-geometry-calibration": {"configurations": []},
+        "designator-geometry-calibration": {
+            "configurations": [
+                {
+                    "configuration": "designator-padding",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": 0,
+                },
+                {
+                    "configuration": "designator-geometry",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": None,
+                },
+                {
+                    "configuration": "designator-grouping",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": 0,
+                },
+            ]
+        },
     }
 
 
@@ -759,7 +779,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         act_text_status=aggregate_basis["act_text_status"],
     )
     projection = ArmariumProjection(
-        not_measured_basis=_not_measured_basis(armarium_export),
+        not_measured_basis=_not_measured_basis(armarium_export, acts_total=1, pages_sealed=2),
         fixture_id="u19d-composed",
         scenario="happy",
         config_digest="a" * 64,
@@ -1304,7 +1324,7 @@ def test_an_occlusion_finding_cannot_hide_inside_a_review_labelled_accepted(tmp_
         act_text_status={},
     )
     projection = ArmariumProjection(
-        not_measured_basis=_not_measured_basis(armarium_export),
+        not_measured_basis=_not_measured_basis(armarium_export, acts_total=1, pages_sealed=2),
         fixture_id="u19d-occluded-review",
         scenario="occluded",
         config_digest="a" * 64,
@@ -1821,7 +1841,7 @@ def test_logical_act_export_conserves_each_member_exactly_once(tmp_path):
         "source_regions": [],
     }
     projection = ArmariumProjection(
-        not_measured_basis=_not_measured_basis(armarium_export),
+        not_measured_basis=_not_measured_basis(armarium_export, acts_total=2, pages_sealed=0),
         fixture_id="u19d-duplicate",
         scenario="adversarial",
         config_digest="a" * 64,

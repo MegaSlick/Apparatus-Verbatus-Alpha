@@ -94,11 +94,37 @@ def test_happy_recensor_pass_writes_a_complete_scoped_partition_receipt(tmp_path
     }
 
 
-@pytest.mark.parametrize("drift", ["stored-false", "geometry-false"])
+@pytest.mark.parametrize(
+    ("drift", "message"),
+    [
+        ("stored-false", "does not derive from"),
+        ("geometry-false", "attached it by 'anchor-line'"),
+        ("no-evidence-at-all", "does not derive from"),
+    ],
+)
 def test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways(
-    tmp_path, monkeypatch, drift
+    tmp_path, monkeypatch, drift, message
 ):
-    """Neither polarity of forged page attachment may move the witness floor."""
+    """Neither polarity of forged page attachment may move the witness floor.
+
+    Three drifts, because a page witness now has two ways to attach and the
+    re-derivation has to be exact about which one happened.
+
+    * `stored-false` -- geometry intact, the stored row says unattached. The
+      chair is discounted for evidence it really produced.
+    * `geometry-false` -- the reported boxes no longer overlap the sealed
+      proposal, while the stored row still calls the attachment
+      `geometric-overlap`. This chair does still attach, on its located anchor
+      line, so `attached` is honest and the LABEL is the lie: the record claims
+      an independent observation it did not make, which is precisely the fact a
+      floor reader needs, since `anchor-line` says the chair counts here only
+      because another chair's anchor located its text.
+    * `no-evidence-at-all` -- neither route survives (the boxes miss the
+      proposal AND the alignment is explicitly unaligned), so an `attached: true`
+      row claims an attachment nothing supports. This is the counterfactual for
+      the widened rule: without it, "geometry removed" would no longer prove
+      that `attached` can ever be driven false.
+    """
     root = tmp_path / "runs"
     through_perlector(root, "attachment-drift", "happy")
     recensor = _load_recensor()
@@ -131,6 +157,35 @@ def test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways(
 
         monkeypatch.setattr(context.tree, "read_artifact", forged_attachment)
     else:
+        if drift == "no-evidence-at-all":
+            original_artifact = context.tree.read_artifact
+
+            def unaligned_attachment(stage, kind, artifact_id):
+                record = original_artifact(stage, kind, artifact_id)
+                if (
+                    stage == ATTESTATORES
+                    and kind == "act-attachment"
+                    and record["subject_id"] == act["act_id"]
+                ):
+                    record = copy.deepcopy(record)
+                    row = next(
+                        row for row in record["payload"]["attachments"] if row["page_witness"]
+                    )
+                    assert row["attached"] is True
+                    # Bounded alignment failing against a page reading is an
+                    # ordinary outcome, honestly recorded with a reason. Paired
+                    # with the geometry forgery below it removes both routes,
+                    # leaving `attached: true` supported by nothing.
+                    row["alignment"] = {
+                        "status": "unaligned",
+                        "reason": "forged-alignment-failure",
+                    }
+                    row["span"] = None
+                    row["comparable"] = False
+                return record
+
+            monkeypatch.setattr(context.tree, "read_artifact", unaligned_attachment)
+
         original = context.tree.read_artifact_reference
 
         def forged_geometry(reference, *, stage, kind, subject_id):
@@ -168,7 +223,7 @@ def test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways(
 
         monkeypatch.setattr(context.tree, "read_artifact_reference", forged_geometry)
 
-    with pytest.raises(FatalAccounting, match="reported geometry against the sealed proposal"):
+    with pytest.raises(FatalAccounting, match=message):
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 

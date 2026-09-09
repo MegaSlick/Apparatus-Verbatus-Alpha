@@ -9,46 +9,92 @@ complete when it reaches this module.  In particular, repetition is inspected
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable
 from contextlib import contextmanager
 from itertools import groupby
 from threading import RLock
-from typing import Any, Callable, Iterator
+from types import MappingProxyType
+from typing import Any, Callable, Final, Iterator, Mapping
 
-from common.contracts.canonical import digest_of
+from common import chandra_layout
+from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ATTESTATORES, EXEMPLAR
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
+    churro_capture_system_prompt,
     derive_churro_capture,
-    validate_churro_xml,
+    # The scan under its own chair-neutral name. It was imported here through
+    # `detect_churro_repetition` while that was the only name it had; two page
+    # chairs now call it, and importing the chair-named alias under the
+    # chair-neutral name would say the Chandra branch borrowed Churro's.
+    detect_repetition,
+    parse_churro_response,
 )
-from common.native_witness import (
-    detect_churro_repetition as detect_repetition,
-)
+from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 
 DAI_MAX_WIDTH_PX = 1_500
-DAI_MAX_HEIGHT_PX = 4_096
+# `DAI_MAX_HEIGHT_PX` (4096, "no model source") retired with the vendor
+# systems design: it read off nothing the model itself states. The
+# total-pixel ceiling did **not** get to retire the same way, and `v4`
+# restores one -- a hostile review (U11) demonstrated the `v3` claim below
+# false on the unit's own kept test case: a DAI crop under 1,500px wide can
+# still carry more total pixels than a served row admits (a tall, narrow
+# marginal-note or signature-column crop, not merely an adversarial input),
+# and when it does, vLLM's own Qwen2.5-VL image processor (`smart_resize`,
+# `common/request_capacity.py`) resizes it *again* inside the engine before
+# the model sees it -- a second resize this schema had no field for and the
+# Testimonium's `identity`/`resize-preserve-aspect` claim then contradicted.
+#
+# `DAI_MAX_TOTAL_PIXELS` is `min(max_pixels)` over every DAI (`attestator_2`)
+# row in the shipped real catalogue (`config/serving_recipes_real.toml`) --
+# 2,359,296 as of U15 (Tyrel's ruling, 2026-09-06: the per-tier pixel ladder
+# is retired, so every tier now ships the same DAI `max_pixels`, its own
+# trained-crop ceiling rather than a generic-24gb leftover) -- pinned against
+# that file by
+# `test_feeding.py::test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels`
+# so a future tier change cannot leave this stale. It is the *smallest*
+# across tiers, not the tier this run actually serves under, on purpose:
+# `dai_dimensions` is a pure function of the crop's own pixels, read back
+# unchanged by `witness_adapters._dai_present` (which publishes the model
+# bytes before any chair answers) and by `validate_adapter_presentation` /
+# `publish_attempt` (which re-derive the same crop from the sealed regions
+# alone, with no served row in hand, to prove a Testimonium was not forged).
+# Threading the live row into that function would make it depend on state
+# none of those three callers has, which is a bigger seam than one hostile
+# finding earns; a fixed, sourced, worst-tier ceiling keeps `dai_dimensions`
+# pure and still guarantees no row's engine ever needs a second resize. The
+# cost, named rather than hidden (GOVERNANCE 10): a crop close to the width
+# ceiling served on a larger tier is cut down to what the *smallest* tier
+# would need, even where its own row could have held more. That is a
+# resolution cost on a minority of wide, tall crops, not a correctness gap.
+#
+# Both ceilings are read off something. The width ceiling is the model card
+# itself (`https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`,
+# revision `e371095d4ffe585f31f4974462931ddbac61ff64`, Training/Parameters:
+# "Image width: 1500 pixels (max)") rather than "design v2.1 section 2", which
+# named the same number but not the model's own source for it. The total-pixel
+# ceiling is the shipped serving catalogue itself, named above. A number
+# nobody can trace is exactly what GOVERNANCE 10 refuses, so both ceilings
+# carry their provenance into the record they seal.
 DAI_MAX_TOTAL_PIXELS = 2_359_296
-# Two of these three ceilings are read off something; one is chosen. Sealing them
-# side by side as bare integers made all three read as measured model bounds, and
-# a number nobody can trace is exactly what GOVERNANCE 10 refuses -- so each one
-# carries its own provenance into the record it seals, and a chosen ceiling says
-# out loud that it was chosen.
 DAI_LIMIT_SOURCES = {
-    "max_width_px": ("design v2.1 section 2: DAI is fed act crops at most 1500 px wide"),
-    "max_height_px": (
-        "R3 policy, no model source: nothing in the design, the roster or DAI's own "
-        "serving flags names a pixel height (the serving script's 4096 is "
-        "--max-model-len, a token count). Chosen so the sealed pixel budget still "
-        "affords 576 px of width at the ceiling (4096 x 576 = 2359296 exactly); "
-        "below it the total-pixel ceiling governs, so it binds only strips past "
-        "about 7:1 that carry too little width to read"
+    "max_width_px": (
+        "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR model card, "
+        "Training/Parameters: 'Image width: 1500 pixels (max)' "
+        "(https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR "
+        "@ e371095d4ffe585f31f4974462931ddbac61ff64)"
     ),
     "max_total_pixels": (
-        "DAI's own serving profile max_pixels (the old pipeline's serve_dai.sh), "
-        "already recorded in this repository at operations/serving/preflight.py"
+        "config/serving_recipes_real.toml: the smallest max_pixels shipped for "
+        "the dai.v1 (attestator_2) row across every tier -- 2,359,296, the same "
+        "at every tier since U15 (Tyrel's ruling, 2026-09-06) retired the "
+        "per-tier pixel ladder -- the floor every deployed tier's engine "
+        "actually admits, so a client-side crop within it is never re-resized "
+        "by any of them"
     ),
 }
 SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
@@ -56,56 +102,199 @@ SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
 # rather than spelled -1 at the two places that have to agree on it.
 _UNPLACED_ORDINAL = -1
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
-_RUNNABLE_PARSERS = frozenset({("chandra.v1", "json"), ("churro.v1", "xml"), ("dai.v1", "text")})
+_RUNNABLE_PARSERS = frozenset(
+    {
+        # Chandra's two postures, the same way Churro's two are named. `html` is
+        # the live path's: the vendor's own layout grammar
+        # (`common/chandra_layout.py`), which is what a served chair is asked for
+        # and the only shape a live reading is ever taken from. `json` is the
+        # committed fixture's placeholder alone -- `fixture-chandra-response.v1`,
+        # a shape this repository invented for a fixture that asks nothing of
+        # anybody -- kept because the fixture's declared bytes are pinned into
+        # its own digests until U16 re-declares those rows in the vendor grammar.
+        # `retain_model_view` refuses `json` for a *served* chair, so retained
+        # history cannot become a live reading by taking the wrong branch.
+        ("chandra.v1", "html"),
+        ("chandra.v1", "json"),
+        # Churro has one grammar and therefore one parser name, in both
+        # postures: `xml`, the vendor's own `HistoricalDocument`
+        # (`common/churro_document.py`). Unit 12 carried a second name for a
+        # live dispatcher that also read this repository's own JSON coordinate
+        # contract; that contract is retired with the channel it invented
+        # (`churro.py` says why), so a fixture body and a served answer are read
+        # by the same parser under the same name and re-derive through the same
+        # branch.
+        ("churro.v1", "xml"),
+        ("dai.v1", "text"),
+    }
+)
+# `[UNCERTAIN]` and `[CROSSED_OUT]` are not this repository's invention: they
+# are the expert transcription convention defined on the training dataset's
+# own card, `Teklia/DAI-CReTDHI-RecordGold-ATR`
+# (https://huggingface.co/datasets/Teklia/DAI-CReTDHI-RecordGold-ATR), which
+# declares `license: mit`. Its sibling training corpus,
+# `Teklia/DAI-CReTDHI-RecordGeneanet-ATR`, declares no licence at all; nothing
+# from that card is carried here; it is named so a later reader does not read
+# one dataset's MIT term as covering both. These two literal strings are the
+# whole of what crosses from the Gold card into this module: `validate_dai_text`
+# preserves them unchanged, and their presence in the grammar is the reason
+# `DAI_FORMAT_CAPABILITIES` below can name a doubt at all.
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 
+#: What DAI's grammar can carry, declared from the grammar rather than assumed
+#: from a blanket default (vendor systems design, Contract boundary: "DAI
+#: true/false"). Its answer is plain UTF-8 text carrying the RecordGold card's
+#: own `[UNCERTAIN]`/`[CROSSED_OUT]` convention (`_UNCERTAINTY_TOKENS` above),
+#: so the grammar *can* carry a doubt; it has no coordinate vocabulary
+#: anywhere, so `can_express_layout` is false and stays false.
+#:
+#: `can_express_uncertainty` is **true, and only because the comparison view it
+#: needs is already wired**. A chair that declares uncertainty before the
+#: Perlector can compare one against a bracket-marker view is permanently
+#: `compared: unknown` under `dissent.is_comparable` -- the judges' second fatal
+#: flaw. U6 landed the view (`common/alignment.py::bracket_marker_view`), U12
+#: wired it at `pipeline/4_perlector/run.py::dissent_testimonia` for exactly the
+#: act-scoped capability-declaring chairs, and the flip is this integration's,
+#: after both. The order is the whole of the safety here: flipped earlier, this
+#: chair would have gone dark on the one axis ARCHITECTURE names for catching a
+#: reader that learned to agree with witnesses.
+DAI_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
+    {"can_express_uncertainty": True, "can_express_layout": False}
+)
 
-def churro_prompt() -> dict[str, str]:
-    """The trained two-message XML framing, retained verbatim.
 
-    These strings are carried bytes from the quarantined prior adapter,
-    ``/window/remote/pilot_churro.py`` (its transcription of ``prompts/ocr.py``
-    from the Churro release, https://github.com/stanford-oval/churro), named as
-    carried in the commit that brought them per the quarantine rule. Licensing,
-    per the upstream repository's own split: the Churro code — these prompt
-    strings included — is Apache-2.0, so carrying and redistributing them with
-    this attribution is permitted; the weights are under the Qwen research
-    license and the training dataset is research-use-only, so weights are never
-    vendored, this repository's use of the model stays on the research track,
-    and any merging decision needs its own licensing decision first. They are
-    split by role because joining or summarizing them changes the actual
-    chat-template bytes the model receives.
-    """
-    system = (
-        "You are an expert in diplomatic transcription of historical documents from various "
-        "languages. Your task is to extract the full text from a given page. Only output the "
-        "transcribed text between <output> and </output> tags."
-    )
-    user = (
-        "Follow these instructions:\n\n"
-        "1. You will be provided with a scanned document page.\n\n"
-        "2. Perform transcription on the entirety of the page, converting all visible text into "
-        "the following format. Include handwritten and print text, if any. Include tables, "
-        "captions, headers, main text and all other visible text.\n\n"
-        "3. If you encounter any non-text elements, simply skip them without attempting to "
-        "describe them.\n\n"
-        "4. Do not modernize or standardize the text. For example, if the transcription is using "
-        '"ſ" instead of "s" or "а" instead of "a", keep it that way.\n\n'
-        "5. When you come across text in languages other than English, transcribe it as "
-        "accurately as possible without translation.\n\n"
-        "6. Output the OCR result in the following format:\n\n"
-        "<output>\nextracted text here\n</output>\n\n"
-        "Remember, your goal is to accurately transcribe the text from the scanned page as much "
-        "as possible. Process the entire page, even if it contains a large amount of text, and "
-        "provide clear, well-formatted output. Pay attention to the appropriate reading order "
-        "and layout of the text."
-    )
-    return {"system": system, "user": user}
+#: The vendor systems ruling retired three things at this seam, and they are
+#: named here because their absence is the point rather than an oversight:
+#: `churro_prompt` (the model-agnostic diplomatic-transcription prompt this
+#: repository carried and described as "the trained two-message XML framing"
+#: -- it is the Churro library's *generic fallback*, a drifted copy of the
+#: paper's zero-shot comparison-VLM prompt, and the fine-tune never saw it),
+#: `churro_layout_prompt` (a modified carry of that prompt asking for a JSON
+#: coordinate channel Churro-DS carries no geometry for), and the two
+#: `CHURRO_*_PROMPT_VERSION` names for them. What a Churro chair is asked is
+#: now one of the two vendor-attested system strings in
+#: `common/churro_document.py`, resolved by name through
+#: `pipeline/3_attestatores/churro.py::FRAMINGS`. This module owns no Churro
+#: prompt bytes at all any more, which is why there is nothing between the
+#: parser table above and the generation view below.
 
 
 def churro_generation() -> dict[str, int]:
-    """The predeclared operational bound, not a content or repetition control."""
+    """Churro's declared answer bound, retained as evidence and not as the wire value.
+
+    20,000 tokens, from the three vendor artifacts
+    ``common/native_witness.py::CHURRO_OUTPUT_TOKENS`` names and reads out of
+    ``request_capacity.DECLARED_ANSWER_BOUND_TOKENS`` -- the one table the wire
+    value is computed from, so this chair's bound cannot drift from the number
+    the bound seam applies. It is *declared* evidence: what actually goes out is
+    ``min(this, max_model_len - image - prompt)`` through
+    ``live_witness.generation_bound_sent``, and at every row in the shipped real
+    catalogue the row is what binds, so no ``max_tokens`` is sent at all.
+
+    The vendor's ``repetition_penalty`` of 1.05 is deliberately **not** folded in
+    here. This is the view retained inside every Churro model view, written
+    through ``common/contracts/canonical.py``, which refuses floats outright; a
+    declared view that quietly re-encoded 1.05 would be worse than one that does
+    not claim to carry it. It goes on the wire through
+    :func:`churro_wire_decoding`, where the retained chair-call record
+    transcribes it exactly.
+    """
     return {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
+
+
+def chandra_generation() -> dict[str, int]:
+    """Chandra's own declared answer bound, retained as the vendor's own number.
+
+    ``chandra/settings.py``'s ``MAX_OUTPUT_TOKENS = 12384`` at the pinned commit
+    -- the value every vendor caller passes as its generation limit. It is
+    *declared* evidence, not by itself what goes on the wire: as for Churro,
+    ``common/request_capacity.py::sendable_max_tokens`` sends
+    ``min(this, max_model_len - image - prompt)`` against this request's own
+    capacity record, and the vendor's own pair overruns the vendor's own
+    container (12,384 + a 6,045-token A4 image against
+    ``--max-model-len 18000``), so the clamp is ours and the record says which
+    of the two bound a given call.
+
+    This module states it once by reading
+    ``request_capacity.DECLARED_ANSWER_BOUND_TOKENS``, the one table the wire
+    value is computed from, exactly as ``CHURRO_OUTPUT_TOKENS`` does -- a second
+    literal here could drift from the number the bound seam actually applies.
+    """
+    return {"max_new_tokens": DECLARED_ANSWER_BOUND_TOKENS["attestator_1"]}
+
+
+def churro_wire_decoding() -> dict[str, float]:
+    """Churro's own shipped ``repetition_penalty``, because the engine drops it.
+
+    Carried third-party content: one value from ``generation_config.json`` (260
+    source bytes, SHA-256
+    ``90e92cbc8634d6f5b1cb1ae58a3c48724a1ce1f11f8b7aecb5b9b3fd5d5a06bf``) in
+    ``stanford-oval/churro-3B`` at the revision ``config/models-real.toml``
+    pins. Only this one value crosses; the file's ``do_sample``/``temperature``
+    describe a sampling posture `config/decoding.toml` owns and the serving
+    seam already fixes at 0, and its ``bos``/``eos``/``pad`` ids are the
+    tokenizer's own, which vLLM reads for itself.
+
+    **Why it has to be sent.** Every serving row pins
+    ``generation_config = "vllm"``, and vLLM's ``get_diff_sampling_param``
+    then returns ``{}`` instead of the model's file, so the request falls back
+    to ``_DEFAULT_SAMPLING_PARAMS`` -- ``repetition_penalty 1.0``. The model's
+    publisher ships 1.05 and the CHURRO paper section D.5 documents this model
+    entering degeneration loops. Declining a vendor's own mitigation by
+    accident is exactly what GOVERNANCE 7 forbids in the other direction: the
+    pipeline does not gate model behaviour, and it does not silently substitute
+    its own value for the vendor's either.
+
+    **Determinism is untouched.** At ``temperature = 0`` vLLM takes the greedy
+    path, and the penalty is applied to the logits *before* that argmax; the
+    same request still returns the same tokens.
+
+    Not folded into :func:`churro_generation`, which is the *declared* view
+    retained inside every Churro model view: that record is written by
+    ``common/contracts/canonical.py``, which refuses floats outright, and a
+    declared view that quietly re-encoded 1.05 would be worse than one that
+    does not claim to carry it. What is sent is recorded, exactly, on the
+    retained chair-call record -- ``operations/serving/client.py`` transcribes
+    it as ``wire-decimal.v1``, the machinery that exists for DAI's identical
+    1.05.
+    """
+    return {"repetition_penalty": 1.05}
+
+
+# The stop token vLLM already holds for DAI without being told: the tokenizer's
+# own ``eos_token``, ``<|im_end|>``, at the pinned revision. Named so
+# :func:`dai_wire_stop_token_ids` can say which of the carried ids is the *new*
+# one rather than re-typing a literal for it.
+DAI_TOKENIZER_EOS_TOKEN_ID: Final = 151645
+
+
+def dai_wire_stop_token_ids() -> dict[str, list[int]]:
+    """DAI's second EOS id, which ``generation_config = "vllm"`` never reads.
+
+    Derived from the carried ``generation_config.json`` (:func:`dai_generation`,
+    under its own digest), never re-typed: its ``eos_token_id`` is
+    ``[151645, 151643]``, and vLLM takes only the first from the tokenizer's
+    ``eos_token``. The second, ``<|endoftext|>``, is dropped with the rest of
+    the model's file when the row pins ``generation_config = "vllm"``, so a
+    response that ends on it would not stop -- and with the answer budget then
+    running to the row's context, that is length billed by the hour rather than
+    a reading.
+
+    Only the ids vLLM does not already have are sent. Adding the primary EOS
+    back would be a no-op in principle and a change to the one stop that is
+    already working in practice, which is not a trade this seam makes on an
+    unobserved engine.
+    """
+
+    declared = dai_generation()["eos_token_id"]
+    extra = [token_id for token_id in declared if token_id != DAI_TOKENIZER_EOS_TOKEN_ID]
+    if not extra:
+        raise SchemaRefusal(
+            "DAI's carried generation config names no stop token beyond the tokenizer's own "
+            f"{DAI_TOKENIZER_EOS_TOKEN_ID}, so this seam has nothing to add; the carried ids "
+            f"are {declared!r} and the carry itself has changed"
+        )
+    return {"stop_token_ids": extra}
 
 
 def dai_prompt() -> dict[str, str]:
@@ -248,11 +437,19 @@ def dai_model_view(
 
 
 def _dai_image_limits() -> dict[str, Any]:
-    """The one sealed statement of DAI's executable image ceilings."""
+    """The sealed statement of DAI's executable image ceilings.
+
+    ``v3`` dropped the height ceiling (no model source) and the total-pixel
+    ceiling together, on the claim that the served row's own ``max_pixels``
+    made the second redundant. ``v4`` restores the total-pixel ceiling alone
+    (``feeding.DAI_MAX_WIDTH_PX``'s own comment names the hostile-review
+    finding that claim did not survive) -- the height ceiling stays retired,
+    since nothing states one and a total-pixel ceiling already bounds height
+    indirectly for any width this rule can produce.
+    """
     return {
-        "schema": "dai-image-limits.v2",
+        "schema": "dai-image-limits.v4",
         "max_width_px": DAI_MAX_WIDTH_PX,
-        "max_height_px": DAI_MAX_HEIGHT_PX,
         "max_total_pixels": DAI_MAX_TOTAL_PIXELS,
         "sources": dict(DAI_LIMIT_SOURCES),
     }
@@ -350,34 +547,154 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
 
 
 def dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
-    """Largest integer aspect-preserving view within every DAI ceiling.
+    """Largest aspect-preserving view within DAI's two sealed ceilings.
 
-    Height and area must remain search predicates: pre-flooring a height-derived
-    width can undercut the largest feasible view by one pixel.
+    Two floor-rounded, aspect-preserving passes, applied in order: first the
+    width ceiling (`DAI_MAX_WIDTH_PX`), same as `v3`; then, only if the
+    resulting crop still carries more total pixels than `DAI_MAX_TOTAL_PIXELS`,
+    a second aspect-preserving scale-down against that ceiling. A width already
+    under 1,500px skips the first pass entirely, but a crop that is narrow and
+    *tall* can still carry more total pixels than any shipped row admits --
+    `v3` let exactly that case through as a claimed identity view, and a
+    hostile review (U11) demonstrated it against the unit's own kept test case
+    (a 500x10,000 crop, 5,000,000px, against a smallest shipped row of
+    1,806,336). This is why the ceiling is a second pass rather than folded
+    into one search the way `v2`'s used to run: the two ceilings come from
+    different places (the model's own trained width; the serving catalogue's
+    smallest admitted pixel count) and a crop can trip either alone.
+
+    Nothing here reaches for the row that will actually serve this request --
+    see `DAI_MAX_TOTAL_PIXELS`'s own comment for why this function stays a
+    pure function of the crop's own pixels. The guarantee it keeps is still
+    real: a view within `DAI_MAX_TOTAL_PIXELS` fits every shipped tier's own
+    `max_pixels`, so none of their engines needs to resize it again.
 
     Public because it decides which pixels a DAI witness is actually shown, and
     the presentation writer and the read-back validator in `witness_adapters`
     both have to reach exactly this rule. Under a private name, renaming it here
     would break those two together with nothing to say they were coupled.
     """
-    upper_width = min(width_px, DAI_MAX_WIDTH_PX)
-    if upper_width < 1:
-        raise SchemaRefusal("DAI image aspect cannot fit the sealed height ceiling")
-    low, high = 1, upper_width
-    while low < high:
-        candidate = (low + high + 1) // 2
-        candidate_height = max(1, height_px * candidate // width_px)
-        if candidate * candidate_height <= DAI_MAX_TOTAL_PIXELS and (
-            candidate_height <= DAI_MAX_HEIGHT_PX
-        ):
-            low = candidate
-        else:
-            high = candidate - 1
-    target_width = low
-    target_height = max(1, height_px * target_width // width_px)
-    if target_height > DAI_MAX_HEIGHT_PX:
-        raise SchemaRefusal("DAI image aspect cannot fit the sealed height ceiling")
+    if (
+        not isinstance(width_px, int)
+        or isinstance(width_px, bool)
+        or not isinstance(height_px, int)
+        or isinstance(height_px, bool)
+        or width_px < 1
+        or height_px < 1
+    ):
+        raise SchemaRefusal("DAI source dimensions must be positive integers")
+    if width_px <= DAI_MAX_WIDTH_PX:
+        target_width, target_height = width_px, height_px
+    else:
+        target_width = DAI_MAX_WIDTH_PX
+        target_height = max(1, height_px * target_width // width_px)
+    if target_width * target_height > DAI_MAX_TOTAL_PIXELS:
+        beta = math.sqrt((target_width * target_height) / DAI_MAX_TOTAL_PIXELS)
+        target_width = max(1, math.floor(target_width / beta))
+        target_height = max(1, math.floor(target_height / beta))
     return target_width, target_height
+
+
+def sealed_page_bytes(context: Any, page_id: str, *, what: str) -> bytes:
+    """The sealed Exemplar page's exact bytes, read once and digest-bound.
+
+    All three adapters cut their own presented image out of a sealed page --
+    DAI's act crop, Chandra's `scale_to_fit` and Churro's `prepare_ocr_image` --
+    and each must read it the same way: through `read_artifact`, which verifies
+    the record's inputs, and then against the *one* byte object the imaging call
+    will use, so a filesystem swap cannot cross the interval between the check
+    and the use. Written once here rather than three times, because the copies
+    would agree only for as long as all of them were edited together.
+
+    ``what`` names the adapter in every refusal, so an operator reading one is
+    sent to the chair whose presentation could not be built rather than to
+    whichever adapter happened to own the shared code.
+    """
+
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    payload = page.get("payload")
+    image_path = payload.get("image_path") if isinstance(payload, dict) else None
+    if not isinstance(image_path, str) or not image_path:
+        raise SchemaRefusal(f"{what}'s sealed source page has no image path to crop")
+    try:
+        page_bytes = context.tree.read_bytes(image_path)
+    except OSError as error:
+        raise SchemaRefusal(f"{what} sealed page bytes could not be read: {error}") from error
+    if digest_bytes(page_bytes) != payload.get("source_sha256"):
+        raise SchemaRefusal(
+            f"{what} sealed page bytes changed between artifact verification and crop use"
+        )
+    return page_bytes
+
+
+def _record_post_hoc_repetition(
+    record: dict[str, Any], raw_response: bytes, *, ceiling: int
+) -> None:
+    """Scan a retained capture for a repeated tail and record what it found.
+
+    The vendor's own answer to a degenerate reading is a retry ladder --
+    Chandra's ``_should_retry`` re-rolls the same page up the temperature
+    ladder until the answer stops looking stuck. That is not carried: re-rolling
+    a reading until it looks better is recovering *quality*, which GOVERNANCE 11
+    reserves to a review flag and refuses to a recovery loop. What is carried is
+    the fact. The scan runs after the bytes are already retained and already
+    parsed, it changes nothing about the response, and it publishes a finding
+    beside the reading plus a stop reason that says the reading is partial --
+    without which a Chandra answer that degenerated but still ended under its
+    bound would reach the Perlector as full testimony under
+    ``transport_stop_reason = "stop"`` (GOVERNANCE 2).
+
+    Written here rather than inside ``derive_churro_capture`` because that
+    function derives *Churro's* whole capture -- its grammar, its byte ceiling,
+    its parse states -- while this is the one chair-neutral half of it. The
+    detector itself is already chair-neutral
+    (``common/native_witness.py::detect_repetition``); this is the seam that
+    applies it to a capture some other chair's derivation did not build.
+
+    Three rules, each the same as Churro's, so two page witnesses cannot come to
+    mean different things by one finding:
+
+    * **What is inspected.** ``parse["text"]`` where a parse produced one, and
+      the raw bytes otherwise, with the choice named in the finding's
+      ``inspected`` field. Repetition is a fact about what the model
+      transcribed, not about the markup it arrived in -- a page of `<div
+      data-bbox=...>` wrappers repeats by construction.
+    * **The ceiling.** A body past the grammar's own retained parsing limit was
+      never read by the parser, and normalizing it here to count a tail would
+      spend the memory the ceiling exists to refuse. The scan says it did not
+      run rather than running on bytes nobody bounded.
+    * **Precedence.** A parse outcome wins over a repeated tail: a body this
+      grammar could not place is the more load-bearing fact about the capture,
+      and the repetition stays in ``findings`` either way, so nothing is lost by
+      the ordering.
+    """
+
+    if len(raw_response) > ceiling:
+        finding: dict[str, Any] | None = {
+            "kind": "post-hoc-repetition-uninspected",
+            "reason": (
+                f"response exceeds the retained parsing limit of {ceiling} bytes "
+                f"(received {len(raw_response)})"
+            ),
+        }
+        basis = "raw-response"
+    else:
+        parsed_text = record["parse"].get("text")
+        inspected: str | bytes
+        inspected, basis = (
+            (parsed_text, "parsed-text")
+            if isinstance(parsed_text, str)
+            else (raw_response, "raw-response")
+        )
+        finding = detect_repetition(inspected)
+    if finding is None:
+        return
+    record["findings"].append({**finding, "inspected": basis})
+    if finding["kind"] == "post-hoc-repetition" and record["parse"]["state"] not in {
+        "failed",
+        "unrecognized-shape",
+    }:
+        record["stop_reason"] = "partial-post-hoc-repetition-detected"
 
 
 def retain_model_view(
@@ -393,12 +710,11 @@ def retain_model_view(
     """Retain a reproducible view and raw response, including parser failure bytes.
 
     ``served`` says the bytes came off a chair that actually answered rather
-    than out of the committed fixture. It reaches exactly one parser --
-    Chandra's, which accepts the fixture's own placeholder schema on the
-    offline posture and must not on the live one (CodeRabbit round 1, T7) --
-    and changes nothing else here. Retention itself is posture-blind, and
-    stays so: the bytes are published to the tree before any parser runs, so a
-    refusal names a surprise without losing it.
+    than out of the committed fixture. It decides exactly one thing -- whether
+    Chandra's fixture-placeholder parser may run at all (CodeRabbit round 1,
+    T7) -- and changes nothing else here. Retention itself is posture-blind,
+    and stays so: the bytes are published to the tree before any parser runs,
+    so a refusal names a surprise without losing it.
     """
     if not isinstance(adapter, str) or not adapter:
         raise SchemaRefusal("model-view adapter is blank")
@@ -411,6 +727,20 @@ def retain_model_view(
     # is the shape GOVERNANCE 2 refuses. Ask for a parse that runs, or ask for none.
     if parser is not None and (adapter, parser) not in _RUNNABLE_PARSERS:
         raise SchemaRefusal(f"model-view parser {parser!r} does not run for adapter {adapter!r}")
+    # A served chair answering in the committed fixture's own placeholder schema
+    # is answering a question nobody put to it, and reading that as a page of
+    # text would publish a reading whose shape this repository never verified
+    # against anything (GOVERNANCE 10). The refusal is at the seam rather than
+    # inside the parser because the parser name is what the record will carry:
+    # a live capture written under `json` could never be re-derived as the live
+    # grammar it was actually asked in. The bytes are retained by the caller's
+    # own route either way, so nothing is lost by refusing here.
+    if served and adapter == "chandra.v1" and parser == "json":
+        raise SchemaRefusal(
+            "a served chandra.v1 response cannot be retained under the committed fixture's "
+            "placeholder parser 'json'; a live reading is taken only in the vendor layout "
+            "grammar ('html')"
+        )
     if adapter == "dai.v1":
         validate_dai_model_view(view)
     raw_digest, published = tree.put_blob(ATTESTATORES, raw_response)
@@ -428,6 +758,20 @@ def retain_model_view(
         "parse": {"state": "not-requested" if parser is None else "pending", "parser": parser},
     }
     if adapter == "churro.v1":
+        # Which vendor pin the prompt bytes beside this reading were taken from,
+        # recorded whatever the answer turned out to be: the pin is a fact about
+        # the request, not about whether the response parsed (GOVERNANCE 6).
+        # Imported locally for the reason Chandra's is: the runnable sibling
+        # module imports this retention seam.
+        import churro
+
+        # The system string comes off the view being retained, so the vendor's
+        # own prompt-echo trim runs against the framing this request actually
+        # sent -- and `verify_native_capture_bytes` reads the same string back
+        # off the same record when it re-derives.
+        system_prompt = churro_capture_system_prompt(record)
+        if (identity := churro.vendor_identity(system_prompt)) is not None:
+            record["vendor_identity"] = identity
         # The blob is immutable before either derived operation. Pass these
         # module bindings explicitly so a pinning test can observe that order.
         record.update(
@@ -435,26 +779,48 @@ def retain_model_view(
                 raw_response,
                 transport_stop_reason,
                 parser=parser,
-                xml_parser=validate_churro_xml,
+                system_prompt=system_prompt,
+                document_parser=parse_churro_response,
                 repetition_detector=detect_repetition,
             )
         )
-    elif adapter == "chandra.v1" and parser == "json":
+    elif adapter == "chandra.v1" and parser in {"html", "json"}:
         # Import locally: the runnable sibling module imports this retention
-        # seam, while its parser must remain the one owner of Chandra's shapes
-        # (the wire contract in `chandra_response`, and the fixture placeholder).
-        from chandra import parse as parse_chandra
+        # seam, while it must remain the one owner of Chandra's two shapes --
+        # the vendor layout grammar, and the committed fixture's placeholder.
+        import chandra
 
-        parsed = parse_chandra(raw_response, served=served)
+        if parser == "html":
+            # Which vendor pin the prompt bytes beside this reading were taken
+            # from, recorded whatever the answer turned out to be: the pin is a
+            # fact about the request, not about whether the response parsed
+            # (GOVERNANCE 6).
+            record["vendor_identity"] = chandra.vendor_identity()
+            parsed_layout = chandra.parse_layout(raw_response)
+            parsed: Any
+            if chandra_layout.is_refusal(parsed_layout):
+                parsed = {"parse_outcome": parsed_layout["parse_outcome"]}
+            else:
+                parsed = parsed_layout["page_text"]
+                # The grammar's own findings travel with the reading. They are
+                # the whole of what the vendor's parser would have printed to a
+                # stdout nobody retains -- a malformed box, a retained blank
+                # page, text outside every block, a block count that does not
+                # reconcile -- and each one names a fact about this response
+                # that the page text alone cannot show (GOVERNANCE 2).
+                record["findings"] = list(parsed_layout["findings"])
+        else:
+            parsed = chandra.parse_fixture_placeholder(raw_response)
         if isinstance(parsed, dict) and set(parsed) == {"parse_outcome"}:
             record["parse"] = {
                 "state": "unrecognized-shape",
-                "parser": "json",
+                "parser": parser,
                 "outcome": parsed["parse_outcome"],
             }
             record["stop_reason"] = "partial-parse-unrecognized-shape"
         else:
-            record["parse"] = {"state": "parsed", "parser": "json", "text": parsed}
+            record["parse"] = {"state": "parsed", "parser": parser, "text": parsed}
+        _record_post_hoc_repetition(record, raw_response, ceiling=chandra.MAX_RESPONSE_BYTES)
     elif adapter == "dai.v1" and parser == "text":
         try:
             record["parse"] = {

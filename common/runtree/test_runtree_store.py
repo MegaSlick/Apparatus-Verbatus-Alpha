@@ -17,6 +17,7 @@ import inspect
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -2334,3 +2335,123 @@ def test_the_shared_snapshot_fails_loudly_on_a_descendant_it_cannot_read(tmp_pat
             tree_snapshot(root)
     finally:
         locked.chmod(0o700)
+
+
+# -- the directory entry a publication creates, and its durability --
+
+
+def _fsync_kinds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record whether each real fsync was of a regular file or of a directory."""
+
+    observed: list[str] = []
+    real_fsync = os.fsync
+
+    def watching(descriptor: int) -> None:
+        try:
+            observed.append("dir" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file")
+        except OSError:  # pragma: no cover - fstat on a live descriptor
+            observed.append("unknown")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", watching)
+    return observed
+
+
+@pytest.mark.parametrize("publish", ["_atomic_write", "_atomic_create"])
+def test_publication_syncs_the_file_then_the_name(
+    tmp_path: Path, publish: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bytes, then the final name, then the directory entry that points at it.
+
+    `fsync` on the artifact persists its *bytes*; the entry naming them is a
+    separate call, and without it a power cut can leave a published artifact
+    with its data intact and its name gone. Every publication here recorded one
+    regular-file sync and no directory sync at 36acde636f.
+    """
+
+    observed = _fsync_kinds(monkeypatch)
+    target = tmp_path / "artifact.json"
+
+    getattr(runtree_store, publish)(target, b'{"a":1}')
+
+    assert observed == ["file", "dir"]
+    assert target.read_bytes() == b'{"a":1}'
+    # Nothing is left behind for a resume to trip over.
+    assert [entry.name for entry in tmp_path.iterdir()] == ["artifact.json"]
+
+
+@pytest.mark.parametrize("publish", ["_atomic_write", "_atomic_create"])
+def test_a_filesystem_that_will_not_persist_a_name_refuses_the_publication(
+    tmp_path: Path, publish: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durability the store cannot prove is refused, never reported as success.
+
+    Strict deliberately: this tree is the evidence, and a stage that says an
+    artifact was published — with a resume that then trusts it — is exactly what
+    a lost directory entry betrays. The refusal says the bytes *are* published,
+    because the operator's repair is to move the run root, not to hunt for a
+    partial file.
+    """
+
+    real_fsync = os.fsync
+
+    def refusing(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError(errno.EINVAL, "Invalid argument")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", refusing)
+    target = tmp_path / "artifact.json"
+
+    with pytest.raises(SchemaRefusal) as refused:
+        getattr(runtree_store, publish)(target, b'{"a":1}')
+
+    assert "will not persist a directory entry" in str(refused.value)
+    assert "artifact.json is published" in str(refused.value)
+    # And it really is published: the caller may retry, and the retry publishes
+    # identical bytes rather than finding a half-written file.
+    assert target.read_bytes() == b'{"a":1}'
+
+
+def test_a_directory_that_cannot_be_opened_refuses_the_publication_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other of `sync_directory`'s two failure points, named the same way."""
+
+    real_open = os.open
+
+    def refusing(path, flags, *arguments, **keywords):  # type: ignore[no-untyped-def]
+        if Path(path) == tmp_path:
+            raise OSError(errno.EACCES, "Permission denied")
+        return real_open(path, flags, *arguments, **keywords)
+
+    monkeypatch.setattr(os, "open", refusing)
+
+    with pytest.raises(SchemaRefusal, match="will not persist a directory entry"):
+        runtree_store._atomic_write(tmp_path / "artifact.json", b'{"a":1}')
+
+
+def test_the_store_and_the_operational_records_share_one_sync_primitive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One implementation, reached from both layers, with `common` importing down.
+
+    The reviewer's finding was a protection present in one place and absent in
+    another. Two copies that agree today are the same finding waiting to happen,
+    so this pins that there is one — and pins the third caller behaviourally,
+    by watching the primitive get called, rather than by reading its source.
+    """
+
+    from common.durability import sync_directory as canonical
+    from operations.pod import durable
+    from operations.review import candidate
+
+    assert durable.sync_directory is canonical
+    assert runtree_store.sync_directory is canonical
+
+    calls: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(
+        candidate, "sync_directory", lambda path, *, strict=False: calls.append((path, strict))
+    )
+    candidate.fsync_directory(tmp_path)
+    assert calls == [(tmp_path, True)]

@@ -806,7 +806,8 @@ _GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
 # Where a reader goes to check each row against the evidence itself (GOALS 5).
 _NOT_MEASURED_RECORDED_IN: Final = {
     _TESTIMONY_COVERAGE: (
-        "each act's Recensor review, field `testimony_content_coverage`, in the retained run"
+        "each act's Recensor review, fields `testimony_content_coverage` and "
+        "`testimony_content_coverage_continuation`, in the retained run"
     ),
     _PAGE_INK_CONSERVATION: (
         "the Designator's per-page conservation records, field `ink_measurable`, in the "
@@ -825,6 +826,11 @@ _NOT_MEASURED_RECORDED_IN: Final = {
         "configurations, whose digests this run's `config_digest` binds"
     ),
 }
+_GEOMETRY_CONFIGURATION_NAMES: Final = (
+    "designator-padding",
+    "designator-geometry",
+    "designator-grouping",
+)
 
 
 _MANIFEST_FIELDS: Final = frozenset(
@@ -931,6 +937,116 @@ def _require_exact_fields(value: object, expected: frozenset[str], *, subject: s
             f"{subject} has an unrecognized field set (unexpected {unknown}, missing {missing})"
         )
     return value
+
+
+def _require_non_negative_integer(value: object, *, subject: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise SchemaRefusal(f"{subject} is not a non-negative integer")
+    return value
+
+
+def _require_distinct_strings(value: object, *, subject: str) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+        or len(value) != len(set(value))
+    ):
+        raise SchemaRefusal(f"{subject} is not a list of distinct non-blank strings")
+    return value
+
+
+def _validate_not_measured_detail(
+    instrument: str, value: object, *, subject: str
+) -> dict[str, Any]:
+    """Validate the detail before either deriving or verifying its status."""
+    detail = _require_exact_fields(value, _NOT_MEASURED_DETAIL_FIELDS[instrument], subject=subject)
+    if instrument == _TESTIMONY_COVERAGE:
+        acts_total = _require_non_negative_integer(
+            detail["acts_total"], subject=f"{subject} acts_total"
+        )
+        acts_unmeasured = _require_distinct_strings(
+            detail["acts_unmeasured"], subject=f"{subject} acts_unmeasured"
+        )
+        _require_distinct_strings(detail["reasons"], subject=f"{subject} reasons")
+        if len(acts_unmeasured) > acts_total:
+            raise SchemaRefusal(f"{subject} names more unmeasured acts than total acts")
+    elif instrument == _PAGE_INK_CONSERVATION:
+        pages_sealed = _require_non_negative_integer(
+            detail["pages_sealed"], subject=f"{subject} pages_sealed"
+        )
+        pages = detail["pages_not_reconciled"]
+        if (
+            not isinstance(pages, list)
+            or any(
+                not isinstance(page, int) or isinstance(page, bool) or page <= 0 for page in pages
+            )
+            or len(pages) != len(set(pages))
+        ):
+            raise SchemaRefusal(
+                f"{subject} pages_not_reconciled is not a list of distinct positive page ordinals"
+            )
+        _require_distinct_strings(detail["reasons"], subject=f"{subject} reasons")
+        if len(pages) > pages_sealed:
+            raise SchemaRefusal(f"{subject} names more unreconciled pages than sealed pages")
+    elif instrument == _ACT_VISIBILITY_SURVEY:
+        acts_total = _require_non_negative_integer(
+            detail["acts_total"], subject=f"{subject} acts_total"
+        )
+        acts_presented = _require_non_negative_integer(
+            detail["acts_with_capture_presentation"],
+            subject=f"{subject} acts_with_capture_presentation",
+        )
+        capture_rows = _require_non_negative_integer(
+            detail["capture_rows"], subject=f"{subject} capture_rows"
+        )
+        absent_rows = _require_non_negative_integer(
+            detail["rows_with_named_absence"],
+            subject=f"{subject} rows_with_named_absence",
+        )
+        absence_codes = _require_distinct_strings(
+            detail["absence_codes"], subject=f"{subject} absence_codes"
+        )
+        if acts_presented > acts_total:
+            raise SchemaRefusal(f"{subject} names more presented acts than total acts")
+        if absent_rows > capture_rows:
+            raise SchemaRefusal(f"{subject} names more absent rows than capture rows")
+        if bool(absence_codes) != bool(absent_rows):
+            raise SchemaRefusal(
+                f"{subject} absence codes do not reconcile with its named-absence row count"
+            )
+    elif instrument == _PERLECTOR_UNCERTAIN_SPANS:
+        for field in (
+            "sealed_audit_round_cap",
+            "acts_delivered",
+            "acts_with_uncertain_spans",
+        ):
+            _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
+    elif instrument == _GEOMETRY_CALIBRATION:
+        configurations = detail["configurations"]
+        if not isinstance(configurations, list) or len(configurations) != len(
+            _GEOMETRY_CONFIGURATION_NAMES
+        ):
+            raise SchemaRefusal(f"{subject} must name three configurations in canonical order")
+        for expected_name, configuration in zip(
+            _GEOMETRY_CONFIGURATION_NAMES, configurations, strict=True
+        ):
+            row = _require_exact_fields(
+                configuration,
+                _GEOMETRY_CALIBRATION_ROW_FIELDS,
+                subject=f"a row in {subject}",
+            )
+            if row["configuration"] != expected_name:
+                raise SchemaRefusal(
+                    f"{subject} does not name the three sealed configurations in canonical order"
+                )
+            if not isinstance(row["calibrated_for_this_corpus"], bool):
+                raise SchemaRefusal(f"a row in {subject} has untyped values")
+            sample_count = row["sample_count"]
+            if sample_count is not None:
+                _require_non_negative_integer(
+                    sample_count, subject=f"a row in {subject} sample_count"
+                )
+    return detail
 
 
 def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
@@ -1042,31 +1158,30 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
             row, _NOT_MEASURED_ENTRY_FIELDS, subject="a manifest not_measured entry"
         )
         instrument = entry["instrument"]
+        if not isinstance(instrument, str):
+            raise SchemaRefusal("a manifest not_measured entry has a non-string instrument")
         if instrument not in _NOT_MEASURED_DETAIL_FIELDS:
             raise SchemaRefusal(
                 "the manifest not_measured block names an instrument this build does not produce"
             )
-        if entry["status"] not in _NOT_MEASURED_STATUSES:
+        if not isinstance(entry["status"], str) or entry["status"] not in _NOT_MEASURED_STATUSES:
             raise SchemaRefusal("a manifest not_measured entry carries an unrecognized status")
-        detail = _require_exact_fields(
+        detail = _validate_not_measured_detail(
+            instrument,
             entry["detail"],
-            _NOT_MEASURED_DETAIL_FIELDS[instrument],
             subject=f"the manifest not_measured detail for {instrument}",
         )
-        if instrument == _GEOMETRY_CALIBRATION:
-            configurations = detail["configurations"]
-            if not isinstance(configurations, list):
-                raise SchemaRefusal(
-                    "the manifest not_measured geometry-calibration detail has no rows"
-                )
-            for configuration in configurations:
-                _require_exact_fields(
-                    configuration,
-                    _GEOMETRY_CALIBRATION_ROW_FIELDS,
-                    subject="a manifest not_measured geometry-calibration row",
-                )
-        if not isinstance(entry["recorded_in"], str) or not entry["recorded_in"].strip():
-            raise SchemaRefusal("a manifest not_measured entry does not say where its record lives")
+        expected_status = _not_measured_status(instrument, detail)
+        if entry["status"] != expected_status:
+            raise SchemaRefusal(
+                f"the manifest not_measured status for {instrument} disagrees with its detail: "
+                f"expected {expected_status!r}, got {entry['status']!r}"
+            )
+        if entry["recorded_in"] != _NOT_MEASURED_RECORDED_IN[instrument]:
+            raise SchemaRefusal(
+                f"the manifest not_measured entry for {instrument} does not name this build's "
+                "canonical evidence location"
+            )
         named.append(instrument)
     # Every instrument, every time: an omitted row and a measured row would
     # otherwise read alike, which is the reassuring silence this block exists
@@ -1077,6 +1192,7 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
             f"once each, in order: expected {list(NOT_MEASURED_INSTRUMENTS)}, got {named}"
         )
     expected_count = sum(1 for row in rows if row["status"] != "measured")
+    _require_non_negative_integer(not_measured["count"], subject="the manifest not_measured count")
     if not_measured["count"] != expected_count:
         raise SchemaRefusal(
             "the manifest not_measured count does not reconcile with its own entries"
@@ -1497,16 +1613,10 @@ def _validate_not_measured_basis(basis: object) -> dict[str, Any]:
     if record["schema"] != NOT_MEASURED_BASIS_SCHEMA:
         raise SchemaRefusal("an Armarium not-measured basis is not this build's schema")
     for instrument in NOT_MEASURED_INSTRUMENTS:
-        _require_exact_fields(
+        _validate_not_measured_detail(
+            instrument,
             record[instrument],
-            _NOT_MEASURED_DETAIL_FIELDS[instrument],
             subject=f"the not-measured basis for {instrument}",
-        )
-    for row in record[_GEOMETRY_CALIBRATION]["configurations"]:
-        _require_exact_fields(
-            row,
-            _GEOMETRY_CALIBRATION_ROW_FIELDS,
-            subject="a not-measured geometry-calibration row",
         )
     return record
 
@@ -1539,7 +1649,8 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
     if instrument == _GEOMETRY_CALIBRATION:
         return (
             "measured"
-            if all(row["calibrated_for_this_corpus"] for row in detail["configurations"])
+            if detail["configurations"]
+            and all(row["calibrated_for_this_corpus"] for row in detail["configurations"])
             else "not-measured"
         )
     raise SchemaRefusal(f"no not-measured status rule exists for {instrument!r}")

@@ -103,6 +103,10 @@ def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
     assert payload["payload"].startswith(HEADER)
     raw = native_run.read_bytes(capture["raw_response_ref"]["relative_path"])
     assert raw == f"<output>{payload['payload']}</output>".encode()
+    # The declared body is the retired framing's envelope, kept as retained
+    # history until U16 re-declares these rows; the vendor grammar reads it and
+    # says on the record that it arrived in a shape nobody asked for.
+    assert capture["findings"] == [{"kind": "retired-output-envelope"}]
     assert capture["raw_response_ref"] in record["inputs"]
     assert payload["content_health"]["recordable"] is True
     assert payload["content_health"]["truncated"] is False
@@ -179,8 +183,16 @@ def test_a_captured_response_that_cannot_be_parsed_keeps_its_bytes_and_names_the
     assert "cut off" in health["truncation_basis"]
     assert "stopped the response at its bound" in payload["reason"]
     raw = native_run.read_bytes(capture["raw_response_ref"]["relative_path"])
-    assert raw == b"<output>" + HEADER.encode() + b"\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
-    assert not raw.endswith(b"</output>")
+    assert raw == (
+        b"<HistoricalDocument><Page><Body><Line>"
+        + HEADER.encode()
+        + b"\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
+    )
+    # Cut inside the *grammar*: these bytes open `HistoricalDocument` and stop
+    # mid-element, so the parser fails rather than reading them. A body that
+    # offers no grammar at all is different -- plain reading-order text, which
+    # reads (`test_feeding.py`).
+    assert not raw.endswith(b"</HistoricalDocument>")
 
 
 def test_a_failed_page_capture_does_not_claim_a_missing_anchor(native_run):

@@ -859,7 +859,7 @@ def test_perlector_names_an_unhashable_page_role_as_a_schema_refusal(tmp_path):
 
 
 def test_perlector_refuses_a_forged_continuation_page_act_anchor(tmp_path):
-    """The compatibility attachment has no page-specific continuation anchor."""
+    """A continuation page carries no act anchor, whichever basis attached it."""
     root = tmp_path / "runs"
     tree = _through_attestatores(root, "forged-continuation-anchor")
     entry = next(
@@ -909,15 +909,18 @@ def test_perlector_refuses_a_forged_continuation_page_act_anchor(tmp_path):
     )
 
     assert result.returncode != 0
-    # Two independent refusals guard this forgery and either may answer first:
-    # the anchor rule ("continuation-page attachment ... has no page-specific
-    # anchor", pipeline/4_perlector/run.py) and Unit 10C's geometric
-    # re-derivation, which notices the forged `attached` fact does not derive
-    # from the witness's reported geometry before the anchor rule is consulted.
+    # The anchor rule is what answers, and it is the right one: this forgery
+    # copies the PRIMARY page's aligned act anchor onto the continuation row, so
+    # what is false about the record is the anchor claim itself. The attachment
+    # derivation no longer catches it first — since a located act anchor is now
+    # one of the two ways a page witness attaches (`anchor-line`), the forged
+    # `attached: true` is consistent with the forged alignment, and the rule
+    # that names the real fault is the one that runs. A continuation page has no
+    # act-specific anchor: the anchor is derived from the act's own primary page.
     assert (
         "continuation-page attachment" in result.stderr
-        and "has no page-specific anchor" in result.stderr
-    ) or "does not derive from that witness's reported geometry" in result.stderr
+        and "carries no act-specific anchor" in result.stderr
+    ), result.stderr
 
 
 def test_the_recensor_refuses_a_page_role_only_the_whole_page_disproves(tmp_path):

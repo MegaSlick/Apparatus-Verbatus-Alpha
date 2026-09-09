@@ -115,7 +115,17 @@ def _test_not_measured_basis(**overrides):
                     "configuration": "designator-padding",
                     "calibrated_for_this_corpus": False,
                     "sample_count": 4572,
-                }
+                },
+                {
+                    "configuration": "designator-geometry",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": None,
+                },
+                {
+                    "configuration": "designator-grouping",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": 0,
+                },
             ]
         },
     }
@@ -3584,6 +3594,81 @@ def _entry(block: dict, instrument: str) -> dict:
     return next(row for row in block["entries"] if row["instrument"] == instrument)
 
 
+def test_a_resealed_not_measured_status_must_be_rederived_from_its_detail(tmp_path):
+    """A self-hash cannot turn an unmeasured detail into a measured claim."""
+
+    def contradict_status(manifest):
+        row = _entry(manifest["claims"]["not_measured"], "page-testimony-content-coverage")
+        row["detail"]["acts_unmeasured"] = ["two"]
+        row["detail"]["reasons"] = ["the continuation-page measurement was not made"]
+        assert row["status"] == "measured"
+
+    with pytest.raises(SchemaRefusal, match="status.*disagrees with its detail"):
+        verify_delivered_bundle(_resealed_manifest(contradict_status), tmp_path / "delivered")
+
+
+@pytest.mark.parametrize("mutation", ["empty", "wrong-order"])
+def test_a_resealed_geometry_detail_must_name_the_canonical_configurations(mutation, tmp_path):
+    def break_geometry(manifest):
+        row = _entry(manifest["claims"]["not_measured"], "designator-geometry-calibration")
+        configurations = row["detail"]["configurations"]
+        if mutation == "empty":
+            configurations.clear()
+        else:
+            configurations[0], configurations[1] = configurations[1], configurations[0]
+
+    with pytest.raises(
+        SchemaRefusal, match="three configurations.*canonical order|canonical order"
+    ):
+        verify_delivered_bundle(_resealed_manifest(break_geometry), tmp_path / "delivered")
+
+
+@pytest.mark.parametrize(
+    ("instrument", "field", "value"),
+    [
+        pytest.param("page-testimony-content-coverage", "acts_total", False, id="bool-count"),
+        pytest.param("page-ink-conservation", "pages_sealed", "1", id="string-count"),
+        pytest.param("act-visibility-survey", "capture_rows", [], id="list-count"),
+        pytest.param("perlector-uncertain-spans", "sealed_audit_round_cap", False, id="bool-cap"),
+    ],
+)
+def test_a_resealed_not_measured_detail_refuses_untyped_counts(instrument, field, value, tmp_path):
+    def replace_count(manifest):
+        _entry(manifest["claims"]["not_measured"], instrument)["detail"][field] = value
+
+    with pytest.raises(SchemaRefusal, match="non-negative integer"):
+        verify_delivered_bundle(_resealed_manifest(replace_count), tmp_path / "delivered")
+
+
+def test_a_resealed_not_measured_count_is_a_strict_integer(tmp_path):
+    def replace_count(manifest):
+        block = manifest["claims"]["not_measured"]
+        uncertainty = _entry(block, "perlector-uncertain-spans")
+        uncertainty["detail"]["sealed_audit_round_cap"] = 0
+        uncertainty["status"] = "measured"
+        geometry = _entry(block, "designator-geometry-calibration")
+        for row in geometry["detail"]["configurations"]:
+            row["calibrated_for_this_corpus"] = True
+        geometry["status"] = "measured"
+        assert sum(row["status"] != "measured" for row in block["entries"]) == 1
+        # Canonical JSON permits booleans, and True == 1 would otherwise let
+        # this malformed count reconcile with the one unmeasured instrument.
+        block["count"] = True
+
+    with pytest.raises(SchemaRefusal, match="not_measured count.*non-negative integer"):
+        verify_delivered_bundle(_resealed_manifest(replace_count), tmp_path / "delivered")
+
+
+def test_a_resealed_not_measured_entry_names_its_canonical_evidence_location(tmp_path):
+    def replace_location(manifest):
+        _entry(manifest["claims"]["not_measured"], "page-testimony-content-coverage")[
+            "recorded_in"
+        ] = "somewhere else"
+
+    with pytest.raises(SchemaRefusal, match="canonical evidence location"):
+        verify_delivered_bundle(_resealed_manifest(replace_location), tmp_path / "delivered")
+
+
 def test_the_export_names_every_instrument_of_this_build_exactly_once_in_order():
     block = _block(_projection())
 
@@ -3593,13 +3678,18 @@ def test_the_export_names_every_instrument_of_this_build_exactly_once_in_order()
         assert set(row) == {"instrument", "status", "detail", "recorded_in"}
         # Where a reader goes to check the row against the evidence (GOALS 5).
         assert row["recorded_in"].strip()
+    assert (
+        _entry(block, "page-testimony-content-coverage")["recorded_in"]
+        == "each act's Recensor review, fields `testimony_content_coverage` and "
+        "`testimony_content_coverage_continuation`, in the retained run"
+    )
 
 
 def test_the_count_is_the_number_of_instruments_that_did_not_measure():
     block = _block(_projection())
 
     assert block["count"] == sum(1 for row in block["entries"] if row["status"] != "measured")
-    assert block["count"] >= 1, "the shipped build has instruments with no producer"
+    assert block["count"] == 3
 
 
 def test_an_unmeasured_testimony_coverage_row_reaches_the_block_by_name():
@@ -3750,7 +3840,17 @@ def test_an_uncalibrated_geometry_configuration_is_a_caveat_on_the_act_boundarie
                             "configuration": "designator-padding",
                             "calibrated_for_this_corpus": True,
                             "sample_count": 4572,
-                        }
+                        },
+                        {
+                            "configuration": "designator-geometry",
+                            "calibrated_for_this_corpus": True,
+                            "sample_count": None,
+                        },
+                        {
+                            "configuration": "designator-grouping",
+                            "calibrated_for_this_corpus": True,
+                            "sample_count": 10,
+                        },
                     ]
                 }
             }
@@ -3779,6 +3879,51 @@ def test_a_basis_missing_one_instrument_is_refused_before_a_product_byte_is_writ
             ArmariumFormats(("jsonl",), embed_pixels=False),
             lambda _path: b"",
         )
+
+
+def test_a_geometry_basis_cannot_turn_a_string_or_empty_row_set_into_measurement():
+    broken = _test_not_measured_basis()
+    broken["designator-geometry-calibration"]["configurations"] = []
+    with pytest.raises(SchemaRefusal, match="must name three configurations"):
+        _manifest_of(replace(_projection(), not_measured_basis=broken))
+
+    broken = _test_not_measured_basis()
+    broken["designator-geometry-calibration"]["configurations"][0]["calibrated_for_this_corpus"] = (
+        "false"
+    )
+    with pytest.raises(SchemaRefusal, match="untyped values"):
+        _manifest_of(replace(_projection(), not_measured_basis=broken))
+
+
+def test_a_projection_not_measured_basis_refuses_bool_as_an_integer_count():
+    broken = _test_not_measured_basis()
+    broken["page-testimony-content-coverage"]["acts_total"] = False
+
+    with pytest.raises(SchemaRefusal, match="acts_total.*non-negative integer"):
+        _manifest_of(replace(_projection(), not_measured_basis=broken))
+
+
+@pytest.mark.parametrize(
+    ("instrument", "mutate"),
+    [
+        pytest.param(
+            "page-testimony-content-coverage",
+            lambda detail: detail.update(acts_total=0, acts_unmeasured=["two"]),
+            id="more-unmeasured-acts-than-total",
+        ),
+        pytest.param(
+            "act-visibility-survey",
+            lambda detail: detail.update(capture_rows=0, rows_with_named_absence=1),
+            id="more-absent-rows-than-capture-rows",
+        ),
+    ],
+)
+def test_a_projection_not_measured_basis_refuses_impossible_count_relations(instrument, mutate):
+    broken = _test_not_measured_basis()
+    mutate(broken[instrument])
+
+    with pytest.raises(SchemaRefusal, match="more .* than"):
+        _manifest_of(replace(_projection(), not_measured_basis=broken))
 
 
 def _resealed_without_not_measured(projection) -> bytes:

@@ -274,7 +274,7 @@ and none of them, before this, qualifying the word on the deliverable:
 | `page-testimony-content-coverage` | a page whose coverage was recorded `shortfall: null` — a continuation page, most often — by the F2 ruling | each act's Recensor review, `testimony_content_coverage` |
 | `page-ink-conservation` | a page whose `ink_measurable: false` was never reconciled | the Designator's per-page conservation records |
 | `act-visibility-survey` | the Designator occlusion instrument, which no stage publishes, so every capture row carries a named absence code | each act's Recensor review, `cross_capture_coverage` |
-| `perlector-uncertain-spans` | `uncertain_spans` is empty on every reading because the sealed `round_cap` leaves the audit no re-proof round to spend | `config/perlector_audit.toml` and each act's uncertainty layer |
+| `perlector-uncertain-spans` | `uncertain_spans` is empty while the sealed `round_cap = 1` leaves a re-proof round; a cap of zero is the exhausted-cap path that can mint a span | `config/perlector_audit.toml` and each act's uncertainty layer |
 | `designator-geometry-calibration` | every crop's `calibrated_for_this_corpus = false`, and the grouping thresholds' `sample_count = 0` | the `provenance` blocks of the three sealed Designator configurations |
 
 Every instrument appears on every bundle with its own `status`

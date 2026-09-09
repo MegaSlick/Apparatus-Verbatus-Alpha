@@ -307,6 +307,7 @@ def _real_dossier():
 
 
 def test_the_real_prompt_carries_each_real_witnesss_own_declared_domain():
+    assert _real_witness_context(), "the real witness declaration must name at least one chair"
     built = prompts.build_prompt(
         "unproven-real-perlector", "perlector", _real_dossier(), _sealed_protocol_config()
     )

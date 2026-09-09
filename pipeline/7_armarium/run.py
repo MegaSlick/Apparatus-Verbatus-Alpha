@@ -816,10 +816,12 @@ _VISIBILITY_ABSENCE_CODES: Final = frozenset(
 )
 
 
-def _config_provenance(path, table: str) -> dict:
+def _config_provenance(context, name: str, path, table: str) -> dict:
     """One sealed configuration's `provenance` block, refused if it has none."""
     try:
-        record = tomllib.loads(Path(path).read_text(encoding="utf-8"))
+        data = Path(path).read_bytes()
+        context.require_sealed_config(name, digest_bytes(data))
+        record = tomllib.loads(data.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise FatalAccounting(
             f"the sealed configuration at {path} could not be read for its calibration "
@@ -845,7 +847,7 @@ def geometry_calibration_rows(context) -> list[dict]:
     """
     rows = []
     for name, attribute, table in _CALIBRATED_CONFIG_ATTRIBUTES:
-        provenance = _config_provenance(getattr(context.args, attribute), table)
+        provenance = _config_provenance(context, name, getattr(context.args, attribute), table)
         sample_count = provenance.get("sample_count")
         rows.append(
             {
@@ -860,9 +862,9 @@ def geometry_calibration_rows(context) -> list[dict]:
 def sealed_audit_round_cap(context) -> int:
     """The `round_cap` this run sealed, which decides whether a span can exist."""
     try:
-        record = tomllib.loads(
-            Path(context.perlector_audit_config_path).read_text(encoding="utf-8")
-        )
+        data = Path(context.perlector_audit_config_path).read_bytes()
+        context.require_sealed_config("perlector-audit", digest_bytes(data))
+        record = tomllib.loads(data.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise FatalAccounting(
             "the sealed Perlector audit policy could not be read; the export cannot say "
@@ -938,6 +940,27 @@ def not_measured_basis(
                 if reason
                 else "this act's review records no measured page testimony coverage"
             )
+        continuation = payload.get("testimony_content_coverage_continuation", [])
+        if not isinstance(continuation, list):
+            raise FatalAccounting(
+                "a Recensor review has a malformed continuation testimony-coverage record; "
+                "the export cannot call the act measured without reading every page record"
+            )
+        for row in continuation:
+            if not isinstance(row, dict) or "shortfall" not in row:
+                raise FatalAccounting(
+                    "a Recensor continuation testimony-coverage row is malformed; the export "
+                    "cannot decide whether its act was measured"
+                )
+            if row["shortfall"] is None:
+                if act_key not in unmeasured_coverage:
+                    unmeasured_coverage.append(act_key)
+                reason = row.get("reason")
+                coverage_reasons.append(
+                    str(reason)
+                    if reason
+                    else "this act's continuation-page coverage is recorded unmeasured"
+                )
         coverage = payload.get("cross_capture_coverage")
         if not isinstance(coverage, dict):
             continue
@@ -1615,6 +1638,40 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "category": category.value,
             "under_witnessed": review["payload"]["coverage"]["under_witnessed"],
             "witness_coverage": review["payload"]["coverage"],
+            # Restated here, not left in the Recensor tree, because this is the
+            # record the export publishes about the act. A continuation page's
+            # testimony content coverage carries no verdict -- the Perlector
+            # declares the page unanchorable, so the diff has no span union to
+            # take -- and an export that delivered the act while saying nothing
+            # about that would be a partial result wearing a complete one's face
+            # (GOVERNANCE 2). Indexed, not `.get`: every review shape this stage
+            # can read writes the field, and a review without it is a stale or
+            # foreign record this stage should refuse over rather than paper.
+            #
+            # **How far this restatement reaches, named rather than assumed.**
+            # It reaches the `manifest-entry` and the `export` artifact -- the run
+            # tree -- and stops there. It is NOT inside the ZIP the run delivers:
+            # `projected_acts` below is what `build_armarium_bundle` receives, and
+            # every place the field could ride into a package member is a closed
+            # field set with a schema version on it (`armarium-act.v2` and its
+            # `_ACT_RECORD_FIELDS`, `armarium-acts-sqlite.v2`,
+            # `armarium-sources.v3`'s own key list, `_act_outcome_sources`'s
+            # record closure, and `_aggregate_from_basis`'s four-name accounting
+            # basis, which is closed precisely so an extended basis is refused).
+            # Carrying it there is an export-contract change across those
+            # versions, not an addition, and it needs the basis copy to be
+            # cross-checkable against the act rows the way `act_text_status` is
+            # -- an unverifiable field inside the verified basis would be an
+            # assertion sitting in the evidence block. So the package still says
+            # `complete` over an act whose continuation page carries transcribed
+            # characters nothing measured, and a reader who has only the ZIP
+            # cannot see that. Raised by CodeRabbit and left standing here
+            # deliberately: it is a real gap, its fix is a contract decision, and
+            # it is written at the line where the reach was actually chosen so it
+            # cannot be lost (GOVERNANCE 2's second paragraph).
+            "testimony_content_coverage_continuation": review["payload"][
+                "testimony_content_coverage_continuation"
+            ],
             "evidence_refs": export_evidence_refs(context, review, established),
         }
         approval_ref = exclusion_approval_ref(act, category)

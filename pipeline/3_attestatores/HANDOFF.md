@@ -130,24 +130,23 @@ alike. Both retained blobs are re-read and digest-checked by the attempt tally
 rather than carried as envelope inputs, because the tally re-derives an act
 record's inputs from its regions and presentation alone.
 
-**Chandra is a served witness like the others, under a closed response
-contract.** Tyrel's ruling (2026-09-02): every witness runs its own full pass,
+**Chandra is a served witness like the others, reading its vendor's own
+grammar.** Tyrel's ruling (2026-09-02): every witness runs its own full pass,
 Chandra reads the page for the Designator and separately as Attestator 1, and
 nothing is captured from one call into another. The capture-as-Testimonium
 intake the structure-chair design had half built (`feeding.chandra_capture_intake`,
 the `chandra-capture.v1` name) is removed rather than left as dead surface.
-What the served chair parses is `chandra_response.py`, described in its own
-section below: the closed JSON shape `chandra.prompt` asks for, exactly as the
-Designator's structure pass asks its Chandra call for
-`verbatus-structure-answer.v1`. A body in that shape is a reading -- page text,
-and block geometry in sealed-page pixels with a span per block into that text.
-A body in any other shape lands as `failed` with its bytes retained and its
-shape named (`unverified-response-schema` and the rest of that module's closed
-set); the retained model view rides on the record beside those bytes in the
-`unrecognized-shape` state, naming the shape in `outcome`. Chandra's *native*
-output mode is still unverified -- the vendor publishes no specimen -- and this
-contract does not pretend otherwise: it is the repository's question, and the
-first real response either answers it or arrives as a named surprise.
+What the served chair parses is the vendor's own layout HTML, read by
+`common/chandra_layout.py::parse_layout_html` under the parser name `html`
+(U9 of the vendor systems design). A body in that grammar is a reading -- page
+text, and block geometry from each `data-bbox` in sealed-page pixels with a span
+per block into that text. A body in no shape the reader can place lands with its
+bytes retained and its shape named in `outcome`, in the `unrecognized-shape`
+state. The premise the retired JSON contract rested on -- that the vendor
+publishes no output specimen -- was true of the model card and false of the
+repository, which ships both the prompt every caller sends and the parser for
+the answer it asks for; both are carried and digest-pinned now, so what this
+chair is asked and what it is read as are the vendor's, not this repository's.
 
 **Fixture declarations a live pass does not read.** A live pass reads the
 fixture's pages, acts, continuations and proposals — that is the corpus — and
@@ -167,67 +166,96 @@ keys on `page_ordinal`, not `chair`, so it cannot ride the `chair in
 live_chairs` filter the others share, and every anchor the scenario declares is
 one the live pass discards regardless of which chair would have used it.
 
-### The Chandra response contract
+### The Chandra layout grammar
 
-`chandra_response.py` closes what a served Chandra page response parses into.
-Exactly two forms are accepted, both under `schema =
-"verbatus-chandra-page-response.v1"`: a `blocks` list, each block `{box_1000,
-text}` with the rectangle in normalized integer coordinates 0..1000 (text per
-layout block with geometry), or a single `text` string (page text with no
-geometry, for a model that can transcribe but not place). Exactly one of the
-two is present; `blocks` may be empty. Every other body -- an unknown or
-missing schema, an extra key at either level, a duplicate member, a malformed
-box or text, either form's absence or both forms together, the byte and block
-ceilings -- is refused by a name from that module's closed `PARSE_OUTCOMES`,
-whole, with nothing repaired (GOVERNANCE 7) and its bytes already retained.
-`chandra.parse` dispatches on the declared schema: the wire contract to that
-module, the committed fixture's `fixture-chandra-response.v1` placeholder to
-the validation it always had, and anything else to `unverified-response-schema`.
-**The placeholder is offline only.** One parser derives the retained model
-view in both postures, and it used to have no way to tell them apart, so a
-served chair answering in the fixture's stand-in shape was read as a page of
-text -- a reading whose wire shape nothing in this repository had verified,
-published as though it had been (GOVERNANCE 10). `retain_model_view` now takes
-a `served` flag, both live call sites in `live_witness.py` set it, and it
-reaches exactly one parser: under it, `chandra.parse` refuses the placeholder
-as `unverified-response-schema` like any other undeclared shape. The bytes are
-retained before the parser runs, so the refusal names a surprise rather than
-losing one. The fixture posture passes nothing and keeps the acceptance its
-pinned bytes depend on. Both halves are pinned --
-`test_live_witness.py::test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_served_chair`
-for the live refusal and the flag at both call sites, `test_chandra_adapter.py`
-and `test_attestatores_retention.py` for the offline acceptance.
+`common/chandra_layout.py` re-expresses `chandra/output.py::parse_layout` over
+the standard library and is what a served Chandra page response is read by,
+under the parser name `html`. An answer is a sequence of top-level `div`s in
+reading order, each carrying `data-bbox` (four integers normalized to
+`BBOX_SCALE = 1000`) and `data-label` from the vendor's own label vocabulary.
+Nothing is repaired: a malformed or out-of-range `data-bbox` becomes
+`bbox_1000: None` plus a `malformed-bbox` finding where the vendor prints a
+line and substitutes `[0, 0, 1, 1]`; a `Blank-Page` block is retained without
+text or geometry where the vendor drops it; a nested `data-bbox` is recorded
+rather than stripped; and the block count the reader returns is reconciled
+against the raw HTML's own top-level `div` count as a finding. Those findings
+travel on the capture beside the reading (GOVERNANCE 2), because they are the
+whole of what the vendor's parser would have printed to a stdout nobody
+retains. A body the reader can place in no shape at all lands in the
+`unrecognized-shape` state naming what it saw in `outcome`, with its bytes
+already retained.
 
-**The prompt is split by posture.** `chandra.prompt()` asks the served chair
-for the contract shape, in the repository's own words, stating no preference
-and no confidence budget (GOVERNANCE 10). The fixture posture records
-`chandra.FIXTURE_PROMPT` in its retained model view instead
+**The post-hoc repetition scan runs here too.** Chandra's own answer to a
+degenerate reading is `_should_retry`'s rising-temperature ladder, which is not
+carried: re-rolling a reading until it stops looking stuck recovers quality,
+which GOVERNANCE 11 refuses to a recovery loop. `feeding.retain_model_view`
+instead runs the chair-neutral `common/native_witness.py::detect_repetition`
+over the parsed page text (or the raw bytes where no parse produced one, named
+in the finding's `inspected` field), publishes `post-hoc-repetition` beside the
+reading and sets `stop_reason = "partial-post-hoc-repetition-detected"`.
+Without it a stuck answer that ended under its bound would reach the Perlector
+as full testimony under `transport_stop_reason = "stop"`. A parse outcome takes
+precedence over the stop reason and the finding is kept either way, exactly as
+for Churro; a body past the grammar's own retained parsing limit is recorded
+`post-hoc-repetition-uninspected` rather than scanned.
+
+**The placeholder is offline only.** `proof/skeleton_fixture.toml`'s Chandra
+rows still declare `fixture-chandra-response.v1`, a JSON placeholder this
+repository invented for a fixture that asks nothing of anybody, and their bytes
+are pinned into the fixture's own digests until U16 re-declares those rows in
+the vendor grammar. It keeps its own parser name, `json`, and its own reader
+(`chandra.parse_fixture_placeholder`) -- retained as history, never parsed as
+the live grammar. The refusal that keeps the two apart is at the retention seam
+rather than inside the parser: `feeding.retain_model_view` takes a `served`
+flag, both live call sites in `live_witness.py` set it, and a served
+`chandra.v1` response may not be retained under `json` at all. The parser name
+is what the record will carry, so a live capture written under `json` could
+never be re-derived as the grammar it was actually asked in. Bytes are retained
+before any parser runs, so the refusal names a surprise rather than losing one.
+
+**The prompt is split by posture.** `chandra.prompt()` sends
+`chandra_layout.OCR_LAYOUT_PROMPT`'s carried bytes -- the vendor's own
+`ocr_layout` prompt, digest-checked at import -- as one `user` turn with no
+system message, which is the shape `chandra/model/vllm.py` builds. The fixture
+posture records `chandra.FIXTURE_PROMPT` in its retained model view instead
 (`run.py::resolve_attempt`): that view is sealed into the fixture's pinned
-bytes, the fixture never asks a chair anything, and rewording the live
-instruction may not move a fixture byte. Both are this repository's wording;
-neither is a vendor line.
+bytes, the fixture never asks a chair anything, and changing what a served
+chair is asked may not move a fixture byte.
 
-**Geometry converts once, the Designator's way.** A block's `box_1000` is
+**Geometry converts once, the Designator's way.** A block's `bbox_1000` is
 quantized low-edges-floor / far-edges-ceil in normalized space and converted to
 sealed-page pixels by `common.structure_answer.to_page_bounds`, the same
 conversion the Designator's structure pass applies to its own Chandra call, so
-the two Chandra readings of one page share one page-pixel mapping. That
-conversion clamps to the page, so a normalized box can never overshoot the
+the two Chandra readings of one page share one page-pixel mapping. The
+denominator is the *sealed page*, not the resized view the chair was shown,
+because the vendor's own denominator is the same one. That conversion clamps
+the far edges to the page, and a component outside [0, 1000] is malformed
+before it reaches the conversion, so a normalized box can never overshoot the
 sealed page. `chandra.observe` takes a keyword `page_size` for it: a page
 witness's act view presents one crop while restating page-level geometry, so
 the presentation's bounds are never the denominator, and a body that needs the
 size without one is refused rather than placed in the wrong space. Each
-observed box carries the block's span into the retained page text, which is
-the block texts joined with a newline between delivered (non-empty) blocks and
-nowhere else -- `common/structure_answer.py`'s own join rule. A body that
-reports no block geometry (the page-text form, or an empty blocks list)
-derives none; the page record then carries the presentation echo `run.py`
-gives every page with no reported geometry -- the same fact the fixture's
-genuinely-empty rows record, excluded from routing and coverage by its
-`bounds_source` -- and the adapter never hands an echo to the shared
-page-edge check, which admits reported geometry only. The adapter's one
-declared `geometry_quantization` rule covers both accepted shapes, each in its
-own coordinate space.
+observed box carries the block's span into the retained page text. A body whose
+blocks all report no rectangle -- `Blank-Page`, or a `data-bbox` the reader
+refused -- and a body with no block at all derive none; the page record then
+carries the presentation echo `run.py` gives every page with no reported
+geometry, excluded from routing and coverage by its `bounds_source`, and the
+adapter never hands an echo to the shared page-edge check, which admits
+reported geometry only.
+
+**The presented page is the vendor's own pixels.** `chandra.present` reproduces
+what the vendor's inference path does to a page before its model sees it --
+`chandra/input.py::load_image`'s `convert("RGB")` and
+`chandra/model/util.py::scale_to_fit` -- and publishes the result as an
+`adapter-crop` under the operation name `chandra-scale-to-fit.v1` with
+`colour_mode = "rgb"`, so the exact image the chair saw re-derives from the
+sealed Exemplar (ARCHITECTURE invariant 3). The colour step runs after the
+resize where the vendor runs it before, because the replay in
+`validate_presented_page_binding` is colour-last for every adapter and the two
+orders are the same pixels on every mode a sealed crop can arrive in. Only a
+whole-page presentation is transformed: an act view of a page witness restates
+one page reading against a Designator crop nobody was shown, and minting a
+vendor recipe over it would record a step that never ran.
 
 **A live page's partition is derived from the page response itself.** The
 fixture walks one declared response per compatibility act; a live page has one
@@ -259,6 +287,97 @@ zero-length attach for a genuinely-empty witness, `refuse_ambiguous_act_alignmen
 for two acts one chair cannot tell apart (which is also what a block
 overlapping two acts produces, named rather than resolved).
 
+### The matcher, and why the deadline is 25 seconds
+
+`common/alignment.py::_matching_blocks` is `difflib.SequenceMatcher(autojunk=
+False)`'s Ratcliff-Obershelp blocks -- longest common contiguous block first,
+then the same search recursively either side of it. That objective is
+load-bearing here, not incidental. A page of register acts repeats the same
+opening formula, so a witness that read only the second of two acts is a genuine
+ambiguity, and the two ways of resolving it attach the *same number* of
+characters: the whole reading against the second act, or the shared opening
+against the first act plus the remainder against the second. Only the first says
+what the witness did.
+
+**RapidFuzz's Indel/LCS opcodes were tried in that seat and refused on
+measurement (hostile review C, 2026-09-07).** They are four orders of magnitude
+faster -- the slowest input the sealed pair bound admits, 283.9 s below, takes
+0.011 s under them -- and
+on identical or near-identical page text they return byte-for-byte the same
+blocks (26 blocks, 7,508 matched characters on a 1,200-word page fixture). But
+LCS maximizes matched characters and breaks ties towards the earliest match, so
+it takes the second reading of the ambiguity above. The pipeline's own
+`confirmed-blank` scenario failed on exactly that: the witness's act-two opening
+was attributed to act one, twelve characters of page text fell outside every act
+attachment, the Recensor read that as incomplete testimony coverage, and both
+acts were held instead of the blank being sealed. A coverage-maximizing
+objective is the wrong objective for attaching a reading to an anchor.
+`common/test_alignment.py` pins that case by name so the swap is not retried
+blind, alongside the fidelity and monotonicity properties the same work
+established.
+
+What hostile review C got right is the deadline, and that is what changed. An
+unaligned page witness is not `comparable`, so it leaves the act's witness floor
+-- which means a deadline short enough to fire on real work records a *slow
+comparison* as coverage that is missing (GOALS 1). `config/alignment.toml` now
+carries 25 s rather than 5 s.
+
+The number is chosen from the legitimate ceiling, not from the pathological one,
+because measurement showed the pathological one cannot be cleared. Timings on
+this laptop, `align_to_anchor` through the shipped bounds:
+
+| Input, at or near the sealed ceiling | Wall clock |
+|---|---|
+| 7,500-character page, names varying between acts | 2.0 s |
+| 7,500-character page, one act's formula repeated verbatim | **10.1 s** |
+| single-character chair response, 10,000 x 10,000 | 7.0 s |
+| genuinely random two-letter pair, 10,000 x 10,000 | 14.7 s |
+| two *different* repeated phrases, 10,000 x 10,000 | **283.9 s** |
+
+Two of those rows are new and both matter. The fully formulaic page is the one
+that decides the number: a scribe copying one form produces exactly that text,
+and at 10.1 s it was already past the old five seconds -- so the five-second
+deadline could fire on a page that had been read perfectly well, and record it
+as an act nobody corroborated. Twenty-five seconds puts real material safely
+inside with load headroom.
+
+The 284-second row is the one that decides what is still open.
+TIMING_REPORT_2026-09-05 put the worst admissible input at 17.5 s, but its
+degenerate cases were all *self*-similar (and one of its two rows was
+accidentally the same single-character string, from a generator that rebuilt its
+`random.Random(1)` on every draw). Two different low-entropy responses are far
+worse, and 284 s is what the sealed pair ceiling actually admits. **No deadline
+value closes hostile review C**: raising it far enough to never fire would mean
+minutes per (page, chair) on a billing pod, and lowering `max_character_pairs`
+far enough to exclude the case would refuse legitimate pages, since a real page
+at 10,000 x 10,000 already sits at the ceiling. The deadline is now honest about
+real material and remains an honest non-verdict on degenerate material; closing
+the case needs the matcher, and the matcher needs the design below.
+
+**What would close it, and is not built here.** Ratcliff-Obershelp first under
+the deadline; on a fired deadline, a bounded LCS pass (RapidFuzz Indel, ~10 ms
+at the ceiling) instead of returning `unaligned`, with the record disclosing
+which matcher produced the spans. Every page any fixture or real reading
+produces today is decided by Ratcliff-Obershelp exactly as now, so no verdict and
+no run-tree digest moves; only inputs that already fail get an answer instead of
+a shortfall, and the LCS tie-break flaw above lands only where no attachment was
+well defined anyway. It needs a `matcher` key on the aligned attachment record
+and a widening of the closed-set check in `pipeline/5_recensor/run.py`, which is a
+published record shape, so it is named here rather than made.
+
+The hole hostile review C named off the main thread is unchanged and still open:
+where `SIGALRM` cannot arm, `max_character_pairs` is the only guard, and it
+admits a 284-second comparison.
+
+A fired deadline is `alignment-deadline-exceeded`, deliberately not `timeout`.
+The name has to say that this module's own backstop gave up, because nothing may
+read it as a measurement of the witness. The Recensor holds the act rather than
+counting the chair, which is the right direction -- no comparison was made, so
+none may be claimed (GOVERNANCE 10) -- but
+`common/contracts/outcomes.py::witness_coverage` still counts it in the same
+`shortfalls["unaligned"]` bucket as a measured non-overlap. Separating the two is
+a change to a published coverage record and is not made here.
+
 Only acts whose primary page is this one are anchored; a continuation's tail
 has no anchor line by design. An act no reported block overlaps, or whose
 overlapping blocks carry no normalizable text, is `act-anchor-line-not-located`:
@@ -270,24 +389,47 @@ attach's `no-page-anchor`, the blank-confirmation path the fixture already
 exercises). `declared_chandra_anchor_chair` names the anchor chair on both
 routes.
 
-**What the live alignment does not do, and why the e2e export is still held.**
-Alignment supplies a span inside a witness's own text; attachment is the page
-geometry that chair reported against the sealed proposal, and a chair with no
-reported geometry is not attached. Churro publishes no native layout, so on
-the live path its page text aligns to the derived anchor and it stays
-`attached: false`, `comparable: false`, with its `aligned` alignment retained
-beside it and no span -- the record says both facts. The fixture attaches
-Churro only through a declared `[[native_observation]]` row, which a live pass
-does not read. Deriving Churro's geometry from Chandra's anchor lines would be
-one chair's geometry attributed to another (the "never chair against chair"
-rule of the adapter contract below), so it is not done here; a Churro layout
-channel is Unit 12's obligation, and until it lands a live run counts two
-witnesses of a floor of three and holds for review.
+**What the live alignment does not do.** Alignment supplies a span inside a
+witness's own text; attachment is the page geometry that chair reported against
+the sealed proposal, and a chair with no reported geometry is not attached.
+Deriving one chair's geometry from another's anchor lines would be one chair's
+geometry attributed to another (the "never chair against chair" rule of the
+adapter contract below), so it is never done. A page witness whose body carries
+no layout therefore aligns and stays `attached: false`, `comparable: false`,
+with its `aligned` alignment retained beside it and no span -- the record says
+both facts.
+
+**Unit 12 tried to close that for Churro by asking; U10 retired the question.**
+Unit 12 asked the served chair for a `box_1000` per block, in a modified carry
+of a prompt the model was never trained on, so that a geometry-blind page
+witness would have rectangles to attach acts by. The vendor systems ruling
+retired both halves: the vendor's own registry answer for this model is a single
+system instruction, and Churro-DS carries no geometry at all, so a coordinate
+channel was a channel the weights were never taught to fill. Churro therefore
+reports no geometry, its only observation is the `bounds_source="presented"`
+echo routing and coverage exclude, and it reads and aligns without reporting a
+rectangle. What attaches it is the Perlector's `anchor-line` basis for a page
+witness whose alignment for an act is `aligned` with a located span (U12 of the
+vendor systems design), not a channel asked of a model that cannot fill it.
+
+**What the floor rests on, said plainly.** `comparable` requires `attached`
+**and** `alignment.status == "aligned"`, and every page witness's alignment is
+computed against the anchor derived from the Chandra chair's response. So a
+third witness counts toward the floor only because the first located its text.
+That is not the attachment rule this section forbids -- the anchor is a
+text-locating instrument the closed alignment schema already refuses to treat as
+a preference -- but it is a real
+narrowing of what "three independent witnesses" means: two independent readings
+and one dependent comparability, not three unrelated readings agreeing. The
+dependency was inert while Churro could never count. It is load-bearing now, and
+any later claim about witness independence has to say so.
 
 **A page witness's geometry on a continuation page is a record the Perlector
-now reads.** `attached` is derived from geometry alone on every contributing
-page, so a served Chandra whose page-2 block overlaps an act's continuation
-region publishes that act's page-2 entry as `attached: true`,
+now reads.** A continuation page carries no act anchor, so geometry is the only
+basis that can attach anything there (the alignment is forced to
+`continuation-page-no-act-anchor` before geometry is consulted). A served
+Chandra whose page-2 block overlaps an act's continuation region therefore
+publishes that act's page-2 entry as `attached: true`,
 `attachment_basis: geometric-overlap`, alignment
 `continuation-page-no-act-anchor`, `comparable: false`, no span
 (`test_attestatores_live_pass.py` pins it). `pipeline/4_perlector/run.py::act_attachment_view`
@@ -368,6 +510,131 @@ say.
    adapter's own account of its bytes beside the bytes themselves instead of
    dropping the view for want of a state name.
 
+**Every chair derives a generation-bound decision from the sealed row, sending
+`max_tokens` only where the declared bound requires it, and the image part
+goes before the text part.** Two corrections to what this seam feeds, landed
+together (`workbench/active/CORRECTION_PLAN_2026-09-06.md`, group (i)).
+
+*Part order.* All three occupants were fine-tuned with the vision block before
+the instruction — DAI's model-card snippet and this project's own old
+`pilot_crops_dai.py`, Chandra's `model/vllm.py`, Churro's provider — and each
+chat template emits a message's content parts in list order, so the order *is*
+the token sequence the model sees. Every builder here sent text first; all
+three now send the image first (`live_witness._user_content`), and one test
+pins it at all three builders together, because the defect was that they agreed
+with each other and disagreed with every upstream. No measured token count
+moves: the sealed prompt constants are taken over the message texts and
+digested over those texts in order.
+
+*The bound.* `common/request_capacity.py::sendable_max_tokens` decides
+`min(the chair's declared upstream bound, max_model_len − image tokens − prompt
+tokens)` from this request's own capacity record, and **expresses the row term
+by sending no `max_tokens` at all** — which is the same quantity, measured by
+the component that holds the tokenizer. Our prompt count is a measured floor
+vLLM's assembly has never been observed to agree with, so putting it on the
+wire would turn a one-token undercount into an HTTP 400 before generation, on a
+billing card. A value goes out only where the *declared* bound is strictly
+smaller than what the row leaves, and the gap between the two is then also the
+margin against an undercount.
+`DECLARED_ANSWER_BOUND_TOKENS` carries the four bounds with their sources —
+Chandra 12,384 (`chandra/settings.py::MAX_OUTPUT_TOKENS`), DAI 1,024 (its model
+card's own `model.generate`), Churro 20,000 (the CHURRO paper §B.2, replacing a
+24,000 this repository had described as a carried value the model's
+`generation_config.json` does not contain). Churro alone used to send a bound,
+and only where the row could hold the whole declared value beside the prompt;
+Chandra and DAI sent **nothing**, which is not the same as being unbounded —
+with no `max_tokens` the engine sets the answer budget to `max_model_len −
+prompt` itself, so a DAI act crop could generate some 7,700 tokens against a
+1,024-token upstream bound on a card billing by the hour. On every row this
+catalogue ships that is the case for DAI alone; Chandra's 12,384 and Churro's
+20,000 are both above what their rows leave, so those three chairs send no
+bound and behave exactly as before. A `"length"` stop means the vendor's bound
+wherever one was sent and the context wherever none was, and the retained
+chair-call record's `generation_sent` says which. The declaration is untouched: `generation_declared` still
+carries Churro's `max_new_tokens` and DAI's whole carried
+`generation_config.json`, and the retained Churro model view still requires the
+bound. `test_live_witness.py` walks every Churro row in the shipped catalogue at
+every tier and asserts the sum this seam would send is one that row can take.
+
+*And the values `generation_config = "vllm"` discards.* That flag makes vLLM
+return an empty sampling diff instead of the model's own file, so every shipped
+default is replaced by vLLM's. Three are sent back deliberately: Churro's
+`repetition_penalty` 1.05 (`feeding.churro_wire_decoding`; the paper documents
+this model's own degeneration loops, and at temperature 0 the penalty is
+applied before the argmax, so determinism is untouched), DAI's second EOS id
+151643 as `stop_token_ids` (`feeding.dai_wire_stop_token_ids`, derived from the
+carried config rather than re-typed), and `chat_template_kwargs:
+{"enable_thinking": false}` on both Chandra chairs (`common/chair_wire.py`,
+which carries the evidence that the revision ships two disagreeing chat
+templates and why the flag is safe under either).
+
+**Churro is asked in a named framing, and the name is on the record.**
+`churro.FRAMINGS` declares two, and both are a vendor artifact's own bytes —
+`registry-v0.3.0`, the string `providers/specs.py::resolve_ocr_profile` returns
+for this model id at tag `v0.3.0`, and `paper-harness-ed09bc7`, the
+`SYSTEM_MESSAGE` the paper's own benchmark harness sent — and
+`config/models-real.toml`'s `[witness_framings]` names which one a run asks in.
+The default is the registry's current answer; which of the two the fine-tuning
+itself saw is stated nowhere in the paper, the model card or the code, so the
+comparison is a Stage 2 arm rather than a guess made here.
+`witness_adapters.framing_for` resolves it
+once per pass from the sealed roster, `run.py` hands it to both live seams, and
+the resolved name is written onto every Churro capture as `view.framing`. This
+is not a picker (hard rule 8): it chooses the wording of a question before the
+page is read, never among readings, and it is recorded rather than inferred.
+Both framings carry their own measured prompt cost (27 and 29), because a
+framing whose cost nobody measured would be refused at the capacity check —
+which would make the selector a choice between one option and an error.
+
+**Whether a request *fits* is a different question, and it is now asked of both
+page chairs and of DAI.** The bound above governs what may be *sent*; it cannot
+say whether the request the engine receives is admissible at all. A whole
+300-dpi page costs Chandra 1,715 prompt tokens and Churro 2,280 at the smallest
+tier's `max_pixels`, before a word of prompt is counted, and a page-fallback
+act hands DAI a page-sized crop at the same cost. `live_witness.
+request_capacity_or_refuse` computes that arithmetic from the sealed row's own
+`min_pixels`/`max_pixels`/`patch_size`/`merge_size` (`common/request_capacity.py`)
+plus the chair's measured prompt cost and its measured answer budget at the
+scope it was asked at — a page's answer for a page chair, one act's for DAI, so
+that reserving a page's answer never refuses an ordinary act crop that
+measurably works. A request that does not fit is refused by name before it is
+built, and the refusal carries the whole record. One that does fit carries the
+record onto the request, and the client copies it onto the retained call
+record. Nothing is ever downscaled to make a request fit.
+
+**A refused request costs its own attempt, not the pass.** The refusal above is
+a fact about one request -- these pixels, at this row's `max_pixels`, against
+this row's `max_model_len` -- and it left `_serve_act_unit` and
+`_serve_page_unit` as an exception nothing between there and `main` caught, so
+one oversized page ended the stage and every other page's testimony went with
+it. The Designator, asked the same question, held the single page and published
+the rest. That asymmetry is closed: `run.py::capacity_refusal_attempt` records
+the refusal as this attempt's own `outcome="failed"`, in the same shape an
+empty or malformed response takes, and the pass moves to the next unit. A
+missed act is worse than a poorly read one (GOALS 1), and one page's arithmetic
+is no reason to lose another page's reading.
+
+What that record says, and what it refuses to say: the **no-response** health,
+because nothing arrived and there is no channel to call unrecordable; no
+`raw_response_ref`, `serving_call_ref` or `native_capture`, because there was
+no call and no bytes; the refusal's own sentence as `reason`, which is the
+capacity record in words -- every image's token cost, the prompt, the reserved
+answer, the need, the row, and by how much it overran; and the chair's real
+serving receipt, because the chair did start and this pass entered its client
+before the arithmetic refused it. `arrived` in the page-record loop is decided
+by retained bytes rather than by the presence of a capture, so a refused page
+cannot borrow the health of a body nobody received. A resumed pass reads that
+pair -- no serving call, no-response health, live receipt -- and lets the record
+stand for the page it already described rather than refusing it as a
+fixture-posture record.
+
+**A wire refusal is still the stage's refusal.** Only the *pre-send* arithmetic
+became a per-attempt failure. An HTTP 400 is the engine refusing a request that
+did leave, from a chair that was asked; its bytes are retained and the stage
+stops and says so, rather than publishing a Testimonium about a response it
+declined to read. `test_attestatores_live_pass.py` drives both through
+`_serve_page_unit` and asserts the two different endings.
+
 Two further seams closed with them:
 
 **A live record says which kind of bytes it retained.** `raw_response_ref` means
@@ -428,22 +695,63 @@ Perlector-side fix has since landed -- one entry per `relative_path` before the
 sorted comparison -- so that branch is no longer a record this stage may
 publish and the next one must refuse.
 
-**Proved end to end.** `pipeline/test_live_reading_seam_e2e.py` runs this
-stage's live pass as one link in a whole run: the real stage programs to the
-Designator, this stage's three live witness chairs, a live Perlector, and then
-the Recensor, Archetypus and Armarium over what both wrote — the first time any
-stage after the Perlector has read a live tree. They read it: the run seals a
-terminal export. It is **held for review, not delivered**, and the reason is
-one named limit of this stage's rather than anything downstream. Each act
-counts two witnesses of a floor of three: Chandra reads under its contract, is
-attached by its own block geometry and aligned against the anchor derived from
-its own response; DAI reads its crops; Churro's page text aligns to that same
-anchor but Churro publishes no native layout, so on the live path its only
-geometry is the presented echo, which routing excludes, and it stays
-geometrically unattached with its alignment retained beside it. The fixture
-posture attaches Churro through a declared `[[native_observation]]` row, and a
-live pass reads none. That is the honest current measurement of a live roster,
-and a Churro layout channel (Unit 12's obligation) is what will move it.
+**Read end to end, and it reaches a held export.**
+`pipeline/test_live_reading_seam_e2e.py` runs this stage's live pass as one link
+in a whole run: the real stage programs to the Designator, this stage's three
+live witness chairs, a live Perlector, and then the Recensor, Archetypus and
+Armarium over what both wrote — the first time any stage after the Perlector has
+read a live tree. They read it: the run seals a terminal export, and it is
+**delivered** (`EXIT_COMPLETE` at the Recensor, the Archetypus and the
+Armarium). Each act counts **three** witnesses of a floor of three. Chandra
+reads under its grammar, attached by its own block geometry and aligned against
+the anchor derived from its own response; DAI reads its crops, basis
+`presented-region`; Churro reads the whole page, reports no geometry at all --
+`HistoricalDocument` has no coordinate vocabulary anywhere -- and attaches on
+the `anchor-line` basis, because it is located against Chandra's anchor with a
+real span.
+
+**Both halves of that were once holds, and neither was closed by asking.** Unit
+12 asked this chair for block rectangles in a modified carry of a prompt the
+model was never trained on, and those rectangles were what attached it. The
+coordinate channel is retired with the prompt that asked for it, because a
+`box_1000` per block is a channel Churro-3B's weights were never taught to fill
+(GOVERNANCE 10). What closed the hold is U12, admitting the Perlector's existing
+`anchor-line` basis for a page witness whose alignment for an act is `aligned`
+with a located span.
+
+**Both halves are still asserted by name, before the aggregate.** The witness
+floor is one: `coverage/under_witnessed` false, `shortfalls`
+`{failed: 0, truncated: 0, unaligned: 0}`. The second is
+`testimony_content_coverage`: the Recensor diffs each page witness's retained
+page text against the union of its attached-and-aligned spans, so an unattached
+page witness's WHOLE page text would be uncovered and the page would hold for
+that reason too, independently of the floor. With attachment reached, both page
+chairs cover their page (0 uncovered non-whitespace each). A bare
+`reasons == []` would fail identically whichever half had broken, so neither is
+asserted through the other.
+
+**What that does and does not claim.** One scripted run over a fixture whose
+page text is exactly its two acts reaches `delivered`. Nothing follows about a
+real page (GOVERNANCE 10, hard rule 1). A real register carries headers, folio
+numbers and marginalia no proposal covers; Churro will transcribe them, and that
+page will hold on content coverage. That is the rule working (GOALS 1,
+GOVERNANCE 2), not a regression to repair by loosening a floor.
+
+**The offline posture still delivers, and the two diverge on one declared row.**
+`proof/skeleton_fixture.toml`'s `[[native_observation]]` for `attestator_3`
+states a page box outright, and `run.py::_fixture_native_observations` publishes
+it as `bounds_source "native"` without consulting the adapter — so the fixture
+happy scenario still attaches Churro, still counts three witnesses of a floor of
+three, and still reaches a delivered export, over geometry the live chair cannot
+produce. The row is kept rather than deleted: removing it moves the whole
+offline proof to the held posture (measured — 109 failures in
+`pipeline/orchestrator/test_orchestrator_acceptance.py` alone, the happy
+scenario at exit 3 with both acts under-witnessed), which is U12's change and
+not this unit's. It is recorded instead of left implicit: at the declaration in
+`proof/build_fixture.py`, and mechanically in
+`proof/test_fixture_declaration_contract.py`, which pins `attestator_3` as the
+one chair declaring a box its own adapter reports it cannot express, so the
+divergence cannot outlive U12 in silence.
 
 ## Real ingress
 
@@ -723,7 +1031,8 @@ bounded fallback-recrop on it, against one absolute cap of three shared with
 every other recovery origin.
 
 **Evidence.** Published vendor specimens enter with their source and licence
-recorded, exactly as `feeding.churro_prompt` cites stanford-oval/churro. A vendor
+recorded, exactly as `common/churro_document.py` cites stanford-oval/Churro at
+the commit each carried string was taken from. A vendor
 that publishes no response specimen is not represented by a synthetic fixture
 wearing that status: the current DAI adapter records its published request
 framing and generation values as named carries, while its fixture response
@@ -732,36 +1041,50 @@ remains explicitly synthetic.
 **Named obligations after Unit 10.** These are adapter/integration work, not
 unfinished choices in this contract:
 
-* **Unit 11 (Chandra)** — landed as the closed response contract
-  (`chandra_response.py`, its own section above): the served chair is asked
-  for a declared JSON shape, `parse` returns its page text, `observe` converts
-  its normalized boxes to sealed-page pixels with spans into that text, and
-  the adapter-metadata rule rides beside `raw_response_ref`. What the unit
-  could not carry is a published vendor specimen, because none exists; the
-  contract is this repository's question, and the first pod reading's retained
-  bytes are the specimen.
-* **Unit 12 (Churro)** replaces the fixture-only Churro serve with the real
-  full-page XML boundary while keeping raw bytes, parse failure, truncation and
-  post-capture repetition visible. It declares whether it has any native
-  quantization to apply (rather than inheriting another adapter's rule) and
-  carries its own published specimen evidence.
-* **Unit 13 (DAI)** adds DAI's exact registry rows and extends the closed
-  transform for its adapter-owned crop/resize so the shown pixels remain
-  reproducible. The landed adapter begins from its assigned Designator proposal;
-  it does not execute DAI's own detector, so it does not satisfy the staged
-  pipeline's separate native-detector requirement. DAI publishes no native
-  layout channel here: its honest
-  `bounds_source="presented"` fallback is excluded from routing and coverage,
-  while the separate secondary proposer remains Unit 9's chair and is not this
-  adapter's native channel. Its carried prompts and nine generation values are
-  named with source, digests, and the settled licence position; uncertainty
-  tokens are retained unchanged.
-* **Unit 14 (native-testimony integration)** removes the temporary
-  `payload.reported` bridge below and teaches the Perlector/Recensor consumers to
-  use each adapter's native retained text and partition facts without choosing a
-  witness boundary. It also owns the explicit hold for an unproposed cross-page
-  half act and the ink-map/proposal coverage reconciliation already assigned to
-  that unit.
+* **Unit 11 (Chandra)** — landed, and the closed JSON response contract it
+  landed as is retired by U9 of the vendor systems design. What stands is the
+  boundary: `parse` returns a page text, `observe` converts normalized boxes to
+  sealed-page pixels with spans into that text, and the adapter-metadata rule
+  rides beside `raw_response_ref`. What is gone is the shape:
+  `chandra_response.py`, `verbatus-chandra-page-response.v1` and the
+  `_LIVE_INSTRUCTION` that asked for them. The clause said the unit could carry
+  no published vendor specimen because none exists; that was true of the model
+  card and false of `datalab-to/chandra`, which ships both the prompt every
+  caller sends and the parser for the answer it asks for under Apache-2.0. Both
+  are carried and digest-pinned now (the layout grammar, its own section
+  above), so the specimen is the vendor's and not this repository's question.
+* **Unit 12 (Churro)** — landed, and its layout channel is retired by U10 of the
+  vendor systems design. The fixture-only serve it replaced with the real
+  full-page boundary stands: raw bytes, parse failure, truncation and
+  post-capture repetition are all still visible, and
+  `pipeline/3_attestatores/churro.py` owns the chair's five operations. What is
+  gone is the channel: `common/churro_response.py` and the modified-carry prompt
+  that asked for it. Both halves of the original clause, answered as they now
+  stand:
+  - **Native quantization: none to inherit and none declared.** Churro's
+    `HistoricalDocument` grammar carries no coordinate vocabulary anywhere in
+    the vendor's guide or its XSD, and Churro-DS carries none either, so there
+    is nothing for a float-to-pixel rule to convert. The adapter's
+    `quantization` is `None`, which is what keeps it from acquiring another
+    adapter's rule by omission, and its `takes_page_size` is `False` for the
+    same fact at the other seam.
+  - **Published specimen evidence: the vendor's own grammar is the specimen.**
+    The guide (`docs/guides/historical-document-xml.md`) and the XSD
+    (`evaluation/historical_doc.xsd`) say what the answer looks like, and
+    `common/churro_document.py` reads it. Three shapes parse — the grammar, the
+    plain reading-order text the paper-era harness expected, and the retired
+    `<output>` envelope kept as retained history with a finding that says so —
+    and a well-formed body rooted anywhere else reaches the capture as
+    `unrecognized-shape` naming which root arrived.
+
+  Two things a later reader should not have to rediscover. There is **one
+  parser name for one grammar**, `xml`, in both postures: Unit 12's second name
+  existed only for the JSON contract, and `verify_native_capture_bytes`
+  re-derives under the name the record carries against the system string the
+  record itself retained. And the **grammar lives in `common/`, not beside the
+  stage**, because three stages re-derive a Churro capture from its retained
+  blob and neither reader may import an Attestatores module; a parser under the
+  stage would leave both re-deriving through a branch they cannot reach.
 
 For Units 11--13, the declared-name set, runnable mapping, parser/retention
 dispatch and occupant configuration move together. A special quantization
@@ -1079,7 +1402,8 @@ pair set against the regions it actually read
 claim a page the ink does not support, or drop one the ink does.
 
 - aligned: the closed key set `{status, anchor_basis, anchor_chair,
-  anchor_span, witness_span, line_geometry, loss, offset_maps}`, with
+  anchor_span, witness_span, anchor_line_match, line_geometry, loss,
+  offset_maps}`, with
   `anchor_chair` naming the sole configured Chandra witness
   (`declared_chandra_anchor_chair`) — a string exactly when `anchor_basis` is
   `act-anchor`, and null otherwise, refused either way round by both readers.
@@ -1099,6 +1423,15 @@ claim a page the ink does not support, or drop one the ink does.
   confirmation stays open), or `act-line-not-located` (the page's anchor
   exists but locates no line for this act — the Recensor's
   `blank_corroboration` refuses to seal a terminal blank on it).
+  `anchor_line_match` is how much of THIS act's anchor line the witness
+  actually matched -- `{anchor_characters, matched_characters,
+  longest_matched_run}`, all three measured in the normalized space the matcher
+  ran in, over the fragments clipped to this act's anchor range before they were
+  hulled into `witness_span`. `anchor_line_located` reads the longest run,
+  because a hull is positive as soon as any two characters coincide and total
+  coverage does not separate a real reading from a long enough coincidence; the
+  other two travel as disclosure. A trivial zero-length attach records
+  `matched_characters: 0`, never an absent field.
   `witness_span` and its top-level `span` mirror index the raw retained page
   reading. Alignment is computed over the markup-stripped,
   whitespace-collapsed view and translated back to raw character offsets before
@@ -1109,7 +1442,7 @@ claim a page the ink does not support, or drop one the ink does.
 - unaligned: `{status, reason}`, reasons among `missing-chandra-page-anchor`,
   `act-anchor-line-not-located`, `no-overlap-with-act-anchor`,
   `no-raw-counterpart-for-aligned-span`,
-  `character-limit`, `character-pair-limit`, `timeout`,
+  `character-limit`, `character-pair-limit`, `alignment-deadline-exceeded`,
   `no-common-anchor-text` (the aligner's own reasons pass through
   verbatim), `non-reading-page-testimonium-<outcome>` for a native page
   capture that produced no reading, `non-reading-act-attempt-<outcome>`
@@ -1118,9 +1451,19 @@ claim a page the ink does not support, or drop one the ink does.
   strength of another act), and `continuation-page-no-act-anchor` for a
   contributing page that is not the act's primary one.
 
-For a page witness, `attached` is derived from geometry alone since Unit 10C:
-this chair's reported boxes overlap one of the act's sealed proposal regions and
-its outcome is a reading. `comparable` is the separate question of whether text
+For a page witness, `attached` is derived from one of two bases since Unit 12
+(`common/contracts/outcomes.py::page_attachment_basis`, re-derived by both
+readers): this chair's reported boxes overlap one of the act's sealed proposal
+regions and its outcome is a reading (`geometric-overlap`), or -- only where it
+reported no such ink -- its alignment located this act's own anchor line inside
+its page text (`anchor-line`). The second basis exists because a witness grammar
+can carry no coordinates at all, and *located* is a measurement, not an aligned
+status: the alignment's `anchor_line_match` must show a contiguous run of this
+act's anchor line at least `ANCHOR_LINE_RUN_FLOOR` characters long, or the whole
+line where the line is shorter. Without that measurement two coincidental
+characters attached a witness whose text had nothing to do with the page.
+
+`comparable` is the separate question of whether text
 exists to compare for THIS act — a page witness is comparable exactly when it is
 attached, its alignment is `aligned`, and its page record retains a string; an
 act-scoped chair, exactly when it is attached and its own retained derived

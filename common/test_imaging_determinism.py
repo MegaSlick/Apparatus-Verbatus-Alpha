@@ -22,10 +22,12 @@ import pytest
 from PIL import Image
 
 from common.imaging import (
+    PNG_CROP_MODES,
     PNG_SIGNATURE,
     _encode_crop_deterministic,
     _to_display_mode,
     carries_only_image_chunks,
+    convert_png_to_rgb,
     crop_png,
     encode_grayscale_png,
     encode_grayscale_png_deterministic,
@@ -646,3 +648,162 @@ def test_a_resize_target_is_bounded_before_pillow_can_allocate_it(monkeypatch):
     with pytest.raises(ValueError, match="resize target.*pixel bound"):
         resize_png_lanczos(crop, 100_000_001, 1)
     assert called is False
+
+
+# ---- the colour step a vendor preprocessor performs before the model looks ----
+#
+# Churro's `prepare_ocr_image` is `ensure_rgb(resize_image_to_fit(...))`. The
+# expansion has to happen here, framed by this encoder, or the engine's own
+# `do_convert_rgb` does it server-side on a grayscale seal and the exact image
+# the model saw stops being reproducible from the Exemplar plus the recorded
+# transforms.
+
+
+def test_a_grayscale_page_expands_to_three_channels_without_moving_a_sample():
+    page = grayscale_page(6, 4)
+    expanded = convert_png_to_rgb(page)
+
+    assert expanded != page
+    with Image.open(BytesIO(expanded)) as reread, Image.open(BytesIO(page)) as original:
+        reread.load()
+        original.load()
+        assert reread.mode == "RGB"
+        samples = reread.tobytes()
+        assert all(
+            samples[index] == samples[index + 1] == samples[index + 2]
+            for index in range(0, len(samples), 3)
+        )
+        assert reread.convert("L").tobytes() == original.tobytes()
+
+
+def test_a_source_icc_profile_does_not_survive_the_colour_class_change():
+    """Pillow's `convert()` copies `.info` across, `icc_profile` included.
+
+    A grayscale page's colour profile describes a grayscale tone response; once
+    `convert_png_to_rgb` has changed the samples' colour class, that profile
+    describes an image that no longer exists (`_without_colour_profile`'s own
+    docstring). Carrying it into the output's iCCP chunk would be a *worse*
+    record than none: anything honouring it would reinterpret the new RGB
+    samples through a transform for the old grayscale ones.
+    """
+    page = Image.new("L", (4, 2), 128)
+    page.info["icc_profile"] = b"not a real ICC profile, only a marker"
+    buffer = BytesIO()
+    page.save(buffer, format="PNG", icc_profile=page.info["icc_profile"])
+    with Image.open(BytesIO(buffer.getvalue())) as reread:
+        assert reread.info.get("icc_profile") == page.info["icc_profile"]
+
+    converted = convert_png_to_rgb(buffer.getvalue())
+
+    assert carries_only_image_chunks(converted)
+    with Image.open(BytesIO(converted)) as reread:
+        assert reread.mode == "RGB"
+        assert "icc_profile" not in reread.info
+
+
+def test_expanding_an_image_that_is_already_rgb_changes_nothing_it_re_frames():
+    """Idempotent, so a record naming the step twice cannot mean two images."""
+    buffer = BytesIO()
+    Image.new("RGB", (5, 3), (10, 20, 30)).save(buffer, format="PNG")
+    once = convert_png_to_rgb(buffer.getvalue())
+    assert convert_png_to_rgb(once) == once
+    assert carries_only_image_chunks(once)
+
+
+def test_the_expansion_is_deterministic_across_calls():
+    page = grayscale_page(9, 7)
+    assert convert_png_to_rgb(page) == convert_png_to_rgb(page)
+
+
+def test_an_indexed_image_expands_through_its_palette():
+    page = Image.new("P", (4, 2))
+    page.putpalette([255, 0, 0, 0, 255, 0, 0, 0, 255] + [0] * (768 - 9))
+    page.putpixel((1, 0), 1)
+    buffer = BytesIO()
+    page.save(buffer, format="PNG")
+
+    with Image.open(BytesIO(convert_png_to_rgb(buffer.getvalue()))) as reread:
+        reread.load()
+        assert reread.mode == "RGB"
+        assert reread.getpixel((1, 0)) == (0, 255, 0)
+
+
+@pytest.mark.parametrize("mode", ["LA", "RGBA"])
+def test_an_alpha_channel_is_dropped_exactly_where_the_vendors_drop_it(mode):
+    """`ensure_rgb` is `image.convert("RGB")`, and so is Chandra's `load_image`.
+
+    Refusing the mode instead would leave a sealed `LA` or `RGBA` page -- both
+    are identity PNGs at the door -- with no legal Churro presentation at all.
+    The band is discarded, not composited against an invented background, which
+    is what makes the replayed blob the image the chair was actually given.
+    """
+    source = Image.new(mode, (4, 2), (10, 128) if mode == "LA" else (10, 20, 30, 128))
+    buffer = BytesIO()
+    source.save(buffer, format="PNG")
+
+    converted = convert_png_to_rgb(buffer.getvalue())
+    with Image.open(BytesIO(converted)) as reread:
+        reread.load()
+        assert reread.mode == "RGB"
+        assert reread.getpixel((0, 0)) == ((10, 10, 10) if mode == "LA" else (10, 20, 30))
+        # The vendor's own one-line body, run here on the same source.
+        assert reread.tobytes() == source.convert("RGB").tobytes()
+    assert carries_only_image_chunks(converted)
+
+
+def test_an_l_images_one_sample_transparency_survives_conversion_to_rgb():
+    """A grayscale page's named transparent sample must reach the RGB record.
+
+    A valid `L` PNG can carry `info["transparency"]` as one integer, and this
+    encoder's `_transparency_chunk` accepts only three samples for `RGB` --
+    without the value becoming a matching `(v, v, v)` triple on the way
+    through `convert("RGB")`, `encode_image_deterministic` would raise and
+    `_replay_colour_mode` (`common/native_witness.py`) would turn that into a
+    `SchemaRefusal`, refusing both Chandra and Churro readings for the page.
+    """
+    source = Image.new("L", (4, 2), color=128)
+    source.info["transparency"] = 200
+    buffer = BytesIO()
+    source.save(buffer, format="PNG")
+
+    converted = convert_png_to_rgb(buffer.getvalue())
+    with Image.open(BytesIO(converted)) as reread:
+        reread.load()
+        assert reread.mode == "RGB"
+        assert reread.info.get("transparency") == (200, 200, 200)
+        assert reread.getpixel((0, 0)) == (128, 128, 128)
+    assert carries_only_image_chunks(converted)
+
+
+def test_a_palette_carrying_transparency_converts_through_its_palette_too():
+    """The vendor asks the palette, not the tRNS chunk; so does the replay."""
+    source = Image.new("RGBA", (4, 2), (10, 20, 30, 0))
+    quantised = source.convert("P", palette=Image.Palette.ADAPTIVE)
+    assert quantised.palette.mode == "RGBA"
+    buffer = BytesIO()
+    quantised.save(buffer, format="PNG")
+
+    # Pillow says out loud that it is dropping the palette's alpha, which is
+    # the same thing this function's docstring says and the vendor never says.
+    with pytest.warns(UserWarning, match="Transparency"):
+        converted = convert_png_to_rgb(buffer.getvalue())
+    with Image.open(BytesIO(converted)) as reread:
+        reread.load()
+        assert reread.mode == "RGB"
+        assert reread.getpixel((0, 0)) == (10, 20, 30)
+
+
+def test_a_mode_no_sealed_crop_arrives_in_is_refused_by_name():
+    """`crop_png` normalises everything else, so this is the whole alphabet."""
+    buffer = BytesIO()
+    Image.new("I;16", (4, 2)).save(buffer, format="PNG")
+    with Image.open(BytesIO(buffer.getvalue())) as reread:
+        assert reread.mode not in PNG_CROP_MODES
+
+    with pytest.raises(ValueError, match="not a mode a sealed crop arrives in"):
+        convert_png_to_rgb(buffer.getvalue())
+
+
+def test_undecodable_bytes_reach_a_named_value_error_not_a_library_exception():
+    with pytest.raises(ValueError, match="not decodable for colour conversion"):
+        convert_png_to_rgb(b"not an image at all")

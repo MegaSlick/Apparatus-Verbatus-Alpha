@@ -1920,23 +1920,31 @@ def validate_witness_context_bindings(
     # the dossier, but the run still seals a declaration saying its real chairs
     # are synthetic, and that record outlives the regime it was sealed under
     # (GOVERNANCE 6).
-    if Path(witness_context_config_path).resolve() == (
-        DEFAULT_WITNESS_CONTEXT_CONFIG_PATH.resolve()
-    ):
-        published = sorted(
-            chair
-            for chair in models.witness_chairs
-            if getattr(models.chairs.get(chair), "source", FIXTURE_CHAIR_SOURCE)
-            != FIXTURE_CHAIR_SOURCE
-        )
+    try:
+        fixture_declaration_digest = digest_bytes(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH.read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the canonical fixture witness-context declaration could not be read; cannot prove "
+            "whether the selected declaration describes fixture chairs"
+        ) from error
+    if witness_context_config_digest == fixture_declaration_digest:
+        published = []
+        for chair in models.witness_chairs:
+            identity = models.chairs[chair]
+            # An explicit absence is preserved as its own run record and is not
+            # a model identity to classify here.  The pairing rule only decides
+            # whether a present witness is falsely described as a fixture.
+            if isinstance(identity, AbsentChair):
+                continue
+            elif not isinstance(identity, ChairIdentity) or identity.source != FIXTURE_CHAIR_SOURCE:
+                published.append(chair)
         if published:
             raise ContractError(
-                f"witness chair(s) {published} resolve to a published model repository, and "
-                f"--witness-context-config was left at {DEFAULT_WITNESS_CONTEXT_CONFIG_PATH}, "
-                "which describes every witness as a synthetic fixture with no real training "
-                "domain. Sealing that beside real chairs tells the Perlector its real "
-                "witnesses are fixtures. Name the declaration this roster is read under, for "
-                "example config/witness_context-real.toml with config/models-real.toml"
+                f"witness chair(s) {published} do not resolve to local fixture snapshots, but "
+                "the selected witness-context declaration has the canonical fixture content, "
+                "which describes every witness as synthetic with no real training domain. "
+                "Name the declaration this roster is read under, for example "
+                "config/witness_context-real.toml with config/models-real.toml"
             )
     return witness_context_config_digest
 
@@ -3126,8 +3134,11 @@ def _verify_proposal_act_row(
     here; what it cannot do is publish one rectangle and mint a different one.
     Re-deriving the acts from the retained blob would close that gap and is a
     design change, not a correction: it would make `common/stage.py` a second
-    parser of the chair's wire contract, which today has exactly one
-    (`common/structure_answer.py`).
+    parser of the chair's wire contract, which today has exactly one. That
+    contract is Chandra's layout HTML since `verbatus-structure-prompt.v3`, and
+    its one reader is `common/chandra_layout.py::parse_layout_html`, shared with
+    the page witness; `common/structure_answer.py::parse` reads the retired
+    `verbatus-structure-answer.v1` JSON and has no live caller.
 
     Three claims, and each is refused separately so the refusal says which one
     failed. The **page** must have been scanned: the page's own

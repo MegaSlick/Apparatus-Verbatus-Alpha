@@ -30,7 +30,18 @@ The knobs. One question per planned file, each answerable without reading code.
 
 | Knob | Default | Who changes it | What retires it |
 |---|---|---|---|
-| alignment character/pair/deadline limits | 100,000 / 100,000,000 / 5 seconds | ordinary engineering with recorded measurement | a replacement bounded aligner with recorded benchmark evidence |
+| alignment character/pair/deadline limits | 100,000 / 100,000,000 / 25 seconds | ordinary engineering with recorded measurement | a replacement bounded aligner with recorded benchmark evidence |
+
+The deadline is sized from the legitimate ceiling, not the pathological one.
+An unaligned page witness is not `comparable`, so it leaves the act's witness
+floor: a deadline that fires on real work records a slow comparison as coverage
+that is missing. A 7,500-character page whose acts repeat one formula verbatim
+measures 10.1 seconds, already past the five this used to carry. Twenty-five
+clears it with load headroom, and does not pretend to clear everything the pair
+ceiling admits -- two different low-entropy chair responses there measure 283.9
+seconds, a case no deadline value closes. A faster matcher was tried and refused
+because it attached witness text to the wrong act. Both measurements and the
+design that would close the case are in `pipeline/3_attestatores/HANDOFF.md`.
 
 ## R5a toggle register
 

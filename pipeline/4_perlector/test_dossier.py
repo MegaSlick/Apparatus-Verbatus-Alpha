@@ -423,6 +423,31 @@ def test_named_dossier_carries_each_witness_model_and_resolved_provenance(eviden
         assert row["resolved_provenance"] == provenance
 
 
+def test_named_dossier_carries_the_fixture_training_domain_for_the_fixture_roster(
+    evidence,
+):
+    """The fixture roster must not receive vendor facts as though they were its own.
+
+    The default declaration is the single source both this dossier and the
+    config-binding check read, so asserting against it catches an accidental
+    real/fixture declaration swap.
+    """
+    context, act_id, act_key, regions, testimonia = evidence
+    named = _build(context, act_id, act_key, regions, testimonia, regime="named")
+    declared = dossier.load_witness_context(DECLARATION)
+
+    by_label = {row["witness_label"]: row for row in named["testimonia"]}
+    assert set(by_label) >= set(declared), (
+        "every declared witness chair must actually reach the dossier as testimony"
+    )
+    for chair, entry in declared.items():
+        assert by_label[chair]["training_domain"] == entry["training_domain"]
+        assert (
+            entry["training_domain"]
+            == "a synthetic fixture witness; no real training domain applies"
+        )
+
+
 def test_dossier_refuses_an_undeclared_witness_regime_even_without_testimonia(evidence):
     context, act_id, act_key, regions, _ = evidence
     with pytest.raises(SchemaRefusal, match="witness regime"):

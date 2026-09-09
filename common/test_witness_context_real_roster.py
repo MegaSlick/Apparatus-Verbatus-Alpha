@@ -73,8 +73,17 @@ def test_no_real_witness_is_described_as_a_synthetic_fixture():
 
 def test_a_roster_of_published_models_may_not_take_the_fixture_declaration():
     """The pairing refusal, at run creation, before any stage runs."""
-    with pytest.raises(ContractError, match="resolve to a published model repository"):
+    with pytest.raises(ContractError, match="canonical fixture content"):
         _bindings(REAL_ROSTER, FIXTURE_CONTEXT)
+
+
+def test_a_copied_fixture_declaration_is_refused_for_the_real_roster(tmp_path):
+    """Declaration identity is its content, so renaming it changes nothing."""
+    copied = tmp_path / "renamed-context.toml"
+    copied.write_bytes(FIXTURE_CONTEXT.read_bytes())
+
+    with pytest.raises(ContractError, match="canonical fixture content"):
+        _bindings(REAL_ROSTER, copied)
 
 
 def test_the_refusal_names_the_chairs_and_the_declaration_it_refused():
@@ -84,7 +93,7 @@ def test_the_refusal_names_the_chairs_and_the_declaration_it_refused():
     message = str(refusal.value)
     for chair in ChairRegistry.from_toml(REAL_ROSTER).config.witness_chairs:
         assert chair in message
-    assert str(FIXTURE_CONTEXT) in message
+    assert "canonical fixture content" in message
     assert "config/witness_context-real.toml" in message
 
 
@@ -157,7 +166,7 @@ def test_the_refusal_holds_under_the_blinded_regime_too():
     The run still seals a declaration saying its real chairs are synthetic, and
     that record outlives the regime it was sealed under (GOVERNANCE 6).
     """
-    with pytest.raises(ContractError, match="synthetic fixture"):
+    with pytest.raises(ContractError, match="canonical fixture content"):
         validate_witness_context_bindings(
             ChairRegistry.from_toml(REAL_ROSTER).config,
             witness_context="blinded",

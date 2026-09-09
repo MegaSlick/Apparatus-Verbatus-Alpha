@@ -171,6 +171,63 @@ def test_an_unattached_row_may_never_claim_comparable_text(tmp_path, rebind_stag
     assert "cannot claim comparable text" in result.stderr
 
 
+def _relabel_as_anchor_line(row):
+    """Turn a geometrically attached page witness into a claimed anchor-line one."""
+    if not (
+        row["chair"] == PAGE_CHAIR
+        and row["attached"]
+        and row["attachment_basis"] == "geometric-overlap"
+    ):
+        return False
+    row["attachment_basis"] = "anchor-line"
+    return True
+
+
+def test_a_geometrically_attached_witness_may_not_be_relabelled_anchor_line(
+    tmp_path, rebind_stage_seal
+):
+    """The attachment basis is derived evidence, not a free-text label.
+
+    The two attaching bases are not interchangeable: `geometric-overlap` says
+    this chair reported ink over the act's own sealed proposal, and
+    `anchor-line` says it reported no such ink and counts here only because
+    ANOTHER chair's anchor located its text. A relabel is therefore a claim
+    about witness independence that the retained evidence contradicts, and it is
+    exactly the shape a widened basis set invites: a reader that admitted either
+    label by membership would pass this forgery.
+    """
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "basis-relabelled")
+    _forge_attachments(tree, rebind_stage_seal, _relabel_as_anchor_line)
+
+    result = _invoke(root, "basis-relabelled", "pipeline/4_perlector/run.py")
+    assert result.returncode != 0
+    assert "attached it by 'geometric-overlap'" in result.stderr
+
+
+def test_recensor_independently_names_a_relabelled_attachment_basis(
+    tmp_path, rebind_stage_seal, rewitness_boundary
+):
+    """The floor reader re-derives the basis too, from its own copy of the page.
+
+    Same reasoning as the forged `comparable` boolean below: two consumers that
+    both trusted the earlier verdict would be one reader in two costumes, and
+    the basis is what the Recensor's own accounting reads to decide whether the
+    native-overlap granularity claim may be made at all.
+    """
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "recensor-basis-relabelled")
+    result = _invoke(root, "recensor-basis-relabelled", "pipeline/4_perlector/run.py")
+    assert result.returncode == 0, result.stderr
+
+    _forge_attachments(tree, rebind_stage_seal, _relabel_as_anchor_line)
+    rewitness_boundary(tree, PERLECTOR)
+
+    result = _invoke(root, "recensor-basis-relabelled", "pipeline/5_recensor/run.py")
+    assert result.returncode != 0
+    assert "attached it by 'geometric-overlap'" in result.stderr
+
+
 def test_recensor_independently_names_a_forged_comparable_boolean(
     tmp_path, rebind_stage_seal, rewitness_boundary
 ):

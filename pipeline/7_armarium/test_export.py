@@ -626,12 +626,16 @@ def test_the_export_block_matches_what_the_run_tree_itself_records(tmp_path):
     ]
     # One review per attempt; the export reads the act's current one, so the
     # comparison is over act keys rather than review count.
-    unmeasured = {
-        payload["act_key"]
-        for payload in reviews
-        if (payload.get("testimony_content_coverage") or {}).get("shortfall") is None
-    }
-    assert set(rows["page-testimony-content-coverage"]["detail"]["acts_unmeasured"]) <= unmeasured
+    unmeasured = set()
+    for payload in reviews:
+        base = payload.get("testimony_content_coverage")
+        continuation = payload.get("testimony_content_coverage_continuation", [])
+        if (not isinstance(base, dict) or base.get("shortfall") is None) or any(
+            isinstance(row, dict) and row.get("shortfall") is None for row in continuation
+        ):
+            unmeasured.add(payload["act_key"])
+    assert set(rows["page-testimony-content-coverage"]["detail"]["acts_unmeasured"]) == unmeasured
+    assert block["count"] == 4
 
     audit = tomllib.loads((ROOT / "config" / "perlector_audit.toml").read_text(encoding="utf-8"))
     spans = rows["perlector-uncertain-spans"]
