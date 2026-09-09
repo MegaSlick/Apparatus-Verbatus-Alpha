@@ -71,8 +71,17 @@ class _Tree:
         )
 
 
-def _context(records: dict[str, list[dict]]):
-    return SimpleNamespace(tree=_Tree(records), run={})
+class _Context(SimpleNamespace):
+    def require_sealed_config(self, name, observed_sha256):
+        expected = self.run["sealed_config_digests"].get(name)
+        if expected != observed_sha256:
+            raise ContractError(f"sealed {name} digest does not match the Ink Map payload")
+
+
+def _context(records: dict[str, list[dict]], digest="0" * 64):
+    return _Context(
+        tree=_Tree(records), run={"sealed_config_digests": {"designator-grouping": digest}}
+    )
 
 
 SEALED_ONE = {1: {"outcome": "sealed"}}
@@ -251,6 +260,83 @@ def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():
     rows = armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
     assert rows == ({"ordinal": 1, "initial_outcome": "ink-not-measurable", "remeasured": None},)
     assert armarium.edge_hold_pages_from_rows(list(rows)) == ()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "",
+            "background_config_sha256": "0" * 64,
+        },
+        {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "refused",
+            "background_config_sha256": "A" * 64,
+        },
+        {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "refused",
+            "background_config_sha256": "0" * 64,
+            "edge_findings": _RUNS,
+        },
+        {
+            "page_ordinal": True,
+            "ink_measurable": False,
+            "background_refusal": "refused",
+            "background_config_sha256": "0" * 64,
+        },
+        {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_config_sha256": "0" * 64,
+        },
+        {
+            "page_ordinal": 1,
+            "ink_measurable": True,
+            "background_refusal": "refused",
+            "background_config_sha256": "0" * 64,
+        },
+    ],
+    ids=[
+        "blank-refusal",
+        "uppercase-digest",
+        "extra-measurement",
+        "boolean-ordinal",
+        "missing-refusal",
+        "measurable-true",
+    ],
+)
+def test_an_unmeasurable_ink_map_payload_must_be_closed_before_export(payload):
+    armarium = _armarium()
+    record = {"artifact_id": "a", "outcome": "ink-not-measurable", "payload": payload}
+    expected = (
+        "without an integer page ordinal"
+        if payload["page_ordinal"] is True
+        else "invalid sealed ink-not-measurable payload"
+    )
+    with pytest.raises(FatalAccounting, match=expected):
+        armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
+
+
+def test_an_unmeasurable_ink_map_payload_must_match_the_run_seal():
+    armarium = _armarium()
+    record = {
+        "artifact_id": "a",
+        "outcome": "ink-not-measurable",
+        "payload": {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "the page is majority ink",
+            "background_config_sha256": "1" * 64,
+        },
+    }
+    with pytest.raises(FatalAccounting, match="invalid sealed ink-not-measurable payload"):
+        armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
 
 
 def test_the_export_verifier_accepts_the_unmeasurable_row_and_refuses_a_measured_one():

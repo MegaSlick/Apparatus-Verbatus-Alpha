@@ -5,10 +5,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import sqlite3
+import sys
 import unicodedata
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import pytest
@@ -38,7 +40,7 @@ from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.outcomes import ArmariumCategory, run_aggregate
-from common.contracts.stages import ARMARIUM
+from common.contracts.stages import ARMARIUM, DESIGNATOR
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import encode_grayscale_png
 from common.residual_ink import MINIMUM_FRACTION_OUTSIDE_COVERAGE, MINIMUM_INK_PIXELS
@@ -47,6 +49,7 @@ from common.stage import REAL_SCENARIO, StageContext
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
 ROOT = Path(__file__).resolve().parents[2]
 ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
+DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
 def _pixels(value: int) -> bytes:
@@ -1464,6 +1467,41 @@ def _armarium_run_module():
     spec = importlib.util.spec_from_file_location("armarium_run_under_test_identity", ARMARIUM_CLI)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def _designator_run_module():
+    """Load Designator without leaving its bare sibling aliases in the session."""
+    spec = importlib.util.spec_from_file_location(
+        "designator_run_for_armarium_refusal_test", DESIGNATOR_CLI
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    original_path = list(sys.path)
+    sibling_names = (
+        "conservation",
+        "geometry",
+        "geometry_layer",
+        "grouping",
+        "grouping_config",
+        "structure",
+        "structure_pass",
+        "structure_prompt",
+    )
+    missing = object()
+    previous = {name: sys.modules.get(name, missing) for name in sibling_names}
+    try:
+        sys.path.insert(0, str(DESIGNATOR_CLI.parent))
+        for name in sibling_names:
+            sys.modules.pop(name, None)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
+        for name, prior in previous.items():
+            if prior is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = prior
     return module
 
 
@@ -3628,6 +3666,147 @@ def _block(projection) -> dict:
 
 def _entry(block: dict, instrument: str) -> dict:
     return next(row for row in block["entries"] if row["instrument"] == instrument)
+
+
+def test_a_real_background_refusal_reaches_the_complete_export_as_not_measured(
+    tmp_path, monkeypatch
+):
+    """Real pixels drive the conservation record the export qualifies itself with."""
+    designator = _designator_run_module()
+    armarium = _armarium_run_module()
+
+    width = height = 100
+    rows = [bytearray([30]) * width for _ in range(80)]
+    rows.extend(bytearray([220]) * width for _ in range(20))
+    page_bytes = encode_grayscale_png(width, height, rows)
+    page_digest = digest_bytes(page_bytes)
+    image_path = "1_exemplar/blobs/sha256/background-refusal-page"
+    page_record = {
+        "subject_id": "pg-1",
+        "payload": {
+            "ordinal": 1,
+            "image_path": image_path,
+            "source_sha256": page_digest,
+        },
+    }
+
+    class ProducerContext:
+        def __init__(self):
+            self.records = []
+            self.tree = SimpleNamespace(read_bytes=lambda _path: page_bytes)
+
+        def input_ref(self, relative_path):
+            return {
+                "relative_path": relative_path,
+                "sha256": page_digest if relative_path == image_path else "0" * 64,
+            }
+
+        def publish(self, *, kind, subject_id, outcome, inputs, payload):
+            self.records.append(
+                {
+                    "kind": kind,
+                    "subject_id": subject_id,
+                    "outcome": outcome,
+                    "inputs": inputs,
+                    "payload": payload,
+                }
+            )
+            return SimpleNamespace(relative_path=f"2_designator/artifacts/{kind}/page-1.json")
+
+    producer = ProducerContext()
+    grouping_policy = designator.grouping_config.load_grouping_config(
+        ROOT / "config" / "designator_grouping.toml"
+    )
+    analysis = designator._analyze_page({}, producer, 1, page_record, grouping_policy)
+    assert analysis["background"] is None
+    assert analysis["background_source"] == "not-inferable"
+    assert analysis["components"] == []
+    assert analysis["structure_evidence"] == "fallback-tiles"
+    assert analysis["groups"], "the refused page must still be cut for reading"
+
+    residual_rows, secondary_held = designator._publish_conservation_and_secondary(
+        producer,
+        1,
+        page_record,
+        analysis,
+        [],
+        {"chair_state": "absent"},
+        grouping_policy,
+    )
+    assert residual_rows == [] and secondary_held is False
+    (conservation,) = producer.records
+    assert conservation["kind"] == "conservation"
+    assert conservation["outcome"] == "held"
+    conservation_payload = conservation["payload"]
+    assert conservation_payload["ink_measurable"] is False
+    assert conservation_payload["reconciliation_thresholds"] is None
+    assert conservation_payload["total_ink_pixel_count"] is None
+    assert conservation_payload["claimed_pixel_count"] is None
+    assert conservation_payload["residual_pixel_count"] is None
+    assert conservation_payload["residual_components"] == []
+    assert conservation_payload["reason"]
+
+    manifest_cache = {
+        DESIGNATOR: {
+            "artifacts": [{"kind": "conservation", "artifact_id": "background-refusal-page-1"}]
+        }
+    }
+    basis_context = SimpleNamespace(
+        tree=SimpleNamespace(
+            read_artifact=lambda _stage, _kind, _artifact_id: conservation,
+        )
+    )
+    # These two instruments are unrelated to the page-conservation path. Keep
+    # their producers out of this focused test while leaving the actual
+    # `not_measured_basis` and conservation census intact.
+    monkeypatch.setattr(armarium, "sealed_audit_round_cap", lambda _context: 1)
+    monkeypatch.setattr(armarium, "geometry_calibration_rows", lambda _context: [])
+    derived_basis = armarium.not_measured_basis(
+        basis_context,
+        manifest_cache,
+        {1: {"outcome": "sealed"}},
+        {},
+        [],
+    )
+    page_basis = derived_basis["page-ink-conservation"]
+    assert page_basis == {
+        "pages_sealed": 1,
+        "pages_not_reconciled": [1],
+        "reasons": [conservation_payload["reason"]],
+    }
+
+    projection = _otherwise_complete()
+    source_region = {
+        **projection.acts[0]["source_regions"][0],
+        "declared_sha256": page_digest,
+    }
+    delivered_act = {**projection.acts[0], "source_regions": [source_region]}
+    page = {
+        **projection.pages[0],
+        "declared_sha256": page_digest,
+        "image_path": image_path,
+        "image_sha256": page_digest,
+    }
+    source = {**projection.source_manifest[0], "sha256": page_digest}
+    export_basis = _basis_for_acts((delivered_act,))
+    export_basis["page-ink-conservation"] = page_basis
+    projection = replace(
+        projection,
+        acts=(delivered_act,),
+        pages=(page,),
+        source_manifest=(source,),
+        not_measured_basis=export_basis,
+    )
+
+    def source_bytes(relative_path):
+        return page_bytes if relative_path == image_path else _source_bytes(relative_path)
+
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), source_bytes)
+    manifest = verify_export_bundle(bundle.data, tmp_path / "verified")
+    page_claim = _entry(manifest["claims"]["not_measured"], "page-ink-conservation")
+    assert manifest["claims"]["status"] == "complete"
+    assert page_claim["status"] == "not-measured"
+    assert page_claim["detail"] == page_basis
 
 
 def test_a_resealed_not_measured_status_must_be_rederived_from_its_detail(tmp_path):

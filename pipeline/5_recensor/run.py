@@ -33,6 +33,7 @@ from common.background import (  # noqa: E402
     BackgroundInferenceRefusal,
     load_background_config,
     resolve_background_policy,
+    validate_ink_not_measurable_payload,
 )
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -1816,13 +1817,20 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
                 "Ink Map inventory or restart the run before rerunning the Recensor."
             )
         if record.get("outcome") == INK_NOT_MEASURABLE:
-            # **Present, and explicitly without evidence.** The shared background
-            # inference refused this page's paper value, so the Ink Map cut no
-            # threshold and retained no runs. `None` rather than an absent key,
-            # because "the map never measured this page" and "the map has no
-            # record of this page at all" are different faults and the caller
-            # below must be able to tell them apart: the first is a page whose
-            # ink nobody could measure, the second is a missing artifact.
+            # **Present, explicitly unavailable, and sealed.** Validate before
+            # discarding runs: a malformed refusal cannot become the same `None`
+            # as the producer's honest unavailable measurement.
+            try:
+                refusal = validate_ink_not_measurable_payload(payload)
+                context.require_sealed_config(
+                    "designator-grouping", refusal["background_config_sha256"]
+                )
+            except ContractError as error:
+                raise FatalAccounting(
+                    f"ink-map page {ordinal} has an invalid sealed ink-not-measurable "
+                    "payload. Restore the sealed Ink Map artifact or restart the run before "
+                    "rerunning the Recensor."
+                ) from error
             maps[ordinal] = None
             continue
         if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
@@ -3866,6 +3874,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "a page-level reread is not a substitute and remains unimplemented, so the act "
                 "is held rather than re-rolled because recovery recovers coverage and never "
                 "quality",
+            )
+        elif (
+            page_coverage["unmeasurable_pages"] or geometry_coverage.get("ink_measurable") is False
+        ):
+            outcome, reason = (
+                "accepted",
+                "the reading is accepted; page ink could not be measured or reconciled for "
+                "this act's recorded page evidence",
             )
         else:
             outcome, reason = "accepted", "coverage and geometry reconcile"

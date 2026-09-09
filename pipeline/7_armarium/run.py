@@ -40,6 +40,7 @@ from armarium_export import (  # noqa: E402
     edge_hold_pages_from_rows,
 )
 
+from common.background import validate_ink_not_measurable_payload  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import validate_annotations  # noqa: E402
 from common.contracts.canonical import digest_bytes, digest_of, verify_self_hash  # noqa: E402
@@ -739,13 +740,20 @@ def ink_map_page_rows(
                 "exporting."
             )
         if record["outcome"] == INK_NOT_MEASURABLE:
-            # **A page whose paper value the shared background inference refused.**
-            # There is no threshold, so there are no retained runs to re-measure
-            # and no hold to release: the page stays in the denominator, carries
-            # its refusal, and is re-measured by nobody. Writing zeros here would
-            # put a measurement nobody took into the export (GOVERNANCE 10) --
-            # the same reason a `mapped` page records `remeasured: None` below --
-            # and dropping the row would break the census reconciliation.
+            # Validate the sealed, closed refusal before publishing an explicit
+            # absence of page-space runs. A bare outcome is not evidence that the
+            # page's ink was unavailable to measure.
+            try:
+                refusal = validate_ink_not_measurable_payload(payload)
+                context.require_sealed_config(
+                    "designator-grouping", refusal["background_config_sha256"]
+                )
+            except ContractError as error:
+                raise FatalAccounting(
+                    f"ink-map page {ordinal} has an invalid sealed ink-not-measurable "
+                    "payload. Restore the sealed Ink Map artifact or restart the run before "
+                    "exporting."
+                ) from error
             found[ordinal] = {"outcome": record["outcome"], "evidence": None}
             continue
         evidence = payload.get("edge_findings")

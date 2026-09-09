@@ -39,6 +39,7 @@ from its arguments. The `[grouping.background]` block stays in
 reason is recorded at `load_background_config`.
 """
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Any, Final, TypedDict
@@ -718,6 +719,52 @@ def infer_background(
 #: Recensor's own contrast constant. A per-run config value for either would make
 #: that cross-stage invariant unenforceable statically.
 FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
+
+
+def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
+    """Validate the closed Ink Map refusal payload before a consumer drops evidence.
+
+    `ink-not-measurable` is a census record of an unavailable measurement, never
+    an empty measured finding. The producer writes exactly these four fields; a
+    consumer must refuse an omitted, added, or contradictory field before it
+    maps the record to ``None`` or an export row without runs.
+    """
+    if not isinstance(payload, dict):
+        raise ContractError("the ink-not-measurable record has no object payload")
+    fields = {
+        "page_ordinal",
+        "ink_measurable",
+        "background_refusal",
+        "background_config_sha256",
+    }
+    if set(payload) != fields:
+        raise ContractError(
+            "the ink-not-measurable payload is not closed: expected exactly "
+            f"{sorted(fields)}, got {sorted(payload)}"
+        )
+    ordinal = payload["page_ordinal"]
+    if not _plain_int(ordinal) or ordinal <= 0:
+        raise ContractError(
+            "the ink-not-measurable payload page_ordinal is not a positive plain integer"
+        )
+    if payload["ink_measurable"] is not False:
+        raise ContractError("the ink-not-measurable payload ink_measurable is not false")
+    refusal = payload["background_refusal"]
+    if not isinstance(refusal, str) or not refusal.strip():
+        raise ContractError(
+            "the ink-not-measurable payload background_refusal is not a non-blank string"
+        )
+    digest = payload["background_config_sha256"]
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ContractError(
+            "the ink-not-measurable payload background_config_sha256 is not lowercase SHA-256 hex"
+        )
+    return {
+        "page_ordinal": ordinal,
+        "ink_measurable": False,
+        "background_refusal": refusal,
+        "background_config_sha256": digest,
+    }
 
 
 def _plain_int(value: Any) -> bool:
