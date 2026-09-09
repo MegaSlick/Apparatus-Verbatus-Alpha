@@ -8,10 +8,12 @@ geometry it needs to exercise.
 
 import itertools
 import random
+from pathlib import Path
 
+import grouping_config
 import pytest
 from grouping import assign_columns, find_continuation_candidate, group_page
-from structure import infer_background, primary_scan
+from structure import infer_background_evidence, primary_scan
 
 from common.contracts.errors import ContractError
 
@@ -299,10 +301,32 @@ def test_a_real_decoded_brace_page_drives_primary_scan_into_group_page():
     for bounds in (brace_bounds, body_a_bounds, body_b_bounds):
         paint(bounds["x"], bounds["y"], bounds["w"], bounds["h"])
 
-    background_value = infer_background(width, height, rows)
+    evidence = infer_background_evidence(
+        width,
+        height,
+        rows,
+        background_policy=grouping_config.resolve_background_policy(
+            grouping_config.load_grouping_config(
+                Path(__file__).resolve().parents[2] / "config" / "designator_grouping.toml"
+            ),
+            width,
+            height,
+        ),
+    )
+    background_value = evidence["background"]
+    # The margin the run would scan this page at, taken from the same evidence
+    # object `run.py::_analyze_page` takes it from rather than written out as a
+    # literal -- a hand-copied threshold is how this chain and the real one
+    # would quietly stop being the same scan.
+    ink_margin = evidence["ink_margin"]
     assert background_value == background, "ink must stay the numeric minority for this test"
     components = primary_scan(
-        width, height, rows, background=background_value, gap_tolerance_px=GAP_TOLERANCE_PX
+        width,
+        height,
+        rows,
+        background=background_value,
+        margin=ink_margin,
+        gap_tolerance_px=GAP_TOLERANCE_PX,
     )
     # Three real, independently-scanned ink components -- not the three dicts
     # a hand-built test would have started from.

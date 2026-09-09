@@ -41,6 +41,18 @@ from common.stage import EXIT_HELD
 ROOT = Path(__file__).resolve().parents[2]
 
 
+# The sealed background-inference policy, resolved for one page's own dimensions.
+# Loaded through the designator's own module rather than re-implemented here,
+# so a test page is inferred under exactly the policy a run would use.
+def _shipped_background_policy(width: int, height: int):
+    grouping_config = _load_designator().grouping_config
+    return grouping_config.resolve_background_policy(
+        grouping_config.load_grouping_config(ROOT / "config" / "designator_grouping.toml"),
+        width,
+        height,
+    )
+
+
 def _load_designator():
     return load_designator("designator_structure_failure_under_test")
 
@@ -411,18 +423,23 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     designator = _load_designator()
     context = _designator_context(root, designator)
 
-    real_infer = designator.structure.infer_background
+    # `infer_background_evidence`, not `infer_background`: the evidence
+    # function is what `run.py` calls, so patching the thin wrapper would
+    # leave the run untouched and this test would assert its way to green
+    # over a refusal that never happened. The `refused_pages` guard below is
+    # what would catch that, and it is why it is there.
+    real_infer = designator.structure.infer_background_evidence
     refused_pages = []
 
-    def refuse_the_first_page(width, height, rows):
+    def refuse_the_first_page(width, height, rows, **keywords):
         if not refused_pages:
             refused_pages.append(True)
             raise designator.structure.BackgroundInferenceRefusal(
                 "the page is majority ink, so its background cannot be inferred"
             )
-        return real_infer(width, height, rows)
+        return real_infer(width, height, rows, **keywords)
 
-    monkeypatch.setattr(designator.structure, "infer_background", refuse_the_first_page)
+    monkeypatch.setattr(designator.structure, "infer_background_evidence", refuse_the_first_page)
 
     held = designator.initial_pass(context)
 
@@ -479,11 +496,13 @@ def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
     # The arithmetic the old guard passed, shown rather than described.
     assert max(range(256), key=lambda v: sum(row.count(v) for row in rows)) == 0
     with pytest.raises(ContractError, match=r"darker than the 20-point ink margin"):
-        infer_background(width, height, rows)
+        infer_background(
+            width, height, rows, background_policy=_shipped_background_policy(width, height)
+        )
     # Defence in depth: even a caller bypassing inference cannot turn the
     # impossible threshold into an all-zero measurement.
     with pytest.raises(ContractError, match=r"below every 8-bit sample"):
-        primary_scan(width, height, rows, background=0, gap_tolerance_px=3)
+        primary_scan(width, height, rows, background=0, margin=PRIMARY_MARGIN, gap_tolerance_px=3)
     assert PRIMARY_MARGIN == 20
 
 
@@ -540,17 +559,75 @@ def test_a_background_too_dark_to_express_an_ink_threshold_is_refused(paper):
 
     rows = [bytearray([paper] * 8) for _ in range(8)]
     with pytest.raises(ContractError, match=r"darker than the 20-point ink margin"):
-        infer_background(8, 8, rows)
+        infer_background(8, 8, rows, background_policy=_shipped_background_policy(8, 8))
+
+
+def test_a_page_of_int_lists_is_refused_by_name_inside_the_dark_distribution_test():
+    """The guard that names the scanline instead of dying inside `translate`.
+
+    `_dark_distribution` reads scanlines with `bytes.translate`, but the histogram
+    loop above it iterates any sequence of integers, so a caller handing this
+    module a list-of-lists page gets all the way to the surround test and then
+    fails with an `AttributeError` naming neither the scanline nor the reason.
+    `conservation._unit_ink_runs` guards the same assumption the same way, and
+    this is the test that says so -- the guard was added in the branch's audit
+    round with no test of its own, which is how a named refusal quietly becomes
+    an unnamed one again.
+
+    The page has to reach the surround test to reach the guard, so it is a
+    framed one: a dark border around a lighter interior, in lists of ints.
+    """
+    from structure import infer_background
+
+    width, height = 400, 300
+    rows = [[0] * width for _ in range(height)]
+    for y in range(23, height - 23):
+        for x in range(30, width - 30):
+            # The paper is many tones, as `test_structure.photographed_page`
+            # builds it: a single flat paper tone would be the page's mode and
+            # this page would never reach the surround test at all.
+            slot = (x * 13 + y * 7) % 11
+            rows[y][x] = 40 if slot == 0 else (205 if slot <= 3 else 195 + (slot - 4))
+    # The premise: this page is majority ink by the mode/mean test, so the
+    # surround branch is the one that runs.
+    histogram = [0] * 256
+    for row in rows:
+        for value in row:
+            histogram[value] += 1
+    mode = max(range(256), key=lambda value: histogram[value])
+    assert mode * (width * height) < sum(v * c for v, c in enumerate(histogram))
+
+    with pytest.raises(ContractError, match=r"scanline \d+ is not grayscale bytes"):
+        infer_background(
+            width, height, rows, background_policy=_shipped_background_policy(width, height)
+        )
+    # And a bytes page of the same shape gets through, so the refusal above is
+    # about the scanline type and not about the page.
+    as_bytes = [bytearray(row) for row in rows]
+    assert (
+        infer_background(
+            width, height, as_bytes, background_policy=_shipped_background_policy(width, height)
+        )
+        == 205
+    )
 
 
 def test_a_background_exactly_at_the_margin_still_infers():
     """The bound is where it is claimed to be: at 20, pure black is still ink."""
-    from structure import infer_background, primary_scan
+    from structure import infer_background_evidence, primary_scan
 
     rows = [bytearray([20] * 8) for _ in range(8)]
     rows[3][3] = 0
-    assert infer_background(8, 8, rows) == 20
-    assert primary_scan(8, 8, rows, background=20, gap_tolerance_px=3) == [
+    evidence = infer_background_evidence(
+        8, 8, rows, background_policy=_shipped_background_policy(8, 8)
+    )
+    assert evidence["background"] == 20
+    # This page's two modes are 0 and 20, so a third of the distance between
+    # them is 6 and the floor is what the derivation returns. That is the shape
+    # the bound is claimed at: at a margin of 20 under a paper value of 20, pure
+    # black is exactly at the threshold and still counts.
+    assert evidence["ink_margin"] == 20
+    assert primary_scan(8, 8, rows, background=20, margin=20, gap_tolerance_px=3) == [
         {"bounds": {"x": 3, "y": 3, "w": 1, "h": 1}, "pixel_count": 1}
     ]
 
@@ -673,7 +750,10 @@ def blank_first_page_run(tmp_path, monkeypatch):
     # these real pixels finds nothing. If a later threshold change made this page
     # scan as inked, every assertion below would still pass for the wrong reason.
     width, height, rows = designator.grayscale_rows(_flat_page_png(200, 260, 230))
-    background = designator.structure.infer_background(width, height, rows)
+    evidence = designator.structure.infer_background_evidence(
+        width, height, rows, background_policy=_shipped_background_policy(width, height)
+    )
+    background = evidence["background"]
     # Resolved from the sealed policy the way the run resolves it, rather than
     # written out as literals: this premise stands in for what `initial_pass`
     # below actually does, and a hand-copied threshold is how the two would
@@ -687,6 +767,7 @@ def blank_first_page_run(tmp_path, monkeypatch):
             height,
             rows,
             background=background,
+            margin=evidence["ink_margin"],
             gap_tolerance_px=thresholds.gap_tolerance_px,
         )
         == []

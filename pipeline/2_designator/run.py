@@ -556,8 +556,17 @@ def _read_checked_page_bytes(context, page_record: dict) -> bytes:
     return data
 
 
-def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
-    """Decode one sealed page and infer its own background value.
+def page_pixels(
+    context, page_record: dict, *, grouping_policy: dict
+) -> tuple[int, int, list, structure.BackgroundEvidence]:
+    """Decode one sealed page and infer its own background, with the evidence.
+
+    Returns `structure.BackgroundEvidence` rather than a bare integer: an
+    interior-mode page has a dark distribution to publish, and dropping that
+    measured population on the way back would be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
+    grouping config, resolved to *this* page's own background-inference policy
+    here through `grouping_config.resolve_background_policy` -- the one resolver
+    for that policy, so this call site and any other cannot come to disagree.
 
     `common.imaging.grayscale_rows`, not `decode_grayscale_png`: the latter
     refuses by design anything this project's own encoder did not write, so
@@ -580,8 +589,13 @@ def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
     """
     page_bytes = _read_checked_page_bytes(context, page_record)
     width, height, rows = grayscale_rows(page_bytes)
-    background = structure.infer_background(width, height, rows)
-    return width, height, rows, background
+    evidence = structure.infer_background_evidence(
+        width,
+        height,
+        rows,
+        background_policy=grouping_config.resolve_background_policy(grouping_policy, width, height),
+    )
+    return width, height, rows, evidence
 
 
 def _bounds_of(row: dict) -> dict:
@@ -1177,6 +1191,31 @@ def publish_structure_status(
                 "state": "held" if reason_code else "scanned",
                 "reason_code": reason_code,
                 "background_source": analysis["background_source"] if analysis else None,
+                # How this page's ink was thresholded, beside how its paper was
+                # established. `ink_margin` is derived per page from the
+                # distance between the page's own two population modes, so
+                # unlike a module constant it cannot be recovered from the
+                # sealed policy alone -- and `ink_threshold` is the integer the
+                # scan compared every pixel against, spelled out rather than
+                # left as arithmetic a reader has to redo. All three are null on
+                # a page held before the structure pass analysed it and on one
+                # whose background could not be inferred, for the reason the
+                # geometry below is: this record answers for a pass that ran.
+                #
+                # `dark_mode` is the third because the other two are not enough
+                # to check either. `structure.BackgroundEvidence`'s own
+                # docstring promises a reader holding `background`, `dark_mode`
+                # and the sealed `ink_margin_bp` can recompute the margin
+                # exactly; `dark_distribution` is separately present only for
+                # pages that reach the interior-mode branch. The derivation runs
+                # on both branches, so its input is recorded on both.
+                "ink_margin": analysis["ink_margin"] if analysis else None,
+                "dark_mode": analysis["dark_mode"] if analysis else None,
+                "ink_threshold": (
+                    None
+                    if analysis is None or analysis["ink_margin"] is None
+                    else analysis["background"] - analysis["ink_margin"]
+                ),
                 "structure_evidence": evidence,
                 # Null on a page held before the structure pass analysed it,
                 # for the same reason the two fields above are: this record
@@ -1237,13 +1276,32 @@ def _analyze_page(
     """
     if ordinal not in cache:
         try:
-            width, height, rows, background = page_pixels(context, page_record)
-            background_source = "inferred-modal"
+            width, height, rows, evidence = page_pixels(
+                context, page_record, grouping_policy=grouping_policy
+            )
+            background = evidence["background"]
+            background_source = evidence["source"]
+            dark_distribution = evidence["dark_distribution"]
+            # The margin this page derived for itself, from the distance
+            # between its own two population modes and the sealed
+            # `ink_margin_bp` (`structure._derived_ink_margin`). It is carried
+            # rather than recomputed because the value the scan runs at and the
+            # value the record publishes have to be one integer, not two
+            # derivations that agree today.
+            ink_margin = evidence["ink_margin"]
+            # The other end of the distance the margin above is a fraction of.
+            # It is published on every measurable page because the derivation
+            # runs on both branches; `dark_distribution`, when present, records
+            # a separate sampled population rather than a page boundary.
+            dark_mode = evidence["dark_mode"]
         except structure.BackgroundInferenceRefusal:
             page_bytes = _read_checked_page_bytes(context, page_record)
             width, height, rows = grayscale_rows(page_bytes)
             background = None
             background_source = "not-inferable"
+            dark_distribution = None
+            ink_margin = None
+            dark_mode = None
         thresholds = grouping_config.resolve_thresholds(grouping_policy, width, height)
         components = (
             []
@@ -1253,6 +1311,7 @@ def _analyze_page(
                 height,
                 rows,
                 background=background,
+                margin=ink_margin,
                 gap_tolerance_px=thresholds.gap_tolerance_px,
             )
         )
@@ -1296,6 +1355,24 @@ def _analyze_page(
             "rows": rows,
             "background": background,
             "background_source": background_source,
+            # The interior-mode branch's dark-population measurements, or
+            # `None` where that branch did not run. They retain sampled values
+            # beside this page's ink accounting without assigning them to a
+            # bezel, paper region, or writing.
+            "dark_distribution": dark_distribution,
+            # This page's own derived ink margin, and `None` on a page whose
+            # background could not be inferred -- where no threshold was
+            # resolved, no scan ran, and naming a margin would be a resolution
+            # reported as an execution. `structure_pass.touches_ink` reads it
+            # rather than a module constant, so the live ink tripwire tests a
+            # chair's rectangle against the ink this page's scan actually
+            # counted.
+            "ink_margin": ink_margin,
+            # This page's dark-population mode, `None` on the same pages
+            # `ink_margin` is `None` on and for the same reason. Cached beside
+            # the margin because the record publishes both: a margin without the
+            # distance it was taken from cannot be checked.
+            "dark_mode": dark_mode,
             "groups": groups,
             "structure_evidence": structure_evidence,
             "thresholds": thresholds,
@@ -2247,6 +2324,13 @@ def _publish_conservation_and_secondary(
         if withheld
         else RESIDUAL_ENUMERATION_COMPLETE,
     }
+    # Present only when the interior-mode branch measured a dark distribution.
+    # The two counts retain their exact sampled band/page populations and remain
+    # in the primary scan and reconciliation. They are not a page-boundary mask:
+    # without independent ground truth they do not establish a bezel, a paper
+    # region, or writing excluded from either denominator.
+    if analysis["dark_distribution"] is not None:
+        conservation_payload["dark_distribution"] = analysis["dark_distribution"]
     if not withheld:
         conservation_payload["residual_components"] = components
     _refuse_text_fields(conservation_payload)
