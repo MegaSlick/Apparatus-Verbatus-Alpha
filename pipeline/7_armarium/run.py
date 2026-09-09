@@ -90,6 +90,10 @@ from common.stage import (  # noqa: E402
     unaddressed_chairs,
     validate_serving_provenance,
 )
+from common.testimony_content_coverage import (  # noqa: E402
+    validate_testimony_content_coverage,
+    validate_testimony_content_coverage_continuation,
+)
 
 _SOURCE_CITATION_FIELDS = frozenset(
     {
@@ -836,6 +840,26 @@ def _config_provenance(context, name: str, path, table: str) -> dict:
     return provenance
 
 
+def _typed_calibration_flag(provenance: dict, name: str) -> bool:
+    value = provenance["calibrated_for_this_corpus"]
+    if not isinstance(value, bool):
+        raise FatalAccounting(
+            f"the sealed {name} calibration provenance has a non-boolean calibrated_for_this_corpus flag"
+        )
+    return value
+
+
+def _typed_sample_count(provenance: dict, name: str) -> int | None:
+    if "sample_count" not in provenance:
+        return None
+    value = provenance["sample_count"]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise FatalAccounting(
+            f"the sealed {name} calibration provenance has an invalid sample_count"
+        )
+    return value
+
+
 def geometry_calibration_rows(context) -> list[dict]:
     """What each sealed geometry configuration says about its own calibration.
 
@@ -848,12 +872,11 @@ def geometry_calibration_rows(context) -> list[dict]:
     rows = []
     for name, attribute, table in _CALIBRATED_CONFIG_ATTRIBUTES:
         provenance = _config_provenance(context, name, getattr(context.args, attribute), table)
-        sample_count = provenance.get("sample_count")
         rows.append(
             {
                 "configuration": name,
-                "calibrated_for_this_corpus": bool(provenance["calibrated_for_this_corpus"]),
-                "sample_count": sample_count if isinstance(sample_count, int) else None,
+                "calibrated_for_this_corpus": _typed_calibration_flag(provenance, name),
+                "sample_count": _typed_sample_count(provenance, name),
             }
         )
     return rows
@@ -876,7 +899,9 @@ def sealed_audit_round_cap(context) -> int:
     return cap
 
 
-def conservation_not_reconciled(context, manifest_cache: dict[str, dict]) -> dict[int, str]:
+def conservation_not_reconciled(
+    context, manifest_cache: dict[str, dict], sealed_ordinals: set[int]
+) -> dict[int, str]:
     """Every sealed page whose ink this run never reconciled, with its reason.
 
     `ink_measurable: false` is the Designator's own record of a page it cut and
@@ -886,6 +911,7 @@ def conservation_not_reconciled(context, manifest_cache: dict[str, dict]) -> dic
     read cleaner than recorded unmeasurability (GOVERNANCE 10).
     """
     unreconciled: dict[int, str] = {}
+    seen_ordinals: set[int] = set()
     for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
         if entry["kind"] != "conservation":
             continue
@@ -897,10 +923,19 @@ def conservation_not_reconciled(context, manifest_cache: dict[str, dict]) -> dic
                 f"the Designator conservation record {entry['artifact_id']} names no page "
                 "ordinal, so the export cannot say which page its ink facts describe"
             )
+        if ordinal in seen_ordinals:
+            raise FatalAccounting(
+                "the Designator conservation inventory repeats a sealed page ordinal"
+            )
+        seen_ordinals.add(ordinal)
         if payload.get("ink_measurable") is True:
             continue
         unreconciled[ordinal] = str(
             payload.get("reason") or "the record states no reason for the unmeasured page"
+        )
+    if seen_ordinals != sealed_ordinals:
+        raise FatalAccounting(
+            "the Designator conservation ordinal census does not exactly cover the sealed page census"
         )
     return unreconciled
 
@@ -928,6 +963,15 @@ def not_measured_basis(
     for act_key in sorted(reviews):
         payload = reviews[act_key]
         content = payload.get("testimony_content_coverage")
+        try:
+            content = validate_testimony_content_coverage(content)
+            continuation = validate_testimony_content_coverage_continuation(
+                payload.get("testimony_content_coverage_continuation")
+            )
+        except SchemaRefusal as error:
+            raise FatalAccounting(
+                "a Recensor testimony-content measurement is malformed"
+            ) from error
         # `shortfall: None` is the F2 ruling's own record of a page whose
         # testimony content coverage was not measured -- a continuation page
         # most often -- and a review with no such field at all measured it even
@@ -940,18 +984,7 @@ def not_measured_basis(
                 if reason
                 else "this act's review records no measured page testimony coverage"
             )
-        continuation = payload.get("testimony_content_coverage_continuation", [])
-        if not isinstance(continuation, list):
-            raise FatalAccounting(
-                "a Recensor review has a malformed continuation testimony-coverage record; "
-                "the export cannot call the act measured without reading every page record"
-            )
         for row in continuation:
-            if not isinstance(row, dict) or "shortfall" not in row:
-                raise FatalAccounting(
-                    "a Recensor continuation testimony-coverage row is malformed; the export "
-                    "cannot decide whether its act was measured"
-                )
             if row["shortfall"] is None:
                 if act_key not in unmeasured_coverage:
                     unmeasured_coverage.append(act_key)
@@ -962,8 +995,18 @@ def not_measured_basis(
                     else "this act's continuation-page coverage is recorded unmeasured"
                 )
         coverage = payload.get("cross_capture_coverage")
-        if not isinstance(coverage, dict):
+        if coverage is None:
             continue
+        if not isinstance(coverage, dict):
+            raise FatalAccounting(
+                "a Recensor cross-capture coverage record is neither an object nor null"
+            )
+        try:
+            coverage = validate_cross_capture_coverage(coverage)
+        except (SchemaRefusal, TypeError) as error:
+            raise FatalAccounting(
+                "a Recensor cross-capture coverage record is malformed"
+            ) from error
         acts_with_presentation += 1
         for component in coverage.get("components", []):
             for row in component.get("captures", []):
@@ -977,10 +1020,10 @@ def not_measured_basis(
                     rows_with_named_absence += 1
                     absence_codes.update(codes)
 
-    unreconciled = conservation_not_reconciled(context, manifest_cache)
     sealed_pages = sorted(
         ordinal for ordinal, page in census.items() if page.get("outcome") == "sealed"
     )
+    unreconciled = conservation_not_reconciled(context, manifest_cache, set(sealed_pages))
     with_spans = sum(
         1
         for act in projected_acts
@@ -1648,27 +1691,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # can read writes the field, and a review without it is a stale or
             # foreign record this stage should refuse over rather than paper.
             #
-            # **How far this restatement reaches, named rather than assumed.**
-            # It reaches the `manifest-entry` and the `export` artifact -- the run
-            # tree -- and stops there. It is NOT inside the ZIP the run delivers:
-            # `projected_acts` below is what `build_armarium_bundle` receives, and
-            # every place the field could ride into a package member is a closed
-            # field set with a schema version on it (`armarium-act.v2` and its
-            # `_ACT_RECORD_FIELDS`, `armarium-acts-sqlite.v2`,
-            # `armarium-sources.v3`'s own key list, `_act_outcome_sources`'s
-            # record closure, and `_aggregate_from_basis`'s four-name accounting
-            # basis, which is closed precisely so an extended basis is refused).
-            # Carrying it there is an export-contract change across those
-            # versions, not an addition, and it needs the basis copy to be
-            # cross-checkable against the act rows the way `act_text_status` is
-            # -- an unverifiable field inside the verified basis would be an
-            # assertion sitting in the evidence block. So the package still says
-            # `complete` over an act whose continuation page carries transcribed
-            # characters nothing measured, and a reader who has only the ZIP
-            # cannot see that. Raised by CodeRabbit and left standing here
-            # deliberately: it is a real gap, its fix is a contract decision, and
-            # it is written at the line where the reach was actually chosen so it
-            # cannot be lost (GOVERNANCE 2's second paragraph).
+            # The detailed continuation rows remain in the retained Recensor review.
+            # The ZIP carries their derived unmeasured-act disclosure and its retained-run
+            # evidence location; it does not replay per-page Recensor evidence.
             "testimony_content_coverage_continuation": review["payload"][
                 "testimony_content_coverage_continuation"
             ],

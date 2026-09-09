@@ -85,8 +85,14 @@ def make_transcript(output: str | Path) -> Path:
         config = workspace / "config"
         config.mkdir(parents=True)
         shutil.copy2(ROOT / "uv.lock", workspace / "uv.lock")
-        shutil.copy2(ROOT / "config" / "models.toml", config / "models.toml")
-        shutil.copy2(ROOT / "config" / "pod_placement.toml", config / "pod_placement.toml")
+        for configuration_name in (
+            "models.toml",
+            "models-real.toml",
+            "pod_placement.toml",
+            "witness_context.toml",
+            "witness_context-real.toml",
+        ):
+            shutil.copy2(ROOT / "config" / configuration_name, config / configuration_name)
         # Boot must record the exercised checkout revision without putting its
         # scratch workspace under that checkout.
         (workspace / ".git").symlink_to(ROOT / ".git")

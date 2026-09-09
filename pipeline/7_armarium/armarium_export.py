@@ -84,7 +84,7 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # closed shape without an explicit schema boundary.
 # v5 adds required `claims.not_measured`: the export's own list of what this
 # run did not measure. A v3 reader has no field for it and would present a
-# bundle that names four unmeasured instruments as one that names none, which
+# bundle that names five unmeasured instruments as one that names none, which
 # is the silent-shape-change under one id these ids exist to prevent.
 EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v5"
 # v4 is the clustered act-partition claim shape: `denominator` names logical
@@ -1021,6 +1021,10 @@ def _validate_not_measured_detail(
             "acts_with_uncertain_spans",
         ):
             _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
+        if detail["sealed_audit_round_cap"] != 0 and detail["acts_with_uncertain_spans"] != 0:
+            raise SchemaRefusal(
+                f"{subject} names uncertain spans although its nonzero sealed audit cap makes them unreachable"
+            )
     elif instrument == _GEOMETRY_CALIBRATION:
         configurations = detail["configurations"]
         if not isinstance(configurations, list) or len(configurations) != len(
@@ -1713,7 +1717,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         projection.aggregate_basis,
         projection.acts,
     )
-    _validate_not_measured_basis(projection.not_measured_basis)
+    not_measured_basis = _validate_not_measured_basis(projection.not_measured_basis)
     ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     sealed = {
@@ -1796,6 +1800,24 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
             require_approval(ARMARIUM, category, act.get("approval_ref"))
         _reject_act_salvage_namespace(act)
+    perlector_basis = not_measured_basis[_PERLECTOR_UNCERTAIN_SPANS]
+    delivered_count = sum(
+        act["category"] == ArmariumCategory.DELIVERED.value for act in projection.acts
+    )
+    uncertain_count = sum(
+        act["category"] == ArmariumCategory.DELIVERED.value
+        and isinstance(act.get("uncertainty"), dict)
+        and bool(act["uncertainty"].get("uncertain_spans"))
+        for act in projection.acts
+    )
+    if (
+        perlector_basis["acts_delivered"] != delivered_count
+        or perlector_basis["acts_with_uncertain_spans"] != uncertain_count
+    ):
+        raise SchemaRefusal(
+            "an Armarium projection's Perlector uncertainty basis does not exactly reconcile "
+            "with its delivered act projection"
+        )
     _validate_logical_act_conservation(projection, act_ids, act_keys)
     # The basis is the copy the run's verdict is computed from, and it was the
     # one copy of the damage record nothing compared to the acts it describes —

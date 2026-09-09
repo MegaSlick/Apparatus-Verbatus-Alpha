@@ -90,6 +90,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, Sequence
 
+from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
@@ -99,6 +100,8 @@ from common.chairs.registry import (
     SnapshotFetcher,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.errors import ContractError
+from common.witness_context import validate_witness_context_configuration
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
 from operations.serving.config import ServingConfigInputs, load_serving_recipes
 from operations.serving.http import HttpTransport
@@ -440,10 +443,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="the Perlector-owned factual witness-context declaration the run seals; defaults "
         "to <repository>/config/witness_context.toml, which describes every chair as a "
-        "synthetic fixture, and may be defaulted only when --models-config is the shipped "
-        "fixture roster config/models.toml -- any other roster must name its declaration "
-        "explicitly (config/witness_context-real.toml for the real roster) or the plan is "
-        "refused",
+        "synthetic fixture; after the pinned checkout, CONFIGURATION matches that parsed "
+        "profile to the selected chair identities. Name config/witness_context-real.toml "
+        "explicitly with config/models-real.toml; custom rosters require an operator-authored "
+        "declaration",
     )
     parser.add_argument(
         "--submission-manifest",
@@ -614,24 +617,10 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         base_label="the checked-out repository",
         report_path=report_path,
     )
-    # The same rule, one file further along the same selection. The shipped
-    # declaration says of every chair that it is "a synthetic fixture witness;
-    # no real training domain applies", and under the `named` regime the
-    # Perlector is handed that sentence as fact about the witness it is reading
-    # (`common/stage.py::validate_witness_context_bindings` refuses the pairing
-    # for exactly this reason). Refused at plan time rather than at the Door, so
-    # a boot that would tell the reader its real witnesses are fixtures costs no
-    # card time to discover.
-    if args.witness_context_config is None and models_config != default_roster:
-        raise PlanRefusal(
-            f"--models-config {models_config} is not the shipped fixture roster "
-            f"{default_roster}, and --witness-context-config was not supplied; the shipped "
-            "declaration describes every witness as a synthetic fixture with no real "
-            "training domain, and sealing it beside another roster tells the Perlector its "
-            "real witnesses are fixtures. Name both "
-            "(config/witness_context-real.toml with config/models-real.toml)",
-            report_path=report_path,
-        )
+    # These paths may not exist until REPOSITORY checks out the pinned commit.
+    # Plan and dry-run therefore validate containment and selection only. The
+    # journaled CONFIGURATION step parses and pairs their content immediately
+    # after checkout, before uv, model materialization, cache work, or serving.
     witness_context_config = _require_contained(
         args.witness_context_config or (repository / "config" / "witness_context.toml"),
         repository,
@@ -1172,11 +1161,50 @@ class _LazyChairCache:
         return _build_cache(self._plan).verify()
 
 
+def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object]]:
+    """Read the pinned roster/declaration after checkout and before paid setup."""
+
+    def _validate() -> dict[str, object]:
+        if (
+            plan.repository is None
+            or plan.models_config is None
+            or plan.witness_context_config is None
+        ):
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                "bootstrap plan reached CONFIGURATION without its repository, roster, or declaration",
+                "Supply the complete bootstrap plan and start a new schema-v3 journal.",
+            )
+        try:
+            models = load_models_toml(plan.models_config)
+            validation = validate_witness_context_configuration(
+                models,
+                plan.witness_context_config,
+                shipped_config_root=plan.repository / "config",
+            )
+        except ContractError as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"witness roster/declaration validation failed: {error}",
+                "Repair the pinned roster/declaration selection. Use the fixture trio together, "
+                "the real trio together, or an operator-authored declaration for a custom roster; "
+                "then resume this journal before any environment or model work.",
+            ) from error
+        return {
+            "models_config": str(plan.models_config),
+            "witness_context_config": str(plan.witness_context_config),
+            **validation.to_record(),
+        }
+
+    return _validate
+
+
 def build_actions(plan: Plan) -> BootstrapActions:
     """The real, tracked composition. Tests inject a fake instead of calling this."""
 
     return SubprocessBootstrapActions(
         repository=plan.repository,  # type: ignore[arg-type]
+        configuration=_build_configuration_validation(plan),
         transfer=_build_transfer(plan),
         materialize_model_store=lambda: _build_model_store(plan).materialize(),
         cache=_LazyChairCache(plan),  # type: ignore[arg-type]

@@ -41,6 +41,7 @@ from common.runtree.store import (
     RunTree,
 )
 from common.stage import load_fixture
+from common.witness_context import validate_witness_context_configuration
 from operations.pod.arming import ControllerArming, ControllerReadiness
 from operations.pod.bootstrap import (
     BootstrapJournal,
@@ -336,6 +337,15 @@ class FixtureBootstrapActions:
 
     def checkout_commit(self, commit: str) -> dict[str, object]:
         return {"commit": commit, "mode": "fixture-only; no network checkout"}
+
+    def validate_configuration(self) -> dict[str, object]:
+        root = self.surface.workspace
+        validation = validate_witness_context_configuration(
+            load_models_toml(root / "config" / "models.toml"),
+            root / "config" / "witness_context.toml",
+            shipped_config_root=root / "config",
+        )
+        return validation.to_record()
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         if not lockfile.is_file():

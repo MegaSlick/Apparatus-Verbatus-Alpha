@@ -90,6 +90,7 @@ from common.recovery import (
 )
 from common.runtree.store import PublishResult, RunTree
 from common.witness_adapters import validate_witness_adapter_bindings
+from common.witness_context import validate_witness_context_configuration
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
 # keeping: 0 = complete, 2 = structural or fatal, 3 = accounted but holdable.
@@ -115,11 +116,6 @@ DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" 
 DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "witness_context.toml"
 )
-# The `source` value a chair carries when it is a local fixture snapshot rather
-# than a published model repository. Named here because the witness-context
-# binding asks exactly that question of every witness chair: the shipped
-# declaration's sentence is true only of chairs that really are fixtures.
-FIXTURE_CHAIR_SOURCE: Final = "local-repository"
 DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "perlector_protocol.toml"
 )
@@ -1842,111 +1838,12 @@ def validate_witness_context_bindings(
             f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} in "
             "--perlector-instrument-approval-ref; an arbitrary string is not an approval record"
         )
-    try:
-        witness_context_config_bytes = Path(witness_context_config_path).read_bytes()
-    except OSError as error:
-        raise ContractError(
-            f"the witness-context declaration at {witness_context_config_path} could not be read"
-        ) from error
-    witness_context_config_digest = digest_bytes(witness_context_config_bytes)
-    # Coverage, not just readability, checked here rather than left to the
-    # Perlector: this function already holds `models.witness_chairs` and
-    # already reads this file's bytes for the digest above, so a chair with no
-    # declared entry can refuse before the run tree exists rather than after
-    # the Exemplar, Designator and the entire Attestatores leg have already
-    # run against every witness model on every act — the expensive part of a
-    # live pod run, spent on what is usually a config typo. The Perlector's own
-    # `dossier.load_witness_context` still does the full per-entry schema
-    # validation when it actually loads this file to build a dossier; this is
-    # only the cheap presence check that can run this early.
-    try:
-        witness_context_table = tomllib.loads(witness_context_config_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(
-            f"the witness-context declaration at {witness_context_config_path} could not be "
-            f"parsed: {error}"
-        ) from error
-    missing = [chair for chair in models.witness_chairs if chair not in witness_context_table]
-    if missing:
-        raise ContractError(
-            f"chair {missing[0]!r} has no declared entry in {witness_context_config_path}; "
-            "every configured witness must carry a factual dossier context, or none is described"
-        )
-    for chair, entry in sorted(witness_context_table.items()):
-        # Shape, not just presence: `attestator_1 = "typed by mistake"` passed
-        # the presence check and then cost the whole pre-Perlector leg before
-        # `dossier.load_witness_context` refused it.
-        if (
-            not isinstance(entry, dict)
-            or set(entry) != {"training_domain"}
-            or not isinstance(entry.get("training_domain"), str)
-            or not entry["training_domain"].strip()
-        ):
-            raise ContractError(
-                f"the witness-context entry for {chair!r} in {witness_context_config_path} "
-                "is not a closed table with only a non-blank training_domain"
-            )
-    unaddressed = [
-        chair for chair in witness_context_table if chair not in set(models.witness_chairs)
-    ]
-    if unaddressed:
-        raise ContractError(
-            f"{witness_context_config_path} declares {unaddressed[0]!r}, which is not a "
-            "configured witness chair; a misspelt chair here would silently lose its witness"
-        )
-    # The declaration and the roster select one reading together. The shipped
-    # declaration at DEFAULT_WITNESS_CONTEXT_CONFIG_PATH says of every chair that
-    # it is "a synthetic fixture witness; no real training domain applies", and
-    # under the `named` regime that sentence is handed to the Perlector as fact
-    # about the witness whose testimony it is reading
-    # (`pipeline/4_perlector/prompts.py`). Left at that default beside
-    # `config/models-real.toml`, it tells the reader that Chandra-2,
-    # DAI-RecordGold and Churro-3B are fixtures -- the exact opposite of
-    # GOVERNANCE 7's "feed it completely and honestly", on the first real call.
-    # `config/witness_context-real.toml` is the declaration that roster is read
-    # under, named on `--witness-context-config` exactly as the roster is named
-    # on `--models-config`; no new configuration key exists for this.
-    #
-    # The test is what the roster says the chair IS, not which file it came from.
-    # The fixture roster's witnesses are `source = "local-repository"` -- a few
-    # deterministic bytes standing in for a model repository, which is precisely
-    # the fact the default declaration asserts -- while a witness resolved from a
-    # published model repository is a real model whatever path its roster sits
-    # at. A filename comparison would both miss a real chair written into a
-    # differently named roster and refuse an ordinary moved copy of the fixture
-    # one.
-    #
-    # Refused whatever the regime: under `blinded` the sentence is withheld from
-    # the dossier, but the run still seals a declaration saying its real chairs
-    # are synthetic, and that record outlives the regime it was sealed under
-    # (GOVERNANCE 6).
-    try:
-        fixture_declaration_digest = digest_bytes(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH.read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the canonical fixture witness-context declaration could not be read; cannot prove "
-            "whether the selected declaration describes fixture chairs"
-        ) from error
-    if witness_context_config_digest == fixture_declaration_digest:
-        published = []
-        for chair in models.witness_chairs:
-            identity = models.chairs[chair]
-            # An explicit absence is preserved as its own run record and is not
-            # a model identity to classify here.  The pairing rule only decides
-            # whether a present witness is falsely described as a fixture.
-            if isinstance(identity, AbsentChair):
-                continue
-            elif not isinstance(identity, ChairIdentity) or identity.source != FIXTURE_CHAIR_SOURCE:
-                published.append(chair)
-        if published:
-            raise ContractError(
-                f"witness chair(s) {published} do not resolve to local fixture snapshots, but "
-                "the selected witness-context declaration has the canonical fixture content, "
-                "which describes every witness as synthetic with no real training domain. "
-                "Name the declaration this roster is read under, for example "
-                "config/witness_context-real.toml with config/models-real.toml"
-            )
-    return witness_context_config_digest
+    validation = validate_witness_context_configuration(
+        models,
+        witness_context_config_path,
+        shipped_config_root=DEFAULT_WITNESS_CONTEXT_CONFIG_PATH.parent,
+    )
+    return validation.source_sha256
 
 
 def real_run_policy_digest(

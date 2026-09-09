@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import shutil
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from common.chairs import ChairRegistry
+from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.stage import run_config_bindings, validate_witness_context_bindings
@@ -73,16 +75,20 @@ def test_no_real_witness_is_described_as_a_synthetic_fixture():
 
 def test_a_roster_of_published_models_may_not_take_the_fixture_declaration():
     """The pairing refusal, at run creation, before any stage runs."""
-    with pytest.raises(ContractError, match="canonical fixture content"):
+    with pytest.raises(ContractError, match="shipped-fixture identity projection"):
         _bindings(REAL_ROSTER, FIXTURE_CONTEXT)
 
 
-def test_a_copied_fixture_declaration_is_refused_for_the_real_roster(tmp_path):
-    """Declaration identity is its content, so renaming it changes nothing."""
+def test_a_semantically_copied_fixture_declaration_is_refused_for_the_real_roster(tmp_path):
+    """Comments, whitespace, and location cannot disguise a shipped profile."""
     copied = tmp_path / "renamed-context.toml"
-    copied.write_bytes(FIXTURE_CONTEXT.read_bytes())
+    copied.write_text(
+        "# operator copy with byte-only edits\n\n"
+        + FIXTURE_CONTEXT.read_text(encoding="utf-8").replace("[attestator_2]", "\n[attestator_2]"),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(ContractError, match="canonical fixture content"):
+    with pytest.raises(ContractError, match="shipped-fixture identity projection"):
         _bindings(REAL_ROSTER, copied)
 
 
@@ -93,8 +99,8 @@ def test_the_refusal_names_the_chairs_and_the_declaration_it_refused():
     message = str(refusal.value)
     for chair in ChairRegistry.from_toml(REAL_ROSTER).config.witness_chairs:
         assert chair in message
-    assert "canonical fixture content" in message
-    assert "config/witness_context-real.toml" in message
+    assert "shipped-fixture identity projection" in message
+    assert "operator-authored declaration" in message
 
 
 def test_a_moved_copy_of_the_fixture_roster_is_not_treated_as_a_real_one(tmp_path):
@@ -119,6 +125,117 @@ def test_a_moved_copy_of_the_fixture_roster_is_not_treated_as_a_real_one(tmp_pat
     )
 
     assert _bindings(moved, FIXTURE_CONTEXT)["config_digest"]
+
+
+def test_whitespace_edited_copies_of_the_shipped_fixture_pair_keep_their_identity(tmp_path):
+    config_root = tmp_path / "config"
+    shutil.copytree(ROOT / "config", config_root)
+    roster = config_root / "moved-models.toml"
+    context = config_root / "moved-context.toml"
+    roster.write_text(
+        "# moved without changing an identity\n" + FIXTURE_ROSTER.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    context.write_text(
+        FIXTURE_CONTEXT.read_text(encoding="utf-8") + "\n# byte-only declaration edit\n",
+        encoding="utf-8",
+    )
+
+    assert _bindings(roster, context)["config_digest"]
+
+
+def test_whitespace_edited_copies_of_the_shipped_real_pair_keep_their_identity(tmp_path):
+    config_root = tmp_path / "config"
+    shutil.copytree(ROOT / "config", config_root)
+    roster = config_root / "moved-models-real.toml"
+    context = config_root / "moved-context-real.toml"
+    roster.write_text(
+        "# moved without changing an identity\n" + REAL_ROSTER.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    context.write_text(
+        REAL_CONTEXT.read_text(encoding="utf-8") + "\n# byte-only declaration edit\n",
+        encoding="utf-8",
+    )
+
+    assert _bindings(roster, context)["config_digest"]
+
+
+def test_the_real_profile_is_bound_to_each_roles_exact_identity_projection():
+    roster = ChairRegistry.from_toml(REAL_ROSTER).config
+    first = roster.chairs["attestator_1"]
+    second = roster.chairs["attestator_2"]
+    assert isinstance(first, ChairIdentity) and isinstance(second, ChairIdentity)
+    changed = replace(
+        roster,
+        chairs={
+            **roster.chairs,
+            "attestator_1": replace(
+                first,
+                repo=second.repo,
+                revision=second.revision,
+                digest_manifest=second.digest_manifest,
+            ),
+        },
+    )
+
+    with pytest.raises(ContractError, match="attestator_1.*shipped-real identity projection"):
+        validate_witness_context_bindings(
+            changed,
+            witness_context="named",
+            witness_context_config_path=REAL_CONTEXT,
+            nuda_per_mille=0,
+            nuda_approval_ref="",
+            perlector_instrument_per_mille=0,
+            perlector_instrument_approval_ref="",
+        )
+
+
+def test_a_recognized_profile_keeps_coverage_but_skips_an_explicit_absence():
+    roster = ChairRegistry.from_toml(REAL_ROSTER).config
+    changed = replace(
+        roster,
+        chairs={
+            **roster.chairs,
+            "attestator_3": AbsentChair(
+                role="attestator_3", reason="unavailable for this degraded run"
+            ),
+        },
+    )
+
+    assert validate_witness_context_bindings(
+        changed,
+        witness_context="named",
+        witness_context_config_path=REAL_CONTEXT,
+        nuda_per_mille=0,
+        nuda_approval_ref="",
+        perlector_instrument_per_mille=0,
+        perlector_instrument_approval_ref="",
+    ) == digest_bytes(REAL_CONTEXT.read_bytes())
+
+
+def test_local_repository_is_a_location_not_proof_of_the_fixture_identity():
+    roster = ChairRegistry.from_toml(FIXTURE_ROSTER).config
+    first = roster.chairs["attestator_1"]
+    assert isinstance(first, ChairIdentity)
+    changed = replace(
+        roster,
+        chairs={
+            **roster.chairs,
+            "attestator_1": replace(first, path="a-real-local-mirror"),
+        },
+    )
+
+    with pytest.raises(ContractError, match="local repository location alone.*operator-authored"):
+        validate_witness_context_bindings(
+            changed,
+            witness_context="named",
+            witness_context_config_path=FIXTURE_CONTEXT,
+            nuda_per_mille=0,
+            nuda_approval_ref="",
+            perlector_instrument_per_mille=0,
+            perlector_instrument_approval_ref="",
+        )
 
 
 def test_a_real_run_seals_the_real_declarations_bytes():
@@ -152,12 +269,20 @@ def test_a_fixture_run_still_seals_the_fixture_declaration():
     assert sealed == digest_bytes(FIXTURE_CONTEXT.read_bytes())
 
 
-def test_the_two_declarations_produce_different_run_configuration_digests():
+def test_a_custom_declaration_remains_operator_authored_and_changes_the_config_digest(tmp_path):
     """Which declaration a run read is inside `config_digest`, not beside it."""
     fixture_digest = _bindings(FIXTURE_ROSTER, FIXTURE_CONTEXT)["config_digest"]
-    real_declaration = _bindings(FIXTURE_ROSTER, REAL_CONTEXT)["config_digest"]
+    custom = tmp_path / "custom-context.toml"
+    custom.write_text(
+        FIXTURE_CONTEXT.read_text(encoding="utf-8").replace(
+            _FIXTURE_SENTENCE,
+            "an operator-authored description of a custom local witness",
+        ),
+        encoding="utf-8",
+    )
+    custom_declaration = _bindings(FIXTURE_ROSTER, custom)["config_digest"]
 
-    assert fixture_digest != real_declaration
+    assert fixture_digest != custom_declaration
 
 
 def test_the_refusal_holds_under_the_blinded_regime_too():
@@ -166,7 +291,7 @@ def test_the_refusal_holds_under_the_blinded_regime_too():
     The run still seals a declaration saying its real chairs are synthetic, and
     that record outlives the regime it was sealed under (GOVERNANCE 6).
     """
-    with pytest.raises(ContractError, match="canonical fixture content"):
+    with pytest.raises(ContractError, match="shipped-fixture identity projection"):
         validate_witness_context_bindings(
             ChairRegistry.from_toml(REAL_ROSTER).config,
             witness_context="blinded",

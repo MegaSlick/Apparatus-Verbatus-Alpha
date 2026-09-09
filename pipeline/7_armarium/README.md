@@ -4,10 +4,11 @@ Writes the pipeline's sealed product bundle. It projects established Archetypus
 readings, their provenance, and their links to exact regions of ink; it does not
 establish, repair, choose, or rewrite text. The pipeline ends here.
 
-Its clean verifier replays the non-text accounting basis and source graph carried
-in the bundle. A self-hashed bundle therefore cannot substitute a partial status,
-drop one continuation citation, replace provenance, or rewrite a review reason
-while leaving the other selected projections untouched.
+The producer derives its disclosure from retained-run evidence before sealing. The
+standalone clean verifier checks the package's canonical schema, closure, and internal
+consistency only; a self-hash does not authenticate the run-derived facts. The publisher
+also binds the exact ZIP to the immutable export artifact and run authority. Authenticity
+beyond that retained-run immutability contract needs an external trust root.
 
 The bundle's first member is `EXPORT_MANIFEST.json`. Its companion formats are
 the run-sealed choices in `config/formats.toml`; the default includes a readable

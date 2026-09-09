@@ -32,7 +32,7 @@ from common.act_visibility_geometry import (  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
-from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ATTACHMENT_BASES,
@@ -56,6 +56,7 @@ from common.cross_capture_coverage import (  # noqa: E402
     build_cross_capture_coverage,
     capture_specific_recovery,
     same_chair_witness_floor,
+    validate_cross_capture_coverage,
 )
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.native_witness import (  # noqa: E402
@@ -95,6 +96,10 @@ from common.stage import (  # noqa: E402
     run_stage,
     scenario_for,
     stage_parser,
+)
+from common.testimony_content_coverage import (  # noqa: E402
+    validate_testimony_content_coverage,
+    validate_testimony_content_coverage_continuation,
 )
 
 
@@ -3021,6 +3026,18 @@ def publish_review(
     only the route inputs would leave a future direct payload field unchecked.
     """
     refuse_capture_preference(payload, what="a Recensor review")
+    try:
+        validate_testimony_content_coverage(payload["testimony_content_coverage"])
+        validate_testimony_content_coverage_continuation(
+            payload["testimony_content_coverage_continuation"]
+        )
+        coverage = payload.get("cross_capture_coverage")
+        if coverage is not None:
+            if not isinstance(coverage, dict):
+                raise SchemaRefusal("cross-capture coverage is neither an object nor null")
+            validate_cross_capture_coverage(coverage)
+    except (KeyError, SchemaRefusal, TypeError) as error:
+        raise FatalAccounting("a Recensor review has malformed measurement evidence") from error
     return context.publish(
         kind="review",
         subject_id=subject_id,

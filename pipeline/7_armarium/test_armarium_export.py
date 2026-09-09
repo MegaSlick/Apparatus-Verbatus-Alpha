@@ -133,6 +133,22 @@ def _test_not_measured_basis(**overrides):
     return basis
 
 
+def _basis_for_acts(acts):
+    """Keep hand-built projection caveats aligned with their act rows."""
+    basis = _test_not_measured_basis()
+    delivered = [act for act in acts if act["category"] == ArmariumCategory.DELIVERED.value]
+    spans = sum(
+        isinstance(act.get("uncertainty"), dict) and bool(act["uncertainty"].get("uncertain_spans"))
+        for act in delivered
+    )
+    basis["perlector-uncertain-spans"] = {
+        "sealed_audit_round_cap": 0 if spans else 1,
+        "acts_delivered": len(delivered),
+        "acts_with_uncertain_spans": spans,
+    }
+    return basis
+
+
 def _projection(*, salvage_items=()) -> ArmariumProjection:
     page = _source_bytes("1_exemplar/blobs/sha256/page")
     crop = _source_bytes("2_designator/blobs/sha256/crop")
@@ -268,7 +284,13 @@ def _damaged_delivered(
         act_pages=basis["act_pages"],
         act_text_status=basis["act_text_status"],
     )
-    return replace(projection, acts=acts, aggregate=aggregate, aggregate_basis=basis)
+    return replace(
+        projection,
+        acts=acts,
+        aggregate=aggregate,
+        aggregate_basis=basis,
+        not_measured_basis=_basis_for_acts(acts),
+    )
 
 
 def _two_region_projection() -> ArmariumProjection:
@@ -765,7 +787,13 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
         },
     }
     bundle = build_armarium_bundle(
-        replace(original, acts=(delivered, original.acts[1])), formats, _source_bytes
+        replace(
+            original,
+            acts=(delivered, original.acts[1]),
+            not_measured_basis=_basis_for_acts((delivered, original.acts[1])),
+        ),
+        formats,
+        _source_bytes,
     )
     members = _members(bundle.data)
     lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
@@ -1873,6 +1901,7 @@ def test_text_bundle_keeps_every_cited_source_folder_when_no_act_is_delivered(tm
         replace(
             original,
             acts=tuple(held),
+            not_measured_basis=_basis_for_acts(tuple(held)),
             aggregate_basis={**original.aggregate_basis, "act_text_status": {}},
             aggregate={
                 "status": "partial",
@@ -1943,6 +1972,7 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
         replace(
             original,
             acts=held,
+            not_measured_basis=_basis_for_acts(held),
             pages=pages,
             ink_map_pages=ink_map_pages,
             source_manifest=source_manifest,
@@ -2464,6 +2494,7 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
         replace(
             original,
             acts=acts,
+            not_measured_basis=_basis_for_acts(acts),
             aggregate=aggregate,
             aggregate_basis={**original.aggregate_basis, "act_text_status": {}},
         ),
@@ -3817,7 +3848,7 @@ def test_the_uncertainty_instrument_reports_the_sealed_round_cap_that_silenced_i
                 "perlector-uncertain-spans": {
                     "sealed_audit_round_cap": 0,
                     "acts_delivered": 1,
-                    "acts_with_uncertain_spans": 1,
+                    "acts_with_uncertain_spans": 0,
                 }
             }
         ),
@@ -3943,3 +3974,17 @@ def test_the_export_schema_refuses_a_package_that_omits_the_block(tmp_path):
     """Closed, so a bundle cannot quietly stop carrying its own caveats."""
     with pytest.raises(SchemaRefusal, match="unrecognized field set"):
         verify_export_bundle(_resealed_without_not_measured(_projection()), tmp_path / "clean")
+
+
+def test_nonzero_audit_cap_refuses_a_basis_that_names_uncertain_spans():
+    basis = _test_not_measured_basis()
+    basis["perlector-uncertain-spans"]["acts_with_uncertain_spans"] = 1
+    with pytest.raises(SchemaRefusal, match="nonzero sealed audit cap"):
+        _manifest_of(replace(_projection(), not_measured_basis=basis))
+
+
+def test_perlector_basis_counts_must_reconcile_with_the_projected_acts():
+    basis = _test_not_measured_basis()
+    basis["perlector-uncertain-spans"]["acts_delivered"] = 0
+    with pytest.raises(SchemaRefusal, match="does not exactly reconcile"):
+        _manifest_of(replace(_projection(), not_measured_basis=basis))

@@ -17,16 +17,13 @@ extraction to an operator-chosen destination — all of it or none of it. An exi
 destination is refused rather than merged into. It writes no text and projects
 nothing: every byte it publishes came out of the run tree already sealed.
 
-That outside verification is `verify_delivered_bundle`, which asks two questions
-rather than one: is the package internally whole (`verify_export_bundle`), and do
-its literal-text formats carry the identical reading of every act
-(`verify_projection_identity`'s comparison, over the members the first pass already
-extracted). The two are separate functions so each refusal names its own defect, but
-`EXPORT_MANIFEST.json` states `canonical_text.identity_verified_across` as a fact
-about the package, so the last gate before a recipient makes that comparison rather
-than asserting it. The published summary reports what each check actually did,
-including the search-fold recomputation's own honest "not run under a different
-Unicode database" — a check that declined to run must not read like one that ran.
+The standalone verifier checks package schema, closure, and internal consistency:
+`verify_export_bundle` verifies the package and `verify_projection_identity` compares
+its literal formats. A self-hash does not authenticate run-derived facts. Publication
+adds the independent retained-run check: `bundle.py` compares the exact ZIP digest,
+run binding, aggregate, and manifest identity to the immutable export artifact before
+writing a destination. Authenticity beyond the retained-run immutability contract
+requires an external trust root. The published summary reports what each check did.
 
 ## Stage-completion seal
 
@@ -177,7 +174,7 @@ projection configuration. The bundle may contain these plainly specified formats
   denominator names logical acts and `local_proposal_rows`/`logical_membership`
   join the claim, so a v3 reader can never misread `expected_count` as
   proposal-seal rows — and v5/v6 add the required `not_measured` claim to both
-  shapes at once, so a stale reader cannot present a bundle that names four
+  shapes at once, so a stale reader cannot present a bundle that names five
   unmeasured instruments as one that names none. A clustered bundle also carries a `logical_accounting`
   block in `sources.json`, and `verify_export_bundle` recomputes the clustered
   claim from it instead of believing the self-hashed manifest.
@@ -266,7 +263,7 @@ bundle. Counting damage is this stage's business; showing it is not.
 
 Required on every bundle (it is what took the manifest to `.v5`/`.v6`) and
 derived, never constant. `DELIVERED` and `aggregate.status == "complete"` are
-reachable over four things nothing in a run measures, each recorded somewhere
+reachable over five things this build does not fully measure, each recorded somewhere
 and none of them, before this, qualifying the word on the deliverable:
 
 | instrument | what is unmeasured | where the record lives |
@@ -285,11 +282,11 @@ deliberately not a softer `not-measured`: saying only "not measured" there
 invites the reading that a measurement was attempted and came back empty.
 `count` is how many instruments did not measure, and the verifier recomputes it.
 
-`pipeline/7_armarium/run.py::not_measured_basis` gathers the basis from the run
-tree and the sealed configurations; `armarium_export._not_measured_claim` derives
-each status from that basis alone. A projection with no basis is refused
-(`_validate_not_measured_basis`) — a block derived from nothing would be exactly
-the reassuring silence it exists to break.
+`pipeline/7_armarium/run.py::not_measured_basis` derives the basis from retained-run
+records and sealed configurations before the export is sealed. The standalone verifier
+checks the packaged block's closure and internal consistency only; the publisher then
+binds its exact ZIP to the immutable export artifact and run. A self-hash alone is not
+an external authenticity proof.
 
 ### The terminal ledger
 

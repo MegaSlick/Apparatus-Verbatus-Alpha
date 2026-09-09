@@ -20,14 +20,11 @@ from .durable import atomic_write, canonical_json
 from .models import require_utc, utc_now
 from .preflight import is_cache_mismatch
 
-BOOTSTRAP_SCHEMA = "pod-bootstrap.v2"
-"""Bumped when ``ORDERED_STEPS`` changed: ``MODEL_STORE`` was inserted before
-``CHAIR_CACHE``, so a journal written under v1 lists a completion prefix this
-code no longer recognises. Left at v1, such a journal was rejected as
-"duplicated, reordered, or skips a step" -- the journal blamed for a change in
-the step list. Under its own name it is rejected as an unsupported schema, whose
-remediation is already the correct one: preserve it and start a new journal,
-because every step from ``MODEL_STORE`` onward genuinely has not run.
+BOOTSTRAP_SCHEMA = "pod-bootstrap.v3"
+"""Bumped when ``CONFIGURATION`` was inserted after ``REPOSITORY`` and before
+``UV_ENVIRONMENT``. A v2 journal may already call the paid environment/model
+steps complete without ever validating the checked-out roster/declaration
+pair. It cannot be resumed under the stronger order and is refused by schema.
 """
 BOOTSTRAP_EXECUTABLES = {"git": "/usr/bin/git", "uv": "/usr/local/bin/uv"}
 BOOTSTRAP_ENVIRONMENT = {
@@ -56,6 +53,7 @@ class BootstrapStep(StrEnum):
     """Named, resumable steps; completion is recorded only after its action returns."""
 
     REPOSITORY = "repository"
+    CONFIGURATION = "configuration"
     UV_ENVIRONMENT = "uv-environment"
     TRANSFER = "transfer"
     MODEL_STORE = "model-store"
@@ -122,6 +120,9 @@ class BootstrapActions(Protocol):
 
     def checkout_commit(self, commit: str) -> dict[str, object]:
         """Materialize and verify exactly this commit."""
+
+    def validate_configuration(self) -> dict[str, object]:
+        """Validate the checked-out roster and declaration before paid setup."""
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         """Build the environment from the existing lockfile without resolution drift."""
@@ -341,6 +342,8 @@ class Bootstrapper:
     def _execute(self, step: BootstrapStep) -> dict[str, object]:
         if step is BootstrapStep.REPOSITORY:
             return self.actions.checkout_commit(self.journal.plan.repository_commit)
+        if step is BootstrapStep.CONFIGURATION:
+            return self.actions.validate_configuration()
         if step is BootstrapStep.UV_ENVIRONMENT:
             return self.actions.sync_uv_environment(self.journal.plan.lockfile)
         if step is BootstrapStep.TRANSFER:
@@ -434,6 +437,7 @@ class SubprocessBootstrapActions:
         *,
         repository: str | Path,
         transfer: Callable[[], dict[str, object]],
+        configuration: Callable[[], dict[str, object]],
         materialize_model_store: Callable[[], dict[str, object]],
         cache: ChairCacheBootstrapAction,
         preflight: Callable[[], dict[str, object]],
@@ -443,6 +447,7 @@ class SubprocessBootstrapActions:
     ) -> None:
         self.repository = Path(repository)
         self.transfer = transfer
+        self.configuration = configuration
         self.materialize = materialize_model_store
         self.cache = cache
         self.preflight = preflight
@@ -477,6 +482,9 @@ class SubprocessBootstrapActions:
                 "Repair repository access or commit pin; do not continue on a branch tip.",
             )
         return {"commit": observed}
+
+    def validate_configuration(self) -> dict[str, object]:
+        return self.configuration()
 
     def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
         expected_lockfile = (self.repository / "uv.lock").resolve()
