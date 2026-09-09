@@ -1456,14 +1456,30 @@ def _perlector_dissent():
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
-# PROVISIONAL integration marker: these literals are copied from current main
-# (7f427cce88007f3b1766c02263910bd53154c578), not measurements of this
-# uncommitted merge tree. The committed integration candidate must be measured
-# in two fresh roots before these active assertions can become evidence.
+# Integrated Designator, measured on committed source 700baa2a9ca7bebc79a3eadd6cb94e824b8348a8.
+# Two fresh canonical-run-id "r" roots per scenario agreed on every raw byte and
+# JSON/ZIP leaf. This pin-only update changes no runtime or sealed config bytes.
+# Relative to the original Designator54ba1065, current main7f427cce retains four
+# additional vendor image-preparation blobs (96 -> 100 files, 107 -> 111), native
+# capture/attachment evidence, continuation coverage, and Armarium not_measured.
+# All those main changes remain in the integrated output.
+# Relative to the retained exact main tree, direct changes are the sealed
+# designator-grouping bytes and three new structure-status leaves on each of two
+# pages: dark_mode90, ink_margin46=(230-90)*3333//10000, ink_threshold184.
+# Fixture pixel sets, geometry, text, review decisions and output counts match
+# main. Remaining differences follow config/artifact/reference/member hashes;
+# content-addressed JSON and ZIP blobs were paired by stable producer slots.
+# Every logical JSON/JSONL/SQLite leaf, raw file and ZIP member was attributed
+# against both parents: no unexplained changes or ambiguous blob pairings.
+# Local evidence: workbench/raw/codex-queue-2026-09-08/designator/
+# acceptance-causal-attribution-700baa2a.json and independent direct-semantics report.
+# The separate native127 survey reproduces114 inferred/13 refused, with every
+# deterministic measurement unchanged after the neutral dark_distribution rename.
+# It uses deterministic grouping rectangles, not served/padded final proposals.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "01613b0a1bc9b033a829282951080c3535a56711b1cee6f16c14e6e93addb30d"
-REVIEW_RUN_TREE_DIGEST = "cc01b77d37f701cf0a2ff155e1f9772aaf4a57db91ef273cf790051182e0720f"
+HAPPY_RUN_TREE_DIGEST = "45473ed3e442dbbc964da582f66a2b22dcd02dec509591c6e7bd7bd4b5fd27fe"
+REVIEW_RUN_TREE_DIGEST = "2953f0d9a1cc4a2b8c9830ea69f41af96e7bccf0db1f712e05d13bb6a590c83f"
 
 
 def orchestrate(
