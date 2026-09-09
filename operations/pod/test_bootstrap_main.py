@@ -1189,6 +1189,33 @@ def test_configuration_names_an_unreadable_selected_source_and_its_repair(
     assert f"{label} {selected} could not be read" in str(refusal.value.__cause__)
 
 
+@pytest.mark.parametrize(
+    ("attribute", "contents", "named_source"),
+    [
+        ("serving_recipes_config", 'schema = "wrong"\nprofiles = []\n', "serving catalogue"),
+        ("placement_config", 'schema = "wrong"\n', "placement table"),
+    ],
+)
+def test_configuration_refuses_semantic_selected_source_before_later_work(
+    tmp_path: Path, attribute: str, contents: str, named_source: str
+) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path)
+    selected = getattr(plan, attribute)
+    assert isinstance(selected, Path)
+    selected.write_text(contents, encoding="utf-8")
+    actions = _configuration_actions(plan)
+
+    result = bootstrap_main.run_bootstrap(
+        plan, now=lambda: START, actions_factory=lambda _plan: actions
+    )
+
+    assert not isinstance(result, int) and result.failure_step is BootstrapStep.CONFIGURATION
+    assert actions.calls == [BootstrapStep.REPOSITORY, BootstrapStep.CONFIGURATION]
+    assert named_source in (result.detail or "")
+    assert str(selected) in (result.detail or "")
+    assert "resume this journal before any environment or model work" in (result.remediation or "")
+
+
 def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(tmp_path: Path) -> None:
     ws, original = _checked_out_configuration_plan(tmp_path)
     first_actions = _configuration_actions(original, fail_step=BootstrapStep.UV_ENVIRONMENT)

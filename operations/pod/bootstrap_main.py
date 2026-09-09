@@ -104,7 +104,12 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
 from common.witness_context import validate_witness_context_configuration
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
-from operations.serving.config import ServingConfigInputs, load_serving_recipes
+from operations.serving.config import (
+    ServingConfigInputs,
+    load_serving_recipes,
+    parse_serving_recipes,
+)
+from operations.serving.errors import ServingConfigurationError
 from operations.serving.http import HttpTransport
 from operations.serving.manager import PackageInspector, ReceiptPublication
 from operations.serving.process import ProcessLauncher
@@ -1213,6 +1218,29 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                 f"a selected configuration source could not be read: {error}",
                 "Repair or restore the named file at the pinned commit, then resume this journal "
                 "before any environment or model work.",
+            ) from error
+        try:
+            serving_raw = tomllib.loads(serving_source.decode("utf-8"))
+            parse_serving_recipes(
+                serving_raw,
+                source_path=plan.serving_recipes_config,
+                source_sha256=digest_bytes(serving_source),
+            )
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError, ServingConfigurationError) as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"selected serving catalogue {plan.serving_recipes_config} could not be parsed: {error}",
+                "Repair or restore the named serving catalogue at the pinned commit, then resume "
+                "this journal before any environment or model work.",
+            ) from error
+        try:
+            load_placement_table(plan.placement_config, source_bytes=placement_source)
+        except PlacementRefusal as error:
+            raise BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"selected placement table {plan.placement_config} could not be parsed: {error}",
+                "Repair or restore the named placement table at the pinned commit, then resume "
+                "this journal before any environment or model work.",
             ) from error
         return {
             "schema": CONFIGURATION_RECEIPT_SCHEMA,

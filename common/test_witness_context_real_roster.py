@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from common.chairs import ChairRegistry
+from common.chairs.errors import ConfigurationRefusal
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
@@ -263,6 +264,25 @@ def test_whitespace_edited_copies_of_the_shipped_fixture_pair_keep_their_identit
     )
 
     assert _bindings(roster, context)["config_digest"]
+
+
+def test_malformed_shipped_real_roster_names_path_and_profile(tmp_path):
+    config_root = tmp_path / "config"
+    shutil.copytree(ROOT / "config", config_root)
+    malformed = config_root / "models-real.toml"
+    malformed.write_text("[models\n", encoding="utf-8")
+
+    with pytest.raises(
+        ConfigurationRefusal, match=r"shipped roster.*models-real\.toml.*shipped-real"
+    ) as refusal:
+        validate_witness_context_configuration(
+            ChairRegistry.from_toml(FIXTURE_ROSTER).config,
+            FIXTURE_CONTEXT,
+            shipped_config_root=config_root,
+        )
+
+    assert isinstance(refusal.value.__cause__, ConfigurationRefusal)
+    assert str(malformed) in str(refusal.value)
 
 
 def test_whitespace_edited_copies_of_the_shipped_real_pair_keep_their_identity(tmp_path):

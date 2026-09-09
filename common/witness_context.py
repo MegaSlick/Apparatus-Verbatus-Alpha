@@ -124,7 +124,14 @@ def validate_witness_context_configuration(
     shipped_profiles: list[tuple[str, dict[str, dict[str, str]], ModelsConfig]] = []
     for profile, declaration_name, roster_name in _SHIPPED_PROFILES:
         _, shipped_declaration = _read_declaration(config_root / declaration_name)
-        shipped_roster = load_models_toml(config_root / roster_name)
+        roster_path = config_root / roster_name
+        try:
+            shipped_roster = load_models_toml(roster_path)
+        except ConfigurationRefusal as error:
+            raise ConfigurationRefusal(
+                "witness-context",
+                f"shipped roster {roster_path} for profile {profile!r} could not be loaded: {error}",
+            ) from error
         if set(shipped_declaration) != set(shipped_roster.witness_chairs):
             raise ConfigurationRefusal(
                 "witness-context",
