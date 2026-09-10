@@ -190,8 +190,11 @@ def _refuse_text_fields(value, path: str = "$") -> None:
 # **structural** field rather than a sentence, because a consumer must be able
 # to tell a measurement from a fallback without reading a rationale string:
 # `detected` means the structure pass genuinely found a region covering this act,
-# and `fallback-tiles` means it found nothing on the page at all and the page was
-# cut into a predetermined grid instead. In the second case `detected_bounds` is
+# and `fallback-tiles` means it produced no eligible group for the page and the
+# page was cut into a predetermined grid instead. The fallback record and the
+# act rationale distinguish no found ink, an unavailable threshold, and ink that
+# was wholly withheld by the page-spanning rule. In every fallback case
+# `detected_bounds` is
 # `null` and the two counts are zero -- recording a computed band there, with
 # zero members, would be a claim about something nothing measured (GOVERNANCE 10).
 #
@@ -222,14 +225,61 @@ ACT_GROUP_EVIDENCE = frozenset(
 # Which of the five carry a measured rectangle, and which say nothing measured.
 _EVIDENCE_WITH_DETECTED_BOUNDS = frozenset({"detected", structure_pass.EVIDENCE_SHARED_DETECTION})
 
-# The rationale a fallback-tiled page's act-group carries. One string, defined
-# once, because it is a statement about the mechanism and must read identically
-# on a primary block and on a continuation block.
-_FALLBACK_ACT_GROUP_RATIONALE = (
+_FALLBACK_REASON_NO_INK = (
+    "the structure pass found no ink to group on this page, so the page is cut into "
+    "predetermined overlapping crops and sent downstream to be read rather than being "
+    "called blank here; blankness is proved by the witnesses and the Perlector, which "
+    "only get a say if the crops reach them"
+)
+_FALLBACK_RATIONALE_NO_INK = (
     "the structure pass found no ink to group on this page, so no detected region "
     "corroborates this act; the page's predetermined fallback crops are separate "
     "evidence and are not a detection"
 )
+_FALLBACK_REASON_BACKGROUND_NOT_INFERABLE = (
+    "the page's background could not be inferred, so no ink threshold or structural "
+    "groups were measured; the page is cut into predetermined overlapping crops and "
+    "sent downstream to be read rather than being called blank here"
+)
+_FALLBACK_RATIONALE_BACKGROUND_NOT_INFERABLE = (
+    "the page's background could not be inferred, so no ink threshold or detected "
+    "region corroborates this act; the page's predetermined fallback crops are "
+    "separate evidence and are not a detection"
+)
+_FALLBACK_REASON_ALL_PAGE_SPANNING = (
+    "the structure pass found ink, but every connected component met the sealed "
+    "page-spanning bound and was withheld from grouping; the page is cut into "
+    "predetermined overlapping crops and sent downstream to be read"
+)
+_FALLBACK_RATIONALE_ALL_PAGE_SPANNING = (
+    "the structure pass found ink, but every connected component met the sealed "
+    "page-spanning bound, so no eligible detected region corroborates this act; the "
+    "page's predetermined fallback crops are separate evidence and are not a detection"
+)
+_FALLBACK_REASON_NO_ELIGIBLE_GROUP = (
+    "the structure pass found ink components but assembled no eligible detected group, "
+    "so the page is cut into predetermined overlapping crops and sent downstream to be read"
+)
+_FALLBACK_RATIONALE_NO_ELIGIBLE_GROUP = (
+    "the structure pass found ink components but assembled no eligible detected group "
+    "that corroborates this act; the page's predetermined fallback crops are separate "
+    "evidence and are not a detection"
+)
+
+
+def _fixture_fallback_explanation(analysis: dict) -> tuple[str, str]:
+    """Return the recorded fallback reason and act rationale for measured cause."""
+    if analysis["background"] is None:
+        return (
+            _FALLBACK_REASON_BACKGROUND_NOT_INFERABLE,
+            _FALLBACK_RATIONALE_BACKGROUND_NOT_INFERABLE,
+        )
+    components = analysis["components"]
+    if not components:
+        return _FALLBACK_REASON_NO_INK, _FALLBACK_RATIONALE_NO_INK
+    if len(analysis["page_spanning"]) == len(components):
+        return _FALLBACK_REASON_ALL_PAGE_SPANNING, _FALLBACK_RATIONALE_ALL_PAGE_SPANNING
+    return _FALLBACK_REASON_NO_ELIGIBLE_GROUP, _FALLBACK_RATIONALE_NO_ELIGIBLE_GROUP
 
 
 def _require_evidence_block(block: dict, what: str) -> None:
@@ -913,8 +963,8 @@ def cut_minted_region(
     """Cut one region of one act and publish it.
 
     Split from `cut_region` so an act this stage *minted* -- one whose identity
-    the fixture never declared, because the structure pass found nothing on its
-    page -- is cut by exactly the same code that cuts a declared act's crop,
+    the fixture never declared, because the page required fallback coverage --
+    is cut by exactly the same code that cuts a declared act's crop,
     rather than by a second copy of it. A crop has one author (this module's own
     docstring), and that has to stay true of a fallback crop too: the region
     record, its transform, its digest, its lineage back to the sealed Exemplar
@@ -1321,9 +1371,9 @@ def _analyze_page(
         # What this call is for is the *record* -- `group_page` returns only the
         # groups, and a component withheld from grouping that appeared nowhere
         # would be a decision inferable solely from a group that is missing.
-        # Published on the conservation record below, beside the surround
-        # measurement, which is the other thing on this page that is ink by
-        # decision rather than by writing.
+        # Published on the conservation record below, beside the neutral
+        # dark-distribution measurements retained for the page. Neither record
+        # assigns a semantic identity such as bezel or writing to those pixels.
         _grouped, page_spanning = grouping.partition_page_spanning(
             components,
             width,
@@ -1340,7 +1390,7 @@ def _analyze_page(
             brace_min_height_px=thresholds.brace_min_height_px,
             page_spanning_area_bp=thresholds.page_spanning_area_bp,
         )
-        # **A page the structure pass found nothing on is cut anyway.** Tyrel
+        # **A page with no eligible structural group is cut anyway.** Tyrel
         # ruled 2026-08-11: "If the designator sees no text it should default to
         # predetermined crops with a small margin of overlap and send the crops
         # down stream to be read by everything. If all the witnesses and the
@@ -1424,7 +1474,7 @@ def _structural_evidence_block(
             "detected_bounds": None,
             "body_member_count": 0,
             "anchor_count": 0,
-            "rationale": _FALLBACK_ACT_GROUP_RATIONALE,
+            "rationale": _fixture_fallback_explanation(analysis)[1],
         }
     group = _match_structural_group(analysis["groups"], declared_bounds, what)
     _claim_structural_group(analysis, group, act_key, what)
@@ -1460,7 +1510,7 @@ def _publish_act_group(
     The predetermined bands cover the whole page by construction, so matching a
     declared act against one would always succeed -- which would silently
     disable `_match_structural_group`'s missed-act refusal on exactly the pages
-    where the structure pass found nothing, and would publish a computed band as
+    where the structure pass produced no eligible group, and would publish a computed band as
     `detected_bounds` with zero members. Both are claims about something nothing
     measured. So the fallback branch below never consults the grid at all: it
     records `structure_evidence="fallback-tiles"` and null detected bounds, and
@@ -2077,13 +2127,6 @@ def _unclaimed_fallback_tiles(tiles: list[dict], claimed: list[dict]) -> list[di
     )
 
 
-_FALLBACK_REASON_FIXTURE = (
-    "the structure pass found no ink to group on this page, so the page is cut into "
-    "predetermined overlapping crops and sent downstream to be read rather than being "
-    "called blank here; blankness is proved by the witnesses and the Perlector, which "
-    "only get a say if the crops reach them"
-)
-
 _FALLBACK_REASON_LIVE = (
     "the structure chair returned no act for this page, so the page is cut into "
     "predetermined overlapping crops and sent downstream to be read rather than being "
@@ -2101,9 +2144,9 @@ def _publish_page_fallback(
     claimed: list[dict],
     provenance: dict,
     *,
-    reason: str = _FALLBACK_REASON_FIXTURE,
+    reason: str | None = None,
 ) -> dict | None:
-    """Cut the predetermined crops over a page the structure pass found nothing on.
+    """Cut predetermined crops over a page with no eligible structural group.
 
     This is the half of Tyrel's 2026-08-11 ruling that `grouping.fallback_tiles`
     alone never delivered. The grid existed and was handed to
@@ -2116,8 +2159,8 @@ def _publish_page_fallback(
     likely a true blank."
 
     **One minted act per page, one proposal region per tile**, rather than one
-    act per tile. The structure pass found nothing, so it has no opinion at all
-    about how many acts are on this page and must not manufacture one by
+    act per tile. No eligible detected group establishes how many acts are on
+    this page, so the fallback mechanism must not manufacture a count by
     counting bands: what it can honestly say is "here is a page, and here is
     every part of it, cut so a reader can be shown all of it". Every consumer
     already reads *all* of an act's proposal regions — the Attestatores witness
@@ -2154,6 +2197,8 @@ def _publish_page_fallback(
     tiles = _unclaimed_fallback_tiles(analysis["groups"], claimed)
     if not tiles:
         return None
+    if reason is None:
+        reason = _fixture_fallback_explanation(analysis)[0]
     fallback_payload = {
         "act_key": act_key,
         "page_id": page_id,
@@ -2358,10 +2403,11 @@ def _publish_conservation_and_secondary(
     # `page_spanning_area_bp` was withheld from column assignment and body
     # chaining -- see `grouping.partition_page_spanning` -- and none of its
     # pixels was removed from anything: they are inside `total_ink_pixel_count`
-    # above and, because no group claims them, inside `residual_pixel_count`
-    # too, where they are minted as a held act. Without this block a reader
-    # holding the record would see a residual the size of a leaf and no
-    # statement anywhere of why the grouping pass declined to claim it.
+    # above. Declared or fallback coverage may claim some or all of those pixels;
+    # conservation reports any unclaimed remainder as residual and mints that
+    # remainder as held evidence. Without this block a reader would have to
+    # infer the page-spanning decision from missing groups or whatever coverage
+    # and residual happened to remain, rather than read the decision directly.
     # Indexed, not `.get`: `_analyze_page` sets this key on every path it
     # takes, the refused-background one included, so a missing key is a bug and
     # should say so rather than publish nothing.
@@ -2750,7 +2796,7 @@ def initial_pass(context) -> bool:
         expected.append(row)
         seal_inputs.extend(evidence)
 
-    # Every sealed page the structure pass found nothing on is cut into its
+    # Every sealed page with no eligible structural group is cut into its
     # predetermined crops, which become real proposal regions of one minted act
     # per page. Before conservation, deliberately: these crops are claims on the
     # page's own pixels, so `_claimed_regions_by_page` below has to see them or

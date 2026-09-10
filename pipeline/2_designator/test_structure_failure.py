@@ -466,6 +466,9 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     status = next(row for row in _payloads(context, "structure-status") if row["page_ordinal"] == 1)
     assert status["background_source"] == "not-inferable"
     assert status["structure_evidence"] == "fallback-tiles"
+    fallback = next(row for row in _payloads(context, "page-fallback") if row["page_ordinal"] == 1)
+    assert "background could not be inferred" in fallback["reason"]
+    assert "found no ink" not in fallback["reason"]
 
     reconciliation = next(
         row for row in _payloads(context, "conservation") if row["page_ordinal"] == 1
@@ -802,6 +805,7 @@ def test_a_page_with_no_found_ink_is_cut_into_fallback_crops(blank_first_page_ru
     assert len(fallbacks) == 1, "one minted act per fallback-tiled page, never one per tile"
     fallback = fallbacks[0]
     assert fallback["page_ordinal"] == 1
+    assert "found no ink" in fallback["reason"]
 
     tiles = [tile["bounds"] for tile in fallback["tiles"]]
     assert fallback["tile_count"] == len(tiles) > 0
@@ -957,6 +961,7 @@ def test_declared_acts_on_a_fallback_tiled_page_record_no_detected_bounds(
         assert groups[key]["detected_bounds"] is None
         assert groups[key]["body_member_count"] == 0
         assert groups[key]["anchor_count"] == 0
+        assert "found no ink" in groups[key]["rationale"]
 
     continuation = groups["a2"]["continuation"]
     assert continuation["structure_evidence"] == "detected"
