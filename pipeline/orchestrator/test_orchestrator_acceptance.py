@@ -1457,281 +1457,35 @@ def _perlector_dissent():
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
 #
-# Moved again, 2026-09-05, for `config/designator_grouping.toml` alone.
-# `infer_background` learned to tell a photographed page (dark surround, lighter
-# interior) from a genuinely dark page, and the three thresholds that test runs
-# under are sealed in a new `[grouping.surround]` block with its own provenance.
-# Every run seals that file's bytes, so its digest moved
-# (a56df58d0c7e... -> 968b72aeaca9657d0dc1381a63c0a38b276243f1b2f603b6df9ecd5802b84b72),
-# which moves `run.json`'s
-# `sealed_config_digests`, its `config_digest` and its `self_hash`, and every
-# digest computed over those downstream.
-#
-# **No fixture page reaches the new branch.** Every walking-skeleton page is
-# white synthetic: its modal pixel is its paper, so it takes the same modal path
-# it always took, records the same `background_source: "inferred-modal"`, and
-# publishes no `surround` block at all (`test_structure.py::
-# test_an_ordinary_page_still_reports_the_modal_source_and_no_surround`). The
-# resolved surround policy is deliberately not a field of `GroupingThresholds`
-# either, so `structure-status.resolved_thresholds` is byte-identical
-# (`test_grouping_config.py::
-# test_background_is_not_a_field_of_the_published_resolved_thresholds`).
-#
-# Checked, not assumed, in this file's own style. Both trees were built from
-# real orchestrator runs -- the `before` tree from a worktree pinned at the
-# preceding commit with its own venv -- and compared leaf by leaf: happy 75
-# changed files / 391 changed JSON leaves, review 87 / 471, and **not one of
-# them is a non-digest field**. Every changed leaf is a 64-hex digest or a
-# content-addressed blob path, plus one renamed blob per scenario in
-# `4_perlector` and `7_armarium` whose own name is its content digest. Snapshot
-# counts and exit codes are unmoved: happy 96 files at exit 0, review 107 at
-# exit 3.
-#
-# And once more, same day, for `config/alignment.toml` alone: `timeout_seconds`
-# 5 -> 25, on the measurement in that file's own header. Its bytes are sealed at
-# run creation like every other config's, so the same digest cascade follows.
-# The value has no effect on a fixture run's *content* -- no fixture alignment
-# comes within two orders of magnitude of either deadline -- which the leaf
-# comparison confirms: happy 75 changed files / 385 changed leaves, review 87 /
-# 445, **zero non-digest changed leaves**, baseline built from a worktree pinned
-# at the preceding commit with its own venv. Counts and exit codes unmoved.
-#
-# And a third time the same day, for a *comment*: `config/designator_grouping.toml`
-# documents every one of its fields in its header and said nothing at all about
-# the `[grouping.surround]` block added above, which is the defect class that
-# header exists to prevent. Sealed bytes are sealed bytes, so the header now
-# describes the block and the digest moved again
-# (968b72aeaca9... -> c9a7607b04122b0238d9907afb72cba1a5845cb90712a38dc4f3bcc793073043).
-# Same proof: happy 75 changed files / 385 changed leaves, review 87 / 445,
-# **zero non-digest changed leaves**, counts and exit codes unmoved.
-#
-# And a fourth time, 2026-09-06, for the same file again: the background
-# inference was redesigned on a 127-page survey, `[grouping.surround]` became
-# `[grouping.background]`, `min_border_dark_bp` was removed, `max_ink_bp` added,
-# `max_interior_dark_bp` moved 3000 -> 5000, and the provenance block was
-# rewritten at `sample_count = 127`
-# (c9a7607b0412... -> c5c009796e0acdd067405220335f7aaeb299284fb97a6ef6857851625abea0af).
-#
-# **No fixture page's inference moves for any of it**, which is what makes the
-# digest cascade the whole of the change. Every walking-skeleton page is white
-# synthetic: its modal pixel is at or above its own mean, so it takes the plain
-# modal branch exactly as before, never reaches the surround test, publishes no
-# `surround` block, and clears the new `max_ink_bp` bound by a wide margin
-# (`test_structure.py::test_an_ordinary_page_still_reports_the_modal_source_and_no_surround`,
-# and the ink-bound tests beside it). The resolved policy is still not a field of
-# `GroupingThresholds`, so `resolved_thresholds` is byte-identical
-# (`test_grouping_config.py::
-# test_background_is_not_a_field_of_the_published_resolved_thresholds`).
-#
-# Proved the same way and attributed leaf by leaf, baseline built from a
-# worktree pinned at the preceding commit under its own name with its own venv:
-# happy 75 changed files / 391 changed leaves, review 87 / 452. Every one of
-# those leaves is accounted for -- 373 and 432 are bare 64-hex digests, 18 and
-# 20 are `relative_path` values naming a content-addressed blob
-# (`blobs/sha256/<digest>`), and **zero are anything else**. Two blobs per
-# scenario are renamed in `4_perlector` and `7_armarium`, each one's name being
-# its own content digest. Snapshot counts and exit codes unmoved: happy 96 files
-# at exit 0, review 107 at exit 3.
-#
-# And a fifth time, 2026-09-06, for the Designator's ink margin. Two things move
-# this one and they are different in kind, so they are attributed separately.
-#
-# 1. `config/designator_grouping.toml` gains `[grouping.background] ink_margin_bp
-#    = 3333` with a rewritten provenance and header, and its bytes are sealed at
-#    run creation like every other config's
-#    (c5c009796e0a... -> the file's own digest in the run's
-#    `sealed_config_digests`), which moves `config_digest`, `self_hash` and every
-#    digest computed over them.
-# 2. `structure-status` publishes two new fields, `ink_margin` and
-#    `ink_threshold`. **This is the first move on this branch that changes a
-#    leaf which is not a digest**, and the leaf comparison names them rather
-#    than tolerating them: 4 newly-present leaves per scenario, all four carrying
-#    `ink_margin = 46` and `ink_threshold = 184` — the margin every page in these
-#    two scenarios derives and the threshold it implies. Not every
-#    walking-skeleton page: the ink-free third page's two modes coincide, so it
-#    derives the floor of 20, and it appears in neither scenario.
-#
-# **No fixture page's cut moves for any of it.** The primary scan now runs at the
-# margin each page derives from the distance between its own two grey-level
-# population modes rather than at `structure.PRIMARY_MARGIN`. On a synthetic page
-# that is the same pixel set: paper is 230, ink is 40 and 90, the derived margin
-# is 46 and the floor is 20, and every ink value is far below both thresholds
-# (`test_structure.py::test_an_ordinary_page_still_reports_the_modal_source_and_no_surround`
-# asserts the two scans return the identical set). Components, groups, crops and
-# every act identity are therefore unmoved, and what is left is the digest
-# cascade plus the two recorded integers.
-#
-# Proved the same way, baseline built from a worktree pinned at the preceding
-# commit `60de02fca7` under its own name with its own venv, and that baseline
-# reproduced both previous pins exactly before anything was compared: happy 75
-# changed files / 382 changed leaves, review 87 / 468. Every one is accounted for
-# — 366 and 438 are bare 64-hex digests, 12 and 26 are `relative_path` values
-# naming a content-addressed blob, 4 and 4 are the two new fields above, and
-# **zero are anything else** (`scripts/leafdiff_values.py`, which prints any leaf
-# it cannot attribute and printed none). Two blobs per scenario are renamed in
-# `4_perlector` and `7_armarium`, each one's name being its own content digest.
-# Snapshot counts and exit codes unmoved: happy 96 files at exit 0, review 107 at
-# exit 3.
-#
-# And a sixth time, 2026-09-06, applying a second reader's findings against the
-# unit above. Two things move it, both of the kinds already described.
-#
-# 1. `config/designator_grouping.toml`'s `[grouping.background]` caveat is
-#    corrected -- `band_bp = 500`'s stated reason was refuted by the table three
-#    lines below it (1000 bp has the widest valley of the three, not 500; the
-#    real reason is that at 1000 the band is 36% of the page and stops being a
-#    frame), the scale-invariance figure now names the 67 pairs that infer both
-#    ways rather than all 72, the limit found on the `da9e07ec...` review proxy
-#    is added to what the sample does not establish, and a missing sentence break
-#    is repaired. Sealed bytes, so the same digest cascade follows.
-# 2. `structure-status` publishes a third field, `dark_mode`. The record already
-#    carried `ink_margin`, and `structure.BackgroundEvidence`'s docstring
-#    promises a reader can recompute that margin from `background`, `dark_mode`
-#    and the sealed `ink_margin_bp` -- but `dark_mode` reached the tree only
-#    inside the `surround` block, which the 49 modal-branch pages of the
-#    127-page calibration do not publish, and which no walking-skeleton page
-#    publishes at all. On those pages the margin was a number with its
-#    derivation dropped. It is 2 newly-present leaves per scenario, both
-#    `dark_mode = 90`: the ink tone of both pages of both scenarios, and the
-#    other end of the 140-level distance whose sealed third is the margin 46
-#    already on the record.
-#
-# **No fixture page's cut moves**, for the same reason as the fifth move: the
-# scan runs at the same derived margin it already ran at and nothing about the
-# inference changed. The only new leaf is a recording.
-#
-# Measured the same way and to the same standard: both scenarios built twice in
-# two independent temporary roots, which agreed exactly on both digests, and
-# compared leaf by leaf against the trees the fifth move left behind -- trees
-# that reproduce the two pins above exactly, which is what makes them a
-# baseline. Happy 75 changed files / 380 changed leaves, review 87 / 447. Every
-# one is accounted for: 366 and 428 are bare 64-hex digests, 12 and 17 are
-# `relative_path` values naming a content-addressed blob, 2 and 2 are the new
-# field, and **zero are anything else** (`scripts/leafdiff_values.py`, which
-# prints any leaf it cannot attribute and printed none). Two blobs per scenario
-# are renamed in `4_perlector` and `7_armarium`, each one's name being its own
-# content digest. Snapshot counts and exit codes unmoved: happy 96 files at exit
-# 0, review 107 at exit 3.
-# **Shared background inference (`work/shared-background-inference`).** Both
-# digests move again, for the sealed config's bytes and for two record shapes.
-# The Ink Map and the Recensor's residual-ink audit now infer a page's paper
-# value through `common/background.py` under the same sealed
-# `[grouping.background]` block the Designator runs under, instead of taking the
-# page's raw histogram mode; `config/designator_grouping.toml`'s header gained a
-# paragraph saying three stages read it, and that file's bytes are sealed into
-# every run by SHA-256, so a comment moves every downstream digest.
-#
-# **No fixture page's measurement moves.** A walking-skeleton page is
-# majority-paper, so its raw mode and the shared inference's paper value are the
-# same 230, it takes the same `inferred-modal` branch, and every count is
-# identical: page 1 `total_ink_pixels` 11,520 and `outside_ink_pixels` 8,328 at
-# the edge, page 2 3,840 and 3,384, 2,880 and 960 retained runs. Checked against
-# the baseline trees leaf by leaf rather than asserted.
-#
-# What actually changes in a record is shape, in three places. Each `ink-map`
-# payload gains `ink_measurable: true` and one `background` block
-# (`background_level` 230, `background_source` "inferred-modal", `dark_mode` 90,
-# `ink_margin` 46, `contrast_below_background` 40, `ink_threshold` 190, and the
-# sealed policy's `config_sha256`) -- GOVERNANCE 6: the record names what it ran
-# under. `background_level` leaves the `ink` and `edge` findings for that one
-# block, so a page states its paper value once. And every Recensor review
-# record's `page_coverage` gains `unmeasurable_pages`, empty on every fixture
-# page because no fixture page's background is refused.
-#
-# Attributed leaf by leaf against baseline trees built from a worktree pinned at
-# the preceding commit with its own venv, which reproduced the retired digests
-# `9100c2c2...` and `d71e9463...` exactly before anything was compared. Happy:
-# 75 changed files, 418 changed leaves -- 377 bare 64-hex digests, 21
-# `relative_path` values naming a content-addressed blob, 16 the new fields
-# above, 4 the moved `background_level`, and **zero anything else**. Review: 87
-# files, 491 leaves -- 442, 29, 16, 4, and **zero**. Two blobs per scenario are
-# renamed in `4_perlector` and `7_armarium`, each one's name being its own
-# content digest. `unmeasurable_pages` is an empty list on every fixture page, so
-# it adds a key and no leaf: it moves the bytes of the records that carry it
-# without appearing in that leaf census, and it is named here rather than left
-# to look like an unattributed digest. Snapshot counts and exit codes unmoved:
-# happy 96 files at exit 0, review 107 at exit 3. Both digests measured twice in
-# independent temporary roots at canonical run id "r" through this module's own
-# `orchestrate` and `semantic_snapshot_digest`, and the two trees compared file
-# by file.
-# **Grouping without the bezel (`work/grouping-without-the-bezel`).** Both
-# digests move again, and this is the smallest move in this list: one sealed
-# config's bytes and one new field on a record that already existed.
-#
-# The Designator's grouping pass gains a bound. A connected component whose
-# bounding box covers `[grouping.page_area_bp] page_spanning_area_bp` of the
-# page -- 5000 basis points, half a leaf -- is withheld from column assignment
-# and body chaining, because on a photographed register opening the bezel is
-# counted as ink by decision, labels as ONE component whose bounding box is the
-# whole leaf, and welds every other component on the page to it. Measured on 14
-# real pages: `group_page` returned one group with the page's own bounds on every
-# one of them, holding up to 440 body components, and `conservation.reconcile`
-# then minted zero residual because the declared coverage was the leaf.
-#
-# **No fixture page is touched by the bound, and that is measured rather than
-# argued.** The largest component on any walking-skeleton page covers 2996 basis
-# points of a 200x260 page, well under the 5000 bound, so nothing is withheld,
-# no page publishes the new `page_spanning_components` block at all, and every
-# conservation number is identical on both pages of both scenarios: page 1
-# `total_ink_pixel_count` 11,520 / claimed 11,520 / residual 0, page 2 3,840 /
-# 3,840 / 0, both `inferred-modal` at paper 230. Every declared act rectangle is
-# unmoved. That was checked field by field against the baseline trees, not
-# inferred from the leaf census -- an act identity is a 64-hex string too, so a
-# moved crop would have been counted as a digest.
-#
-# What moves is therefore two things and no more. `config/designator_grouping.
-# toml` gains the `[grouping.page_area_bp]` table, its provenance block and a
-# header paragraph, and that file's bytes are sealed into every run by SHA-256,
-# so a comment moves every downstream digest. And `structure-status`'s
-# `resolved_thresholds` gains `page_spanning_area_bp`, because that record
-# publishes `GroupingThresholds` whole and the bound is now on it -- one newly
-# present leaf per page, value 5000, two per scenario.
-#
-# Attributed leaf by leaf (`scripts/leafdiff.py`, which prints any leaf it
-# cannot attribute) against baseline trees built from a worktree pinned at the
-# preceding commit `96ff55722e` under its own name with its own venv, which
-# reproduced the retired digests `81c789e6...` and `5b4a8b93...` exactly before
-# anything was compared. Happy: 75 changed files, 402 changed leaves -- 379 bare
-# 64-hex digests, 21 `relative_path` values naming a content-addressed blob, 2
-# the new field, and **zero anything else**. Review: 87 files, 449 leaves -- 430,
-# 17, 2, and **zero**. Two blobs per scenario are renamed in `4_perlector` and
-# `7_armarium`, each one's name being its own content digest. Snapshot counts and
-# exit codes unmoved: happy 96 files at exit 0, review 107 at exit 3. Both
-# digests measured twice in independent temporary roots at canonical run id "r"
-# through this module's own `orchestrate` and `semantic_snapshot_digest`, and the
-# two trees per scenario compared file for file identical.
-# Shared Background integration, measured on source 45c7a91a127e6fa778ca05b4c5010b3e45327f33.
+# Grouping integration, measured on source 7ce178e0d3e45761a2d5a7e854e97dd7120969a8.
 # Two fresh canonical-run-id "r" roots per scenario agree on raw bytes and typed
-# JSON/ZIP leaves. Happy remains 100 files/exit 0; review 111 files/exit 3.
-# Against main 54fe0c63, Ink Map publishes one shared background block per page:
-# paper 230, dark_mode 90, primary margin 46, audit contrast 40/threshold 190,
-# ink_measurable=true, sealed grouping SHA; duplicate ink/edge paper leaves move.
-# Recensor adds an empty unmeasurable_pages census to each fixture review.
-# Armarium manifest v7 adds verified claims.ink_map.unmeasurable_pages=[]; the
-# separate Designator conservation availability disclosure remains unchanged.
-# Grouping configuration text names all three shared readers. Exact Git config
-# bytes explain sealed digests; fixture pixel counts, geometry, text and terminal
-# outcomes are unchanged. Main native preparation/continuation/Honesty disclosure
-# remain present relative to original Shared 96ff5572 (96/107 -> 100/111 files).
-# Every logical JSON/JSONL/SQLite leaf, raw artifact and ZIP member was compared
-# against original and main controls; stable producer slots pair content-addressed
-# blobs. No unexplained leaves, ambiguous pairings or raw/reference mismatches.
-# The v7/v8-aware acceptance reducer retains SQLite row portability and persisted
-# integrity guards. Earlier 1d442507 raw-ZIP fallback pins were rejected, not reused.
-# Evidence: workbench/raw/codex-queue-2026-09-08/shared-background/
-# acceptance-causal-attribution-45c7a91a.json and independent direct-semantics report.
-# The separate frozen 17-page survey repeats 14 measured/3 refused with deterministic
-# fields unchanged. Grouping rectangles are a coverage surrogate, not served or
-# capture-padded proposals or a complete Armarium trial. Generated-image tests
-# separately cover refusals and measurable conservation with an unavailable audit.
-# Provisional merge values only. These retain the fresh Shared/main parent's
-# counts and pins so this module remains importable while the integrated tree is
-# inspected. They are not evidence for the merged Grouping behavior and must be
-# replaced only by fresh, repeatable measurements of the committed integration.
+# JSON/ZIP leaves: happy 100 files/exit 0; review 111 files/exit 3.
+# Against Shared/main 766d0965 (tree-identical to measured Shared 5352bbe6), the
+# only ordinary value additions are two structure-status leaves per scenario:
+# resolved_thresholds.page_spanning_area_bp=5000. Fixture components remain below
+# that bound; text, declared geometry, pixel counts and terminal outcomes do not
+# change. The new policy/provenance and corrected fallback-accounting prose change
+# exact sealed grouping-config bytes; alignment bytes remain identical to main.
+# Every resulting artifact/input/inventory digest and stable producer blob pair
+# was checked against retained raw JSON/JSONL/SQLite and ZIP members. Independent
+# output review rehashed the content-addressed files and bound both configurations
+# to their run seals; a hash-shaped leaf alone is not a causality waiver.
+# Against original Grouping 7dd35b30, main's native witness preparation, continuation
+# and Honesty/Shared disclosure contracts account for 96/107 becoming 100/111 files.
+# All three control comparisons have zero unexplained leaves or reference failures.
+# The v7/v8-aware reducer and its persisted-integrity checks remain intact.
+# Evidence: workbench/raw/codex-queue-2026-09-08/grouping/acceptance-integrated-7ce178e0,
+# acceptance-causal-attribution-7ce178e0-bound.json and acceptance-output-review-7ce178e0.md.
+# Earlier attribution text is preserved beside them and in Git history.
+# Three fixed 17-page surveys reproduce 14 measured/3 refused and every deterministic
+# field. Their grouping rectangles are a coverage surrogate, not served final crops,
+# pairwise continuation proof or a full real-material pipeline trial. A separate
+# generated all-withheld stage regression proves readable fallback and exact
+# 10464 total = 10464 claimed + 0 residual; the mixed case retains residual holds.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "ebc7484efd767bbdeaf995cd4c14636e5802cad8953cd41cc465817394e5ed1a"
-REVIEW_RUN_TREE_DIGEST = "1cb2d609a13e1b16a04f5095ca9e63167ea766586ce07bd9dd25a5526df838a4"
+HAPPY_RUN_TREE_DIGEST = "385ed21b3a94a917d03be660a3b5afabaacc776254b48812ee1ecafdf8c990ab"
+REVIEW_RUN_TREE_DIGEST = "351ff8a78add433ea015db68d8b27a9fc360ae5de56c4e3a67d07faf3a357ed6"
 
 
 def orchestrate(
