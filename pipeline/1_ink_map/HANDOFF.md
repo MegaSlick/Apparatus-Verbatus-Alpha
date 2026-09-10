@@ -93,10 +93,12 @@ counts it decided.
 
 **The counts on this record are the page's AUDITED ink.** `total_ink_pixels` and
 `outside_ink_pixels` are this page's ink with its page-spanning component taken
-out of both -- the component the Designator withholds from grouping and mints as
-a held act. `page_ink_pixels` is every pixel the audit calls ink and
-`page_spanning_ink_pixels` is the part of it that component holds, so the
-whole-page figure is on the record and nothing has gone quiet. The retained
+out of both -- the component the Designator withholds from detected grouping
+while retaining all its pixels in conservation. Declared or fallback coverage
+may claim those pixels, and conservation holds any unclaimed remainder.
+`page_ink_pixels` is every pixel the audit calls ink and
+`page_spanning_ink_pixels` is that separately accounted part, so the whole-page
+figure is on the record and nothing has gone quiet. The retained
 `edge_findings` runs are the same audited set, which is why their schema id is
 `ink-runs.v2` and an old reader is refused rather than quietly measuring new
 content under the old contract.

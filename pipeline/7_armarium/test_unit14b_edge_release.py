@@ -12,9 +12,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.background import load_background_config, resolve_background_policy
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import DESIGNATOR, INK_MAP
+from common.residual_ink import (
+    edge_ink,
+    edge_ink_from_runs,
+    ink_runs_from_rows,
+    load_coverage_audit_config,
+    resolve_coverage_audit_policy,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 GROUPING_CONFIG = ROOT / "config/designator_grouping.toml"
@@ -24,6 +32,16 @@ GROUPING_CONFIG_DIGEST = digest_bytes(GROUPING_CONFIG.read_bytes())
 def _armarium():
     spec = importlib.util.spec_from_file_location(
         "armarium_u14b_edge_release", ROOT / "pipeline/7_armarium/run.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _ink_map():
+    spec = importlib.util.spec_from_file_location(
+        "ink_map_for_edge_reconciliation", ROOT / "pipeline/1_ink_map/run.py"
     )
     module = importlib.util.module_from_spec(spec)
     assert spec is not None and spec.loader is not None
@@ -52,7 +70,33 @@ _BACKGROUND = {
 }
 
 
-def _ink_record(artifact_id: str, ordinal, outcome="mapped", evidence=None) -> dict:
+def _edge_for_runs(evidence: dict) -> dict:
+    config = load_coverage_audit_config(GROUPING_CONFIG)
+    policy = resolve_coverage_audit_policy(config, evidence["width"], evidence["height"])
+    measured = edge_ink_from_runs(evidence, [], coverage_policy=policy)
+    return {
+        "page_ink_pixels": measured["total_ink_pixels"],
+        "page_spanning_ink_pixels": 0,
+        "page_spanning_components": [],
+        "total_ink_pixels": measured["total_ink_pixels"],
+        "outside_ink_pixels": measured["outside_ink_pixels"],
+        "fraction_outside_per_million": int(round(measured["fraction_outside"] * 1_000_000)),
+        "flagged": measured["flagged"],
+        "substantial_ink_pixels": measured["substantial_ink_pixels"],
+        "edge_band_pixels": measured["edge_band_pixels"],
+        "named_finding": measured["named_finding"],
+    }
+
+
+def _ink_record(artifact_id: str, ordinal, outcome="mapped", evidence=None, edge=None) -> dict:
+    retained = _RUNS if evidence is None else evidence
+    if edge is None:
+        try:
+            edge = _edge_for_runs(retained)
+        except (ContractError, KeyError, TypeError, ValueError):
+            # Malformed-run tests need an independently valid summary so the
+            # production boundary, rather than this fixture builder, refuses.
+            edge = _edge_for_runs(_RUNS)
     return {
         "artifact_id": artifact_id,
         "outcome": outcome,
@@ -61,8 +105,8 @@ def _ink_record(artifact_id: str, ordinal, outcome="mapped", evidence=None) -> d
             "ink_measurable": True,
             "background": dict(_BACKGROUND),
             "ink": {},
-            "edge": {},
-            "edge_findings": _RUNS if evidence is None else evidence,
+            "edge": edge,
+            "edge_findings": retained,
         },
     }
 
@@ -161,6 +205,124 @@ def test_a_partial_claim_releases_nothing_it_did_not_actually_cover():
     assert armarium.edge_hold_pages_from_rows(list(rows)) == (1,)
 
 
+def test_same_outcome_run_loss_is_refused_before_a_crop_can_release_it():
+    """A shorter retained run cannot silently replace the producer's count."""
+    armarium = _armarium()
+    ink_map = _ink_map()
+    width = height = 100
+    rows = [bytearray([230] * width) for _ in range(height)]
+    rows[0][:80] = bytearray([0] * 80)
+    background_config = load_background_config(GROUPING_CONFIG)
+    coverage_config = load_coverage_audit_config(GROUPING_CONFIG)
+    background_policy = resolve_background_policy(background_config, width, height)
+    coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
+    producer_finding = ink_map.artifact_finding(
+        edge_ink(
+            width,
+            height,
+            rows,
+            background_policy=background_policy,
+            coverage_policy=coverage_policy,
+        )
+    )
+    producer_runs = ink_runs_from_rows(
+        width,
+        height,
+        rows,
+        background_policy=background_policy,
+        coverage_policy=coverage_policy,
+    )
+    assert producer_runs["rows"][0] == [[0, 80]]
+    record = _ink_record(
+        "producer",
+        1,
+        "unclaimed-edge-ink",
+        producer_runs,
+        edge=producer_finding,
+    )
+    unmodified = armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
+    assert unmodified[0]["remeasured"]["outside_ink_pixels"] == 80
+
+    truncated = {**producer_runs, "rows": [[[0, 40]], *producer_runs["rows"][1:]]}
+    assert edge_ink_from_runs(truncated, [], coverage_policy=coverage_policy)["flagged"] is True
+    damaged = _ink_record(
+        "damaged",
+        1,
+        "unclaimed-edge-ink",
+        truncated,
+        edge=producer_finding,
+    )
+    with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
+        armarium.ink_map_page_rows(
+            _context({INK_MAP: [damaged]}),
+            SEALED_ONE,
+            {1: [{"x": 0, "y": 0, "w": 40, "h": 1}]},
+        )
+
+
+@pytest.mark.parametrize(
+    ("defect", "value"),
+    [
+        ("missing-field", None),
+        ("extra-field", None),
+        ("boolean-count", True),
+        ("negative-count", -1),
+        ("broken-partition", 1),
+        ("outside-over-total", 1),
+        ("bad-component", [{"x": 0, "y": 0, "w": 41, "h": 2}]),
+        ("wrong-derived-count", 1),
+        ("wrong-band", 2),
+        ("wrong-substantial", 25),
+        ("wrong-flag", True),
+        ("wrong-name", "a-different-finding"),
+        ("wrong-ratio", 1),
+        ("ratio-over-million", 1_000_001),
+    ],
+)
+def test_the_published_edge_summary_is_closed_typed_and_run_bound(defect, value):
+    armarium = _armarium()
+    edge = _edge_for_runs(_RUNS)
+    if defect == "missing-field":
+        del edge["named_finding"]
+    elif defect == "extra-field":
+        edge["later_field"] = 0
+    elif defect == "boolean-count":
+        edge["total_ink_pixels"] = value
+    elif defect == "negative-count":
+        edge["page_ink_pixels"] = value
+    elif defect == "broken-partition":
+        edge["page_ink_pixels"] = value
+    elif defect == "outside-over-total":
+        edge["outside_ink_pixels"] = value
+    elif defect == "bad-component":
+        edge["page_spanning_components"] = value
+    elif defect == "wrong-derived-count":
+        edge["outside_ink_pixels"] = value
+        edge["total_ink_pixels"] = value
+        edge["page_ink_pixels"] = value
+    elif defect == "wrong-band":
+        edge["edge_band_pixels"] = value
+    elif defect == "wrong-substantial":
+        edge["substantial_ink_pixels"] = value
+    elif defect == "wrong-flag":
+        edge["flagged"] = value
+    elif defect == "wrong-name":
+        edge["named_finding"] = value
+    else:
+        edge["fraction_outside_per_million"] = value
+    record = _ink_record("damaged", 1, edge=edge)
+    with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
+        armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
+
+
+def test_retained_ink_runs_are_a_closed_record():
+    armarium = _armarium()
+    evidence = {**_RUNS, "unreviewed": 0}
+    record = _ink_record("damaged", 1, evidence=evidence, edge=_edge_for_runs(_RUNS))
+    with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
+        armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
+
+
 def test_two_ink_map_records_for_one_page_are_refused_rather_than_resolved():
     """A duplicate in the settled inventory cannot make walk order decide the hold."""
     armarium = _armarium()
@@ -215,7 +377,7 @@ def test_a_mapped_page_with_unreadable_retained_runs_is_refused_by_name():
     with pytest.raises(
         FatalAccounting,
         match=(
-            "unreadable retained page-space edge evidence.*"
+            "does not reconcile with its retained page-space evidence.*"
             "cannot verify the page finding.*"
             "Restore the sealed Ink Map artifact"
         ),
@@ -430,5 +592,5 @@ def test_evidence_with_impossible_dimensions_is_refused_by_the_named_refusal(dim
     armarium = _armarium()
     evidence = {"schema": "ink-runs.v2", "rows": [[], []], **dimensions}
     context = _context({INK_MAP: [_ink_record("a", 1, "unclaimed-edge-ink", evidence)]})
-    with pytest.raises(FatalAccounting, match="unreadable retained page-space edge evidence"):
+    with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
         armarium.ink_map_page_rows(context, SEALED_ONE, {})

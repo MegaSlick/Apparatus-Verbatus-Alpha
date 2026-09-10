@@ -7,8 +7,10 @@ been. It moved for the reason `common/background.py` moved the day before and by
 the same rule: a second stage needs it, and `common/` may not import a stage.
 The second reader is `common/residual_ink.py`, whose outside-coverage audit has
 to be able to name this page's page-spanning component -- the one the
-Designator withholds from grouping and mints as a held act -- so that it does
-not report a component already accounted for as ink nobody is looking at.
+Designator withholds from detected grouping while keeping its pixels in
+conservation -- so that it does not report that separately accounted pixel
+population as ordinary outside-coverage ink. Declared or fallback coverage may
+claim those pixels; conservation holds any unclaimed remainder.
 
 **The audit re-derives that component; it does not read the Designator's
 record.** It labels the same page at the same derived margin under the same

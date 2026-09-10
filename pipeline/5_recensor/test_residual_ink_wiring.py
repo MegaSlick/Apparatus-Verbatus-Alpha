@@ -24,6 +24,7 @@ supply (a genuinely short covered set) provided directly -- exactly the
 boundary named in HANDOFF.md.
 """
 
+import copy
 import importlib.util
 import subprocess
 import sys
@@ -586,6 +587,7 @@ def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monk
     context = _FakeContext.__new__(_FakeContext)
     context.tree = ConsumerTree()
     context.run = {"sealed_config_digests": {"designator-grouping": expected_digest}}
+    context.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
     context.required_configs = []
     assert RUN.ink_map_by_page(context) == {1: None}
     assert context.required_configs == [("designator-grouping", expected_digest)]
@@ -660,9 +662,19 @@ def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(mon
     context = _FakeContext.__new__(_FakeContext)
     context.tree = ConsumerTree()
     context.run = {"sealed_config_digests": {"designator-grouping": expected_digest}}
+    context.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
     context.required_configs = []
     assert RUN.ink_map_by_page(context) == {1: record["payload"]["edge_findings"]}
     assert context.required_configs == [("designator-grouping", expected_digest)]
+
+    # The same outcome is not enough: shorten one retained edge run while the
+    # producer's published count remains intact. Both versions still flag, but
+    # only the original is the measurement the producer made.
+    assert record["outcome"] == "unclaimed-edge-ink"
+    record = copy.deepcopy(record)
+    record["payload"]["edge_findings"]["rows"][-1][0][1] = 40
+    with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
+        RUN.ink_map_by_page(context)
 
 
 def test_ink_map_by_page_refuses_an_unmeasurable_payload_with_a_wrong_seal():
@@ -707,7 +719,7 @@ def test_ink_map_by_page_refuses_a_measured_payload_without_current_background_p
         },
         "ink": {},
         "edge": {},
-        "edge_findings": {"schema": "ink-runs.v1", "width": 1, "height": 1, "rows": [[]]},
+        "edge_findings": {"schema": "ink-runs.v2", "width": 1, "height": 1, "rows": [[]]},
     }
     if defect == "base-era":
         del payload["ink_measurable"]

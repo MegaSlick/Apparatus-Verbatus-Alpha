@@ -770,10 +770,11 @@ def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
 def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> dict[str, Any]:
     """Validate the closed current Ink Map measurement before consuming its runs.
 
-    The retained ``ink-runs.v1`` codec predates shared background inference.
-    Its schema therefore cannot establish the predicate that made the runs.
-    This envelope does: it names the page's complete audit background and the
-    sealed grouping bytes that selected it.
+    The retained ``ink-runs.v2`` codec records audited ink after the named
+    page-spanning component is removed, but its run geometry alone cannot
+    establish the background predicate that selected those pixels. This
+    envelope does: it names the page's complete audit background and the sealed
+    grouping bytes that selected it.
     """
     if not isinstance(payload, dict):
         raise ContractError("the measured ink-map record has no object payload")

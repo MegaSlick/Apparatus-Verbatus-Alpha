@@ -33,7 +33,8 @@ true rather than vacuous.
 **The page-spanning component is named and taken out of both counts.** Until
 2026-09-06 this audit measured every ink pixel on the page against every region
 cut for it. On a real page the Designator withholds one connected component
-whose bounding box is the whole leaf from grouping and mints it as a held act
+whose bounding box is the whole leaf from detected grouping while preserving
+all of its pixels in conservation
 (`pipeline/2_designator/grouping.partition_page_spanning`), and that component
 holds 35 to 87 per cent of every pixel this audit calls ink, measured on 44 real
 pages. Counting it as "ink outside coverage" reported 29 to 87 per cent of every
@@ -41,11 +42,12 @@ page as unclaimed and flagged all 44 -- a gate firing on a whole corpus, which
 says no more than one firing on none of it. So this module finds the same
 component itself, from the same bytes at the same derived margin under the same
 sealed bound, and publishes it by name: `page_ink_pixels` is every pixel this
-audit calls ink, `page_spanning_ink_pixels` is the part of it the Designator is
-already holding, and `total_ink_pixels` / `outside_ink_pixels` -- the pair both
-gates read -- are what is left. Nothing is dropped in silence: the component's
-own bounds and pixel count are on the record beside the counts they were taken
-out of.
+audit calls ink, `page_spanning_ink_pixels` is the part the Designator accounts
+for separately, and `total_ink_pixels` / `outside_ink_pixels` -- the pair both
+gates read -- are what is left. Declared or fallback coverage may claim the
+page-spanning pixels; conservation holds any unclaimed remainder. Nothing is
+dropped in silence: the component's own bounds and pixel count are on the
+record beside the counts they were taken out of.
 
 **It re-derives that component rather than reading the Designator's record**,
 for the reason the record cannot serve: `page_spanning_components` carries
@@ -523,8 +525,10 @@ def page_spanning_components(
     bounding box covering at least `page_spanning_area_bp` of the page's own
     area. Same margin (the one this page derived for itself), same
     `gap_tolerance_px`, same bound, same labeller -- so the component this audit
-    takes out of its counts is the component that stage withheld from grouping
-    and minted as a held act, without this module reading that stage's record.
+    takes out of its counts is the component that stage withheld from detected
+    grouping and retained in conservation, without this module reading that
+    stage's record. Declared or fallback coverage may claim it; only an
+    unclaimed remainder is held.
 
     Returns the components (bounds and pixel count, in the labeller's own total
     order) and a page-sized 0/1 mask of their pixels. The mask is what the
@@ -776,6 +780,8 @@ def edge_ink_from_runs(
     """
     if not isinstance(evidence, dict) or evidence.get("schema") != INK_RUNS_SCHEMA:
         raise ValueError("ink-run evidence has the wrong schema")
+    if set(evidence) != {"schema", "width", "height", "rows"}:
+        raise ValueError("ink-run evidence is not a closed record")
     width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
     if (
         not isinstance(width, int)
@@ -878,6 +884,122 @@ def edge_ink_from_runs(
         "substantial_ink_pixels": coverage_policy["substantial_ink_pixels"],
         "named_finding": "unclaimed-edge-ink",
     }
+
+
+_EDGE_FINDING_FIELDS: Final = frozenset(
+    {
+        "page_ink_pixels",
+        "page_spanning_ink_pixels",
+        "page_spanning_components",
+        "total_ink_pixels",
+        "outside_ink_pixels",
+        "fraction_outside_per_million",
+        "flagged",
+        "substantial_ink_pixels",
+        "edge_band_pixels",
+        "named_finding",
+    }
+)
+_EDGE_COUNT_FIELDS: Final = (
+    "page_ink_pixels",
+    "page_spanning_ink_pixels",
+    "total_ink_pixels",
+    "outside_ink_pixels",
+    "fraction_outside_per_million",
+    "substantial_ink_pixels",
+    "edge_band_pixels",
+)
+_RUN_DERIVED_EDGE_FIELDS: Final = (
+    "total_ink_pixels",
+    "outside_ink_pixels",
+    "flagged",
+    "substantial_ink_pixels",
+    "edge_band_pixels",
+    "named_finding",
+)
+
+
+def reconcile_edge_finding_with_runs(
+    finding: Any,
+    evidence: Any,
+    *,
+    coverage_policy: CoverageAuditPolicy,
+) -> dict[str, Any]:
+    """Validate and reconcile the Ink Map's two initial edge measurements.
+
+    ``finding`` is the producer's closed summary and ``evidence`` is its retained
+    audited-pixel run set.  The runs cannot reconstruct page-spanning pixels or
+    component masks, so those fields receive closed type, range, and partition
+    checks here; every value the retained runs can prove must agree exactly.
+    """
+    if not isinstance(finding, dict) or set(finding) != _EDGE_FINDING_FIELDS:
+        raise ContractError("the ink-map edge finding is not a closed current record")
+    try:
+        measured = edge_ink_from_runs(evidence, [], coverage_policy=coverage_policy)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ContractError(f"the retained ink-run evidence is invalid: {error}") from error
+
+    for field in _EDGE_COUNT_FIELDS:
+        value = finding[field]
+        if not _plain_int(value):
+            raise ContractError(f"the ink-map edge finding {field} is not a plain integer")
+        floor = 1 if field in {"substantial_ink_pixels", "edge_band_pixels"} else 0
+        if value < floor:
+            qualifier = "positive" if floor else "non-negative"
+            raise ContractError(f"the ink-map edge finding {field} is not a {qualifier} integer")
+    if finding["fraction_outside_per_million"] > 1_000_000:
+        raise ContractError("the ink-map edge finding fraction exceeds one million")
+    if finding["outside_ink_pixels"] > finding["total_ink_pixels"]:
+        raise ContractError("the ink-map edge finding has more outside than total ink")
+    if finding["page_spanning_ink_pixels"] > finding["page_ink_pixels"]:
+        raise ContractError("the ink-map edge finding has more spanning than page ink")
+    if finding["page_ink_pixels"] != (
+        finding["page_spanning_ink_pixels"] + finding["total_ink_pixels"]
+    ):
+        raise ContractError("the ink-map edge finding does not partition page ink")
+    width, height = evidence["width"], evidence["height"]
+    if finding["page_ink_pixels"] > width * height or finding["total_ink_pixels"] > width * height:
+        raise ContractError("the ink-map edge finding exceeds the retained page area")
+    if not isinstance(finding["flagged"], bool):
+        raise ContractError("the ink-map edge finding flagged value is not a boolean")
+    if finding["named_finding"] != "unclaimed-edge-ink":
+        raise ContractError("the ink-map edge finding has the wrong named finding")
+
+    components = finding["page_spanning_components"]
+    if not isinstance(components, list):
+        raise ContractError("the ink-map edge finding page-spanning components are not a list")
+    for component in components:
+        if not isinstance(component, dict) or set(component) != {"x", "y", "w", "h"}:
+            raise ContractError("the ink-map edge finding has malformed component bounds")
+        x, y, component_width, component_height = (
+            component["x"],
+            component["y"],
+            component["w"],
+            component["h"],
+        )
+        if not all(_plain_int(value) for value in (x, y, component_width, component_height)):
+            raise ContractError("the ink-map edge finding has non-integer component bounds")
+        if (
+            x < 0
+            or y < 0
+            or component_width <= 0
+            or component_height <= 0
+            or x + component_width > width
+            or y + component_height > height
+        ):
+            raise ContractError("the ink-map edge finding has out-of-page component bounds")
+
+    for field in _RUN_DERIVED_EDGE_FIELDS:
+        if finding[field] != measured[field] or type(finding[field]) is not type(measured[field]):
+            raise ContractError(
+                f"the ink-map edge finding {field} disagrees with its retained runs"
+            )
+    measured_ratio = int(round(measured["fraction_outside"] * 1_000_000))
+    if finding["fraction_outside_per_million"] != measured_ratio:
+        raise ContractError(
+            "the ink-map edge finding fraction_outside_per_million disagrees with its retained runs"
+        )
+    return measured
 
 
 def page_edge_ink(

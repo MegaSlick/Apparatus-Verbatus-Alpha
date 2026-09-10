@@ -89,6 +89,7 @@ from common.residual_ink import (  # noqa: E402
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
     MINIMUM_INK_PIXELS,
     load_coverage_audit_config,
+    reconcile_edge_finding_with_runs,
     residual_ink,
     resolve_coverage_audit_policy,
 )
@@ -1704,7 +1705,8 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
     # gates this audit's flag is decided by, and the page-spanning bound it
     # splits its counts on -- the same bound the Designator withheld under, which
     # is what makes the component this audit sets aside the component that stage
-    # is already holding.
+    # accounts for separately. Declared or fallback coverage may claim its
+    # pixels; only an unclaimed remainder is held.
     coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     pages = sealed_page_images(context) if sealed_pages is None else sealed_pages
@@ -1809,6 +1811,7 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
     in the census and it has no retained runs, because the shared background
     inference refused its paper value and no threshold was ever cut.
     """
+    coverage_config = None
     maps: dict[int, dict | None] = {}
     for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
         if entry["kind"] != "ink-map":
@@ -1864,12 +1867,36 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
                 f"ink-map page {ordinal} has an invalid sealed measured payload. Restore the "
                 "sealed Ink Map artifact or restart the run before rerunning the Recensor."
             ) from error
-        if not isinstance(evidence, dict) or evidence.get("schema") != INK_RUNS_SCHEMA:
-            raise FatalAccounting(
-                f"ink-map page {ordinal} has no readable {INK_RUNS_SCHEMA} page-space evidence. The "
-                "Recensor cannot confirm witness pointers from a bare page outcome. Restore the "
-                "sealed Ink Map artifact or restart the run before rerunning the Recensor."
+        try:
+            if not isinstance(evidence, dict):
+                raise ContractError("the measured payload has no ink-run evidence object")
+            if coverage_config is None:
+                coverage_config = load_coverage_audit_config(
+                    context.args.designator_grouping_config
+                )
+            if coverage_config["config_sha256"] != measured["background_config_sha256"]:
+                raise ContractError(
+                    "the background and coverage instruments did not read the same sealed bytes"
+                )
+            initial_measure = reconcile_edge_finding_with_runs(
+                payload.get("edge"),
+                evidence,
+                coverage_policy=resolve_coverage_audit_policy(
+                    coverage_config, evidence.get("width"), evidence.get("height")
+                ),
             )
+            measured_outcome = "unclaimed-edge-ink" if initial_measure["flagged"] else "mapped"
+            if record.get("outcome") != measured_outcome:
+                raise ContractError(
+                    "the measured outcome disagrees with the retained initial edge measurement"
+                )
+        except (ContractError, KeyError, TypeError, ValueError) as error:
+            raise FatalAccounting(
+                f"ink-map page {ordinal} has an edge finding that does not reconcile with its "
+                f"retained {INK_RUNS_SCHEMA} page-space evidence. The Recensor cannot confirm "
+                "witness pointers from damaged evidence. Restore the sealed Ink Map artifact "
+                "or restart the run before rerunning the Recensor."
+            ) from error
         maps[ordinal] = evidence
     return maps
 

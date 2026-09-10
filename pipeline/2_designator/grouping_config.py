@@ -371,15 +371,13 @@ def _load_continuation(table: Any) -> dict[str, Any]:
     `page_fraction_bp` and 44 for this. Two blocks say two true things; folding
     them together would say a false one.
 
-    The field is refused outside 1..`BASIS_POINTS`. Zero is refused because a
-    reach of zero is the continuation test switched off by a value rather than
-    by a decision -- no group's bounds can be at distance zero from an edge and
-    still be a group the pass produced -- and `BASIS_POINTS` because a reach of
-    a whole page height passes for every group on every page, which is the same
-    test switched off from the other end. Both ends were reached in practice,
-    which is why they are bounds and not comments: the retired 154 passed on 0
-    of the 44 pages it was finally measured on, and before the page-spanning
-    bound existed the same test passed on all of them.
+    The field is a positive basis-point value in 1..`BASIS_POINTS`, inclusive.
+    Zero is outside that positive policy range; an observed group can still
+    have zero distance from an edge, so the loader does not claim that geometry
+    is impossible. The inclusive upper endpoint is deliberately permitted by
+    the validated numeric contract, although a whole-page reach is broad and
+    does not discriminate groups by proximity to an edge. The 44-page
+    measurement, rather than this range alone, supports the shipped value.
     """
     if not isinstance(table, dict):
         raise ContractError("the grouping configuration has no [grouping.continuation] table")
@@ -406,9 +404,9 @@ def _load_continuation(table: Any) -> dict[str, Any]:
     if not 0 < reach <= _BASIS_POINTS:
         raise ContractError(
             "the grouping configuration's [grouping.continuation] page_edge_reach_bp is not a "
-            f"basis-point integer in 1..{_BASIS_POINTS}; a reach of zero can be met by no group "
-            "the pass produces and a reach of a whole page height is met by every one of them, "
-            "and either is the continuation test turned off by a value rather than by a decision"
+            f"positive basis-point integer in the supported inclusive range "
+            f"1..{_BASIS_POINTS}; the permitted upper endpoint is a broad whole-page policy "
+            "value"
         )
     values["provenance"] = _load_provenance(
         table.get("provenance"), "[grouping.continuation.provenance]"

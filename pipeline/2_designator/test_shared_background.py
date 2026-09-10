@@ -282,7 +282,8 @@ def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation()
         result["claimed_pixel_count"] + result["residual_pixel_count"]
         == (result["total_ink_pixel_count"])
     )
-    # Every withheld pixel is inside the residual: nothing left the accounting.
+    # On this deliberately under-covered page the withheld frame remains in
+    # residual evidence; other pages may have it claimed by fallback coverage.
     assert result["residual_pixel_count"] >= frame["pixel_count"]
     assert len(result["residual_components"]) == 3
     assert len(result["residual_components"]) <= config["max_residual_components"]
@@ -294,8 +295,9 @@ def test_the_audit_withholds_exactly_the_component_the_grouping_pass_withholds()
     The audit takes this page's page-spanning component out of both its counts,
     and it must be the *same* component `grouping.partition_page_spanning`
     withheld from column assignment and body chaining -- otherwise the audit is
-    setting aside ink nobody is holding, which is a missed act reported as a
-    clean page.
+    setting aside a different pixel population from the one grouping records.
+    The withheld pixels remain in conservation, where declared or fallback
+    coverage may claim them and any unclaimed remainder stays residual evidence.
 
     It is the same by construction rather than by agreement: both sides label the
     same bytes at the margin this page derives for itself, under one sealed
