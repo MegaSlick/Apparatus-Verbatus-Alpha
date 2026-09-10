@@ -686,8 +686,8 @@ def test_a_submitted_name_that_is_not_valid_utf8_is_a_named_refusal(submission):
     folder = submission["approved"] / "odd-encoding"
     folder.mkdir()
     (folder / "page.png").write_bytes(b"\x89PNG\r\n\x1a\nreal")
-    # Not every filesystem will hold this name. Linux and ext4 — where the chambers
-    # run — accept arbitrary bytes; macOS and APFS reject anything that is not valid
+    # Not every filesystem will hold this name. Linux and ext4 — where CI runs —
+    # accept arbitrary bytes; macOS and APFS reject anything that is not valid
     # UTF-8 with `OSError: Illegal byte sequence`, so the test cannot construct its
     # own subject there and dies before reaching the behaviour it is checking.
     #

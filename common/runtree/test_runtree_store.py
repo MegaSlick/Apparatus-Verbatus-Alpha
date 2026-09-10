@@ -2227,8 +2227,9 @@ def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_cras
     have. Both are refusals and neither is a traceback, which is the whole of what
     this test exists to prove. Pinning the message asserted the mechanism instead
     of the guarantee, and the mechanism belongs to CPython. Found by running the
-    gate on a 3.14 host after the rebase; the chambers run 3.13 and CI runs 3.12,
-    so nothing else in the ladder would have shown it."""
+    gate on a 3.14 host after the rebase; the container seats then ran 3.13 and CI only
+    3.12, so nothing in the ladder as it stood would have shown it; CI's matrix carries
+    3.14 today, so it would be caught there now."""
     tree = make_run(tmp_path)
     envelope = make_envelope()
     tree.publish_artifact(envelope)

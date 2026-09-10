@@ -123,13 +123,6 @@ reviews:
         are defects. `assert` on this path is acceptable only where the invariant is
         already enforced by a `raise` that survives `python -O`, and the comment beside it
         must name that `raise`.
-    - path: "operations/autoclave/**"
-      instructions: >-
-        The chamber launcher. Anything writing to `/home/agent/.claude` touches a volume
-        every chamber of that vendor shares, so concurrent-writer and lost-update hazards
-        are real rather than theoretical. Every `sh -c` body must fail loudly: check that
-        it sets `set -eu`, because these bodies end on a copy and a failure that is not
-        fatal is masked by the copy that follows it.
     - path: ".githooks/**"
       instructions: >-
         Local enforcement. CLAUDE.md hard rule 11: every guard must be removable in one

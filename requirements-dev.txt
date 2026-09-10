@@ -4,7 +4,7 @@ ruff==0.15.4
 # The gate's own suite parses .github/workflows/ci.yml with a real YAML
 # parser rather than by searching the file's text, so what it reports is
 # what the workflow executes (.githooks/test_r0_contract_ci_matrix.py).
-# Declared here because the chamber image and everyday gate install this file;
+# Declared here because the everyday gate installs this file;
 # it was otherwise present only as a transitive of huggingface_hub.
 PyYAML==6.0.3
 shellcheck-py==0.11.0.1

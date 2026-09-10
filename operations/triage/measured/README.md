@@ -1,6 +1,7 @@
 # Host-only measured pass
 
-This chamber cannot read the Montebello masters or call vision seats. On the host, the
+This pass runs on the host, not in a seat: a seat cannot dispatch the three vision seats
+it needs, and the master copies are handled by the operator directly. On the host, the
 operator supplies the authority path — the Montebello (Notre-Dame-de-Bonsecours) master
 copies — as `$VERBATUS_MASTER_COPIES`, and these instructions never name a machine
 layout of their own: a tracked file that spells one operator's home directory both

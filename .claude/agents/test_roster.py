@@ -34,27 +34,31 @@ def affirmative_governing_read_directive(text: str) -> str | None:
     """The read directive, and only when nothing in the brief acts before it.
 
     `first` is the word being tested, so position has to be part of the match. Matching
-    any later sentence accepted `Edit /work. Read ... from /work first.` -- a brief that
-    tells the agent to act before it reads the documents that bind the action, with every
-    assertion below still green.
+    any later sentence accepted `Edit the seat's own checkout. Read ... from the seat's
+    own checkout first.` -- a brief that tells the agent to act before it reads the
+    documents that bind the action, with every assertion below still green. The
+    acts-before-reading check is a heuristic over a verb list, not a parser.
     """
 
     introduction = " ".join(text.split("\n-", 1)[0].split())
     match = re.search(
-        r"(?:^|[.!?]\s+)read\s+(.+?)\s+(?:from|in)\s+`?/work`?\s+first\.",
+        r"(?:^|[.!?]\s+)read\s+(.+?)\s+(?:from|in)\s+the seat's own checkout\s+first\.",
         introduction,
         re.I,
     )
     if match is None:
         return None
-    # Nothing may aim an action at the tree before that sentence. Scoped to `/work`
-    # deliberately: a brief may state its purpose ("Build the task from its
+    # Nothing may aim an action at the tree before that sentence. Scoped to the
+    # checkout deliberately: a brief may state its purpose ("Build the task from its
     # specification") before the read without having touched anything.
     preceding = introduction[: match.start()]
-    acts_on_work = re.search(
-        r"\b(edit|write|change|modify|inspect|run|commit)\b[^.!?]*`?/work`?", preceding, re.I
+    acts_before_reading = re.search(
+        r"\b(edit|write|change|modify|inspect|run|commit|refactor|delete|remove|create|add|move|rename)\b"
+        r"[^.!?]*(?:the seat's own checkout|the checkout|the repository|the tree|the worktree|the files)",
+        preceding,
+        re.I,
     )
-    return None if acts_on_work else match.group(0).lstrip(".!? ")
+    return None if acts_before_reading else match.group(0).lstrip(".!? ")
 
 
 def test_the_roster_is_not_empty():
@@ -100,9 +104,10 @@ def test_no_host_role_can_write_or_run_a_shell():
     # `rebuilder` held `Write`, `Edit` and `Bash` on Tyrel's machine — the session's
     # own reach, granted to something running unattended against a prompt nobody
     # reads twice — and each carried its own prohibitions in prose to compensate.
-    # They are briefs now (`operations/autoclave/briefs/`), dispatched into a seat
-    # whose boundary is a mechanism rather than the wording: a chamber's mount, or,
-    # since R4 (2026-09-05), a worktree under the tool-call guard's eight refusals.
+    # They are briefs now (`operations/seats/`), dispatched into a seat whose
+    # boundary is a mechanism rather than the wording: since R4 (2026-09-05) a
+    # worktree under the tool-call guard's eight refusals (a container's mount before
+    # that; the container seat was retired on 2026-09-10).
     #
     # **R4 did not relax this one.** What it moved is where a *writing* seat runs;
     # what this pins is that the three custom roles in this directory stay readers.
@@ -115,7 +120,7 @@ def test_no_host_role_can_write_or_run_a_shell():
     for path in ROLE_FILES:
         assert not writes(path), (
             f"{path.name} holds a write or shell tool. Writing work is dispatched per "
-            "task into a worktree seat or a chamber — see .claude/agents/README.md — "
+            "task into a worktree seat — see .claude/agents/README.md — "
             "never granted standing to a role file here."
         )
 
@@ -147,8 +152,8 @@ def test_no_host_role_can_reach_a_write_through_another_agent():
 def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
     # The prohibition did not disappear with the role files; it moved. A brief is
     # what a dispatched agent is actually given, so it is where the rule has to be —
-    # nothing in the container enforces it, which is exactly why the wording matters.
-    briefs = sorted((ROOT / "operations" / "autoclave" / "briefs").glob("*.md"))
+    # nothing in the seat enforces it, which is exactly why the wording matters.
+    briefs = sorted((ROOT / "operations" / "seats").glob("*.md"))
     roles = [path for path in briefs if path.name != "README.md"]
     assert roles, "no role briefs found; the writing roles have nowhere to be dispatched from"
     for path in roles:
@@ -176,7 +181,7 @@ def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
 def test_negative_wording_is_not_a_governing_read_directive():
     assert (
         affirmative_governing_read_directive(
-            "# Builder\n\nDo not read README.md and the governing documents from /work first."
+            "# Builder\n\nDo not read README.md and the governing documents from the seat's own checkout first."
         )
         is None
     )
@@ -187,9 +192,9 @@ def test_a_directive_that_acts_before_it_reads_is_not_a_governing_read_directive
 
     assert (
         affirmative_governing_read_directive(
-            "# Builder\n\nEdit /work as the task requires. "
+            "# Builder\n\nEdit the seat's own checkout as the task requires. "
             "Read GOALS.md, GOVERNANCE.md, ARCHITECTURE.md, GLOSSARY.md, "
-            "and CLAUDE.md from /work first."
+            "and CLAUDE.md from the seat's own checkout first."
         )
         is None
     )
@@ -211,7 +216,7 @@ def test_judgement_roles_keep_their_effort_floors():
     rank = {"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4, "ultra": 5, "ultracode": 5}
     # Duplicated in README.md's roster table on purpose; change both together.
     # Tyrel's ruling, 2026-08-01: medium is the default, and high or above is a
-    # deliberate choice reserved for planning and for judging. The chamber briefs
+    # deliberate choice reserved for planning and for judging. The seat briefs
     # build from a written spec, so they sit at medium and are raised per dispatch
     # when a unit earns it — and a brief carries no effort field at all, because a
     # value written into prose is a value nothing enforces. The two that keep

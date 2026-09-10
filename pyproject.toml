@@ -43,7 +43,7 @@ build-backend = "setuptools.build_meta"
 [dependency-groups]
 # The full gate executes its tests and static tooling from uv's frozen
 # environment. Keep these direct values identical to requirements-dev.txt,
-# which builds the chamber image and the everyday non-frozen environment.
+# which builds the everyday non-frozen environment.
 test = [
     "pytest==9.1.1",
     # Distributes the suite across worker processes. The gate and CI both export

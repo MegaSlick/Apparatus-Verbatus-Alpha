@@ -3,10 +3,11 @@
 **The rebuild bench. What sits here is written new in this repository — or carried
 under the citation rule below, named and justified, never silently.**
 
-Called `autoclave/` until 2026-08-01. The containers agents work inside took that name
-instead — they are the thing that actually sterilizes — and one word for two boundaries
-made every sentence about either of them ambiguous. `operations/autoclave/` is the
-chamber; this is the tray a draft waits in, tracked, so reviewers read it raw.
+Called `autoclave/` until 2026-08-01. The containers agents then worked inside took that
+name instead — they were the thing that actually sterilized — and one word for two
+boundaries made every sentence about either of them ambiguous. That container seat was
+retired on 2026-09-10 (`history/2026-09-10_chamber-retired.md`); a seat is a worktree
+under the guard now. This is the tray a draft waits in, tracked, so reviewers read it raw.
 
 This project is a rebuild. A rebuilding model reads the reference where it lies —
 `Temp_Stage`, an analysis output, and the frozen old repository — and writes its best
@@ -25,20 +26,19 @@ borrowing.
 — "no line, no function, no file crosses". Tyrel amended it on 2026-08-05: reason the
 problem through first, then read the window, then build the better version, and a line
 carried across is named as carried, in the commit and in the report. His words were **"cite
-but don't plagiarize."** A chamber that pastes an old function *without saying so* has
+but don't plagiarize."** A seat that pastes an old function *without saying so* has
 failed the task; one that names what it took, and why it was the best option, has done the
 job. This paragraph is quoted rather than paraphrased because the record of it previously
 lived only in `operations/autoclave/window.conf`, which the window's removal deleted — and a
 reviewer has already read the older, absolute standard back onto this file.
 
-**The window is closed by default, and the rule below is what governs it if it reopens
-(Tyrel, 2026-08-20).** Chambers no longer mount the old pipeline: the rebuild is planned
-from the design notes now, and a session that wants the old code must set
-`AUTOCLAVE_WINDOW` **while running `new`** for that one chamber — mounts are fixed when
-the container is created, and the launcher refuses the variable at `dispatch` rather than
-letting it read as a window that is not there. This section is therefore mostly dormant rather
-than retired — it still binds the session reading the reference on the host, where both
-locations remain readable, and it binds any chamber that is deliberately given a window.
+**The window is closed by default (Tyrel, 2026-08-20), and the rule below governs the
+reference wherever it is read.** No seat mounts the old pipeline: the rebuild is planned
+from the design notes now. The container seat that could once be given a window
+deliberately (`AUTOCLAVE_WINDOW` on `new`) was retired on 2026-09-10, a separate ruling,
+so no mechanism to reopen the window exists now. This section is therefore dormant rather than retired — it still
+binds the session reading the reference on the host, where both locations remain
+readable, and it would bind any seat that is ever given the reference again.
 
 **Reason first, then look.** Work out what the stage needs on its own terms, then read the
 old code to see how it was solved before, then build the better version. Reading first and

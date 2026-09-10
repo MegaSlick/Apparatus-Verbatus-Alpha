@@ -64,7 +64,6 @@ fi
 # fresh clone needs; their tracked README files explain what belongs in each.
 mkdir -p workbench/active workbench/standing workbench/archive \
          workbench/scratch workbench/design workbench/tools workbench/raw \
-         workbench/autoclave \
          workbench/quarantine
 
 # Configure Git only after every filesystem prerequisite succeeds. If either
@@ -89,7 +88,7 @@ echo "    uv sync --frozen --group test --group audit"
 echo "    sh .githooks/check-all.sh"
 echo ""
 echo "  The two gates run different environments on purpose. The everyday one"
-echo "  uses whatever python3 is on PATH, so it also works inside a chamber,"
+echo "  uses whatever python3 is on PATH, so it also works in a fresh clone,"
 echo "  which has no .venv. The full gate runs the exact environment uv.lock"
 echo "  describes and refuses PATH's python outright, which is why it needs the"
 echo "  sync above first."
