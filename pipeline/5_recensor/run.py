@@ -3834,7 +3834,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "confirmed-blank",
                     "the Perlector's own reading found no-readable-text, and every witness "
                     f"that actually read this act ({', '.join(corroborating_chairs)}) "
-                    "independently reports the same absence; sealed blank with that evidence",
+                    "independently reports the same absence; sealed blank with that evidence"
+                    + (
+                        "; page ink could not be measured or reconciled for this act's "
+                        "recorded page evidence"
+                        if page_coverage["unmeasurable_pages"]
+                        or geometry_coverage.get("ink_measurable") is False
+                        else ""
+                    ),
                 )
                 # Spec 09 seals a blank "with evidence", and a sentence is not
                 # evidence a consumer can read. The review queue, the Armarium
