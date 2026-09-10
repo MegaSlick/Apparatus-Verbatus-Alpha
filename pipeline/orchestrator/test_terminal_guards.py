@@ -15,12 +15,20 @@ from types import SimpleNamespace
 import pytest
 
 from common.armarium_formats import ArmariumFormats
+from common.background import load_background_config, resolve_background_policy
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ApprovalRefusal, FatalAccounting
+from common.contracts.errors import ApprovalRefusal, ContractError, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
+from common.residual_ink import (
+    edge_ink,
+    ink_runs_from_rows,
+    load_coverage_audit_config,
+    residual_ink,
+    resolve_coverage_audit_policy,
+)
 from common.runtree.store import RunTree
 from common.stage import (
     EXIT_COMPLETE,
@@ -43,6 +51,9 @@ def _stage_module(name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+INK_MAP_RUN = _stage_module("ink_map_terminal_fixture", ROOT / "pipeline" / "1_ink_map" / "run.py")
 
 
 def _parser_stub():
@@ -83,12 +94,6 @@ class _RecordingContext:
         self.config_digest = "a" * 64
         self.run = {"source_manifest": []}
         self.registry = SimpleNamespace(config=object())
-        # The Armarium reads the sealed `[coverage_audit]` block through its own
-        # parsed argv and proves the bytes against the run's seal, so this
-        # double carries the one argument and the one check that path makes.
-        self.args = SimpleNamespace(
-            designator_grouping_config=str(ROOT / "config" / "designator_grouping.toml")
-        )
         self.required_configs: list[tuple[str, str]] = []
         self.witness_chairs: list[str] = []
         self.witness_floor = 0
@@ -122,10 +127,39 @@ class _RecordingContext:
             "perlector-audit": digest_bytes(self.perlector_audit_config_path.read_bytes()),
         }
 
-        def require_sealed_config(name: str, digest: str) -> None:
-            self.required_configs.append((name, digest))
-
-        self.require_sealed_config = require_sealed_config
+        # Build the mapped page with the same policies, measures, and canonical
+        # projection as Ink Map. The tiny page is uniformly paper-colored, so
+        # it truthfully contains no retained or edge ink while still carrying
+        # every field the closed producer record requires.
+        width, height = 8, 2
+        rows = [bytearray([230] * width) for _ in range(height)]
+        background_config = load_background_config(self.args.designator_grouping_config)
+        coverage_config = load_coverage_audit_config(self.args.designator_grouping_config)
+        background_policy = resolve_background_policy(background_config, width, height)
+        coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
+        ink_measure = residual_ink(
+            width,
+            height,
+            rows,
+            [],
+            background_policy=background_policy,
+            coverage_policy=coverage_policy,
+        )
+        edge_measure = edge_ink(
+            width,
+            height,
+            rows,
+            background_policy=background_policy,
+            coverage_policy=coverage_policy,
+        )
+        assert edge_measure["background"] == ink_measure["background"]
+        edge_findings = ink_runs_from_rows(
+            width,
+            height,
+            rows,
+            background_policy=background_policy,
+            coverage_policy=coverage_policy,
+        )
 
         def read_bytes(relative_path: str) -> bytes:
             if relative_path not in self.blobs:
@@ -159,34 +193,12 @@ class _RecordingContext:
                     "page_ordinal": 1,
                     "ink_measurable": True,
                     "background": {
-                        "background_level": 230,
-                        "background_source": "inferred-modal",
-                        "dark_mode": 230,
-                        "ink_margin": 20,
-                        "contrast_below_background": 40,
-                        "ink_threshold": 190,
+                        **ink_measure["background"],
                         "config_sha256": self.sealed_config_digests["designator-grouping"],
                     },
-                    "ink": {
-                        "total_ink_pixels": 0,
-                        "outside_ink_pixels": 0,
-                        "fraction_outside_per_million": 0,
-                        "flagged": False,
-                    },
-                    "edge": {
-                        "total_ink_pixels": 0,
-                        "outside_ink_pixels": 0,
-                        "fraction_outside_per_million": 0,
-                        "flagged": False,
-                        "edge_band_pixels": 1,
-                        "named_finding": "unclaimed-edge-ink",
-                    },
-                    "edge_findings": {
-                        "schema": "ink-runs.v2",
-                        "width": 8,
-                        "height": 2,
-                        "rows": [[], []],
-                    },
+                    "ink": INK_MAP_RUN.artifact_finding(ink_measure),
+                    "edge": INK_MAP_RUN.artifact_finding(edge_measure),
+                    "edge_findings": edge_findings,
                 },
             }
         }
@@ -242,6 +254,7 @@ class _RecordingContext:
         require_sealed_config(
             self.sealed_config_digests, name, observed_sha256, "synthetic terminal context"
         )
+        self.required_configs.append((name, observed_sha256))
 
     def artifact_ref(self, stage: str, kind: str, identity: str) -> dict[str, str]:
         return {
@@ -256,6 +269,26 @@ class _RecordingContext:
             "relative_path": relative_path,
             "sha256": digest_bytes(self.blobs[relative_path]),
         }
+
+
+def test_recording_context_validates_a_config_before_recording_it() -> None:
+    context = _RecordingContext()
+    name = "designator-grouping"
+    digest = context.sealed_config_digests[name]
+
+    context.require_sealed_config(name, digest)
+    assert context.required_configs == [(name, digest)]
+
+    with pytest.raises(
+        ContractError, match="configuration changed between this run's binding check"
+    ):
+        context.require_sealed_config(name, "0" * 64)
+    with pytest.raises(
+        ContractError,
+        match="synthetic terminal context sealed no digest for the unsealed-test-name configuration",
+    ):
+        context.require_sealed_config("unsealed-test-name", digest)
+    assert context.required_configs == [(name, digest)]
 
 
 def _all_refused_door_tree(root: Path) -> RunTree:

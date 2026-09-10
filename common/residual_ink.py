@@ -280,7 +280,7 @@ def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]"
     ):
         raise ContractError(
             f"the grouping configuration's {where} {SUBSTANTIAL_INK_AREA_BP_FIELD} is not a "
-            f"basis-point integer strictly between 0 and {BASIS_POINTS}; a gate of zero "
+            f"basis-point integer in 1..{BASIS_POINTS}; a gate of zero "
             "flags every page that carries a single unclaimed pixel and says nothing"
         )
     # The band is bounded strictly below half the shorter side because at half
