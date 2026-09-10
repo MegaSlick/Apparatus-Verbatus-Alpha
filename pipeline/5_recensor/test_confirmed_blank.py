@@ -43,6 +43,15 @@ def _load_module(relative_path: str, name: str):
 
 RECENSOR_RUN = _load_module("pipeline/5_recensor/run.py", "recensor_run_confirmed_blank")
 
+_CONFIRMED_BLANK_REASON = (
+    "the Perlector's own reading found no-readable-text, and every witness that actually read "
+    "this act (attestator_1, attestator_2, attestator_3) independently reports the same absence; "
+    "sealed blank with that evidence"
+)
+_UNAVAILABLE_INK_SUFFIX = (
+    "; page ink could not be measured or reconciled for this act's recorded page evidence"
+)
+
 
 def _invoke(root: Path, run_id: str, scenario: str, program: str) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -118,6 +127,7 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     assert "attestator_1" in review["payload"]["reason"]
     assert "attestator_2" in review["payload"]["reason"]
     assert "attestator_3" in review["payload"]["reason"]
+    assert review["payload"]["reason"] == _CONFIRMED_BLANK_REASON
 
     # Spec 09 seals a blank "with evidence", and a sentence is not evidence a
     # consumer can read. The same facts are recorded as data beside the prose.
@@ -155,6 +165,92 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     assert measurement["attached_spans"]
     assert measurement["uncovered_non_whitespace"] == {"ranges": [], "count": 0}
     assert content_coverage["shortfall"] is False
+
+
+@pytest.mark.parametrize("availability_cause", ["page-audit", "geometry-conservation"])
+def test_confirmed_blank_discloses_each_unavailable_ink_instrument(
+    tmp_path, monkeypatch, availability_cause
+):
+    """Either unavailable ink fact qualifies the terminal blank explanation.
+
+    The run reaches the real Perlector first. The controlled seam replaces only
+    one already-computed page measurement with the corresponding unavailable
+    result, leaving the other instrument measured so each cause is observed
+    independently at the Recensor's publication boundary.
+    """
+    root = tmp_path / "runs"
+    _run_through_perlector(root, "r", "confirmed-blank")
+
+    if availability_cause == "page-audit":
+        measured_page_findings = RECENSOR_RUN.page_coverage_findings
+
+        def page_findings_with_unavailable_audit(context, sealed_pages=None):
+            findings = measured_page_findings(context, sealed_pages)
+            assert findings[1]["flagged"] is False
+            config = RECENSOR_RUN.load_background_config(context.args.designator_grouping_config)
+            findings[1] = {
+                "ink_measurable": False,
+                "named_finding": RECENSOR_RUN.INK_NOT_MEASURABLE,
+                "background_refusal": "controlled unavailable page audit",
+                "background_config_sha256": config["config_sha256"],
+            }
+            return findings
+
+        monkeypatch.setattr(
+            RECENSOR_RUN, "page_coverage_findings", page_findings_with_unavailable_audit
+        )
+    else:
+        measured_geometry = RECENSOR_RUN.geometry_coverage_inputs
+
+        def geometry_with_unavailable_conservation(context):
+            findings = measured_geometry(context)
+            measured = findings[1]
+            assert measured["ink_measurable"] is True
+            findings[1] = {
+                **measured,
+                "ink_measurable": False,
+                "residual_component_count": 0,
+                "residual_act_count": 0,
+                "page_residual_act_count": 0,
+            }
+            return findings
+
+        monkeypatch.setattr(
+            RECENSOR_RUN, "geometry_coverage_inputs", geometry_with_unavailable_conservation
+        )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline/5_recensor/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "confirmed-blank",
+        ],
+    )
+
+    assert RECENSOR_RUN.main() == 0
+    review = _review_of(RunTree(root, "r"), "a1")
+    payload = review["payload"]
+    assert review["outcome"] == "confirmed-blank"
+    assert payload["reason"] == _CONFIRMED_BLANK_REASON + _UNAVAILABLE_INK_SUFFIX
+    assert payload["blank_evidence"] == {
+        "perlector_outcome": "no-readable-text",
+        "corroborating_chairs": ["attestator_1", "attestator_2", "attestator_3"],
+        "pages_without_residual_ink_outside_coverage": (
+            [] if availability_cause == "page-audit" else [1]
+        ),
+    }
+    if availability_cause == "page-audit":
+        assert payload["page_coverage"]["unmeasurable_pages"] == [1]
+        assert payload["geometry_coverage"]["ink_measurable"] is True
+    else:
+        assert payload["page_coverage"]["unmeasurable_pages"] == []
+        assert payload["geometry_coverage"]["ink_measurable"] is False
 
 
 def _decision_chain_causes() -> list[str]:

@@ -11,12 +11,20 @@
 #
 # Every configured witness chair must have an entry, or the dossier builder
 # refuses by name rather than describing a witness with no context at all.
+#
+# These entries describe the local fixture snapshots selected by
+# `config/models.toml`. Real vendor facts belong in
+# `config/witness_context-real.toml`, selected with `models-real.toml`; a
+# real roster paired with this declaration is refused before a run starts.
 
+# fixture attestator_1.
 [attestator_1]
 training_domain = "a synthetic fixture witness; no real training domain applies"
 
+# fixture attestator_2.
 [attestator_2]
 training_domain = "a synthetic fixture witness; no real training domain applies"
 
+# fixture attestator_3.
 [attestator_3]
 training_domain = "a synthetic fixture witness; no real training domain applies"

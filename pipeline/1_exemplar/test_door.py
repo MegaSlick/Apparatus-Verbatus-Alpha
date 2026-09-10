@@ -47,7 +47,7 @@ from common.contracts.canonical import (
 )
 from common.contracts.errors import ContractError, IncompatibleReuse
 from common.contracts.identities import physical_page_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
+from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.corpus_register import members_of
 from common.runtree.store import RunTree
 from common.stage import (
@@ -118,6 +118,15 @@ ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
 INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
+
+
+def _fixture_models():
+    """Load the declared fixture roster for real-binding tests.
+
+    `_real_bindings` validates witness-context identities, so its doubles must
+    expose the same ChairIdentity records the fixture declaration addresses.
+    """
+    return load_models_toml(ROOT / "config" / "models.toml")
 
 
 def jpeg(width: int = 5, height: int = 4, *, trailing: bytes = b"") -> bytes:
@@ -1662,20 +1671,7 @@ def test_a_row_with_no_non_negative_byte_count_is_a_contract_error(bad_bytes):
 
 
 def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_written(monkeypatch):
-    class Models:
-        # The full configured roster: `_real_bindings` now validates the real
-        # witness-context declaration, which describes these three chairs, and
-        # a narrower stub roster would refuse the declaration as unaddressed.
-        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
-        adapter_recipes = {"door": "synthetic-door-v0"}
-
-        @staticmethod
-        def to_record():
-            return {"models": "synthetic"}
-
-        @property
-        def models_digest(self):
-            return digest_of(self.to_record())
+    models = _fixture_models()
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -1685,7 +1681,7 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
     baseline = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         settings,
@@ -1696,7 +1692,7 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
     altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(settings), dpi=301)
     monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda _settings: altered_pdf_recipe)
     changed = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         settings,
@@ -1742,20 +1738,7 @@ def test_real_run_bindings_refuse_a_configured_witness_without_an_adapter():
 
 
 def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(monkeypatch):
-    class Models:
-        # The full configured roster: `_real_bindings` now validates the real
-        # witness-context declaration, which describes these three chairs, and
-        # a narrower stub roster would refuse the declaration as unaddressed.
-        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
-        adapter_recipes = {"door": "fake-door-v0"}
-
-        @staticmethod
-        def to_record():
-            return {"models": "synthetic"}
-
-        @property
-        def models_digest(self):
-            return digest_of(self.to_record())
+    models = _fixture_models()
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -1765,7 +1748,7 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
     baseline = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         settings,
@@ -1778,7 +1761,7 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
 
     monkeypatch.setattr(door, "REAL_DOOR_ADAPTER_REVISION", "exemplar-door-test-change")
     changed = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         settings,
@@ -1798,20 +1781,7 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
     so it is sealed into `config_digest` and a changed policy is a different run.
     """
 
-    class Models:
-        # The full configured roster: `_real_bindings` now validates the real
-        # witness-context declaration, which describes these three chairs, and
-        # a narrower stub roster would refuse the declaration as unaddressed.
-        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
-        adapter_recipes = {"door": "synthetic-door-v0"}
-
-        @staticmethod
-        def to_record():
-            return {"models": "synthetic"}
-
-        @property
-        def models_digest(self):
-            return digest_of(self.to_record())
+    models = _fixture_models()
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -1822,7 +1792,7 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
     )
     recovery = door.load_recovery_policy()
     baseline = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         settings,
@@ -1831,7 +1801,7 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
         **_sealed_binding_digests(),
     )
     changed = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         settings,
@@ -1859,17 +1829,7 @@ def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
     (GOVERNANCE 6).
     """
 
-    class Models:
-        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
-        adapter_recipes = {"door": "synthetic-door-v0"}
-
-        @staticmethod
-        def to_record():
-            return {"models": "synthetic"}
-
-        @property
-        def models_digest(self):
-            return digest_of(self.to_record())
+    models = _fixture_models()
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -1880,7 +1840,7 @@ def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
     )
     recovery = door.load_recovery_policy()
     common = (
-        Models(),
+        models,
         ledger,
         POLICY,
         settings,
@@ -2052,6 +2012,33 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
         text=True,
     )
     assert ink_map.returncode == 0, ink_map.stderr
+
+    # This real subprocess reaches StageContext publication and the closed
+    # outcome algebra, unlike a recording-only producer double. At least one
+    # small generated input has no measurable audit background; the refusal
+    # must survive as page evidence and permit the predecessor seal to close.
+    ink_records = [
+        tree.read_artifact(INK_MAP, "ink-map", row["artifact_id"])
+        for row in tree.build_manifest(INK_MAP)["artifacts"]
+        if row["kind"] == "ink-map"
+    ]
+    assert len(ink_records) == len(pages)
+    refused_maps = [row for row in ink_records if row["outcome"] == "ink-not-measurable"]
+    assert refused_maps
+    for record in refused_maps:
+        payload = record["payload"]
+        assert set(payload) == {
+            "page_ordinal",
+            "ink_measurable",
+            "background_refusal",
+            "background_config_sha256",
+        }
+        assert payload["ink_measurable"] is False
+        assert payload["background_refusal"]
+        assert (
+            payload["background_config_sha256"]
+            == run["sealed_config_digests"]["designator-grouping"]
+        )
 
     before_designator = tree.build_manifest(DESIGNATOR)
     boundary = subprocess.run(
@@ -3189,17 +3176,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     the same `sealed_config_digests` shape.
     """
 
-    class Models:
-        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
-        adapter_recipes = {"door": "synthetic-door-v0"}
-
-        @staticmethod
-        def to_record():
-            return {"models": "synthetic"}
-
-        @property
-        def models_digest(self):
-            return digest_of(self.to_record())
+    models = _fixture_models()
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -3214,7 +3191,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     grouping_digest = supplied["designator_grouping_config_sha256"]
     recovery = door.load_recovery_policy()
     bindings = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         settings,
@@ -3275,7 +3252,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     # cannot be recomputed downstream, so `common.stage._open_real_context`'s
     # name-by-name recheck is the only thing that catches a resumed real run
     # under a moved roster, format projection or witness regime.
-    assert sealed.get("models") == Models().models_digest, (
+    assert sealed.get("models") == models.models_digest, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'models' entry bound to the roster digest; without it a real run resumed under a "
         "moved chair revision publishes stage-3 Testimonia naming one model and stage-4 "
@@ -3303,7 +3280,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "`--witness-context blinded` on a resumed real run reaches the Perlector unchecked"
     )
     blinded = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         settings,
@@ -3321,7 +3298,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "the witness regime was already inside the real config_digest and must stay there"
     )
     unchanged = door._real_bindings(
-        Models(), ledger, POLICY, settings, recovery, door.load_hard_failure_policy(), **supplied
+        models, ledger, POLICY, settings, recovery, door.load_hard_failure_policy(), **supplied
     )
     assert unchanged["config_digest"] == bindings["config_digest"]
 
@@ -3343,17 +3320,7 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
     is what the point of use is handed on a real run.
     """
 
-    class Models:
-        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
-        adapter_recipes = {"door": "synthetic-door-v0"}
-
-        @staticmethod
-        def to_record():
-            return {"models": "synthetic"}
-
-        @property
-        def models_digest(self):
-            return digest_of(self.to_record())
+    models = _fixture_models()
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -3361,7 +3328,7 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
     }
     supplied = _sealed_binding_digests()
     bindings = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),
@@ -3426,17 +3393,7 @@ def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry(
 def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
     """The real ingress path shares the fixture path's approval refusal."""
 
-    class Models:
-        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
-        adapter_recipes = {"door": "synthetic-door-v0"}
-
-        @staticmethod
-        def to_record():
-            return {"models": "synthetic"}
-
-        @property
-        def models_digest(self):
-            return digest_of(self.to_record())
+    models = _fixture_models()
 
     ledger = {
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
@@ -3447,7 +3404,7 @@ def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
     )
     with pytest.raises(ContractError, match="is not an approval record"):
         door._real_bindings(
-            Models(),
+            models,
             ledger,
             POLICY,
             settings,
@@ -3728,17 +3685,7 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
     already-published admission.
     """
 
-    class Models:
-        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
-        adapter_recipes = {"door": "fake-door-v0"}
-
-        @staticmethod
-        def to_record():
-            return {"models": "synthetic"}
-
-        @property
-        def models_digest(self):
-            return digest_of(self.to_record())
+    models = _fixture_models()
 
     ledger = {
         "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
@@ -3750,7 +3697,7 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
 
     def bindings(triage_digests):
         return door._real_bindings(
-            Models(),
+            models,
             ledger,
             POLICY,
             settings,
@@ -4537,24 +4484,14 @@ def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(
     otherwise compare a run against bytes that did not govern it.
     """
 
-    class Models:
-        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
-        adapter_recipes = {"door": "fake-door-v0"}
-
-        @staticmethod
-        def to_record():
-            return {"models": "synthetic"}
-
-        @property
-        def models_digest(self):
-            return digest_of(self.to_record())
+    models = _fixture_models()
 
     ledger = {
         "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
     }
     bindings = door._real_bindings(
-        Models(),
+        models,
         ledger,
         POLICY,
         door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),

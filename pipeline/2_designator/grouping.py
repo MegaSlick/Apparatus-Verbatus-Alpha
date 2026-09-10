@@ -36,24 +36,20 @@ group at all), or in no group -- and `conservation.py` is what accounts for
 that last case, not this module. Grouping only assembles what it is given; it
 never decides that something ungrouped may be discarded.
 
-**A component that spans the page is not connective tissue.** On a photographed
-register opening the bezel is dark, is counted as ink by decision
-(`common/background.py::_dark_surround` -- masking it out would mean deciding
-where the page ends, and a page edge misjudged by thirty pixels would silently
-delete a marginal name), and labels as one connected component whose bounding
-box is the entire leaf. Handed to the pass below it lands in the body column,
-its y-range is the page's y-range, and `_chain_body` therefore chains every
-other body component on the page to it: on all fourteen real pages this project
-has measured, one group came back with the page's own bounds, holding up to 440
-body components and 14 anchors, and conservation then reconciled zero residual
-because the declared coverage was the leaf. `partition_page_spanning` withholds
-such a component from column assignment and chaining. **Withheld is not
-excluded**: its pixels were never removed from the ink set, are still in
-`conservation.reconcile`'s `total_ink_pixel_count`, and -- because no group
-claims them -- reach that reconciliation as residual, which is minted as a held
-act a reviewer opens. The component itself is published by name on the page's
-conservation record. That is the whole of the change: the surround stays ink for
-the accounting and stops being glue for the grouping.
+**A component that spans the page is not connective tissue.** On all fourteen
+measurable real pages in the calibration sample, the primary scan produced one
+connected component whose bounding box was the entire page. The measurements
+do not establish whether those pixels are bezel, writing, or another dark
+population. Handed to the pass below, such a component lands in the body column,
+its y-range is the page's y-range, and `_chain_body` can therefore chain every
+other body component on the page to it. `partition_page_spanning` withholds the
+component from column assignment and chaining. **Withheld is not excluded**:
+its pixels remain in `conservation.reconcile`'s `total_ink_pixel_count`.
+Declared or fallback coverage may claim some or all of them; conservation
+reports any unclaimed remainder as residual and mints that remainder as held
+evidence. The component itself is published by name on the page's conservation
+record. The change removes connective influence while retaining every pixel and
+the measured page-spanning decision.
 """
 
 from typing import Any, TypedDict
@@ -182,8 +178,8 @@ def partition_page_spanning(
     A component whose bounding box covers `page_spanning_area_bp` basis points
     or more of the page's own area is withheld: it is not offered to
     `assign_columns` and never enters `_chain_body`, so it cannot join two acts
-    that only its own bezel connects. See the module docstring for the
-    measurement behind that.
+    through a page-wide y-range. See the module docstring for the measurement
+    behind that.
 
     **This function removes nothing from the page and decides nothing about
     ink.** It is handed components that have already been scanned, thresholded
@@ -191,11 +187,11 @@ def partition_page_spanning(
     (`run.py`) records the withheld half on the page's conservation record, and
     `conservation.reconcile` -- which rescans the page's own pixels rather than
     reading this module's output -- still counts every withheld pixel in
-    `total_ink_pixel_count` and reports it as residual because no group claims
-    it. A residual is a held act a reviewer opens. This is the direction GOALS 1
-    requires and it is why the word is *withheld*: excluding would be deciding
-    that a page-spanning mark contains nothing, and this decides only that it
-    cannot be used to prove two other marks belong together.
+    `total_ink_pixel_count`. Declared or fallback coverage may claim those
+    pixels; any unclaimed remainder is residual and becomes held evidence. This
+    is why the word is *withheld*: excluding would decide that a page-spanning
+    mark contains nothing, while this decides only that it cannot join other
+    marks into one group.
 
     **It is not a picker** (GOVERNANCE 3). It scores nothing, ranks nothing and
     compares no component against another: each one is measured against a sealed
@@ -373,10 +369,11 @@ def group_page(
     _check_margin(margin_px, page_w)
     _check_page_spanning_area_bp(page_spanning_area_bp)
 
-    # One short-circuit, after the partition rather than before it, because the
-    # two cases are the same case: a page with no components and a page whose
-    # every component spans it both have nothing left to assemble into acts, and
-    # `run.py` reads both as `fallback-tiles`. Every threshold above has already
+    # One short-circuit, after the partition rather than before it, because
+    # both cases have nothing left to assemble into acts: a page with no
+    # components and a page whose every component spans it. `run.py` reads both
+    # as `fallback-tiles` but records which premise led there. Every threshold
+    # above has already
     # been validated at this point, which is the property `_check_margin`'s own
     # docstring asks for and the reason those checks are not below here.
     components, _withheld = partition_page_spanning(
@@ -534,8 +531,8 @@ def find_continuation_candidate(
     return {"page_a_group": trailing, "page_b_group": leading}
 
 
-# The predetermined fallback crop grid, for a page the structure pass found
-# nothing on. Tyrel ruled 2026-08-11: "If the designator sees no text it should
+# The predetermined fallback crop grid, for a page with no eligible structural
+# group. Tyrel ruled 2026-08-11: "If the designator sees no text it should
 # default to predetermined crops with a small margin of overlap and send the
 # crops down stream to be read by everything. If all the witnesses and the
 # perlector see no text on any of the crops then it's likely a true blank." And,
@@ -566,7 +563,7 @@ def fallback_tiles(
     bands: int,
     overlap_px: int,
 ) -> list[ActGroup]:
-    """Predetermined overlapping crops covering the whole page, for a page with no found ink.
+    """Predetermined overlapping crops covering a page that requires fallback.
 
     Every pixel of the page falls inside at least one band, and adjacent bands
     overlap by `overlap_px`, so a line of writing sitting exactly on a band
@@ -622,9 +619,8 @@ def fallback_tiles(
                 body_members=[],
                 anchors=[],
                 rationale=(
-                    f"fallback tile {index + 1} of {bands}: the structure pass found no ink to "
-                    "group on this page, so a predetermined crop is cut and sent to be read "
-                    "rather than the page being called blank here"
+                    f"fallback tile {index + 1} of {bands}: a predetermined crop is cut "
+                    "and sent to be read rather than the page being called blank here"
                 ),
             )
         )

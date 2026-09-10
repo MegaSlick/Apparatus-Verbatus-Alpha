@@ -1,0 +1,32 @@
+# The real roster's factual witness context, selected explicitly with
+# `--witness-context-config config/witness_context-real.toml` -- the same way
+# `config/models-real.toml` is selected with `--models-config`, and paired with it
+# for the same reason the serving catalogue is: the fixture declaration at
+# `config/witness_context.toml` describes every chair as a synthetic fixture, and
+# under the `named` regime that sentence is what the Perlector is told about the
+# witness whose testimony it is reading (GOVERNANCE 7: feed it completely and
+# honestly). `common/stage.py::validate_witness_context_bindings` refuses a
+# non-fixture roster that leaves this file at the fixture default.
+#
+# Same closed schema as the fixture file: one table per configured witness chair,
+# holding `training_domain` and nothing else. No trust weight, no ranking, no
+# preferred order -- spec_08's "witness identity and factual context only... never
+# pipeline-asserted worth."
+#
+# Every sentence below is the researched vendor fact formerly kept in the
+# default declaration. It is selected only with the real roster; no fixture
+# dossier presents it as a fact about a local snapshot.
+
+# datalab-to/chandra-ocr-2 (config/models-real.toml). Pinned Hugging Face
+# config revision af93b47dba1b47b6640c86ccf487ed2260ab9a09 records architecture
+# Qwen3_5ForConditionalGeneration/model_type qwen3_5; the README credits Qwen3.5.
+[attestator_1]
+training_domain = "Chandra-2, a vision-language OCR model from Datalab whose published configuration names Qwen3.5; it emits an HTML layout grammar (data-bbox/data-label blocks over a closed label set); the vendor's own model card publishes no description of the training-page composition or resolution beyond a benchmark comparison against olmOCR, so no more specific training domain is known to this project."
+
+# Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR (config/models-real.toml).
+[attestator_2]
+training_domain = "a Qwen2.5-VL-7B fine-tune by Teklia whose own trained system prompt frames it as an archivist reading acts from French parish registers of the sixteenth to eighteenth centuries; its training data is two published, ungated Hugging Face Hub datasets linked from the model card and spanning the sixteenth through nineteenth centuries -- Teklia/DAI-CReTDHI-RecordGold-ATR (about 7,000 single-record IIIF-region crops, released under the MIT license) and Teklia/DAI-CReTDHI-RecordGeneanet-ATR (about 30,000 crops linked from geneanet.org page records, no license stated); neither has been inspected here beyond its dataset card."
+
+# stanford-oval/churro-3B (config/models-real.toml).
+[attestator_3]
+training_domain = "a Qwen2.5-VL-3B-Instruct model fine-tuned (standard supervised fine-tuning, per the paper) by Stanford OVAL; the vendor's own model registry gives it a single system instruction to transcribe the entirety of the historical document to XML format, with no separate user message -- not the library's other, model-agnostic diplomatic-transcription default that this project previously mistook for the trained framing; the paper states it was fine-tuned for 5 epochs over roughly 100,000 pages on a training target with no layout geometry, a single continuous text string per page, and its training dataset is declared research-use-only and has not been inspected here beyond that."

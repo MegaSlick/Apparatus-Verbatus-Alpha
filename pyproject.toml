@@ -46,6 +46,11 @@ build-backend = "setuptools.build_meta"
 # which builds the chamber image and the everyday non-frozen environment.
 test = [
     "pytest==9.1.1",
+    # Distributes the suite across worker processes. The gate and CI both export
+    # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, so this plugin does nothing until an
+    # invocation names it with `-p xdist`; installing it changes no run that does
+    # not ask for it.
+    "pytest-xdist==3.8.0",
     "ruff==0.15.4",
     "PyYAML==6.0.3",
     "shellcheck-py==0.11.0.1",
@@ -77,6 +82,14 @@ pod = [
     "qwen-vl-utils==0.0.14; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
+# Deliberately narrow, and deliberately not repaired by widening. A wheel built
+# from this carries no `pipeline/`, `config/`, `proof/` or `gold/`, and runtime code
+# resolves those as siblings of the checkout rather than as package data -- so a
+# non-editable install cannot run this system, and packaging the private material to
+# make it appear to would be the wrong repair. Verbatus runs from a source checkout:
+# the pod bootstrap clones at a pinned commit and runs `uv sync --locked`, and
+# `common/checkout.py` refuses before any verb starts anywhere else.
+# `operations/README.md` carries the contract in full.
 [tool.setuptools.packages.find]
 include = ["common", "common.*", "operations", "operations.*"]
 namespaces = false
@@ -103,6 +116,18 @@ addopts = "-q -p no:tach"
 markers = [
     "full: slower integration and exhaustive boundary cases reserved for the full gate",
     "scanner: core credential-detection cases the everyday gate runs even though they are also full",
+    # The one marked test reaches the network, by design: it fetches the pinned
+    # vendor sources into a temporary directory, diffs this repository's carried
+    # bytes and resize ports against them, and deletes the directory. Nothing is
+    # stored, and `-m vendor_network` runs it on demand, which is what keeps the
+    # offline parity pins re-measurable without making a green gate depend on
+    # GitHub and Hugging Face being reachable. The marker does not gate it on its
+    # own -- check-all.sh runs pytest with no `-m` expression at all, and
+    # check-fast.sh runs `-m "not full or scanner"`, which a test carrying only
+    # this marker satisfies through the `not full` half; both therefore collect
+    # it -- so the test also reads back what the run selected and skips itself
+    # unless this marker was named. See `common/test_vendor_parity.py`.
+    "vendor_network: fetches the pinned vendor sources to re-measure the carried-bytes pins",
 ]
 # pytest skips every dotted directory by default, so the harness's own tests
 # under .claude/hooks/ were found by CI's `find` and then collected by nobody —

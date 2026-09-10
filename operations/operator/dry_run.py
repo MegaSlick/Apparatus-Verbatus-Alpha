@@ -85,8 +85,15 @@ def make_transcript(output: str | Path) -> Path:
         config = workspace / "config"
         config.mkdir(parents=True)
         shutil.copy2(ROOT / "uv.lock", workspace / "uv.lock")
-        shutil.copy2(ROOT / "config" / "models.toml", config / "models.toml")
-        shutil.copy2(ROOT / "config" / "pod_placement.toml", config / "pod_placement.toml")
+        for configuration_name in (
+            "models.toml",
+            "models-real.toml",
+            "pod_placement.toml",
+            "serving_recipes.toml",
+            "witness_context.toml",
+            "witness_context-real.toml",
+        ):
+            shutil.copy2(ROOT / "config" / configuration_name, config / configuration_name)
         # Boot must record the exercised checkout revision without putting its
         # scratch workspace under that checkout.
         (workspace / ".git").symlink_to(ROOT / ".git")
@@ -242,7 +249,8 @@ def main(argv: list[str] | None = None) -> int:
             "What happened: the dry-run transcript could not be prepared or saved "
             f"({safe_detail}).\n"
             "What it means: nothing was changed or billed; no transcript was written.\n"
-            "Next step: check the output path is writable, then run this again; this is safe."
+            "Next step: check the named input files exist and are readable and the output "
+            "path is writable, then run this again; this is safe."
         )
         return 1
     return 0

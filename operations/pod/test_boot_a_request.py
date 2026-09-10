@@ -43,18 +43,30 @@ def configured(**overrides: object) -> SpendPolicy:
     return SpendPolicy(**fields)  # type: ignore[arg-type]
 
 
-def test_the_committed_unconfigured_policy_renders_a_refusal_not_a_request() -> None:
-    rendered = render_boot_a_request(
-        load_spend_policy(COMMITTED_SPEND), load_placement_table(PLACEMENT)
-    )
+def test_the_committed_policy_renders_the_a5000_drill_under_the_ledger_ceilings() -> None:
+    """`config/spend.toml` is configured since 2026-09-06 (standing ledger §8-§9):
+    the committed file renders the Boot A drill on the cheapest reviewed card
+    under exactly the ceilings Tyrel approved. The refusal path keeps its own
+    coverage in the unconfigured-policy tests below."""
+    placement = load_placement_table(PLACEMENT)
+    rendered = render_boot_a_request(load_spend_policy(COMMITTED_SPEND), placement)
 
-    assert rendered.refused
-    assert "REFUSED" in rendered.text
-    assert rendered.card is None and rendered.hard_lifetime_seconds is None
-    # Nothing in a refusal reads as a runnable plan.
-    assert "python -m operations.pod.cli" not in rendered.text
-    assert "create --request" not in rendered.text
-    assert "No pod, lease, preview or provider call results" in rendered.text
+    assert not rendered.refused
+    assert rendered.card is cheapest_card(placement)
+    assert rendered.card.name == "RTX A5000"
+    assert rendered.hard_lifetime_seconds == BOOT_A_HARD_LIFETIME_SECONDS == 900
+    text = rendered.text
+    for phrase in (
+        "max_hourly_usd` = $0.40",
+        "max_estimated_metered_cost_usd` = $2.00",
+        "account_balance_floor_usd` = $50.00",
+        "account_balance_alert_usd` = $75.00",
+        "ceiling = 14400",
+        "billing_cutoff_margin_seconds` = 3600",
+        "authorizes nothing",
+    ):
+        assert phrase in text, phrase
+    assert "Why the preview will refuse" not in text
 
 
 def test_an_unconfigured_policy_renders_a_refusal_not_a_request() -> None:
@@ -245,19 +257,20 @@ def test_placeholders_stay_visible_until_supplied() -> None:
     assert raw["image"] == raw["volume_id"] == raw["repository_commit"] == "<not yet supplied>"
 
 
-def test_main_exits_two_on_the_committed_policy(capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_exits_zero_on_the_committed_policy(capsys: pytest.CaptureFixture[str]) -> None:
     status = main(["--spend", str(COMMITTED_SPEND), "--placement", str(PLACEMENT)])
 
-    assert status == 2
-    assert "REFUSED" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert status == 0
+    assert "REFUSED" not in out
+    assert "RTX A5000" in out
 
 
 def test_main_exits_two_on_an_uncommitted_unconfigured_policy(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Same as test_main_exits_two_on_the_committed_policy, but against a
-    policy file this test writes itself, so the refusal path keeps its own
-    coverage even after the committed config/spend.toml is configured."""
+    """Against a policy file this test writes itself, so the refusal path keeps
+    its own coverage now that the committed config/spend.toml is configured."""
     spend = tmp_path / "spend.toml"
     spend.write_text('schema = "pod-spend.v3"\nstate = "unconfigured"\n', encoding="utf-8")
 

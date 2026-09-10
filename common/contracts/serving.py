@@ -35,6 +35,14 @@ CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
         "finish_reason",
         "usage",
         "parse_problem",
+        # The `verbatus-request-capacity.v1` record the caller checked this
+        # request against before it was built, or null where the caller
+        # supplied none (the readiness probe and the smoke path).  It sits on
+        # the call record because that is the retained record *of the request*:
+        # every stage that keeps a reading already names its call record, so
+        # the arithmetic a real run refused or admitted on is reachable from
+        # each of them without a second reference.
+        "capacity",
     }
 )
 

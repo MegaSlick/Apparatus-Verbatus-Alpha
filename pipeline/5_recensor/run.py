@@ -33,16 +33,19 @@ from common.background import (  # noqa: E402
     BackgroundInferenceRefusal,
     load_background_config,
     resolve_background_policy,
+    validate_ink_not_measurable_payload,
+    validate_measured_ink_map_payload,
 )
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
-from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ATTACHMENT_BASES,
     OutcomeClass,
     classify,
+    page_attachment_basis,
     terminal_category,
     witness_coverage,
 )
@@ -60,6 +63,7 @@ from common.cross_capture_coverage import (  # noqa: E402
     build_cross_capture_coverage,
     capture_specific_recovery,
     same_chair_witness_floor,
+    validate_cross_capture_coverage,
 )
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.imaging import grayscale_rows  # noqa: E402
@@ -82,6 +86,7 @@ from common.recovery import (  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
     INK_RUNS_SCHEMA,
+    MINIMUM_CONTRAST_BELOW_BACKGROUND,
     MINIMUM_INK_PIXELS,
     load_coverage_audit_config,
     residual_ink,
@@ -107,6 +112,10 @@ from common.stage import (  # noqa: E402
     run_stage,
     scenario_for,
     stage_parser,
+)
+from common.testimony_content_coverage import (  # noqa: E402
+    validate_testimony_content_coverage,
+    validate_testimony_content_coverage_continuation,
 )
 
 
@@ -764,14 +773,31 @@ def act_attachment_facts(
             attachment_outcome = (
                 page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
             )
-            geometrically_attached = attachment_outcome in WITNESS_READING_OUTCOMES and any(
-                reported_geometry_overlaps(page_payload.get("observed", []), bounds)
-                for bounds in proposal_page["bounds"]
+            # The same shared rule the producer and the Perlector use
+            # (`common/contracts/outcomes.py::page_attachment_basis`), read here
+            # independently from this stage's own copy of the evidence: a page
+            # witness attaches on its reported ink over the sealed proposal, or
+            # -- only where it reported none -- on an alignment that located
+            # this act's anchor line in its page text. The second basis is what
+            # a grammar carrying no geometry (Churro's, by vendor design) can
+            # reach at all; the floor is counted from this, so it is derived,
+            # never read off the record's own boolean. A malformed alignment
+            # cannot buy an attachment: the helper answers "not located" for
+            # every shape it does not recognise, and the closed-shape refusals
+            # below still name it.
+            derived_basis = page_attachment_basis(
+                reading=attachment_outcome in WITNESS_READING_OUTCOMES,
+                geometry_overlaps=any(
+                    reported_geometry_overlaps(page_payload.get("observed", []), bounds)
+                    for bounds in proposal_page["bounds"]
+                ),
+                alignment=entry.get("alignment"),
             )
-            if entry["attached"] != geometrically_attached:
+            if entry["attached"] != (derived_basis != "unattached"):
                 raise FatalAccounting(
                     f"act {act_id} page attachment for chair {chair!r} does not derive from "
-                    "that witness's reported geometry against the sealed proposal"
+                    "that witness's reported geometry, or from an anchor line located in its "
+                    "page text, against the sealed proposal"
                 )
             if entry["comparable"] and not entry["attached"]:
                 raise FatalAccounting(
@@ -790,9 +816,17 @@ def act_attachment_facts(
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} has no computed alignment fact"
                 )
-            if entry["attached"] and attachment_basis != "geometric-overlap":
+            # The exact derived label. Admitting either of the two attaching
+            # bases by membership would let a chair attached on its own
+            # geometry be filed as `anchor-line` and the reverse -- and the two
+            # differ in exactly the fact a floor reader needs: `anchor-line`
+            # says this chair counts here only because another chair's anchor
+            # located its text.
+            if entry["attached"] and attachment_basis != derived_basis:
                 raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} is attached without geometric evidence"
+                    f"act {act_id} page witness {chair!r} names attachment basis "
+                    f"{attachment_basis!r}, but its own retained evidence attached it by "
+                    f"{derived_basis!r}"
                 )
             if not entry["attached"] and attachment_basis != "unattached":
                 raise FatalAccounting(
@@ -813,6 +847,7 @@ def act_attachment_facts(
                         "anchor_chair",
                         "anchor_span",
                         "witness_span",
+                        "anchor_line_match",
                         "line_geometry",
                         "loss",
                         "offset_maps",
@@ -845,8 +880,12 @@ def act_attachment_facts(
                     f"act {act_id} page witness {chair!r} carries an unaligned record with "
                     "no usable reason; an unexplained failure is a silent loss"
                 )
-            # `attached` proves geometry, not text. The floor also requires an
-            # aligned slice from the referenced page record.
+            # `attached` proves that SOME evidence placed this chair's reading
+            # in this act -- its own reported ink over the sealed proposal, or
+            # an alignment that located this act's anchor line in its page text
+            # (the derivation above). It does not prove there is a slice of
+            # retained text to compare, and the floor requires that as well:
+            # an aligned record AND a string on the referenced page record.
             if entry["comparable"] != (
                 entry["attached"]
                 and alignment["status"] == "aligned"
@@ -1791,15 +1830,40 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
                 "Ink Map inventory or restart the run before rerunning the Recensor."
             )
         if record.get("outcome") == INK_NOT_MEASURABLE:
-            # **Present, and explicitly without evidence.** The shared background
-            # inference refused this page's paper value, so the Ink Map cut no
-            # threshold and retained no runs. `None` rather than an absent key,
-            # because "the map never measured this page" and "the map has no
-            # record of this page at all" are different faults and the caller
-            # below must be able to tell them apart: the first is a page whose
-            # ink nobody could measure, the second is a missing artifact.
+            # **Present, explicitly unavailable, and sealed.** Validate before
+            # discarding runs: a malformed refusal cannot become the same `None`
+            # as the producer's honest unavailable measurement.
+            try:
+                refusal = validate_ink_not_measurable_payload(payload)
+                context.require_sealed_config(
+                    "designator-grouping", refusal["background_config_sha256"]
+                )
+            except ContractError as error:
+                raise FatalAccounting(
+                    f"ink-map page {ordinal} has an invalid sealed ink-not-measurable "
+                    "payload. Restore the sealed Ink Map artifact or restart the run before "
+                    "rerunning the Recensor."
+                ) from error
             maps[ordinal] = None
             continue
+        if record.get("outcome") not in {"mapped", "unclaimed-edge-ink"}:
+            raise FatalAccounting(
+                f"ink-map page {ordinal} has an unknown measured outcome. The Recensor cannot "
+                "bind its retained runs to a current Ink Map measurement. Restore the sealed "
+                "Ink Map artifact or restart the run before rerunning the Recensor."
+            )
+        try:
+            measured = validate_measured_ink_map_payload(
+                payload, audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
+            )
+            context.require_sealed_config(
+                "designator-grouping", measured["background_config_sha256"]
+            )
+        except ContractError as error:
+            raise FatalAccounting(
+                f"ink-map page {ordinal} has an invalid sealed measured payload. Restore the "
+                "sealed Ink Map artifact or restart the run before rerunning the Recensor."
+            ) from error
         if not isinstance(evidence, dict) or evidence.get("schema") != INK_RUNS_SCHEMA:
             raise FatalAccounting(
                 f"ink-map page {ordinal} has no readable {INK_RUNS_SCHEMA} page-space evidence. The "
@@ -2544,6 +2608,60 @@ def reconcile_page_roles(
             )
 
 
+#: The alignment reason the Perlector and the Attestatores both force onto every
+#: attachment row belonging to a page that is not its act's primary page
+#: (`pipeline/4_perlector/run.py`, `pipeline/3_attestatores/run.py`). The act
+#: anchor is derived from the act's own primary page, so a continuation page has
+#: none and no row on it can ever reach `aligned`.
+CONTINUATION_NO_ACT_ANCHOR = "continuation-page-no-act-anchor"
+
+
+def continuation_unmeasured_reason(
+    ordinal: int,
+    observations: list[tuple[str, int, list]],
+    *,
+    beside_a_measured_verdict: bool = False,
+) -> str:
+    """Say, in one sentence, why a declared-unanchored act's uncovered text has no verdict.
+
+    The observation itself is kept — the chair, the page, the uncovered count —
+    because it is real and somebody has to be able to act on it. What is refused
+    is calling it a shortfall: no span of a declared act can enter the union its
+    page text was diffed against, by declaration rather than by measurement
+    (GOVERNANCE 10).
+
+    Two situations, and the sentence names which one it is describing. Where the
+    chair has no aligned spans on the page at all, the whole page is unmeasured
+    and this is the page's own `reason` — the wording Tyrel's ruling produced,
+    unchanged. Where it does have some, only the declared acts' share is
+    unmeasured; the page carries a real verdict and this rides beside it as
+    `unmeasured_reason`, scoped to those acts, because the page-wide sentence
+    would be a false statement about a page that *was* measured.
+    """
+    observed = "; ".join(
+        f"chair {chair!r} saw {count} uncovered non-whitespace character(s) beside "
+        f"{', '.join(acts)} declared unanchored"
+        for chair, count, acts in sorted(observations)
+    )
+    if beside_a_measured_verdict:
+        subject = (
+            f"page {ordinal}'s testimony content coverage is unmeasured for the acts the "
+            f"Perlector declares {CONTINUATION_NO_ACT_ANCHOR}, so no witness span can be "
+            "attached to them and what is uncovered beside them is not a measured shortfall"
+        )
+    else:
+        subject = (
+            f"page {ordinal}'s testimony content coverage is unmeasured: the Perlector declares "
+            f"every act attachment on this continuation page {CONTINUATION_NO_ACT_ANCHOR}, so no "
+            "witness span can be attached there and what is uncovered is not a measured shortfall"
+        )
+    return (
+        f"{subject} "
+        f"({observed}); continuation-page alignment in the Perlector is what would make this "
+        "measurement real"
+    )
+
+
 def testimony_content_findings(context) -> dict[int, dict]:
     """Compare each page witness's text to its own aligned act attachments.
 
@@ -2645,6 +2763,9 @@ def testimony_content_findings(context) -> dict[int, dict]:
     # converse orphan (a page record no act owns) before any finding is built.
     reconcile_page_roles(context, attachments, page_testimonia)
     findings: dict[int, dict] = {}
+    # Page ordinal -> the (chair, uncovered count, declared-unanchored acts) rows
+    # whose uncovered text no attachment on this page could ever have covered.
+    unanchored_by_page: dict[int, list[tuple[str, int, list[str]]]] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
         # `current_page_testimonia` types only the page ordinal and the chair,
@@ -2729,6 +2850,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # retirement is meant to preserve.
             continue
         spans = []
+        declared_unanchored: list[str] = []
         for act_id, row in rows_by_page_chair.get((ordinal, chair), []):
             alignment = row.get("alignment")
             if (
@@ -2743,6 +2865,20 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ):
                     raise FatalAccounting("attached page witness has malformed alignment span")
                 spans.append((span["start"], span["end"], act_id))
+            elif (
+                isinstance(alignment, dict)
+                and alignment.get("status") == "unaligned"
+                and alignment.get("reason") == CONTINUATION_NO_ACT_ANCHOR
+            ):
+                # Not attachment-conditional, deliberately. The declaration is
+                # written onto every continuation row whichever way `attached`
+                # came out (`pipeline/3_attestatores/run.py` derives the row per
+                # contributing page and forces this alignment before geometry is
+                # consulted), and it is the declaration -- not the geometry --
+                # that makes an aligned span unreachable here. Requiring
+                # `attached` would leave the live seam's own continuation page,
+                # whose rows are unattached, reported as a measured shortfall.
+                declared_unanchored.append(act_id)
         covered_intervals = _covered_intervals(spans, len(text))
         uncovered = uncovered_non_whitespace_ranges(text, covered_intervals)
         finding = findings.setdefault(ordinal, {"by_chair": {}, "shortfall": False})
@@ -2753,7 +2889,30 @@ def testimony_content_findings(context) -> dict[int, dict]:
             ],
             "uncovered_non_whitespace": uncovered,
         }
-        finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
+        if declared_unanchored and uncovered["count"]:
+            # Recorded whichever way the verdict goes: this chair saw uncovered
+            # text beside acts whose spans could never have covered it, and that
+            # observation is what names the gap the Perlector has yet to close.
+            # The settlement below decides whether it becomes the page's reason
+            # or rides beside a measured one.
+            unanchored_by_page.setdefault(ordinal, []).append(
+                (chair, uncovered["count"], sorted(declared_unanchored))
+            )
+        if covered_intervals or not declared_unanchored:
+            # Only an *empty* span union is unmeasured -- the union, not the
+            # span list: a zero-width aligned span is a valid row that covers
+            # nothing, so `covered_intervals` is the fact, not `spans` or
+            # `declared_unanchored` alone. Where this chair has covering spans
+            # on the page, the diff was taken against a real union -- a mixed
+            # page carries one act starting here beside another continuing
+            # through -- so its uncovered text is a measurement like any other
+            # and raises the page's shortfall. Suppressing it because some
+            # other act on the page declared itself unanchorable would hide a
+            # real coverage loss behind a neighbour's declaration, which is
+            # the missed act GOALS 1 puts above every other cost. Tyrel's
+            # ruling (Unit 12 F2) withholds the verdict where the measurement
+            # cannot be made; here it can be.
+            finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     for finding in findings.values():
         if finding["by_chair"]:
             continue
@@ -2768,6 +2927,33 @@ def testimony_content_findings(context) -> dict[int, dict]:
         # bounded recovery.
         finding["shortfall"] = None
         finding.setdefault("reason", NO_PAGE_CONTENT_COVERAGE["reason"])
+    for ordinal, observations in unanchored_by_page.items():
+        finding = findings[ordinal]
+        if finding["shortfall"]:
+            # This page carries a real shortfall measured against a real span
+            # union -- by another chair, or by this same chair on a mixed page
+            # where one act's spans are aligned and another's are declared
+            # unanchorable. That verdict is a measurement and outranks the
+            # unmeasured one; the reason still records what could not be
+            # measured beside it, so neither half is lost (GOVERNANCE 2).
+            finding.setdefault(
+                "unmeasured_reason",
+                continuation_unmeasured_reason(
+                    ordinal, observations, beside_a_measured_verdict=True
+                ),
+            )
+            continue
+        # Tyrel's ruling on Unit 12's F2: unmeasured by name.
+        # Before it, this page's uncovered text became `shortfall: True` on a
+        # page no act's review reads, so the verdict reached nothing and the
+        # export said DELIVERED over it. `None` is this module's existing
+        # spelling for "not measured" (the `by_chair`-empty case above), and it
+        # is the honest one here: the diff was taken against a union the
+        # Perlector declared empty, so its result is not a shortfall the
+        # Recensor found. The count stays in `by_chair`, the reason names the
+        # cause, and every act spanning the page restates the row.
+        finding["shortfall"] = None
+        finding.setdefault("reason", continuation_unmeasured_reason(ordinal, observations))
     return findings
 
 
@@ -2838,6 +3024,44 @@ def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
     absence rather than restating it as a measured, clean page.
     """
     return copy.deepcopy(findings.get(ordinal, NO_PAGE_CONTENT_COVERAGE))
+
+
+def testimony_content_for_continuation_pages(
+    findings: dict[int, dict], act_regions: list[dict], primary_ordinal: int
+) -> list[dict]:
+    """Restate the content finding of every page this act spans but is not primary on.
+
+    The same derivation `page_coverage_for` already uses for residual ink —
+    "every page the act's proposal or recovery regions touch, not only its
+    primary `page_ordinal`" — applied to the measurement that did not have it.
+    Without this, a continuation page's finding reached no review at all: both
+    acts of the fixture are primary on page 1, so page 2's record was computed
+    every run and read by nobody.
+
+    These rows are **not** route inputs. Their verdict is `None` wherever the
+    Perlector declared the page unanchorable (`continuation_unmeasured_reason`),
+    and `review_route_from_findings` treats `None` as "no measurement exists" —
+    routing them would be routing an absence. What they do is make the absence
+    visible in the act's own record, in the export, and in the Armarium's
+    per-act restatement, which is what GOVERNANCE 2 asks of a partial result.
+
+    Present and empty for an act that spans one page, for the reason
+    `page_coverage_for`'s `checked_pages` is: a consumer that only ever sees the
+    field populated cannot tell "spans no continuation" from "never derived".
+    """
+    ordinals = sorted(
+        {
+            region["payload"]["transform"]["source_page_ordinal"]
+            for region in act_regions
+            if isinstance(region.get("payload"), dict)
+            and isinstance(region["payload"].get("transform"), dict)
+        }
+        - {primary_ordinal}
+    )
+    return [
+        {"page_ordinal": ordinal, **testimony_content_for_page(findings, ordinal)}
+        for ordinal in ordinals
+    ]
 
 
 def review_route_from_findings(
@@ -2925,6 +3149,22 @@ def publish_review(
     only the route inputs would leave a future direct payload field unchecked.
     """
     refuse_capture_preference(payload, what="a Recensor review")
+    measurement_field = "testimony_content_coverage"
+    try:
+        validate_testimony_content_coverage(payload[measurement_field])
+        measurement_field = "testimony_content_coverage_continuation"
+        validate_testimony_content_coverage_continuation(payload[measurement_field])
+        measurement_field = "cross_capture_coverage"
+        coverage = payload[measurement_field]
+        if coverage is not None:
+            if not isinstance(coverage, dict):
+                raise SchemaRefusal("cross-capture coverage is neither an object nor null")
+            validate_cross_capture_coverage(coverage)
+    except (KeyError, SchemaRefusal, TypeError) as error:
+        raise FatalAccounting(
+            f"the Recensor review of {subject_id!r} has malformed measurement evidence "
+            f"in {measurement_field}: {error}"
+        ) from error
     return context.publish(
         kind="review",
         subject_id=subject_id,
@@ -3252,6 +3492,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "coverage": coverage,
                     "geometry_coverage": geometry_coverage,
                     "testimony_content_coverage": content_coverage,
+                    # Derived from what was actually cut, exactly as
+                    # `page_coverage` below is: a Designator-held act whose
+                    # near-side region really was cut has continuation pages to
+                    # restate, and hardcoding this empty for the held shape
+                    # would drop the only record of them.
+                    "testimony_content_coverage_continuation": (
+                        testimony_content_for_continuation_pages(
+                            content_findings, hold_regions, act["page_ordinal"]
+                        )
+                    ),
                     "continuation": recensor_continuation_link(hold_regions, act_id),
                     "page_coverage": page_coverage_for(hold_regions, page_findings),
                     "recoveries_used": 0,
@@ -3337,6 +3587,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # needs the whole page, not a guess at which one act is "responsible".
         page_coverage = page_coverage_for(state["regions"], page_findings)
         flagged_pages = page_coverage["flagged_pages"]
+        # The testimony-content half of the same "every page this act touches"
+        # rule, off the same region set. Recorded, never routed: see
+        # `testimony_content_for_continuation_pages`.
+        continuation_content_coverage = testimony_content_for_continuation_pages(
+            content_findings, state["regions"], act["page_ordinal"]
+        )
 
         used_total = len(state["requests"])
         used_fallback = len(state["requests_by_kind"][FALLBACK_RECROP])
@@ -3467,6 +3723,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "coverage": coverage,
                 "geometry_coverage": geometry_coverage,
                 "testimony_content_coverage": content_coverage,
+                "testimony_content_coverage_continuation": continuation_content_coverage,
                 "perlectio_ref": reading_ref,
                 "recovery_policy": budget,
             }
@@ -3504,6 +3761,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # and clear" from "never checked".
                     "geometry_coverage": geometry_coverage,
                     "testimony_content_coverage": content_coverage,
+                    "testimony_content_coverage_continuation": continuation_content_coverage,
                     "continuation": continuation_link,
                     "page_coverage": page_coverage,
                     "perlectio_ref": reading_ref,
@@ -3587,7 +3845,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "confirmed-blank",
                     "the Perlector's own reading found no-readable-text, and every witness "
                     f"that actually read this act ({', '.join(corroborating_chairs)}) "
-                    "independently reports the same absence; sealed blank with that evidence",
+                    "independently reports the same absence; sealed blank with that evidence"
+                    + (
+                        "; page ink could not be measured or reconciled for this act's "
+                        "recorded page evidence"
+                        if page_coverage["unmeasurable_pages"]
+                        or geometry_coverage.get("ink_measurable") is False
+                        else ""
+                    ),
                 )
                 # Spec 09 seals a blank "with evidence", and a sentence is not
                 # evidence a consumer can read. The review queue, the Armarium
@@ -3649,7 +3914,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "quality",
             )
         else:
-            outcome, reason = "accepted", "coverage and geometry reconcile"
+            outcome = "accepted"
+            if (
+                page_coverage["unmeasurable_pages"]
+                or geometry_coverage.get("ink_measurable") is False
+            ):
+                reason = (
+                    "the reading is accepted; page ink could not be measured or reconciled for "
+                    "this act's recorded page evidence"
+                )
+            else:
+                reason = "coverage and geometry reconcile"
 
         # Derived from the outcome's own class rather than counted by hand in each
         # branch above, so a review shape added later cannot land in the tree
@@ -3677,6 +3952,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "coverage": coverage,
                 "geometry_coverage": geometry_coverage,
                 "testimony_content_coverage": content_coverage,
+                "testimony_content_coverage_continuation": continuation_content_coverage,
                 "continuation": continuation_link,
                 "recoveries_used": used_total,
                 "budget_allowed": budget["allowed"],

@@ -9,6 +9,7 @@ the wrong ID, or ignored an adapter is more expensive than a visible refusal.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, Iterable, Mapping
 
 import pytest
@@ -87,13 +89,24 @@ from .http import (
     require_exact_model_id,
 )
 from .manager import (
+    PROCESSOR_CONFIG_FILENAMES,
     AdapterCalibration,
     ReceiptPublication,
     ServiceHandle,
     ServingManager,
     StageContextReceiptPublisher,
+    assert_no_discoverable_local_env,
+    assert_processor_geometry,
 )
-from .preflight import ServingSmokeReader, prepare_log_root
+from .preflight import (
+    ServingSmokeReader,
+    UsageReconciliation,
+    assert_generation_config_key_coverage,
+    assert_image_before_text_on_wire,
+    assert_resized_pixels_within_trained_geometry,
+    prepare_log_root,
+    reconcile_usage_against_capacity,
+)
 from .process import SubprocessLauncher
 from .residency import FileResidencyLease
 from .smoke import VisionSmokeCall
@@ -174,6 +187,8 @@ class FakeHttp:
         ambiguous_before_launch: bool = False,
         sticky_after_stop: bool = False,
         ambiguous_after_stop: bool = False,
+        probe_http_status: int | None = None,
+        usage: Mapping[str, object] | None = None,
     ) -> None:
         self.model_ids = model_ids
         self.outputs = dict(outputs or {})
@@ -184,6 +199,11 @@ class FakeHttp:
         self.ambiguous_before_launch = ambiguous_before_launch
         self.sticky_after_stop = sticky_after_stop
         self.ambiguous_after_stop = ambiguous_after_stop
+        # A fixed non-200 status every probe answers with, for exercising
+        # `_is_deterministic_probe_rejection` without a real engine: `None`
+        # (default) keeps every existing test's ordinary 200 answers.
+        self.probe_http_status = probe_http_status
+        self.usage = dict(usage) if usage is not None else None
         self.process: FakeProcess | None = None
         self.calls: list[tuple[str, str, dict[str, object] | None]] = []
 
@@ -228,6 +248,8 @@ class FakeHttp:
             return HttpResponse(404, b"{}")
         model_id = decoded["model"]
         assert isinstance(model_id, str)
+        if self.probe_http_status is not None:
+            return HttpResponse(self.probe_http_status, b"{}")
         if self.bad_response:
             return HttpResponse(200, json.dumps({"model": model_id, "choices": []}).encode())
         response_model = self.response_model or model_id
@@ -237,9 +259,10 @@ class FakeHttp:
             }
         else:
             choice = {"text": self.outputs.get(model_id, f"answer:{model_id}")}
-        return HttpResponse(
-            200, json.dumps({"model": response_model, "choices": [choice]}).encode()
-        )
+        body: dict[str, object] = {"model": response_model, "choices": [choice]}
+        if self.usage is not None:
+            body["usage"] = self.usage
+        return HttpResponse(200, json.dumps(body).encode())
 
     def _available(self) -> bool:
         return self.occupied_before_launch or (
@@ -781,6 +804,8 @@ def manager_for(
     ignore_terminate: bool = False,
     ignore_kill: bool = False,
     residency_lease: FileResidencyLease | None = None,
+    probe_http_status: int | None = None,
+    usage: Mapping[str, object] | None = None,
 ):
     clock = Clock()
     http = FakeHttp(
@@ -793,6 +818,8 @@ def manager_for(
         ambiguous_before_launch=ambiguous_before_launch,
         sticky_after_stop=sticky_after_stop,
         ambiguous_after_stop=ambiguous_after_stop,
+        probe_http_status=probe_http_status,
+        usage=usage,
     )
     launcher = FakeLauncher(
         http,
@@ -969,6 +996,9 @@ def test_the_argv_carries_every_typed_profile_flag_and_the_audit_digests_that_ar
         "--generation-config",
         "vllm",
         "--no-enable-log-requests",
+        "--enable-prompt-tokens-details",
+        "--chat-template-content-format",
+        "openai",
         "--enable-prefix-caching" if switches_on else "--no-enable-prefix-caching",
         "--enforce-eager" if switches_on else "--no-enforce-eager",
         "--trust-remote-code" if switches_on else "--no-trust-remote-code",
@@ -2134,6 +2164,41 @@ def _wait_until(predicate: Callable[[], bool], *, timeout_seconds: float = 5.0) 
         time.sleep(0.02)
 
 
+def _proc_status_is_live(read_status: Callable[[], str]) -> bool:
+    """Classify one `/proc` status sample, including disappearance during its read."""
+    try:
+        status = read_status()
+    except OSError as error:
+        if error.errno in {errno.ENOENT, errno.ESRCH}:
+            return False
+        raise
+    return "(zombie)" not in status
+
+
+def test_proc_status_observer_distinguishes_live_zombie_and_disappearance() -> None:
+    assert _proc_status_is_live(lambda: "State:\tS (sleeping)\n")
+    assert not _proc_status_is_live(lambda: "State:\tZ (zombie)\n")
+
+    for error in (
+        FileNotFoundError(errno.ENOENT, "status entry disappeared"),
+        ProcessLookupError(errno.ESRCH, "process disappeared while status was read"),
+    ):
+
+        def disappeared(error=error):
+            raise error
+
+        assert not _proc_status_is_live(disappeared)
+
+    denied = PermissionError(errno.EACCES, "status entry is unreadable")
+
+    def unreadable():
+        raise denied
+
+    with pytest.raises(PermissionError) as caught:
+        _proc_status_is_live(unreadable)
+    assert caught.value is denied
+
+
 def test_a_still_running_child_polls_none_and_a_terminated_one_reports_its_signal(
     tmp_path: Path,
 ) -> None:
@@ -2243,18 +2308,12 @@ def test_terminate_reaches_a_grandchild_in_the_same_owned_session(tmp_path: Path
         grandchild_pid = int(pidfile.read_text())
 
         def _grandchild_alive() -> bool:
-            # The grandchild is orphaned once its true parent (the direct
-            # child this manager owns) is also killed by the same killpg, so
-            # nothing left in this process tree ever reaps it: a signalled
-            # grandchild becomes an unreapable zombie rather than
-            # disappearing, and plain os.kill(pid, 0) still succeeds against
-            # a zombie. /proc's own state character is the one thing that
-            # distinguishes "signalled and exited" from "still running" here.
-            try:
-                status = Path(f"/proc/{grandchild_pid}/status").read_text()
-            except FileNotFoundError:
-                return False
-            return "(zombie)" not in status
+            # The grandchild's true parent exits under the same killpg. The
+            # host may leave the grandchild observable briefly as a zombie or
+            # reap it before this sample. Plain os.kill(pid, 0) treats a zombie
+            # as present, so /proc's state distinguishes the first case while
+            # the two disappearance errnos distinguish the second.
+            return _proc_status_is_live(Path(f"/proc/{grandchild_pid}/status").read_text)
 
         assert _grandchild_alive(), "grandchild must be running before terminate is asserted"
         process.terminate()
@@ -4613,3 +4672,853 @@ def test_serving_smoke_reader_turns_an_invalid_page_result_into_existing_preflig
         issue.code == "smoke-output-invalid" and issue.chair == "reader" for issue in report.issues
     )
     assert launcher.processes[0].terminate_calls == 1
+
+
+# --- the row's declared image geometry, proved against the model's own file ---
+
+
+def _geometry_row(patch: int | None = 16, merge: int | None = 2):
+    """A row shaped only as `assert_processor_geometry` reads one."""
+
+    return SimpleNamespace(
+        patch_size=patch,
+        merge_size=merge,
+        chair="attestator_2",
+        recipe="unproven-real-attestatores",
+        tier=TIER,
+    )
+
+
+def _snapshot_carrying(tmp_path: Path, filename: str, document: object):
+    root = tmp_path / "snapshot"
+    root.mkdir(exist_ok=True)
+    (root / filename).write_text(json.dumps(document), encoding="utf-8")
+    return SimpleNamespace(root=root)
+
+
+# The two real shapes, taken from the pinned revisions themselves:
+# `preprocessor_config.json` states the pair at the top level (chandra-ocr-2,
+# churro-3B, Qwen3.8-27B); `processor_config.json` nests it under
+# `image_processor`, and for `attestator_2`'s DAI revision it is the only file
+# that exists at all -- fetching the other returns 404, which is the defect
+# this check and the comment corrections beside it close.
+TOP_LEVEL = {"patch_size": 16, "merge_size": 2, "image_processor_type": "Qwen2VLImageProcessorFast"}
+NESTED = {
+    "image_processor": {"patch_size": 16, "merge_size": 2},
+    "processor_class": "Qwen3VLProcessor",
+}
+
+
+@pytest.mark.parametrize(
+    "filename,document",
+    [
+        (PROCESSOR_CONFIG_FILENAMES[0], TOP_LEVEL),
+        (PROCESSOR_CONFIG_FILENAMES[1], NESTED),
+    ],
+)
+def test_a_row_matching_the_models_own_processor_configuration_passes(
+    tmp_path: Path, filename: str, document: dict
+) -> None:
+    assert_processor_geometry(_snapshot_carrying(tmp_path, filename, document), _geometry_row())
+
+
+@pytest.mark.parametrize(
+    "filename,document",
+    [
+        (PROCESSOR_CONFIG_FILENAMES[0], {**TOP_LEVEL, "patch_size": 14}),
+        (PROCESSOR_CONFIG_FILENAMES[1], {"image_processor": {"patch_size": 16, "merge_size": 1}}),
+    ],
+)
+def test_a_row_that_disagrees_with_the_model_is_refused_by_name(
+    tmp_path: Path, filename: str, document: dict
+) -> None:
+    """The defect this closes: `patch_size`/`merge_size` decide every image's
+    prompt-token cost, and a wrong pair mis-counts by 30% while the receipt
+    publishes the arithmetic as though it had been checked."""
+
+    with pytest.raises(ServingConfigurationError) as error:
+        assert_processor_geometry(_snapshot_carrying(tmp_path, filename, document), _geometry_row())
+    assert "attestator_2" in str(error.value)
+    assert filename in str(error.value)
+
+
+def test_a_row_that_declares_no_geometry_is_left_alone(tmp_path: Path) -> None:
+    """Fixture and synthetic rows declare neither, and are unchanged by this."""
+
+    snapshot = _snapshot_carrying(tmp_path, PROCESSOR_CONFIG_FILENAMES[0], {"patch_size": 14})
+    assert_processor_geometry(snapshot, _geometry_row(patch=None, merge=None))
+
+
+def test_a_snapshot_with_no_processor_configuration_is_passed_not_refused(tmp_path: Path) -> None:
+    """The documented boundary. All four pinned repositories ship one of the two
+    files, so absence means a synthetic store rather than a wrong declaration
+    about a real model -- and whether a materialized store is complete is
+    `common/chairs/model_store.py`'s question, answered against the manifest."""
+
+    root = tmp_path / "empty"
+    root.mkdir()
+    assert_processor_geometry(SimpleNamespace(root=root), _geometry_row())
+
+
+def test_an_unreadable_processor_configuration_is_refused_rather_than_skipped(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "broken"
+    root.mkdir()
+    (root / PROCESSOR_CONFIG_FILENAMES[0]).write_text("{not json", encoding="utf-8")
+    with pytest.raises(ServingConfigurationError):
+        assert_processor_geometry(SimpleNamespace(root=root), _geometry_row())
+
+
+@pytest.mark.parametrize(
+    "filename,document",
+    [
+        (PROCESSOR_CONFIG_FILENAMES[0], {"patch_size": 16}),
+        (PROCESSOR_CONFIG_FILENAMES[1], {"image_processor": {"merge_size": 2}}),
+    ],
+)
+def test_a_present_file_with_neither_pair_complete_is_refused_not_skipped(
+    tmp_path: Path, filename: str, document: dict
+) -> None:
+    """A present file that names only one of the two values used to fall
+    through silently: nothing had checked the row's declaration, and the
+    receipt still recorded it as confirmed. `common/request_capacity.py` uses
+    both row values on every image, so an unconfirmed pair must refuse."""
+
+    with pytest.raises(ServingConfigurationError) as error:
+        assert_processor_geometry(_snapshot_carrying(tmp_path, filename, document), _geometry_row())
+    assert "attestator_2" in str(error.value)
+    assert filename in str(error.value)
+
+
+def test_a_split_declaration_across_top_level_and_nested_is_read_and_confirmed(
+    tmp_path: Path,
+) -> None:
+    """A processor file naming one field at the top level and the other under
+    `image_processor` still supplies a complete, confirmable pair."""
+
+    document = {"patch_size": 16, "image_processor": {"merge_size": 2}}
+    assert_processor_geometry(
+        _snapshot_carrying(tmp_path, PROCESSOR_CONFIG_FILENAMES[1], document), _geometry_row()
+    )
+
+
+def test_a_split_declaration_that_disagrees_with_the_row_is_refused(tmp_path: Path) -> None:
+    """The counterfactual for the split layout: if the check ever skipped an
+    incomplete nested section again, the positive test above would still pass;
+    this one cannot, because the split pair must be READ to be refused."""
+
+    document = {"patch_size": 14, "image_processor": {"merge_size": 2}}
+    with pytest.raises(ServingConfigurationError) as error:
+        assert_processor_geometry(
+            _snapshot_carrying(tmp_path, PROCESSOR_CONFIG_FILENAMES[1], document), _geometry_row()
+        )
+    assert "attestator_2" in str(error.value)
+
+
+# --------------------------------------------------------------------------
+# U4: generation_config = "auto"; hybrid-attention prefix caching;
+# --enable-prompt-tokens-details and usage reconciliation; a deterministic
+# probe rejection breaking before the watchdog; local.env discoverability;
+# and the three static preflight assertions from hostile review item A.
+# (The row's declared image geometry against the model's own processor file,
+# above, landed already on this unit's base and is not re-tested here.)
+# --------------------------------------------------------------------------
+
+
+def test_generation_config_auto_is_admitted_only_for_a_witness_role() -> None:
+    witness_row = profile_row(
+        recipe="witness-v1", chair="attestator_2", served_model_id="witness-api", port=8200
+    )
+    witness_row["generation_config"] = "auto"
+    profile = recipes(witness_row).profiles[0]
+    assert profile.generation_config == "auto"
+
+    non_witness_row = profile_row(
+        recipe="perlector-v1", chair="perlector", served_model_id="perlector-api", port=8300
+    )
+    non_witness_row["generation_config"] = "auto"
+    with pytest.raises(ServingConfigurationError, match="admitted only for witness"):
+        recipes(non_witness_row)
+
+    bad_value_row = profile_row(
+        recipe="witness-v1", chair="attestator_2", served_model_id="witness-api", port=8200
+    )
+    bad_value_row["generation_config"] = "custom"
+    with pytest.raises(ServingConfigurationError, match="generation_config must be one of"):
+        recipes(bad_value_row)
+
+
+def test_generation_config_auto_records_the_generation_config_json_digest_in_the_audit(
+    tmp_path: Path,
+) -> None:
+    chair = identity("attestator_2", "witness-v1")
+    row = profile_row(
+        recipe="witness-v1", chair="attestator_2", served_model_id="witness-api", port=8200
+    )
+    row["generation_config"] = "auto"
+    snapshot_root = tmp_path / "attestator_2"
+    snapshot_root.mkdir(parents=True)
+    payload = b'{"eos_token_id":[151645,151643],"repetition_penalty":1.05,"top_k":1,"top_p":0.001}'
+    (snapshot_root / "generation_config.json").write_bytes(payload)
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("witness-api",),
+    )
+
+    handle = manager.start(chair, TIER)
+
+    assert (
+        handle.launch_audit["profile"]["generation_config_digest"]  # type: ignore[index]
+        == hashlib.sha256(payload).hexdigest()
+    )
+    handle.stop()
+    assert launcher.calls
+
+
+def test_generation_config_vllm_carries_no_digest(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, _, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+
+    handle = manager.start(chair, TIER)
+
+    assert handle.launch_audit["profile"]["generation_config_digest"] is None  # type: ignore[index]
+    handle.stop()
+
+
+def test_generation_config_auto_without_a_readable_file_refuses(tmp_path: Path) -> None:
+    chair = identity("attestator_2", "witness-v1")
+    row = profile_row(
+        recipe="witness-v1", chair="attestator_2", served_model_id="witness-api", port=8200
+    )
+    row["generation_config"] = "auto"
+    (tmp_path / "attestator_2").mkdir(parents=True)  # no generation_config.json inside
+    manager, _, _, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("witness-api",),
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="no readable"):
+        manager.start(chair, TIER)
+
+    # Checked before any process exists, alongside the processor-geometry
+    # check -- a real launch's boot time is not spent to discover a fact
+    # already on local disk.
+    assert launcher.processes == []
+    assert publisher.calls == []
+
+
+def test_a_hybrid_attention_checkpoint_refuses_to_launch_with_prefix_caching_on(
+    tmp_path: Path,
+) -> None:
+    """Chandra-2 and the Perlector, named by repository -- never by role.
+
+    Role names are reused across this whole suite as generic fixture
+    identifiers (``test_client.py``'s default identity is literally
+    ``attestator_1``), so this refusal must be keyed on the exact real
+    checkpoint, not on a role a fixture happens to share.
+    """
+
+    chair = ChairIdentity(
+        role="attestator_1",
+        source="huggingface",
+        repo="datalab-to/chandra-ocr-2",
+        path=None,
+        revision=REVISION,
+        digest_manifest=MANIFEST,
+        manifest="manifests/attestator_1.json",
+        adapter_of=None,
+        serving_recipe="unproven-real-attestatores",
+        license_note="test identity only",
+    )
+    row = profile_row(
+        recipe="unproven-real-attestatores",
+        chair="attestator_1",
+        served_model_id="attestator-1-api",
+        port=8102,
+    )
+    row["enable_prefix_caching"] = True
+    manager, _, _, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("attestator-1-api",),
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="hybrid Mamba/attention"):
+        manager.start(chair, TIER)
+    assert launcher.processes == []
+    assert publisher.calls == []
+
+    off_row = dict(row)
+    off_row["enable_prefix_caching"] = False
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path / "off",
+        identities={chair.role: chair},
+        profiles=(off_row,),
+        model_ids=("attestator-1-api",),
+    )
+    manager.start(chair, TIER).stop()
+    assert launcher.calls
+
+
+def test_a_fixture_role_sharing_the_same_name_is_unaffected_by_the_hybrid_check(
+    tmp_path: Path,
+) -> None:
+    """Same role name (``attestator_1``), a fake repository: no refusal.
+
+    Regression guard for the collision the role-keyed version of this check
+    originally had with `test_client.py`'s and this file's own generic
+    fixtures.
+    """
+
+    chair = identity("attestator_1", "reader-v1")  # repo="example/attestator_1"
+    row = profile_row(
+        recipe="reader-v1", chair="attestator_1", served_model_id="reader-api", port=8000
+    )
+    row["enable_prefix_caching"] = True
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader-api",),
+    )
+
+    manager.start(chair, TIER).stop()
+    assert launcher.calls
+
+
+def test_start_wires_processor_geometry_and_refuses_a_disagreeing_row(tmp_path: Path) -> None:
+    """`assert_processor_geometry` is unit-tested on its own above; this proves
+    `manager.start` actually calls it, on the exact base snapshot, before launch."""
+
+    chair = identity("reader", "reader-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["patch_size"] = 14
+    row["merge_size"] = 2
+    snapshot_root = tmp_path / "reader"
+    snapshot_root.mkdir(parents=True)
+    (snapshot_root / "processor_config.json").write_text(
+        json.dumps({"image_processor": {"patch_size": 16, "merge_size": 2}})
+    )
+    manager, _, _, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader-api",),
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="mis-count every request"):
+        manager.start(chair, TIER)
+    assert launcher.processes == []
+    assert publisher.calls == []
+
+
+def test_a_deterministic_probe_rejection_breaks_before_the_full_watchdog_wait(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, clock, _, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        probe_http_status=400,
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="VLLM_PROBE_HTTP_ERROR") as excinfo:
+        manager.start(chair, TIER)
+
+    assert "VLLM_WATCHDOG_TIMEOUT" not in str(excinfo.value)
+    # A retry-to-deadline failure would have consumed the full
+    # startup_timeout_seconds (3, from profile_row); breaking on a
+    # deterministic rejection costs nothing.
+    assert clock.seconds == 0
+    assert launcher.processes[0].terminate_calls == 1
+    assert publisher.calls == []
+
+
+def test_a_transient_probe_status_still_retries_to_the_watchdog(tmp_path: Path) -> None:
+    """502/503 is the engine still booting, not rejecting the request shape."""
+
+    chair = identity("reader", "reader-v1")
+    manager, clock, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        probe_http_status=503,
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="VLLM_WATCHDOG_TIMEOUT.*VLLM_PROBE_HTTP_ERROR"):
+        manager.start(chair, TIER)
+
+    assert clock.seconds == 3
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_assert_no_discoverable_local_env_refuses_only_when_present(tmp_path: Path) -> None:
+    assert_no_discoverable_local_env(directory=tmp_path)  # absent: no refusal
+
+    (tmp_path / "local.env").write_text("SOME_TOKEN=x\n")
+    with pytest.raises(ServingConfigurationError, match="local.env"):
+        assert_no_discoverable_local_env(directory=tmp_path)
+
+
+def test_assert_no_discoverable_local_env_also_catches_this_projects_own_dotenv_names(
+    tmp_path: Path,
+) -> None:
+    """`.env`/`.env.*` are this repo's own credential-filename convention.
+
+    `.gitignore` ignores `.env` and `.env.*` (keeping only the tracked
+    `.env.example`), and `.githooks/check_ingress.py` names `.env` a
+    sensitive filename -- `local.env` matches no such convention anywhere in
+    this repository or in vLLM, so the check must not rely on that name alone.
+    """
+
+    (tmp_path / ".env").write_text("HF_TOKEN=leaked\n")
+    with pytest.raises(ServingConfigurationError, match=r"\.env"):
+        assert_no_discoverable_local_env(directory=tmp_path)
+
+
+def test_assert_no_discoverable_local_env_catches_a_dotenv_variant_but_not_the_example(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env.example").write_text("HF_TOKEN=replace-me\n")
+    assert_no_discoverable_local_env(directory=tmp_path)  # the tracked example is not a leak
+
+    (tmp_path / ".env.production").write_text("HF_TOKEN=leaked\n")
+    with pytest.raises(ServingConfigurationError, match=r"\.env\.production"):
+        assert_no_discoverable_local_env(directory=tmp_path)
+
+
+def test_manager_start_refuses_a_discoverable_env_override_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`manager.start` itself must guard every real launch, not only the smoke reader.
+
+    `ChairClient.__enter__` calls `manager.start` directly, with no smoke
+    lifecycle in between; a check placed only in `ServingSmokeReader.read`
+    would never run on that path.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, registry, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+    operator_cwd = tmp_path / "operator-cwd"
+    operator_cwd.mkdir()
+    (operator_cwd / ".env").write_text("HF_TOKEN=leaked\n")
+    monkeypatch.chdir(operator_cwd)
+
+    with pytest.raises(ServingConfigurationError, match=r"\.env"):
+        manager.start(chair, TIER)
+
+    assert launcher.processes == []
+    assert registry.ensure_calls == []
+
+
+def test_serving_smoke_reader_refuses_a_discoverable_local_env_before_any_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, registry, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    operator_cwd = tmp_path / "operator-cwd"
+    operator_cwd.mkdir()
+    (operator_cwd / "local.env").write_text("HF_TOKEN=leaked\n")
+    monkeypatch.chdir(operator_cwd)
+
+    reader = ServingSmokeReader(manager, vision_smoke(), gpu_profile=measured_gpu())
+
+    with pytest.raises(ServingConfigurationError, match="local.env"):
+        reader.read(chair, fixture, smoke_placement())
+
+    assert launcher.processes == []
+    assert registry.ensure_calls == []
+
+
+def test_assert_image_before_text_on_wire_checks_the_rendered_order() -> None:
+    assert_image_before_text_on_wire(
+        [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+            {"type": "text", "text": "read this"},
+        ]
+    )
+    with pytest.raises(ServingConfigurationError, match="must open with an image_url part"):
+        assert_image_before_text_on_wire(
+            [
+                {"type": "text", "text": "read this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+            ]
+        )
+    with pytest.raises(ServingConfigurationError, match="is empty"):
+        assert_image_before_text_on_wire([])
+
+
+def test_assert_resized_pixels_within_trained_geometry_bounds() -> None:
+    assert_resized_pixels_within_trained_geometry(
+        chair="attestator_1",
+        resized_width=2080,
+        resized_height=2976,
+        trained_min_pixels=50_176,
+        trained_max_pixels=6_291_456,
+    )
+    with pytest.raises(ServingConfigurationError, match="outside its declared trained geometry"):
+        assert_resized_pixels_within_trained_geometry(
+            chair="attestator_1",
+            resized_width=100,
+            resized_height=100,
+            trained_min_pixels=50_176,
+            trained_max_pixels=6_291_456,
+        )
+    with pytest.raises(ServingConfigurationError, match="must be positive"):
+        assert_resized_pixels_within_trained_geometry(
+            chair="attestator_1",
+            resized_width=0,
+            resized_height=100,
+            trained_min_pixels=1,
+            trained_max_pixels=10,
+        )
+    with pytest.raises(ServingConfigurationError, match="malformed"):
+        assert_resized_pixels_within_trained_geometry(
+            chair="attestator_1",
+            resized_width=10,
+            resized_height=10,
+            trained_min_pixels=10,
+            trained_max_pixels=5,
+        )
+
+
+def test_assert_generation_config_key_coverage_names_every_unaccounted_key() -> None:
+    vendor = {"temperature": 0.0, "top_k": 1, "repetition_penalty": 1.05}
+    assert_generation_config_key_coverage(
+        chair="attestator_3",
+        vendor_generation_config=vendor,
+        sent_keys=("temperature", "repetition_penalty"),
+        deliberately_not_sent={"top_k": "recorded reason"},
+    )
+    with pytest.raises(ServingConfigurationError, match="neither sent"):
+        assert_generation_config_key_coverage(
+            chair="attestator_3",
+            vendor_generation_config=vendor,
+            sent_keys=("temperature",),
+            deliberately_not_sent={},
+        )
+    with pytest.raises(ServingConfigurationError, match="both sent and deliberately"):
+        assert_generation_config_key_coverage(
+            chair="attestator_3",
+            vendor_generation_config=vendor,
+            sent_keys=("temperature", "top_k"),
+            deliberately_not_sent={"top_k": "recorded reason"},
+        )
+
+
+def test_reconcile_usage_against_capacity_within_tolerance_has_no_finding() -> None:
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_1",
+        usage={"prompt_tokens": 6045, "completion_tokens": 10, "total_tokens": 6055},
+        expected_image_tokens=6000,
+        expected_text_tokens=45,
+        tolerance=5,
+    )
+    assert isinstance(reconciled, UsageReconciliation)
+    assert reconciled.within_tolerance
+    assert reconciled.to_finding() is None
+
+
+def test_reconcile_usage_against_capacity_localizes_an_image_only_mismatch() -> None:
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_3",
+        usage={"prompt_tokens": 5200},
+        expected_image_tokens=5100,
+        expected_text_tokens=0,
+        tolerance=5,
+    )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["kind"] == "usage-capacity-mismatch"
+    assert finding["localized_to"] == "image"
+    assert finding["discrepancy"] == 100
+
+
+def test_reconcile_usage_against_capacity_localizes_a_text_only_mismatch() -> None:
+    reconciled = reconcile_usage_against_capacity(
+        chair="reader",
+        usage={"prompt_tokens": 30},
+        expected_image_tokens=0,
+        expected_text_tokens=4,
+        tolerance=1,
+    )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "text"
+
+
+def test_reconcile_usage_against_capacity_reports_a_mixed_mismatch_as_unlocalized() -> None:
+    """With no per-modality breakdown in ``usage``, a mixed mismatch stays honest."""
+
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_2",
+        usage={"prompt_tokens": 5200},
+        expected_image_tokens=4059,
+        expected_text_tokens=1024,
+        tolerance=5,
+    )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "unlocalized"
+
+
+def test_reconcile_usage_against_capacity_localizes_a_mixed_mismatch_to_image() -> None:
+    """``multimodal_tokens.image`` localizes exactly even on a real mixed request."""
+
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_2",
+        usage={
+            "prompt_tokens": 5183,
+            "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
+        },
+        expected_image_tokens=4059,
+        expected_text_tokens=1024,
+        tolerance=5,
+    )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "image"
+    assert finding["observed_image_tokens"] == 4159
+
+
+def test_reconcile_usage_against_capacity_localizes_a_mixed_mismatch_to_text() -> None:
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_2",
+        usage={
+            "prompt_tokens": 5200,
+            "prompt_tokens_details": {"multimodal_tokens": {"image": 4059}},
+        },
+        expected_image_tokens=4059,
+        expected_text_tokens=1024,
+        tolerance=5,
+    )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "text"
+
+
+def test_reconcile_usage_against_capacity_mixed_breakdown_both_off_stays_unlocalized() -> None:
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_2",
+        usage={
+            "prompt_tokens": 5300,
+            "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
+        },
+        expected_image_tokens=4059,
+        expected_text_tokens=1024,
+        tolerance=5,
+    )
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "unlocalized"
+
+
+def test_reconcile_usage_against_capacity_ignores_a_malformed_multimodal_breakdown() -> None:
+    reconciled = reconcile_usage_against_capacity(
+        chair="attestator_2",
+        usage={"prompt_tokens": 5200, "prompt_tokens_details": {"multimodal_tokens": "image"}},
+        expected_image_tokens=4059,
+        expected_text_tokens=1024,
+        tolerance=5,
+    )
+    assert reconciled.observed_image_tokens is None
+    finding = reconciled.to_finding()
+    assert finding is not None
+    assert finding["localized_to"] == "unlocalized"
+
+
+def test_reconcile_usage_against_capacity_refuses_missing_or_malformed_usage() -> None:
+    with pytest.raises(ServingConfigurationError, match="prompt_tokens"):
+        reconcile_usage_against_capacity(
+            chair="reader",
+            usage=None,
+            expected_image_tokens=0,
+            expected_text_tokens=4,
+            tolerance=0,
+        )
+    with pytest.raises(ServingConfigurationError, match="prompt_tokens"):
+        reconcile_usage_against_capacity(
+            chair="reader",
+            usage={"prompt_tokens": "6045"},
+            expected_image_tokens=0,
+            expected_text_tokens=4,
+            tolerance=0,
+        )
+    with pytest.raises(ServingConfigurationError, match="non-negative"):
+        reconcile_usage_against_capacity(
+            chair="reader",
+            usage={"prompt_tokens": 10},
+            expected_image_tokens=-1,
+            expected_text_tokens=4,
+            tolerance=0,
+        )
+
+
+def test_render_vllm_argv_carries_enable_prompt_tokens_details(tmp_path: Path) -> None:
+    """Hostile review item H: the engine's own token counts must be requestable."""
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+
+    manager.start(chair, TIER).stop()
+
+    assert "--enable-prompt-tokens-details" in launcher.calls[0][0]
+
+
+# --- tests merged from origin/main (#103/#104: readiness budgets, error bodies, deadlines) ---
+
+
+def test_the_readiness_poll_retries_a_transport_refusal_and_then_starts(tmp_path: Path) -> None:
+    """A normalised transport refusal must cost an interval, never the launch.
+
+    This is the half of the R4 defect the manager owns.  While a broken 4xx/5xx
+    body escaped `operations/serving/http.py` as a bare `http.client` exception,
+    it missed this loop's `except EndpointUnavailable` entirely and fell through
+    to the unexpected-start handler, which refuses and tears the child down.
+    Classification is pinned against a real socket in `test_http.py`; what is
+    pinned here is that the classification the transport now produces is spent
+    on a retry.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+
+    class RefusesTwiceOnceLaunched:
+        """Refuse the first two post-launch health checks, then defer to the fake.
+
+        Only post-launch: `_assert_endpoint_unoccupied` runs the same health URL
+        before the child exists and reads an ambiguous refusal there as an
+        occupied port, which is a different — and correct — behaviour.
+        """
+
+        def __init__(self) -> None:
+            self.refusals = 0
+
+        def request(
+            self, method: str, url: str, *, body: bytes | None, timeout_seconds: float
+        ) -> HttpResponse:
+            if launcher.processes and url.endswith("/health") and self.refusals < 2:
+                self.refusals += 1
+                raise EndpointUnavailable(
+                    "GET /health: IncompleteRead: IncompleteRead(0 bytes read)",
+                    definitively_absent=False,
+                )
+            return http.request(method, url, body=body, timeout_seconds=timeout_seconds)
+
+    flaky = RefusesTwiceOnceLaunched()
+    manager.http = flaky
+
+    handle = manager.start(chair, TIER)
+
+    assert flaky.refusals == 2
+    assert handle.receipt.details.endpoint == "http://127.0.0.1:8000/v1"
+    assert launcher.processes[0].terminate_calls == 0
+
+
+def test_a_readiness_probe_never_outlives_what_is_left_of_the_watchdog(tmp_path: Path) -> None:
+    """Each probe gets the smaller of its own budget and the watchdog's remainder.
+
+    The watchdog's deadline used to be consulted only *between* requests, so a
+    probe issued one millisecond inside it could still add its whole budget to a
+    start that had already run out of time. With `startup_timeout_seconds` of 3
+    and a 1-second poll, the third round has one second left and the probe must
+    be told so.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+
+    class RecordingHealthBudgets:
+        def __init__(self) -> None:
+            self.health_budgets: list[float] = []
+            self.rounds = 0
+
+        def request(
+            self, method: str, url: str, *, body: bytes | None, timeout_seconds: float
+        ) -> HttpResponse:
+            if launcher.processes and url.endswith("/health"):
+                self.health_budgets.append(timeout_seconds)
+                self.rounds += 1
+                if self.rounds <= 2:
+                    raise EndpointUnavailable("not up yet", definitively_absent=False)
+            return http.request(method, url, body=body, timeout_seconds=timeout_seconds)
+
+    recorder = RecordingHealthBudgets()
+    manager.http = recorder
+
+    manager.start(chair, TIER)
+
+    assert recorder.health_budgets == [2.0, 2.0, 1.0]

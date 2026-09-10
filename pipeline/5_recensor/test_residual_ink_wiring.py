@@ -38,7 +38,7 @@ from common.background import (
     resolve_background_policy,
 )
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import DESIGNATOR, RECENSOR
 from common.imaging import dimensions, encode_grayscale_png
 from common.runtree.store import RunTree
@@ -124,6 +124,8 @@ class _FakeContext:
         self.required_configs = []
 
     def require_sealed_config(self, name, observed_sha256):
+        if self.run["sealed_config_digests"].get(name) != observed_sha256:
+            raise ContractError(f"sealed {name} digest does not match the consumer input")
         self.required_configs.append((name, observed_sha256))
 
 
@@ -395,6 +397,46 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
 
 
+def test_an_unmeasurable_page_qualifies_an_otherwise_accepted_reason_through_main(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        _invoke(root, "r", "happy", program)
+
+    def unmeasurable_pages(context, unused_sealed_pages=None):
+        return {
+            ordinal: {"ink_measurable": False} for ordinal in RUN.regions_by_source_page(context)
+        }
+
+    monkeypatch.setattr(RUN, "page_coverage_findings", unmeasurable_pages)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run.py", "--run-root", str(root), "--run-id", "r", "--scenario", "happy"],
+    )
+    assert RUN.main() == RUN.EXIT_COMPLETE
+    tree = RunTree(root, "r")
+    reviews = [
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review"
+    ]
+    assert {review["outcome"] for review in reviews} == {"accepted"}
+    assert all(review["payload"]["page_coverage"]["unmeasurable_pages"] for review in reviews)
+    assert all(
+        "page ink could not be measured or reconciled" in review["payload"]["reason"]
+        for review in reviews
+    )
+
+
 def test_a_page_whose_paper_cannot_be_inferred_is_unmeasurable_and_never_checked(tmp_path):
     """The audit refuses the page rather than reporting zero residual ink on it.
 
@@ -473,3 +515,222 @@ def test_an_unmeasurable_page_confirms_no_witness_pointer_and_authorizes_no_reco
     assert RUN.unclaimed_ink_observations({1: None}, [observation], 1, {}) == []
     with pytest.raises(FatalAccounting, match="no ink-map page-space evidence"):
         RUN.unclaimed_ink_observations({}, [observation], 1, {})
+
+
+def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monkeypatch):
+    """A real refused PNG crosses the producer/consumer boundary unchanged."""
+    ink_map = _load_module("pipeline/1_ink_map/run.py", "ink_map_real_refusal_for_recensor")
+    rows = [bytearray([30] * 100) for _ in range(100)]
+    for y in range(80, 100):
+        rows[y] = bytearray([220] * 100)
+    page = {
+        "subject_id": "page-1",
+        "payload": {"image_path": "page.png", "source_sha256": "0" * 64},
+    }
+    expected_digest = digest_bytes(DEFAULT_BACKGROUND_CONFIG_PATH.read_bytes())
+
+    class ProducerContext:
+        def __init__(self):
+            self.tree = object()  # The checked-byte storage boundary is supplied below.
+            self.run = {"ingress": {"mode": "synthetic-fixture"}}
+            self.args = SimpleNamespace(
+                designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH)
+            )
+            self.published = []
+            self.sealed_config_digests = {"designator-grouping": expected_digest}
+            self.required_configs = []
+
+        def require_sealed_config(self, name, observed_sha256):
+            if self.sealed_config_digests.get(name) != observed_sha256:
+                raise ContractError(f"sealed {name} digest does not match the producer input")
+            self.required_configs.append((name, observed_sha256))
+
+        def input_ref(self, path):
+            return {"relative_path": path, "sha256": "0" * 64}
+
+        def publish(self, **record):
+            self.published.append(record)
+
+        def seal_boundary(self):
+            pass
+
+        def finish(self):
+            pass
+
+    producer = ProducerContext()
+
+    class Parser:
+        @staticmethod
+        def parse_args():
+            return SimpleNamespace()
+
+    monkeypatch.setattr(ink_map, "stage_parser", lambda *_args: Parser())
+    monkeypatch.setattr(ink_map, "open_stage_context", lambda *_args, **_kwargs: producer)
+    monkeypatch.setattr(ink_map, "sealed_pages", lambda _context: [(1, page, "page.json")])
+    monkeypatch.setattr(
+        ink_map, "measured_page_bytes", lambda *_args: encode_grayscale_png(100, 100, rows)
+    )
+    assert ink_map.main(registry_factory=None) == ink_map.EXIT_COMPLETE
+    (record,) = producer.published
+    assert record["outcome"] == "ink-not-measurable"
+    assert record["payload"]["background_config_sha256"] == expected_digest
+    assert producer.required_configs == [("designator-grouping", expected_digest)]
+
+    class ConsumerTree:
+        def build_manifest(self, _stage):
+            return {"artifacts": [{"kind": "ink-map", "artifact_id": "page-1"}]}
+
+        def read_artifact(self, _stage, _kind, _artifact_id):
+            return record
+
+    context = _FakeContext.__new__(_FakeContext)
+    context.tree = ConsumerTree()
+    context.run = {"sealed_config_digests": {"designator-grouping": expected_digest}}
+    context.required_configs = []
+    assert RUN.ink_map_by_page(context) == {1: None}
+    assert context.required_configs == [("designator-grouping", expected_digest)]
+
+
+def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(monkeypatch):
+    """A producer record proves the measured envelope before the consumer reads runs."""
+    ink_map = _load_module("pipeline/1_ink_map/run.py", "ink_map_real_measurement_for_recensor")
+    rows = [bytearray([220] * 100) for _ in range(100)]
+    for y in range(80, 100):
+        rows[y] = bytearray([0] * 100)
+    page = {
+        "subject_id": "page-1",
+        "payload": {"image_path": "page.png", "source_sha256": "0" * 64},
+    }
+    expected_digest = digest_bytes(DEFAULT_BACKGROUND_CONFIG_PATH.read_bytes())
+
+    class ProducerContext:
+        def __init__(self):
+            self.tree = object()
+            self.run = {"ingress": {"mode": "synthetic-fixture"}}
+            self.args = SimpleNamespace(
+                designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH)
+            )
+            self.published = []
+            self.sealed_config_digests = {"designator-grouping": expected_digest}
+            self.required_configs = []
+
+        def require_sealed_config(self, name, observed_sha256):
+            if self.sealed_config_digests.get(name) != observed_sha256:
+                raise ContractError(f"sealed {name} digest does not match the producer input")
+            self.required_configs.append((name, observed_sha256))
+
+        def input_ref(self, path):
+            return {"relative_path": path, "sha256": "0" * 64}
+
+        def publish(self, **record):
+            self.published.append(record)
+
+        def seal_boundary(self):
+            pass
+
+        def finish(self):
+            pass
+
+    producer = ProducerContext()
+
+    class Parser:
+        @staticmethod
+        def parse_args():
+            return SimpleNamespace()
+
+    monkeypatch.setattr(ink_map, "stage_parser", lambda *_args: Parser())
+    monkeypatch.setattr(ink_map, "open_stage_context", lambda *_args, **_kwargs: producer)
+    monkeypatch.setattr(ink_map, "sealed_pages", lambda _context: [(1, page, "page.json")])
+    monkeypatch.setattr(
+        ink_map, "measured_page_bytes", lambda *_args: encode_grayscale_png(100, 100, rows)
+    )
+    assert ink_map.main(registry_factory=None) == ink_map.EXIT_COMPLETE
+    (record,) = producer.published
+    assert record["outcome"] in {"mapped", "unclaimed-edge-ink"}
+    assert record["payload"]["ink_measurable"] is True
+    assert record["payload"]["background"]["config_sha256"] == expected_digest
+
+    class ConsumerTree:
+        def build_manifest(self, _stage):
+            return {"artifacts": [{"kind": "ink-map", "artifact_id": "page-1"}]}
+
+        def read_artifact(self, _stage, _kind, _artifact_id):
+            return record
+
+    context = _FakeContext.__new__(_FakeContext)
+    context.tree = ConsumerTree()
+    context.run = {"sealed_config_digests": {"designator-grouping": expected_digest}}
+    context.required_configs = []
+    assert RUN.ink_map_by_page(context) == {1: record["payload"]["edge_findings"]}
+    assert context.required_configs == [("designator-grouping", expected_digest)]
+
+
+def test_ink_map_by_page_refuses_an_unmeasurable_payload_with_a_wrong_seal():
+    class RefusalTree:
+        def build_manifest(self, _stage):
+            return {"artifacts": [{"kind": "ink-map", "artifact_id": "page-1"}]}
+
+        def read_artifact(self, _stage, _kind, _artifact_id):
+            return {
+                "outcome": "ink-not-measurable",
+                "payload": {
+                    "page_ordinal": 1,
+                    "ink_measurable": False,
+                    "background_refusal": "the page is majority ink",
+                    "background_config_sha256": "1" * 64,
+                },
+            }
+
+    context = _FakeContext.__new__(_FakeContext)
+    context.tree = RefusalTree()
+    context.run = {"sealed_config_digests": {"designator-grouping": "0" * 64}}
+    context.required_configs = []
+    with pytest.raises(FatalAccounting, match="invalid sealed ink-not-measurable payload"):
+        RUN.ink_map_by_page(context)
+
+
+@pytest.mark.parametrize(
+    "defect", ["base-era", "wrong-seal", "missing-background-field", "array-source"]
+)
+def test_ink_map_by_page_refuses_a_measured_payload_without_current_background_provenance(defect):
+    payload = {
+        "page_ordinal": 1,
+        "ink_measurable": True,
+        "background": {
+            "background_level": 220,
+            "background_source": "inferred-modal",
+            "dark_mode": 0,
+            "ink_margin": 73,
+            "contrast_below_background": 40,
+            "ink_threshold": 180,
+            "config_sha256": "0" * 64,
+        },
+        "ink": {},
+        "edge": {},
+        "edge_findings": {"schema": "ink-runs.v1", "width": 1, "height": 1, "rows": [[]]},
+    }
+    if defect == "base-era":
+        del payload["ink_measurable"]
+        del payload["background"]
+        del payload["ink"]
+        del payload["edge"]
+    elif defect == "wrong-seal":
+        payload["background"]["config_sha256"] = "1" * 64
+    elif defect == "missing-background-field":
+        del payload["background"]["ink_threshold"]
+    else:
+        payload["background"]["background_source"] = []
+
+    class MeasuredTree:
+        def build_manifest(self, _stage):
+            return {"artifacts": [{"kind": "ink-map", "artifact_id": "page-1"}]}
+
+        def read_artifact(self, _stage, _kind, _artifact_id):
+            return {"outcome": "mapped", "payload": payload}
+
+    context = _FakeContext.__new__(_FakeContext)
+    context.tree = MeasuredTree()
+    context.run = {"sealed_config_digests": {"designator-grouping": "0" * 64}}
+    context.required_configs = []
+    with pytest.raises(FatalAccounting, match="invalid sealed measured payload"):
+        RUN.ink_map_by_page(context)

@@ -93,6 +93,22 @@ RECENSOR_RUN = _load_recensor()
 NO_PAGE_CONSERVATION = RECENSOR_RUN.NO_PAGE_CONSERVATION
 NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 
+
+def _perlector_dissent():
+    """The Perlector's own `dissent` module, loaded the way `_load_recensor` is.
+
+    Imported by path rather than by name: `pipeline/4_perlector` is a
+    numeric-prefixed directory its own stage program adds to `sys.path`, and
+    this suite must not acquire that path as a side effect of a comparison it
+    makes in one test.
+    """
+    path = ROOT / "pipeline/4_perlector/dissent.py"
+    spec = importlib.util.spec_from_file_location("perlector_dissent_acceptance", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # Each of these is the digest of a whole run tree's relative-path -> file-digest
 # inventory, per spec 02's test 9. They are re-pinned in the commit that changes
 # what a run writes, and never loosened: "nothing changed" must not be satisfiable
@@ -1752,6 +1768,7 @@ def orchestrate(
     *,
     models_config: Path | None = None,
     serving_recipes_config: Path | None = None,
+    witness_context_config: Path | None = None,
     recovery_config: Path | None = None,
     hard_failure_config: Path | None = None,
     nuda_per_mille: int | None = None,
@@ -1795,6 +1812,8 @@ def orchestrate(
         command.extend(("--models-config", str(models_config)))
     if serving_recipes_config is not None:
         command.extend(("--serving-recipes-config", str(serving_recipes_config)))
+    if witness_context_config is not None:
+        command.extend(("--witness-context-config", str(witness_context_config)))
     if recovery_config is not None:
         command.extend(("--recovery-config", str(recovery_config)))
     if hard_failure_config is not None:
@@ -2045,6 +2064,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
 
     models = ROOT / "config" / "models-real.toml"
     recipes = ROOT / "config" / "serving_recipes_real.toml"
+    witness_context = ROOT / "config" / "witness_context-real.toml"
     run_root = tmp_path / "runs"
 
     # The tier is what the real catalogue's live rows require to resolve at all:
@@ -2057,6 +2077,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
         "happy",
         models_config=models,
         serving_recipes_config=recipes,
+        witness_context_config=witness_context,
         placement_tier="generic-48gb",
     )
 
@@ -2069,6 +2090,7 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
         load_fixture(ROOT / "proof"),
         "happy",
         serving_recipes_config_path=recipes,
+        witness_context_config_path=witness_context,
     )
     assert run_record["config_digest"] == expected["config_digest"]
     assert expected["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(
@@ -2585,7 +2607,8 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v3"
+                or manifest.get("schema")
+                not in {"armarium-export-manifest.v7", "armarium-export-manifest.v8"}
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -3427,7 +3450,9 @@ def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavaila
         _sqlite_logical_digest(b"not reached")
 
 
-def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None) -> None:
+def _write_acceptance_bundle_tree(
+    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v7"
+) -> None:
     """Write a whole run tree around one bundle, optionally damaged from the inside.
 
     ``damage`` mutates the package manifest *after* it is written and before the tree
@@ -3439,7 +3464,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v3",
+        "schema": manifest_schema,
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -3496,7 +3521,10 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     (root / "7_armarium/manifest.json").write_bytes(canonical_bytes(stage_manifest))
 
 
-def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path):
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
+)
+def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path, manifest_schema):
     """Version-local database fields cannot rename a run; a literal row can."""
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     version_local = _acceptance_sqlite(
@@ -3509,21 +3537,24 @@ def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path)
     original_root = tmp_path / "original"
     doctored_root = tmp_path / "doctored"
     changed_root = tmp_path / "changed"
-    _write_acceptance_bundle_tree(original_root, database)
-    _write_acceptance_bundle_tree(doctored_root, doctored)
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
+    _write_acceptance_bundle_tree(doctored_root, doctored, manifest_schema=manifest_schema)
     changed = _acceptance_sqlite(
         tmp_path / "changed.sqlite",
         "changed row",
         derived_from_canonical_sha256=digest_bytes(b"original row"),
     )
-    _write_acceptance_bundle_tree(changed_root, changed)
+    _write_acceptance_bundle_tree(changed_root, changed, manifest_schema=manifest_schema)
 
     assert snapshot(original_root) != snapshot(doctored_root)
     assert semantic_snapshot_digest(original_root) == semantic_snapshot_digest(doctored_root)
     assert semantic_snapshot_digest(original_root) != semantic_snapshot_digest(changed_root)
 
 
-def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
+@pytest.mark.parametrize(
+    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
+)
+def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, manifest_schema):
     """Integrity damage stays byte-bound instead of being normalized out of the pin.
 
     The two bundle-internal cases are the ones the reduction would otherwise *erase*:
@@ -3536,7 +3567,7 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     """
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     original_root = tmp_path / "original"
-    _write_acceptance_bundle_tree(original_root, database)
+    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
     original_semantic = semantic_snapshot_digest(original_root)
 
     manifest_hash_root = tmp_path / "manifest-self-hash"
@@ -3553,9 +3584,14 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
             {key: value for key, value in manifest.items() if key != "self_hash"}
         )
 
-    _write_acceptance_bundle_tree(manifest_hash_root, database, damage=damage_manifest_hash)
     _write_acceptance_bundle_tree(
-        member_digest_root, database, damage=damage_database_member_digest
+        manifest_hash_root, database, damage=damage_manifest_hash, manifest_schema=manifest_schema
+    )
+    _write_acceptance_bundle_tree(
+        member_digest_root,
+        database,
+        damage=damage_database_member_digest,
+        manifest_schema=manifest_schema,
     )
     shutil.copytree(original_root, export_hash_root)
     export_path = export_hash_root / "7_armarium/artifacts/export/example.json"
@@ -3566,6 +3602,20 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     for root in (manifest_hash_root, member_digest_root, export_hash_root):
         assert snapshot(root) != snapshot(original_root)
         assert semantic_snapshot_digest(root) != original_semantic
+
+
+def test_semantic_snapshot_preserves_the_bundle_manifest_schema(tmp_path):
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "same row")
+    image_root = tmp_path / "image-local"
+    clustered_root = tmp_path / "clustered"
+    _write_acceptance_bundle_tree(
+        image_root, database, manifest_schema="armarium-export-manifest.v7"
+    )
+    _write_acceptance_bundle_tree(
+        clustered_root, database, manifest_schema="armarium-export-manifest.v8"
+    )
+
+    assert semantic_snapshot_digest(image_root) != semantic_snapshot_digest(clustered_root)
 
 
 def export_of(tree: RunTree) -> dict:
@@ -3612,6 +3662,71 @@ def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
     assert export["aggregate"]["reasons"] == []
     assert len(export["delivered"]) == 2
     assert export["non_delivered"] == []
+    assert {item["category"] for item in export["delivered"]} == {"delivered"}
+
+
+def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happy_run):
+    """Tyrel's ruling on Unit 12's F2, on the principal fixture.
+
+    Both acts are marked out on page 1; a2 continues onto page 2, and both page
+    witnesses transcribe page 2's whole text. No attachment there can ever be
+    `aligned` — the Perlector declares every continuation row
+    `continuation-page-no-act-anchor` because the act anchor is derived from the
+    act's own primary page — so the span union page 2's text was diffed against
+    is empty by declaration, not by measurement.
+
+    Until this ruling the Recensor called that `shortfall: True` on a page no
+    act's review read, and the export said DELIVERED over 34 transcribed
+    non-whitespace characters nothing accounted for. Now the observation is kept
+    and the verdict is withheld: `shortfall: None`, the reason naming the cause,
+    the chairs, the page and the count, restated on the act that spans the page
+    in its review, in the manifest entry, and in the export (GOVERNANCE 2). The
+    happy path still establishes both acts — this is a visible partial, not a
+    hold — and the Perlector gap that would make the measurement real is filed.
+    """
+    _, tree = happy_run
+    export = export_of(tree)
+    assert export["aggregate"]["status"] == "complete"
+    assert export["aggregate"]["reasons"] == []
+
+    review_records = artifacts(tree, RECENSOR, "review")
+    reviews_by_key = {record["payload"]["act_key"]: record for record in review_records}
+    # Counted before anything is read out of it: a second review for one act is
+    # an accounting failure, and a lookup keyed by `act_key` would silently keep
+    # whichever of the two the manifest happened to list last.
+    assert len(reviews_by_key) == len(review_records)
+    # And the whole key set: an extra review under a third key would hide behind
+    # a count that only catches a repeated one.
+    assert set(reviews_by_key) == {"a1", "a2"}
+    assert reviews_by_key["a1"]["payload"]["testimony_content_coverage_continuation"] == []
+    rows = reviews_by_key["a2"]["payload"]["testimony_content_coverage_continuation"]
+    assert [row["page_ordinal"] for row in rows] == [2]
+    row = rows[0]
+    assert row["shortfall"] is None
+    assert sorted(row["by_chair"]) == ["attestator_1", "attestator_3"]
+    for chair, measured in sorted(row["by_chair"].items()):
+        assert measured["attached_spans"] == [], chair
+        assert measured["uncovered_non_whitespace"]["count"] == 34, chair
+        assert f"chair {chair!r} saw 34 uncovered non-whitespace" in row["reason"], chair
+    assert "continuation-page-no-act-anchor" in row["reason"]
+    assert "page 2's testimony content coverage is unmeasured" in row["reason"]
+    # Unmeasured is not a hold and not a route input: a2 is delivered.
+    assert reviews_by_key["a2"]["outcome"] == "accepted"
+
+    entry_payloads = [
+        tree.read_artifact(ARMARIUM, "manifest-entry", entry["artifact_id"])["payload"]
+        for entry in tree.build_manifest(ARMARIUM)["artifacts"]
+        if entry["kind"] == "manifest-entry"
+    ]
+    entries = {payload["act_key"]: payload for payload in entry_payloads}
+    delivered = {item["act_key"]: item for item in export["delivered"]}
+    # The same count, for the same reason, on both restatements.
+    assert len(entries) == len(entry_payloads)
+    assert len(delivered) == len(export["delivered"])
+    assert set(entries) == set(delivered) == {"a1", "a2"}
+    for restatement in (entries, delivered):
+        assert restatement["a1"]["testimony_content_coverage_continuation"] == []
+        assert restatement["a2"]["testimony_content_coverage_continuation"] == rows
     assert {item["category"] for item in export["delivered"]} == {"delivered"}
 
 
@@ -5700,7 +5815,9 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     # the happy walking skeleton; repeatability still compares every byte.
     # The count includes two retained Chandra-response blobs, Unit 12's two
     # content-addressed raw Churro responses, Unit 13's retained DAI act
-    # responses, and Unit 9's ink-map artifacts.
+    # responses, Unit 9's ink-map artifacts, and -- since the Chandra adapter
+    # runs the vendor's own `scale_to_fit` -- the two published page images it
+    # presents, one per witnessed page.
     assert len(before) == HAPPY_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -6214,7 +6331,7 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     assert any("under-witnessed" in reason for reason in export["aggregate"]["reasons"])
 
 
-def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compares_all(
+def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_view(
     tmp_path, happy_run
 ):
     """Capability handling stays live without blinding the reference instrument.
@@ -6223,16 +6340,22 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     whose format can express uncertainty, because such a format may embed
     alternative-reading markup inline and diffing the markup would count as
     disagreement. It cannot touch the reading — dissent is read-only and computed
-    after the fact — so it is not a picker. What it is, is a hole in the
-    instrument ARCHITECTURE names for catching a reader that "learned to agree
-    with witnesses rather than to read ink."
+    after the fact — so it is not a picker. What it was, until U12, is a hole in
+    the instrument ARCHITECTURE names for catching a reader that "learned to
+    agree with witnesses rather than to read ink": the declaration alone put a
+    chair permanently outside the comparison.
 
     Spec 07's fixture declares that capability on chair 2 of act a1 in the
-    dedicated `witness-capabilities` scenario. R0 left both page-witness chairs
-    unknown until R4 provided act-anchored comparison views; now that R4's
-    alignment lands a comparison view for both, only the capability-declared
-    chair stays unknown, and the reference happy run — where no chair declares
-    the capability — compares all three.
+    dedicated `witness-capabilities` scenario, and chair 2 is act-scoped. It is
+    now compared — not because the exemption was deleted, but because
+    `pipeline/4_perlector/run.py::dissent_testimonia` derives it a
+    `comparison_reported` from its own retained bytes
+    (`common/alignment.py::bracket_marker_view`), and the exemption lifts for a
+    chair that has a safe view. The counterfactual below is what says those are
+    different things: the RETAINED record, which carries no derived view, is
+    still refused by `is_comparable`. Every chair in this scenario is now
+    compared, exactly as in the reference happy run where none declares the
+    capability.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "witness-capabilities")
@@ -6245,9 +6368,13 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     )
     by_chair = {row["chair"]: row for row in reading["payload"]["dissent"]}
     assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
-    assert by_chair["attestator_2"]["compared"] == "unknown"
-    assert "cannot be reduced to a plain comparison view" in by_chair["attestator_2"]["reason"]
-    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 1
+    assert by_chair["attestator_2"]["compared"] is True
+    assert "reason" not in by_chair["attestator_2"]
+    assert {chair: row["compared"] for chair, row in by_chair.items()} == {
+        "attestator_1": True,
+        "attestator_2": True,
+        "attestator_3": True,
+    }
 
     testimonium = next(
         record
@@ -6255,8 +6382,15 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
         if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_2"
     )
     assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
-    # The capability blinds the comparison and nothing else: the outcome, the
-    # class, and the coverage count are what they would be without it.
+    # The counterfactual, on this run's own retained evidence: the exemption is
+    # still there and still bites. The retained Testimonium carries the verbatim
+    # report and no derived view (GOVERNANCE 4), and on that record
+    # `is_comparable` is False — so what lifted it above is the view
+    # `dissent_testimonia` builds, not a relaxed rule.
+    assert "comparison_reported" not in testimonium["payload"]
+    assert _perlector_dissent().is_comparable(testimonium) is False
+    # The capability decides the comparison route and nothing else: the outcome,
+    # the class, and the coverage count are what they would be without it.
     assert testimonium["outcome"] == "read"
     entry = next(row for row in export_of(tree)["delivered"] if row["act_key"] == "a1")
     assert entry["witness_coverage"]["by_class"] == {

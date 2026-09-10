@@ -33,8 +33,9 @@ reaches the geometric test. `ink_margin_bp` joined it the same day for the same
 reason: it derives each page's own ink threshold and has nothing to do with a
 surround either. A sub-table named for one of its four fields is the misnaming
 GLOSSARY's "one word per concept" refuses, so it is named for what it governs.
-The *evidence* a framed page publishes is still `surround`, because that block
-really is about the surround.
+The evidence published by the interior-mode branch is `dark_distribution`: its
+counts describe sampled dark pixels and do not establish a frame, bezel, or
+paper-region boundary.
 
 `primary_margin` and `secondary_margin` are refused by name wherever they
 appear, in either sub-table or at the policy's own top level. They are
@@ -87,6 +88,7 @@ from common.background import (  # noqa: F401
     resolve_background_policy,
     validate_background_table,
 )
+from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.residual_ink import validate_coverage_audit_table
@@ -350,6 +352,13 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
     if not isinstance(provenance["calibrated_for_this_corpus"], bool):
         raise ContractError(
             f"the grouping configuration's {where} calibrated_for_this_corpus is not a boolean"
+        )
+    if not calibrated_claim_has_sample_evidence(
+        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
+    ):
+        raise ContractError(
+            f"the grouping configuration's {where} says calibrated_for_this_corpus but "
+            "sample_count is zero"
         )
     return dict(provenance)
 

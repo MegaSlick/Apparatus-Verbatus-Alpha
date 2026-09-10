@@ -190,8 +190,11 @@ def _refuse_text_fields(value, path: str = "$") -> None:
 # **structural** field rather than a sentence, because a consumer must be able
 # to tell a measurement from a fallback without reading a rationale string:
 # `detected` means the structure pass genuinely found a region covering this act,
-# and `fallback-tiles` means it found nothing on the page at all and the page was
-# cut into a predetermined grid instead. In the second case `detected_bounds` is
+# and `fallback-tiles` means it produced no eligible group for the page and the
+# page was cut into a predetermined grid instead. The fallback record and the
+# act rationale distinguish no found ink, an unavailable threshold, and ink that
+# was wholly withheld by the page-spanning rule. In every fallback case
+# `detected_bounds` is
 # `null` and the two counts are zero -- recording a computed band there, with
 # zero members, would be a claim about something nothing measured (GOVERNANCE 10).
 #
@@ -222,14 +225,61 @@ ACT_GROUP_EVIDENCE = frozenset(
 # Which of the five carry a measured rectangle, and which say nothing measured.
 _EVIDENCE_WITH_DETECTED_BOUNDS = frozenset({"detected", structure_pass.EVIDENCE_SHARED_DETECTION})
 
-# The rationale a fallback-tiled page's act-group carries. One string, defined
-# once, because it is a statement about the mechanism and must read identically
-# on a primary block and on a continuation block.
-_FALLBACK_ACT_GROUP_RATIONALE = (
+_FALLBACK_REASON_NO_INK = (
+    "the structure pass found no ink to group on this page, so the page is cut into "
+    "predetermined overlapping crops and sent downstream to be read rather than being "
+    "called blank here; blankness is proved by the witnesses and the Perlector, which "
+    "only get a say if the crops reach them"
+)
+_FALLBACK_RATIONALE_NO_INK = (
     "the structure pass found no ink to group on this page, so no detected region "
     "corroborates this act; the page's predetermined fallback crops are separate "
     "evidence and are not a detection"
 )
+_FALLBACK_REASON_BACKGROUND_NOT_INFERABLE = (
+    "the page's background could not be inferred, so no ink threshold or structural "
+    "groups were measured; the page is cut into predetermined overlapping crops and "
+    "sent downstream to be read rather than being called blank here"
+)
+_FALLBACK_RATIONALE_BACKGROUND_NOT_INFERABLE = (
+    "the page's background could not be inferred, so no ink threshold or detected "
+    "region corroborates this act; the page's predetermined fallback crops are "
+    "separate evidence and are not a detection"
+)
+_FALLBACK_REASON_ALL_PAGE_SPANNING = (
+    "the structure pass found ink, but every connected component met the sealed "
+    "page-spanning bound and was withheld from grouping; the page is cut into "
+    "predetermined overlapping crops and sent downstream to be read"
+)
+_FALLBACK_RATIONALE_ALL_PAGE_SPANNING = (
+    "the structure pass found ink, but every connected component met the sealed "
+    "page-spanning bound, so no eligible detected region corroborates this act; the "
+    "page's predetermined fallback crops are separate evidence and are not a detection"
+)
+_FALLBACK_REASON_NO_ELIGIBLE_GROUP = (
+    "the structure pass found ink components but assembled no eligible detected group, "
+    "so the page is cut into predetermined overlapping crops and sent downstream to be read"
+)
+_FALLBACK_RATIONALE_NO_ELIGIBLE_GROUP = (
+    "the structure pass found ink components but assembled no eligible detected group "
+    "that corroborates this act; the page's predetermined fallback crops are separate "
+    "evidence and are not a detection"
+)
+
+
+def _fixture_fallback_explanation(analysis: dict) -> tuple[str, str]:
+    """Return the recorded fallback reason and act rationale for measured cause."""
+    if analysis["background"] is None:
+        return (
+            _FALLBACK_REASON_BACKGROUND_NOT_INFERABLE,
+            _FALLBACK_RATIONALE_BACKGROUND_NOT_INFERABLE,
+        )
+    components = analysis["components"]
+    if not components:
+        return _FALLBACK_REASON_NO_INK, _FALLBACK_RATIONALE_NO_INK
+    if len(analysis["page_spanning"]) == len(components):
+        return _FALLBACK_REASON_ALL_PAGE_SPANNING, _FALLBACK_RATIONALE_ALL_PAGE_SPANNING
+    return _FALLBACK_REASON_NO_ELIGIBLE_GROUP, _FALLBACK_RATIONALE_NO_ELIGIBLE_GROUP
 
 
 def _require_evidence_block(block: dict, what: str) -> None:
@@ -309,6 +359,12 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "prompt_version",
         "prompt_sha256",
         "answer_schema",
+        # The rule the record's text digests were taken under, and the vendor
+        # code whose prompt bytes were sent and whose grammar was read
+        # (`structure_prompt.vendor_identity`). Both arrived with
+        # `verbatus-structure-prompt.v3`; neither carries text.
+        "text_view",
+        "vendor",
         "call_record_ref",
         "raw_response_ref",
         "custody_ref",
@@ -322,6 +378,11 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "parse_outcome",
         "disposition",
         "reason_code",
+        # How many top-level blocks the chair's answer carried, and the ones
+        # that proposed no rectangle -- recorded rather than dropped, which is
+        # the whole of "malformed-bbox blocks recorded, never minted".
+        "block_count",
+        "blocks_without_proposal",
         "act_count",
         "acts",
         "findings",
@@ -329,11 +390,18 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         "page_text_rule",
         "decoding",
         "provenance",
+        # The `verbatus-request-capacity.v1` record this page's request was
+        # admitted or held on. Counts and dimensions only -- no text -- so it
+        # passes `_refuse_text_fields` like every other block here.
+        "capacity",
     }
 )
 # Geometry, and both of the chair's free strings only as a digest and a length.
 # `label` and `text` are absent from this set on purpose: the day either name
-# reappears in the record, this refuses.
+# reappears in the record, this refuses. `label_vocabulary` is not that name
+# coming back -- it carries which of the vendor grammar's own twenty admitted
+# words the answer named, or `null`, and a closed range is not a reading
+# (`structure_pass._label_fields` argues it in full).
 _STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
     {
         "ordinal",
@@ -341,14 +409,54 @@ _STRUCTURE_ANSWER_ACT_FIELDS = frozenset(
         "raw_bounds",
         "text_digest",
         "text_length",
+        "label_vocabulary",
+        "label_declared",
         "label_digest",
         "label_length",
+        "nested_bbox_count",
     }
 )
+# One of the chair's blocks that proposed no rectangle: everything an act row
+# carries except the geometry it does not have, plus the closed reason it has
+# instead. Closed separately from the act row, because the two are different
+# shapes and a field that wandered from one into the other should refuse.
+_STRUCTURE_ANSWER_UNPROPOSED_FIELDS = frozenset(
+    {
+        "ordinal",
+        "reason",
+        "blank_page",
+        "label_vocabulary",
+        "label_declared",
+        "label_digest",
+        "label_length",
+        "text_digest",
+        "text_length",
+        "nested_bbox_count",
+    }
+)
+_STRUCTURE_ANSWER_VENDOR_FIELDS = frozenset(
+    {"repository", "commit", "licence", "prompt_source", "parser_source", "prompt_sha256"}
+)
 _STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "temperature", "decoding_config_sha256"})
-# One finding kind exists (`structure_pass.dedupe_rectangles`); a second one is
-# declared here or it does not publish.
-_STRUCTURE_ANSWER_FINDING_FIELDS = {"duplicate-rectangle": frozenset({"kind", "ordinals"})}
+# Seven finding kinds: this pass's own `duplicate-rectangle`, and the six the
+# Chandra layout grammar raises (`common/chandra_layout.py`), carried onto the
+# record by `structure_pass._designator_finding`. Declared here independently of
+# that function on purpose -- a validator that imported the producer's own table
+# would agree with the producer by construction and report nothing. `data_bbox`
+# is absent from the malformed-bbox row and `data_bbox_digest` stands in its
+# place: the quoted attribute is bytes the chair wrote, and this stage publishes
+# no string the chair wrote.
+_STRUCTURE_ANSWER_FINDING_FIELDS = {
+    "duplicate-rectangle": frozenset({"kind", "ordinals"}),
+    "malformed-bbox": frozenset(
+        {"kind", "ordinal", "reason", "data_bbox_digest", "data_bbox_truncated"}
+    ),
+    "blank-page-retained": frozenset({"kind", "ordinal"}),
+    "nested-bbox-retained": frozenset({"kind", "blocks", "attributes"}),
+    "unclosed-block": frozenset({"kind", "ordinal", "detail"}),
+    "block-count-mismatch": frozenset({"kind", "parsed_blocks", "top_level_divs"}),
+    "content-outside-blocks": frozenset({"kind", "characters", "detail"}),
+}
 
 
 def _closed_object(value: object, fields: frozenset, what: str) -> dict:
@@ -371,11 +479,29 @@ def _validate_structure_answer_payload(payload: object) -> None:
     _closed_object(
         record["decoding"], _STRUCTURE_ANSWER_DECODING_FIELDS, "structure-answer decoding block"
     )
+    _closed_object(record["vendor"], _STRUCTURE_ANSWER_VENDOR_FIELDS, "structure-answer vendor")
     acts = record["acts"]
     if not isinstance(acts, list):
         raise ContractError("a Designator structure-answer payload carries no act list")
     for act in acts:
         _closed_object(act, _STRUCTURE_ANSWER_ACT_FIELDS, "structure-answer act")
+    unproposed = record["blocks_without_proposal"]
+    if not isinstance(unproposed, list):
+        raise ContractError(
+            "a Designator structure-answer payload carries no list of the blocks that "
+            "proposed nothing; a block dropped from the mint is recorded or it is lost"
+        )
+    for block in unproposed:
+        _closed_object(
+            block, _STRUCTURE_ANSWER_UNPROPOSED_FIELDS, "structure-answer unproposed block"
+        )
+        reason = block["reason"]
+        if reason not in structure_pass.NO_PROPOSAL_REASONS:
+            raise ContractError(
+                f"a Designator structure-answer block proposed nothing for reason {reason!r}, "
+                f"which is not one of the declared reasons "
+                f"{sorted(structure_pass.NO_PROPOSAL_REASONS)}"
+            )
     findings = record["findings"]
     if not isinstance(findings, list):
         raise ContractError("a Designator structure-answer payload carries no finding list")
@@ -485,10 +611,9 @@ def page_pixels(
 ) -> tuple[int, int, list, structure.BackgroundEvidence]:
     """Decode one sealed page and infer its own background, with the evidence.
 
-    Returns `structure.BackgroundEvidence` rather than a bare integer: a page
-    whose paper was inferred from its interior under a dark photographic
-    surround has a measurement to publish, and dropping it on the way back would
-    be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
+    Returns `structure.BackgroundEvidence` rather than a bare integer: an
+    interior-mode page has a dark distribution to publish, and dropping that
+    measured population on the way back would be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
     grouping config, resolved to *this* page's own background-inference policy
     here through `grouping_config.resolve_background_policy` -- the one resolver
     for that policy, so this call site and any other cannot come to disagree.
@@ -838,8 +963,8 @@ def cut_minted_region(
     """Cut one region of one act and publish it.
 
     Split from `cut_region` so an act this stage *minted* -- one whose identity
-    the fixture never declared, because the structure pass found nothing on its
-    page -- is cut by exactly the same code that cuts a declared act's crop,
+    the fixture never declared, because the page required fallback coverage --
+    is cut by exactly the same code that cuts a declared act's crop,
     rather than by a second copy of it. A crop has one author (this module's own
     docstring), and that has to stay true of a fallback crop too: the region
     record, its transform, its digest, its lineage back to the sealed Exemplar
@@ -1131,14 +1256,9 @@ def publish_structure_status(
                 # to check either. `structure.BackgroundEvidence`'s own
                 # docstring promises a reader holding `background`, `dark_mode`
                 # and the sealed `ink_margin_bp` can recompute the margin
-                # exactly; the `surround` block on the conservation record
-                # carries `dark_mode` too, but only for pages that reach the
-                # surround branch -- 65 of the 114 inferred pages of the
-                # 127-page calibration, with the other 49 taking the plain modal
-                # branch and publishing no surround block at all. On those the
-                # promise was false: the margin was a number with its own
-                # derivation dropped. The derivation runs on both branches, so
-                # its input is recorded on both.
+                # exactly; `dark_distribution` is separately present only for
+                # pages that reach the interior-mode branch. The derivation runs
+                # on both branches, so its input is recorded on both.
                 "ink_margin": analysis["ink_margin"] if analysis else None,
                 "dark_mode": analysis["dark_mode"] if analysis else None,
                 "ink_threshold": (
@@ -1211,7 +1331,7 @@ def _analyze_page(
             )
             background = evidence["background"]
             background_source = evidence["source"]
-            surround = evidence["surround"]
+            dark_distribution = evidence["dark_distribution"]
             # The margin this page derived for itself, from the distance
             # between its own two population modes and the sealed
             # `ink_margin_bp` (`structure._derived_ink_margin`). It is carried
@@ -1220,16 +1340,16 @@ def _analyze_page(
             # derivations that agree today.
             ink_margin = evidence["ink_margin"]
             # The other end of the distance the margin above is a fraction of.
-            # Carried for the same reason and published for a different one: the
-            # `surround` block already records it, but only on pages that reach
-            # the surround branch, and the derivation runs on both.
+            # It is published on every measurable page because the derivation
+            # runs on both branches; `dark_distribution`, when present, records
+            # a separate sampled population rather than a page boundary.
             dark_mode = evidence["dark_mode"]
         except structure.BackgroundInferenceRefusal:
             page_bytes = _read_checked_page_bytes(context, page_record)
             width, height, rows = grayscale_rows(page_bytes)
             background = None
             background_source = "not-inferable"
-            surround = None
+            dark_distribution = None
             ink_margin = None
             dark_mode = None
         thresholds = grouping_config.resolve_thresholds(grouping_policy, width, height)
@@ -1251,9 +1371,9 @@ def _analyze_page(
         # What this call is for is the *record* -- `group_page` returns only the
         # groups, and a component withheld from grouping that appeared nowhere
         # would be a decision inferable solely from a group that is missing.
-        # Published on the conservation record below, beside the surround
-        # measurement, which is the other thing on this page that is ink by
-        # decision rather than by writing.
+        # Published on the conservation record below, beside the neutral
+        # dark-distribution measurements retained for the page. Neither record
+        # assigns a semantic identity such as bezel or writing to those pixels.
         _grouped, page_spanning = grouping.partition_page_spanning(
             components,
             width,
@@ -1270,7 +1390,7 @@ def _analyze_page(
             brace_min_height_px=thresholds.brace_min_height_px,
             page_spanning_area_bp=thresholds.page_spanning_area_bp,
         )
-        # **A page the structure pass found nothing on is cut anyway.** Tyrel
+        # **A page with no eligible structural group is cut anyway.** Tyrel
         # ruled 2026-08-11: "If the designator sees no text it should default to
         # predetermined crops with a small margin of overlap and send the crops
         # down stream to be read by everything. If all the witnesses and the
@@ -1301,12 +1421,11 @@ def _analyze_page(
             "rows": rows,
             "background": background,
             "background_source": background_source,
-            # The dark-surround measurement, or `None` on a page that had no
-            # dark surround to measure. Published on the conservation record
-            # below, because that record is where this page's ink accounting
-            # lives and the surround is the part of that ink which is bezel
-            # rather than writing.
-            "surround": surround,
+            # The interior-mode branch's dark-population measurements, or
+            # `None` where that branch did not run. They retain sampled values
+            # beside this page's ink accounting without assigning them to a
+            # bezel, paper region, or writing.
+            "dark_distribution": dark_distribution,
             # This page's own derived ink margin, and `None` on a page whose
             # background could not be inferred -- where no threshold was
             # resolved, no scan ran, and naming a margin would be a resolution
@@ -1355,7 +1474,7 @@ def _structural_evidence_block(
             "detected_bounds": None,
             "body_member_count": 0,
             "anchor_count": 0,
-            "rationale": _FALLBACK_ACT_GROUP_RATIONALE,
+            "rationale": _fixture_fallback_explanation(analysis)[1],
         }
     group = _match_structural_group(analysis["groups"], declared_bounds, what)
     _claim_structural_group(analysis, group, act_key, what)
@@ -1391,7 +1510,7 @@ def _publish_act_group(
     The predetermined bands cover the whole page by construction, so matching a
     declared act against one would always succeed -- which would silently
     disable `_match_structural_group`'s missed-act refusal on exactly the pages
-    where the structure pass found nothing, and would publish a computed band as
+    where the structure pass produced no eligible group, and would publish a computed band as
     `detected_bounds` with zero members. Both are claims about something nothing
     measured. So the fallback branch below never consults the grid at all: it
     records `structure_evidence="fallback-tiles"` and null detected bounds, and
@@ -2008,13 +2127,6 @@ def _unclaimed_fallback_tiles(tiles: list[dict], claimed: list[dict]) -> list[di
     )
 
 
-_FALLBACK_REASON_FIXTURE = (
-    "the structure pass found no ink to group on this page, so the page is cut into "
-    "predetermined overlapping crops and sent downstream to be read rather than being "
-    "called blank here; blankness is proved by the witnesses and the Perlector, which "
-    "only get a say if the crops reach them"
-)
-
 _FALLBACK_REASON_LIVE = (
     "the structure chair returned no act for this page, so the page is cut into "
     "predetermined overlapping crops and sent downstream to be read rather than being "
@@ -2032,9 +2144,9 @@ def _publish_page_fallback(
     claimed: list[dict],
     provenance: dict,
     *,
-    reason: str = _FALLBACK_REASON_FIXTURE,
+    reason: str | None = None,
 ) -> dict | None:
-    """Cut the predetermined crops over a page the structure pass found nothing on.
+    """Cut predetermined crops over a page with no eligible structural group.
 
     This is the half of Tyrel's 2026-08-11 ruling that `grouping.fallback_tiles`
     alone never delivered. The grid existed and was handed to
@@ -2047,8 +2159,8 @@ def _publish_page_fallback(
     likely a true blank."
 
     **One minted act per page, one proposal region per tile**, rather than one
-    act per tile. The structure pass found nothing, so it has no opinion at all
-    about how many acts are on this page and must not manufacture one by
+    act per tile. No eligible detected group establishes how many acts are on
+    this page, so the fallback mechanism must not manufacture a count by
     counting bands: what it can honestly say is "here is a page, and here is
     every part of it, cut so a reader can be shown all of it". Every consumer
     already reads *all* of an act's proposal regions — the Attestatores witness
@@ -2085,6 +2197,8 @@ def _publish_page_fallback(
     tiles = _unclaimed_fallback_tiles(analysis["groups"], claimed)
     if not tiles:
         return None
+    if reason is None:
+        reason = _fixture_fallback_explanation(analysis)[0]
     fallback_payload = {
         "act_key": act_key,
         "page_id": page_id,
@@ -2275,34 +2389,25 @@ def _publish_conservation_and_secondary(
         if withheld
         else RESIDUAL_ENUMERATION_COMPLETE,
     }
-    # Present only on a page that had a dark surround, absent on every other
-    # page, exactly like `residual_components` above. A key that is always
-    # present would carry `null` on every fixture page and move bytes that
-    # nothing measured differently; `background_source` already says which
-    # branch inferred this page's paper, so an absent `surround` is not a
-    # fact going unrecorded. What it records when present is how much of this
-    # page's counted ink is photographic bezel rather than writing. Its two
-    # dark counts bracket that: `border_dark_pixel_count` is a lower bound
-    # (34.1% to 79.7% of the counted ink on the 65 pages of the 127-page
-    # calibration that reach this branch, at the margin each page derives for
-    # itself) and `dark_pixel_count` an upper one (78.5% to 96.9%). The surround is never removed from the scan or from
-    # this reconciliation (see `structure._dark_surround` for why), so without
-    # this a reader would take an ink fraction of two thirds for two thirds of
-    # writing.
-    if analysis["surround"] is not None:
-        conservation_payload["surround"] = analysis["surround"]
-    # Present only on a page that had one, absent on every other, exactly like
-    # `surround` above and for the same reason: a key carrying an empty list on
-    # every fixture page would move bytes nothing measured differently.
+    # Present only when the interior-mode branch measured a dark distribution.
+    # The two counts retain their exact sampled band/page populations and remain
+    # in the primary scan and reconciliation. They are not a page-boundary mask:
+    # without independent ground truth they do not establish a bezel, a paper
+    # region, or writing excluded from either denominator.
+    if analysis["dark_distribution"] is not None:
+        conservation_payload["dark_distribution"] = analysis["dark_distribution"]
+    # Present only on a page that had one. A key carrying an empty list on every
+    # fixture page would move bytes nothing measured differently.
     #
     # What it records is the decision itself. A component at or past the sealed
     # `page_spanning_area_bp` was withheld from column assignment and body
     # chaining -- see `grouping.partition_page_spanning` -- and none of its
     # pixels was removed from anything: they are inside `total_ink_pixel_count`
-    # above and, because no group claims them, inside `residual_pixel_count`
-    # too, where they are minted as a held act. Without this block a reader
-    # holding the record would see a residual the size of a leaf and no
-    # statement anywhere of why the grouping pass declined to claim it.
+    # above. Declared or fallback coverage may claim some or all of those pixels;
+    # conservation reports any unclaimed remainder as residual and mints that
+    # remainder as held evidence. Without this block a reader would have to
+    # infer the page-spanning decision from missing groups or whatever coverage
+    # and residual happened to remain, rather than read the decision directly.
     # Indexed, not `.get`: `_analyze_page` sets this key on every path it
     # takes, the refused-background one included, so a missing key is a bug and
     # should say so rather than publish nothing.
@@ -2691,7 +2796,7 @@ def initial_pass(context) -> bool:
         expected.append(row)
         seal_inputs.extend(evidence)
 
-    # Every sealed page the structure pass found nothing on is cut into its
+    # Every sealed page with no eligible structural group is cut into its
     # predetermined crops, which become real proposal regions of one minted act
     # per page. Before conservation, deliberately: these crops are claims on the
     # page's own pixels, so `_claimed_regions_by_page` below has to see them or

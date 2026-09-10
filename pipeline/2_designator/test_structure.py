@@ -786,39 +786,40 @@ def test_a_photographed_page_infers_its_paper_instead_of_refusing():
     evidence = infer_background_evidence(width, height, rows, background_policy=policy)
     assert evidence["background"] == 205
     assert evidence["source"] == "inferred-interior-mode"
-    surround = evidence["surround"]
+    dark_distribution = evidence["dark_distribution"]
     # The level is the page's own, and it is a valley rather than a spike: the
     # midpoint between the dark population's mode (0, the frame) and the light
     # population's mode (205, the paper). Asserted as the arithmetic rather than
     # as 102, so a change to `photographed_page`'s tones cannot leave this test
     # passing against a level it no longer describes.
-    assert surround["dark_mode"] == 0
-    assert surround["dark_at_or_below"] == (surround["dark_mode"] + 205) // 2
-    assert surround["interior_dark_bp"] <= 5000
+    assert dark_distribution["dark_mode"] == 0
+    assert dark_distribution["dark_at_or_below"] == (dark_distribution["dark_mode"] + 205) // 2
+    assert dark_distribution["interior_dark_bp"] <= 5000
     # The border figure is published and decides nothing. On this page every
     # border pixel is frame, so it is the whole band.
-    assert surround["border_dark_bp"] == 10000
-    # The surround is measured, never removed: every one of those pixels is
-    # still on the page and still below the ink threshold, so the scan counts
-    # them. That is the safe direction (GOALS 1) and this is the number that
-    # keeps a reader from taking the resulting ink fraction for writing.
-    # The two counts bracket the bezel rather than either one being it. The
-    # band is 5% of each dimension and this page's frame is wider than that, so
-    # the band count is a lower bound; the page-wide count at the same level
-    # also catches the interior's ink at 40, so it is an upper bound. Both are
-    # published because one number here is how a reader takes the wrong one.
+    assert dark_distribution["border_dark_bp"] == 10000
+    # The sampled dark population is retained, never removed: every one of
+    # those pixels remains on the page and below the ink threshold, so the scan
+    # counts it. That is the safe direction (GOALS 1). The two counts state the
+    # border-band and page-wide populations at one level; this framed fixture
+    # has a real frame, but the values do not prove that interpretation for an
+    # arbitrary admitted page.
     band_x, band_y = policy["band_px_x"], policy["band_px_y"]
-    assert surround["border_dark_pixel_count"] == sum(
+    assert dark_distribution["border_dark_pixel_count"] == sum(
         1
         for y in range(height)
         for x in range(width)
         if (x < band_x or x >= width - band_x or y < band_y or y >= height - band_y)
-        and rows[y][x] <= surround["dark_at_or_below"]
+        and rows[y][x] <= dark_distribution["dark_at_or_below"]
     )
     frame_pixels = sum(1 for row in rows for value in row if value == 0)
-    assert surround["border_dark_pixel_count"] < frame_pixels < surround["dark_pixel_count"]
-    assert surround["dark_pixel_count"] == sum(
-        1 for row in rows for value in row if value <= surround["dark_at_or_below"]
+    assert (
+        dark_distribution["border_dark_pixel_count"]
+        < frame_pixels
+        < dark_distribution["dark_pixel_count"]
+    )
+    assert dark_distribution["dark_pixel_count"] == sum(
+        1 for row in rows for value in row if value <= dark_distribution["dark_at_or_below"]
     )
     ink = ink_pixels(width, height, rows, background=205, margin=PRIMARY_MARGIN)
     assert (0, 0) in ink, "a corner of the surround must still be counted as ink"
@@ -827,22 +828,49 @@ def test_a_photographed_page_infers_its_paper_instead_of_refusing():
     # and the ink threshold (185), so its dark set and its ink set coincide
     # exactly. On a real page they do not, and the subset assertion below is
     # what actually holds in both cases.
-    assert len(ink) >= surround["dark_pixel_count"]
+    assert len(ink) >= dark_distribution["dark_pixel_count"]
     # Every surround pixel, not merely most of them: the count above and the
     # threshold together are what make that true, and an inequality alone would
     # not have caught a test that dropped a strip.
     assert all((x, y) in ink for y in range(height) for x in range(width) if rows[y][x] == 0)
-    # And every pixel the block calls dark is a pixel the scan calls ink, which
-    # is what makes "this much of the counted ink is bezel" a true sentence.
-    # `_dark_surround` caps the level at the ink threshold so this holds by
-    # construction rather than by luck.
-    assert surround["dark_at_or_below"] <= 205 - PRIMARY_MARGIN
+    # Every sampled dark pixel is a pixel the scan calls ink. `_dark_distribution`
+    # caps its level at the ink threshold, so the retained counts stay comparable
+    # with the scan without classifying those pixels as a frame or writing.
+    assert dark_distribution["dark_at_or_below"] <= 205 - PRIMARY_MARGIN
     assert all(
         (x, y) in ink
         for y in range(height)
         for x in range(width)
-        if rows[y][x] <= surround["dark_at_or_below"]
+        if rows[y][x] <= dark_distribution["dark_at_or_below"]
     )
+
+
+def test_uniform_dark_population_is_published_without_a_frame_claim():
+    """A 40%-dark page passes the existing interior/ink bounds unchanged.
+
+    Its dark pixels are uniform across border and interior, so this proves only
+    the corrected evidence contract: selection and counted pixels stay the same,
+    while the record is a neutral distribution rather than a bezel claim.
+    """
+    width = height = 100
+    rows = []
+    for y in range(height):
+        row = bytearray()
+        for x in range(width):
+            slot = y * width + x
+            row.append(0 if slot % 5 < 2 else 180 + ((slot // 5) % 60))
+        rows.append(row)
+    policy = shipped_background_policy(width, height)
+    evidence = infer_background_evidence(width, height, rows, background_policy=policy)
+    dark_distribution = evidence["dark_distribution"]
+    assert evidence["source"] == "inferred-interior-mode"
+    assert dark_distribution is not None
+    assert dark_distribution["dark_pixel_count"] == 4000
+    assert dark_distribution["border_dark_bp"] == dark_distribution["interior_dark_bp"] == 4000
+    ink = ink_pixels(
+        width, height, rows, background=evidence["background"], margin=evidence["ink_margin"]
+    )
+    assert len(ink) == 4000
 
 
 def test_the_thin_wrapper_returns_the_same_value_as_the_evidence_function():
@@ -876,7 +904,7 @@ def test_an_ordinary_page_still_reports_the_modal_source_and_no_surround():
     assert evidence == {
         "background": BACKGROUND,
         "source": "inferred-modal",
-        "surround": None,
+        "dark_distribution": None,
         "dark_mode": INK,
         "ink_margin": expected_margin,
     }
@@ -962,10 +990,10 @@ def test_a_paper_mode_below_the_dark_mode_is_refused_by_name():
         _derived_ink_margin(40, 205, 3333)
 
 
-def test_the_derived_threshold_never_falls_below_the_surround_level():
-    """`SurroundEvidence`'s two counts are published as fractions of the ink.
+def test_the_derived_threshold_never_falls_below_the_dark_distribution_level():
+    """The dark-distribution counts remain subsets of the primary ink scan.
 
-    That reading is only true while every pixel the surround block counts is a
+    That relation holds only while every pixel the dark distribution counts is a
     pixel the scan counts too, which holds exactly while the derived threshold
     stays at or above the midpoint of the two modes. The loader refuses any
     `ink_margin_bp` at or past 5000 for this reason; here is the property it
@@ -975,14 +1003,14 @@ def test_the_derived_threshold_never_falls_below_the_surround_level():
     rows = photographed_page(width, height)
     policy = shipped_background_policy(width, height)
     evidence = infer_background_evidence(width, height, rows, background_policy=policy)
-    surround = evidence["surround"]
+    dark_distribution = evidence["dark_distribution"]
     threshold = evidence["background"] - evidence["ink_margin"]
-    assert surround["dark_at_or_below"] <= threshold
+    assert dark_distribution["dark_at_or_below"] <= threshold
     ink = ink_pixels(
         width, height, rows, background=evidence["background"], margin=evidence["ink_margin"]
     )
-    assert surround["dark_pixel_count"] <= len(ink)
-    assert surround["border_dark_pixel_count"] <= len(ink)
+    assert dark_distribution["dark_pixel_count"] <= len(ink)
+    assert dark_distribution["border_dark_pixel_count"] <= len(ink)
 
 
 def test_a_page_whose_paper_spreads_over_many_tones_counts_far_less_of_itself_as_ink():
@@ -1138,7 +1166,7 @@ def test_a_uniformly_dark_page_never_reaches_the_surround_test_at_all():
         )
 
 
-def test_a_dark_surround_whose_interior_is_too_dark_to_threshold_still_refuses():
+def test_a_dark_distribution_whose_interior_is_too_dark_to_threshold_still_refuses():
     """A framed page whose paper is darker than the ink margin. The shape test
     passes and the paper value still cannot express a threshold, so the refusal
     stands -- and it names the surround it found rather than pretending it saw
@@ -1146,14 +1174,14 @@ def test_a_dark_surround_whose_interior_is_too_dark_to_threshold_still_refuses()
     width, height = 400, 300
     rows = photographed_page(width, height, paper=15, ink=2)
     assert_the_surround_is_the_modal_pixel(width, height, rows)
-    with pytest.raises(BackgroundInferenceRefusal, match=r"a dark surround was found"):
+    with pytest.raises(BackgroundInferenceRefusal, match=r"a dark distribution was measured"):
         infer_background(
             width, height, rows, background_policy=shipped_background_policy(width, height)
         )
 
 
 def test_a_band_with_no_interior_to_compare_against_refuses_rather_than_guesses():
-    """`_dark_surround` returns `None` when the band leaves no interior. The
+    """`_dark_distribution` returns `None` when the band leaves no interior. The
     sealed loader refuses such a band outright, so this can only be reached by a
     caller passing its own policy -- and it must not silently infer."""
     width, height = 400, 300
@@ -1167,7 +1195,7 @@ def test_a_band_with_no_interior_to_compare_against_refuses_rather_than_guesses(
         infer_background(width, height, rows, background_policy=degenerate)
 
 
-def test_the_surround_bound_actually_decides_the_outcome():
+def test_the_interior_dark_bound_actually_decides_the_outcome():
     """The interior bound is load-bearing: moving it past this page's own
     measurement flips the answer, so it is not a decoration.
 
@@ -1180,9 +1208,15 @@ def test_the_surround_bound_actually_decides_the_outcome():
     rows = photographed_page(width, height)
     policy = shipped_background_policy(width, height)
     assert "min_border_dark_bp" not in policy
-    measured = infer_background_evidence(width, height, rows, background_policy=policy)["surround"]
+    dark_distribution = infer_background_evidence(width, height, rows, background_policy=policy)[
+        "dark_distribution"
+    ]
+    assert dark_distribution is not None
 
-    too_strict_interior = {**policy, "max_interior_dark_bp": measured["interior_dark_bp"] - 1}
+    too_strict_interior = {
+        **policy,
+        "max_interior_dark_bp": dark_distribution["interior_dark_bp"] - 1,
+    }
     with pytest.raises(BackgroundInferenceRefusal, match=r"the page is majority ink"):
         infer_background(width, height, rows, background_policy=too_strict_interior)
 

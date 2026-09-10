@@ -18,17 +18,26 @@ from __future__ import annotations
 
 import hashlib
 import stat
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Final, Mapping
+from typing import Callable, Final, Iterable, Mapping, Sequence
 
 from common.chairs.models import ChairIdentity, is_sha256
+
+# `_mint_runtime_provenance` is deliberately a private name from another
+# module. It mints the opaque token `operations.pod.preflight` checks before a
+# receipt may claim a real assembly was measured, and `_with_service_evidence`
+# below is one of its two minting sites -- the other is that module's own GPU
+# probe. Keeping the mint private is the point: a public helper would be an
+# invitation for any caller to name its own serving engine and publish the
+# claim on the strength of it.
 from operations.pod.preflight import (
     GpuProfile,
     PlacementRefusal,
     PlacementTable,
     PlacementTier,
     SmokeResult,
+    _mint_runtime_provenance,
 )
 
 from .config import ServingProfile
@@ -104,6 +113,284 @@ def prepare_log_root(log_root: str | Path) -> Path:
     return prepared
 
 
+def assert_image_before_text_on_wire(content: Sequence[Mapping[str, object]]) -> None:
+    """Refuse a rendered chat request whose first content part is not the image.
+
+    Must be checked against the *rendered* content list -- the exact list
+    that serializes onto the wire -- never the Python call an adapter built
+    before rendering.  This assertion means anything only because
+    ``render_vllm_argv`` pins ``--chat-template-content-format openai``: under
+    vLLM's ``string`` format (what ``auto`` can resolve to, and what a future
+    template revision could resolve to differently) every image placeholder
+    is hoisted ahead of the text regardless of the caller's own part order
+    (vllm-project/vllm#14047), so a rendered body checked under ``string``
+    format would read image-first and pass no matter what order the caller
+    actually assembled -- a no-op that could never catch a caller putting
+    text first (hostile review item A). Under the pinned ``openai`` format
+    the rendered content list keeps the caller's own order verbatim, so this
+    check against the rendered body reflects a real caller ordering bug
+    rather than the engine's own reformatting.
+    """
+
+    if not content:
+        raise ServingConfigurationError(
+            "rendered request content is empty; there is no wire order to assert"
+        )
+    first = content[0]
+    if not isinstance(first, Mapping):
+        raise ServingConfigurationError("rendered request content parts must be objects")
+    first_type = first.get("type")
+    if first_type != "image_url":
+        raise ServingConfigurationError(
+            "rendered request content must open with an image_url part; the wire's first part "
+            f"is {first_type!r}"
+        )
+
+
+def assert_resized_pixels_within_trained_geometry(
+    *,
+    chair: str,
+    resized_width: int,
+    resized_height: int,
+    trained_min_pixels: int,
+    trained_max_pixels: int,
+) -> None:
+    """Refuse a post-resize image outside a chair's own declared trained geometry.
+
+    Checked against the dimensions actually sent -- after
+    ``common/request_capacity.py::smart_resize`` (or a chair's own carried
+    resize port) has run -- never against the source image.  A resize
+    algorithm that silently under- or over-shoots a vendor's own declared
+    training range (Model card "Parameters", ``processor_config.json``) reads
+    a page at the wrong scale with no error anywhere else (hostile review
+    item A; the same silent-drop failure mode as an unrecognised
+    ``mm_processor_kwargs``, GOALS 2's worst-rated failure).
+    """
+
+    if resized_width <= 0 or resized_height <= 0:
+        raise ServingConfigurationError(
+            f"chair {chair!r} resized dimensions must be positive, got "
+            f"{resized_width}x{resized_height}"
+        )
+    if trained_min_pixels <= 0 or trained_max_pixels < trained_min_pixels:
+        raise ServingConfigurationError(
+            f"chair {chair!r} declared trained pixel geometry "
+            f"[{trained_min_pixels}, {trained_max_pixels}] is malformed"
+        )
+    pixels = resized_width * resized_height
+    if not (trained_min_pixels <= pixels <= trained_max_pixels):
+        raise ServingConfigurationError(
+            f"chair {chair!r} post-resize image is {resized_width}x{resized_height} = {pixels} "
+            f"pixels, outside its declared trained geometry "
+            f"[{trained_min_pixels}, {trained_max_pixels}]"
+        )
+
+
+def assert_generation_config_key_coverage(
+    *,
+    chair: str,
+    vendor_generation_config: Mapping[str, object],
+    sent_keys: Iterable[str],
+    deliberately_not_sent: Mapping[str, str],
+) -> None:
+    """Refuse a vendor ``generation_config.json`` key accounted for nowhere.
+
+    Every key the vendor's own shipped file carries must be either sent
+    verbatim on the wire (``sent_keys``) or named in ``deliberately_not_sent``
+    with the recorded reason it is withheld (Churro's paper-era ``0.6``
+    temperature is the one case on record).  A key in neither set is not a
+    decision anyone made -- it is a vendor value quietly falling on the floor,
+    exactly the shape hostile review item A names for the JSON grammar this
+    project no longer imposes on Chandra.  A key claimed both sent and
+    deliberately withheld is a contradiction, refused the same way.
+    """
+
+    vendor_keys = set(vendor_generation_config)
+    sent = set(sent_keys)
+    excluded = set(deliberately_not_sent)
+    both = sorted(sent & excluded)
+    if both:
+        raise ServingConfigurationError(
+            f"chair {chair!r} generation_config key(s) {both} are claimed both sent and "
+            "deliberately not sent; that is a contradiction, not a decision"
+        )
+    unaccounted = sorted(vendor_keys - sent - excluded)
+    if unaccounted:
+        raise ServingConfigurationError(
+            f"chair {chair!r} vendor generation_config.json ships key(s) {unaccounted} that are "
+            "neither sent on the wire nor named as deliberately not sent; a vendor value may "
+            "not silently fall on the floor"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class UsageReconciliation:
+    """One comparison between an engine's own reported usage and the laptop's count.
+
+    ``observed_image_tokens`` is the engine's own per-modality breakdown --
+    ``usage.prompt_tokens_details.multimodal_tokens["image"]`` -- when the
+    response carries one; vLLM v0.27.1 gates that breakdown (not
+    ``prompt_tokens`` itself, which is always present) behind
+    ``--enable-prompt-tokens-details``.  When it is present, ``localized_to``
+    compares the image half and the text half (the remainder) against their
+    own expected counts independently, so a *mixed* real request -- every
+    real request in this design, since Chandra/DAI/Churro all send image and
+    text together -- can still be localized exactly rather than only the
+    image-only and text-only requests a scalar-only comparison could ever
+    tell apart.  Without that breakdown, ``localized_to`` can only ever be
+    more than a guess when one side of the request carries no *expected*
+    tokens of its kind at all: an image-only user turn puts every text token
+    in the one fixed system string, so any mismatch there is necessarily the
+    image half; a text-only readiness probe carries no image, so any mismatch
+    there is necessarily the text half. A mixed request with no per-modality
+    breakdown is reported honestly as ``"unlocalized"`` rather than guessed
+    at from one scalar.
+    """
+
+    chair: str
+    observed_prompt_tokens: int
+    expected_image_tokens: int
+    expected_text_tokens: int
+    tolerance: int
+    observed_image_tokens: int | None = None
+
+    @property
+    def expected_prompt_tokens(self) -> int:
+        return self.expected_image_tokens + self.expected_text_tokens
+
+    @property
+    def discrepancy(self) -> int:
+        return self.observed_prompt_tokens - self.expected_prompt_tokens
+
+    @property
+    def within_tolerance(self) -> bool:
+        return abs(self.discrepancy) <= self.tolerance
+
+    @property
+    def localized_to(self) -> str | None:
+        if self.within_tolerance:
+            return None
+        if self.observed_image_tokens is not None:
+            image_discrepancy = self.observed_image_tokens - self.expected_image_tokens
+            text_discrepancy = self.discrepancy - image_discrepancy
+            image_off = abs(image_discrepancy) > self.tolerance
+            text_off = abs(text_discrepancy) > self.tolerance
+            if image_off and not text_off:
+                return "image"
+            if text_off and not image_off:
+                return "text"
+            return "unlocalized"
+        if self.expected_image_tokens == 0 and self.expected_text_tokens == 0:
+            # Neither half carries an expected token at all -- nothing to
+            # localize a mismatch to, honestly reported the same as a mixed
+            # request rather than defaulting to a guess.
+            return "unlocalized"
+        if self.expected_text_tokens == 0:
+            return "image"
+        if self.expected_image_tokens == 0:
+            return "text"
+        return "unlocalized"
+
+    def to_finding(self) -> dict[str, object] | None:
+        """A named finding for a mismatch beyond tolerance, or ``None`` in tolerance."""
+
+        if self.within_tolerance:
+            return None
+        return {
+            "kind": "usage-capacity-mismatch",
+            "chair": self.chair,
+            "observed_prompt_tokens": self.observed_prompt_tokens,
+            "observed_image_tokens": self.observed_image_tokens,
+            "expected_prompt_tokens": self.expected_prompt_tokens,
+            "expected_image_tokens": self.expected_image_tokens,
+            "expected_text_tokens": self.expected_text_tokens,
+            "discrepancy": self.discrepancy,
+            "tolerance": self.tolerance,
+            "localized_to": self.localized_to,
+        }
+
+
+def _observed_image_tokens(usage: Mapping[str, object]) -> int | None:
+    """Read the engine's own image-token count from ``prompt_tokens_details``.
+
+    ``None`` whenever the shape is not exactly the OpenAI
+    ``prompt_tokens_details.multimodal_tokens.image`` int vLLM v0.27.1 sends
+    when ``--enable-prompt-tokens-details`` is set and the request carried
+    multimodal input -- a build or a text-only request that omits it is not
+    an error here, only a missing precision the caller falls back without.
+    """
+
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, Mapping):
+        return None
+    multimodal_tokens = details.get("multimodal_tokens")
+    if not isinstance(multimodal_tokens, Mapping):
+        return None
+    value = multimodal_tokens.get("image")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def reconcile_usage_against_capacity(
+    *,
+    chair: str,
+    usage: Mapping[str, object] | None,
+    expected_image_tokens: int,
+    expected_text_tokens: int,
+    tolerance: int,
+) -> UsageReconciliation:
+    """Compare a live engine's own reported ``prompt_tokens`` against the laptop's count.
+
+    ``usage.prompt_tokens`` is present on every real response regardless of
+    launch flags (vLLM v0.27.1 sets it unconditionally). What
+    ``--enable-prompt-tokens-details`` (``render_vllm_argv``; every real
+    profile now carries it) actually gates is ``usage.prompt_tokens_details``,
+    whose ``multimodal_tokens`` breakdown this reconciliation reads when
+    present to localize a mismatch precisely -- see
+    :class:`UsageReconciliation`.  This is a *reconciliation*, not a gate: a
+    mismatch is returned as a named finding rather than raised, because a
+    wrong laptop count would otherwise silently disagree with a correct
+    engine on every request with nothing surfaced anywhere (hostile review
+    item H) -- and because what the mismatch means (a dropped
+    ``mm_processor_kwargs``, a stale token-cost table, an engine upgrade that
+    changed rounding) is exactly the kind of thing GOVERNANCE 10 keeps out of
+    a hard-coded verdict.  Refusing outright would make this itself a picker
+    among possible causes.
+    """
+
+    if expected_image_tokens < 0 or expected_text_tokens < 0:
+        raise ServingConfigurationError(
+            f"chair {chair!r} expected token counts must be non-negative"
+        )
+    if tolerance < 0:
+        raise ServingConfigurationError(f"chair {chair!r} usage tolerance must be non-negative")
+    observed: int | None = None
+    observed_image: int | None = None
+    if isinstance(usage, Mapping):
+        candidate = usage.get("prompt_tokens")
+        if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
+            observed = candidate
+        observed_image = _observed_image_tokens(usage)
+    if observed is None:
+        raise ServingConfigurationError(
+            f"chair {chair!r} response usage has no non-negative integer prompt_tokens to "
+            "reconcile; the response carried no usage object, or its prompt_tokens was not "
+            "a non-negative integer. A real vLLM response carries prompt_tokens regardless "
+            "of launch flags (--enable-prompt-tokens-details gates a different field, "
+            "usage.prompt_tokens_details.multimodal_tokens), so this names a response that "
+            "did not come from one"
+        )
+    return UsageReconciliation(
+        chair=chair,
+        observed_prompt_tokens=observed,
+        expected_image_tokens=expected_image_tokens,
+        expected_text_tokens=expected_text_tokens,
+        tolerance=tolerance,
+        observed_image_tokens=observed_image,
+    )
+
+
 class ServingSmokeReader:
     """One lifecycle-backed implementation of the pod ``SmokeReader`` protocol.
 
@@ -177,6 +464,9 @@ class ServingSmokeReader:
         # The same log-root guarantee the callback seam gives: refuse a
         # symlinked root and force it owner-only before anything can write a
         # launch log through it. Idempotent, so once per read is cheap.
+        # (`manager.start`, called next, is what actually refuses a
+        # discoverable env-override file -- the one door every real launch
+        # passes through, not only this smoke lifecycle.)
         prepare_log_root(self.manager.log_root)
         handle = self.manager.start(
             identity,
@@ -308,6 +598,15 @@ def _with_service_evidence(
     collision = sorted(reserved & set(receipt))
     if collision:
         raise ValueError(f"smoke receipt cannot pre-populate service evidence fields {collision}")
+    # The engine that answered, named from the receipt of the handle this module
+    # started, proved fixture-bound and stopped -- never from anything the smoke
+    # callable said about itself. `operations.pod.preflight` derives
+    # `PreflightReport.assembly_proven` from this, so it must be a fact about the
+    # lifecycle rather than a label a caller can supply.
+    details = handle.receipt.details
+    served_by = " ".join(
+        part for part in (details.engine, details.engine_version) if isinstance(part, str) and part
+    )
     receipt.update(
         {
             "service_receipt": handle.receipt.to_record(),
@@ -322,7 +621,19 @@ def _with_service_evidence(
             "smoke_fixture_request_count": handle.fixture_requests_completed,
         }
     )
-    return replace(result, receipt=receipt)
+    if not served_by:
+        # Nothing to claim: the handle published no engine name, so the read
+        # proves a page came back and nothing about what served it.
+        return replace(result, receipt=receipt, served_by=None, provenance=None)
+    return replace(
+        result,
+        receipt=receipt,
+        served_by=served_by,
+        # Minted here and nowhere else in this package: this line is reachable
+        # only from `ServingSmokeReader.read`, holding a `ServiceHandle` this
+        # module started, proved fixture-bound and will stop in its `finally`.
+        provenance=_mint_runtime_provenance(f"service handle receipt: {served_by}"),
+    )
 
 
 def _plain_mapping(value: Mapping[str, object], depth: int = 0) -> dict[str, object]:

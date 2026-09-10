@@ -5,16 +5,21 @@ from __future__ import annotations
 import importlib.util
 import json
 import sqlite3
+import sys
 import unicodedata
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import pytest
 from armarium_export import (
     CANONICAL_TEXT_FIELD,
     EXPORT_MANIFEST_NAME,
+    NOT_MEASURED_BASIS_SCHEMA,
+    NOT_MEASURED_INSTRUMENTS,
+    NOT_MEASURED_SCHEMA,
     ArmariumProjection,
     _page_ledger_category,
     _terminal_ledger,
@@ -31,11 +36,11 @@ from display import DISPLAY_CONVENTION, render_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
-from common.contracts.approval import real_ingress_record
+from common.contracts.approval import real_ingress_record, synthetic_fixture_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.outcomes import ArmariumCategory, run_aggregate
-from common.contracts.stages import ARMARIUM
+from common.contracts.stages import ARMARIUM, DESIGNATOR
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import encode_grayscale_png
 from common.residual_ink import MINIMUM_FRACTION_OUTSIDE_COVERAGE, MINIMUM_INK_PIXELS
@@ -44,6 +49,8 @@ from common.stage import REAL_SCENARIO, StageContext
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
 ROOT = Path(__file__).resolve().parents[2]
 ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
+DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
+INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 
 
 def _pixels(value: int) -> bytes:
@@ -79,6 +86,82 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
     }
 
 
+def _test_not_measured_basis(**overrides):
+    """A minimal, valid not-measured basis for a hand-built projection.
+
+    The production basis is derived from a run's own records
+    (`pipeline/7_armarium/run.py::not_measured_basis`, proven against a real run
+    in `test_export.py`); these projections have no run behind them, so they
+    declare the shape, and a test about the block's content overrides the one
+    sub-record it is about.
+    """
+    basis = {
+        "schema": NOT_MEASURED_BASIS_SCHEMA,
+        "page-testimony-content-coverage": {
+            "acts_total": 2,
+            "acts_unmeasured": [],
+            "reasons": [],
+        },
+        "page-ink-conservation": {
+            "pages_sealed": 1,
+            "pages_not_reconciled": [],
+            "reasons": [],
+        },
+        "act-visibility-survey": {
+            "acts_total": 2,
+            "acts_with_capture_presentation": 0,
+            "capture_rows": 0,
+            "rows_with_named_absence": 0,
+            "absence_codes": [],
+        },
+        "perlector-uncertain-spans": {
+            "sealed_audit_round_cap": 1,
+            "acts_delivered": 1,
+            "acts_with_uncertain_spans": 0,
+        },
+        "designator-geometry-calibration": {
+            "configurations": [
+                {
+                    "configuration": "designator-padding",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": 4572,
+                },
+                {
+                    "configuration": "designator-geometry",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": None,
+                },
+                {
+                    "configuration": "designator-grouping",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": 0,
+                },
+            ]
+        },
+    }
+    basis.update(overrides)
+    return basis
+
+
+def _basis_for_acts(acts, *, sealed_pages=1):
+    """Keep hand-built projection caveats aligned with their act and page rows."""
+    basis = _test_not_measured_basis()
+    basis["page-testimony-content-coverage"]["acts_total"] = len(acts)
+    basis["act-visibility-survey"]["acts_total"] = len(acts)
+    basis["page-ink-conservation"]["pages_sealed"] = sealed_pages
+    delivered = [act for act in acts if act["category"] == ArmariumCategory.DELIVERED.value]
+    spans = sum(
+        isinstance(act.get("uncertainty"), dict) and bool(act["uncertainty"].get("uncertain_spans"))
+        for act in delivered
+    )
+    basis["perlector-uncertain-spans"] = {
+        "sealed_audit_round_cap": 0 if spans else 1,
+        "acts_delivered": len(delivered),
+        "acts_with_uncertain_spans": spans,
+    }
+    return basis
+
+
 def _projection(*, salvage_items=()) -> ArmariumProjection:
     page = _source_bytes("1_exemplar/blobs/sha256/page")
     crop = _source_bytes("2_designator/blobs/sha256/crop")
@@ -98,6 +181,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
         },
     }
     return ArmariumProjection(
+        not_measured_basis=_test_not_measured_basis(),
         fixture_id="armarium-export-test-v1",
         scenario="happy",
         config_digest="a" * 64,
@@ -213,7 +297,13 @@ def _damaged_delivered(
         act_pages=basis["act_pages"],
         act_text_status=basis["act_text_status"],
     )
-    return replace(projection, acts=acts, aggregate=aggregate, aggregate_basis=basis)
+    return replace(
+        projection,
+        acts=acts,
+        aggregate=aggregate,
+        aggregate_basis=basis,
+        not_measured_basis=_basis_for_acts(acts),
+    )
 
 
 def _two_region_projection() -> ArmariumProjection:
@@ -295,6 +385,7 @@ def _otherwise_complete(**fields) -> ArmariumProjection:
         acts=acts,
         expected_acts=1,
         aggregate_basis=basis,
+        not_measured_basis=_basis_for_acts(acts),
         **fields,
     )
     return replace(
@@ -324,11 +415,15 @@ def test_an_otherwise_complete_export_is_complete_without_an_edge_hold():
     assert manifest["claims"]["ink_map"]["held_pages"] == []
 
 
-def test_the_required_ink_map_claim_moves_the_manifest_schema_to_v3(tmp_path):
-    """A v2 identity may not describe the new closed claim set.
+def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
+    """An older identity may not describe a newer closed claim set.
 
-    ``claims.ink_map`` is required, so old and new closed shapes need different
-    identities rather than two incompatible meanings of v2.
+    ``claims.ink_map`` took the manifest from v2 to v3, ``claims.not_measured``
+    took it from v3 to v5, and the required Ink Map unmeasurable-page census
+    takes it from v5 to v7. Each has the same reason: a required claim a stale
+    reader has no field for would be presented as a bundle that does not carry
+    it. Old and new closed shapes need different identities rather than two
+    incompatible meanings of one.
     """
     members = _members(
         build_armarium_bundle(
@@ -336,12 +431,18 @@ def test_the_required_ink_map_claim_moves_the_manifest_schema_to_v3(tmp_path):
         ).data
     )
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    assert manifest["schema"] == "armarium-export-manifest.v3"
+    assert manifest["schema"] == "armarium-export-manifest.v7"
 
-    manifest["schema"] = "armarium-export-manifest.v2"
-    _refresh_manifest(members, manifest)
-    with pytest.raises(SchemaRefusal, match="no recognized EXPORT_MANIFEST schema"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "stale-v2")
+    for stale in (
+        "armarium-export-manifest.v2",
+        "armarium-export-manifest.v3",
+        "armarium-export-manifest.v5",
+        "armarium-export-manifest.v6",
+    ):
+        manifest["schema"] = stale
+        _refresh_manifest(members, manifest)
+        with pytest.raises(SchemaRefusal, match="no recognized EXPORT_MANIFEST schema"):
+            verify_export_bundle(_zip_bytes(members), tmp_path / f"stale-{stale[-2:]}")
 
 
 def test_an_unreleased_edge_finding_forces_a_partial_export_and_rejects_complete(tmp_path):
@@ -434,7 +535,7 @@ def test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine(tmp_path
         row["sha256"] = digest_bytes(forged[row["path"]])
         row["bytes"] = len(forged[row["path"]])
     _refresh_manifest(forged, green_manifest)
-    with pytest.raises(SchemaRefusal, match="ink-map hold claim does not match"):
+    with pytest.raises(SchemaRefusal, match="ink-map claim does not match"):
         verify_export_bundle(_zip_bytes(forged), tmp_path / "forged-green")
 
 
@@ -451,7 +552,7 @@ def test_an_edited_ink_map_row_cannot_release_a_page_it_still_flags(tmp_path):
     sources["ink_map_pages"][0]["remeasured"]["outside_ink_pixels"] = 0
     members["sources.json"] = canonical_bytes(sources)
     _refresh_manifest_member(members, "sources.json")
-    with pytest.raises(SchemaRefusal, match="ink-map hold claim does not match"):
+    with pytest.raises(SchemaRefusal, match="ink-map claim does not match"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "edited-row")
 
 
@@ -707,7 +808,13 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
         },
     }
     bundle = build_armarium_bundle(
-        replace(original, acts=(delivered, original.acts[1])), formats, _source_bytes
+        replace(
+            original,
+            acts=(delivered, original.acts[1]),
+            not_measured_basis=_basis_for_acts((delivered, original.acts[1])),
+        ),
+        formats,
+        _source_bytes,
     )
     members = _members(bundle.data)
     lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
@@ -1377,6 +1484,56 @@ def _armarium_run_module():
     return module
 
 
+def _designator_run_module():
+    """Load Designator without leaving its bare sibling aliases in the session."""
+    spec = importlib.util.spec_from_file_location(
+        "designator_run_for_armarium_refusal_test", DESIGNATOR_CLI
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    original_path = list(sys.path)
+    sibling_names = (
+        "conservation",
+        "geometry",
+        "geometry_layer",
+        "grouping",
+        "grouping_config",
+        "structure",
+        "structure_pass",
+        "structure_prompt",
+    )
+    missing = object()
+    previous = {name: sys.modules.get(name, missing) for name in sibling_names}
+    try:
+        sys.path.insert(0, str(DESIGNATOR_CLI.parent))
+        for name in sibling_names:
+            sys.modules.pop(name, None)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
+        for name, prior in previous.items():
+            if prior is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = prior
+    return module
+
+
+def _ink_map_run_module():
+    """Load the Ink Map entry point without retaining its path insertion."""
+    spec = importlib.util.spec_from_file_location(
+        "ink_map_run_for_armarium_visibility_test", INK_MAP_CLI
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    original_path = list(sys.path)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
+    return module
+
+
 def test_export_run_identity_never_touches_the_refusing_fixture_accessor_on_a_real_run():
     """The unit's central claim, pinned rather than asserted only in prose and HANDOFF.md.
 
@@ -1815,6 +1972,7 @@ def test_text_bundle_keeps_every_cited_source_folder_when_no_act_is_delivered(tm
         replace(
             original,
             acts=tuple(held),
+            not_measured_basis=_basis_for_acts(tuple(held)),
             aggregate_basis={**original.aggregate_basis, "act_text_status": {}},
             aggregate={
                 "status": "partial",
@@ -1885,6 +2043,7 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
         replace(
             original,
             acts=held,
+            not_measured_basis=_basis_for_acts(held, sealed_pages=2),
             pages=pages,
             ink_map_pages=ink_map_pages,
             source_manifest=source_manifest,
@@ -2406,6 +2565,7 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
         replace(
             original,
             acts=acts,
+            not_measured_basis=_basis_for_acts(acts),
             aggregate=aggregate,
             aggregate_basis={**original.aggregate_basis, "act_text_status": {}},
         ),
@@ -2465,6 +2625,7 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
             }
             for page in pages
         ),
+        not_measured_basis=_basis_for_acts(base.acts, sealed_pages=2),
         aggregate=run_aggregate(
             {"one": ArmariumCategory.DELIVERED, "two": ArmariumCategory.HELD_FOR_REVIEW},
             base.aggregate_basis["coverage_records"],
@@ -2768,7 +2929,7 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
 
     manifest = verify_export_bundle(bundle.data, clean)
 
-    assert manifest["schema"] == "armarium-export-manifest.v3"
+    assert manifest["schema"] == "armarium-export-manifest.v7"
     assert outside.read_bytes() == b"bytes outside the extraction root"
     assert linked.stat().st_ino != shared_inode
 
@@ -3461,6 +3622,7 @@ def _logical_conservation_projection(attribution) -> ArmariumProjection:
         },
     }
     return ArmariumProjection(
+        not_measured_basis=_test_not_measured_basis(),
         fixture_id="armarium-logical-attribution-v1",
         scenario="adversarial",
         config_digest="a" * 64,
@@ -3510,3 +3672,810 @@ def test_a_malformed_page_attribution_refuses_before_the_page_accounting_reads_i
             {"pac_aaaaaaaaaaaaaaaa"},
             {"logical:pac_aaaaaaaaaaaaaaaa"},
         )
+
+
+# --- `claims.not_measured`: what this run did not measure ---------------------
+#
+# `DELIVERED` and `aggregate.status == "complete"` are reachable over five
+# things nothing measured -- a page whose testimony content coverage was
+# recorded unmeasured, a page whose ink was never reconciled, two instruments
+# with no producer, and geometry thresholds no sample was taken for. All five
+# are recorded somewhere; none of them qualified the word on the deliverable.
+# These prove the block is present, closed, and derived rather than constant.
+
+
+def _manifest_of(projection) -> dict:
+    formats = ArmariumFormats(("jsonl",), embed_pixels=False)
+    return build_armarium_bundle(projection, formats, lambda _path: b"").manifest
+
+
+def _block(projection) -> dict:
+    return _manifest_of(projection)["claims"]["not_measured"]
+
+
+def _entry(block: dict, instrument: str) -> dict:
+    return next(row for row in block["entries"] if row["instrument"] == instrument)
+
+
+def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation(
+    tmp_path, monkeypatch
+):
+    """The stricter audit can refuse while Designator truthfully remains measured."""
+    designator = _designator_run_module()
+    ink_map = _ink_map_run_module()
+    armarium = _armarium_run_module()
+
+    width = height = 100
+    rows = [bytearray([30]) * width for _ in range(90)]
+    rows.extend(bytearray([0]) * width for _ in range(10))
+    page_bytes = encode_grayscale_png(width, height, rows)
+    page_digest = digest_bytes(page_bytes)
+    image_path = "1_exemplar/blobs/sha256/low-paper-page"
+    page_record = {
+        "subject_id": "pg-1",
+        "outcome": "sealed",
+        "payload": {
+            "ordinal": 1,
+            "image_path": image_path,
+            "source_sha256": page_digest,
+        },
+    }
+
+    class DesignatorContext:
+        def __init__(self):
+            self.records = []
+            self.tree = SimpleNamespace(read_bytes=lambda _path: page_bytes)
+
+        def input_ref(self, relative_path):
+            return {"relative_path": relative_path, "sha256": page_digest}
+
+        def publish(self, *, kind, subject_id, outcome, inputs, payload):
+            self.records.append(
+                {
+                    "kind": kind,
+                    "subject_id": subject_id,
+                    "outcome": outcome,
+                    "inputs": inputs,
+                    "payload": payload,
+                }
+            )
+            return SimpleNamespace(relative_path=f"2_designator/artifacts/{kind}/page-1.json")
+
+    designator_context = DesignatorContext()
+    grouping_path = ROOT / "config" / "designator_grouping.toml"
+    grouping_digest = digest_bytes(grouping_path.read_bytes())
+    grouping_policy = designator.grouping_config.load_grouping_config(grouping_path)
+    assert grouping_policy["config_sha256"] == grouping_digest
+    analysis = designator._analyze_page({}, designator_context, 1, page_record, grouping_policy)
+    assert analysis["background"] == 30
+    assert analysis["ink_margin"] == 20
+    designator._publish_conservation_and_secondary(
+        designator_context,
+        1,
+        page_record,
+        analysis,
+        [{"act_id": "act-1", "bounds": {"x": 0, "y": 0, "w": width, "h": height}}],
+        {"chair_state": "absent"},
+        grouping_policy,
+    )
+    conservation = next(row for row in designator_context.records if row["kind"] == "conservation")
+    assert conservation["outcome"] == "proposed"
+    assert conservation["payload"]["ink_measurable"] is True
+    assert conservation["payload"]["total_ink_pixel_count"] == 1_000
+    assert conservation["payload"]["claimed_pixel_count"] == 1_000
+    assert conservation["payload"]["residual_pixel_count"] == 0
+
+    class InkMapContext:
+        def __init__(self):
+            self.tree = object()
+            self.args = SimpleNamespace(designator_grouping_config=str(grouping_path))
+            self.run = {"ingress": synthetic_fixture_ingress_record()}
+            self.published = []
+            self.required_configs = []
+
+        def require_sealed_config(self, name, observed_sha256):
+            self.required_configs.append((name, observed_sha256))
+
+        def input_ref(self, relative_path):
+            return {"relative_path": relative_path, "sha256": page_digest}
+
+        def publish(self, **record):
+            self.published.append(record)
+
+        def seal_boundary(self):
+            pass
+
+        def finish(self):
+            pass
+
+    class Parser:
+        @staticmethod
+        def parse_args():
+            return SimpleNamespace()
+
+    ink_map_context = InkMapContext()
+    monkeypatch.setattr(ink_map, "stage_parser", lambda *_args: Parser())
+    monkeypatch.setattr(ink_map, "open_stage_context", lambda *_args, **_kwargs: ink_map_context)
+    monkeypatch.setattr(
+        ink_map,
+        "sealed_pages",
+        lambda _context: [(1, page_record, "1_exemplar/artifacts/page/page-1.json")],
+    )
+    monkeypatch.setattr(ink_map, "measured_page_bytes", lambda *_args: page_bytes)
+    assert ink_map.main(registry_factory=None) == ink_map.EXIT_COMPLETE
+    (ink_record,) = ink_map_context.published
+    assert ink_record["outcome"] == ink_map.INK_NOT_MEASURABLE
+    assert ink_record["payload"]["ink_measurable"] is False
+    assert ink_record["payload"]["background_refusal"]
+    assert ink_map_context.required_configs == [("designator-grouping", grouping_digest)]
+
+    armarium_config_checks = []
+    armarium_context = SimpleNamespace(
+        tree=SimpleNamespace(
+            build_manifest=lambda _stage: {
+                "artifacts": [{"kind": "ink-map", "artifact_id": "low-paper"}]
+            },
+            read_artifact=lambda _stage, _kind, _artifact_id: ink_record,
+        ),
+        require_sealed_config=lambda name, observed: armarium_config_checks.append(
+            (name, observed)
+        ),
+    )
+    (ink_map_page,) = armarium.ink_map_page_rows(armarium_context, {1: {"outcome": "sealed"}}, {})
+    assert ink_map_page == {
+        "ordinal": 1,
+        "initial_outcome": ink_map.INK_NOT_MEASURABLE,
+        "remeasured": None,
+    }
+    assert armarium_config_checks == [("designator-grouping", grouping_digest)]
+
+    conservation_manifest = {
+        DESIGNATOR: {"artifacts": [{"kind": "conservation", "artifact_id": "low-paper"}]}
+    }
+    conservation_context = SimpleNamespace(
+        tree=SimpleNamespace(
+            read_artifact=lambda _stage, _kind, _artifact_id: conservation,
+        )
+    )
+    monkeypatch.setattr(armarium, "sealed_audit_round_cap", lambda _context: 1)
+    monkeypatch.setattr(armarium, "geometry_calibration_rows", lambda _context: [])
+    derived_basis = armarium.not_measured_basis(
+        conservation_context,
+        conservation_manifest,
+        {1: {"outcome": "sealed"}},
+        {},
+        [],
+    )
+    page_conservation_basis = derived_basis["page-ink-conservation"]
+    assert page_conservation_basis == {
+        "pages_sealed": 1,
+        "pages_not_reconciled": [],
+        "reasons": [],
+    }
+
+    projection = _otherwise_complete(ink_map_pages=(ink_map_page,))
+    source_region = {
+        **projection.acts[0]["source_regions"][0],
+        "declared_sha256": page_digest,
+    }
+    delivered_act = {**projection.acts[0], "source_regions": [source_region]}
+    page = {
+        **projection.pages[0],
+        "declared_sha256": page_digest,
+        "image_path": image_path,
+        "image_sha256": page_digest,
+    }
+    source = {**projection.source_manifest[0], "sha256": page_digest}
+    export_basis = _basis_for_acts((delivered_act,))
+    export_basis["page-ink-conservation"] = page_conservation_basis
+    projection = replace(
+        projection,
+        acts=(delivered_act,),
+        pages=(page,),
+        source_manifest=(source,),
+        not_measured_basis=export_basis,
+    )
+
+    def source_bytes(relative_path):
+        return page_bytes if relative_path == image_path else _source_bytes(relative_path)
+
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), source_bytes)
+    manifest = verify_export_bundle(bundle.data, tmp_path / "verified")
+    assert manifest["schema"] == "armarium-export-manifest.v7"
+    assert manifest["claims"]["status"] == "complete"
+    assert manifest["claims"]["ink_map"] == {
+        "denominator": "Unit 9 ink-map sealed pages",
+        "held_pages": [],
+        "unmeasurable_pages": [1],
+    }
+    conservation_claim = _entry(manifest["claims"]["not_measured"], "page-ink-conservation")
+    assert conservation_claim["status"] == "measured"
+    assert conservation_claim["detail"]["pages_not_reconciled"] == []
+    sources = json.loads(_members(bundle.data)["sources.json"])
+    assert sources["ink_map_pages"] == [ink_map_page]
+
+    for mutation in ("missing", "false-empty", "boolean-ordinal"):
+        members = _members(bundle.data)
+        forged = json.loads(members[EXPORT_MANIFEST_NAME])
+        if mutation == "missing":
+            del forged["claims"]["ink_map"]["unmeasurable_pages"]
+        elif mutation == "false-empty":
+            forged["claims"]["ink_map"]["unmeasurable_pages"] = []
+        else:
+            forged["claims"]["ink_map"]["unmeasurable_pages"] = [True]
+        _refresh_manifest(members, forged)
+        with pytest.raises(SchemaRefusal):
+            verify_export_bundle(_zip_bytes(members), tmp_path / f"forged-{mutation}")
+
+
+def test_a_real_background_refusal_reaches_the_complete_export_as_not_measured(
+    tmp_path, monkeypatch
+):
+    """Real pixels drive the conservation record the export qualifies itself with."""
+    designator = _designator_run_module()
+    armarium = _armarium_run_module()
+
+    width = height = 100
+    rows = [bytearray([30]) * width for _ in range(80)]
+    rows.extend(bytearray([220]) * width for _ in range(20))
+    page_bytes = encode_grayscale_png(width, height, rows)
+    page_digest = digest_bytes(page_bytes)
+    image_path = "1_exemplar/blobs/sha256/background-refusal-page"
+    page_record = {
+        "subject_id": "pg-1",
+        "payload": {
+            "ordinal": 1,
+            "image_path": image_path,
+            "source_sha256": page_digest,
+        },
+    }
+
+    class ProducerContext:
+        def __init__(self):
+            self.records = []
+            self.tree = SimpleNamespace(read_bytes=lambda _path: page_bytes)
+
+        def input_ref(self, relative_path):
+            return {
+                "relative_path": relative_path,
+                "sha256": page_digest if relative_path == image_path else "0" * 64,
+            }
+
+        def publish(self, *, kind, subject_id, outcome, inputs, payload):
+            self.records.append(
+                {
+                    "kind": kind,
+                    "subject_id": subject_id,
+                    "outcome": outcome,
+                    "inputs": inputs,
+                    "payload": payload,
+                }
+            )
+            return SimpleNamespace(relative_path=f"2_designator/artifacts/{kind}/page-1.json")
+
+    producer = ProducerContext()
+    grouping_policy = designator.grouping_config.load_grouping_config(
+        ROOT / "config" / "designator_grouping.toml"
+    )
+    analysis = designator._analyze_page({}, producer, 1, page_record, grouping_policy)
+    assert analysis["background"] is None
+    assert analysis["background_source"] == "not-inferable"
+    assert analysis["components"] == []
+    assert analysis["structure_evidence"] == "fallback-tiles"
+    assert analysis["groups"], "the refused page must still be cut for reading"
+
+    residual_rows, secondary_held = designator._publish_conservation_and_secondary(
+        producer,
+        1,
+        page_record,
+        analysis,
+        [],
+        {"chair_state": "absent"},
+        grouping_policy,
+    )
+    assert residual_rows == [] and secondary_held is False
+    (conservation,) = producer.records
+    assert conservation["kind"] == "conservation"
+    assert conservation["outcome"] == "held"
+    conservation_payload = conservation["payload"]
+    assert conservation_payload["ink_measurable"] is False
+    assert conservation_payload["reconciliation_thresholds"] is None
+    assert conservation_payload["total_ink_pixel_count"] is None
+    assert conservation_payload["claimed_pixel_count"] is None
+    assert conservation_payload["residual_pixel_count"] is None
+    assert conservation_payload["residual_components"] == []
+    assert conservation_payload["reason"]
+
+    manifest_cache = {
+        DESIGNATOR: {
+            "artifacts": [{"kind": "conservation", "artifact_id": "background-refusal-page-1"}]
+        }
+    }
+    basis_context = SimpleNamespace(
+        tree=SimpleNamespace(
+            read_artifact=lambda _stage, _kind, _artifact_id: conservation,
+        )
+    )
+    # These two instruments are unrelated to the page-conservation path. Keep
+    # their producers out of this focused test while leaving the actual
+    # `not_measured_basis` and conservation census intact.
+    monkeypatch.setattr(armarium, "sealed_audit_round_cap", lambda _context: 1)
+    monkeypatch.setattr(armarium, "geometry_calibration_rows", lambda _context: [])
+    derived_basis = armarium.not_measured_basis(
+        basis_context,
+        manifest_cache,
+        {1: {"outcome": "sealed"}},
+        {},
+        [],
+    )
+    page_basis = derived_basis["page-ink-conservation"]
+    assert page_basis == {
+        "pages_sealed": 1,
+        "pages_not_reconciled": [1],
+        "reasons": [conservation_payload["reason"]],
+    }
+
+    projection = _otherwise_complete()
+    source_region = {
+        **projection.acts[0]["source_regions"][0],
+        "declared_sha256": page_digest,
+    }
+    delivered_act = {**projection.acts[0], "source_regions": [source_region]}
+    page = {
+        **projection.pages[0],
+        "declared_sha256": page_digest,
+        "image_path": image_path,
+        "image_sha256": page_digest,
+    }
+    source = {**projection.source_manifest[0], "sha256": page_digest}
+    export_basis = _basis_for_acts((delivered_act,))
+    export_basis["page-ink-conservation"] = page_basis
+    projection = replace(
+        projection,
+        acts=(delivered_act,),
+        pages=(page,),
+        source_manifest=(source,),
+        not_measured_basis=export_basis,
+    )
+
+    def source_bytes(relative_path):
+        return page_bytes if relative_path == image_path else _source_bytes(relative_path)
+
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), source_bytes)
+    manifest = verify_export_bundle(bundle.data, tmp_path / "verified")
+    page_claim = _entry(manifest["claims"]["not_measured"], "page-ink-conservation")
+    assert manifest["claims"]["status"] == "complete"
+    assert page_claim["status"] == "not-measured"
+    assert page_claim["detail"] == page_basis
+
+
+def test_a_resealed_not_measured_status_must_be_rederived_from_its_detail(tmp_path):
+    """A self-hash cannot turn an unmeasured detail into a measured claim."""
+
+    def contradict_status(manifest):
+        row = _entry(manifest["claims"]["not_measured"], "page-testimony-content-coverage")
+        row["detail"]["acts_unmeasured"] = ["two"]
+        row["detail"]["reasons"] = ["the continuation-page measurement was not made"]
+        assert row["status"] == "measured"
+
+    with pytest.raises(SchemaRefusal, match="status.*disagrees with its detail"):
+        verify_delivered_bundle(_resealed_manifest(contradict_status), tmp_path / "delivered")
+
+
+@pytest.mark.parametrize("mutation", ["empty", "wrong-order"])
+def test_a_resealed_geometry_detail_must_name_the_canonical_configurations(mutation, tmp_path):
+    def break_geometry(manifest):
+        row = _entry(manifest["claims"]["not_measured"], "designator-geometry-calibration")
+        configurations = row["detail"]["configurations"]
+        if mutation == "empty":
+            configurations.clear()
+        else:
+            configurations[0], configurations[1] = configurations[1], configurations[0]
+
+    with pytest.raises(
+        SchemaRefusal, match="three configurations.*canonical order|canonical order"
+    ):
+        verify_delivered_bundle(_resealed_manifest(break_geometry), tmp_path / "delivered")
+
+
+def test_a_resealed_geometry_detail_refuses_calibrated_claim_with_zero_samples(tmp_path):
+    def contradict_calibration(manifest):
+        row = _entry(manifest["claims"]["not_measured"], "designator-geometry-calibration")
+        row["detail"]["configurations"][2]["calibrated_for_this_corpus"] = True
+
+    with pytest.raises(SchemaRefusal, match="calibrated_for_this_corpus.*sample_count is zero"):
+        verify_delivered_bundle(_resealed_manifest(contradict_calibration), tmp_path / "delivered")
+
+
+@pytest.mark.parametrize(
+    ("instrument", "field", "value", "match"),
+    [
+        ("page-testimony-content-coverage", "acts_total", 3, "testimony-content denominator"),
+        ("act-visibility-survey", "acts_total", 1, "visibility-survey denominator"),
+        ("page-ink-conservation", "pages_sealed", 2, "conservation denominator"),
+    ],
+)
+def test_projection_refuses_not_measured_sibling_denominators_that_do_not_match_its_population(
+    instrument, field, value, match
+):
+    projection = _projection()
+    basis = _basis_for_acts(projection.acts)
+    basis[instrument][field] = value
+    with pytest.raises(SchemaRefusal, match=match):
+        build_armarium_bundle(
+            replace(projection, not_measured_basis=basis),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
+@pytest.mark.parametrize(
+    ("instrument", "field", "value", "match"),
+    [
+        ("page-testimony-content-coverage", "acts_total", 3, "testimony-content denominator"),
+        ("act-visibility-survey", "acts_total", 1, "visibility-survey denominator"),
+        ("page-ink-conservation", "pages_sealed", 2, "conservation denominator"),
+    ],
+)
+def test_a_coherently_resealed_not_measured_claim_refuses_wrong_sibling_denominators(
+    instrument, field, value, match, tmp_path
+):
+    def contradict_denominator(manifest):
+        _entry(manifest["claims"]["not_measured"], instrument)["detail"][field] = value
+
+    with pytest.raises(SchemaRefusal, match=match):
+        verify_delivered_bundle(_resealed_manifest(contradict_denominator), tmp_path / "delivered")
+
+
+@pytest.mark.parametrize(
+    ("instrument", "field", "value"),
+    [
+        pytest.param("page-testimony-content-coverage", "acts_total", False, id="bool-count"),
+        pytest.param("page-ink-conservation", "pages_sealed", "1", id="string-count"),
+        pytest.param("act-visibility-survey", "capture_rows", [], id="list-count"),
+        pytest.param("perlector-uncertain-spans", "sealed_audit_round_cap", False, id="bool-cap"),
+    ],
+)
+def test_a_resealed_not_measured_detail_refuses_untyped_counts(instrument, field, value, tmp_path):
+    def replace_count(manifest):
+        _entry(manifest["claims"]["not_measured"], instrument)["detail"][field] = value
+
+    with pytest.raises(SchemaRefusal, match="non-negative integer"):
+        verify_delivered_bundle(_resealed_manifest(replace_count), tmp_path / "delivered")
+
+
+def test_a_resealed_not_measured_count_is_a_strict_integer(tmp_path):
+    def replace_count(manifest):
+        block = manifest["claims"]["not_measured"]
+        uncertainty = _entry(block, "perlector-uncertain-spans")
+        uncertainty["detail"]["sealed_audit_round_cap"] = 0
+        uncertainty["status"] = "measured"
+        geometry = _entry(block, "designator-geometry-calibration")
+        for row in geometry["detail"]["configurations"]:
+            row["calibrated_for_this_corpus"] = True
+            if row["sample_count"] == 0:
+                row["sample_count"] = 1
+        geometry["status"] = "measured"
+        assert sum(row["status"] != "measured" for row in block["entries"]) == 1
+        # Canonical JSON permits booleans, and True == 1 would otherwise let
+        # this malformed count reconcile with the one unmeasured instrument.
+        block["count"] = True
+
+    with pytest.raises(SchemaRefusal, match="not_measured count.*non-negative integer"):
+        verify_delivered_bundle(_resealed_manifest(replace_count), tmp_path / "delivered")
+
+
+def test_a_resealed_not_measured_entry_names_its_canonical_evidence_location(tmp_path):
+    def replace_location(manifest):
+        _entry(manifest["claims"]["not_measured"], "page-testimony-content-coverage")[
+            "recorded_in"
+        ] = "somewhere else"
+
+    with pytest.raises(SchemaRefusal, match="canonical evidence location"):
+        verify_delivered_bundle(_resealed_manifest(replace_location), tmp_path / "delivered")
+
+
+def test_the_export_names_every_instrument_of_this_build_exactly_once_in_order():
+    block = _block(_projection())
+
+    assert block["schema"] == NOT_MEASURED_SCHEMA
+    assert [row["instrument"] for row in block["entries"]] == list(NOT_MEASURED_INSTRUMENTS)
+    for row in block["entries"]:
+        assert set(row) == {"instrument", "status", "detail", "recorded_in"}
+        # Where a reader goes to check the row against the evidence (GOALS 5).
+        assert row["recorded_in"].strip()
+    assert (
+        _entry(block, "page-testimony-content-coverage")["recorded_in"]
+        == "each act's Recensor review, fields `testimony_content_coverage` and "
+        "`testimony_content_coverage_continuation`, in the retained run"
+    )
+
+
+def test_the_count_is_the_number_of_instruments_that_did_not_measure():
+    block = _block(_projection())
+
+    assert block["count"] == sum(1 for row in block["entries"] if row["status"] != "measured")
+    assert block["count"] == 3
+
+
+def test_an_unmeasured_testimony_coverage_row_reaches_the_block_by_name():
+    """The counterfactual: change the record, and the block changes with it."""
+    clean = _entry(_block(_projection()), "page-testimony-content-coverage")
+    assert clean["status"] == "measured"
+
+    projection = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "page-testimony-content-coverage": {
+                    "acts_total": 2,
+                    "acts_unmeasured": ["two"],
+                    "reasons": ["no page witness supplied comparable page text for this page"],
+                }
+            }
+        ),
+    )
+
+    changed = _entry(_block(projection), "page-testimony-content-coverage")
+    assert changed["status"] == "not-measured"
+    assert changed["detail"]["acts_unmeasured"] == ["two"]
+
+
+def test_a_page_whose_ink_was_never_reconciled_reaches_the_block_by_ordinal():
+    clean = _entry(_block(_projection()), "page-ink-conservation")
+    assert clean["status"] == "measured"
+
+    projection = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "page-ink-conservation": {
+                    "pages_sealed": 1,
+                    "pages_not_reconciled": [1],
+                    "reasons": ["the page's background could not be inferred"],
+                }
+            }
+        ),
+    )
+
+    changed = _entry(_block(projection), "page-ink-conservation")
+    assert changed["status"] == "not-measured"
+    assert changed["detail"]["pages_not_reconciled"] == [1]
+
+
+def test_the_visibility_survey_is_declared_unproduced_and_measured_when_it_runs():
+    """`declared-unproduced` is the contract's word, not a softer `not-measured`.
+
+    No stage publishes the Designator occlusion records the survey reads, so
+    every capture row on every current run carries a named absence code. A row
+    that carried a measured visibility state instead is a different status, and
+    the block must be able to say so rather than always reporting absence.
+    """
+    absent = _entry(_block(_projection()), "act-visibility-survey")
+    assert absent["status"] == "declared-unproduced"
+    assert absent["detail"]["capture_rows"] == 0
+
+    all_absent = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "act-visibility-survey": {
+                    "acts_total": 2,
+                    "acts_with_capture_presentation": 1,
+                    "capture_rows": 2,
+                    "rows_with_named_absence": 2,
+                    "absence_codes": ["act-visibility-survey-absent"],
+                }
+            }
+        ),
+    )
+    assert _entry(_block(all_absent), "act-visibility-survey")["status"] == "declared-unproduced"
+
+    surveyed = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "act-visibility-survey": {
+                    "acts_total": 2,
+                    "acts_with_capture_presentation": 1,
+                    "capture_rows": 2,
+                    "rows_with_named_absence": 0,
+                    "absence_codes": [],
+                }
+            }
+        ),
+    )
+    assert _entry(_block(surveyed), "act-visibility-survey")["status"] == "measured"
+
+    partial = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "act-visibility-survey": {
+                    "acts_total": 2,
+                    "acts_with_capture_presentation": 1,
+                    "capture_rows": 2,
+                    "rows_with_named_absence": 1,
+                    "absence_codes": ["cross-capture-registration-absent"],
+                }
+            }
+        ),
+    )
+    assert _entry(_block(partial), "act-visibility-survey")["status"] == "not-measured"
+
+
+def test_the_uncertainty_instrument_reports_the_sealed_round_cap_that_silenced_it():
+    """An empty `uncertain_spans` under `round_cap = 1` is policy, not confidence.
+
+    `pipeline/4_perlector/audit.py` can only mint a span when the sealed cap
+    leaves no re-proof round to spend, so under any other cap the empty list is
+    arithmetic. Said in the block rather than left for a reader to infer from a
+    `[]` that looks like a reader who was never uncertain.
+    """
+    silenced = _entry(_block(_projection()), "perlector-uncertain-spans")
+    assert silenced["status"] == "declared-unproduced"
+    assert silenced["detail"]["sealed_audit_round_cap"] == 1
+
+    reachable = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "perlector-uncertain-spans": {
+                    "sealed_audit_round_cap": 0,
+                    "acts_delivered": 1,
+                    "acts_with_uncertain_spans": 0,
+                }
+            }
+        ),
+    )
+    assert _entry(_block(reachable), "perlector-uncertain-spans")["status"] == "measured"
+
+
+def test_an_uncalibrated_geometry_configuration_is_a_caveat_on_the_act_boundaries():
+    caveat = _entry(_block(_projection()), "designator-geometry-calibration")
+    assert caveat["status"] == "not-measured"
+    assert caveat["detail"]["configurations"][0]["sample_count"] == 4572
+
+    calibrated = replace(
+        _projection(),
+        not_measured_basis=_test_not_measured_basis(
+            **{
+                "designator-geometry-calibration": {
+                    "configurations": [
+                        {
+                            "configuration": "designator-padding",
+                            "calibrated_for_this_corpus": True,
+                            "sample_count": 4572,
+                        },
+                        {
+                            "configuration": "designator-geometry",
+                            "calibrated_for_this_corpus": True,
+                            "sample_count": None,
+                        },
+                        {
+                            "configuration": "designator-grouping",
+                            "calibrated_for_this_corpus": True,
+                            "sample_count": 10,
+                        },
+                    ]
+                }
+            }
+        ),
+    )
+    assert _entry(_block(calibrated), "designator-geometry-calibration")["status"] == "measured"
+
+
+def test_a_projection_with_no_not_measured_basis_is_refused():
+    """A block derived from nothing is the reassuring silence it exists to break."""
+    with pytest.raises(SchemaRefusal, match="carries no not-measured basis"):
+        build_armarium_bundle(
+            replace(_projection(), not_measured_basis=None),
+            ArmariumFormats(("jsonl",), embed_pixels=False),
+            lambda _path: b"",
+        )
+
+
+def test_a_basis_missing_one_instrument_is_refused_before_a_product_byte_is_written():
+    broken = _test_not_measured_basis()
+    del broken["page-ink-conservation"]
+
+    with pytest.raises(SchemaRefusal, match="not-measured basis has an unrecognized field set"):
+        build_armarium_bundle(
+            replace(_projection(), not_measured_basis=broken),
+            ArmariumFormats(("jsonl",), embed_pixels=False),
+            lambda _path: b"",
+        )
+
+
+def test_a_geometry_basis_cannot_turn_a_string_or_empty_row_set_into_measurement():
+    broken = _test_not_measured_basis()
+    broken["designator-geometry-calibration"]["configurations"] = []
+    with pytest.raises(SchemaRefusal, match="must name three configurations"):
+        _manifest_of(replace(_projection(), not_measured_basis=broken))
+
+    broken = _test_not_measured_basis()
+    broken["designator-geometry-calibration"]["configurations"][0]["calibrated_for_this_corpus"] = (
+        "false"
+    )
+    with pytest.raises(SchemaRefusal, match="untyped values"):
+        _manifest_of(replace(_projection(), not_measured_basis=broken))
+
+
+def test_a_projection_not_measured_basis_refuses_bool_as_an_integer_count():
+    broken = _test_not_measured_basis()
+    broken["page-testimony-content-coverage"]["acts_total"] = False
+
+    with pytest.raises(SchemaRefusal, match="acts_total.*non-negative integer"):
+        _manifest_of(replace(_projection(), not_measured_basis=broken))
+
+
+@pytest.mark.parametrize(
+    ("instrument", "mutate"),
+    [
+        pytest.param(
+            "page-testimony-content-coverage",
+            lambda detail: detail.update(acts_total=0, acts_unmeasured=["two"]),
+            id="more-unmeasured-acts-than-total",
+        ),
+        pytest.param(
+            "act-visibility-survey",
+            lambda detail: detail.update(capture_rows=0, rows_with_named_absence=1),
+            id="more-absent-rows-than-capture-rows",
+        ),
+    ],
+)
+def test_a_projection_not_measured_basis_refuses_impossible_count_relations(instrument, mutate):
+    broken = _test_not_measured_basis()
+    mutate(broken[instrument])
+
+    with pytest.raises(SchemaRefusal, match="more .* than"):
+        _manifest_of(replace(_projection(), not_measured_basis=broken))
+
+
+def _resealed_without_not_measured(projection) -> bytes:
+    """Rebuild a package whose manifest has had the block removed."""
+    formats = ArmariumFormats(("jsonl",), embed_pixels=False)
+    bundle = build_armarium_bundle(projection, formats, lambda _path: b"")
+    with ZipFile(BytesIO(bundle.data)) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME].decode("utf-8"))
+    del manifest["claims"]["not_measured"]
+    manifest["self_hash"] = self_hash({k: v for k, v in manifest.items() if k != "self_hash"})
+    members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
+    return _zip_bytes(members)
+
+
+def test_the_export_schema_refuses_a_package_that_omits_the_block(tmp_path):
+    """Closed, so a bundle cannot quietly stop carrying its own caveats."""
+    with pytest.raises(SchemaRefusal, match="unrecognized field set"):
+        verify_export_bundle(_resealed_without_not_measured(_projection()), tmp_path / "clean")
+
+
+def test_nonzero_audit_cap_refuses_a_basis_that_names_uncertain_spans():
+    basis = _test_not_measured_basis()
+    basis["perlector-uncertain-spans"]["acts_with_uncertain_spans"] = 1
+    with pytest.raises(SchemaRefusal, match="nonzero sealed audit cap"):
+        _manifest_of(replace(_projection(), not_measured_basis=basis))
+
+
+def test_perlector_basis_counts_must_reconcile_with_the_projected_acts():
+    basis = _test_not_measured_basis()
+    basis["perlector-uncertain-spans"]["acts_delivered"] = 0
+    with pytest.raises(SchemaRefusal, match="does not exactly reconcile"):
+        _manifest_of(replace(_projection(), not_measured_basis=basis))
+
+
+def test_a_resealed_cap_zero_uncertainty_count_cannot_exceed_delivered_acts(tmp_path):
+    """Recipient validation must enforce the bound without a producer projection."""
+
+    def contradict_counts(manifest):
+        block = manifest["claims"]["not_measured"]
+        entry = _entry(block, "perlector-uncertain-spans")
+        detail = entry["detail"]
+        detail["sealed_audit_round_cap"] = 0
+        detail["acts_with_uncertain_spans"] = detail["acts_delivered"] + 1
+        entry["status"] = "measured"
+        block["count"] = sum(row["status"] != "measured" for row in block["entries"])
+
+    with pytest.raises(SchemaRefusal, match="more acts with uncertain spans than delivered acts"):
+        verify_delivered_bundle(_resealed_manifest(contradict_counts), tmp_path / "delivered")

@@ -886,3 +886,58 @@ def test_bigtiff_leaves_its_page_count_to_the_decoder():
 
     assert sniff(data) == "tiff"
     assert count_raster_pages(data) == 2
+
+
+# --- what a sealed page can carry, and what reads it back ------------------------
+#
+# From an outside review of `common/imaging.py` (GPT-6 review kit, 2026-09-06,
+# Tyrel; kit under Apache-2.0 at `workbench/raw/gpt6-review-2026-09-06/`). The kit
+# named helper-level defects and said plainly that it could not show an admitted
+# source reaching them. These two tests are that missing half, and they belong
+# beside the door because the door is what decides the answer.
+
+
+def test_a_16bit_tiff_seals_samples_a_grayscale_read_does_not_clip():
+    """A 16-bit archival scan is an ordinary admitted source, and the Designator
+    reads its sealed page through `common.imaging.grayscale_rows`
+    (`pipeline/2_designator/run.py::page_pixels`). The whole-page render keeps
+    `I;16` samples, so a reader that converted straight to `L` returned almost
+    pure white for a page full of ink: a blank page, and a missed act (GOALS 1),
+    manufactured by the reader rather than present in the scan."""
+    from common.imaging import grayscale_rows
+
+    master = Image.frombytes("I;16", (4, 1), struct.pack("<4H", 0, 257, 32896, 65535))
+    output = BytesIO()
+    master.save(output, format="TIFF")
+
+    sealed, geometry, recipe = render_raster_page(output.getvalue(), 0)
+
+    assert geometry.width == 4
+    assert recipe["output"]["color_mode"] == "I;16"
+    width, height, rows = grayscale_rows(sealed)
+    assert (width, height) == (4, 1)
+    assert list(rows[0]) == [0, 1, 128, 255]
+
+
+def test_a_sealed_page_can_carry_transparency_that_a_crop_must_keep():
+    """The seal does not guarantee opaque grey with no ancillary data: an admitted
+    grayscale PNG with a tRNS chunk renders through the identity path, and Pillow
+    writes the chunk out again. That is why `crop_png` preserves transparency
+    rather than refusing it — the sealed page really can carry it."""
+    from common.imaging import crop_png
+
+    source = png(
+        2,
+        1,
+        rows=b"\x00\x00\xff",
+        extra_chunks=png_chunk(b"tRNS", struct.pack(">H", 0)),
+    )
+
+    sealed, _geometry, _recipe = render_raster_page(source, 0)
+    assert b"tRNS" in sealed
+
+    crop = crop_png(sealed, {"x": 0, "y": 0, "w": 2, "h": 1})
+    with Image.open(BytesIO(crop)) as cropped, Image.open(BytesIO(sealed)) as page:
+        cropped.load()
+        page.load()
+        assert cropped.convert("RGBA").tobytes() == page.convert("RGBA").tobytes()

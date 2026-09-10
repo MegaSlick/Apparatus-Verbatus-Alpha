@@ -1,47 +1,16 @@
 # R4 alignment limits. These bytes are sealed at run creation and rechecked at
 # the point of use. Values are operational bounds, never similarity thresholds.
-#
-# `timeout_seconds` was 5 until 2026-09-05, when it was measured rather than
-# reasoned about (`workbench/active/TIMING_REPORT_2026-09-05.md` §2, §2f;
-# `common/alignment.py::align_to_anchor` driven through this file's own loader,
-# three runs each, on a Mac at load 4.5-6.7 so the numbers are pessimistic).
-#
-# No page-length text comes near five seconds. A 1,200-word / 7,530-character
-# French parish-register page aligns against a second witness in 0.95 s, and in
-# 1.59 s when that witness read an entirely different page of the same register
-# -- the costliest realistic input, because the shared formulae produce 322
-# matching blocks instead of 26. At the largest input `max_character_pairs`
-# admits at all, 10,000 x 10,000 characters, realistic text still finishes in
-# 1.44-2.73 s.
-#
-# What does reach the clock is not a length, it is a *shape*: a chair that
-# emitted 10,000 characters of very low entropy. `autojunk=False` (correct here)
-# stops `SequenceMatcher` discarding popular characters, so a degenerate witness
-# gives every position thousands of candidate matches and `find_longest_match`
-# goes quadratic -- 7.9 s with one side degenerate and 17.5 s with both, the
-# slowest any input the pair bound admits can produce.
-#
-# 25 s carries that worst measured case with about 40% margin. The principle is
-# that the pair bound should be what refuses and the clock should only catch a
-# genuine runaway; at 5 s the two overlapped, and the deadline decided the
-# outcome for a whole class of inputs this file had already declared admissible
-# -- the instrument constraining what it measures, which GOVERNANCE 10 forbids.
-# The cost was concrete: `pipeline/5_recensor/run.py` requires
-# `alignment["status"] == "aligned"` for a chair to count as comparable, so every
-# fired deadline removed that chair from `witness_floor = 3` and held the act
-# under-witnessed for what was a laptop artifact rather than a coverage fact.
-#
-# Two things this does not fix. `signal.alarm()` takes integer seconds, so the
-# deadline cannot be tuned finer than 1 s, and it is `ITIMER_REAL` -- wall clock,
-# not CPU. And the deadline only arms on the main thread with no timer already
-# set (`common/alignment.py`); where it does not arm the pair bound is the only
-# guard, and the pair bound admits the 17.5-second case whatever this value says.
-# Tightening `max_character_pairs` instead was considered and rejected: a real
-# 1,200-word page pair is already 56,738,550 pairs, so a bound low enough to put
-# the degenerate case under 5 s would refuse real pages. "Long" and "degenerate"
-# are not the same property, and catching the second by name belongs upstream as
-# an entropy check on the Testimonium, not here.
 [limits]
 max_characters = 100000
 max_character_pairs = 100000000
+# 25 seconds, not five, and chosen from the legitimate ceiling rather than the
+# pathological one. An unaligned page witness is not comparable, so it leaves
+# the act's witness floor: a deadline that fires on real work records a slow
+# comparison as coverage that is missing. A 7,500-character page whose acts
+# repeat one formula verbatim -- what a scribe copying one form produces --
+# measures 10.1 s, already past five seconds. Twenty-five clears it with load
+# headroom. It does NOT clear everything the pair bound admits: two different
+# low-entropy chair responses at 100,000,000 pairs measure 283.9 s. That case is
+# reported as a named non-verdict, and closing it needs the matcher, not this
+# number. See pipeline/3_attestatores/HANDOFF.md.
 timeout_seconds = 25

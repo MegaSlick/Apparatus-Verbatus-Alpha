@@ -40,7 +40,7 @@ any time to check on things.
 | `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
-| `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door, and `--models-config` with `--serving-recipes-config` seal the real chair roster and its serving catalogue into the run (always the pair; one without the other is refused). | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
+| `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the trio `--models-config config/models-real.toml`, `--serving-recipes-config config/serving_recipes_real.toml`, and `--witness-context-config config/witness_context-real.toml`; all three are sealed into the run and a partial trio is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. It is the one word besides `upload --network-volume` that talks to the volume, so you have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
 | `review` | Opens one run tree read-only and shows its sealed boundaries, page and act images, review queue and recorded decisions. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
@@ -285,9 +285,13 @@ cannot travel in a commit.
    selects the S3-compatible target; it has never been run against a real endpoint.
 4. **`run` runs on this computer, not on a pod.** With no submission it processes the
    declared synthetic fixture; with `--submission-folder` and `--submission-manifest` it
-   sends a real approved submission to the Door, and with the `--models-config` /
-   `--serving-recipes-config` pair it seals the real roster — but no chair is served
-   here, so a real-roster run on this computer stops where a stage first needs one.
+   sends a real approved submission to the Door. The `--models-config` /
+   `--serving-recipes-config` / `--witness-context-config` trio seals the real roster,
+   serving catalogue, and factual witness declaration — but no chair is served here,
+   so a real-roster run on this computer stops where a stage first needs one. Use the
+   shipped real trio together. For a custom roster, provide an operator-authored
+   witness declaration; a local repository path alone does not establish that a chair
+   is one of the shipped fixtures.
    The pod's run is `python -m operations.pod.pod_run`, and `fetch-run` is how its tree
    comes back.
 5. **`export` produces a base Armarium evidence bundle**, not Spec 11's product export,

@@ -269,6 +269,59 @@ def test_a_page_witness_comparison_view_lifts_the_capability_exemption():
     assert "reason" not in rows[0]
 
 
+def test_a_bracket_marker_view_lifts_the_exemption_for_an_act_scoped_chair():
+    """The act-scoped half of the same lift, on the notation DAI actually uses.
+
+    `markup_text_view` removes TAG markup, so it does nothing to a bracketed
+    `[UNCERTAIN]`. An act-scoped chair declaring `can_express_uncertainty`
+    therefore had no safe view at all and stayed `compared: "unknown"` forever
+    -- the parroting instrument dark on the one chair whose grammar says most
+    about uncertain ink. `common/alignment.py::bracket_marker_view`, wired in by
+    `pipeline/4_perlector/run.py::dissent_testimonia`, is the view that lifts
+    it, and the counterfactual below is why the strip has to happen at all.
+    """
+    raw = "Marie [UNCERTAIN] Dupont"
+    stripped = "Marie  Dupont"
+    testimonia = [
+        {
+            "outcome": "read",
+            "payload": {
+                "chair": "attestator_2",
+                "payload": raw,
+                "comparison_reported": stripped,
+                "format_capabilities": {"can_express_uncertainty": True},
+            },
+        }
+    ]
+    rows = dissent.dissent_against("Marie Dupont", testimonia)
+    assert rows[0]["compared"] is True
+    # The bracket marker is gone, so what remains is a whitespace difference:
+    # `departed` (normalized) is False while `departed_raw` still records that
+    # the strings were not byte-equal. Two honest answers to two questions.
+    assert rows[0]["departed"] is False, rows[0]
+    assert rows[0]["departed_raw"] is True, rows[0]
+
+    # The counterfactual: without the strip, this chair reads as dissenting
+    # about eleven characters it never disagreed about.
+    raw_rows = dissent.dissent_against(
+        "Marie Dupont",
+        [
+            {
+                "outcome": "read",
+                "payload": {
+                    "chair": "attestator_2",
+                    "payload": raw,
+                    "comparison_reported": raw,
+                    "format_capabilities": {"can_express_uncertainty": True},
+                },
+            }
+        ],
+    )
+    assert raw_rows[0]["compared"] is True
+    assert raw_rows[0]["departed"] is True, raw_rows[0]
+    assert raw_rows[0]["departures"], raw_rows[0]
+
+
 def test_a_runaway_witness_report_is_unknown_rather_than_aligned_for_twenty_minutes():
     """A witness's `reported` is a model's own output and nothing upstream bounds
     it. `SequenceMatcher` costs the product of the two lengths, so a model stuck

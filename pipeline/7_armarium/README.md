@@ -4,10 +4,11 @@ Writes the pipeline's sealed product bundle. It projects established Archetypus
 readings, their provenance, and their links to exact regions of ink; it does not
 establish, repair, choose, or rewrite text. The pipeline ends here.
 
-Its clean verifier replays the non-text accounting basis and source graph carried
-in the bundle. A self-hashed bundle therefore cannot substitute a partial status,
-drop one continuation citation, replace provenance, or rewrite a review reason
-while leaving the other selected projections untouched.
+The producer derives its disclosure from retained-run evidence before sealing. The
+standalone clean verifier checks the package's canonical schema, closure, and internal
+consistency only; a self-hash does not authenticate the run-derived facts. The publisher
+also binds the exact ZIP to the immutable export artifact and run authority. Authenticity
+beyond that retained-run immutability contract needs an external trust root.
 
 The bundle's first member is `EXPORT_MANIFEST.json`. Its companion formats are
 the run-sealed choices in `config/formats.toml`; the default includes a readable
@@ -17,6 +18,15 @@ status and transcription annotation layer, so an act the pipeline knows is
 damaged is visibly partial in the products and in the run's own verdict. The
 separate *semantic* annotation layer remains only a boundary contract pending
 Tyrel's ARCHITECTURE approval.
+
+Every bundle also carries `claims.not_measured`: this build's five instruments,
+each with what this run actually recorded for it. `DELIVERED` is reachable over
+a page whose ink was never reconciled, an act whose page testimony coverage was
+recorded unmeasured, two instruments no stage in this build publishes at all,
+and geometry thresholds no sample was taken for — all recorded somewhere, none
+of them qualifying the word on the deliverable until now. The block is required
+by the export schema and derived from the run's own records, so a bundle can
+neither omit its caveats nor report the same ones whatever happened.
 
 `run.py` seals the bundle into the run tree; `bundle.py` publishes it to a
 destination outside, verifying it again on the way out. Nothing else takes a
