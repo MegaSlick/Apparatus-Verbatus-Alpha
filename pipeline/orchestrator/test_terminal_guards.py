@@ -145,6 +145,30 @@ class _RecordingContext:
                 "outcome": "mapped",
                 "payload": {
                     "page_ordinal": 1,
+                    "ink_measurable": True,
+                    "background": {
+                        "background_level": 230,
+                        "background_source": "inferred-modal",
+                        "dark_mode": 230,
+                        "ink_margin": 20,
+                        "contrast_below_background": 40,
+                        "ink_threshold": 190,
+                        "config_sha256": self.sealed_config_digests["designator-grouping"],
+                    },
+                    "ink": {
+                        "total_ink_pixels": 0,
+                        "outside_ink_pixels": 0,
+                        "fraction_outside_per_million": 0,
+                        "flagged": False,
+                    },
+                    "edge": {
+                        "total_ink_pixels": 0,
+                        "outside_ink_pixels": 0,
+                        "fraction_outside_per_million": 0,
+                        "flagged": False,
+                        "edge_band_pixels": 1,
+                        "named_finding": "unclaimed-edge-ink",
+                    },
                     "edge_findings": {
                         "schema": "ink-runs.v1",
                         "width": 8,

@@ -47,7 +47,7 @@ from common.contracts.canonical import (
 )
 from common.contracts.errors import ContractError, IncompatibleReuse
 from common.contracts.identities import physical_page_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
+from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.corpus_register import members_of
 from common.runtree.store import RunTree
 from common.stage import (
@@ -2012,6 +2012,33 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
         text=True,
     )
     assert ink_map.returncode == 0, ink_map.stderr
+
+    # This real subprocess reaches StageContext publication and the closed
+    # outcome algebra, unlike a recording-only producer double. At least one
+    # small generated input has no measurable audit background; the refusal
+    # must survive as page evidence and permit the predecessor seal to close.
+    ink_records = [
+        tree.read_artifact(INK_MAP, "ink-map", row["artifact_id"])
+        for row in tree.build_manifest(INK_MAP)["artifacts"]
+        if row["kind"] == "ink-map"
+    ]
+    assert len(ink_records) == len(pages)
+    refused_maps = [row for row in ink_records if row["outcome"] == "ink-not-measurable"]
+    assert refused_maps
+    for record in refused_maps:
+        payload = record["payload"]
+        assert set(payload) == {
+            "page_ordinal",
+            "ink_measurable",
+            "background_refusal",
+            "background_config_sha256",
+        }
+        assert payload["ink_measurable"] is False
+        assert payload["background_refusal"]
+        assert (
+            payload["background_config_sha256"]
+            == run["sealed_config_digests"]["designator-grouping"]
+        )
 
     before_designator = tree.build_manifest(DESIGNATOR)
     boundary = subprocess.run(
