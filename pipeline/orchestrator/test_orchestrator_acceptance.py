@@ -1456,34 +1456,36 @@ def _perlector_dissent():
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
-# Shared Background integration, measured on source 45c7a91a127e6fa778ca05b4c5010b3e45327f33.
+#
+# Grouping integration, measured on source 7ce178e0d3e45761a2d5a7e854e97dd7120969a8.
 # Two fresh canonical-run-id "r" roots per scenario agree on raw bytes and typed
-# JSON/ZIP leaves. Happy remains 100 files/exit 0; review 111 files/exit 3.
-# Against main 54fe0c63, Ink Map publishes one shared background block per page:
-# paper 230, dark_mode 90, primary margin 46, audit contrast 40/threshold 190,
-# ink_measurable=true, sealed grouping SHA; duplicate ink/edge paper leaves move.
-# Recensor adds an empty unmeasurable_pages census to each fixture review.
-# Armarium manifest v7 adds verified claims.ink_map.unmeasurable_pages=[]; the
-# separate Designator conservation availability disclosure remains unchanged.
-# Grouping configuration text names all three shared readers. Exact Git config
-# bytes explain sealed digests; fixture pixel counts, geometry, text and terminal
-# outcomes are unchanged. Main native preparation/continuation/Honesty disclosure
-# remain present relative to original Shared 96ff5572 (96/107 -> 100/111 files).
-# Every logical JSON/JSONL/SQLite leaf, raw artifact and ZIP member was compared
-# against original and main controls; stable producer slots pair content-addressed
-# blobs. No unexplained leaves, ambiguous pairings or raw/reference mismatches.
-# The v7/v8-aware acceptance reducer retains SQLite row portability and persisted
-# integrity guards. Earlier 1d442507 raw-ZIP fallback pins were rejected, not reused.
-# Evidence: workbench/raw/codex-queue-2026-09-08/shared-background/
-# acceptance-causal-attribution-45c7a91a.json and independent direct-semantics report.
-# The separate frozen 17-page survey repeats 14 measured/3 refused with deterministic
-# fields unchanged. Grouping rectangles are a coverage surrogate, not served or
-# capture-padded proposals or a complete Armarium trial. Generated-image tests
-# separately cover refusals and measurable conservation with an unavailable audit.
+# JSON/ZIP leaves: happy 100 files/exit 0; review 111 files/exit 3.
+# Against Shared/main 766d0965 (tree-identical to measured Shared 5352bbe6), the
+# only ordinary value additions are two structure-status leaves per scenario:
+# resolved_thresholds.page_spanning_area_bp=5000. Fixture components remain below
+# that bound; text, declared geometry, pixel counts and terminal outcomes do not
+# change. The new policy/provenance and corrected fallback-accounting prose change
+# exact sealed grouping-config bytes; alignment bytes remain identical to main.
+# Every resulting artifact/input/inventory digest and stable producer blob pair
+# was checked against retained raw JSON/JSONL/SQLite and ZIP members. Independent
+# output review rehashed the content-addressed files and bound both configurations
+# to their run seals; a hash-shaped leaf alone is not a causality waiver.
+# Against original Grouping 7dd35b30, main's native witness preparation, continuation
+# and Honesty/Shared disclosure contracts account for 96/107 becoming 100/111 files.
+# All three control comparisons have zero unexplained leaves or reference failures.
+# The v7/v8-aware reducer and its persisted-integrity checks remain intact.
+# Evidence: workbench/raw/codex-queue-2026-09-08/grouping/acceptance-integrated-7ce178e0,
+# acceptance-causal-attribution-7ce178e0-bound.json and acceptance-output-review-7ce178e0.md.
+# Earlier attribution text is preserved beside them and in Git history.
+# Three fixed 17-page surveys reproduce 14 measured/3 refused and every deterministic
+# field. Their grouping rectangles are a coverage surrogate, not served final crops,
+# pairwise continuation proof or a full real-material pipeline trial. A separate
+# generated all-withheld stage regression proves readable fallback and exact
+# 10464 total = 10464 claimed + 0 residual; the mixed case retains residual holds.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "ebc7484efd767bbdeaf995cd4c14636e5802cad8953cd41cc465817394e5ed1a"
-REVIEW_RUN_TREE_DIGEST = "1cb2d609a13e1b16a04f5095ca9e63167ea766586ce07bd9dd25a5526df838a4"
+HAPPY_RUN_TREE_DIGEST = "385ed21b3a94a917d03be660a3b5afabaacc776254b48812ee1ecafdf8c990ab"
+REVIEW_RUN_TREE_DIGEST = "351ff8a78add433ea015db68d8b27a9fc360ae5de56c4e3a67d07faf3a357ed6"
 
 
 def orchestrate(
