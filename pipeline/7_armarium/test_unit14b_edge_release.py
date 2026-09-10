@@ -38,6 +38,16 @@ _FLAGGED_RUNS = {
     "rows": [[[0, 40]], [[0, 40]]],
 }
 
+_BACKGROUND = {
+    "background_level": 220,
+    "background_source": "inferred-modal",
+    "dark_mode": 0,
+    "ink_margin": 73,
+    "contrast_below_background": 40,
+    "ink_threshold": 180,
+    "config_sha256": "0" * 64,
+}
+
 
 def _ink_record(artifact_id: str, ordinal, outcome="mapped", evidence=None) -> dict:
     return {
@@ -45,6 +55,10 @@ def _ink_record(artifact_id: str, ordinal, outcome="mapped", evidence=None) -> d
         "outcome": outcome,
         "payload": {
             "page_ordinal": ordinal,
+            "ink_measurable": True,
+            "background": dict(_BACKGROUND),
+            "ink": {},
+            "edge": {},
             "edge_findings": _RUNS if evidence is None else evidence,
         },
     }
@@ -71,8 +85,17 @@ class _Tree:
         )
 
 
-def _context(records: dict[str, list[dict]]):
-    return SimpleNamespace(tree=_Tree(records), run={})
+class _Context(SimpleNamespace):
+    def require_sealed_config(self, name, observed_sha256):
+        expected = self.run["sealed_config_digests"].get(name)
+        if expected != observed_sha256:
+            raise ContractError(f"sealed {name} digest does not match the Ink Map payload")
+
+
+def _context(records: dict[str, list[dict]], digest="0" * 64):
+    return _Context(
+        tree=_Tree(records), run={"sealed_config_digests": {"designator-grouping": digest}}
+    )
 
 
 SEALED_ONE = {1: {"outcome": "sealed"}}
@@ -83,6 +106,30 @@ def test_a_mapped_page_records_the_measurement_nobody_took_as_absence():
     armarium = _armarium()
     rows = armarium.ink_map_page_rows(_context({INK_MAP: [_ink_record("a", 1)]}), SEALED_ONE, {})
     assert rows == ({"ordinal": 1, "initial_outcome": "mapped", "remeasured": None},)
+
+
+@pytest.mark.parametrize(
+    "defect", ["base-era", "wrong-seal", "missing-background-field", "array-source"]
+)
+def test_a_measured_ink_map_payload_must_name_the_current_background_contract(defect):
+    armarium = _armarium()
+    record = _ink_record("a", 1)
+    payload = record["payload"]
+    if defect == "base-era":
+        del payload["ink_measurable"]
+        del payload["background"]
+        del payload["ink"]
+        del payload["edge"]
+    elif defect == "wrong-seal":
+        payload["background"] = {**_BACKGROUND, "config_sha256": "1" * 64}
+    else:
+        payload["background"] = dict(_BACKGROUND)
+        if defect == "missing-background-field":
+            del payload["background"]["ink_threshold"]
+        else:
+            payload["background"]["background_source"] = []
+    with pytest.raises(FatalAccounting, match="invalid sealed measured payload"):
+        armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
 
 
 def test_a_flagged_page_is_re_measured_against_the_crops_actually_cut():
@@ -224,3 +271,139 @@ def test_a_verified_region_with_no_bounds_is_refused_not_skipped(monkeypatch):
     )
     with pytest.raises(FatalAccounting, match="no crop bounds"):
         armarium.claimed_bounds_by_page(_context({DESIGNATOR: [region]}), {})
+
+
+def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():
+    """`ink-not-measurable`: a census row with no measurement and no evidence.
+
+    The Ink Map publishes this when the shared background inference refuses a
+    page's paper value: no threshold was cut, so there are no retained runs to
+    re-measure and no counts a hold could be derived from. The row must still
+    exist -- the page census is reconciled against these rows, and a missing one
+    is refused as a denominator mismatch -- and it must carry `remeasured: None`
+    for the same GOVERNANCE 10 reason a `mapped` page does, only more strongly:
+    here nothing was measured at all.
+    """
+    armarium = _armarium()
+    record = {
+        "artifact_id": "a",
+        "outcome": "ink-not-measurable",
+        "payload": {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "the page is majority ink",
+            "background_config_sha256": "0" * 64,
+        },
+    }
+    rows = armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
+    assert rows == ({"ordinal": 1, "initial_outcome": "ink-not-measurable", "remeasured": None},)
+    assert armarium.edge_hold_pages_from_rows(list(rows)) == ()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "",
+            "background_config_sha256": "0" * 64,
+        },
+        {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "refused",
+            "background_config_sha256": "A" * 64,
+        },
+        {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "refused",
+            "background_config_sha256": "0" * 64,
+            "edge_findings": _RUNS,
+        },
+        {
+            "page_ordinal": True,
+            "ink_measurable": False,
+            "background_refusal": "refused",
+            "background_config_sha256": "0" * 64,
+        },
+        {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_config_sha256": "0" * 64,
+        },
+        {
+            "page_ordinal": 1,
+            "ink_measurable": True,
+            "background_refusal": "refused",
+            "background_config_sha256": "0" * 64,
+        },
+    ],
+    ids=[
+        "blank-refusal",
+        "uppercase-digest",
+        "extra-measurement",
+        "boolean-ordinal",
+        "missing-refusal",
+        "measurable-true",
+    ],
+)
+def test_an_unmeasurable_ink_map_payload_must_be_closed_before_export(payload):
+    armarium = _armarium()
+    record = {"artifact_id": "a", "outcome": "ink-not-measurable", "payload": payload}
+    expected = (
+        "without an integer page ordinal"
+        if payload["page_ordinal"] is True
+        else "invalid sealed ink-not-measurable payload"
+    )
+    with pytest.raises(FatalAccounting, match=expected):
+        armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
+
+
+def test_an_unmeasurable_ink_map_payload_must_match_the_run_seal():
+    armarium = _armarium()
+    record = {
+        "artifact_id": "a",
+        "outcome": "ink-not-measurable",
+        "payload": {
+            "page_ordinal": 1,
+            "ink_measurable": False,
+            "background_refusal": "the page is majority ink",
+            "background_config_sha256": "1" * 64,
+        },
+    }
+    with pytest.raises(FatalAccounting, match="invalid sealed ink-not-measurable payload"):
+        armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
+
+
+def test_the_export_verifier_accepts_the_unmeasurable_row_and_refuses_a_measured_one():
+    """The closed row shape knows the third outcome, and still refuses a claim.
+
+    A row that says the page could not be measured and then carries a
+    re-measurement is the same contradiction as a `mapped` page carrying one:
+    a measurement nobody took, in the one file a clean-machine verifier reads.
+    """
+    # Bare, the way this stage's other tests import it: pytest's prepend import
+    # mode puts this directory on `sys.path`, and a `spec_from_file_location`
+    # load leaves the module unregistered, which its dataclasses cannot resolve.
+    from armarium_export import _validate_ink_map_pages
+
+    from common.contracts.errors import SchemaRefusal
+
+    row = {"ordinal": 1, "initial_outcome": "ink-not-measurable", "remeasured": None}
+    assert _validate_ink_map_pages([row], "subject") == [row]
+    with pytest.raises(SchemaRefusal, match="re-measures an ink-map page its own map never"):
+        _validate_ink_map_pages(
+            [
+                {
+                    **row,
+                    "remeasured": {
+                        "total_ink_pixels": 1,
+                        "outside_ink_pixels": 1,
+                        "edge_band_pixels": 1,
+                    },
+                }
+            ],
+            "subject",
+        )

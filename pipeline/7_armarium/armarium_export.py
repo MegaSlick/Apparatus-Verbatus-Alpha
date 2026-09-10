@@ -67,7 +67,7 @@ from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
-from common.residual_ink import coverage_flag
+from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
 
 _atomic_replace = os.replace
 _unlink_at = os.unlink
@@ -83,19 +83,23 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # manifest's id moves with its claims.
 # v3 adds required `claims.ink_map`; v2 readers and writers cannot consume that
 # closed shape without an explicit schema boundary.
-# v5 adds required `claims.not_measured`: the export's own list of what this
+# v5 added required `claims.not_measured`: the export's own list of what this
 # run did not measure. A v3 reader has no field for it and would present a
 # bundle that names five unmeasured instruments as one that names none, which
 # is the silent-shape-change under one id these ids exist to prevent.
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v5"
+# v7 adds `claims.ink_map.unmeasurable_pages`. The source citation already
+# carried each Ink Map refusal, but a v5 reader had no claim-level field for
+# that audit gap and could present a complete bundle without naming it.
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v7"
 # v4 introduced the clustered act-partition claim: `denominator` names logical
 # acts, and `local_proposal_rows`/`logical_membership` join the claim. At that
 # historical boundary an image-local bundle remained v3 while a clustered one
 # declared v4, so a reader could not mistake logical acts for proposal-seal rows.
-# v6 is v5's clustered counterpart: both shapes gained `claims.not_measured`
-# together. `verify_export_bundle` accepts the current v5/v6 shapes and refuses
+# v6 is v5's clustered counterpart; v8 is v7's clustered counterpart. The
+# current shapes gained `claims.ink_map.unmeasurable_pages` together.
+# `verify_export_bundle` accepts the current v7/v8 shapes and refuses
 # a schema id that disagrees with its own claim's shape.
-EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v6"
+EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v8"
 # v2: the damage record. `text_status` and `transcription_annotations` joined
 # the row, and the bare `annotations`/`annotation_status` pair was renamed
 # apart into `semantic_annotations`/`semantic_annotation_status`. A consumer
@@ -902,7 +906,7 @@ _CLAIM_SUBFIELDS: Final = {
         }
     ),
     "page_census": frozenset({"denominator", "counted", "status"}),
-    "ink_map": frozenset({"denominator", "held_pages"}),
+    "ink_map": frozenset({"denominator", "held_pages", "unmeasurable_pages"}),
     "pixels": frozenset({"embedded", "resolution_claim"}),
     "display": frozenset(
         {
@@ -1301,7 +1305,15 @@ _INK_MAP_REMEASURE_FIELDS: Final = frozenset(
     {"total_ink_pixels", "outside_ink_pixels", "edge_band_pixels"}
 )
 _UNCLAIMED_EDGE_INK: Final = "unclaimed-edge-ink"
-_INK_MAP_OUTCOMES: Final = frozenset({"mapped", _UNCLAIMED_EDGE_INK})
+# `ink-not-measurable` joined this set on 2026-09-06, when the Ink Map began
+# inferring each page's paper value through `common.background` and gained a way
+# to refuse one. **No schema id moves for it**, and the reason is the one the ids
+# above exist for: a bump exists to stop a reader silently misreading a renamed
+# shape under an unchanged id, and an older verifier meeting this value refuses it
+# by name at the check below. A new value in a closed vocabulary fails loudly on
+# an old reader; a renamed field does not, which is why one moves the id and the
+# other does not.
+_INK_MAP_OUTCOMES: Final = frozenset({"mapped", _UNCLAIMED_EDGE_INK, INK_NOT_MEASURABLE})
 
 
 def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
@@ -1311,6 +1323,13 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
     stage re-measures only the pages Unit 9 actually flagged, and writing zeros
     for the rest would put a measurement nobody took into the record
     (GOVERNANCE 10). The absence is recorded as absence.
+
+    An `ink-not-measurable` page carries `remeasured: None` for a stronger
+    version of the same reason: the Ink Map could not infer its paper value, so
+    it cut no threshold, retained no runs and took no measurement at all. It is
+    in these rows because it is in the page census — dropping it would break the
+    denominator this file reconciles — and it can never be a held page, because
+    a hold here is derived from counts and this row has none.
     """
     if not isinstance(rows, list | tuple):
         raise SchemaRefusal(
@@ -1328,11 +1347,11 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                 "Armarium v3 source graph."
             )
         ordinal, outcome, remeasured = row["ordinal"], row["initial_outcome"], row["remeasured"]
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal <= 0:
             raise SchemaRefusal(
-                f"{subject} has an ink-map row without an integer page ordinal. The verifier "
-                "cannot bind its measurement to a sealed page. Rebuild the export from the "
-                "sealed page inventory."
+                f"{subject} has an ink-map row without a positive integer page ordinal. The "
+                "verifier cannot bind its measurement to a sealed page. Rebuild the export "
+                "from the sealed page inventory."
             )
         if ordinal in ordinals:
             raise SchemaRefusal(
@@ -1391,6 +1410,15 @@ def _edge_hold_pages_from_validated_rows(rows: list[dict[str, Any]]) -> tuple[in
                 row["remeasured"]["total_ink_pixels"], row["remeasured"]["outside_ink_pixels"]
             )[1]
         )
+    )
+
+
+def _unmeasurable_ink_map_pages_from_validated_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[int, ...]:
+    """Every page whose Ink Map audit refused, derived from its closed rows."""
+    return tuple(
+        sorted(row["ordinal"] for row in rows if row["initial_outcome"] == INK_NOT_MEASURABLE)
     )
 
 
@@ -3544,7 +3572,9 @@ def _export_manifest(
             "promotion": _SALVAGE_PROMOTION_CLAIM,
         }
     )
-    edge_hold_pages = edge_hold_pages_from_rows(list(projection.ink_map_pages))
+    ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
+    edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
+    unmeasurable_ink_map_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
     ledger = _terminal_ledger(
         _act_outcomes(projection.acts),
         list(projection.pages),
@@ -3589,6 +3619,7 @@ def _export_manifest(
             "ink_map": {
                 "denominator": INK_MAP_DENOMINATOR,
                 "held_pages": list(edge_hold_pages),
+                "unmeasurable_pages": list(unmeasurable_ink_map_pages),
             },
             "act_partition": _act_partition_claim(projection, categories),
             "submission_inventory": {
@@ -4090,6 +4121,7 @@ def _verify_honest_status_claims(
         sources.get("ink_map_pages"), "the package sources citation"
     )
     derived_edge_holds = _edge_hold_pages_from_validated_rows(ink_map_rows)
+    derived_unmeasurable_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
     sealed_ordinals = {
         page["ordinal"]
         for page in sources["pages"]
@@ -4102,16 +4134,28 @@ def _verify_honest_status_claims(
             "Discard this extraction and rebuild the package from the intact run tree."
         )
     ink_map_claim = claims.get("ink_map")
+    declared_unmeasurable_pages = (
+        ink_map_claim.get("unmeasurable_pages") if isinstance(ink_map_claim, dict) else None
+    )
     if (
         not isinstance(ink_map_claim, dict)
-        or set(ink_map_claim) != {"denominator", "held_pages"}
+        or set(ink_map_claim) != {"denominator", "held_pages", "unmeasurable_pages"}
         or ink_map_claim["denominator"] != INK_MAP_DENOMINATOR
         or ink_map_claim["held_pages"] != list(derived_edge_holds)
+        or not isinstance(declared_unmeasurable_pages, list)
+        or any(
+            not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal <= 0
+            for ordinal in declared_unmeasurable_pages
+        )
+        or declared_unmeasurable_pages != sorted(set(declared_unmeasurable_pages))
+        or canonical_text(declared_unmeasurable_pages)
+        != canonical_text(list(derived_unmeasurable_pages))
     ):
         raise SchemaRefusal(
-            "the exported ink-map hold claim does not match the pages its own re-measured "
-            "evidence still flags. The manifest and source graph disagree about which pages need "
-            "review. Discard this extraction and rebuild the package from the intact run tree."
+            "the exported ink-map claim does not match the held and unmeasurable pages in its "
+            "own source evidence. The manifest and source graph disagree about which pages need "
+            "review or had no audit measurement. Discard this extraction and rebuild the package "
+            "from the intact run tree."
         )
     must_be_partial = must_be_partial or bool(derived_edge_holds)
     # The third way a run can be incomplete, and the one a category-only reading

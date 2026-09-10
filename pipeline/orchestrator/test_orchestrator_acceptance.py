@@ -1456,30 +1456,34 @@ def _perlector_dissent():
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
-# Integrated Designator, measured on committed source 700baa2a9ca7bebc79a3eadd6cb94e824b8348a8.
-# Two fresh canonical-run-id "r" roots per scenario agreed on every raw byte and
-# JSON/ZIP leaf. This pin-only update changes no runtime or sealed config bytes.
-# Relative to the original Designator54ba1065, current main7f427cce retains four
-# additional vendor image-preparation blobs (96 -> 100 files, 107 -> 111), native
-# capture/attachment evidence, continuation coverage, and Armarium not_measured.
-# All those main changes remain in the integrated output.
-# Relative to the retained exact main tree, direct changes are the sealed
-# designator-grouping bytes and three new structure-status leaves on each of two
-# pages: dark_mode90, ink_margin46=(230-90)*3333//10000, ink_threshold184.
-# Fixture pixel sets, geometry, text, review decisions and output counts match
-# main. Remaining differences follow config/artifact/reference/member hashes;
-# content-addressed JSON and ZIP blobs were paired by stable producer slots.
-# Every logical JSON/JSONL/SQLite leaf, raw file and ZIP member was attributed
-# against both parents: no unexplained changes or ambiguous blob pairings.
-# Local evidence: workbench/raw/codex-queue-2026-09-08/designator/
-# acceptance-causal-attribution-700baa2a.json and independent direct-semantics report.
-# The separate native127 survey reproduces114 inferred/13 refused, with every
-# deterministic measurement unchanged after the neutral dark_distribution rename.
-# It uses deterministic grouping rectangles, not served/padded final proposals.
+# Shared Background integration, measured on source 45c7a91a127e6fa778ca05b4c5010b3e45327f33.
+# Two fresh canonical-run-id "r" roots per scenario agree on raw bytes and typed
+# JSON/ZIP leaves. Happy remains 100 files/exit 0; review 111 files/exit 3.
+# Against main 54fe0c63, Ink Map publishes one shared background block per page:
+# paper 230, dark_mode 90, primary margin 46, audit contrast 40/threshold 190,
+# ink_measurable=true, sealed grouping SHA; duplicate ink/edge paper leaves move.
+# Recensor adds an empty unmeasurable_pages census to each fixture review.
+# Armarium manifest v7 adds verified claims.ink_map.unmeasurable_pages=[]; the
+# separate Designator conservation availability disclosure remains unchanged.
+# Grouping configuration text names all three shared readers. Exact Git config
+# bytes explain sealed digests; fixture pixel counts, geometry, text and terminal
+# outcomes are unchanged. Main native preparation/continuation/Honesty disclosure
+# remain present relative to original Shared 96ff5572 (96/107 -> 100/111 files).
+# Every logical JSON/JSONL/SQLite leaf, raw artifact and ZIP member was compared
+# against original and main controls; stable producer slots pair content-addressed
+# blobs. No unexplained leaves, ambiguous pairings or raw/reference mismatches.
+# The v7/v8-aware acceptance reducer retains SQLite row portability and persisted
+# integrity guards. Earlier 1d442507 raw-ZIP fallback pins were rejected, not reused.
+# Evidence: workbench/raw/codex-queue-2026-09-08/shared-background/
+# acceptance-causal-attribution-45c7a91a.json and independent direct-semantics report.
+# The separate frozen 17-page survey repeats 14 measured/3 refused with deterministic
+# fields unchanged. Grouping rectangles are a coverage surrogate, not served or
+# capture-padded proposals or a complete Armarium trial. Generated-image tests
+# separately cover refusals and measurable conservation with an unavailable audit.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "45473ed3e442dbbc964da582f66a2b22dcd02dec509591c6e7bd7bd4b5fd27fe"
-REVIEW_RUN_TREE_DIGEST = "2953f0d9a1cc4a2b8c9830ea69f41af96e7bccf0db1f712e05d13bb6a590c83f"
+HAPPY_RUN_TREE_DIGEST = "ebc7484efd767bbdeaf995cd4c14636e5802cad8953cd41cc465817394e5ed1a"
+REVIEW_RUN_TREE_DIGEST = "1cb2d609a13e1b16a04f5095ca9e63167ea766586ce07bd9dd25a5526df838a4"
 
 
 def orchestrate(
@@ -2329,7 +2333,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             if (
                 not isinstance(manifest, dict)
                 or manifest.get("schema")
-                not in {"armarium-export-manifest.v5", "armarium-export-manifest.v6"}
+                not in {"armarium-export-manifest.v7", "armarium-export-manifest.v8"}
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -3172,7 +3176,7 @@ def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavaila
 
 
 def _write_acceptance_bundle_tree(
-    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v5"
+    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v7"
 ) -> None:
     """Write a whole run tree around one bundle, optionally damaged from the inside.
 
@@ -3243,7 +3247,7 @@ def _write_acceptance_bundle_tree(
 
 
 @pytest.mark.parametrize(
-    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
 )
 def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path, manifest_schema):
     """Version-local database fields cannot rename a run; a literal row can."""
@@ -3273,7 +3277,7 @@ def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path,
 
 
 @pytest.mark.parametrize(
-    "manifest_schema", ["armarium-export-manifest.v5", "armarium-export-manifest.v6"]
+    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
 )
 def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, manifest_schema):
     """Integrity damage stays byte-bound instead of being normalized out of the pin.
@@ -3330,10 +3334,10 @@ def test_semantic_snapshot_preserves_the_bundle_manifest_schema(tmp_path):
     image_root = tmp_path / "image-local"
     clustered_root = tmp_path / "clustered"
     _write_acceptance_bundle_tree(
-        image_root, database, manifest_schema="armarium-export-manifest.v5"
+        image_root, database, manifest_schema="armarium-export-manifest.v7"
     )
     _write_acceptance_bundle_tree(
-        clustered_root, database, manifest_schema="armarium-export-manifest.v6"
+        clustered_root, database, manifest_schema="armarium-export-manifest.v8"
     )
 
     assert semantic_snapshot_digest(image_root) != semantic_snapshot_digest(clustered_root)

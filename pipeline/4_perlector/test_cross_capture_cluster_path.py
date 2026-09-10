@@ -888,7 +888,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
     # verifies -- with `local_proposal_rows` and `logical_membership` derived
     # again from the package's own `logical_accounting` source block, never
     # believed off the self-hashed manifest.
-    assert manifest["schema"] == "armarium-export-manifest.v6"
+    assert manifest["schema"] == "armarium-export-manifest.v8"
     verified = armarium_export.verify_export_bundle(bundle.data, tmp_path / "clean-clustered")
     assert verified["claims"]["act_partition"]["local_proposal_rows"] == 2
 

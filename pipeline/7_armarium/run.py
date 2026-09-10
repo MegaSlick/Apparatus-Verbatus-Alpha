@@ -40,6 +40,10 @@ from armarium_export import (  # noqa: E402
     edge_hold_pages_from_rows,
 )
 
+from common.background import (  # noqa: E402
+    validate_ink_not_measurable_payload,
+    validate_measured_ink_map_payload,
+)
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import validate_annotations  # noqa: E402
 from common.contracts.canonical import digest_bytes, digest_of, verify_self_hash  # noqa: E402
@@ -73,7 +77,11 @@ from common.exemplar_boundary import (  # noqa: E402
     verify_sealed_page_pixels,
 )
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
-from common.residual_ink import edge_ink_from_runs  # noqa: E402
+from common.residual_ink import (  # noqa: E402
+    INK_NOT_MEASURABLE,
+    MINIMUM_CONTRAST_BELOW_BACKGROUND,
+    edge_ink_from_runs,
+)
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -732,12 +740,41 @@ def ink_map_page_rows(
                 "record decides the edge hold. Restore the sealed Ink Map inventory or restart "
                 "the run before exporting."
             )
-        if record["outcome"] not in {"mapped", "unclaimed-edge-ink"}:
+        if record["outcome"] not in {"mapped", "unclaimed-edge-ink", INK_NOT_MEASURABLE}:
             raise FatalAccounting(
                 "ink-map has an unknown page finding outcome. The Armarium cannot determine "
                 "whether the page remains held. Rebuild the Ink Map under this version before "
                 "exporting."
             )
+        if record["outcome"] == INK_NOT_MEASURABLE:
+            # Validate the sealed, closed refusal before publishing an explicit
+            # absence of page-space runs. A bare outcome is not evidence that the
+            # page's ink was unavailable to measure.
+            try:
+                refusal = validate_ink_not_measurable_payload(payload)
+                context.require_sealed_config(
+                    "designator-grouping", refusal["background_config_sha256"]
+                )
+            except ContractError as error:
+                raise FatalAccounting(
+                    f"ink-map page {ordinal} has an invalid sealed ink-not-measurable "
+                    "payload. Restore the sealed Ink Map artifact or restart the run before "
+                    "exporting."
+                ) from error
+            found[ordinal] = {"outcome": record["outcome"], "evidence": None}
+            continue
+        try:
+            measured = validate_measured_ink_map_payload(
+                payload, audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
+            )
+            context.require_sealed_config(
+                "designator-grouping", measured["background_config_sha256"]
+            )
+        except ContractError as error:
+            raise FatalAccounting(
+                f"ink-map page {ordinal} has an invalid sealed measured payload. Restore the "
+                "sealed Ink Map artifact or restart the run before exporting."
+            ) from error
         evidence = payload.get("edge_findings")
         if not isinstance(evidence, dict):
             raise FatalAccounting(

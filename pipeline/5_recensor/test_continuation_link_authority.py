@@ -256,7 +256,11 @@ def test_a_designator_held_act_with_a_real_region_carries_that_regions_own_facts
         "page_ordinals": [1],
         "region_ids": [region_id],
     }
-    assert held["payload"]["page_coverage"] == {"checked_pages": [1], "flagged_pages": []}
+    assert held["payload"]["page_coverage"] == {
+        "checked_pages": [1],
+        "flagged_pages": [],
+        "unmeasurable_pages": [],
+    }
 
 
 def test_a_designator_held_act_with_no_region_at_all_carries_empty_facts(tmp_path):
@@ -282,7 +286,11 @@ def test_a_designator_held_act_with_no_region_at_all_carries_empty_facts(tmp_pat
             "page_ordinals": [],
             "region_ids": [],
         }
-        assert held["payload"]["page_coverage"] == {"checked_pages": [], "flagged_pages": []}
+        assert held["payload"]["page_coverage"] == {
+            "checked_pages": [],
+            "flagged_pages": [],
+            "unmeasurable_pages": [],
+        }
 
 
 if __name__ == "__main__":

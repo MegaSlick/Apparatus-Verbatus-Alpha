@@ -271,6 +271,10 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     INK_MAP: {
         "mapped": _C.COMPLETED,
         "unclaimed-edge-ink": _C.UNRESOLVED,
+        # An unavailable measurement is unresolved page evidence, not a failed
+        # act or a blank page. It flows onward with its named refusal so later
+        # readers and the export can disclose the missing instrument.
+        "ink-not-measurable": _C.UNRESOLVED,
     },
     DESIGNATOR: {
         "proposed": _C.COMPLETED,
@@ -369,6 +373,7 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (EXEMPLAR, "refused"): _A.REFUSED_WITH_REASON,
     (INK_MAP, "mapped"): None,
     (INK_MAP, "unclaimed-edge-ink"): None,
+    (INK_MAP, "ink-not-measurable"): None,
     (DESIGNATOR, "proposed"): None,
     (DESIGNATOR, "excluded"): _A.EXCLUDED_WITH_APPROVAL,
     (DESIGNATOR, "held"): _A.HELD_FOR_REVIEW,

@@ -550,6 +550,27 @@ def test_load_padding_config_refuses_a_non_boolean_calibrated_flag(tmp_path):
         load_padding_config(path)
 
 
+def test_this_project_has_exactly_one_basis_point_rounding_rule():
+    """`geometry._pad_amount` and `common.background.round_half_up_bp` are one.
+
+    They stopped being one module's business on 2026-09-06: the background
+    band `[grouping.background] band_bp` resolves is now read by the Ink Map and
+    the Recensor as well, through `common/background.py`, which may not import a
+    stage. `_pad_amount` delegates there rather than keeping a second copy, and
+    this pins both halves of that -- the same denominator and the same answer,
+    including at the exact half-pixel tie the half-up rule exists for.
+    """
+    import geometry
+
+    from common.background import BASIS_POINTS, round_half_up_bp
+
+    assert geometry.BP_DENOMINATOR == BASIS_POINTS
+    assert geometry._pad_amount(10, 500) == 1  # exactly 0.5 px: half-up, not half-even
+    for dimension in (1, 5, 10, 200, 260, 2480, 3508):
+        for bp in (0, 1, 250, 499, 500, 501, 1500, 3333, 9999, 10000):
+            assert geometry._pad_amount(dimension, bp) == round_half_up_bp(dimension, bp)
+
+
 def test_load_padding_config_refuses_calibrated_provenance_with_no_samples(tmp_path):
     path = tmp_path / "padding.toml"
     _write_padding_toml(

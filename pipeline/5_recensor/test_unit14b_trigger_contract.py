@@ -14,11 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.errors import FatalAccounting
+from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
+from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError, FatalAccounting
 from common.residual_ink import MINIMUM_INK_PIXELS
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
+EXPECTED_BACKGROUND_SHA256 = digest_bytes(DEFAULT_BACKGROUND_CONFIG_PATH.read_bytes())
 
 
 def _recensor():
@@ -177,12 +180,35 @@ class _FakeTree:
 
     def read_artifact(self, stage, kind, artifact_id):
         ordinal = int(artifact_id.split("-")[1])
-        return {"payload": {"page_ordinal": ordinal, "edge_findings": self._maps[ordinal]}}
+        return {
+            "outcome": "mapped",
+            "payload": {
+                "page_ordinal": ordinal,
+                "ink_measurable": True,
+                "background": {
+                    "background_level": 220,
+                    "background_source": "inferred-modal",
+                    "dark_mode": 0,
+                    "ink_margin": 73,
+                    "contrast_below_background": 40,
+                    "ink_threshold": 180,
+                    "config_sha256": EXPECTED_BACKGROUND_SHA256,
+                },
+                "ink": {},
+                "edge": {},
+                "edge_findings": self._maps[ordinal],
+            },
+        }
 
 
 class _FakeContext:
     def __init__(self, maps_by_ordinal: dict[int, dict]):
         self.tree = _FakeTree(maps_by_ordinal)
+        self.run = {"sealed_config_digests": {"designator-grouping": EXPECTED_BACKGROUND_SHA256}}
+
+    def require_sealed_config(self, name, observed_sha256):
+        if self.run["sealed_config_digests"].get(name) != observed_sha256:
+            raise ContractError(f"sealed {name} digest does not match the Ink Map payload")
 
 
 def _ink_map(width: int, height: int, ink_boxes: list[dict]) -> dict:

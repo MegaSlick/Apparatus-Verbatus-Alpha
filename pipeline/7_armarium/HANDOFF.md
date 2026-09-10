@@ -80,14 +80,14 @@ real-shaped export payload publishing clean and a both-named payload being
 refused by name.
 
 **The real-run identity union does not have a separate manifest schema id.**
-It remains part of the current image-local `armarium-export-manifest.v5` and
-clustered `armarium-export-manifest.v6` shapes. Those two ids distinguish the
+It remains part of the current image-local `armarium-export-manifest.v7` and
+clustered `armarium-export-manifest.v8` shapes. Those two ids distinguish the
 act-partition denominator: a reader must know whether `expected_count` counts
 proposal-seal rows or logical acts before interpreting the claims.
 
 Run identity is a separate closed union within either schema. A fixture package
 carries `run.fixture_id`; a real-submission package carries `run.submission_id`,
-with exactly one of those keys present. Consumers of v5 or v6 must branch on
+with exactly one of those keys present. Consumers of v7 or v8 must branch on
 that key before reading it. An unconditional `manifest["run"]["fixture_id"]`
 read is invalid for a real-run package, and the schema id alone intentionally
 does not distinguish which run-identity shape the package carries. The producer
@@ -154,15 +154,17 @@ projection configuration. The bundle may contain these plainly specified formats
   `armarium-sources.v3` for the same reason twice over: at v2 its act-outcome
   rows began to REQUIRE `text_status` under exact-field-set validation, and at
   v3 `ink_map_pages` joins the source graph, so a v2 file cannot answer a v3
-  reader's question at all. The manifest is `armarium-export-manifest.v5` for
-  an image-local run and `armarium-export-manifest.v6` for a clustered one: v2
+  reader's question at all. The manifest is `armarium-export-manifest.v7` for
+  an image-local run and `armarium-export-manifest.v8` for a clustered one: v2
   renamed the annotation claims apart, v3 added the required `ink_map` claim to
   the closed claim set, v4 was the clustered act-partition claim — the
   denominator names logical acts and `local_proposal_rows`/`logical_membership`
   join the claim, so a v3 reader can never misread `expected_count` as
   proposal-seal rows — and v5/v6 add the required `not_measured` claim to both
   shapes at once, so a stale reader cannot present a bundle that names five
-  unmeasured instruments as one that names none. A clustered bundle also carries a `logical_accounting`
+  unmeasured instruments as one that names none. V7/v8 add the required
+  `ink_map.unmeasurable_pages` census to both shapes, so a complete bundle cannot
+  hide a page on which that distinct audit took no measurement. A clustered bundle also carries a `logical_accounting`
   block in `sources.json`, and `verify_export_bundle` recomputes the clustered
   claim from it instead of believing the self-hashed manifest.
 - `review-items.jsonl` — held and refused act records with reasons and

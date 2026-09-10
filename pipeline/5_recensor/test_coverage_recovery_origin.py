@@ -189,10 +189,16 @@ def test_an_unclaimed_observation_alone_spends_nothing_without_ink_confirmation(
     # merely convenient: Unit 9's own ink map records zero ink in every one of
     # the retained boxes. A regression that started flagging real ink there
     # would falsify this control and must not be read as this test passing.
+    from common.background import load_background_config, resolve_background_policy
+    from common.imaging import dimensions
     from common.residual_ink import ink_runs
     from proof.synthetic_pages import page_bytes
 
-    evidence = ink_runs(page_bytes(1))
+    page = page_bytes(1)
+    evidence = ink_runs(
+        page,
+        background_policy=resolve_background_policy(load_background_config(), *dimensions(page)),
+    )
     for bounds in observed_bounds:
         x0, x1 = bounds["x"], bounds["x"] + bounds["w"]
         ink_here = sum(

@@ -322,9 +322,34 @@ ink belongs to, and a human needs the whole page. A successful recovery crop
 that reaches the missed ink clears the finding on the very next Recensor pass,
 with no code path here that requests one — recovery requests are per-act, and
 there is no act to request a recrop for when the ink belongs to nobody's
-proposal at all. `payload["page_coverage"]` (`checked_pages`, `flagged_pages`)
-is recorded for every act, the same way `continuation` is, not only when it
-flags something.
+proposal at all. `payload["page_coverage"]` (`checked_pages`, `flagged_pages`,
+`unmeasurable_pages`) is recorded for every act, the same way `continuation` is,
+not only when it flags something.
+
+**The paper value this check thresholds against is the Designator's, since
+2026-09-06.** It used to be the page's own raw histogram mode, which on a
+photographed opening is the bezel, so the check computed approximately zero
+residual ink over a page full of writing and reported every such page clean:
+an independent audit that passed by construction rather than by measurement.
+It now infers through `common.background` under the sealed
+`[grouping.background]` policy resolved for that page's dimensions, proved
+against the run's own `designator-grouping` seal — the same call the Designator
+and the Ink Map make on the same bytes. The **contrast** stays this module's own
+`MINIMUM_CONTRAST_BELOW_BACKGROUND = 40` and is not shared: a check that took
+the Designator's derived margin as well would be a restatement of the stage it
+audits. What that buys is the cross-stage containment being real —
+`recensor_contrast >= SECONDARY_MARGIN` now orders two thresholds under one
+background, so this check can never call ink what the Designator's own
+accounting dismissed, over a non-empty set.
+
+**`unmeasurable_pages` is a third state and not a variant of the other two.** A
+page whose paper value the shared inference refuses has no residual measurement
+at all — not zero, none — so it is never in `checked_pages`, which is a claim
+about a measurement that was taken. It is listed by ordinal on every act that
+touches it, because a consumer that saw only its absence could not tell "no
+unclaimed ink here" from "nobody could say". Nothing recovers from such a page
+either: recovery requires independently measured ink outside every cut, and a
+witness pointer at an unmeasurable page confirms nothing.
 
 **A page with zero regions cut on it at all has no late finding here.** The
 preceding Ink Map stage now measures every sealed page before detection,

@@ -36,6 +36,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
+from common.background import round_half_up_bp
 from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError
@@ -213,8 +214,15 @@ def _pad_amount(dimension: int, bp: int) -> int:
     Round-half-up, not banker's rounding or truncation, so the amount actually
     applied is deterministic and independent of Python's float rounding rules
     -- this is pure integer arithmetic and never touches a float at all.
+
+    Delegated to `common.background.round_half_up_bp` since 2026-09-06, when the
+    background band this rule also resolves stopped being this stage's alone:
+    the Ink Map and the Recensor now resolve a page's band through the shared
+    inference, and two copies of a rounding rule are two rules the day one of
+    them is edited. `BP_DENOMINATOR` and `common.background.BASIS_POINTS` are
+    the same 10,000 and `test_geometry.py` pins them equal.
     """
-    return (dimension * bp + BP_DENOMINATOR // 2) // BP_DENOMINATOR
+    return round_half_up_bp(dimension, bp)
 
 
 def apply_padding(

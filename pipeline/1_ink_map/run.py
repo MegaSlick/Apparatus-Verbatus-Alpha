@@ -4,6 +4,16 @@ One ``ink-map`` record is written for every sealed Exemplar page, including a
 page on which this measure finds no ink; proposals do not exist yet. The record
 is bounded evidence: ``unclaimed-edge-ink`` names an edge signal without holding
 anything; Unit 14 owns that explicit hold outcome.
+
+Since 2026-09-06 this stage infers each page's paper value through
+``common.background``, the same inference and the same sealed
+``[grouping.background]`` policy the Designator's structure pass runs under, and
+proves the bytes it read against the run's own ``designator-grouping`` seal. It
+took the page's raw histogram mode until then, which on a photographed opening
+is the bezel, so every such page was mapped as carrying approximately no ink at
+all. A page the shared inference refuses is published as ``ink-not-measurable``
+-- present in the census, with its refusal named and no counts -- rather than as
+a page that measured clean.
 """
 
 import sys
@@ -12,13 +22,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from common.background import (  # noqa: E402
+    BackgroundInferenceRefusal,
+    load_background_config,
+    resolve_background_policy,
+)
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import parse_ingress_record  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import EXEMPLAR, INK_MAP  # noqa: E402
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
-from common.residual_ink import ink_runs, page_edge_ink, page_residual_ink  # noqa: E402
+from common.imaging import grayscale_rows  # noqa: E402
+from common.residual_ink import (  # noqa: E402
+    INK_NOT_MEASURABLE,
+    edge_ink,
+    ink_runs_from_rows,
+    residual_ink,
+)
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     open_stage_context,
@@ -103,8 +124,16 @@ def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
 
 
 def artifact_finding(finding: dict) -> dict:
-    """Make the shared measure's ratio canonical without changing its measure."""
+    """Make the shared measure's ratio canonical without changing its measure.
+
+    The background block is lifted out here rather than carried on both
+    findings. Both measures inferred the same page under the same policy, `main`
+    checks that they agree before publishing, and the page's record states its
+    one paper value once: two copies of a number is how two copies come to
+    disagree.
+    """
     recorded = dict(finding)
+    recorded.pop("background", None)
     # Defaulted rather than indexed: a measure that stops emitting the key at
     # all is a worse contract break than one emitting a string, and it was the
     # one getting the worse report -- a bare KeyError where the string got a
@@ -133,19 +162,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # ingress evidence is not a closed fixture-or-real record must still stop
     # here, as it did before both routes shared one constructor.
     parse_ingress_record(context.run.get("ingress"))
+    # The same file the Designator loads and the same digest the run sealed at
+    # binding time. Read once for the whole run: the policy is per-page only in
+    # its two band widths, which `resolve_background_policy` derives from each
+    # page's own dimensions below.
+    background_config = load_background_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", background_config["config_sha256"])
     for ordinal, page, page_path in sealed_pages(context):
         image_bytes = measured_page_bytes(context.tree, ordinal, page)
         try:
-            # Empty coverage is intentional: this is the pre-proposal denominator.
-            ink_map = page_residual_ink(image_bytes, covered=[])
-            edge = page_edge_ink(image_bytes)
-            # Retain lossless runs so later coverage decisions cannot
-            # re-measure the page under a different pixel predicate. Decoded
-            # inside this refusal boundary: it is this module's third decode of
-            # the same digest-verified bytes, and an undecodable page must be
-            # the named census failure, never a bare traceback mid-publish.
-            edge_findings = ink_runs(image_bytes)
-        except ValueError as error:
+            # One decode for all three measures; it used to be one per measure.
             # `measured_page_bytes` proves these bytes match the digest the
             # Exemplar sealed; it proves nothing about whether this module's own
             # independent decoder can read them. An uncaught decoder ValueError
@@ -154,12 +180,54 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # pages already published -- GOVERNANCE 2's silent loss with extra
             # steps. Named and stopped instead, like every other census failure
             # this stage refuses.
+            width, height, rows = grayscale_rows(image_bytes)
+        except ValueError as error:
             raise FatalAccounting(
                 f"the ink map cannot measure sealed Exemplar page {ordinal}: its own "
                 f"digest-verified pixels do not decode ({error}); no boundary was "
                 "sealed, and the records already published for earlier pages of this "
                 "run are an incomplete map"
             ) from error
+        policy = resolve_background_policy(background_config, width, height)
+        try:
+            # Empty coverage is intentional: this is the pre-proposal denominator.
+            ink_map = residual_ink(width, height, rows, [], background_policy=policy)
+            edge = edge_ink(width, height, rows, background_policy=policy)
+            # Retain lossless runs so later coverage decisions cannot
+            # re-measure the page under a different pixel predicate.
+            edge_findings = ink_runs_from_rows(width, height, rows, background_policy=policy)
+        except BackgroundInferenceRefusal as error:
+            # **Named, and still in the census.** The page is sealed, it is real,
+            # and the Designator will cut it; what this stage cannot do is say
+            # how much ink is on it. Publishing `mapped` with zero counts would
+            # be the exact failure this record now exists to stop -- an audit
+            # passing by construction -- and dropping the record would break the
+            # page denominator the Armarium reconciles against the census.
+            context.publish(
+                kind="ink-map",
+                subject_id=page["subject_id"],
+                outcome=INK_NOT_MEASURABLE,
+                inputs=[context.input_ref(page_path)],
+                payload={
+                    "page_ordinal": ordinal,
+                    "ink_measurable": False,
+                    "background_refusal": str(error),
+                    "background_config_sha256": background_config["config_sha256"],
+                },
+            )
+            continue
+        # Both measures infer the same page under the same policy, so they must
+        # return the same background block; publishing it once rather than
+        # twice, and checking that before doing so, keeps one paper value per
+        # page in the record and makes the identity a check rather than an
+        # assumption.
+        background = ink_map["background"]
+        if edge["background"] != background:
+            raise FatalAccounting(
+                f"the ink map inferred two different backgrounds for sealed page {ordinal} "
+                f"({background} against {edge['background']}); one page has one paper value "
+                "and a record that carried both would leave every count on it unreadable"
+            )
         context.publish(
             kind="ink-map",
             subject_id=page["subject_id"],
@@ -167,6 +235,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             inputs=[context.input_ref(page_path)],
             payload={
                 "page_ordinal": ordinal,
+                "ink_measurable": True,
+                # GOVERNANCE 6: the record names the paper value it ran under,
+                # where that value came from, the contrast this audit applied
+                # below it, and the digest of the sealed policy that decided
+                # the inference.
+                "background": {**background, "config_sha256": background_config["config_sha256"]},
                 "ink": artifact_finding(ink_map),
                 "edge": artifact_finding(edge),
                 "edge_findings": edge_findings,

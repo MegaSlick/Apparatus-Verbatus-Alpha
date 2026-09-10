@@ -40,7 +40,7 @@ from common.recensor_receipt import _validate_coverage
 EXPECTED_VOCABULARY_SIZES = {
     "door": 4,
     "exemplar": 3,
-    "ink-map": 4,
+    "ink-map": 5,
     "designator": 6,
     "attestatores": 8,
     "perlector": 7,
@@ -58,6 +58,11 @@ def test_algebra_is_total():
 def test_ink_map_names_edge_evidence_without_owning_unit_14s_hold():
     assert classify(INK_MAP, "unclaimed-edge-ink") is OutcomeClass.UNRESOLVED
     assert terminal_category(INK_MAP, "unclaimed-edge-ink") is None
+
+
+def test_unmeasurable_ink_remains_unresolved_page_evidence_that_flows_onward():
+    assert classify(INK_MAP, "ink-not-measurable") is OutcomeClass.UNRESOLVED
+    assert terminal_category(INK_MAP, "ink-not-measurable") is None
 
 
 def test_vocabulary_shape_is_pinned():

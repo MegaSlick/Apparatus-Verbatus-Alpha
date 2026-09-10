@@ -616,7 +616,7 @@ def test_background_is_not_a_field_of_the_published_resolved_thresholds():
     resolved = resolve_thresholds(load_grouping_config(), 200, 260)
     assert not hasattr(resolved, "background_policy")
     assert not hasattr(resolved, "surround_policy")
-    assert "surround" not in dataclasses.asdict(
+    assert "dark_distribution" not in dataclasses.asdict(
         resolve_thresholds(load_grouping_config(), 200, 260)
     )
 

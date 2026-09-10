@@ -40,7 +40,11 @@
 # honestly set.
 #
 # `[grouping.background]` holds the policy the per-page background inference runs
-# under, and it is the only block in this file measured against real material --
+# under. **Three stages read it.** `common/background.py` supplies one parser and
+# validator to the Designator, Ink Map, and Recensor residual-ink audit; each
+# proves the exact selected bytes against the run's sealed designator-grouping
+# digest. The file remains named for the Designator while this shared policy still
+# lives here. It is the only block in this file measured against real material --
 # so it carries a provenance block of its own, with
 # `calibrated_for_this_corpus = true` and `sample_count = 127`, rather than
 # sitting under the file-level provenance whose `sample_count` is 0. One block
