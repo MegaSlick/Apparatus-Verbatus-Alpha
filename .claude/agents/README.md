@@ -11,20 +11,15 @@ verification.
   tool-call guard. PR #84 made that guard judge each worktree's own checkout, so a seat
   there is bounded by the same six refusals the session is, plus the two that apply to a
   spawned agent alone.
-- **A chamber is the seat for two jobs, not the default one.** Reach for
-  `operations/autoclave/` when the work needs the window onto the old pipeline
-  (`AUTOCLAVE_WINDOW`, see below), or when it installs a dependency this machine should
-  not be asked to trust. Otherwise the container buys isolation nobody is spending and
-  costs a clone, an image and a hand-off.
-- **A chamber sees this repository and the design notes, not the old pipeline.** The
-  window closed on 2026-08-20; `/specs` carries the notes, and the old code arrives only
-  when `AUTOCLAVE_WINDOW` is set on `new` — mounts are fixed at container creation, so
-  `dispatch` **refuses** the variable rather than accepting it as a no-op. Write briefs
-  against what is actually mounted: an agent told to consult a mount that is absent fills
-  the gap with invention more often than it reports it, so a rebuilder result is trusted
-  only after the mount is confirmed in the chamber, never because the brief named it.
-  `operations/autoclave/briefs/rebuilder.md` is the one brief that assumes the window and
-  says so at the top.
+- **There is no container seat.** The chamber (`operations/autoclave/`) was retired on
+  2026-09-10 (`history/2026-09-10_chamber-retired.md`): the window it was kept for closed
+  on 2026-08-20, the container engine had been off for weeks, and the container bought
+  isolation nobody was spending at the cost of a clone, an image and a hand-off. The
+  standing briefs moved to `operations/seats/`; prepend `builder.md` to a task.
+- **A seat sees this repository and the design notes, not the old pipeline.** The notes
+  reach it by the path the brief names. Write briefs against what is actually there: a
+  seat told to consult a location it cannot reach is more likely to fill the gap than to
+  report it, and a brief must not rely on it doing otherwise.
 - **The three custom host roles are read-only.** `scout`, `auditor` and `consult` hold no
   shell or write tools, and `test_roster.py` keeps it that way. That bound is about those
   role files, not about the machine: a worktree seat writes and runs a shell, and what
@@ -56,7 +51,7 @@ Choose the model and effort for the job, not from a permanent ceremony:
 **Sonnet and Terra are the default build seats; Opus and Sol are the audit and correction
 seats. There is no standing vendor ratio.** Choose the seat for the job and name it in the
 dispatch. Vendor diversity is a real reason to reach for a seat — a Claude host plus
-all-Claude chambers concentrates one vendor's blind spots — but it is a reason, not a
+all-Claude seats concentrates one vendor's blind spots — but it is a reason, not a
 quota, and a seat Tyrel names for a run is simply the seat.
 
 **Fable is not dispatched unless Tyrel asks for it in the session** — it may hold the
@@ -66,10 +61,13 @@ when Tyrel asks. The `consult` floor of `xhigh` stands, enforced by `test_roster
 
 Effort buys thinking time, not virtue. Raise it for hard judgement, not merely long work.
 Model and effort are dispatch arguments; record what actually answered. A substitution is
-reported, never silently treated as the requested seat. The launcher validates the
-reachable model/effort pairs before it touches Docker.
+reported, never silently treated as the requested seat. Nothing validates the pair now
+that the container launcher is gone: the dispatcher is responsible for naming a reachable
+one, and the table below is the record of what each CLI accepted when last probed.
 
-The launcher's reachable effort values are:
+The effort values each CLI accepted when last probed — the reachability matrix of
+2026-08-01 (`history/2026-08-01_model-matrix.md`), with `ultracode` and `ultra` verified
+2026-08-03:
 
 | Vendor/model | Allowed effort |
 |---|---|
@@ -78,8 +76,8 @@ The launcher's reachable effort values are:
 | Codex `gpt-5.6-sol` or `gpt-5.6-terra` | `none low medium high xhigh max ultra` |
 | other Codex models | `none low medium high xhigh max` |
 
-This is dispatch validation, not a model recommendation. Update the table and launcher in
-the same change when a live CLI probe shows the accepted values changed.
+This is a dispatch reference, not a model recommendation. Update the table when a live
+CLI probe shows the accepted values changed.
 
 ## Prompting
 
@@ -92,7 +90,7 @@ Every prompt names:
 
 Do not invent deadlines. Ask reviewers for every finding. The main session records each
 finding as fixed or declined with a reason; it does not silently discard findings
-below a presentation threshold. A chamber
+below a presentation threshold. A seat
 may orchestrate internally for a large task, but its sub-agents use disjoint result paths
 and do not touch git concurrently.
 
@@ -118,16 +116,15 @@ after reasonable investigation; it is not a route for handing routine work back 
 
 **A seat builds and audits; the host integrates.** A seat's brief charges it with its own
 independent audit round, and it returns a branch or a report together with that audit's
-ledger — a branch in a worktree it cannot push, or a branch out of a chamber it could
-never have pushed. The host verifies the
+ledger — a branch in a worktree it cannot push. The host verifies the
 load-bearing claims and the check results, runs the review loops and the gate,
 integrates, and pushes. **The host does not re-read the returned diff line by line** —
-that spends the context the chamber existed to save and adds a reader who is no longer
+that spends the context the seat existed to save and adds a reader who is no longer
 independent.
 
 **This does not amend `CLAUDE.md` hard rule 6.** Rule 6 says nothing enters uninspected and
 that the accountable session must be able to justify what lands. That holds exactly as
-written; what this section settles is *where* the reading happens — in the chamber and its
+written; what this section settles is *where* the reading happens — in the seat and its
 audit round, and in the checks — not whether it happens. A remark in a chat is not an
 amendment to a hard rule, and no session may make one (`GOVERNANCE.md`, "Who decides").
 

@@ -66,9 +66,9 @@ substitute an unchecked `git branch -D`. Otherwise keep the branch and say why.
 
 ## 5. Leave machine state explicit
 
-List chambers. If none run and this session started Colima, stop it. If any chamber still
-runs, leave Colima up and name the chamber and purpose. Never destroy uncollected work to
-tidy the close.
+List the linked worktrees (`git worktree list`). Remove a seat this session created only
+once its branch is merged or its work is recorded; name any seat still holding uncollected
+work and its purpose. Never destroy uncollected work to tidy the close.
 
 Report the final branch/tree state, checks, filing, external actions, live suspensions,
 and the next action. Send the `done` notification through `operations/notify/notify.sh`;

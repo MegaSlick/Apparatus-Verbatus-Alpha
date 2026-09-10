@@ -223,7 +223,7 @@ def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkey
     }
 
 
-@requires_landlock("the chamber proves the Landlock worker")
+@requires_landlock("a Linux runner proves the Landlock worker")
 def test_backup_cli_executes_the_worker_inside_the_real_custody_boundary(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
@@ -745,7 +745,7 @@ def test_the_overlap_check_reads_filesystem_identity_and_not_the_spelling(tmp_pa
     The Mac target is case-insensitive by default and `Path.resolve` does not
     correct case on macOS, so `is_relative_to` -- a comparison of spellings --
     answers False for two paths that name one directory there. That exact
-    condition cannot be built on this container's case-sensitive filesystem, so
+    condition cannot be built portably — CI's filesystem is case-sensitive — so
     the equivalent real fact is used: an alias that `is_relative_to` misses and
     device-and-inode catches. The macOS spelling itself is on the host checklist.
     """
@@ -764,7 +764,7 @@ def test_backup_names_a_backup_directory_that_refuses_hard_links(
 ) -> None:
     """An exFAT volume or an SMB share is an ordinary Mac backup directory.
 
-    The filesystem cannot be built inside this container, so the kernel's own
+    Neither can be created in an ordinary test environment, so the kernel's own
     answer for one is raised at the one call that would meet it. What is being
     checked is not that `os.link` fails -- it is that the failure reaches the
     operator as the setup fact they can act on, the way `_atomic_create` already

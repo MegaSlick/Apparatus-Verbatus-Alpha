@@ -68,11 +68,12 @@ while IFS= read -r f; do
     README.md|GOALS.md|GOVERNANCE.md|ARCHITECTURE.md|GLOSSARY.md|CLAUDE.md|DATA_CONTRACT.md) ;;
     # **The bounded drawers come first, because `case` takes the first match.** The
     # generic rule below accepts `*/README.md` at any depth — `*` matches `/` in a
-    # shell case pattern — so it admitted `operations/autoclave/briefs/nested/README.md`
-    # before the one-level-deep rules further down could refuse it, and the same for
-    # `HANDOFF.md`. Those drawers are bounded on purpose: an unbounded one becomes a
-    # notes folder by another name. Found by CodeRabbit on pull request 15.
-    operations/autoclave/briefs/*/*) printf '%s\n' "$f"; stray=1 ;;
+    # shell case pattern — so it admitted `operations/seats/nested/README.md` (the
+    # defect was found in this drawer under its former name) before the one-level-deep
+    # rules further down could refuse it, and the same for `HANDOFF.md`. Those drawers
+    # are bounded on purpose: an unbounded one becomes a notes folder by another name.
+    # Found by CodeRabbit on pull request 15.
+    operations/seats/*/*) printf '%s\n' "$f"; stray=1 ;;
     .claude/agents/*/*) printf '%s\n' "$f"; stray=1 ;;
     .github/*/*) printf '%s\n' "$f"; stray=1 ;;
     # Every directory may explain itself; every stage declares what it writes.
@@ -95,26 +96,18 @@ while IFS= read -r f; do
       case "${f#.github/}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
     .claude/agents/*.md)
       case "${f#.claude/agents/}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
-    # The standing brief a dispatched agent reads inside the autoclave container.
-    # A harness document by the same logic as the agent files above — it instructs
-    # an agent — and admitted by exact path rather than a glob so the directory
-    # does not become a notes drawer. It is deliberately NOT named `CLAUDE.md`:
-    # under that name a session working in this directory *on the host* would read
-    # it and believe it was inside a container. The Dockerfile renames it on the
-    # way into the image, which is the only place it is true.
-    operations/autoclave/agent-brief.md) ;;
     # The RunPod v1 -> v2 migration record: every call the adapter makes today,
     # mapped to v2 with a documentation citation each, and the plan the next
-    # unit executes. Admitted by exact path, like the brief above, so the pod
+    # unit executes. Admitted by exact path, like the seat briefs below, so the pod
     # directory does not become a notes drawer; it is deleted with the v1
     # adapter once the migration has landed and been observed live.
     operations/pod/V2_MIGRATION.md) ;;
-    # The standing briefs a dispatched agent is given for its role — what
+    # The standing briefs a dispatched seat is given for its role — what
     # `.claude/agents/worker.md` and its two siblings held before writing work
-    # moved off this machine. Harness documents by the same logic as the agent
+    # moved into worktree seats. Harness documents by the same logic as the agent
     # files above, and one level deep only, so the drawer cannot grow notes.
-    operations/autoclave/briefs/*.md)
-      case "${f#operations/autoclave/briefs/}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
+    operations/seats/*.md)
+      case "${f#operations/seats/}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
     # The session skills. Instructions to a session, so they are harness
     # documents like the agents beside them. Exactly `.claude/skills/<name>/SKILL.md`
     # and nothing else under it: a skill may bundle reference files, but each one

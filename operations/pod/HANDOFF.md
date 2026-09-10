@@ -252,7 +252,7 @@ from it is cited with its page and its date in the file that relies on it.
 - `V2_MIGRATION.md` (new) — every v1 call mapped to v2 with a citation each; what v2
   adds; what has no counterpart; the plan the next unit executes. Admitted to the
   document allowlist by exact path (`.githooks/doc-allowlist.sh`), the same way the
-  autoclave brief is.
+  seat briefs are.
 - `README.md` — the v1/v2 and balance paragraphs rewritten to the code as it now
   stands; the `--record-fixture` and Boot A paragraphs; the balance checklist row made
   runnable; deferral rows 04-4, 04-6, 04-7 and 04-9 updated to what the migration

@@ -106,8 +106,8 @@ def project(tmp_path, monkeypatch):
 def project_under_tmp(monkeypatch):
     """A project root that genuinely lives under `/tmp`.
 
-    What actually sits under `/tmp` in a chamber is pytest's own fixture root — a
-    chamber clones to `/work` and GitHub checks out under `/home/runner/work`. But a
+    What actually sat under `/tmp` in a container seat was pytest's own fixture root — a
+    container cloned to `/work` and GitHub checks out under `/home/runner/work`. But a
     checkout *can* land there, in a scratch clone or a sandbox, and treating the
     prefix as disposable wherever it appeared judged that whole tree disposable.
 
@@ -148,7 +148,7 @@ class TestMain:
         # The ordinary, undecorated form. It names no refspec, so the arm that reads
         # refspecs saw nothing and let it through — while the docstring claimed this
         # refusal covered pushing to main. Found by a Sonnet seat running the guard
-        # against real payloads inside a chamber.
+        # against real payloads inside a container seat.
         directory = checkout_on(tmp_path, "main")
         assert denied(decide("git push", directory))
         assert denied(decide("git push origin", directory))
@@ -178,7 +178,7 @@ class TestMain:
         self, tmp_path, branch, refused, spelling
     ):
         """A linked worktree's `.git` is a *file* naming the real gitdir, and HEAD lives
-        there. That is the layout `git worktree add` writes and the one a chamber uses,
+        there. That is the layout `git worktree add` writes and the one a seat uses,
         and nothing exercised it — `checkout_on` and the suite's own `WORKTREE` both
         build the directory spelling. A regression in this arm would read the parent
         clone's branch, or none at all, for a checkout that is standing on main.
@@ -305,11 +305,11 @@ class TestDeletesInsideATemporaryCheckout:
 
     A checkout can land under `/tmp` — a scratch clone, a sandbox, or the throwaway
     project root these tests build. It is pytest's fixture root that put one there on
-    Linux, not a chamber: a chamber clones to `/work`.
+    Linux, not a container seat: those cloned to `/work`.
     Treating that prefix as disposable wherever it appeared meant the whole checkout
     was judged disposable, and `rm -rf` on the repository itself was waved straight
     through — the one thing this refusal exists to stop. macOS hid it by accident,
-    which is why the suite passed on the host and failed in a chamber.
+    which is why the suite passed on the host and failed in a container seat.
 
     The rule these pin: a temporary directory is disposable **only when it is outside
     the project root**. Inside it, only the named drawers are.
@@ -369,7 +369,7 @@ class TestHistory:
 
     def test_an_ordinary_push_to_a_work_branch_passes(self):
         assert decide("git push origin work/topic") is None
-        assert decide("git push -u origin infra/autoclave-container") is None
+        assert decide("git push -u origin infra/retire-container") is None
 
     def test_history_filters_are_refused(self):
         assert denied(decide("git filter-branch --tree-filter 'rm -f x' HEAD"))
@@ -429,7 +429,7 @@ class TestCredentials:
         assert denied(decide("git add -f private/"))
 
     def test_staging_ordinary_paths_passes(self):
-        assert decide("git add operations/autoclave/autoclave.sh") is None
+        assert decide("git add operations/seats/builder.md") is None
 
     def test_writing_a_key_into_tracked_ground_is_refused(self, project):
         decision = decide_write(
@@ -580,7 +580,7 @@ class TestAgentGovernance:
         CLAUDE.md governs "the root `README.md`" and nothing else, while hard rule 12
         makes `operations/` agent-written. A spawned agent asked to update one of these
         was denied with no route forward — a denial is final within a session — and
-        that is the likeliest account of the denials logged inside a chamber on
+        that is the likeliest account of the denials logged inside a container seat on
         2026-08-02. `.claude/agents/README.md` stays refused, by the `.claude/` arm
         rather than by its name. Found by CodeRabbit on pull request 15.
         """
@@ -589,10 +589,10 @@ class TestAgentGovernance:
         assert denied(decide_as_agent("Edit", {"file_path": "./README.md"}))
         assert denied(decide_as_agent("Edit", {"file_path": ".claude/agents/README.md"}))
         for path in (
-            "operations/autoclave/README.md",
+            "operations/seats/README.md",
             "cleanroom/README.md",
             "workbench/README.md",
-            "operations/autoclave/briefs/README.md",
+            "operations/notify/README.md",
         ):
             assert decide_as_agent("Edit", {"file_path": path}) is None, path
 
@@ -601,9 +601,7 @@ class TestAgentGovernance:
         assert denied(decide_as_agent("Bash", {"command": "echo x > ./README.md"}))
         assert denied(decide_as_agent("Bash", {"command": "cp draft README.md"}))
         assert decide_as_agent("Bash", {"command": "cp draft cleanroom/README.md"}) is None
-        assert (
-            decide_as_agent("Bash", {"command": "tee operations/autoclave/README.md < x"}) is None
-        )
+        assert decide_as_agent("Bash", {"command": "tee operations/seats/README.md < x"}) is None
 
     def test_an_agent_may_write_anything_else(self):
         # The point is a bound, not a cage. Ordinary work is untouched.
@@ -627,7 +625,7 @@ class TestAgentGovernance:
         # The redirect branch matched governed *basenames* only, and `guard.py` is not
         # one — so an agent could overwrite this file itself. The `.claude/` alternative
         # required a leading slash, so the bare relative spelling passed too. Found by a
-        # Terra seat running the guard inside a chamber; DEFERRED_ACTIONS row 0.
+        # Terra seat running the guard inside a container seat; DEFERRED_ACTIONS row 0.
         assert denied(decide_as_agent("Bash", {"command": command})), command
 
     @pytest.mark.parametrize(
@@ -654,8 +652,8 @@ class TestAgentGovernance:
 class TestAgentPushingAndMerging:
     """Hard rule 12 with something behind it.
 
-    Until worktree seats became ordinary, "an agent never pushes" held because a chamber
-    had no route out of its container. A seat in a host worktree has the session's
+    Until worktree seats became ordinary, "an agent never pushes" held because a container
+    seat had no route out. A seat in a host worktree has the session's
     credentials and its allow list — `Bash(git push:*)` and `Bash(gh pr create:*)` are
     both on it — so the rule was a sentence and nothing else. Every case here pairs the
     agent with the session: the same command, refused for one and silent for the other.
@@ -744,7 +742,7 @@ class TestAgentPushingAndMerging:
         ),
     )
     def test_an_agent_keeps_every_way_of_working_and_reporting(self, command):
-        # A bundle is how a chamber hands work back, `git fetch` and the `gh` reads are
+        # A bundle is how a seat may hand work back, `git fetch` and the `gh` reads are
         # how any seat sees the state it is working against, and `gh pr comment` is how
         # it answers a review thread. Refusing these would be the noise that makes the
         # real refusal invisible.
@@ -963,7 +961,7 @@ class TestRtkProxyIsTransparent:
     def test_a_shell_keyword_does_not_hide_a_refusal(self, project, command):
         # `then`, `do` and `else` open a command position. Without them every refusal
         # in the file was bypassed by wrapping the command in `if`, `for` or `while`.
-        # Two chamber seats demonstrated it independently.
+        # Two container seats demonstrated it independently.
         assert denied(decide(command, project)), command
 
     def test_a_keyword_word_that_is_not_a_command_position_stays_silent(self, project):
@@ -1052,9 +1050,8 @@ class TestSilence:
             "git diff --stat",
             "git switch -c work/topic",
             "git worktree add ../wt work/topic",
-            "docker build -t verbatus-autoclave .",
-            "sh operations/autoclave/autoclave.sh doctor",
-            "sh operations/notify/notify.sh milestone 'the chamber works end to end'",
+            "docker build -t verbatus-scratch .",
+            "sh operations/notify/notify.sh milestone 'the seat works end to end'",
             "curl -fsSL https://example.com/spec.json",
             "gh pr comment 14 --body 'fixed in ce6d8bd'",
             "ruff check .",
@@ -1128,7 +1125,7 @@ class TestShape:
         # agent-only checks: the governed-path one, added when built-in agent types
         # were allowed back in, and the push/pull-request/merge one, added when host
         # worktree seats became the ordinary build seat (R4, Tyrel's ruling 2026-09-05)
-        # and "a chamber cannot push" stopped being the thing that enforced hard rule
+        # and "a container cannot push" stopped being the thing that enforced hard rule
         # 12. A ninth arriving without that conversation fails here.
         assert len(guard.CHECKS) == 8
 

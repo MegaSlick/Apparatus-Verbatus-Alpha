@@ -108,8 +108,8 @@ def test_ci_installs_the_frozen_project_environment_before_running_the_gate():
     assert "python -m pip install ." not in text
 
 
-def test_every_runtime_dependency_is_inside_the_image_and_everyday_environment():
-    """Every runtime dependency must reach the image and everyday gate."""
+def test_every_runtime_dependency_is_inside_the_everyday_environment():
+    """Every runtime dependency must reach the everyday gate."""
     import tomllib
 
     declared = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
@@ -123,7 +123,7 @@ def test_every_runtime_dependency_is_inside_the_image_and_everyday_environment()
     )
     assert not missing, (
         f"runtime dependencies {missing} are not in requirements-dev.txt, so "
-        "the chamber image and everyday gate do not install them"
+        "the everyday gate does not install them"
     )
 
 
@@ -154,18 +154,19 @@ def _pinned(requirements):
     return pins
 
 
-# The chamber image and the everyday non-frozen gate install only these two
-# groups (`.githooks/check-all.sh` and the Dockerfile both name them). `pod` is
-# installed only by `operations/pod/bootstrap.py`, on the pod itself, never on
-# a laptop or in the chamber image -- putting a ~10 GB CUDA stack into the
-# image it is not is not a gap requirements-dev.txt should close. A future
-# laptop-side group has to earn its way into IMAGE_GROUPS explicitly; the
+# The frozen gate installs only these two groups (`.githooks/check-all.sh` names
+# them); `requirements-dev.txt` builds the everyday non-frozen environment, and this
+# file compares the two declarations against each other. `pod` is installed only by
+# `operations/pod/bootstrap.py`, on the pod itself, never on a laptop --
+# putting a ~10 GB CUDA stack into a laptop environment is not a gap
+# requirements-dev.txt should close. A future
+# laptop-side group has to earn its way into GATE_GROUPS explicitly; the
 # marker assertion below is the tripwire that catches one that tries to ride
 # along silently instead.
-IMAGE_GROUPS = ("test", "audit")
+GATE_GROUPS = ("test", "audit")
 
 
-def test_the_image_requirements_match_the_projects_declared_direct_environment():
+def test_the_declared_requirements_match_the_projects_declared_direct_environment():
     """Both independently consumed declarations must pin the same direct environment."""
     import tomllib
 
@@ -174,7 +175,7 @@ def test_the_image_requirements_match_the_projects_declared_direct_environment()
     excluded_entries = [
         entry
         for name, group in dependency_groups.items()
-        if name not in IMAGE_GROUPS
+        if name not in GATE_GROUPS
         for entry in group
     ]
     # Two different problems, reported separately. A PEP 735
@@ -187,21 +188,18 @@ def test_the_image_requirements_match_the_projects_declared_direct_environment()
     assert all(
         isinstance(entry, dict) and set(entry) == {"include-group"} for entry in excluded_tables
     ), (
-        f"unrecognised non-string dependency-group entries outside {IMAGE_GROUPS}: "
+        f"unrecognised non-string dependency-group entries outside {GATE_GROUPS}: "
         f"{excluded_tables}; this test compares environment markers and does not know "
         "what these declare"
     )
     unmarked = [entry for entry in excluded_entries if isinstance(entry, str) and ";" not in entry]
     assert not unmarked, (
-        f"dependency-group entries outside {IMAGE_GROUPS} without an environment "
+        f"dependency-group entries outside {GATE_GROUPS} without an environment "
         f"marker: {unmarked}; an unmarked entry would install everywhere "
         "and this test would silently stop comparing it"
     )
     group_entries = [
-        entry
-        for name, group in dependency_groups.items()
-        if name in IMAGE_GROUPS
-        for entry in group
+        entry for name, group in dependency_groups.items() if name in GATE_GROUPS for entry in group
     ]
     # PEP 735 lets a group hold `{include-group = "..."}` tables. `_pinned` would
     # be handed the table and fail on `entry.strip()` with an AttributeError,
@@ -218,12 +216,12 @@ def test_the_image_requirements_match_the_projects_declared_direct_environment()
             *(entry for entry in group_entries if isinstance(entry, str)),
         ]
     )
-    image_requirements = _pinned((ROOT / "requirements-dev.txt").read_text().splitlines())
+    declared_requirements = _pinned((ROOT / "requirements-dev.txt").read_text().splitlines())
 
-    assert image_requirements == installed, (
+    assert declared_requirements == installed, (
         "requirements-dev.txt and pyproject.toml no longer describe the same "
         "direct environment: "
-        f"image_requirements={image_requirements} declared={installed}"
+        f"declared_requirements={declared_requirements} declared={installed}"
     )
 
 
@@ -311,42 +309,6 @@ def test_the_frozen_audit_inventory_refuses_requirement_injection(
 
     with pytest.raises(ValueError, match="unsafe"):
         frozen_audit.installed_pins()
-
-
-def test_a_missing_frozen_interpreter_prints_the_image_launcher_recovery_steps(tmp_path):
-    """The advice a chamber is given is read back out of the gate that prints it.
-
-    Asserting these strings against the script said only that the words exist
-    somewhere in the file: advice naming the wrong Dockerfile, the wrong command
-    or the wrong directory passed, and so would advice written into a branch
-    nothing reaches.
-
-    `chamber_environment_followup` returns early unless
-    `/opt/autoclave/CLAUDE.md` exists, which is true only inside a chamber image
-    and cannot be staged on a host. That one absolute marker path -- and nothing
-    else -- is rewritten to a file in `tmp_path`, so the branch runs here exactly
-    as it does in the image.
-    """
-
-    repo = gate_repo(tmp_path)
-    marker = tmp_path / "chamber-marker"
-    marker.write_text("stand-in for the chamber image's own marker\n")
-    script = repo / ".githooks" / "check-all.sh"
-    source = script.read_text()
-    assert source.count("/opt/autoclave/CLAUDE.md") == 1
-    script.write_text(source.replace("/opt/autoclave/CLAUDE.md", str(marker)))
-
-    result = run_gate(repo)
-
-    assert result.returncode == 1
-    assert "frozen interpreter is missing" in result.stderr
-    assert "this chamber image cannot construct the required checkout-local .venv" in result.stderr
-    assert "install pinned uv==0.12.1 in operations/autoclave/Dockerfile" in result.stderr
-    assert "in cmd_new, after checkout" in result.stderr
-    assert (
-        "operations/autoclave/autoclave.sh to operations/autoclave/fingerprint.py" in result.stderr
-    )
-    assert "do not link .venv to /opt/venv" in result.stderr
 
 
 def gate_repo(tmp_path):
@@ -691,7 +653,7 @@ def test_cleanroom_gate_fails_when_git_cannot_list(tmp_path):
     assert "git ls-files failed" in result.stderr
 
 
-def test_every_third_party_import_in_the_gate_suite_is_declared_for_the_image():
+def test_every_third_party_import_in_the_gate_suite_is_declared():
     """The sibling above covers the project's runtime dependencies. This covers
     the gate's own: a package these hook tests import, but nothing declares,
     reaches the gate only as some other dependency's transitive -- unpinned,
@@ -729,6 +691,6 @@ def test_every_third_party_import_in_the_gate_suite_is_declared_for_the_image():
     )
     assert not undeclared, (
         f"the gate's own suite imports {undeclared}, which requirements-dev.txt does not "
-        "declare, so the chamber image and everyday gate reach them only as an "
+        "declare, so the everyday gate reaches them only as an "
         "unpinned transitive dependency"
     )

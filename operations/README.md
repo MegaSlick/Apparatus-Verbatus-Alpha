@@ -16,6 +16,9 @@ Anything with a human, a machine, or money on the other end.
 | `data/` | future movement of runs and exports between machines |
 | `notify/` | the implemented, fileless one-way notification client |
 | `review/` | immutable review-candidate manifests and local receipts |
+| `seats/` | the standing briefs a worktree seat is dispatched with |
+
+The table is not exhaustive; a directory that needs explaining carries its own README.
 
 There is no `local/`, `remote/`, or `deploy/` here. A pod runs the very same stage
 directories this repository holds. Where code runs is an operational fact, not an

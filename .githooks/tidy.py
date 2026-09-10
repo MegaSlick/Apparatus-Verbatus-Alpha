@@ -35,7 +35,6 @@ DESIGN = WORKBENCH / "design"
 ARCHIVE = WORKBENCH / "archive"
 SCRATCH = WORKBENCH / "scratch"
 RAW = WORKBENCH / "raw"
-AUTOCLAVE = WORKBENCH / "autoclave"
 QUARANTINE = WORKBENCH / "quarantine"
 
 # A session never deletes from quarantine/; it stages material there and Tyrel
@@ -89,6 +88,10 @@ MEMORY = (
 )
 
 
+# Files above this size are never candidates for the archived-note duplicate check.
+ARCHIVE_DIGEST_MAX_BYTES = 1024 * 1024
+
+
 def digest(path):
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -107,7 +110,11 @@ def archived_digests():
     if not ARCHIVE.is_dir():
         return seen
     for path in sorted(ARCHIVE.rglob("*")):
-        if path.is_file():
+        # A note is small; the duplicate check exists for notes. Filed evidence can run
+        # to gigabytes — the archived dispatch bundles are one case — and hashing it
+        # twice a session for a comparison no note-sized file can produce is cost
+        # without a finding.
+        if path.is_file() and path.stat().st_size <= ARCHIVE_DIGEST_MAX_BYTES:
             seen.setdefault(digest(path), path)
     return seen
 
@@ -352,28 +359,6 @@ def main(argv=None):
                 f"  -> past {RAW_BYTE_BUDGET // 1024} KB. Archive the runs whose work has "
                 f"closed; keep the ones a live finding still cites."
             )
-
-    # autoclave/ is the one drawer nothing here creates on a clock and nothing
-    # empties: `operations/autoclave/autoclave.sh` writes one directory per dispatched
-    # chamber, holding the brief, the report and the collected bundle, and
-    # `autoclave.sh rm` keeps it on purpose — the bundle is the only surviving evidence
-    # that a dispatch happened. So it is counted and named here and judged no further:
-    # like raw/ it is archived with the work that cites it rather than on a clock of
-    # its own, and it is held to no budget. Reported without demanding attention,
-    # because a drawer whose whole point is that it survives is not a finding every
-    # session. Before this it was the only drawer a session could not see at all.
-    chambers = (
-        sorted(p.name for p in AUTOCLAVE.iterdir() if p.is_dir()) if AUTOCLAVE.is_dir() else []
-    )
-    if chambers:
-        chamber_files = [p for p in AUTOCLAVE.rglob("*") if p.is_file()]
-        chamber_bytes = sum(p.stat().st_size for p in chamber_files)
-        print(
-            f"\nautoclave/ {len(chambers)} chamber drawers, {chamber_bytes // 1024} KB — "
-            f"dispatch evidence, kept when the chamber is destroyed:"
-        )
-        for name in chambers:
-            print(f"  {name}")
 
     dangling, unlisted, note = check_memory()
     if note:
