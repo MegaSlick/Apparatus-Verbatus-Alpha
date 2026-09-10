@@ -132,6 +132,7 @@ class _RecordingContext:
         # it truthfully contains no retained or edge ink while still carrying
         # every field the closed producer record requires.
         width, height = 8, 2
+        self.sealed_page_dimensions = (width, height)
         rows = [bytearray([230] * width) for _ in range(height)]
         background_config = load_background_config(self.args.designator_grouping_config)
         coverage_config = load_coverage_audit_config(self.args.designator_grouping_config)
@@ -269,6 +270,16 @@ class _RecordingContext:
             "relative_path": relative_path,
             "sha256": digest_bytes(self.blobs[relative_path]),
         }
+
+
+def _sealed_page_census(context: _RecordingContext) -> dict[int, dict]:
+    """The page shape of this context's generated synthetic measurement."""
+    return {
+        1: {
+            "outcome": "sealed",
+            "_pixel_dimensions": context.sealed_page_dimensions,
+        }
+    }
 
 
 def test_recording_context_validates_a_config_before_recording_it() -> None:
@@ -427,7 +438,7 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
     monkeypatch.setattr(armarium, "pages_marked_out", lambda _context, _cache: {"act_held": [1]})
     monkeypatch.setattr(armarium, "expected_acts", lambda _context: [held])
     monkeypatch.setattr(
@@ -466,7 +477,7 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
     monkeypatch.setattr(
         armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
     )
@@ -531,7 +542,7 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
     monkeypatch.setattr(
         armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
     )
@@ -590,7 +601,7 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
     monkeypatch.setattr(
         armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
     )
