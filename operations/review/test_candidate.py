@@ -1,7 +1,9 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -32,6 +34,100 @@ def repository(tmp_path):
     git(tmp_path, "add", "file.txt")
     git(tmp_path, "commit", "--quiet", "-m", "candidate")
     return base, git(tmp_path, "rev-parse", "HEAD")
+
+
+def candidate_cli(root: Path, *arguments: str, env: dict[str, str]) -> subprocess.CompletedProcess:
+    """Invoke a fresh candidate process, so inherited Git selectors are exercised."""
+    source_root = Path(candidate_module.__file__).resolve().parents[2]
+    command = [
+        sys.executable,
+        str(source_root / "operations/review/candidate.py"),
+        "--root",
+        str(root),
+        *arguments,
+    ]
+    return subprocess.run(
+        command,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        env={**env, "PYTHONPATH": str(source_root)},
+    )
+
+
+def test_cli_ignores_inherited_git_selectors_for_prepare_and_receipt(tmp_path):
+    """A clean twin must not make a dirty requested root look reviewable."""
+    clean = tmp_path / "clean"
+    dirty = tmp_path / "dirty"
+    clean.mkdir()
+    dirty.mkdir()
+    base, candidate = repository(clean)
+    shutil.copytree(clean / ".git", dirty / ".git")
+    (dirty / "dirty.txt").write_text("requested root is dirty\n")
+    report = tmp_path / "review.md"
+    report.write_text(f"Candidate: {candidate}\nBase: {base}\n")
+    redirected = {
+        **os.environ,
+        "GIT_DIR": str(clean / ".git"),
+        "GIT_WORK_TREE": str(clean),
+    }
+
+    prepared = candidate_cli(dirty, "prepare", "--base", base, env=redirected)
+    recorded = candidate_cli(
+        dirty,
+        "receipt",
+        "--candidate",
+        candidate,
+        "--base",
+        base,
+        "--reviewer",
+        "Independent Sol",
+        "--report",
+        str(report),
+        env=redirected,
+    )
+
+    assert prepared.returncode == 1
+    assert "dirty" in prepared.stderr
+    assert recorded.returncode == 1
+    assert "dirty" in recorded.stderr
+    assert not list((dirty / "workbench" / "raw" / "reviews").glob("**/*"))
+
+
+def test_cli_clean_target_succeeds_despite_inherited_git_selectors(tmp_path):
+    """Stripping selectors preserves the normal CLI success path for its own clean root."""
+    clean = tmp_path / "clean"
+    other = tmp_path / "other"
+    clean.mkdir()
+    other.mkdir()
+    base, candidate = repository(clean)
+    repository(other)
+    report = tmp_path / "review.md"
+    report.write_text(f"Candidate: {candidate}\nBase: {base}\n")
+    redirected = {
+        **os.environ,
+        "GIT_DIR": str(other / ".git"),
+        "GIT_WORK_TREE": str(other),
+    }
+
+    prepared = candidate_cli(clean, "prepare", "--base", base, env=redirected)
+    recorded = candidate_cli(
+        clean,
+        "receipt",
+        "--candidate",
+        candidate,
+        "--base",
+        base,
+        "--reviewer",
+        "Independent Sol",
+        "--report",
+        str(report),
+        env=redirected,
+    )
+
+    assert prepared.returncode == 0, prepared.stderr
+    assert recorded.returncode == 0, recorded.stderr
+    assert list((clean / "workbench" / "raw" / "reviews" / candidate).glob("*.json"))
 
 
 def test_prepare_names_the_exact_clean_candidate(tmp_path):

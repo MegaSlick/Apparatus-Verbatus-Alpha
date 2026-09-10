@@ -301,9 +301,12 @@ check.
   receipt, launch audit and evidence manifest each smoke publishes land
   content-addressed in that same directory (`PodPreflightReceiptPublisher`),
   because no run tree exists yet for a `StageContext` to own them; the
-  catalogue is `--serving-recipes-config` (default the fixture-only
-  `config/serving_recipes.toml`; a real launch names
-  `config/serving_recipes_real.toml`), and `--fixture` with
+  catalogue is `--serving-recipes-config` and the factual declaration is
+  `--witness-context-config` (the fixture defaults are
+  `config/serving_recipes.toml` and `config/witness_context.toml`; a real launch
+  names `config/serving_recipes_real.toml` and
+  `config/witness_context-real.toml` with `config/models-real.toml`), and
+  `--fixture` with
   `--page-witness-file` lets an operator supply a rendered page instead.
   `test_bootstrap_main.py` proves the wiring green through the real registry
   over the committed model fixtures and the serving package's fakes, and red
@@ -356,9 +359,11 @@ check.
   `pipeline/orchestrator/run.py` as a subprocess of the pod's own interpreter
   over the volume — run root `<volume>/runs` (or `--run-root`, inside the
   volume), `--submission-folder`/`--submission-manifest` inside the volume,
-  `--models-config` and `--serving-recipes-config` taken from the bootstrap plan
-  (the roster `PREFLIGHT` measured is the roster the run serves; naming a
-  different pair here is not offered), `--data-gate-policy` inside the
+  `--models-config`, `--serving-recipes-config`, and `--witness-context-config`
+  taken from the bootstrap plan (the roster and declaration checked by
+  `CONFIGURATION`, and the serving catalogue `PREFLIGHT` measured, are the trio
+  the run serves and seals; naming a different selection here is not offered),
+  `--data-gate-policy` inside the
   repository — and writes a `pod-run-report.v1` at its launch-bound
   `--report-path` before, during and after: `bootstrapping`, `running`, then
   `complete`, `held`, `halted`, `failed`, `bootstrap-red` or `refused`. **Exit
@@ -417,15 +422,27 @@ check.
   `held_to_hard_deadline`. `test_pod_run.py` drives all of it
   against a fakes-only bootstrap and a recorded orchestrator: no chair is
   served, no model is called, no provider is reached.
-  **The roster and the catalogue are named together or the plan is refused.**
+  **The roster, serving catalogue, and witness declaration are one selection.**
   `bootstrap_main` defaults `--serving-recipes-config` to the fixture-only
   `config/serving_recipes.toml`, which is right only while `--models-config` is
   the shipped fixture roster; any other roster must name its catalogue
-  explicitly, or the plan is refused before the boot. A real roster resolving
-  against the fixture catalogue is the mismatch `pipeline/orchestrator/run.py`
-  names and `operations/operator/surface._roster_argv` refuses, and on this path
-  it would otherwise be discovered only after the pod had billed for the boot
-  and the model fetch.
+  explicitly. The shipped real selection must also name
+  `--witness-context-config config/witness_context-real.toml`. After the pinned
+  checkout, the journaled `CONFIGURATION` step recognizes each role's known
+  shipped sentence, even among custom entries or with edge whitespace, and
+  matches its present witness to the shipped source, source reference, receipt
+  revision, and kind. It runs before uv sync, transfer, model materialization,
+  cache work, or serving. Its receipt binds the roster, declaration, serving
+  catalogue, and placement paths and raw digests. Partial and green resumes
+  revalidate those bindings before skipping completed work. A changed selection
+  or an old receipt without these bindings fails at `CONFIGURATION`, preserving
+  the original receipt; restore that selection or start a new journal. A failure
+  before this step first completes still permits configuration repair. Plan-only and
+  `--dry-run` report selected paths without reading files that may not exist
+  until checkout. A custom roster may use an operator-authored declaration that
+  passes the closed shape and exact-role coverage checks. A local repository
+  path alone neither proves the fixture profile nor identifies a Hugging Face
+  mirror, so custom local mirrors need that custom declaration.
 - `notify_hooks.py` is a small, vendor-neutral phone-notification seam, distinct from
   `notify_bridge.py`'s narrower spend-floor-warning one. It sends exactly one short line
   through `operations/notify/notify.sh` at each of three moments — launch (lease id,
@@ -465,7 +482,21 @@ check.
   lifetime ceiling checks include both pod and attached volume while the hard lifetime is
   running, and the ceiling is applied a second time to the price the provider *actually*
   returned — a created pod that bills above it is closed immediately rather than left
-  running. `config/spend.toml` is deliberately unconfigured, so both paid paths refuse
+  running. **Which card may be rented is its own gate, and it is `config/pod_placement.toml`
+  that says so.** A create refuses, before any provider call at all, a `gpu_type` that is
+  not a reviewed row of the placement table the runtime was given (matched on the row's
+  `gpu_type_id` alone: that is the only spelling this repository has ever sent to the API —
+  `boot_a_request.py` renders `"gpu_type": card.gpu_type_id` — while the table's `name`
+  column is prose for the operator, so accepting it too would allowlist a string no
+  provider is known to take), and refuses again — after the estimate and still before anything is created — a
+  row whose *reviewed* price exceeds `max_hourly_usd` net of the volume rate the provider
+  quoted. That binds the reviewed price, which the returned-price ceiling above cannot do:
+  a card quoted cheaply today is still the card the table priced. Both refusals name the
+  row and the ceiling and are `refused-card`. `cli.py` passes `config/pod_placement.toml`
+  unless `--placement` names another table, and an unreadable table refuses the launch
+  rather than turning the gate off; a `PodRuntime` constructed with no table — an offline
+  drill — enforces no allowlist. `adopt` is deliberately not gated this way: the pod
+  already exists, and refusing to adopt it would leave it billing unguarded. `config/spend.toml` is deliberately unconfigured, so both paid paths refuse
   until Tyrel supplies a reviewed policy. A configured policy must set a
   `billing_cutoff_margin_seconds` value within the code-owned 0–3600-second envelope;
   the exact value is sealed into both shutdown controllers and the pending-create
@@ -540,14 +571,94 @@ check.
   engine memory fraction, context cap, pixel cap and batch size that one model gets. The
   table ships prebuilt profiles for the cards this project actually rents and falls back
   to computed placement for anything else; the report names which plan it chose and why.
-  Its utilization fields are measurements, not a claim that a card is "saturated". It
-  always labels this stage fixture/planning-only; Spec 05 owns a real-assembly claim.
+  Its utilization fields are measurements, not a claim that a card is "saturated". Its
+  `assembly_proven` flag is **derived from what actually ran**, never declared: true only
+  when the card was read by a real driver (`GpuProfile.measured`, set by `SystemGpuProbe`'s
+  successful `nvidia-smi` path alone) *and* at least one chair read the golden page back
+  through an engine that served it (`SmokeResult.served_by`, set by
+  `operations/serving/preflight.py` from the service handle it started and stopped), and
+  the note then names those chairs and that card. An invalid read proves nothing, and the
+  colour of the report is not consulted: a red preflight that nonetheless served one chair
+  on a real card proved that much. The fixture and planning paths stay `False` under the
+  same sentence they always carried; a measured card with no served chair says so in its
+  own words rather than calling a paid measurement fixture-only. The smoke adapter cannot
+  pre-populate the runtime-owned `served_engine` receipt field, so a fake cannot assert its
+  own proof. **Both halves are minted, not declared.** `PreflightRunner` takes the profile
+  from its caller and the smoke reader from its constructor, so `measured` and `served_by`
+  were fields anyone wanting the claim could simply set. Each now travels with an opaque
+  module-private token created in exactly two places — the probe's successful `nvidia-smi`
+  path and the serving module's service-evidence path, which names the engine off a
+  service handle it started, proved fixture-bound and stopped — checked by type, never
+  serialised into any receipt or record, and refused at construction when a caller
+  supplies one. A caller-built `GpuProfile(measured=True)` and a caller-built
+  `SmokeResult(served_by=…)` no longer exist, so `assembly_proven` cannot be reached from
+  outside those two runtimes.
 
-The local command surface is `python -m operations.pod.cli`. It requires explicit
-untracked provider and controller-armer factories plus a request file, so this repository
-contains neither a credential, a personal provider default, nor an implicit controller
-process. It prints the previewed current price and ceilings before prompting for the exact
-typed confirmation; EOF is a refusal. **`--record-fixture PATH`** routes every provider
+The local command surface is `python -m operations.pod.cli`, with three verbs: `create`,
+`adopt`, and `close`. The first two require explicit untracked provider and
+controller-armer factories plus a request file, so this repository contains neither a
+credential, a personal provider default, nor an implicit controller process. They print
+the previewed current price and ceilings before prompting for the exact typed
+confirmation; EOF is a refusal. A `create` or `adopt` run without
+`--controller-armer-factory` refuses in this surface's own record shape — one JSON object
+naming the missing flag, exit 2 — rather than in argparse's usage text, so nothing reading
+these records meets a second shape.
+
+**`close --lease <id>` closes one live lease on purpose**, through
+`supervise.close_lease_now`, which drives the same `_close_lease` a supervisor tick drives
+on an `EXITED` pod — so the standard is the one standard above: exact-pod GET-404,
+independent pod-list absence, non-empty exact-pod billing through the cutoff, and
+`UNVERIFIED CLOSE` for anything short of it, which is reported as such and exits 3, never
+0. It writes the lease's terminal phase, and with `--notify` sends the same close line a
+create sends when it closes its own pod. It arms nothing, so it needs no
+`--controller-armer-factory`; it previews nothing and asks for no typed phrase, because it
+stops spending rather than starting it. It refuses, before any terminate, a `--lease` that is not 32
+lowercase hexadecimal characters — checked before the id is interpolated into the lease,
+lock, identity or record path; a lease this account does not hold, absent from the lease
+root or armed under a different `--provider-name`; a lease file whose own recorded
+`lease_id` is not the one asked for, which is a renamed or hand-edited file and would
+close a pod under another lease's identity; and a lease some live supervisor still holds,
+since two closers over one pod is what the lease's kernel lock exists to prevent. A lease
+file that exists and **cannot be read** is exit 3, not 2: it is the durable record of a
+paid action, the pod it names may be billing, and the refusal prints the exact path to go
+and look at.
+
+**Everything that fails on this laptop before the provider is reached is exit 3 as well**,
+under one `CLOSE NOT ATTEMPTED:` prefix — the sibling of `UNVERIFIED CLOSE`, and a
+different phrase because that one means a close ran and could not be verified while this
+one means none was tried. It covers a `--provider-factory` that will not import, will not
+resolve, raises when it is called, or returns something that is not the seam, and a
+`--spend` policy that cannot be read or is unconfigured. None of those stops a pod, so
+none of them may exit 2 and say "nothing was paid"; each leaves the durable record, names
+what failed, and leaves the lease exactly as it was so whatever guards it keeps guarding
+it. The optional attachments around the close are contained rather than fatal for the same
+reason: an evidence recorder that cannot be opened (`OSError`) or a provider that raises
+while attaching it is written into the close record, and a balance-notification seam that
+raises while being wired is written into `balance_notification` — a phone that cannot be
+reached has never been allowed to decide a launch, and it certainly may not abandon a
+close. `create` and `adopt` keep the opposite disposition for the recorder: nothing is
+paid yet, so a recorder that cannot be attached refuses by name with exit 2.
+
+**`--provider-name` is a label, not a proof of account**, and one refusal exists because of
+that. It is the string the operator typed, recorded in the lease; nothing reconciles it
+against the credentials behind `--provider-factory`. So a factory pointing at the wrong
+account passes every holding check above, and the close would then terminate nothing,
+observe a perfectly genuine absence and no billing on an account that never held the pod,
+and write `close-unverified` — which is not an active lease, so `run_supervisor` would stop
+guarding a pod still running and still billing on the real account. A close whose provider
+reports the pod **absent before any terminate was issued** therefore refuses with exit 3,
+names that possibility, and leaves the lease exactly as it was for the supervisor to keep
+guarding. Only a close that actually issued a terminate may reach `close-unverified`, and
+`UNVERIFIED CLOSE` prefixes the detail on both branches that report one — the close just
+attempted, and the already-terminal lease a returning operator asks about. Every outcome,
+refusals included, also leaves the same durable per-run record beside the lease that
+`supervise.py` writes, so a refusal read into a terminal that is about to be closed is not
+the only copy. A configured `--spend` policy is
+required and is not a spend gate here: the shutdown controller's poll interval, deadline
+and billing-cutoff margin are reviewed values, and a close driven on invented timings is
+not the close this repository verifies. Before this verb existed a live pod could be closed
+only by its sealed hard lifetime, by a supervisor tick that happened to see a non-`RUNNING`
+state, or by the provider's console. **`--record-fixture PATH`** routes every provider
 exchange the launch sees — method, path, request body, status, response body, and a
 raised transport failure — through `fixture.py`'s recorder, appended as JSON lines
 (0600, fsynced per line, never truncated) so a drill boot leaves a replayable fixture
@@ -560,8 +671,11 @@ numbers, and the record says `verbatim: false` and names every scrubbed path; th
 token is scrubbed too, by the name predicate, with no exemption. The flag is duck-typed on a provider's
 `record_exchanges` method so the CLI names no vendor; the RunPod adapter wraps its REST
 transport and its own balance observer's transport, and a provider without the method —
-the fake — refuses the flag by name before any preview rather than recording nothing.
-The result record names the fixture path.
+the fake — refuses the flag by name before any preview rather than recording nothing. The
+exception is `close`: that verb exists for the moment a pod is billing and something has
+already gone wrong, so an unhonoured flag is written into its record and the meter is
+still stopped, rather than trading a live pod for a fixture nobody asked for in that
+moment. The result record names the fixture path.
 
 **The Boot A request is a tracked module, not a note.** `python -m
 operations.pod.boot_a_request --spend config/spend.toml --placement
@@ -613,7 +727,8 @@ laptop/restart machinery rather than infer it from the pod process. If `pod_time
 own startup fails **before a provider-backed timer exists** (a missing environment value,
 a deadline already passed) it can terminate nothing; the pod goes `EXITED`, which bills
 volume disk at double the running rate, and the laptop supervisor above (`supervise.py`)
-is the only backstop for that case. A refusal raised *after* the timer is built now
+is the only *automatic* backstop for that case — the operator's own backstop is the `close`
+verb below. A refusal raised *after* the timer is built now
 spends that capability on an immediate close and files a receipt. A non-green close at
 the hard deadline is re-attempted a small fixed number of times before the timer exits;
 the durable report records the attempt count and the final close's evidence (not each

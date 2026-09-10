@@ -13,6 +13,7 @@ own interpreter, over the volume::
     submission          --submission-folder / --submission-manifest, inside the volume
     roster              the bootstrap plan's --models-config
     serving catalogue   the bootstrap plan's --serving-recipes-config
+    witness context     the bootstrap plan's --witness-context-config
     data gate           --data-gate-policy, inside the repository
 
 The roster and the serving catalogue are deliberately taken from the bootstrap
@@ -187,6 +188,19 @@ class RunPlan:
         return _named(self.bootstrap.serving_recipes_config, "--serving-recipes-config")
 
     @property
+    def witness_context_config(self) -> Path:
+        """The factual witness-context declaration this run seals.
+
+        Named on the plan beside the roster, never defaulted here:
+        `bootstrap_main.resolve_plan` supplies the default when none is named.
+        After checkout, the journaled CONFIGURATION step checks known shipped
+        sentences against their present witness identities before environment
+        or model work. This property receives that resolved path selection;
+        it does not choose another declaration for the orchestrator.
+        """
+        return _named(self.bootstrap.witness_context_config, "--witness-context-config")
+
+    @property
     def repository(self) -> Path:
         return _named(self.bootstrap.repository, "--repository")
 
@@ -219,6 +233,8 @@ class RunPlan:
             str(self.models_config),
             "--serving-recipes-config",
             str(self.serving_recipes_config),
+            "--witness-context-config",
+            str(self.witness_context_config),
         ]
 
     def to_record(self) -> dict[str, object]:
@@ -231,6 +247,7 @@ class RunPlan:
             "data_gate_policy": str(self.data_gate_policy),
             "models_config": str(self.models_config),
             "serving_recipes_config": str(self.serving_recipes_config),
+            "witness_context_config": str(self.witness_context_config),
             "fixture": self.fixture,
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,

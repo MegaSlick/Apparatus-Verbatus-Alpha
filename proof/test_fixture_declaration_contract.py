@@ -9,6 +9,7 @@ retain one reading with the same response shape as its base declaration.
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import sys
 import tomllib
@@ -17,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from common import native_witness
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import SchemaRefusal
@@ -211,6 +213,14 @@ def test_every_declared_response_is_readable_by_its_own_chairs_adapter(skeleton,
     response declared in Chandra's JSON for a chair bound to Churro is a
     declaration the stage will refuse at run time, and the reason it is wrong is
     the binding, not the bytes.
+
+    And of the reader that adapter's *fixture* posture actually uses, where it
+    has one. Chandra's live grammar is the vendor's HTML layout answer, while
+    this fixture's rows declare its own `fixture-chandra-response.v1`
+    placeholder -- retained history whose bytes are pinned into the fixture's
+    digests until U16 re-declares them. `RunnableAdapter.fixture_parse` is what
+    the registry says about that, so this asks the registry rather than the
+    adapter's name (`pipeline/3_attestatores/witness_adapters.py`).
     """
     checked = 0
     for table, row in response_rows(skeleton):
@@ -218,12 +228,13 @@ def test_every_declared_response_is_readable_by_its_own_chairs_adapter(skeleton,
         if raw is None:
             continue
         adapter = adapters.resolve_runnable_adapter(chairs[row["chair"]].witness_adapter)
+        read = adapter.fixture_parse or adapter.parse
         # An adapter may refuse in either of its two vocabularies: a named parse
         # outcome or a `SchemaRefusal`. Both are the same finding here, and
         # letting the second escape would report a bare exception where this
         # module is supposed to name the declaration that caused it.
         try:
-            parsed: Any = adapter.parse(raw.encode("utf-8"))
+            parsed: Any = read(raw.encode("utf-8"))
         except SchemaRefusal as refusal:
             parsed = refusal
         assert isinstance(parsed, str), (
@@ -313,6 +324,122 @@ def test_every_declared_native_observation_lies_inside_its_own_sealed_page(skele
         ), f"native_observation {row!r} falls outside page {page['ordinal']}"
 
 
+def test_the_declared_rows_no_live_chair_could_produce_are_named_here(skeleton, chairs, adapters):
+    """The offline posture may declare geometry; it may not do so unnoticed.
+
+    A `[[native_observation]]` row bypasses the adapter entirely --
+    `run.py::_fixture_native_observations` publishes it as `bounds_source
+    "native"` without asking whether the chair's adapter could have reported a
+    box at all -- so the fixture can state page geometry for a chair whose live
+    `observe` never produces any. Exactly one row does, and it is load-bearing:
+    `attestator_3` is the Churro chair, whose `HistoricalDocument` grammar has
+    no coordinate vocabulary (`can_express_layout` false, no quantization rule,
+    no `takes_page_size`, and an `observe` that returns a `bounds_source
+    "presented"` echo routing and coverage exclude). That declared box is what
+    attaches this chair offline, so the fixture happy scenario counts three
+    witnesses of a floor of three and reaches a delivered export.
+
+    U12 has since landed: the live seam over the same chair now also reaches
+    a delivered export with three of three
+    (`pipeline/test_live_reading_seam_e2e.py`), but through the Perlector's
+    own `anchor-line` derivation rather than a reported page-geometry box --
+    this chair's grammar carries none live, so no live response could ever
+    produce the declared row this test names. `proof/build_fixture.py` carries
+    the fuller account. What this test refuses is the silence: the moment a
+    second chair is given a declared box its adapter says it cannot express,
+    this list is wrong and says so by name, rather than a fixture quietly
+    asking a live capability of a chair that has none.
+    """
+    incapable = sorted(
+        {
+            row["chair"]
+            for row in skeleton.get("native_observation", [])
+            if not adapters.resolve_runnable_adapter(
+                chairs[row["chair"]].witness_adapter
+            ).format_capabilities["can_express_layout"]
+        }
+    )
+    assert incapable == ["attestator_3"], incapable
+
+
+def test_a_page_scoped_chairs_declared_observation_fits_its_page_exactly(
+    skeleton, chairs, adapters
+):
+    """A declared row that overshoots is moved out of the act view, not refused.
+
+    The split runs for a chair whose adapter reports geometry normalized against
+    the whole page (`takes_page_size`), which today is Chandra alone: Churro's
+    `HistoricalDocument` grammar carries no coordinate vocabulary, so its
+    adapter declares neither a quantization rule nor a page size, and its
+    declared `[[native_observation]]` row reaches the act view untouched -- held
+    only by the sibling containment test above, exactly as it was before Unit 12
+    asked that chair for rectangles.
+
+    For the rows that do pass through the split, the fit is pinned rather than
+    assumed: an overshooting row would be moved out of the act view's `observed`
+    list instead of refused, which changes the published tree rather than
+    failing. The sibling test permits any row inside the page; this one pins the
+    exact edge arithmetic with the one-pixel counterfactual beside it, so that
+    widening a committed row by a pixel fails here by name instead of moving
+    `HAPPY_RUN_TREE_DIGEST` in silence.
+    """
+    pages = declared_pages(skeleton)
+    clearances = []
+    for row in skeleton.get("native_observation", []):
+        chair = chairs[row["chair"]]
+        if not adapters.resolve_runnable_adapter(chair.witness_adapter).takes_page_size:
+            continue
+        page = pages[row["page_ordinal"]]
+        page_size = (page["width"], page["height"])
+        observed = [
+            {
+                "ordinal": 0,
+                "bounds": {key: row[key] for key in ("x", "y", "w", "h")},
+                "bounds_source": "native",
+                "span": None,
+            }
+        ]
+        observed_snapshot = copy.deepcopy(observed)
+        survivors, overshoots = native_witness.split_page_edge_overshoots(
+            observed, page_size=page_size
+        )
+        assert (observed, survivors, overshoots) == (observed_snapshot, observed_snapshot, []), (
+            f"declared observation {row!r} no longer survives page {page['ordinal']}'s edge split"
+        )
+        spare_x = page["width"] - (row["x"] + row["w"])
+        spare_y = page["height"] - (row["y"] + row["h"])
+        clearances.append(
+            (row.get("scenario"), row["chair"], row["page_ordinal"], spare_x, spare_y)
+        )
+        # The counterfactual, one pixel past this row's own far edge: the box is
+        # split out of the act view rather than refused, which is the failure
+        # this pin exists to make visible instead of silent. Both edges, because
+        # a page has two of them: an implementation that measured only the far x
+        # edge would pass the first case and let a box hanging off the bottom of
+        # the page into the act view, which is the same silent loss on the other
+        # axis. Neither edge is the one this fixture's rows are near -- the flush
+        # row has `spare_x == 0` -- so the pair is what says the check is about
+        # the page, not about this corpus.
+        for axis, spare in (("w", spare_x), ("h", spare_y)):
+            over = [
+                {**observed[0], "bounds": {**observed[0]["bounds"], axis: row[axis] + spare + 1}}
+            ]
+            kept, rejected = native_witness.split_page_edge_overshoots(over, page_size=page_size)
+            assert kept == [], axis
+            assert [item["bounds"] for item in rejected] == [over[0]["bounds"]], axis
+    # Every such row's exact distance to its page's far edges, written out. A
+    # one-pixel edit to any of them fails here, naming the row, rather than only
+    # as a moved whole-tree digest nobody can attribute. Churro's own default
+    # row is deliberately absent from this list: its adapter reports no geometry
+    # and takes no page size, so nothing splits it, and the sibling containment
+    # test is what holds it inside its page.
+    assert sorted(clearances, key=repr) == [
+        ("coverage-recovery", "attestator_1", 1, 190, 20),
+        ("review", "attestator_1", 1, 190, 20),
+    ]
+    assert clearances, "no declared row reached the split; this guard would pass vacuously"
+
+
 def test_no_declaration_hands_a_minted_fallback_region_reported_geometry(
     skeleton, chairs, adapters
 ):
@@ -383,13 +510,19 @@ def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton
     raw bytes that payload was parsed out of. When a scenario rewrote one and not
     the other, the fixture declared two different readings for one attempt and
     the geometry belonged to neither.
+
+    Read through the reader the fixture posture itself uses -- the registry's
+    `fixture_parse` where an adapter has one -- for the reason the readability
+    guard above gives: Chandra's live grammar is the vendor's HTML layout
+    answer, and these rows declare its own placeholder.
     """
     checked = 0
     for row in skeleton["testimony"]:
         if "raw_response" not in row or not isinstance(row["payload"], str):
             continue
         adapter = adapters.resolve_runnable_adapter(chairs[row["chair"]].witness_adapter)
-        text = adapter.parse(row["raw_response"].encode("utf-8"))
+        read = adapter.fixture_parse or adapter.parse
+        text = read(row["raw_response"].encode("utf-8"))
         assert text == row["payload"], (
             f"testimony row {row!r} retains {text!r} but declares payload {row['payload']!r}"
         )
@@ -398,7 +531,8 @@ def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton
         if "raw_response" not in row:
             continue
         adapter = adapters.resolve_runnable_adapter(chairs[row["chair"]].witness_adapter)
-        text = adapter.parse(row["raw_response"].encode("utf-8"))
+        read = adapter.fixture_parse or adapter.parse
+        text = read(row["raw_response"].encode("utf-8"))
         assert text == "", (
             f"witness_empty row {row!r} declares a completed empty response but retains {text!r}"
         )

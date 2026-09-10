@@ -434,7 +434,7 @@ transport_stop_reason = "eos"
 scenario = "churro-native"
 page_ordinal = 2
 chair = "attestator_3"
-raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
+raw_xml = "<HistoricalDocument><Page><Body><Line>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
 transport_stop_reason = "length"
 
 [[churro_page_response]]

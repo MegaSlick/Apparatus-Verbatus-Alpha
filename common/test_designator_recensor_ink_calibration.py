@@ -262,10 +262,9 @@ def test_the_probe_level_is_below_the_audits_own_contrast():
 
     Both numbers are offsets below one background now, so their order is a real
     statement about two instruments rather than two unrelated constants. The
-    floor is the most permissive threshold any scan in this project applies, and
-    the audit's contrast sits below it -- meaning the audit is *stricter* than
-    the most permissive scan and looser than the derived margin a photographed
-    page produces. That is the band this audit is meant to work in, and nothing
-    else in the tree says so.
+    floor margin produces the most permissive scan threshold. The audit's
+    contrast is above that margin, so its resulting threshold is lower and
+    stricter. Its ordering against a particular photographed page's threshold
+    depends on that page's derived margin.
     """
     assert PRIMARY_MARGIN < MINIMUM_CONTRAST_BELOW_BACKGROUND

@@ -43,6 +43,15 @@ caller's job — never buy it by misreporting delivery.
 **If a send fails, say so in the session.** A decision ping nobody hears is a session
 waiting on a message that was never sent.
 
+**Success is reported too, on stderr.** A delivered post prints `notify: delivered
+(<event>)` and nothing else changes: exit 0, stdout untouched. Before 2026-09-06 the
+script printed nothing at all on success, so a caller reading silence after a stalled
+earlier command in the same chain could not tell "delivered" from "hung" — one session
+read the silence as failure twice and sent the same `done` ping three times for one
+close. Before resending anything, read this line (or the topic's own delivery log), never
+the absence of output. The bridges are unaffected: they key on the exit code and on
+`NOTIFY_SUPPRESSED` on stdout, and this line never reaches that stream.
+
 ## The topic is a bearer secret
 
 Anyone holding the topic can publish to his phone. It lives in `private/ntfy.conf`, which
@@ -56,6 +65,58 @@ the file exists instead.
 The destination is fixed to `https://ntfy.sh`. Setting `NTFY_SERVER` is refused outright
 rather than honoured, so a redirect to another host cannot be arranged by an environment
 variable.
+
+## The test sink
+
+**One topic value is reserved: `verbatus-test-sink`.** With it, the script prints what it
+would have sent to stderr and exits 0 without calling `curl`. It is a literal, not a
+prefix — a near-miss like `verbatus-test-sink-2` notifies normally, because a matching
+rule loose enough to catch a typo would be loose enough to silence him.
+
+It exists because the injected-runner seam every caller is meant to use is only as good
+as the caller. Three tests in `operations/pod/test_pod_runtime.py` drove the pod CLI with
+`--notify`, stubbed the launch hook, and left the balance hook real; a single gate run
+posted nine identical `pod balance` milestones to his phone. Every earlier gate had run in
+a worktree with no `private/ntfy.conf`, where the script failed "no topic configured" —
+so the missing stub read as a passing test for as long as it did.
+
+Two places set it, and both are deliberate rather than inherited:
+
+- the root `conftest.py`, in a session-scoped autouse fixture, so any pytest session and
+  every process it spawns is covered
+- `.githooks/check-all.sh`, immediately above its pytest line, because the gate is the one
+  run that happens inside the checkout holding the real topic. It *reads* the value out of
+  `conftest.py` rather than restating it — one source of truth, and no literal
+  `NTFY_TOPIC=<topic>` for `.githooks/check_ingress.py` to refuse, which it rightly would.
+  It fails closed: a constant that has been renamed stops the gate, because an empty
+  `NTFY_TOPIC` is not "no sink", it is `private/ntfy.conf`
+
+**Exit 0, not a refusal.** A guard that failed the send would change what the suites it
+protects measure — several assert on delivered versus `NOT DELIVERED` — and an instrument
+that constrains its subject is what GOVERNANCE 10 refuses. The swallowed message goes to
+stderr instead, so a leak stays visible without being fatal.
+
+**And exit 0 alone was a second lie.** Every Python bridge over this script —
+`operations/pod/notify_bridge.py`, `operations/pod/notify_hooks.py`,
+`operations/operator/notify_bridge.py` — mapped exit 0 to `delivered=True`, so under the
+sink each of them printed "Phone notification: sent." for a notification that never left
+the machine. The exit code still stays 0, for the reason above; the distinction is carried
+on **stdout**, which nothing else in this script writes to: one stable line,
+
+    NOTIFY_SUPPRESSED verbatus-test-sink
+
+Each bridge reads that marker word and returns a third state — `attempted=True`,
+`delivered=False`, `suppressed=True` — whose printed line is "Phone notification:
+suppressed (test sink)." The bridges match the marker word and never the topic, which is
+normally a bearer secret; the topic is safe to print in that one line because control
+reaches it only when the topic is exactly the reserved public constant.
+
+The sink is a backstop, not the seam. A test that reaches this script at all is still a
+defect: inject a fake runner, or use the `silent` notifier.
+
+`operations/notify/test_notify.py` drives its own copy of the script with a scrubbed
+`NTFY_` environment and a fake `curl`, so the sink never blocks the tests of the script
+itself.
 
 ## Why `start` is rate-limited and the others are not
 

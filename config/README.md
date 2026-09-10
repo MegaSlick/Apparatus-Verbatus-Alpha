@@ -22,6 +22,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `designator_grouping.toml` | which marks the Designator joins into one act, and how many residual components one page may enumerate before the page itself is held |
 | `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
 | `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
+| `witness_context-real.toml` | the same declaration for the real roster's three chairs, each training domain stated as far as this repository can cite it and named as unknown where it cannot; selected with the full trio `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml --witness-context-config config/witness_context-real.toml`; published witness identities paired with a known fixture declaration are refused |
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
 | `decoding.toml` | temperature-zero record readings and the labelled variance experiment's seed and pass count |
 
@@ -29,7 +30,18 @@ The knobs. One question per planned file, each answerable without reading code.
 
 | Knob | Default | Who changes it | What retires it |
 |---|---|---|---|
-| alignment character/pair/deadline limits | 100,000 / 100,000,000 / 5 seconds | ordinary engineering with recorded measurement | a replacement bounded aligner with recorded benchmark evidence |
+| alignment character/pair/deadline limits | 100,000 / 100,000,000 / 25 seconds | ordinary engineering with recorded measurement | a replacement bounded aligner with recorded benchmark evidence |
+
+The deadline is sized from the legitimate ceiling, not the pathological one.
+An unaligned page witness is not `comparable`, so it leaves the act's witness
+floor: a deadline that fires on real work records a slow comparison as coverage
+that is missing. A 7,500-character page whose acts repeat one formula verbatim
+measures 10.1 seconds, already past the five this used to carry. Twenty-five
+clears it with load headroom, and does not pretend to clear everything the pair
+ceiling admits -- two different low-entropy chair responses there measure 283.9
+seconds, a case no deadline value closes. A faster matcher was tried and refused
+because it attached witness text to the wrong act. Both measurements and the
+design that would close the case are in `pipeline/3_attestatores/HANDOFF.md`.
 
 ## R5a toggle register
 

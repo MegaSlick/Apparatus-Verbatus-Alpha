@@ -1627,3 +1627,178 @@ def test_concurrent_record_calls_never_share_a_sequence(tmp_path) -> None:  # ty
         "/parked",
         "/second",
     ]
+
+
+# -- the whole-call deadline on the live transport, against a real socket --
+
+
+def _no_ambient_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear the proxy environment these loopback tests must not inherit.
+
+    Unlike the serving transport, `UrllibRunPodTransport` honours proxy
+    discovery deliberately — it addresses an external service. That makes a
+    developer's own `http_proxy` able to route these 127.0.0.1 tests somewhere
+    else and fail them for a reason that has nothing to do with the deadline.
+    """
+
+    for name in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _dribbling_server(*, headers_slowly: bool):
+    """One loopback responder that stays inside the socket timeout forever."""
+
+    import socket as socket_module
+
+    listener = socket_module.socket()
+    listener.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    stop = threading.Event()
+
+    def serve() -> None:
+        try:
+            connection, _ = listener.accept()
+        except OSError:  # pragma: no cover - closed before a request arrived
+            return
+        with connection:
+            try:
+                connection.recv(65536)
+                if headers_slowly:
+                    connection.sendall(b"HTTP/1.1 200 OK\r\n")
+                    while not stop.wait(0.05):
+                        connection.sendall(b"X-Pad: pad\r\n")
+                else:
+                    connection.sendall(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                        b"Content-Length: 4096\r\n\r\n"
+                    )
+                    while not stop.wait(0.05):
+                        connection.sendall(b"x")
+            except OSError:  # the client's deadline broke the socket
+                pass
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return listener, thread, stop
+
+
+@pytest.mark.parametrize("headers_slowly", [False, True], ids=["slow-body", "slow-headers"])
+def test_the_configured_timeout_bounds_the_whole_provider_call(
+    headers_slowly: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A response that dribbles cannot hold a money-path verb open.
+
+    Measured at 36acde636f against a declared 0.15s: a loopback response
+    delivering its body one byte at a time answered after 8.559s, and one
+    delivering its headers slowly after 1.273s. `VerifiedShutdown` and every
+    other controller here check their own deadline only *between* provider
+    calls, so an unbounded call is an unbounded controller while the card bills.
+    """
+
+    _no_ambient_proxy(monkeypatch)
+    listener, thread, stop = _dribbling_server(headers_slowly=headers_slowly)
+    try:
+        transport = UrllibRunPodTransport(
+            "test-capability-value",
+            timeout_seconds=0.4,
+            root=f"http://127.0.0.1:{listener.getsockname()[1]}",
+        )
+        started = time.monotonic()
+        with pytest.raises(ProviderFailure, match="did not complete within its 0.4s deadline"):
+            transport.request("GET", "/pods")
+        elapsed = time.monotonic() - started
+    finally:
+        stop.set()
+        listener.close()
+        thread.join(timeout=5.0)
+
+    assert elapsed < 3.0, f"the call ran {elapsed:.2f}s against a 0.4s budget"
+
+
+def test_a_slow_but_finite_provider_response_still_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The counterfactual: the deadline must not refuse a merely slow answer."""
+
+    import socket as socket_module
+
+    _no_ambient_proxy(monkeypatch)
+
+    body = b'[{"id":"pod-1"}]'
+    listener = socket_module.socket()
+    listener.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def serve() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            connection.recv(65536)
+            connection.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(body)
+            )
+            for start in range(0, len(body), 4):
+                time.sleep(0.02)
+                connection.sendall(body[start : start + 4])
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        transport = UrllibRunPodTransport(
+            "test-capability-value",
+            timeout_seconds=5.0,
+            root=f"http://127.0.0.1:{listener.getsockname()[1]}",
+        )
+        response = transport.request("GET", "/pods")
+    finally:
+        listener.close()
+        thread.join(timeout=5.0)
+
+    assert response.status == 200
+    assert response.body == body
+
+
+def test_a_create_interrupted_by_its_deadline_is_never_re_issued() -> None:
+    """An interrupted mutating call has an unknown outcome, and stays that way.
+
+    The POST may have created a billing pod. Correlating the launch token is
+    what makes that recoverable, and re-issuing the POST is what would pay
+    twice; this pins that a deadline refusal takes exactly one POST with it and
+    that the recovery lookup afterwards finds the pod rather than creating one.
+    """
+
+    class DeadlineOnPost:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def request(
+            self, method: str, path: str, body: dict[str, object] | None = None
+        ) -> HttpResponse:
+            self.calls.append((method, path))
+            if method == "POST":
+                raise ProviderFailure(
+                    "RunPod HTTP request failed: RunPod POST /pods did not complete "
+                    "within its 30s deadline (abandoned after 30.001s)"
+                )
+            return json_response([])
+
+        def sibling(self, **_: object) -> "DeadlineOnPost":  # pragma: no cover - unused
+            return self
+
+    transport = DeadlineOnPost()
+    # No `match=`: the refusal text here is this fake's own, so asserting it
+    # would assert nothing. What the test is for is the call sequence — one
+    # POST, never a second — and the recovery lookup below.
+    with pytest.raises(ProviderFailure):
+        provider(transport).create(request())
+
+    assert [method for method, _ in transport.calls] == ["GET", "POST"]
+
+    # The controller's recovery path is a pure lookup, and it finds the pod the
+    # interrupted POST created rather than issuing a second one.
+    recovery = ScriptedTransport([json_response([pod_payload()])])
+    record = provider(recovery).create(request().recovery_request())
+    assert record.pod_id == "pod-1"
+    assert [method for method, _, _ in recovery.calls] == ["GET"]

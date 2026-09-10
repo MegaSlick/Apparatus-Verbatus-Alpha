@@ -17,16 +17,13 @@ extraction to an operator-chosen destination — all of it or none of it. An exi
 destination is refused rather than merged into. It writes no text and projects
 nothing: every byte it publishes came out of the run tree already sealed.
 
-That outside verification is `verify_delivered_bundle`, which asks two questions
-rather than one: is the package internally whole (`verify_export_bundle`), and do
-its literal-text formats carry the identical reading of every act
-(`verify_projection_identity`'s comparison, over the members the first pass already
-extracted). The two are separate functions so each refusal names its own defect, but
-`EXPORT_MANIFEST.json` states `canonical_text.identity_verified_across` as a fact
-about the package, so the last gate before a recipient makes that comparison rather
-than asserting it. The published summary reports what each check actually did,
-including the search-fold recomputation's own honest "not run under a different
-Unicode database" — a check that declined to run must not read like one that ran.
+The standalone verifier checks package schema, closure, and internal consistency:
+`verify_export_bundle` verifies the package and `verify_projection_identity` compares
+its literal formats. A self-hash does not authenticate run-derived facts. Publication
+adds the independent retained-run check: `bundle.py` compares the exact ZIP digest,
+run binding, aggregate, and manifest identity to the immutable export artifact before
+writing a destination. Authenticity beyond the retained-run immutability contract
+requires an external trust root. The published summary reports what each check did.
 
 ## Stage-completion seal
 
@@ -82,33 +79,20 @@ neither — instead of hardcoding `fixture_id`. `test_bundle_publish.py` pins a
 real-shaped export payload publishing clean and a both-named payload being
 refused by name.
 
-**The manifest schema id is deliberately not versioned to this shape.** The
-real run identity travels under the existing `EXPORT_MANIFEST_SCHEMA`
-(`armarium-export-manifest.v3`) rather than a new schema id, unlike the
-clustered act-partition claim a few lines below, which does get its own id
-(`.v4`) with an id/shape refusal (`_verify_manifest_field_closure`, the
-`expected_schema` check). The two cases differ in what a consumer needs to
-decide first: a clustered manifest changes the *denominator* — a reader must
-know which counting convention a package uses before it can interpret
-`expected_count` at all, so the id has to carry that decision before the
-reader opens `claims`. A real-run manifest changes only *which run this
-package is,* the way a different `fixture_id` value already did before this
-unit — but it changes it by a shape, not a value: every v3 package before
-this unit carried `run.fixture_id` unconditionally, and a reader doing
-`manifest["run"]["fixture_id"]` worked on all of them. After this unit a v3
-package may instead carry `run.submission_id` with no `fixture_id` key at
-all, and that same unconditional read now `KeyError`s. This is latent, not a
-break: a repo-wide search finds no reader of `run.fixture_id` outside the
-Armarium's own tests, and no real run reaches the Armarium today. A consumer
-that keys on the schema id and then reads the run block must branch on which
-identity key is present (`"submission_id" in run` vs `"fixture_id" in run`)
-before it may read either — the two-shape union is closed, but it is not
-uniform, and the id alone does not say which shape a given package has. A
-fourth schema id would let a consumer learn that from the id instead of by
-opening the block first. Any future schema-versioning ruling belongs to
-Tyrel under the boundary this project's `CLAUDE.md` sets for governed
-change; this paragraph records the reasoned default — and the real risk it
-accepts — rather than presupposing that ruling.
+**The real-run identity union does not have a separate manifest schema id.**
+It remains part of the current image-local `armarium-export-manifest.v7` and
+clustered `armarium-export-manifest.v8` shapes. Those two ids distinguish the
+act-partition denominator: a reader must know whether `expected_count` counts
+proposal-seal rows or logical acts before interpreting the claims.
+
+Run identity is a separate closed union within either schema. A fixture package
+carries `run.fixture_id`; a real-submission package carries `run.submission_id`,
+with exactly one of those keys present. Consumers of v7 or v8 must branch on
+that key before reading it. An unconditional `manifest["run"]["fixture_id"]`
+read is invalid for a real-run package, and the schema id alone intentionally
+does not distinguish which run-identity shape the package carries. The producer
+and recipient both enforce this union; the publisher additionally checks it
+against the retained run authority described above.
 
 ## Export contract
 
@@ -170,13 +154,17 @@ projection configuration. The bundle may contain these plainly specified formats
   `armarium-sources.v3` for the same reason twice over: at v2 its act-outcome
   rows began to REQUIRE `text_status` under exact-field-set validation, and at
   v3 `ink_map_pages` joins the source graph, so a v2 file cannot answer a v3
-  reader's question at all. The manifest is `armarium-export-manifest.v3` for
-  an image-local run and `armarium-export-manifest.v4` for a clustered one: v2
-  renamed the annotation claims apart, v3 adds the required `ink_map` claim to
-  the closed claim set, and v4 is the clustered act-partition claim — the
+  reader's question at all. The manifest is `armarium-export-manifest.v7` for
+  an image-local run and `armarium-export-manifest.v8` for a clustered one: v2
+  renamed the annotation claims apart, v3 added the required `ink_map` claim to
+  the closed claim set, v4 was the clustered act-partition claim — the
   denominator names logical acts and `local_proposal_rows`/`logical_membership`
   join the claim, so a v3 reader can never misread `expected_count` as
-  proposal-seal rows. A clustered bundle also carries a `logical_accounting`
+  proposal-seal rows — and v5/v6 add the required `not_measured` claim to both
+  shapes at once, so a stale reader cannot present a bundle that names five
+  unmeasured instruments as one that names none. V7/v8 add the required
+  `ink_map.unmeasurable_pages` census to both shapes, so a complete bundle cannot
+  hide a page on which that distinct audit took no measurement. A clustered bundle also carries a `logical_accounting`
   block in `sources.json`, and `verify_export_bundle` recomputes the clustered
   claim from it instead of believing the self-hashed manifest.
 - `review-items.jsonl` — held and refused act records with reasons and
@@ -259,6 +247,35 @@ carriage claim, like `claims.uncertainty`). Neither takes the bare word.
 inside the `display:` reading remains Tyrel's choice of convention (spec 11), and
 `claims.display.renders_canonical_uncertainty` still says `false` on the face of every
 bundle. Counting damage is this stage's business; showing it is not.
+
+### `claims.not_measured` — what this run did not measure
+
+Required on every bundle (it is what took the manifest to `.v5`/`.v6`) and
+derived, never constant. `DELIVERED` and `aggregate.status == "complete"` are
+reachable over five things this build does not fully measure, each recorded somewhere
+and none of them, before this, qualifying the word on the deliverable:
+
+| instrument | what is unmeasured | where the record lives |
+|---|---|---|
+| `page-testimony-content-coverage` | a page whose coverage was recorded `shortfall: null` — a continuation page, most often — by the F2 ruling | each act's Recensor review, `testimony_content_coverage` and `testimony_content_coverage_continuation` |
+| `page-ink-conservation` | a page whose `ink_measurable: false` was never reconciled | the Designator's per-page conservation records |
+| `act-visibility-survey` | the Designator occlusion instrument, which no stage publishes, so every capture row carries a named absence code | each act's Recensor review, `cross_capture_coverage` |
+| `perlector-uncertain-spans` | `uncertain_spans` is empty while the sealed `round_cap = 1` leaves a re-proof round; a cap of zero is the exhausted-cap path that can mint a span | `config/perlector_audit.toml` and each act's uncertainty layer |
+| `designator-geometry-calibration` | every crop's `calibrated_for_this_corpus = false`, and the grouping thresholds' `sample_count = 0` | the `provenance` blocks of the three sealed Designator configurations |
+
+Every instrument appears on every bundle with its own `status`
+(`measured` | `not-measured` | `declared-unproduced`), because an omitted row and
+a measured row would otherwise read alike. `declared-unproduced` is the
+contract's word for an instrument with no producer at all, and it is
+deliberately not a softer `not-measured`: saying only "not measured" there
+invites the reading that a measurement was attempted and came back empty.
+`count` is how many instruments did not measure, and the verifier recomputes it.
+
+`pipeline/7_armarium/run.py::not_measured_basis` derives the basis from retained-run
+records and sealed configurations before the export is sealed. The standalone verifier
+checks the packaged block's closure and internal consistency only; the publisher then
+binds its exact ZIP to the immutable export artifact and run. A self-hash alone is not
+an external authenticity proof.
 
 ### The terminal ledger
 

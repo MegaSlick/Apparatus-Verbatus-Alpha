@@ -305,6 +305,16 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
             row["comparable"] = False
             row["attachment_basis"] = "unattached"
             row["span"] = None
+            # The second route to attachment, closed here on purpose. Since the
+            # `anchor-line` basis landed, a page witness also attaches when its
+            # page text carries this act's located anchor line -- which this
+            # chair's does, and which has nothing to do with the recovery crop
+            # this test is about. Recording the alignment as explicitly
+            # unaligned (an ordinary, honest outcome, with its reason) isolates
+            # the question the test asks: with no text route left, does a box
+            # that lies inside only a LATER crop attach the chair to the act?
+            # It must not, and the assertions below are that answer.
+            row["alignment"] = {"status": "unaligned", "reason": "forged-alignment-failure"}
         return record
 
     original_reference = context.tree.read_artifact_reference
@@ -351,7 +361,7 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
     assert facts["attestator_1"]["attached"] is False
     assert facts["attestator_1"]["attachment_basis"] == "unattached"
     coverage = recensor.witness_coverage(outcomes, context.witness_floor, attachments=facts)
-    assert coverage["granularity_basis"] == "native-observation-overlap"
+    assert coverage["granularity_basis"] == "native-per-chair-attachment-basis"
     assert coverage["page_granularity_only"] == 1
     assert coverage["under_witnessed"] is True
 

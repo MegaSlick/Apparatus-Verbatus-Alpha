@@ -152,9 +152,15 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
     runner = RecordedRunner(returncode=0)
     real_recipes = ws.repository / "config" / "serving_recipes_real.toml"
     real_roster = ws.repository / "config" / "models-real.toml"
+    real_context = ws.repository / "config" / "witness_context-real.toml"
     argv = _run_argv(
         ws,
-        bootstrap_extra=("--serving-recipes-config", str(real_recipes)),
+        bootstrap_extra=(
+            "--serving-recipes-config",
+            str(real_recipes),
+            "--witness-context-config",
+            str(real_context),
+        ),
     )
     argv[argv.index("--models-config") + 1] = str(real_roster)
     environment = _environ(clock, lifetime=4.0, extra={"RUNPOD_S3_ACCESS_KEY": "user_abc"})
@@ -190,6 +196,8 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
         str(real_roster),
         "--serving-recipes-config",
         str(real_recipes),
+        "--witness-context-config",
+        str(real_context),
     ]
     # The scrubbed environment is what the orchestrator sees: no transfer key.
     assert "RUNPOD_S3_ACCESS_KEY" not in env

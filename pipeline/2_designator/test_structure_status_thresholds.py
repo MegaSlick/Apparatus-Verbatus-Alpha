@@ -25,7 +25,7 @@ from types import SimpleNamespace
 from _test_support import load_designator
 
 from common.contracts.stages import DESIGNATOR
-from common.imaging import grayscale_rows
+from common.imaging import encode_grayscale_png, grayscale_rows
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_GROUPING_CONFIG = ROOT / "config" / "designator_grouping.toml"
@@ -317,3 +317,56 @@ _ANALYSIS_FIELDS = {
     # checkable rather than two numbers that happen to sit beside each other.
     "dark_mode": 90,
 }
+
+
+def test_analyze_page_uses_its_derived_margin_for_real_decoded_pixels(monkeypatch):
+    """A shade between the derived and fixed margins is excluded only live.
+
+    The only stub is the already-checked page-byte boundary. `_analyze_page`
+    still decodes an actual PNG, infers the background, derives the margin, and
+    calls its production `primary_scan`; changing that call back to
+    `PRIMARY_MARGIN` makes the isolated shade become a second component.
+    """
+    import grouping_config
+
+    designator = _load_designator()
+    width = height = 100
+    rows = [bytearray([230]) * width for _ in range(height)]
+    # The 5x5 dark mark establishes dark_mode=90. The separate 3x3 shade at
+    # 200 is above the derived threshold 184 but at or below fixed-20's 210.
+    for y in range(10, 15):
+        for x in range(10, 15):
+            rows[y][x] = 90
+    for y in range(70, 73):
+        for x in range(70, 73):
+            rows[y][x] = 200
+    png = encode_grayscale_png(width, height, rows)
+    page_record = {
+        "payload": {"ordinal": 1, "image_path": "sealed/page.png", "source_sha256": "0" * 64}
+    }
+    monkeypatch.setattr(designator, "_read_checked_page_bytes", lambda _context, _page: png)
+    policy = grouping_config.load_grouping_config(str(SHIPPED_GROUPING_CONFIG))
+
+    analysis = designator._analyze_page({}, SimpleNamespace(), 1, page_record, policy)
+
+    assert (analysis["width"], analysis["height"]) == (100, 100)
+    assert analysis["background"] == 230
+    assert analysis["dark_mode"] == 90
+    assert analysis["ink_margin"] == 46
+    assert analysis["ink_margin"] > designator.structure.PRIMARY_MARGIN
+    assert [component["bounds"] for component in analysis["components"]] == [
+        {"x": 10, "y": 10, "w": 5, "h": 5}
+    ]
+
+    fixed_components = designator.structure.primary_scan(
+        width,
+        height,
+        rows,
+        background=230,
+        margin=designator.structure.PRIMARY_MARGIN,
+        gap_tolerance_px=analysis["thresholds"].gap_tolerance_px,
+    )
+    assert [component["bounds"] for component in fixed_components] == [
+        {"x": 10, "y": 10, "w": 5, "h": 5},
+        {"x": 70, "y": 70, "w": 3, "h": 3},
+    ]

@@ -20,6 +20,7 @@ from typing import Callable
 
 import pytest
 
+from common.chairs.errors import ConfigurationRefusal
 from common.contracts.canonical import canonical_bytes
 from operations.pod import supervise as pod_supervise
 from operations.pod.fake_provider import FakeProvider
@@ -1731,6 +1732,32 @@ def test_red_boot_is_named_and_can_be_retried(tmp_path: Path) -> None:
     assert surface.boot().is_file()
 
 
+def test_fixture_boot_does_not_let_a_workspace_redefine_the_shipped_witness_profile(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "operator-workspace"
+    config = workspace / "config"
+    config.mkdir(parents=True)
+    for name in (
+        "models-real.toml",
+        "pod_placement.toml",
+        "serving_recipes.toml",
+        "witness_context-real.toml",
+        "witness_context.toml",
+    ):
+        (config / name).write_bytes((ROOT / "config" / name).read_bytes())
+    # The selected roster is real while its selected declaration repeats the
+    # shipped fixture sentence. Before the reference root was anchored, naming
+    # this real roster as workspace models.toml made it its own identity proof.
+    (config / "models.toml").write_bytes((ROOT / "config" / "models-real.toml").read_bytes())
+    surface = OperatorSurface(workspace, tmp_path / "operator-state")
+
+    with pytest.raises(ConfigurationRefusal, match="shipped-fixture identity projection"):
+        surface_module.FixtureBootstrapActions(
+            surface, transfer_receipt=None
+        ).validate_configuration()
+
+
 def test_laptop_crash_leaves_resumable_pages_and_acts(tmp_path: Path) -> None:
     messages: list[str] = []
     surface = _surface(tmp_path, faults=Faults(laptop_crash=True), output=messages)
@@ -3438,13 +3465,15 @@ def test_dry_run_missing_launch_record_uses_the_operator_error_contract(
     assert refusal.value.code is ErrorCode.UNEXPECTED
 
 
+@pytest.mark.parametrize("error_type", [OSError, FileNotFoundError])
 def test_dry_run_main_strips_control_bytes_from_an_os_error(
+    error_type: type[OSError],
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def refuse(_output: Path) -> Path:
-        raise OSError("cannot write before\x1b[2Jafter")
+        raise error_type("cannot access before\x1b[2Jafter")
 
     monkeypatch.setattr(dry_run, "make_transcript", refuse)
 
@@ -3452,6 +3481,11 @@ def test_dry_run_main_strips_control_bytes_from_an_os_error(
     captured = capsys.readouterr().out
     assert "\x1b" not in captured
     assert "before [2Jafter" in captured
+    assert "What happened:" in captured
+    assert "What it means:" in captured
+    assert "Next step:" in captured
+    assert "input files exist and are readable" in captured
+    assert "output path is writable" in captured
 
 
 def test_dry_run_parser_has_a_description_when_docstrings_are_removed(
@@ -4536,22 +4570,25 @@ def test_status_never_prints_the_supervisor_owner_token(tmp_path: Path) -> None:
 # --- the run verb carries the real-roster pair, together or not at all --------
 
 
-def test_run_forwards_the_roster_pair_to_the_door_and_the_orchestrator(tmp_path: Path) -> None:
+def test_run_forwards_the_roster_trio_to_the_door_and_the_orchestrator(tmp_path: Path) -> None:
     surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
     roster = tmp_path / "config" / "models-real.toml"
     catalogue = tmp_path / "config" / "serving_recipes_real.toml"
+    witness_context = tmp_path / "config" / "witness_context-real.toml"
 
     with pytest.raises(OperatorError) as interrupted:
         surface.run(
             run_id="real-roster-run",
             models_config=roster,
             serving_recipes_config=catalogue,
+            witness_context_config=witness_context,
         )
 
     assert interrupted.value.code is ErrorCode.RUN_INTERRUPTED
     [(command, _cwd)] = observed
     assert _argv_value(command, "--models-config") == str(roster.absolute())
     assert _argv_value(command, "--serving-recipes-config") == str(catalogue.absolute())
+    assert _argv_value(command, "--witness-context-config") == str(witness_context.absolute())
 
 
 def test_run_without_a_roster_names_neither_flag(tmp_path: Path) -> None:
@@ -4562,24 +4599,30 @@ def test_run_without_a_roster_names_neither_flag(tmp_path: Path) -> None:
 
     [(command, _cwd)] = observed
     assert "--models-config" not in command and "--serving-recipes-config" not in command
+    assert "--witness-context-config" not in command
 
 
-@pytest.mark.parametrize("supplied", ["models_config", "serving_recipes_config"])
-def test_run_refuses_half_a_roster_before_any_child_starts(tmp_path: Path, supplied: str) -> None:
-    """One roster half without the other would seal the real chairs against the
-    fixture catalogue, or the reverse; the orchestrator digests both together."""
+@pytest.mark.parametrize(
+    "supplied", ["models_config", "serving_recipes_config", "witness_context_config"]
+)
+def test_run_refuses_part_of_a_roster_before_any_child_starts(
+    tmp_path: Path, supplied: str
+) -> None:
+    """One roster part without the others would seal the real chairs against the
+    fixture catalogue, or describe them to the Perlector with the fixture
+    declaration; the orchestrator digests all three together."""
 
     surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
 
     with pytest.raises(OperatorError) as refusal:
-        surface.run(run_id="half-roster", **{supplied: tmp_path / "half.toml"})
+        surface.run(run_id="part-roster", **{supplied: tmp_path / "part.toml"})
 
     assert refusal.value.code is ErrorCode.INVALID_COMMAND
-    assert "supply both or neither" in str(refusal.value.detail)
+    assert "supply all three or none" in str(refusal.value.detail)
     assert not observed
 
 
-def test_cli_run_carries_the_roster_pair_to_the_operator_surface(
+def test_cli_run_carries_the_roster_trio_to_the_operator_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observed: dict[str, object] = {}
@@ -4594,6 +4637,7 @@ def test_cli_run_carries_the_roster_pair_to_the_operator_surface(
     monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
     roster = tmp_path / "models-real.toml"
     catalogue = tmp_path / "serving_recipes_real.toml"
+    witness_context = tmp_path / "witness_context-real.toml"
 
     assert (
         cli.main(
@@ -4607,12 +4651,15 @@ def test_cli_run_carries_the_roster_pair_to_the_operator_surface(
                 str(roster),
                 "--serving-recipes-config",
                 str(catalogue),
+                "--witness-context-config",
+                str(witness_context),
             ]
         )
         == 0
     )
     assert observed["models_config"] == roster
     assert observed["serving_recipes_config"] == catalogue
+    assert observed["witness_context_config"] == witness_context
 
 
 # --- fetch-run: the tree comes home digest-checked, never overwriting ---------

@@ -72,7 +72,13 @@ jobs:
           uv sync --frozen --group test --group audit
 
       - name: Repository checks
-        run: sh .githooks/check-all.sh --ci
+        # `--parallel` hands the suite to four xdist workers, one file at a
+        # time per worker. It is passed here and not in the local gate: the
+        # runner is a fresh machine with nothing else on it, while a laptop
+        # gate shares its cores with the session that started it. The census
+        # is identical either way; only the wall time differs, and the leg's
+        # timeout above is the budget this is meant to keep clear of.
+        run: sh .githooks/check-all.sh --ci --parallel
 
   # Branch protection requires the single context `check`. The matrix above
   # publishes one context per Python version (`test (3.12)` and so on), so this

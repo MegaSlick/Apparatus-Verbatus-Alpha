@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -17,6 +17,74 @@ from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
 from .models import as_decimal
 
 PLACEMENT_SCHEMA = "pod-placement.v1"
+
+FIXTURE_ONLY_ASSEMBLY_NOTE = "fixture-only result; no real chair or GPU assembly is proven"
+"""What a preflight that measured no real card and served no real chair says of itself.
+
+Kept as one constant because it is the sentence a receipt publishes about its
+own worth, and `assembly_proven` is derived rather than declared: the note and
+the flag must never be able to drift apart.
+"""
+
+
+class _RuntimeProvenance:
+    """Opaque proof that a runtime in this package produced the value it sits on.
+
+    `assembly_proven` is the one claim a preflight receipt makes about a paid
+    measurement, and until this existed it was derived from two ordinary
+    dataclass fields -- `GpuProfile.measured` and `SmokeResult.served_by` --
+    that any caller of `PreflightRunner.run` could set to whatever it liked.
+    Both are constructor arguments; a caller-built profile and a caller-built
+    smoke result could therefore publish "real assembly measured on <card>"
+    with no `nvidia-smi` read and no served engine anywhere in the run. A
+    fabricated *page* was already caught by `_bound_receipt`; a fabricated
+    *claim about the hardware* was not (GOVERNANCE 10).
+
+    So the two facts now travel as an instance of this class, which is:
+
+    * module-private, and never exported, so no public name reaches it;
+    * minted in exactly two places -- `SystemGpuProbe.profile`'s successful
+      `nvidia-smi` path, and `operations.serving.preflight`'s service-evidence
+      path, which names the engine off a `ServiceHandle` it started, proved
+      fixture-bound and stopped;
+    * checked by `isinstance`, never by a string, a flag or a truthy value;
+    * never serialised. It appears in no receipt, no record and no JSON, so it
+      cannot be captured from an artifact and replayed into a constructor.
+
+    This is a guard against a caller asserting its own proof, not a security
+    boundary: Python has no private, and a determined caller can always reach a
+    module-private name. That is the same posture `repaired_once` and
+    `served_engine` already take on their receipts -- what it buys is that a
+    fixture, an operator rehearsal, a test double, or a future adapter cannot
+    claim a measured card *by accident* or by filling in an inviting field.
+    """
+
+    __slots__ = ("origin",)
+
+    def __init__(self, origin: str) -> None:
+        self.origin = origin
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return f"<runtime provenance: {self.origin}>"
+
+
+def _mint_runtime_provenance(origin: str) -> _RuntimeProvenance:
+    """The only constructor either minting site calls; `origin` names which.
+
+    `operations.serving.preflight` imports this deliberately private name. The
+    two runtimes that may mint provenance live in two packages, and the token
+    they mint has to be the same type for `_assembly_claim` to check it by
+    identity -- so the import is the seam, and its privacy is the statement
+    that nothing else may call it.
+    """
+
+    return _RuntimeProvenance(origin)
+
+
+def _is_runtime_provenance(value: object) -> bool:
+    """One `isinstance` check, in one place, for both halves of the claim."""
+
+    return isinstance(value, _RuntimeProvenance)
 
 
 class PlacementRefusal(ValueError):
@@ -42,8 +110,38 @@ class GpuProfile:
     """Why measurement failed, when it did.  The probe is the only place that
     sees the driver's own error text, and spec 04 asks a red report for "what
     happened" as well as "what to do next"."""
+    measured: bool = False
+    """True only when a real driver read produced these numbers.
+
+    `SystemGpuProbe.profile` sets it on its success path and nowhere else, so a
+    synthetic profile -- an operator fixture, a test, a hand-built planning
+    profile -- carries `False` by construction rather than by remembering to say
+    so.  `PreflightReport.assembly_proven` reads it: a receipt may not claim a
+    real GPU was measured on the strength of a number somebody typed.
+
+    It cannot be set without `provenance`, and `provenance` cannot be minted
+    outside this module, so this flag is now a statement about where the profile
+    came from rather than about what its constructor was told.
+    """
+    provenance: object | None = field(default=None, repr=False, compare=False)
+    """The probe's own opaque token, or `None`.  Never serialised.
+
+    Typed `object` on purpose: `_RuntimeProvenance` is module-private, and a
+    public annotation naming it would put it in this module's exported surface
+    and in every reader's autocomplete.  `__post_init__` refuses anything else.
+    """
 
     def __post_init__(self) -> None:
+        # The two halves of one fact, so neither can be set alone: a caller that
+        # passes `measured=True` has no token to pass with it and is refused
+        # here, and a token can only come from the one probe path that mints it.
+        if self.provenance is not None and not _is_runtime_provenance(self.provenance):
+            raise ValueError("GPU profile provenance is minted by the probe, not supplied")
+        if self.measured != (self.provenance is not None):
+            raise ValueError(
+                "a GPU profile is measured exactly when it carries the probe's own "
+                "provenance; a profile cannot declare itself measured"
+            )
         object.__setattr__(self, "vram_gib", as_decimal(self.vram_gib, "VRAM GiB"))
         object.__setattr__(self, "disk_gib", as_decimal(self.disk_gib, "disk GiB"))
         if not isinstance(self.name, str) or not self.name.strip():
@@ -118,6 +216,12 @@ class SystemGpuProbe:
                 disk_gib=disk_gib,
                 dtype=dtype,
                 discovery_detail=disk_detail,
+                # The one place `measured` is ever set: `nvidia-smi` answered
+                # with four parseable fields for a card this process can see.
+                # The token beside it is what makes that unforgeable from
+                # outside this module -- the flag alone was an argument.
+                measured=True,
+                provenance=_mint_runtime_provenance("nvidia-smi read by SystemGpuProbe"),
             )
         except Exception as error:
             gpu_detail = f"{type(error).__name__}: {error}".strip()
@@ -282,6 +386,28 @@ class PlacementTable:
             return None
         for profile in self.card_profiles:
             if card_name in {profile.name, profile.gpu_type_id}:
+                return profile
+        return None
+
+    def profile_for_gpu_type_id(self, gpu_type_id: str | None) -> CardProfile | None:
+        """The reviewed row a request's `gpu_type` names, matched on `gpu_type_id` alone.
+
+        Distinct from `profile_for`, and deliberately stricter. `profile_for`
+        resolves a card a *probe* reported and accepts either spelling, because
+        a probe reports whatever the driver calls the card. This one resolves
+        the string a `PodCreateRequest` will send to the provider's API, and
+        only `gpu_type_id` is ever sent: `boot_a_request.py` renders
+        `"gpu_type": card.gpu_type_id`, and the `name` column exists so an
+        operator can read about the card in prose. Accepting the human name
+        here would make an allowlist entry out of a string that has never
+        reached the API and that no provider is known to accept -- a create
+        that passed the gate and then failed, or worse, rented something else.
+        """
+
+        if not gpu_type_id:
+            return None
+        for profile in self.card_profiles:
+            if profile.gpu_type_id == gpu_type_id:
                 return profile
         return None
 
@@ -497,6 +623,24 @@ class SmokeResult:
     format_valid: bool
     receipt: dict[str, object]
     utilization: tuple[UtilizationSample, ...]
+    served_by: str | None = None
+    """The engine that actually answered, or `None` when nothing served this read.
+
+    Only `operations.serving.preflight.ServingSmokeReader` sets it, from the
+    receipt of the service handle it started, proved and stopped -- so a fixture
+    reader that fabricates a green `SmokeResult` cannot also fabricate the claim
+    that an engine produced it.  `PreflightReport.assembly_proven` reads this.
+
+    "Only" is now enforced rather than documented: it cannot be set without the
+    `provenance` token below, which is minted in that one lifecycle path.
+    """
+    provenance: object | None = field(default=None, repr=False, compare=False)
+    """The serving runtime's own opaque token, or `None`.  Never serialised.
+
+    Typed `object` for the same reason `GpuProfile.provenance` is: the class is
+    module-private to `operations.pod.preflight` and stays out of this one's
+    public annotations.  `__post_init__` refuses anything else.
+    """
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -506,6 +650,22 @@ class SmokeResult:
         ):
             if not isinstance(value, bool):
                 raise ValueError(f"smoke result {label} must be boolean")
+        if self.served_by is not None and (
+            not isinstance(self.served_by, str) or not self.served_by.strip()
+        ):
+            raise ValueError("smoke result served_by must be a non-blank string or None")
+        # Named engine and token together, or neither -- checked after the shape
+        # above, so a blank name is still refused as a blank name. A smoke
+        # reader that could name an engine without the lifecycle that started
+        # it could assert the serving half of `assembly_proven` on its own
+        # say-so.
+        if self.provenance is not None and not _is_runtime_provenance(self.provenance):
+            raise ValueError("smoke result provenance is minted by the serving runtime")
+        if (self.served_by is not None) != (self.provenance is not None):
+            raise ValueError(
+                "a smoke result names a serving engine exactly when it carries the serving "
+                "runtime's own provenance; a reader cannot name its own engine"
+            )
         if not isinstance(self.receipt, dict):
             raise ValueError("smoke result receipt must be an object")
         if not isinstance(self.utilization, tuple) or not all(
@@ -569,6 +729,12 @@ class PreflightReport:
     utilization: tuple[UtilizationSample, ...]
     issues: tuple[PreflightIssue, ...]
     assembly_proven: bool
+    assembly_note: str = FIXTURE_ONLY_ASSEMBLY_NOTE
+    """What was proven, in the report's own words -- names the chairs and the card.
+
+    Derived beside `assembly_proven` in `PreflightRunner.run`, never re-derived
+    from the flag: "proven" and "proven *of what*" are one statement.
+    """
     card_profile: str | None = None
     card_profile_note: str | None = None
     plan_source: str = "computed from measured VRAM"
@@ -625,11 +791,7 @@ class PreflightReport:
                 for issue in self.issues
             ],
             "assembly_proven": self.assembly_proven,
-            "assembly_note": (
-                "real chair/GPU assembly was measured"
-                if self.assembly_proven
-                else "fixture-only result; no real chair or GPU assembly is proven"
-            ),
+            "assembly_note": self.assembly_note,
         }
 
 
@@ -656,6 +818,9 @@ class PreflightRunner:
         cache_receipts: list[dict[str, object]] = []
         smoke_receipts: list[dict[str, object]] = []
         utilization: list[UtilizationSample] = []
+        # (chair, engine) for every chair that read the golden page back through
+        # an engine that actually served it.  Half of the assembly claim below.
+        served_reads: list[tuple[str, str]] = []
         tier: PlacementTier | None = self._environment(profile, issues)
         matched = self.placement.profile_for(profile.name)
         plan_source = "computed from measured VRAM"
@@ -716,7 +881,9 @@ class PreflightRunner:
             verified = self._verify_cache(configured, issues, cache_receipts)
             if not verified or not fixture_present:
                 continue
-            self._smoke(configured, tier, issues, smoke_receipts, utilization)
+            served_by = self._smoke(configured, tier, issues, smoke_receipts, utilization)
+            if served_by is not None:
+                served_reads.append((role, served_by))
         if not smoke_receipts:
             # An all-absent or fully-failed roster produced placements and no
             # measurements; green here would claim a serving assembly nobody
@@ -740,10 +907,7 @@ class PreflightRunner:
                     "before a paid run.",
                 )
             )
-        # This stage runs against injected/fake probes and the repository's
-        # fixture roster.  It must never turn source labels into a claim that a
-        # real GPU/chair assembly was measured; Spec 05 owns that demonstration.
-        assembly_proven = False
+        assembly_proven, assembly_note = self._assembly_claim(profile, served_reads)
         return PreflightReport(
             color="green" if not issues else "red",
             profile=profile,
@@ -754,10 +918,65 @@ class PreflightRunner:
             utilization=tuple(utilization),
             issues=tuple(issues),
             assembly_proven=assembly_proven,
+            assembly_note=assembly_note,
             card_profile=matched.name if matched is not None else None,
             card_profile_note=matched.note if matched is not None and matched.note else None,
             plan_source=plan_source,
         )
+
+    @staticmethod
+    def _assembly_claim(
+        profile: GpuProfile, served_reads: list[tuple[str, str]]
+    ) -> tuple[bool, str]:
+        """Derive the receipt's assembly claim from what this run actually did.
+
+        This used to be the constant `False`, with a note that called every
+        result "fixture-only".  On a rented card that was a false record of a
+        paid measurement: the receipt disowned the one measurement it was bought
+        to make (GOVERNANCE 10 -- claims are made only about what was actually
+        measured, and an understatement is as untrue as an overstatement).
+
+        Both halves must hold, and each is a fact the layer that produced it
+        recorded rather than a label this method infers:
+
+        * the card was read by a real driver -- `GpuProfile.measured`, set only
+          by `SystemGpuProbe`'s successful `nvidia-smi` path;
+        * at least one chair read the golden page back through an engine that
+          served it -- `SmokeResult.served_by`, set only by
+          `ServingSmokeReader` from the service handle it started and stopped.
+
+        "Set only by" is enforced by `_RuntimeProvenance`, not by convention.
+        `PreflightRunner` takes both values from callers -- a caller supplies
+        the profile to `run` and the reader to the constructor -- so both fields
+        were writable by whoever wanted the claim. Each now travels with an
+        opaque token that only those two runtime paths can mint, and this method
+        checks the token rather than the flag: a caller-built
+        `GpuProfile(measured=True)` and a caller-built
+        `SmokeResult(served_by=...)` are refused at construction, and no
+        combination of ordinary values reaches `True` here.
+
+        A smoke read that came back invalid does not count: the assembly claim
+        says a chair *read its witness*, not that a process was started.  The
+        colour of the report is deliberately not consulted -- a red preflight
+        that nonetheless served one chair on a real card proved that much, and
+        hiding it would lose a measured fact behind a status (GOVERNANCE 2).
+        """
+
+        measured = profile.measured and _is_runtime_provenance(profile.provenance)
+        if measured and served_reads:
+            chairs = ", ".join(f"{chair} via {engine}" for chair, engine in sorted(served_reads))
+            return True, (
+                f"real assembly measured on {profile.name}: {chairs} smoke-read the "
+                "golden page through a served engine"
+            )
+        if measured:
+            # An honest third case: the card is real, the assembly is not proven.
+            # Calling this "fixture-only" would misdescribe a paid measurement.
+            return False, (
+                f"no assembly proven: {profile.name} was measured by a real driver read, "
+                "but no chair smoke-read the golden page through a served engine"
+            )
+        return False, FIXTURE_ONLY_ASSEMBLY_NOTE
 
     def _environment(
         self, profile: GpuProfile, issues: list[PreflightIssue]
@@ -918,6 +1137,19 @@ class PreflightRunner:
                 )
             )
             return None
+        if kind == "smoke" and "served_engine" in receipt:
+            # The field the assembly claim is published under. A reader that
+            # could write it could assert its own proof.
+            issues.append(
+                PreflightIssue(
+                    "smoke-receipt-invalid",
+                    f"chair {identity.role} returned the runtime-owned served_engine field.",
+                    "Repair the smoke adapter; naming the serving engine belongs to the "
+                    "preflight runtime.",
+                    identity.role,
+                )
+            )
+            return None
         return {key: value for key, value in receipt.items() if key != "chair"}
 
     def _smoke(
@@ -927,7 +1159,14 @@ class PreflightRunner:
         issues: list[PreflightIssue],
         receipts: list[dict[str, object]],
         utilization: list[UtilizationSample],
-    ) -> None:
+    ) -> str | None:
+        """Return the engine that served a valid read, else `None`.
+
+        `None` covers every path that proves no assembly: a failed read, an
+        unstructured result, a misbound receipt, an invalid page, and the
+        ordinary fixture reader, which names no engine at all.
+        """
+
         try:
             result = self.smoke_reader.read(identity, self.fixture, tier)
         except Exception as error:
@@ -939,7 +1178,7 @@ class PreflightRunner:
                     identity.role,
                 )
             )
-            return
+            return None
         if not isinstance(result, SmokeResult):
             issues.append(
                 PreflightIssue(
@@ -949,10 +1188,10 @@ class PreflightRunner:
                     identity.role,
                 )
             )
-            return
+            return None
         receipt = self._bound_receipt(identity, result.receipt, issues, "smoke")
         if receipt is None:
-            return
+            return None
         utilization.extend(result.utilization)
         if not result.utilization:
             issues.append(
@@ -979,10 +1218,15 @@ class PreflightRunner:
                     identity.role,
                 )
             )
+        valid = result.shape_valid and result.nonempty and result.format_valid
         receipts.append(
             {
                 "chair": identity.role,
                 **receipt,
+                # Runtime-owned, like `repaired_once` on a cache receipt: the
+                # reader reports what it read, the runtime reports what served
+                # it.  `_bound_receipt` refuses an adapter that pre-populates it.
+                "served_engine": result.served_by,
                 "utilization": [
                     {
                         "gpu_percent": str(sample.gpu_percent),
@@ -992,6 +1236,13 @@ class PreflightRunner:
                 ],
             }
         )
+        # The token, not the string: `served_by` is the engine's name, and the
+        # provenance beside it is what says a lifecycle in this repository
+        # started that engine.  A result that carries one without the other
+        # cannot exist (`SmokeResult.__post_init__`), and this is the check that
+        # keeps that true if it ever could.
+        proven = _is_runtime_provenance(result.provenance)
+        return result.served_by if valid and proven else None
 
 
 def is_cache_mismatch(error: BaseException) -> bool:
