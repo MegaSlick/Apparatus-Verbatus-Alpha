@@ -91,6 +91,7 @@ from common.background import (  # noqa: F401
 from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
+from common.residual_ink import validate_coverage_audit_table
 
 DEFAULT_GROUPING_CONFIG_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "designator_grouping.toml"
@@ -103,10 +104,17 @@ _PAGE_FRACTION_BP_FIELDS: Final = (
     "chain_gap_bp",
     "anchor_reach_bp",
     "brace_min_height_bp",
-    "page_edge_reach_bp",
     "review_priority_min_dimension_bp",
     "fallback_overlap_bp",
 )
+
+# The one field of `[grouping.continuation]`. A fraction of the page's own
+# HEIGHT, like five of the six above, and it sat among them until 2026-09-06.
+# It moved for the reason `page_area_bp` has a table of its own: it now carries
+# a provenance block measured on 44 real pages, and the block above it truthfully
+# says of everything left in it that its values are unmeasured conversions of
+# retired pixel constants against a 200x260 fixture. One block cannot say both.
+_CONTINUATION_BP_FIELDS: Final = ("page_edge_reach_bp",)
 _ABSOLUTE_FIELDS: Final = ("gap_tolerance_px",)
 
 # The one field whose basis is the page's own AREA. It is a bound on a
@@ -135,11 +143,22 @@ _GROUPING_COUNT_FIELDS: Final = (
 
 _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
     "page_fraction_bp",
+    "continuation",
     "absolute",
     "page_area_bp",
     "background",
     "provenance",
 )
+
+# The top-level tables this file carries. `coverage_audit` is not the
+# Designator's: it is the sealed policy of `common/residual_ink.py`'s
+# outside-coverage audit, which the Ink Map, the Recensor and the Armarium run.
+# It is named here, and validated below through the audit's own validator, so
+# that "an unread policy table cannot be applied" stays literally true -- the
+# table IS read, by this loader, which refuses a malformed one at the earliest
+# stage a run reaches rather than at the last. What the Designator does with it
+# is nothing, and that is the whole of the exception.
+_TOP_LEVEL_TABLES: Final = ("grouping", "coverage_audit")
 
 
 def _refuse_forbidden_names(fields: dict, where: str) -> None:
@@ -178,7 +197,7 @@ def load_grouping_config(
     if not isinstance(config, dict):
         raise ContractError("the grouping configuration is not a table")
 
-    unexpected_top_level = sorted(set(config) - {"grouping"})
+    unexpected_top_level = sorted(set(config) - set(_TOP_LEVEL_TABLES))
     if unexpected_top_level:
         raise ContractError(
             "the grouping configuration has unknown top-level field(s) "
@@ -221,7 +240,22 @@ def load_grouping_config(
     absolute = _load_closed_int_table(
         grouping.get("absolute"), _ABSOLUTE_FIELDS, "[grouping.absolute]"
     )
+    continuation = _load_continuation(grouping.get("continuation"))
     page_area_bp = _load_page_area_bp(grouping.get("page_area_bp"))
+    # Validated, not applied: see `_TOP_LEVEL_TABLES`. The provenance block is
+    # checked here and only here, which is the same asymmetry
+    # `[grouping.background]` already carries -- the Designator refuses a run
+    # whose calibration block has lost its provenance and the three stages that
+    # actually run under it do not.
+    coverage_audit = {
+        **validate_coverage_audit_table(config.get("coverage_audit")),
+        "provenance": _load_provenance(
+            (config.get("coverage_audit") or {}).get("provenance")
+            if isinstance(config.get("coverage_audit"), dict)
+            else None,
+            "[coverage_audit.provenance]",
+        ),
+    }
     background = _load_background(grouping.get("background"))
     provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")
 
@@ -229,6 +263,8 @@ def load_grouping_config(
         "config_sha256": digest_bytes(data),
         **counts,
         "page_fraction_bp": page_fraction_bp,
+        "continuation": continuation,
+        "coverage_audit": coverage_audit,
         "absolute": absolute,
         "page_area_bp": page_area_bp,
         "background": background,
@@ -325,6 +361,57 @@ def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
             "sample_count is zero"
         )
     return dict(provenance)
+
+
+def _load_continuation(table: Any) -> dict[str, Any]:
+    """Read `[grouping.continuation]` and its own provenance.
+
+    One field, and a table of its own for the reason `[grouping.page_area_bp]`
+    has one: `sample_count` is 0 for the six unmeasured conversions left in
+    `page_fraction_bp` and 44 for this. Two blocks say two true things; folding
+    them together would say a false one.
+
+    The field is a positive basis-point value in 1..`BASIS_POINTS`, inclusive.
+    Zero is outside that positive policy range; an observed group can still
+    have zero distance from an edge, so the loader does not claim that geometry
+    is impossible. The inclusive upper endpoint is deliberately permitted by
+    the validated numeric contract, although a whole-page reach is broad and
+    does not discriminate groups by proximity to an edge. The 44-page
+    measurement, rather than this range alone, supports the shipped value.
+    """
+    if not isinstance(table, dict):
+        raise ContractError("the grouping configuration has no [grouping.continuation] table")
+    _refuse_forbidden_names(table, "[grouping.continuation]")
+    expected = set(_CONTINUATION_BP_FIELDS) | {"provenance"}
+    unexpected = sorted(set(table) - expected)
+    if unexpected:
+        raise ContractError(
+            f"the grouping configuration's [grouping.continuation] carries unknown field(s) "
+            f"{unexpected}; an unread policy field cannot be applied"
+        )
+    missing = sorted(expected - set(table))
+    if missing:
+        raise ContractError(
+            f"the grouping configuration's [grouping.continuation] is missing field(s) {missing}"
+        )
+    values = {name: table[name] for name in _CONTINUATION_BP_FIELDS}
+    reach = values["page_edge_reach_bp"]
+    if not _is_plain_int(reach):
+        raise ContractError(
+            "the grouping configuration's [grouping.continuation] page_edge_reach_bp is not an "
+            "integer"
+        )
+    if not 0 < reach <= _BASIS_POINTS:
+        raise ContractError(
+            "the grouping configuration's [grouping.continuation] page_edge_reach_bp is not a "
+            f"positive basis-point integer in the supported inclusive range "
+            f"1..{_BASIS_POINTS}; the permitted upper endpoint is a broad whole-page policy "
+            "value"
+        )
+    values["provenance"] = _load_provenance(
+        table.get("provenance"), "[grouping.continuation.provenance]"
+    )
+    return values
 
 
 def _load_page_area_bp(table: Any) -> dict[str, Any]:
@@ -456,8 +543,8 @@ class GroupingThresholds:
 def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> GroupingThresholds:
     """Resolve one page's own basis-point thresholds into pixel integers.
 
-    `margin_px` resolves against `width`; every other page_fraction_bp field
-    resolves against `height` -- the basis each field's config comment
+    `margin_px` resolves against `width`; every other page_fraction_bp field,
+    and `[grouping.continuation]`'s one field, resolves against `height` -- the basis each field's config comment
     declares as a design decision (SPEC_C section 2), not a property
     recovered from the retired pixel constant it replaces.
     `gap_tolerance_px`, the three counts (`max_residual_components`,
@@ -480,7 +567,9 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
         chain_gap_px=_pad_amount(height, bp["chain_gap_bp"]),
         anchor_reach_px=_pad_amount(height, bp["anchor_reach_bp"]),
         brace_min_height_px=_pad_amount(height, bp["brace_min_height_bp"]),
-        page_edge_reach_px=_pad_amount(height, bp["page_edge_reach_bp"]),
+        # `[grouping.continuation]`, not `page_fraction_bp`: the same HEIGHT
+        # basis, a different provenance block. See `_CONTINUATION_BP_FIELDS`.
+        page_edge_reach_px=_pad_amount(height, config["continuation"]["page_edge_reach_bp"]),
         review_priority_min_dimension_px=_pad_amount(
             height, bp["review_priority_min_dimension_bp"]
         ),

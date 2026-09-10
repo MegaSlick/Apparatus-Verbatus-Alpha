@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import sqlite3
+import subprocess
 import sys
 import unicodedata
 from dataclasses import replace
@@ -36,14 +38,25 @@ from display import DISPLAY_CONVENTION, render_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
+from common.background import load_background_config, resolve_background_policy
 from common.contracts.approval import real_ingress_record, synthetic_fixture_ingress_record
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.errors import ApprovalRefusal, SchemaRefusal
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
+from common.contracts.errors import ApprovalRefusal, ContractError, FatalAccounting, SchemaRefusal
+from common.contracts.identities import region_id
 from common.contracts.outcomes import ArmariumCategory, run_aggregate
-from common.contracts.stages import ARMARIUM, DESIGNATOR
+from common.contracts.stages import ARMARIUM, DESIGNATOR, EXEMPLAR, INK_MAP
 from common.contracts.uncertainty import validate as validate_uncertainty
-from common.imaging import encode_grayscale_png
-from common.residual_ink import MINIMUM_FRACTION_OUTSIDE_COVERAGE, MINIMUM_INK_PIXELS
+from common.imaging import crop_png, decode_grayscale_png, encode_grayscale_png
+from common.residual_ink import (
+    MINIMUM_FRACTION_OUTSIDE_COVERAGE,
+    MINIMUM_INK_PIXELS,
+    edge_ink,
+    ink_runs_from_rows,
+    load_coverage_audit_config,
+    residual_ink,
+    resolve_coverage_audit_policy,
+)
+from common.runtree.store import RunTree
 from common.stage import REAL_SCENARIO, StageContext
 
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
@@ -51,6 +64,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
+ORCHESTRATOR_CLI = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
 def _pixels(value: int) -> bytes:
@@ -76,6 +90,12 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
             "total_ink_pixels": total,
             "outside_ink_pixels": outside,
             "edge_band_pixels": 64,
+            # The gate the page was measured under, recorded on the row since
+            # 2026-09-06 so this verifier can recompute the hold from the counts
+            # alone on a clean machine. 2,000 is the retired flat constant, kept
+            # as this helper's value because these rows are hand-built shapes
+            # rather than a measurement of any page.
+            "substantial_ink_pixels": 2_000,
         },
     }
 
@@ -409,6 +429,327 @@ def test_an_otherwise_complete_export_is_complete_without_an_edge_hold():
     assert manifest["claims"]["ink_map"]["held_pages"] == []
 
 
+def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_claim(tmp_path):
+    """Post-ingress edge evidence crosses the crop reader into the export.
+
+    A real fixture run supplies the sealed Exemplar page, proposal region, and
+    proposal seal that the unpatched lineage verifier reads in the held half.
+    The release half constructs a full-page version of that same proposal and
+    updates its seal and crop bytes coherently; a wrong-crop control proves the
+    verifier still rejects pixels that do not match the sealed Exemplar page.
+
+    The Ink Map rows remain a deliberate post-ingress substitution. They have
+    the sealed page's dimensions but do not claim to be the same pixels Door
+    admitted. This proves the verifier/crop-reader/terminal integration, not an
+    end-to-end identity link between Exemplar pixels and Ink Map evidence.
+    """
+    armarium = _armarium_run_module()
+    ink_map = _ink_map_run_module()
+    run_root = tmp_path / "runs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR_CLI),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "edge-lineage",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    real_tree = RunTree(run_root, "edge-lineage")
+    run = real_tree.read_run()
+    proposal = next(
+        record
+        for record in (
+            real_tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            for entry in real_tree.build_manifest(DESIGNATOR)["artifacts"]
+            if entry["kind"] == "region"
+        )
+        if record["payload"]["origin"] == "proposal"
+        and record["payload"]["transform"]["source_page_ordinal"] == 1
+    )
+    ordinal = proposal["payload"]["transform"]["source_page_ordinal"]
+    page = next(
+        record
+        for record in (
+            real_tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+            for entry in real_tree.build_manifest(EXEMPLAR)["artifacts"]
+            if entry["kind"] == "page"
+        )
+        if record["payload"]["ordinal"] == ordinal
+    )
+    sealed_page_bytes = real_tree.read_bytes(page["payload"]["image_path"])
+    width, height, sealed_rows = decode_grayscale_png(sealed_page_bytes)
+    rows = [bytearray([230] * width) for _ in range(height)]
+    for y in range(2):
+        rows[y] = bytearray([0] * width)
+    for y in range(height - 2, height):
+        rows[y] = bytearray([0] * width)
+    page_bytes = encode_grayscale_png(width, height, rows)
+    assert rows != sealed_rows
+    assert page_bytes != sealed_page_bytes
+    page_digest = digest_bytes(page_bytes)
+    grouping_path = ROOT / "config" / "designator_grouping.toml"
+    grouping_digest = digest_bytes(grouping_path.read_bytes())
+    background_config = load_background_config(grouping_path)
+    coverage_config = load_coverage_audit_config(grouping_path)
+    background_policy = resolve_background_policy(background_config, width, height)
+    coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
+    measured_edge = edge_ink(
+        width,
+        height,
+        rows,
+        background_policy=background_policy,
+        coverage_policy=coverage_policy,
+    )
+    measured_ink = residual_ink(
+        width,
+        height,
+        rows,
+        [],
+        background_policy=background_policy,
+        coverage_policy=coverage_policy,
+    )
+    assert measured_ink["background"] == measured_edge["background"]
+    finding = ink_map.artifact_finding(measured_edge)
+    ink = ink_map.artifact_finding(measured_ink)
+    runs = ink_runs_from_rows(
+        width,
+        height,
+        rows,
+        background_policy=background_policy,
+        coverage_policy=coverage_policy,
+    )
+    assert finding["flagged"] is True
+    assert finding["total_ink_pixels"] > 0
+    assert finding["edge_band_pixels"] == 2
+    ink_record = {
+        "artifact_id": "ink-page-1",
+        "outcome": "unclaimed-edge-ink",
+        "payload": {
+            "page_ordinal": ordinal,
+            "ink_measurable": True,
+            "background": {
+                **measured_edge["background"],
+                "config_sha256": grouping_digest,
+            },
+            "ink": ink,
+            "edge": finding,
+            "edge_findings": runs,
+        },
+    }
+
+    class EvidenceTree:
+        """Delegate a real run, replacing only one region and the Ink Map row."""
+
+        def __init__(self, region, seal, crop_bytes=None):
+            self.run_id = real_tree.run_id
+            self.region = region
+            self.seal = seal
+            self.crop_bytes = crop_bytes
+            self.region_path = real_tree.artifact_path(
+                DESIGNATOR, "region", proposal["artifact_id"]
+            )
+
+        def build_manifest(self, stage, **kwargs):
+            if stage == INK_MAP:
+                manifest = real_tree.build_manifest(stage, **kwargs)
+                retained = [
+                    entry
+                    for entry in manifest["artifacts"]
+                    if entry["kind"] != "ink-map"
+                    or real_tree.read_artifact(stage, "ink-map", entry["artifact_id"])["payload"][
+                        "page_ordinal"
+                    ]
+                    != ordinal
+                ]
+                return {
+                    **manifest,
+                    "artifacts": [
+                        *retained,
+                        {"kind": "ink-map", "artifact_id": "ink-page-1"},
+                    ],
+                }
+            return real_tree.build_manifest(stage, **kwargs)
+
+        def read_artifact(self, stage, kind, artifact_id):
+            if stage == INK_MAP and artifact_id == "ink-page-1":
+                return ink_record
+            if stage == DESIGNATOR and kind == "region" and artifact_id == proposal["artifact_id"]:
+                return self.region
+            if stage == DESIGNATOR and kind == "proposal-seal":
+                return self.seal
+            return real_tree.read_artifact(stage, kind, artifact_id)
+
+        def artifact_path(self, stage, kind, artifact_id):
+            return real_tree.artifact_path(stage, kind, artifact_id)
+
+        def read_bytes(self, relative_path):
+            if relative_path == self.region_path:
+                return canonical_bytes(self.region)
+            if (
+                self.crop_bytes is not None
+                and relative_path == self.region["payload"]["image_path"]
+            ):
+                return self.crop_bytes
+            return real_tree.read_bytes(relative_path)
+
+        def __getattr__(self, name):
+            return getattr(real_tree, name)
+
+    class Context(SimpleNamespace):
+        def require_sealed_config(self, name, observed_sha256):
+            assert name == "designator-grouping"
+            assert observed_sha256 == grouping_digest
+
+    real_seal = real_tree.read_artifact(
+        DESIGNATOR,
+        "proposal-seal",
+        next(
+            entry["artifact_id"]
+            for entry in real_tree.build_manifest(DESIGNATOR)["artifacts"]
+            if entry["kind"] == "proposal-seal"
+        ),
+    )
+
+    def context_for(tree):
+        return Context(
+            tree=tree,
+            run=run,
+            args=SimpleNamespace(designator_grouping_config=str(grouping_path)),
+        )
+
+    def claims_for(tree):
+        context = context_for(tree)
+        claimed = armarium.claimed_bounds_by_page(context, {})
+        return context, claimed
+
+    def page_row(context, claimed):
+        census = armarium.page_census(context)
+        measured_rows = armarium.ink_map_page_rows(context, census, claimed)
+        return next(row for row in measured_rows if row["ordinal"] == ordinal)
+
+    def projection_for(row, bounds, crop_bytes):
+        base = _otherwise_complete(ink_map_pages=(row,))
+        source_region = {
+            **base.acts[0]["source_regions"][0],
+            "declared_sha256": page_digest,
+            "image_sha256": digest_bytes(crop_bytes),
+            "transform": {
+                **base.acts[0]["source_regions"][0]["transform"],
+                "bounds": bounds,
+            },
+        }
+        act = {**base.acts[0], "source_regions": [source_region]}
+        page = {
+            **base.pages[0],
+            "declared_sha256": page_digest,
+            "image_sha256": page_digest,
+        }
+        source = {**base.source_manifest[0], "sha256": page_digest}
+        return replace(base, acts=(act,), pages=(page,), source_manifest=(source,))
+
+    page_path = _projection().pages[0]["image_path"]
+    projection_crop_path = _projection().acts[0]["source_regions"][0]["image_path"]
+
+    def source_bytes(crop_bytes):
+        blobs = {page_path: page_bytes, projection_crop_path: crop_bytes}
+        return blobs.__getitem__
+
+    held_context, held_claimed = claims_for(EvidenceTree(proposal, real_seal))
+    assert ordinal in held_claimed
+    held_row = page_row(held_context, held_claimed)
+    assert armarium.edge_hold_pages_from_rows([held_row]) == (ordinal,)
+    held_bounds = proposal["payload"]["transform"]["bounds"]
+    held_crop = crop_png(page_bytes, held_bounds)
+    held_bundle = build_armarium_bundle(
+        projection_for(held_row, held_bounds, held_crop),
+        _formats(embed_pixels=False),
+        source_bytes(held_crop),
+    )
+    held_manifest = verify_export_bundle(held_bundle.data, tmp_path / "held")
+    assert held_manifest["claims"]["status"] == "partial"
+    assert held_manifest["claims"]["ink_map"]["held_pages"] == [ordinal]
+    assert any(
+        "unclaimed-edge-ink" in reason for reason in held_manifest["claims"]["partial_reasons"]
+    )
+    ledger_categories = {
+        unit["unit_id"]: unit["category"]
+        for unit in held_manifest["claims"]["terminal_ledger"]["units"]
+    }
+    assert ledger_categories["page:1"] == "held-for-review"
+    assert ledger_categories["source:1"] == "held-for-review"
+
+    full_page = {"x": 0, "y": 0, "w": width, "h": height}
+    released_region = copy.deepcopy(proposal)
+    transform = {**released_region["payload"]["transform"], "bounds": full_page}
+    crop_digest = digest_bytes(sealed_page_bytes)
+    lineage_crop_path = real_tree.blob_path(DESIGNATOR, crop_digest)
+    released_region["payload"].update(
+        {
+            "transform": transform,
+            "transform_digest": digest_of(transform),
+            "raw_bounds": full_page,
+            "padding": None,
+            "region_id": region_id(released_region["subject_id"], transform),
+            "image_path": lineage_crop_path,
+            "image_sha256": crop_digest,
+        }
+    )
+    released_region["self_hash"] = self_hash(released_region)
+    region_path = real_tree.artifact_path(DESIGNATOR, "region", proposal["artifact_id"])
+    region_ref = {
+        "relative_path": region_path,
+        "sha256": digest_bytes(canonical_bytes(released_region)),
+    }
+    released_seal = copy.deepcopy(real_seal)
+    seal_row = next(
+        row
+        for row in released_seal["payload"]["expected_acts"]
+        if row["act_key"] == released_region["payload"]["act_key"]
+    )
+    assert any(ref["relative_path"] == region_path for ref in seal_row["evidence"])
+    assert any(ref["relative_path"] == region_path for ref in released_seal["inputs"])
+    seal_row["evidence"] = [
+        region_ref if ref["relative_path"] == region_path else ref for ref in seal_row["evidence"]
+    ]
+    released_seal["inputs"] = [
+        region_ref if ref["relative_path"] == region_path else ref
+        for ref in released_seal["inputs"]
+    ]
+    released_seal["payload"]["self_hash"] = self_hash(released_seal["payload"])
+    released_seal["self_hash"] = self_hash(released_seal)
+
+    wrong_crop = crop_png(sealed_page_bytes, held_bounds)
+    wrong_tree = EvidenceTree(released_region, released_seal, wrong_crop)
+    with pytest.raises(FatalAccounting, match="cannot be verified as a crop") as refusal:
+        armarium.claimed_bounds_by_page(context_for(wrong_tree), {})
+    assert isinstance(refusal.value.__cause__, ContractError)
+
+    released_context, released_claimed = claims_for(
+        EvidenceTree(released_region, released_seal, sealed_page_bytes)
+    )
+    assert full_page in released_claimed[ordinal]
+    released_row = page_row(released_context, released_claimed)
+    assert armarium.edge_hold_pages_from_rows([released_row]) == ()
+    released_bundle = build_armarium_bundle(
+        projection_for(released_row, full_page, page_bytes),
+        _formats(embed_pixels=False),
+        source_bytes(page_bytes),
+    )
+    released_manifest = verify_export_bundle(released_bundle.data, tmp_path / "released")
+    assert released_manifest["claims"]["status"] == "complete"
+    assert released_manifest["claims"]["ink_map"]["held_pages"] == []
+
+
 def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
     """An older identity may not describe a newer closed claim set.
 
@@ -497,6 +838,32 @@ def test_a_release_is_by_ink_and_a_partial_claim_does_not_make_one():
         assert manifest["claims"]["status"] == ("partial" if held else "complete"), outside
 
 
+def test_the_recorded_absolute_gate_decides_below_the_fraction_gate(tmp_path):
+    """The row's page-specific gate, including its inclusive endpoint, is used."""
+    total = 200_000
+    assert 2_000 / total < MINIMUM_FRACTION_OUTSIDE_COVERAGE
+    for outside, held in ((1_999, []), (2_000, [1])):
+        bundle = build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=(_edge_page(outside=outside, total=total),)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+        manifest = verify_export_bundle(bundle.data, tmp_path / f"absolute-{outside}")
+        assert manifest["claims"]["ink_map"]["held_pages"] == held, outside
+        assert manifest["claims"]["status"] == ("partial" if held else "complete"), outside
+
+
+def test_a_zero_substantial_gate_is_refused_before_it_can_hold_every_page():
+    row = _edge_page(outside=0)
+    row["remeasured"]["substantial_ink_pixels"] = 0
+    with pytest.raises(SchemaRefusal, match="invalid ink-map re-measurement"):
+        build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=(row,)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
 def test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine(tmp_path):
     """The hold is derived from the source graph, never read out of its claim.
 
@@ -577,6 +944,7 @@ def test_a_page_the_map_never_flagged_may_not_carry_a_re_measurement():
                             "total_ink_pixels": 0,
                             "outside_ink_pixels": 0,
                             "edge_band_pixels": 64,
+                            "substantial_ink_pixels": 2_000,
                         },
                     },
                 )
@@ -3800,7 +4168,9 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
     assert ink_record["outcome"] == ink_map.INK_NOT_MEASURABLE
     assert ink_record["payload"]["ink_measurable"] is False
     assert ink_record["payload"]["background_refusal"]
-    assert ink_map_context.required_configs == [("designator-grouping", grouping_digest)]
+    # Ink Map reads the background and coverage-audit views independently from
+    # the same sealed file; both readers must prove those bytes against the run.
+    assert ink_map_context.required_configs == [("designator-grouping", grouping_digest)] * 2
 
     armarium_config_checks = []
     armarium_context = SimpleNamespace(
@@ -3813,6 +4183,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
         require_sealed_config=lambda name, observed: armarium_config_checks.append(
             (name, observed)
         ),
+        args=SimpleNamespace(designator_grouping_config=str(grouping_path)),
     )
     (ink_map_page,) = armarium.ink_map_page_rows(armarium_context, {1: {"outcome": "sealed"}}, {})
     assert ink_map_page == {
@@ -3820,7 +4191,9 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
         "initial_outcome": ink_map.INK_NOT_MEASURABLE,
         "remeasured": None,
     }
-    assert armarium_config_checks == [("designator-grouping", grouping_digest)]
+    # Armarium proves the loaded coverage policy, then independently proves the
+    # refusal envelope's recorded configuration before accepting no measurement.
+    assert armarium_config_checks == [("designator-grouping", grouping_digest)] * 2
 
     conservation_manifest = {
         DESIGNATOR: {"artifacts": [{"kind": "conservation", "artifact_id": "low-paper"}]}

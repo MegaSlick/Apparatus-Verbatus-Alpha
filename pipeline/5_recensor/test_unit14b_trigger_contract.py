@@ -11,13 +11,19 @@ from __future__ import annotations
 import ast
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
-from common.residual_ink import MINIMUM_INK_PIXELS
+from common.residual_ink import (
+    MINIMUM_INK_PIXELS,
+    edge_ink_from_runs,
+    load_coverage_audit_config,
+    resolve_coverage_audit_policy,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
@@ -180,8 +186,30 @@ class _FakeTree:
 
     def read_artifact(self, stage, kind, artifact_id):
         ordinal = int(artifact_id.split("-")[1])
+        evidence = self._maps[ordinal]
+        try:
+            config = load_coverage_audit_config(DEFAULT_BACKGROUND_CONFIG_PATH)
+            policy = resolve_coverage_audit_policy(config, evidence["width"], evidence["height"])
+            measured = edge_ink_from_runs(evidence, [], coverage_policy=policy)
+        except (ContractError, KeyError, TypeError, ValueError):
+            valid = {"schema": "ink-runs.v2", "width": 1, "height": 1, "rows": [[]]}
+            config = load_coverage_audit_config(DEFAULT_BACKGROUND_CONFIG_PATH)
+            policy = resolve_coverage_audit_policy(config, 1, 1)
+            measured = edge_ink_from_runs(valid, [], coverage_policy=policy)
+        edge = {
+            "page_ink_pixels": measured["total_ink_pixels"],
+            "page_spanning_ink_pixels": 0,
+            "page_spanning_components": [],
+            "total_ink_pixels": measured["total_ink_pixels"],
+            "outside_ink_pixels": measured["outside_ink_pixels"],
+            "fraction_outside_per_million": int(round(measured["fraction_outside"] * 1_000_000)),
+            "flagged": measured["flagged"],
+            "substantial_ink_pixels": measured["substantial_ink_pixels"],
+            "edge_band_pixels": measured["edge_band_pixels"],
+            "named_finding": measured["named_finding"],
+        }
         return {
-            "outcome": "mapped",
+            "outcome": "unclaimed-edge-ink" if measured["flagged"] else "mapped",
             "payload": {
                 "page_ordinal": ordinal,
                 "ink_measurable": True,
@@ -195,8 +223,8 @@ class _FakeTree:
                     "config_sha256": EXPECTED_BACKGROUND_SHA256,
                 },
                 "ink": {},
-                "edge": {},
-                "edge_findings": self._maps[ordinal],
+                "edge": edge,
+                "edge_findings": evidence,
             },
         }
 
@@ -205,6 +233,7 @@ class _FakeContext:
     def __init__(self, maps_by_ordinal: dict[int, dict]):
         self.tree = _FakeTree(maps_by_ordinal)
         self.run = {"sealed_config_digests": {"designator-grouping": EXPECTED_BACKGROUND_SHA256}}
+        self.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
 
     def require_sealed_config(self, name, observed_sha256):
         if self.run["sealed_config_digests"].get(name) != observed_sha256:
@@ -218,7 +247,7 @@ def _ink_map(width: int, height: int, ink_boxes: list[dict]) -> dict:
             (box["x"], box["w"]) for box in ink_boxes if box["y"] <= y < box["y"] + box["h"]
         )
         rows.append([[x, w] for x, w in runs])
-    return {"schema": "ink-runs.v1", "width": width, "height": height, "rows": rows}
+    return {"schema": "ink-runs.v2", "width": width, "height": height, "rows": rows}
 
 
 @pytest.mark.parametrize(
@@ -361,32 +390,22 @@ def test_unordered_ink_runs_are_refused_rather_than_double_counted():
     recensor = _recensor()
     forged = _ink_map(20, 20, [])
     forged["rows"][0] = [[0, 10], [5, 10]]
-    maps = recensor.ink_map_by_page(_FakeContext({1: forged}))
-    observation = {"kind": "unrouted-observation", "bounds": {"x": 0, "y": 0, "w": 20, "h": 20}}
-    with pytest.raises(FatalAccounting, match="unordered or out-of-bounds"):
-        recensor.unclaimed_ink_observations(maps, [observation], 1, {})
+    with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
+        recensor.ink_map_by_page(_FakeContext({1: forged}))
 
 
 @pytest.mark.parametrize(
     "evidence",
     [
-        {"schema": "ink-runs.v1", "width": 0, "height": 1, "rows": [[]]},
-        {"schema": "ink-runs.v1", "width": 1, "height": False, "rows": []},
+        {"schema": "ink-runs.v2", "width": 0, "height": 1, "rows": [[]]},
+        {"schema": "ink-runs.v2", "width": 1, "height": False, "rows": []},
     ],
 )
 def test_invalid_ink_map_dimensions_are_refused_instead_of_read_as_empty(evidence):
     """Zero and boolean dimensions cannot turn malformed evidence into no ink."""
     recensor = _recensor()
-    maps = recensor.ink_map_by_page(_FakeContext({1: evidence}))
-    observation = {"kind": "unrouted-observation", "bounds": {"x": 0, "y": 0, "w": 1, "h": 1}}
-    with pytest.raises(
-        FatalAccounting,
-        match=(
-            "invalid dimensions.*cannot be measured against a witness pointer.*"
-            "Restore the sealed Ink Map artifact"
-        ),
-    ):
-        recensor.unclaimed_ink_observations(maps, [observation], 1, {})
+    with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
+        recensor.ink_map_by_page(_FakeContext({1: evidence}))
 
 
 def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():

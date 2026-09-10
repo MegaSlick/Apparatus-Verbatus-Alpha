@@ -38,7 +38,9 @@ from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
     edge_ink,
     ink_runs_from_rows,
+    load_coverage_audit_config,
     residual_ink,
+    resolve_coverage_audit_policy,
 )
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -168,6 +170,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # page's own dimensions below.
     background_config = load_background_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", background_config["config_sha256"])
+    # `[coverage_audit]` out of the same file and under the same seal: the two
+    # gates this stage's finding is decided by, and the page-spanning bound it
+    # splits its counts on. Read once for the run for the same reason.
+    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     for ordinal, page, page_path in sealed_pages(context):
         image_bytes = measured_page_bytes(context.tree, ordinal, page)
         try:
@@ -189,13 +196,21 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "run are an incomplete map"
             ) from error
         policy = resolve_background_policy(background_config, width, height)
+        audit_policy = resolve_coverage_audit_policy(coverage_config, width, height)
         try:
             # Empty coverage is intentional: this is the pre-proposal denominator.
-            ink_map = residual_ink(width, height, rows, [], background_policy=policy)
-            edge = edge_ink(width, height, rows, background_policy=policy)
-            # Retain lossless runs so later coverage decisions cannot
-            # re-measure the page under a different pixel predicate.
-            edge_findings = ink_runs_from_rows(width, height, rows, background_policy=policy)
+            ink_map = residual_ink(
+                width, height, rows, [], background_policy=policy, coverage_policy=audit_policy
+            )
+            edge = edge_ink(
+                width, height, rows, background_policy=policy, coverage_policy=audit_policy
+            )
+            # Retain the page's audited runs so later coverage decisions cannot
+            # re-measure it under a different pixel predicate or a different
+            # page-spanning split.
+            edge_findings = ink_runs_from_rows(
+                width, height, rows, background_policy=policy, coverage_policy=audit_policy
+            )
         except BackgroundInferenceRefusal as error:
             # **Named, and still in the census.** The page is sealed, it is real,
             # and the Designator will cut it; what this stage cannot do is say

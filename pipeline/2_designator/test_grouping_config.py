@@ -39,7 +39,6 @@ _RETIRED = {
     "chain_gap_bp": ("height", 6),  # grouping.DEFAULT_CHAIN_GAP_PX
     "anchor_reach_bp": ("height", 2),  # grouping.DEFAULT_ANCHOR_REACH_PX
     "brace_min_height_bp": ("height", 30),  # grouping.DEFAULT_BRACE_MIN_HEIGHT_PX
-    "page_edge_reach_bp": ("height", 4),  # grouping.DEFAULT_PAGE_EDGE_REACH_PX
     "review_priority_min_dimension_bp": (
         "height",
         6,
@@ -101,19 +100,37 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     assert config["page_area_bp"]["page_spanning_area_bp"] == 5000
     assert config["page_area_bp"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["page_area_bp"]["provenance"]["sample_count"] == 17
+    # The third and fourth measured blocks, both from 2026-09-06 and both on the
+    # same 44 real pages. `[coverage_audit]` is not this stage's policy at all --
+    # it is the outside-coverage audit's, validated here and applied nowhere in
+    # this stage -- and it is pinned here because this loader is what refuses a
+    # malformed one before any stage runs.
+    assert config["continuation"]["page_edge_reach_bp"] == 280
+    assert config["continuation"]["provenance"]["calibrated_for_this_corpus"] is True
+    assert config["continuation"]["provenance"]["sample_count"] == 44
+    assert config["coverage_audit"]["substantial_ink_area_bp"] == 4
+    assert config["coverage_audit"]["edge_band_bp"] == 100
+    assert config["coverage_audit"]["provenance"]["calibrated_for_this_corpus"] is True
+    assert config["coverage_audit"]["provenance"]["sample_count"] == 44
 
 
 def test_default_config_is_valid_toml_matching_the_loaded_shape():
     raw = tomllib.loads(DEFAULT_GROUPING_CONFIG_PATH.read_bytes().decode("utf-8"))
-    assert set(raw) == {"grouping"}
+    assert set(raw) == {"grouping", "coverage_audit"}
     assert set(raw["grouping"]) == {
         "max_residual_components",
         "max_secondary_proposals",
         "fallback_bands",
         "page_fraction_bp",
+        "continuation",
         "absolute",
         "page_area_bp",
         "background",
+        "provenance",
+    }
+    assert set(raw["coverage_audit"]) == {
+        "substantial_ink_area_bp",
+        "edge_band_bp",
         "provenance",
     }
 
@@ -125,6 +142,13 @@ def test_default_config_is_valid_toml_matching_the_loaded_shape():
 def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(width, height):
     """The load-bearing claim: at each measured fixture page size, every
     resolved threshold equals what the retired hardcoded constant was.
+
+    **`page_edge_reach_px` left this claim on 2026-09-06 and it is asserted
+    below instead of here.** It was 4 pixels on this page because `154` was a
+    conversion of `DEFAULT_PAGE_EDGE_REACH_PX` against it; measured on 44 real
+    pages that reach passed on none of them, so the value is now 280 and
+    resolves to 7 here. Every OTHER field in this table is still the retired
+    constant, which is what this test exists to keep true.
     """
     config = load_grouping_config()
     resolved = resolve_thresholds(config, width, height)
@@ -133,7 +157,7 @@ def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(wi
     assert resolved.chain_gap_px == 6  # DEFAULT_CHAIN_GAP_PX
     assert resolved.anchor_reach_px == 2  # DEFAULT_ANCHOR_REACH_PX
     assert resolved.brace_min_height_px == 30  # DEFAULT_BRACE_MIN_HEIGHT_PX
-    assert resolved.page_edge_reach_px == 4  # DEFAULT_PAGE_EDGE_REACH_PX
+    assert resolved.page_edge_reach_px == 7  # 260 * 280 / 10000 = 7.28 -> 7
     assert (
         resolved.review_priority_min_dimension_px == 6
     )  # DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX
@@ -156,7 +180,9 @@ def test_resolve_thresholds_at_260_height_matches_the_spec_worked_arithmetic():
     assert resolved.chain_gap_px == 6  # 260 * 231 / 10000 = 6.006 -> 6
     assert resolved.anchor_reach_px == 2  # 260 * 77 / 10000 = 2.002 -> 2
     assert resolved.brace_min_height_px == 30  # 260 * 1154 / 10000 = 30.004 -> 30
-    assert resolved.page_edge_reach_px == 4  # 260 * 154 / 10000 = 4.004 -> 4
+    # Re-derived on 44 real pages, so no longer the retired constant's 4:
+    # 260 * 280 / 10000 = 7.28 -> 7.
+    assert resolved.page_edge_reach_px == 7
     assert resolved.review_priority_min_dimension_px == 6  # 260 * 231 / 10000 = 6.006 -> 6
     assert resolved.fallback_overlap_px == 8  # 260 * 308 / 10000 = 8.008 -> 8
 
@@ -224,9 +250,43 @@ margin_bp = 1500
 chain_gap_bp = 231
 anchor_reach_bp = 77
 brace_min_height_bp = 1154
-page_edge_reach_bp = 154
 review_priority_min_dimension_bp = 231
 fallback_overlap_bp = 308
+"""
+
+# `[grouping.continuation]`'s own provenance block. A fourth distinct spelling,
+# for the reason `_VALID_BACKGROUND`'s comment gives.
+_VALID_CONTINUATION = """\
+page_edge_reach_bp = 280
+
+[grouping.continuation.provenance]
+source = 'ks'
+corpus = 'kc'
+sample_unit = 'ku'
+sample_count = 44
+statistic = 'kst'
+calibrated_for_this_corpus = true
+caveat = 'kcv'
+"""
+
+# `[coverage_audit]` is a TOP-LEVEL table, not one of `[grouping]`'s: it is the
+# sealed policy of `common/residual_ink.py`'s outside-coverage audit, which this
+# loader validates and applies nothing from. A fifth distinct spelling, same
+# reason. It is written between `[grouping]`'s bare keys and its sub-tables
+# because several tests below append a line to the END of the document to put a
+# field inside `[grouping.provenance]`, which must therefore stay last.
+_VALID_COVERAGE_AUDIT = """\
+substantial_ink_area_bp = 4
+edge_band_bp = 100
+
+[coverage_audit.provenance]
+source = 'vs'
+corpus = 'vc'
+sample_unit = 'vu'
+sample_count = 44
+statistic = 'vst'
+calibrated_for_this_corpus = true
+caveat = 'vcv'
 """
 
 _VALID_PROVENANCE = """\
@@ -290,7 +350,9 @@ def _valid_toml() -> str:
         "max_residual_components = 2000\n"
         "max_secondary_proposals = 2000\n"
         "fallback_bands = 4\n\n"
+        "[coverage_audit]\n" + _VALID_COVERAGE_AUDIT + "\n"
         "[grouping.page_fraction_bp]\n" + _VALID_PAGE_FRACTION + "\n"
+        "[grouping.continuation]\n" + _VALID_CONTINUATION + "\n"
         "[grouping.absolute]\n"
         "gap_tolerance_px = 3\n\n"
         "[grouping.page_area_bp]\n" + _VALID_PAGE_AREA + "\n"

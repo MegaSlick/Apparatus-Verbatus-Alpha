@@ -22,7 +22,6 @@ from residual_ink import (  # noqa: E402
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
     MINIMUM_FRACTION_OUTSIDE_COVERAGE,
     MINIMUM_INK_PIXELS,
-    SUBSTANTIAL_INK_PIXELS,
     page_residual_ink,
     residual_ink,
 )
@@ -34,7 +33,12 @@ from common.background import (  # noqa: E402
     resolve_background_policy,
 )
 from common.imaging import dimensions, encode_grayscale_png  # noqa: E402
-from common.residual_ink import edge_ink_from_runs, ink_runs, page_edge_ink  # noqa: E402
+from common.residual_ink import (  # noqa: E402
+    edge_ink_from_runs,
+    ink_runs,
+    page_edge_ink,
+    page_spanning_components,
+)
 from proof.synthetic_pages import PAGES, page_bytes  # noqa: E402
 
 
@@ -50,13 +54,38 @@ def _policy(width: int, height: int):
     return resolve_background_policy(load_background_config(), width, height)
 
 
+def _coverage(width: int, height: int):
+    """This page's own resolved coverage-audit policy, from the shipped file.
+
+    The companion to `_policy`, and required at the same call sites for the same
+    reason: since 2026-09-06 the two outside-coverage gates and the perimeter
+    band are fractions of the page sealed in `[coverage_audit]`, and no call site
+    is allowed a default.
+    """
+    from common.residual_ink import load_coverage_audit_config, resolve_coverage_audit_policy
+
+    return resolve_coverage_audit_policy(load_coverage_audit_config(), width, height)
+
+
 def _measure(width, height, rows, covered):
-    return residual_ink(width, height, rows, covered, background_policy=_policy(width, height))
+    return residual_ink(
+        width,
+        height,
+        rows,
+        covered,
+        background_policy=_policy(width, height),
+        coverage_policy=_coverage(width, height),
+    )
 
 
 def _measure_page(image_bytes, covered):
     width, height = dimensions(image_bytes)
-    return page_residual_ink(image_bytes, covered, background_policy=_policy(width, height))
+    return page_residual_ink(
+        image_bytes,
+        covered,
+        background_policy=_policy(width, height),
+        coverage_policy=_coverage(width, height),
+    )
 
 
 BACKGROUND = 230
@@ -75,7 +104,13 @@ def paint(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int = IN
 
 
 def _straightforward_counts(
-    width: int, height: int, rows: list[bytearray], covered: list[dict], background: int
+    width: int,
+    height: int,
+    rows: list[bytearray],
+    covered: list[dict],
+    background: int,
+    *,
+    spanning_mask: bytearray | None = None,
 ) -> tuple[int, int]:
     """`(total_ink, outside_ink)` the obvious, per-pixel way.
 
@@ -84,6 +119,14 @@ def _straightforward_counts(
     comparison per pixel -- exactly what `residual_ink` did before
     `bytes.translate` and `int.bit_count` replaced those loops for real-page
     speed.
+
+    **The page-spanning mask is given too, and for the same reason the
+    background is.** Since 2026-09-06 the audited counts are this page's ink
+    with its page-spanning component taken out of both, and finding that
+    component is `common.components`' labelling -- proved against its own
+    per-pixel oracle in `pipeline/2_designator/test_structure.py`, not here.
+    What this reference exists to check is the *counting*, so it is handed the
+    same mask and does the arithmetic the slow way.
 
     **The background is given, not inferred here.** It used to be this
     function's own `histogram.index(max(histogram))`, which was a second copy of
@@ -94,6 +137,7 @@ def _straightforward_counts(
     what this reference exists to check is the *counting*, which is what the
     optimisation actually changed.
     """
+    spanning = spanning_mask if spanning_mask is not None else bytearray(width * height)
     mask = bytearray(width * height)
     for bounds in covered:
         x0 = max(0, min(bounds["x"], width))
@@ -108,6 +152,8 @@ def _straightforward_counts(
     for y, row in enumerate(rows):
         for x, value in enumerate(row):
             if background - value < MINIMUM_CONTRAST_BELOW_BACKGROUND:
+                continue
+            if spanning[y * width + x]:
                 continue
             total_ink += 1
             if not mask[y * width + x]:
@@ -180,8 +226,23 @@ def test_the_fast_counts_agree_with_a_straightforward_implementation():
             refused += 1
             continue
 
+        _components, spanning = page_spanning_components(
+            width,
+            height,
+            [bytearray(row) for row in rows],
+            background_evidence={
+                "background_level": evidence["background"],
+                "ink_margin": evidence["ink_margin"],
+            },
+            coverage_policy=_coverage(width, height),
+        )
         expected_total, expected_outside = _straightforward_counts(
-            width, height, [bytearray(row) for row in rows], covered, evidence["background"]
+            width,
+            height,
+            [bytearray(row) for row in rows],
+            covered,
+            evidence["background"],
+            spanning_mask=spanning,
         )
         result = _measure(width, height, [bytearray(row) for row in rows], covered)
 
@@ -241,12 +302,18 @@ def test_a_small_fraction_of_heavily_covered_ink_is_not_flagged():
     the fraction gate is what separates that from a genuinely missed region."""
     # Wide enough that ink -- covered and uncovered together -- stays a
     # minority of the page, so the background inference (a histogram mode)
-    # is not itself confused by the covered block.
-    rows = canvas(200, 200)
-    paint(rows, 0, 0, 50, 40)  # 2000 covered ink pixels
-    outside = MINIMUM_INK_PIXELS + 6  # 30: above the pixel floor
-    paint(rows, 55, 0, outside, 1)
-    result = _measure(200, 200, rows, [{"x": 0, "y": 0, "w": 50, "h": 40}])
+    # is not itself confused by the covered block. **And large enough for the
+    # two gates to be different numbers**, which since 2026-09-06 they are only
+    # above about 60,000 pixels of page area: `substantial_ink_area_bp` resolves
+    # to `MINIMUM_INK_PIXELS` there and is floored at it below, so on a smaller
+    # page the substantial gate fires wherever the noise floor is cleared and
+    # the fraction gate has nothing left to decide. 1200x800 resolves the
+    # substantial gate to 384.
+    rows = canvas(1200, 800)
+    paint(rows, 0, 0, 200, 200)  # 40,000 covered ink pixels
+    outside = MINIMUM_INK_PIXELS + 6  # 30: above the pixel floor, far under 384
+    paint(rows, 300, 0, outside, 1)
+    result = _measure(1200, 800, rows, [{"x": 0, "y": 0, "w": 200, "h": 200}])
     assert result["outside_ink_pixels"] == outside
     assert result["fraction_outside"] < MINIMUM_FRACTION_OUTSIDE_COVERAGE
     assert result["flagged"] is False
@@ -267,7 +334,12 @@ def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_wou
     # that line.
     rows = canvas(1200, 800)
     paint(rows, 0, 0, 400, 500)  # 200,000 covered ink pixels
-    outside = SUBSTANTIAL_INK_PIXELS  # plainly real text, but only ~1% of the total
+    # The gate resolved for THIS page, which is what the sealed
+    # `substantial_ink_area_bp` means: 4 basis points of 1200x800 is 384 pixels,
+    # where the retired flat constant asked for 2,000 here and for the same
+    # 2,000 on a page sixteen times the size.
+    outside = _coverage(1200, 800)["substantial_ink_pixels"]
+    assert outside == 384
     paint(rows, 0, 600, outside // 4, 4)
     result = _measure(1200, 800, rows, [{"x": 0, "y": 0, "w": 400, "h": 500}])
 
@@ -278,10 +350,17 @@ def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_wou
 
 
 def test_a_large_enough_fraction_outside_coverage_is_flagged_even_with_other_ink_covered():
-    rows = canvas(20, 20)
-    paint(rows, 0, 0, 10, 10)  # 100 covered ink pixels
-    paint(rows, 10, 10, 6, 6)  # 36 uncovered -- 36 / 136 > 2%
-    result = _measure(20, 20, rows, [{"x": 0, "y": 0, "w": 10, "h": 10}])
+    # A page large enough that neither block's bounding box covers half of it:
+    # since 2026-09-06 the audit withholds a page-spanning component the way the
+    # Designator's grouping does, and on a 20x20 canvas a 10x10 block IS a
+    # page-spanning component. The shapes and their ratio are the ones this test
+    # has always used, scaled by 20.
+    rows = canvas(600, 600)
+    paint(rows, 0, 0, 200, 200)  # 40,000 covered ink pixels
+    # Clear of the covered block by more than `gap_tolerance_px`, so the two do
+    # not weld into one component whose bounding box would then span the page.
+    paint(rows, 300, 300, 120, 120)  # 14,400 uncovered -- 14,400 / 54,400 > 2%
+    result = _measure(600, 600, rows, [{"x": 0, "y": 0, "w": 200, "h": 200}])
     assert result["fraction_outside"] > MINIMUM_FRACTION_OUTSIDE_COVERAGE
     assert result["flagged"] is True
 
@@ -371,22 +450,47 @@ def test_page_residual_ink_refuses_undecodable_bytes():
 def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink():
     """The map's early edge observation is not a hold after the crop re-measure.
 
-    The fixture is intentionally small enough that its 64-pixel edge band sees
-    its acts.  The relevant truth is not that early observation, but whether
-    every observed edge pixel lies in the later, recorded Designator crops.
+    **The fixture pages no longer carry the observation at all**, and that is
+    asserted here rather than worked around: their 64-pixel band used to reach a
+    third of the way into a 200x260 page and see the acts themselves, and
+    `edge_band_bp` resolves to 2 pixels there, where these pages have no ink.
+    So the release is exercised on a page built to carry edge ink -- one act
+    crop that reaches the page's own margin -- which is the shape a real page
+    presents and the fixture does not.
     """
     for page in PAGES:
         image = page_bytes(page["ordinal"])
-        initial = page_edge_ink(image, background_policy=_policy(*dimensions(image)))
-        released = edge_ink_from_runs(
-            ink_runs(image, background_policy=_policy(*dimensions(image))),
-            [act["bounds"] for act in page["acts"]],
+        initial = page_edge_ink(
+            image,
+            background_policy=_policy(*dimensions(image)),
+            coverage_policy=_coverage(*dimensions(image)),
         )
+        assert initial["outside_ink_pixels"] == 0
+        assert initial["flagged"] is False
 
-        assert initial["flagged"] is True
-        assert released["total_ink_pixels"] == initial["total_ink_pixels"]
-        assert released["outside_ink_pixels"] == 0
-        assert released["flagged"] is False
+    # A page whose writing runs into its own perimeter, which is what the
+    # release exists for. 600x600, so the substantial gate resolves to 144 and
+    # the band to 6; the mark is 6 pixels tall against the top edge and 400 wide.
+    rows = canvas(600, 600)
+    paint(rows, 100, 0, 400, 6)
+    image = encode_grayscale_png(600, 600, rows)
+    audit = _coverage(600, 600)
+    assert audit["edge_band_px"] == 6
+    initial = page_edge_ink(image, background_policy=_policy(600, 600), coverage_policy=audit)
+    assert initial["outside_ink_pixels"] == 2400
+    assert initial["flagged"] is True
+
+    runs = ink_runs(image, background_policy=_policy(600, 600), coverage_policy=audit)
+    unclaimed = edge_ink_from_runs(runs, [], coverage_policy=audit)
+    assert unclaimed["outside_ink_pixels"] == initial["outside_ink_pixels"]
+    assert unclaimed["flagged"] is True
+
+    released = edge_ink_from_runs(
+        runs, [{"x": 100, "y": 0, "w": 400, "h": 6}], coverage_policy=audit
+    )
+    assert released["total_ink_pixels"] == initial["total_ink_pixels"]
+    assert released["outside_ink_pixels"] == 0
+    assert released["flagged"] is False
 
 
 @pytest.mark.parametrize(
@@ -406,12 +510,26 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
     export while naming the wrong problem.
     """
     rows = canvas(width, height)
-    paint(rows, 0, 0, width, height)
+    # A one-pixel image proves geometry only; longer thin pages also prove ink.
+    if width == 1 and height > 1:
+        paint(rows, 0, 0, 1, 3)
+    elif height == 1 and width > 1:
+        paint(rows, 0, 0, 3, 1)
     image = encode_grayscale_png(width, height, rows)
 
-    initial = page_edge_ink(image, background_policy=_policy(*dimensions(image)))
+    initial = page_edge_ink(
+        image,
+        background_policy=_policy(*dimensions(image)),
+        coverage_policy=_coverage(*dimensions(image)),
+    )
     remeasured = edge_ink_from_runs(
-        ink_runs(image, background_policy=_policy(*dimensions(image))), []
+        ink_runs(
+            image,
+            background_policy=_policy(*dimensions(image)),
+            coverage_policy=_coverage(*dimensions(image)),
+        ),
+        [],
+        coverage_policy=_coverage(*dimensions(image)),
     )
 
     assert remeasured["edge_band_pixels"] == initial["edge_band_pixels"] >= 1
@@ -419,6 +537,8 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
     # two detectors reach the same outcome.
     assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"]
     assert remeasured["flagged"] == initial["flagged"]
+    if width > 1 or height > 1:
+        assert initial["outside_ink_pixels"] > 0
 
 
 def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
@@ -438,9 +558,19 @@ def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
         paint(rows, 0, y, width, 1)
     image = encode_grayscale_png(width, height, rows)
 
-    initial = page_edge_ink(image, background_policy=_policy(*dimensions(image)))
+    initial = page_edge_ink(
+        image,
+        background_policy=_policy(*dimensions(image)),
+        coverage_policy=_coverage(*dimensions(image)),
+    )
     remeasured = edge_ink_from_runs(
-        ink_runs(image, background_policy=_policy(*dimensions(image))), []
+        ink_runs(
+            image,
+            background_policy=_policy(*dimensions(image)),
+            coverage_policy=_coverage(*dimensions(image)),
+        ),
+        [],
+        coverage_policy=_coverage(*dimensions(image)),
     )
 
     assert remeasured["total_ink_pixels"] == initial["total_ink_pixels"] == 13

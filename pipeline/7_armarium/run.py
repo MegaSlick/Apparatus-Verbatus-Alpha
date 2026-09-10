@@ -76,11 +76,15 @@ from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_crop_lineage,
     verify_sealed_page_pixels,
 )
+from common.imaging import dimensions  # noqa: E402
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
     edge_ink_from_runs,
+    load_coverage_audit_config,
+    reconcile_edge_finding_with_runs,
+    resolve_coverage_audit_policy,
 )
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -660,11 +664,12 @@ def page_census(context) -> dict[int, dict]:
         entries_by_ordinal[ordinal] = entry
         if record["outcome"] == "sealed":
             try:
-                verify_sealed_page_pixels(context.tree, context.run, source, record)
-            except ContractError as error:
+                page_bytes = verify_sealed_page_pixels(context.tree, context.run, source, record)
+                item["_pixel_dimensions"] = dimensions(page_bytes)
+            except (ContractError, TypeError, ValueError) as error:
                 raise FatalAccounting(
                     "the final Exemplar pixel boundary is not immutable; no export may be "
-                    "written over altered source bytes"
+                    "written over altered or undecodable source bytes"
                 ) from error
 
     # Counted before it is compared as a set: a set comparison cannot tell two pages
@@ -715,10 +720,19 @@ def ink_map_page_rows(
     bare list of held ordinals would be a claim it could only check against
     itself. A page the map never flagged is re-measured by nobody and records
     `remeasured: None`, because writing zeros would record a measurement that
-    never occurred. Every initial outcome is first reconciled with the retained
-    runs against the original empty crop set, independently of the later
-    re-measurement against Designator cuts.
+    never occurred. The producer's closed edge summary and initial outcome are
+    first reconciled with the retained runs against the original empty crop
+    set, independently of the later re-measurement against Designator cuts.
+
+    The sealed `[coverage_audit]` policy is read here, out of the same file and
+    under the same `designator-grouping` seal every other reader of it proves
+    its bytes against, and resolved for each page's own dimensions: the band
+    this stage re-measures in and the gate it releases by have to be the ones
+    the Ink Map's own finding was taken under, and a policy resolved for another
+    page would make this a second detector rather than the same one.
     """
+    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     found: dict[int, dict] = {}
     for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
         if entry["kind"] != "ink-map":
@@ -733,6 +747,12 @@ def ink_map_page_rows(
                 "ink-map has a record without an integer page ordinal. The Armarium cannot bind "
                 "its finding to a sealed page. Restore the sealed Ink Map inventory or restart "
                 "the run before exporting."
+            )
+        if ordinal not in census or census[ordinal].get("outcome") != "sealed":
+            raise FatalAccounting(
+                f"ink-map page denominator does not match the Armarium page census: "
+                f"page {ordinal} is not sealed. Restore the sealed stage inventories "
+                "or restart the run before exporting."
             )
         if ordinal in found:
             raise FatalAccounting(
@@ -776,20 +796,40 @@ def ink_map_page_rows(
                 "sealed Ink Map artifact or restart the run before exporting."
             ) from error
         evidence = payload.get("edge_findings")
-        if not isinstance(evidence, dict):
-            raise FatalAccounting(
-                "ink-map has no reusable page-space edge evidence. The Armarium cannot verify "
-                "or release the page finding from a bare outcome. Restore the sealed Ink Map "
-                "artifact or restart the run before exporting."
-            )
         try:
-            initial_measure = edge_ink_from_runs(evidence, [])
-        except (KeyError, TypeError, ValueError) as error:
+            # Inside the try, and `ContractError` inside the caught set: the
+            # policy is resolved for THIS page's own dimensions, which come out
+            # of the same evidence blob the measure reads, so damaged evidence
+            # can fail here as easily as one line later. Resolved outside, a
+            # width of zero left this stage by ContractError naming page
+            # geometry instead of by the named refusal that tells an operator
+            # which artifact to restore.
+            if not isinstance(evidence, dict):
+                raise ContractError("the measured payload has no ink-run evidence object")
+            sealed_page = census.get(ordinal)
+            sealed_dimensions = (
+                sealed_page.get("_pixel_dimensions")
+                if isinstance(sealed_page, dict) and sealed_page.get("outcome") == "sealed"
+                else None
+            )
+            if (evidence.get("width"), evidence.get("height")) != sealed_dimensions:
+                raise ContractError(
+                    "the retained ink-run dimensions do not match the sealed Exemplar pixels"
+                )
+            coverage_policy = resolve_coverage_audit_policy(
+                coverage_config, evidence.get("width"), evidence.get("height")
+            )
+            initial_measure = reconcile_edge_finding_with_runs(
+                payload.get("edge"),
+                evidence,
+                coverage_policy=coverage_policy,
+            )
+        except (ContractError, KeyError, TypeError, ValueError) as error:
             raise FatalAccounting(
-                f"ink-map page {ordinal} has unreadable retained page-space edge evidence. "
-                "The Armarium cannot verify the page finding that decides whether edge ink "
-                "must remain held. Restore the sealed Ink Map artifact or restart the run "
-                "before exporting."
+                f"ink-map page {ordinal} has an edge finding that does not reconcile with its "
+                "retained page-space evidence. The Armarium cannot verify the page finding "
+                "that decides whether edge ink must remain held. Restore the sealed Ink Map "
+                "artifact or restart the run before exporting."
             ) from error
         measured_outcome = "unclaimed-edge-ink" if initial_measure["flagged"] else "mapped"
         if record["outcome"] != measured_outcome:
@@ -799,7 +839,11 @@ def ink_map_page_rows(
                 "between a page finding and the evidence meant to prove it. Repair or restart "
                 "the Ink Map stage before exporting."
             )
-        found[ordinal] = {"outcome": record["outcome"], "evidence": evidence}
+        found[ordinal] = {
+            "outcome": record["outcome"],
+            "evidence": evidence,
+            "coverage_policy": coverage_policy,
+        }
     sealed = {ordinal for ordinal, page in census.items() if page.get("outcome") == "sealed"}
     if set(found) != sealed:
         raise FatalAccounting(
@@ -813,8 +857,12 @@ def ink_map_page_rows(
         remeasured = None
         if finding["outcome"] == "unclaimed-edge-ink":
             try:
-                measure = edge_ink_from_runs(finding["evidence"], claimed_bounds.get(ordinal, []))
-            except (KeyError, TypeError, ValueError) as error:
+                measure = edge_ink_from_runs(
+                    finding["evidence"],
+                    claimed_bounds.get(ordinal, []),
+                    coverage_policy=finding["coverage_policy"],
+                )
+            except (ContractError, KeyError, TypeError, ValueError) as error:
                 raise FatalAccounting(
                     "ink-map page-space edge evidence cannot be re-measured. The Armarium cannot "
                     "decide whether later crops released the page hold. Restore the sealed Ink "
@@ -824,6 +872,7 @@ def ink_map_page_rows(
                 "total_ink_pixels": measure["total_ink_pixels"],
                 "outside_ink_pixels": measure["outside_ink_pixels"],
                 "edge_band_pixels": measure["edge_band_pixels"],
+                "substantial_ink_pixels": measure["substantial_ink_pixels"],
             }
         rows.append(
             {
@@ -1886,7 +1935,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             f"{len(categories)}. Conservation failed at the last boundary"
         )
 
-    pages = [{"ordinal": ordinal, **census[ordinal]} for ordinal in sorted(census)]
+    pages = [
+        {
+            "ordinal": ordinal,
+            **{key: value for key, value in census[ordinal].items() if key != "_pixel_dimensions"},
+        }
+        for ordinal in sorted(census)
+    ]
     bundle = build_armarium_bundle(
         ArmariumProjection(
             fixture_id=fixture_id,

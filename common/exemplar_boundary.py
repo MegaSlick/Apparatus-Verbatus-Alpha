@@ -49,8 +49,8 @@ def verify_sealed_page_pixels(
     run: dict[str, Any],
     source: dict[str, Any],
     page: dict[str, Any],
-) -> None:
-    """Verify one sealed Exemplar page and its immutable Door pixel source.
+) -> bytes:
+    """Verify one sealed Exemplar page and return its immutable Door pixel bytes.
 
     ``source`` is the matching self-hashed ``run.json`` source-manifest row and
     ``page`` is a validated Exemplar page artifact.  The page must name exactly
@@ -129,7 +129,7 @@ def verify_sealed_page_pixels(
     if blob_ref != {"relative_path": blob_path, "sha256": source_digest}:
         raise ContractError("a sealed Exemplar page's pixel input is not content-addressed")
 
-    _read_checked(tree, blob_ref, "the sealed Exemplar pixel blob")
+    page_bytes = _read_checked(tree, blob_ref, "the sealed Exemplar pixel blob")
 
     admission_data = _read_checked(tree, refs[admission_path], "the sealed Door admission")
     try:
@@ -137,6 +137,7 @@ def verify_sealed_page_pixels(
     except (SchemaRefusal, UnicodeDecodeError, ValueError, TypeError) as error:
         raise ContractError("the sealed page's Door admission is not a valid artifact") from error
     _verify_admission(admission, run, source, ordinal, blob_ref, tree, rendered)
+    return page_bytes
 
 
 def _page_origin(source_digest: str, rendered: Any) -> dict[str, Any]:

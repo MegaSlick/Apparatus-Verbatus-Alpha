@@ -82,6 +82,19 @@ def _policy(width: int, height: int):
     return resolve_background_policy(load_background_config(), width, height)
 
 
+def _coverage(width: int, height: int):
+    """This page's own resolved coverage-audit policy, from the shipped file.
+
+    The companion to `_policy`, and required at the same call sites for the same
+    reason: since 2026-09-06 the two outside-coverage gates and the perimeter
+    band are fractions of the page sealed in `[coverage_audit]`, and no call site
+    is allowed a default.
+    """
+    from common.residual_ink import load_coverage_audit_config, resolve_coverage_audit_policy
+
+    return resolve_coverage_audit_policy(load_coverage_audit_config(), width, height)
+
+
 def test_early_map_and_late_reconciliation_import_one_measure():
     assert INK_MAP_RUN.residual_ink is RECENSOR_RUN.residual_ink
 
@@ -90,33 +103,59 @@ def test_unclaimed_edge_ink_is_named_and_bounded_but_not_held():
     rows = [bytearray([230] * 200) for _ in range(200)]
     for y in range(10):
         rows[y][10:30] = bytes([170] * 20)
-    finding = INK_MAP_RUN.edge_ink(200, 200, rows, background_policy=_policy(200, 200))
+    finding = INK_MAP_RUN.edge_ink(
+        200, 200, rows, background_policy=_policy(200, 200), coverage_policy=_coverage(200, 200)
+    )
     assert finding["flagged"] is True
     assert finding["named_finding"] == "unclaimed-edge-ink"
-    assert finding["edge_band_pixels"] == 64
+    # 2 pixels on a 200-pixel-square page: `edge_band_bp` is a fraction of the
+    # page's own shorter side since 2026-09-06, where 64 was a flat count that
+    # made a third of this page its own perimeter.
+    assert finding["edge_band_pixels"] == _coverage(200, 200)["edge_band_px"] == 2
     assert classify(INK_MAP, "unclaimed-edge-ink") is OutcomeClass.UNRESOLVED
     assert terminal_category(INK_MAP, "unclaimed-edge-ink") is None
     handoff = (ROOT / "pipeline/1_ink_map/HANDOFF.md").read_text(encoding="utf-8")
     assert "Unit 14 owns the explicit hold outcome" in handoff
 
 
-def test_ink_thresholds_remain_explicitly_unmeasured_without_a_calibration_claim():
-    source = (ROOT / "common/residual_ink.py").read_text(encoding="utf-8")
-    handoff = (ROOT / "pipeline/1_ink_map/HANDOFF.md").read_text(encoding="utf-8")
-    # Matched on normalised whitespace. The claim is "no calibration is
-    # asserted", not "this sentence occupies these two lines": pinned to the
-    # exact wrap, a reflow of either file turned the suite red over no change
-    # in meaning.
-    assert "PROPOSED, NOT YET MEASURED" in " ".join(source.split())
-    normalised_handoff = " ".join(handoff.split()).lower()
-    assert "proposed, not yet measured" in normalised_handoff
-    # The claim, not the word. Banning "calibrated" outright also failed
-    # "not calibrated" and "uncalibrated" -- so strengthening the handoff to
-    # say plainly that the band is not calibrated turned the suite red, and the
-    # cheapest way out of that is to delete the sentence.
-    assert "this stage claims no calibration" in normalised_handoff
-    for claim in ("is calibrated", "was calibrated", "has been calibrated"):
-        assert claim not in normalised_handoff
+def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
+    """Two of this audit's five numbers are calibrated now; three are not.
+
+    The module used to say PROPOSED-NOT-MEASURED of all of them and the handoff
+    used to say the stage claimed no calibration, and both were true. On
+    2026-09-06 the two that are *lengths* -- the absolute outside-coverage gate
+    and the perimeter band -- were measured on 44 real pages and sealed in
+    `[coverage_audit]`, with `calibrated_for_this_corpus = true` and their own
+    provenance block. The three that are not lengths were not:
+    `MINIMUM_INK_PIXELS`, `MINIMUM_CONTRAST_BELOW_BACKGROUND` and
+    `MINIMUM_FRACTION_OUTSIDE_COVERAGE` are still reasoned defaults.
+
+    So the claim this test protects has changed shape rather than gone away: the
+    module must still carry the unmeasured banner over the three it applies to,
+    and the sealed block must still carry the calibration claim over the two it
+    applies to. A later edit that widened either would have to move this test.
+    """
+    import tomllib
+
+    source = " ".join((ROOT / "common/residual_ink.py").read_text(encoding="utf-8").split())
+    handoff = " ".join(
+        (ROOT / "pipeline/1_ink_map/HANDOFF.md").read_text(encoding="utf-8").split()
+    ).lower()
+
+    assert "PROPOSED, NOT YET MEASURED" in source
+    assert "proposed, not yet measured" in handoff
+
+    config = tomllib.loads((ROOT / "config/designator_grouping.toml").read_bytes().decode("utf-8"))
+    provenance = config["coverage_audit"]["provenance"]
+    assert provenance["calibrated_for_this_corpus"] is True
+    assert provenance["sample_count"] == 44
+    # The claim is bounded by its own caveat, which is what keeps "calibrated"
+    # from being read as "calibrated for the corpus this pipeline will run on".
+    assert "WHAT THE SAMPLE DOES NOT ESTABLISH" in provenance["caveat"]
+    # The handoff must keep saying which two moved and which three did not,
+    # so a reader of the stage interface is not left to infer it from the file
+    # the gates now live in.
+    assert "sample_count = 44" in handoff
 
 
 class _StubTree:
@@ -237,22 +276,44 @@ def test_the_ink_map_declares_the_decode_route_it_actually_takes():
 
 
 def test_the_edge_band_is_a_bounded_instrument_and_says_it_is_not_calibrated():
-    """The edge width must remain visibly proposed until corpus calibration."""
-    from common.residual_ink import EDGE_BAND_PIXELS
+    """The edge width is a bounded instrument, and it is a fraction of the page.
+
+    It was the flat 64 pixels until 2026-09-06 and is `edge_band_bp` in the
+    sealed `[coverage_audit]` block now, resolved against the page's own shorter
+    side. Both halves are pinned here: the module still says what the band is
+    for and does not claim it is a calibrated cross-page-act threshold, and the
+    resolution really is proportional -- the same sealed value gives 2 pixels on
+    this repository's 200x260 fixture and 36 on a 3,600-pixel leaf, where the
+    retired constant gave 64 on both.
+    """
+    from common.residual_ink import (
+        EDGE_BAND_BP_FIELD,
+        load_coverage_audit_config,
+        resolve_coverage_audit_policy,
+    )
 
     source = (ROOT / "common/residual_ink.py").read_text(encoding="utf-8")
-    assert EDGE_BAND_PIXELS == 64
-    # Comment markers and wrapping normalised away, for the same reason as above.
     normalised = " ".join(source.replace("#", " ").split())
-    assert "not a claim that 64 pixels is a calibrated cross-page-act threshold" in normalised
+    assert "instrument boundary rather than a calibrated cross-page-act threshold" in normalised
+
+    config = load_coverage_audit_config()
+    assert config["coverage_audit"][EDGE_BAND_BP_FIELD] == 100
+    assert resolve_coverage_audit_policy(config, 200, 260)["edge_band_px"] == 2
+    assert resolve_coverage_audit_policy(config, 3853, 3600)["edge_band_px"] == 36
+    # The floor under the smallest legal image, which is why the band can never
+    # resolve to zero however small the page is.
+    assert resolve_coverage_audit_policy(config, 1, 100)["edge_band_px"] == 1
 
 
 def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
     """A zero-ink page still needs evidence, but must not manufacture an alarm."""
     rows = [bytearray([230] * 200) for _ in range(200)]
     policy = _policy(200, 200)
-    edge = INK_MAP_RUN.edge_ink(200, 200, rows, background_policy=policy)
-    ink = INK_MAP_RUN.residual_ink(200, 200, rows, [], background_policy=policy)
+    audit = _coverage(200, 200)
+    edge = INK_MAP_RUN.edge_ink(200, 200, rows, background_policy=policy, coverage_policy=audit)
+    ink = INK_MAP_RUN.residual_ink(
+        200, 200, rows, [], background_policy=policy, coverage_policy=audit
+    )
 
     assert edge["flagged"] is False
     assert ink["total_ink_pixels"] == 0
@@ -508,7 +569,9 @@ def test_a_one_pixel_wide_page_records_its_whole_width_as_edge():
     """The smallest legal width has an edge even though ``width // 2`` is zero."""
     rows = [bytearray([170 if y < 25 else 230]) for y in range(100)]
 
-    edge = INK_MAP_RUN.edge_ink(1, 100, rows, background_policy=_policy(1, 100))
+    edge = INK_MAP_RUN.edge_ink(
+        1, 100, rows, background_policy=_policy(1, 100), coverage_policy=_coverage(1, 100)
+    )
 
     assert edge["edge_band_pixels"] == 1
     assert edge["total_ink_pixels"] == 25
@@ -516,31 +579,48 @@ def test_a_one_pixel_wide_page_records_its_whole_width_as_edge():
     assert edge["flagged"] is True
 
 
-def test_the_fixture_geometry_is_degenerate_and_every_fixture_page_flags():
-    """Name the fixture's own degeneracy so a green run is not over-read.
+def test_the_fixture_pages_stop_flagging_because_the_band_stopped_being_the_page():
+    """The retired band's flag on a fixture page was an artefact, and it is gone.
 
-    A 64-pixel band on a 200x260 page leaves a 72x132 centre, so every page of
-    both pinned scenarios flags and no run in the suite produces `mapped` at
-    all. That is a fact about the specimen, not about the instrument, and it is
-    pinned here because a green suite otherwise says nothing about selectivity.
-    If the fixture pages gain a quiet perimeter, the handoff must change too.
+    A 64-pixel band on a 200x260 page left a 72x132 centre: a third of each
+    dimension was "perimeter", so both pinned scenarios flagged every page and
+    no run in the suite produced `mapped` at all. Measured here, that flag was
+    the page's own body text being counted as edge ink -- these pages carry
+    **zero** ink in every band from 1 pixel to 20, and only at 64 does the band
+    reach the writing. `edge_band_bp` resolves to 2 pixels here, so both pages
+    are now `mapped`.
+
+    **The cost is named rather than hidden: no fixture scenario exercises the
+    `unclaimed-edge-ink` outcome end to end any more.** That path is covered by
+    this module's own unit tests, by `pipeline/5_recensor/test_residual_ink.py`
+    and by `pipeline/7_armarium/test_unit14b_edge_release.py`, all of which build
+    the flagged shape directly. What no run tree in this repository now proves is
+    the release travelling from the Ink Map through the Designator's cuts to the
+    Armarium on a real scenario. It is a real gap and it belongs to the fixture,
+    which has no page with ink near its edge; it is written into the Ink Map's
+    HANDOFF.md beside this test.
     """
     from common.imaging import dimensions
-    from common.residual_ink import EDGE_BAND_PIXELS, page_edge_ink
+    from common.residual_ink import page_edge_ink
     from proof.synthetic_pages import page_bytes
 
     width, height = dimensions(page_bytes(1))
-    centre = (width - 2 * EDGE_BAND_PIXELS) * (height - 2 * EDGE_BAND_PIXELS)
+    band = _coverage(width, height)["edge_band_px"]
     assert (width, height) == (200, 260)
-    assert centre * 4 < width * height, (
-        "the fixture page now has a substantial quiet centre; the ink map handoff "
-        "says it does not, and the edge findings on a fixture run mean something else"
+    assert band == 2
+    centre = (width - 2 * band) * (height - 2 * band)
+    assert centre * 100 > width * height * 95, (
+        "the fixture page's perimeter is no longer a thin strip; the ink map handoff "
+        "says it is, and the edge findings on a fixture run mean something else"
     )
     for ordinal in (1, 2):
-        assert (
-            page_edge_ink(page_bytes(ordinal), background_policy=_policy(width, height))["flagged"]
-            is True
+        finding = page_edge_ink(
+            page_bytes(ordinal),
+            background_policy=_policy(width, height),
+            coverage_policy=_coverage(width, height),
         )
+        assert finding["outside_ink_pixels"] == 0
+        assert finding["flagged"] is False
 
 
 def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal():
@@ -552,6 +632,7 @@ def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal(
     whole point-of-use recheck family exists to catch.
     """
     from common.background import load_background_config
+    from common.residual_ink import load_coverage_audit_config
 
     blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
     page = _sealed_page(1)
@@ -575,8 +656,13 @@ def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal(
         monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: blank)
         assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
 
+    # Twice, and deliberately: the stage reads `[grouping.background]` and
+    # `[coverage_audit]` through two loaders, and each one proves the bytes IT
+    # read against the run's seal. One check standing for both would leave the
+    # second loader's read unproved on a file that had changed between them.
     assert context.required_configs == [
-        ("designator-grouping", load_background_config()["config_sha256"])
+        ("designator-grouping", load_background_config()["config_sha256"]),
+        ("designator-grouping", load_coverage_audit_config()["config_sha256"]),
     ]
     background = context.published[0]["payload"]["background"]
     assert background["config_sha256"] == load_background_config()["config_sha256"]

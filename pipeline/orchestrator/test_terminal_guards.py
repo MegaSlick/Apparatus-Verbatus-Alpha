@@ -15,12 +15,20 @@ from types import SimpleNamespace
 import pytest
 
 from common.armarium_formats import ArmariumFormats
+from common.background import load_background_config, resolve_background_policy
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ApprovalRefusal, FatalAccounting
+from common.contracts.errors import ApprovalRefusal, ContractError, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
+from common.residual_ink import (
+    edge_ink,
+    ink_runs_from_rows,
+    load_coverage_audit_config,
+    residual_ink,
+    resolve_coverage_audit_policy,
+)
 from common.runtree.store import RunTree
 from common.stage import (
     EXIT_COMPLETE,
@@ -43,6 +51,9 @@ def _stage_module(name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+INK_MAP_RUN = _stage_module("ink_map_terminal_fixture", ROOT / "pipeline" / "1_ink_map" / "run.py")
 
 
 def _parser_stub():
@@ -83,6 +94,7 @@ class _RecordingContext:
         self.config_digest = "a" * 64
         self.run = {"source_manifest": []}
         self.registry = SimpleNamespace(config=object())
+        self.required_configs: list[tuple[str, str]] = []
         self.witness_chairs: list[str] = []
         self.witness_floor = 0
         self.armarium_formats = ArmariumFormats(
@@ -115,6 +127,41 @@ class _RecordingContext:
             "perlector-audit": digest_bytes(self.perlector_audit_config_path.read_bytes()),
         }
 
+        # Build the mapped page with the same policies, measures, and canonical
+        # projection as Ink Map. The tiny page is uniformly paper-colored, so
+        # it truthfully contains no retained or edge ink while still carrying
+        # every field the closed producer record requires.
+        width, height = 8, 2
+        self.sealed_page_dimensions = (width, height)
+        rows = [bytearray([230] * width) for _ in range(height)]
+        background_config = load_background_config(self.args.designator_grouping_config)
+        coverage_config = load_coverage_audit_config(self.args.designator_grouping_config)
+        background_policy = resolve_background_policy(background_config, width, height)
+        coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
+        ink_measure = residual_ink(
+            width,
+            height,
+            rows,
+            [],
+            background_policy=background_policy,
+            coverage_policy=coverage_policy,
+        )
+        edge_measure = edge_ink(
+            width,
+            height,
+            rows,
+            background_policy=background_policy,
+            coverage_policy=coverage_policy,
+        )
+        assert edge_measure["background"] == ink_measure["background"]
+        edge_findings = ink_runs_from_rows(
+            width,
+            height,
+            rows,
+            background_policy=background_policy,
+            coverage_policy=coverage_policy,
+        )
+
         def read_bytes(relative_path: str) -> bytes:
             if relative_path not in self.blobs:
                 raise AssertionError(f"the stage read an unstored blob path: {relative_path}")
@@ -131,7 +178,7 @@ class _RecordingContext:
         # is exactly the shape that becomes reachable later without anyone
         # noticing (GOVERNANCE 2). This double therefore answers the manifest
         # walk the real tree answers: one `mapped` page 1 finding, carrying
-        # real `ink-runs.v1`-shaped evidence rather than a placeholder, and no
+        # real `ink-runs.v2`-shaped evidence rather than a placeholder, and no
         # Designator regions to release anything with.
         self.conservation_records = {
             "page-1": {
@@ -147,34 +194,12 @@ class _RecordingContext:
                     "page_ordinal": 1,
                     "ink_measurable": True,
                     "background": {
-                        "background_level": 230,
-                        "background_source": "inferred-modal",
-                        "dark_mode": 230,
-                        "ink_margin": 20,
-                        "contrast_below_background": 40,
-                        "ink_threshold": 190,
+                        **ink_measure["background"],
                         "config_sha256": self.sealed_config_digests["designator-grouping"],
                     },
-                    "ink": {
-                        "total_ink_pixels": 0,
-                        "outside_ink_pixels": 0,
-                        "fraction_outside_per_million": 0,
-                        "flagged": False,
-                    },
-                    "edge": {
-                        "total_ink_pixels": 0,
-                        "outside_ink_pixels": 0,
-                        "fraction_outside_per_million": 0,
-                        "flagged": False,
-                        "edge_band_pixels": 1,
-                        "named_finding": "unclaimed-edge-ink",
-                    },
-                    "edge_findings": {
-                        "schema": "ink-runs.v1",
-                        "width": 8,
-                        "height": 2,
-                        "rows": [[], []],
-                    },
+                    "ink": INK_MAP_RUN.artifact_finding(ink_measure),
+                    "edge": INK_MAP_RUN.artifact_finding(edge_measure),
+                    "edge_findings": edge_findings,
                 },
             }
         }
@@ -230,6 +255,7 @@ class _RecordingContext:
         require_sealed_config(
             self.sealed_config_digests, name, observed_sha256, "synthetic terminal context"
         )
+        self.required_configs.append((name, observed_sha256))
 
     def artifact_ref(self, stage: str, kind: str, identity: str) -> dict[str, str]:
         return {
@@ -244,6 +270,36 @@ class _RecordingContext:
             "relative_path": relative_path,
             "sha256": digest_bytes(self.blobs[relative_path]),
         }
+
+
+def _sealed_page_census(context: _RecordingContext) -> dict[int, dict]:
+    """The page shape of this context's generated synthetic measurement."""
+    return {
+        1: {
+            "outcome": "sealed",
+            "_pixel_dimensions": context.sealed_page_dimensions,
+        }
+    }
+
+
+def test_recording_context_validates_a_config_before_recording_it() -> None:
+    context = _RecordingContext()
+    name = "designator-grouping"
+    digest = context.sealed_config_digests[name]
+
+    context.require_sealed_config(name, digest)
+    assert context.required_configs == [(name, digest)]
+
+    with pytest.raises(
+        ContractError, match="configuration changed between this run's binding check"
+    ):
+        context.require_sealed_config(name, "0" * 64)
+    with pytest.raises(
+        ContractError,
+        match="synthetic terminal context sealed no digest for the unsealed-test-name configuration",
+    ):
+        context.require_sealed_config("unsealed-test-name", digest)
+    assert context.required_configs == [(name, digest)]
 
 
 def _all_refused_door_tree(root: Path) -> RunTree:
@@ -382,7 +438,7 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
     monkeypatch.setattr(armarium, "pages_marked_out", lambda _context, _cache: {"act_held": [1]})
     monkeypatch.setattr(armarium, "expected_acts", lambda _context: [held])
     monkeypatch.setattr(
@@ -421,7 +477,7 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
     monkeypatch.setattr(
         armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
     )
@@ -486,7 +542,7 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
     monkeypatch.setattr(
         armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
     )
@@ -545,7 +601,7 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
 
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
     monkeypatch.setattr(
         armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
     )

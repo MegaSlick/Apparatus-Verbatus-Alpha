@@ -1482,10 +1482,59 @@ def _perlector_dissent():
 # pairwise continuation proof or a full real-material pipeline trial. A separate
 # generated all-withheld stage regression proves readable fallback and exact
 # 10464 total = 10464 claimed + 0 residual; the mixed case retains residual holds.
+#
+# Audit Gates integration, measured on source 26dd5e076ebe1eb443870ee866e15c05c05e6979.
+# Two fresh canonical-run-id "r" roots per scenario agree on raw bytes and typed
+# JSON/ZIP leaves: happy 100 files/exit 0; review 111 files/exit 3.
+# Against main ce7ac530 (tree-identical to measured Grouping c5dd8cf3), exactly
+# 44 ordinary leaves per scenario change: 33 run-tree and 11 bundle-view leaves.
+# Both fixture pages gain whole-page/spanning/component/substantial counts in ink
+# and edge records: 11520/3840 page pixels, zero spanning pixels, empty component
+# lists and a substantial floor of 24. Retained rows are unchanged but explicitly
+# use ink-runs.v2. The proportional border resolves from 64 to 2 pixels, outside
+# counts 8328/3384 and fractions 722917/881250 ppm become zero, and both flags
+# clear. Five page/manifest/seal outcomes become mapped. Continuation reach is
+# 7 rather than 4 pixels. Export sources carry mapped initial outcomes and null
+# remeasurement where no remeasurement occurred; sources.json shrinks 157 bytes.
+# No text, category, crop geometry, conservation count, witness/recovery result,
+# manifest schema, terminal status, file count or exit code changes against main.
+# The two-pixel fixture perimeter has no ink, so these acceptance runs no longer
+# exercise a positive edge hold. Generated tests cover producer/run reconciliation
+# and hold/export behavior with actual crop verification after ingress; their edge
+# pixels are a separate input, not proof of an end-to-end same-image real trial.
+# Against original Audit b704a692, the Audit changes cancel. Later main accounts
+# for 232 happy/167 review ordinary leaves (native presentation, witness contracts,
+# anchor/attachment/continuation evidence, Honesty/Shared disclosures and export
+# schema); sources.json grows only 14 bytes for the corrected attachment basis.
+# Exact grouping/alignment bytes are bound to run seals. Every remaining integrity
+# or reference delta has a parsed endpoint cause, including two content-addressed
+# blob pairs per scenario and all changed ZIP members; no hash-shaped waiver.
+# The embedded main-versus-original control is identical to its retained inventory.
+# All six comparisons have exhaustive item assignments and zero ambiguous pairs.
+# The semantic reducer and v7/v8 integrity checks are unchanged.
+# Evidence: workbench/raw/codex-queue-2026-09-08/audit-gates/
+# acceptance-integrated-26dd5e07/measurement.json,
+# acceptance-output-review-26dd5e07.md and acceptance-output-assignments-26dd5e07.json.
+# Measurement SHA256: 9f058088b692424d2725f93c7fed47c38f5904bfe6d6cadcbc703e8c1eedf634.
+# Historical calibration has 47 pages, 44 measurable and 3 refused; all measurable
+# pages contain a spanning component. Group rectangles are a coverage surrogate;
+# neither a non-spanning corpus nor actual consecutive-pair behavior is proved.
+# Earlier Audit provenance is archived beside these records and retained in Git.
+# PR111 correction, measured on 8eb1f0a1b5cb1bb8942d148bbd8fd28ac13855b1.
+# Four fresh roots retain 100/111 files and exits 0/3. Against b23016c7,
+# no ordinary output value or ZIP-member size changes; private census dimensions
+# stay out of every emitted leaf. Two seven-to-six configuration prose edits
+# reduce sealed bytes by four, with no numeric policy change. Their digest and
+# reference propagation accounts for the changed pins: 536 happy and 583 review
+# inventory items, including uniquely paired partition and export blobs.
+# Evidence: audit-gates/acceptance-correction-8eb1f0a1/measurement.json and
+# audit-gates/pr111-acceptance-attribution-8eb1.md under the queue evidence above.
+# Measurement SHA256: 253deb4707561d91539cd32a6bc46207e9504be8344536bd602511e2344249de.
+# The v7/v8 semantic reducer and persisted-integrity checks remain unchanged.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "385ed21b3a94a917d03be660a3b5afabaacc776254b48812ee1ecafdf8c990ab"
-REVIEW_RUN_TREE_DIGEST = "351ff8a78add433ea015db68d8b27a9fc360ae5de56c4e3a67d07faf3a357ed6"
+HAPPY_RUN_TREE_DIGEST = "5dcc5ae8a7b5d6eb3700885736ec0f9512395edf8f897d7036f96cc7e6dc3330"
+REVIEW_RUN_TREE_DIGEST = "a0150dd17e27dbbd59c460a78394277f31cd25f75e3919ca12495c2cfa88ea9a"
 
 
 def orchestrate(
@@ -6702,12 +6751,26 @@ def test_the_page_loss_is_named_and_the_run_is_partial(refused_page_run):
     assert export["aggregate"]["by_page_outcome"] == {"sealed": 1, "refused": 1}
 
 
-def test_unclaimed_edge_ink_remains_held_when_designator_cut_no_page_region(tmp_path):
-    """The positive edge case: an initial finding releases only after real coverage.
+def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_path):
+    """The positive edge case this scenario used to carry, and where it went.
 
-    `structure-failure` leaves the fixture's actual edge ink without any
-    Designator crop.  It therefore proves the complementary case to happy: the
-    hold reaches the terminal ledger and makes the export visibly partial.
+    `structure-failure` cuts no Designator region at all, so before 2026-09-06
+    the fixture's edge ink was unclaimed and both pages reached the terminal
+    ledger held for `unclaimed-edge-ink`. That was the only end-to-end proof in
+    this repository of a page hold surviving from the Ink Map to the export.
+
+    It is gone, and the reason is measured rather than incidental: the retired
+    64-pixel band was 32 per cent of a 200-pixel page, so what it called "edge
+    ink" was the fixture's own body text. `edge_band_bp` resolves to 2 pixels
+    here and these pages carry zero ink in every band up to 20, so the Ink Map
+    now maps both and holds neither.
+
+    **What this test protects is that the loss stays visible.** The scenario
+    still exits held and still exports partial -- for its own cause, which is
+    that no region was cut -- and no page reason mentions edge ink any more.
+    If a future fixture page gains ink near its edge, this test fails and the
+    edge path's end-to-end proof comes back with it. The gap is written into
+    `pipeline/1_ink_map/HANDOFF.md`.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "structure-failure")
@@ -6720,15 +6783,14 @@ def test_unclaimed_edge_ink_remains_held_when_designator_cut_no_page_region(tmp_
         manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
 
     assert manifest["claims"]["status"] == "partial"
-    assert manifest["claims"]["ink_map"]["held_pages"] == [1, 2]
-    assert any("unclaimed-edge-ink" in reason for reason in manifest["claims"]["partial_reasons"])
-    page_reasons = {
-        row["unit_id"]: row["reason"]
-        for row in manifest["claims"]["terminal_ledger"]["units"]
-        if row["unit_type"] == "page"
-    }
-    assert set(page_reasons) == {"page:1", "page:2"}
-    assert all("unclaimed-edge-ink" in reason for reason in page_reasons.values())
+    assert manifest["claims"]["ink_map"]["held_pages"] == []
+    assert not any(
+        "unclaimed-edge-ink" in reason for reason in manifest["claims"]["partial_reasons"]
+    )
+    assert manifest["claims"]["partial_reasons"], (
+        "the scenario must still be visibly partial for its own cause; a green "
+        "structure-failure export would be a far larger finding than the band"
+    )
 
 
 def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_run):

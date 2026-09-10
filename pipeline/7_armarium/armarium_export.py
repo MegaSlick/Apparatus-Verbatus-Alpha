@@ -1301,8 +1301,14 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
 
 INK_MAP_DENOMINATOR: Final = "Unit 9 ink-map sealed pages"
 _INK_MAP_ROW_FIELDS: Final = frozenset({"ordinal", "initial_outcome", "remeasured"})
+# `substantial_ink_pixels` joined this set on 2026-09-06, when the absolute
+# outside-coverage gate stopped being a module constant and became a fraction of
+# each page's own area sealed in `[coverage_audit]`. It has to be recorded here
+# because this verifier's whole point is to recompute the hold from the counts
+# alone, on a clean machine, with no config to read: a gate it had to fetch from
+# somewhere else would make it a different instrument from the one that measured.
 _INK_MAP_REMEASURE_FIELDS: Final = frozenset(
-    {"total_ink_pixels", "outside_ink_pixels", "edge_band_pixels"}
+    {"total_ink_pixels", "outside_ink_pixels", "edge_band_pixels", "substantial_ink_pixels"}
 )
 _UNCLAIMED_EDGE_INK: Final = "unclaimed-edge-ink"
 # `ink-not-measurable` joined this set on 2026-09-06, when the Ink Map began
@@ -1376,7 +1382,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
             if any(
                 not isinstance(remeasured[field], int)
                 or isinstance(remeasured[field], bool)
-                or remeasured[field] < 0
+                or remeasured[field] < (1 if field == "substantial_ink_pixels" else 0)
                 for field in sorted(_INK_MAP_REMEASURE_FIELDS)
             ):
                 raise SchemaRefusal(
@@ -1407,7 +1413,9 @@ def _edge_hold_pages_from_validated_rows(rows: list[dict[str, Any]]) -> tuple[in
             for row in rows
             if row["initial_outcome"] == _UNCLAIMED_EDGE_INK
             and coverage_flag(
-                row["remeasured"]["total_ink_pixels"], row["remeasured"]["outside_ink_pixels"]
+                row["remeasured"]["total_ink_pixels"],
+                row["remeasured"]["outside_ink_pixels"],
+                substantial_ink_pixels=row["remeasured"]["substantial_ink_pixels"],
             )[1]
         )
     )
