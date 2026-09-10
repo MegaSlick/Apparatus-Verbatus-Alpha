@@ -1456,27 +1456,27 @@ def _perlector_dissent():
 # Measured twice, in two independent temporary roots, at canonical run id "r",
 # through this module's own `orchestrate` and `semantic_snapshot_digest`. The two
 # roots agreed exactly on both scenarios.
-# Shared Background integration, measured on source45c7a91a127e6fa778ca05b4c5010b3e45327f33.
+# Shared Background integration, measured on source 45c7a91a127e6fa778ca05b4c5010b3e45327f33.
 # Two fresh canonical-run-id "r" roots per scenario agree on raw bytes and typed
-# JSON/ZIP leaves. Happy remains100files/exit0; review111files/exit3.
-# Against main54fe0c63, Ink Map publishes one shared background block per page:
-# paper230, dark_mode90, primary margin46, audit contrast40/threshold190,
+# JSON/ZIP leaves. Happy remains 100 files/exit 0; review 111 files/exit 3.
+# Against main 54fe0c63, Ink Map publishes one shared background block per page:
+# paper 230, dark_mode 90, primary margin 46, audit contrast 40/threshold 190,
 # ink_measurable=true, sealed grouping SHA; duplicate ink/edge paper leaves move.
 # Recensor adds an empty unmeasurable_pages census to each fixture review.
-# Armarium manifestv7 adds verified claims.ink_map.unmeasurable_pages=[]; the
+# Armarium manifest v7 adds verified claims.ink_map.unmeasurable_pages=[]; the
 # separate Designator conservation availability disclosure remains unchanged.
 # Grouping configuration text names all three shared readers. Exact Git config
 # bytes explain sealed digests; fixture pixel counts, geometry, text and terminal
 # outcomes are unchanged. Main native preparation/continuation/Honesty disclosure
-# remain present relative to original Shared96ff5572 (96/107 ->100/111files).
+# remain present relative to original Shared 96ff5572 (96/107 -> 100/111 files).
 # Every logical JSON/JSONL/SQLite leaf, raw artifact and ZIP member was compared
 # against original and main controls; stable producer slots pair content-addressed
 # blobs. No unexplained leaves, ambiguous pairings or raw/reference mismatches.
 # The v7/v8-aware acceptance reducer retains SQLite row portability and persisted
-# integrity guards. Earlier1d442507 raw-ZIP fallback pins were rejected, not reused.
+# integrity guards. Earlier 1d442507 raw-ZIP fallback pins were rejected, not reused.
 # Evidence: workbench/raw/codex-queue-2026-09-08/shared-background/
 # acceptance-causal-attribution-45c7a91a.json and independent direct-semantics report.
-# The separate frozen17page survey repeats14measured/3refused with deterministic
+# The separate frozen 17-page survey repeats 14 measured/3 refused with deterministic
 # fields unchanged. Grouping rectangles are a coverage surrogate, not served or
 # capture-padded proposals or a complete Armarium trial. Generated-image tests
 # separately cover refusals and measurable conservation with an unavailable audit.
