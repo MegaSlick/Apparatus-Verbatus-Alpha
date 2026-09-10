@@ -53,6 +53,7 @@ from common.residual_ink import (
     edge_ink,
     ink_runs_from_rows,
     load_coverage_audit_config,
+    residual_ink,
     resolve_coverage_audit_policy,
 )
 from common.runtree.store import RunTree
@@ -486,13 +487,15 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
         if record["payload"]["ordinal"] == ordinal
     )
     sealed_page_bytes = real_tree.read_bytes(page["payload"]["image_path"])
-    width, height, _sealed_rows = decode_grayscale_png(sealed_page_bytes)
+    width, height, sealed_rows = decode_grayscale_png(sealed_page_bytes)
     rows = [bytearray([230] * width) for _ in range(height)]
     for y in range(2):
         rows[y] = bytearray([0] * width)
     for y in range(height - 2, height):
         rows[y] = bytearray([0] * width)
     page_bytes = encode_grayscale_png(width, height, rows)
+    assert rows != sealed_rows
+    assert page_bytes != sealed_page_bytes
     page_digest = digest_bytes(page_bytes)
     grouping_path = ROOT / "config" / "designator_grouping.toml"
     grouping_digest = digest_bytes(grouping_path.read_bytes())
@@ -507,7 +510,17 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
         background_policy=background_policy,
         coverage_policy=coverage_policy,
     )
+    measured_ink = residual_ink(
+        width,
+        height,
+        rows,
+        [],
+        background_policy=background_policy,
+        coverage_policy=coverage_policy,
+    )
+    assert measured_ink["background"] == measured_edge["background"]
     finding = ink_map.artifact_finding(measured_edge)
+    ink = ink_map.artifact_finding(measured_ink)
     runs = ink_runs_from_rows(
         width,
         height,
@@ -528,7 +541,7 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
                 **measured_edge["background"],
                 "config_sha256": grouping_digest,
             },
-            "ink": {},
+            "ink": ink,
             "edge": finding,
             "edge_findings": runs,
         },
