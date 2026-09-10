@@ -94,8 +94,11 @@ def frame_only_pass(tmp_path_factory):
 
         width, height, rows = grayscale_rows(page)
         policy = designator.grouping_config.load_grouping_config(grouping_config)
+        background_policy = designator.grouping_config.resolve_background_policy(
+            policy, width, height
+        )
         evidence = designator.structure.infer_background_evidence(
-            width, height, rows, background_policy=policy["background"]
+            width, height, rows, background_policy=background_policy
         )
         thresholds = designator.grouping_config.resolve_thresholds(policy, width, height)
         components = designator.structure.primary_scan(
