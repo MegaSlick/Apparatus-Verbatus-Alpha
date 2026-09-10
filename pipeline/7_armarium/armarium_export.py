@@ -1382,7 +1382,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
             if any(
                 not isinstance(remeasured[field], int)
                 or isinstance(remeasured[field], bool)
-                or remeasured[field] < 0
+                or remeasured[field] < (1 if field == "substantial_ink_pixels" else 0)
                 for field in sorted(_INK_MAP_REMEASURE_FIELDS)
             ):
                 raise SchemaRefusal(

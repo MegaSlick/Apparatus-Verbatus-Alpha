@@ -648,11 +648,10 @@ def residual_ink(
         covered_bits = int.from_bytes(bytes(covered_mask[row_offset : row_offset + width]), "big")
         spanning_bits = int.from_bytes(bytes(spanning_mask[row_offset : row_offset + width]), "big")
         page_ink += ink_row.count(1)
-        # The page-spanning component was found at the page's own derived
-        # margin, which is at or above this audit's contrast, so its pixels are
-        # a subset of this ink set on every page -- `& ink_bits` is belt and
-        # braces against a page where the two thresholds coincide, never a
-        # correction.
+        # The structural component is found at the page-derived Designator
+        # margin. Where that margin is below this audit's stricter contrast,
+        # its mask also contains pixels this audit does not call ink. Intersect
+        # the two sets so only this audit's ink is removed from its own counts.
         spanning_ink += (ink_bits & spanning_bits).bit_count()
         audited_bits = ink_bits & ~spanning_bits
         total_ink += audited_bits.bit_count()
@@ -988,6 +987,15 @@ def reconcile_edge_finding_with_runs(
             or y + component_height > height
         ):
             raise ContractError("the ink-map edge finding has out-of-page component bounds")
+    spanning_pixels = finding["page_spanning_ink_pixels"]
+    if not components and spanning_pixels:
+        raise ContractError(
+            "the ink-map edge finding has page-spanning ink without component bounds"
+        )
+    if spanning_pixels > sum(component["w"] * component["h"] for component in components):
+        raise ContractError(
+            "the ink-map edge finding page-spanning ink exceeds its component bounds"
+        )
 
     for field in _RUN_DERIVED_EDGE_FIELDS:
         if finding[field] != measured[field] or type(finding[field]) is not type(measured[field]):

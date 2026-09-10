@@ -76,6 +76,7 @@ from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_crop_lineage,
     verify_sealed_page_pixels,
 )
+from common.imaging import dimensions  # noqa: E402
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
@@ -663,11 +664,12 @@ def page_census(context) -> dict[int, dict]:
         entries_by_ordinal[ordinal] = entry
         if record["outcome"] == "sealed":
             try:
-                verify_sealed_page_pixels(context.tree, context.run, source, record)
-            except ContractError as error:
+                page_bytes = verify_sealed_page_pixels(context.tree, context.run, source, record)
+                item["_pixel_dimensions"] = dimensions(page_bytes)
+            except (ContractError, TypeError, ValueError) as error:
                 raise FatalAccounting(
                     "the final Exemplar pixel boundary is not immutable; no export may be "
-                    "written over altered source bytes"
+                    "written over altered or undecodable source bytes"
                 ) from error
 
     # Counted before it is compared as a set: a set comparison cannot tell two pages
@@ -746,6 +748,12 @@ def ink_map_page_rows(
                 "its finding to a sealed page. Restore the sealed Ink Map inventory or restart "
                 "the run before exporting."
             )
+        if ordinal not in census or census[ordinal].get("outcome") != "sealed":
+            raise FatalAccounting(
+                f"ink-map page denominator does not match the Armarium page census: "
+                f"page {ordinal} is not sealed. Restore the sealed stage inventories "
+                "or restart the run before exporting."
+            )
         if ordinal in found:
             raise FatalAccounting(
                 f"ink-map repeats page ordinal {ordinal}. The Armarium cannot choose which page "
@@ -798,6 +806,16 @@ def ink_map_page_rows(
             # which artifact to restore.
             if not isinstance(evidence, dict):
                 raise ContractError("the measured payload has no ink-run evidence object")
+            sealed_page = census.get(ordinal)
+            sealed_dimensions = (
+                sealed_page.get("_pixel_dimensions")
+                if isinstance(sealed_page, dict) and sealed_page.get("outcome") == "sealed"
+                else None
+            )
+            if (evidence.get("width"), evidence.get("height")) != sealed_dimensions:
+                raise ContractError(
+                    "the retained ink-run dimensions do not match the sealed Exemplar pixels"
+                )
             coverage_policy = resolve_coverage_audit_policy(
                 coverage_config, evidence.get("width"), evidence.get("height")
             )
@@ -1917,7 +1935,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             f"{len(categories)}. Conservation failed at the last boundary"
         )
 
-    pages = [{"ordinal": ordinal, **census[ordinal]} for ordinal in sorted(census)]
+    pages = [
+        {
+            "ordinal": ordinal,
+            **{key: value for key, value in census[ordinal].items() if key != "_pixel_dimensions"},
+        }
+        for ordinal in sorted(census)
+    ]
     bundle = build_armarium_bundle(
         ArmariumProjection(
             fixture_id=fixture_id,

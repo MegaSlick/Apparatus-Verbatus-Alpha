@@ -110,6 +110,7 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     assert config["continuation"]["provenance"]["sample_count"] == 44
     assert config["coverage_audit"]["substantial_ink_area_bp"] == 4
     assert config["coverage_audit"]["edge_band_bp"] == 100
+    assert config["coverage_audit"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["coverage_audit"]["provenance"]["sample_count"] == 44
 
 

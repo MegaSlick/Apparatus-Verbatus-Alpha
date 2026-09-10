@@ -41,7 +41,7 @@
 # own HEIGHT: how close a group's bounds must come to the top or bottom edge for
 # `grouping.find_continuation_candidate` to treat it as reaching that edge. It
 # has a table and a provenance block of its own because it is measured -- 44
-# real pages, `sample_count = 44` -- and the seven values left in
+# real pages, `sample_count = 44` -- and the six values left in
 # `page_fraction_bp` are not. Its retired value, 154, was a conversion of
 # `grouping.DEFAULT_PAGE_EDGE_REACH_PX` (4) against the 200x260 fixture, and it
 # passed on none of those 44 pages.
@@ -252,7 +252,7 @@ caveat = "These four numbers were measured on 127 real pages from five sources, 
 
 [grouping.provenance]
 source = "every page_fraction_bp value is a basis-point conversion of the retired module-level Python default it replaces (grouping.DEFAULT_MARGIN_FRACTION, grouping.DEFAULT_CHAIN_GAP_PX, grouping.DEFAULT_ANCHOR_REACH_PX, grouping.DEFAULT_BRACE_MIN_HEIGHT_PX, grouping.DEFAULT_PAGE_EDGE_REACH_PX, conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX), computed against this project's own synthetic fixture pages (proof/fixtures/synthetic-two-page-v0, measured 200x260) with geometry._pad_amount round-half-up so every field resolves bit-identically to the retired constant at that size; gap_tolerance_px is carried forward unconverted from structure.DEFAULT_GAP_TOLERANCE_PX (3); fallback_overlap_bp is a basis-point conversion of grouping.DEFAULT_FALLBACK_OVERLAP_PX (8) and fallback_bands is grouping.DEFAULT_FALLBACK_BANDS (4) carried forward unconverted, both retired here after being left behind by the first sweep; max_residual_components and max_secondary_proposals are new policy values, not converted constants -- each reasoned from operations/operator/review.py's own MAX_REVIEW_ITEMS = 50_000-item / 16 MiB console refusal (CONSOLE_TREE_UNREADABLE), which a single unbounded page can already trip, and each bounding one page's contribution to that queue rather than the run's total"
-corpus = "none of these values comes from a measured parish-register corpus. The seven page_fraction_bp values are unmeasured walking-skeleton defaults tuned by eye against this project's own tiny synthetic fixtures, not derived from any register sample; gap_tolerance_px has no corpus behind it at all -- see caveat; fallback_bands is a four-band grid chosen by eye for a fixture page and matched against no register layout; max_residual_components and max_secondary_proposals are reasoned from the operator console's own documented item ceiling, not from any ink-density sample"
+corpus = "none of these values comes from a measured parish-register corpus. The six page_fraction_bp values are unmeasured walking-skeleton defaults tuned by eye against this project's own tiny synthetic fixtures, not derived from any register sample; gap_tolerance_px has no corpus behind it at all -- see caveat; fallback_bands is a four-band grid chosen by eye for a fixture page and matched against no register layout; max_residual_components and max_secondary_proposals are reasoned from the operator console's own documented item ceiling, not from any ink-density sample"
 sample_unit = "page (the synthetic fixture pages under proof/fixtures/synthetic-two-page-v0, not a real register record or act)"
 sample_count = 0
 statistic = "none -- every field here is an unmeasured default or a policy ceiling reasoned from another module's documented limit, not a computed percentile or summary statistic over any sample"

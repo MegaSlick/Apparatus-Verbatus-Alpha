@@ -510,7 +510,11 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
     export while naming the wrong problem.
     """
     rows = canvas(width, height)
-    paint(rows, 0, 0, width, height)
+    # A one-pixel image proves geometry only; longer thin pages also prove ink.
+    if width == 1 and height > 1:
+        paint(rows, 0, 0, 1, 3)
+    elif height == 1 and width > 1:
+        paint(rows, 0, 0, 3, 1)
     image = encode_grayscale_png(width, height, rows)
 
     initial = page_edge_ink(
@@ -533,6 +537,8 @@ def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, 
     # two detectors reach the same outcome.
     assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"]
     assert remeasured["flagged"] == initial["flagged"]
+    if width > 1 or height > 1:
+        assert initial["outside_ink_pixels"] > 0
 
 
 def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():

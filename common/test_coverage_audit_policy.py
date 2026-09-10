@@ -110,6 +110,13 @@ def test_a_band_outside_its_range_is_refused(value):
         validate_coverage_audit_table({"substantial_ink_area_bp": 4, "edge_band_bp": value})
 
 
+@pytest.mark.parametrize(("substantial", "band"), [(1, 1), (BASIS_POINTS, BASIS_POINTS // 2 - 1)])
+def test_both_accepted_endpoints_stay_accepted(substantial, band):
+    assert validate_coverage_audit_table(
+        {"substantial_ink_area_bp": substantial, "edge_band_bp": band}
+    ) == {"substantial_ink_area_bp": substantial, "edge_band_bp": band}
+
+
 def test_an_unknown_field_is_refused_rather_than_ignored():
     with pytest.raises(ContractError, match="unknown field"):
         validate_coverage_audit_table(

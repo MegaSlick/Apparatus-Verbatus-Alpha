@@ -157,7 +157,7 @@ def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: 
 # outside-coverage audit now has to name the page-spanning component this stage
 # withholds from grouping, `common/` may not import a stage, and a third copy of
 # a rule this repository already keeps two of would be the drift surface
-# `label_components`' own docstring argues against. The three names below are
+# `label_components`' own docstring argues against. The two aliases below are
 # re-exported under the spellings this stage has always used, so every caller
 # and every test in it reaches for them exactly where they were; nothing about
 # what they do changes.

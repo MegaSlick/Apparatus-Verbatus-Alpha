@@ -561,11 +561,27 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
 
         def build_manifest(self, stage, **kwargs):
             if stage == INK_MAP:
-                return {"artifacts": [{"kind": "ink-map", "artifact_id": "ink-page-1"}]}
+                manifest = real_tree.build_manifest(stage, **kwargs)
+                retained = [
+                    entry
+                    for entry in manifest["artifacts"]
+                    if entry["kind"] != "ink-map"
+                    or real_tree.read_artifact(stage, "ink-map", entry["artifact_id"])["payload"][
+                        "page_ordinal"
+                    ]
+                    != ordinal
+                ]
+                return {
+                    **manifest,
+                    "artifacts": [
+                        *retained,
+                        {"kind": "ink-map", "artifact_id": "ink-page-1"},
+                    ],
+                }
             return real_tree.build_manifest(stage, **kwargs)
 
         def read_artifact(self, stage, kind, artifact_id):
-            if stage == INK_MAP:
+            if stage == INK_MAP and artifact_id == "ink-page-1":
                 return ink_record
             if stage == DESIGNATOR and kind == "region" and artifact_id == proposal["artifact_id"]:
                 return self.region
@@ -617,7 +633,9 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
         return context, claimed
 
     def page_row(context, claimed):
-        return armarium.ink_map_page_rows(context, {ordinal: {"outcome": "sealed"}}, claimed)[0]
+        census = armarium.page_census(context)
+        measured_rows = armarium.ink_map_page_rows(context, census, claimed)
+        return next(row for row in measured_rows if row["ordinal"] == ordinal)
 
     def projection_for(row, bounds, crop_bytes):
         base = _otherwise_complete(ink_map_pages=(row,))
@@ -818,6 +836,32 @@ def test_a_release_is_by_ink_and_a_partial_claim_does_not_make_one():
         manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
         assert manifest["claims"]["ink_map"]["held_pages"] == held, outside
         assert manifest["claims"]["status"] == ("partial" if held else "complete"), outside
+
+
+def test_the_recorded_absolute_gate_decides_below_the_fraction_gate(tmp_path):
+    """The row's page-specific gate, including its inclusive endpoint, is used."""
+    total = 200_000
+    assert 2_000 / total < MINIMUM_FRACTION_OUTSIDE_COVERAGE
+    for outside, held in ((1_999, []), (2_000, [1])):
+        bundle = build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=(_edge_page(outside=outside, total=total),)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+        manifest = verify_export_bundle(bundle.data, tmp_path / f"absolute-{outside}")
+        assert manifest["claims"]["ink_map"]["held_pages"] == held, outside
+        assert manifest["claims"]["status"] == ("partial" if held else "complete"), outside
+
+
+def test_a_zero_substantial_gate_is_refused_before_it_can_hold_every_page():
+    row = _edge_page(outside=0)
+    row["remeasured"]["substantial_ink_pixels"] = 0
+    with pytest.raises(SchemaRefusal, match="invalid ink-map re-measurement"):
+        build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=(row,)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
 
 
 def test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine(tmp_path):

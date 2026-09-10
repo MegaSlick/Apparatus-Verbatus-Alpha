@@ -136,21 +136,15 @@ chosen while Unit 14 was outstanding. Unit 14B has landed; the sentence is kept
 here corrected rather than deleted because this file is the stage interface and
 a consumer who built against the old contract needs to see that it moved.
 
-## The fixture is a degenerate case for the edge detector
+## The fixture's current edge measure is quiet
 
-The synthetic pages are 200x260, so a 64-pixel perimeter leaves a central
-rectangle of 72x132 — about 18% of the page. Both pinned scenarios therefore
-flag **every** page `unclaimed-edge-ink`, and no run in the suite produces the
-`mapped` outcome at all. On a real 300-DPI register page the same band is a few
-per cent of the area, which is the bounded strip the constant is for.
-
-Read a green fixture run accordingly: it proves the detector is wired, named
-and bounded, and it proves nothing about the detector's selectivity, because
-the fixture geometry does not leave a quiet perimeter for it to be quiet about.
-`EDGE_BAND_PIXELS` stays where it is — moving it to make the fixture look
-better would be tuning the instrument to the specimen, which is what
-GOVERNANCE 10's second paragraph forbids. Selectivity is measured on real
-material or not claimed.
+The synthetic pages are 200x260. Their historical 64-pixel perimeter reached
+painted acts, but the current sealed `edge_band_bp = 100` resolves to a
+2-pixel band and contains no fixture ink. The fixture therefore exercises the
+`mapped` outcome, not `unclaimed-edge-ink`; it does not establish positive
+edge-finding selectivity. The 64-pixel figures below are historical comparison
+evidence, not the active detector or an `EDGE_BAND_PIXELS` configuration.
+Selectivity is measured on real material or not claimed.
 
 ## Unit 14B reconciliation ledger — release is by the same ink, not by exemption
 
@@ -163,16 +157,13 @@ genuinely *claimed*; the semantic defect was treating a pre-proposal finding
 as unreleased after the Designator had supplied coverage, not a specimen with
 unclaimed edge ink.
 
-Unit 14B therefore retained the fixture and left the band and
-`MINIMUM_INK_PIXELS` unchanged. **The band was re-derived on 2026-09-06** and the
-figures in the paragraph above are the retired band's: at the sealed
-`edge_band_bp` the same two pages contain 0 of 11,520 and 0 of 3,840 ink pixels
-in their perimeter strips, so they are released before any crop is applied rather
-than by one. `MINIMUM_INK_PIXELS` is unchanged. Armarium re-measures the Ink Map's retained,
+Unit 14B originally retained the fixture and fixed band.
+**The band was re-derived on 2026-09-06**: at the sealed `edge_band_bp` the same
+two pages contain 0 of 11,520 and 0 of 3,840 ink pixels in their perimeter
+strips. `MINIMUM_INK_PIXELS` remains the noise floor; the substantial-ink gate
+is resolved from page area. Armarium re-measures the Ink Map's retained,
 lossless page-space runs against verified final Designator crop bounds. A clear
 re-measure releases the page; a flagged re-measure holds it. The
-`structure-failure` scenario is the positive: it cuts no page regions, so its
-real fixture ink remains unclaimed, is held for review, appears in
-`partial_reasons`, and refuses a complete export. This distinguishes a
-pre-proposal signal from a genuine unresolved coverage finding without
-weakening either.
+`structure-failure` scenario remains partial for its recorded structure failure
+and unclaimed residual ink, not an edge hold. This distinguishes a pre-proposal
+signal from a genuine unresolved coverage finding without weakening either.
