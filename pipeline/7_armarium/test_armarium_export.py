@@ -4124,7 +4124,9 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
     assert ink_record["outcome"] == ink_map.INK_NOT_MEASURABLE
     assert ink_record["payload"]["ink_measurable"] is False
     assert ink_record["payload"]["background_refusal"]
-    assert ink_map_context.required_configs == [("designator-grouping", grouping_digest)]
+    # Ink Map reads the background and coverage-audit views independently from
+    # the same sealed file; both readers must prove those bytes against the run.
+    assert ink_map_context.required_configs == [("designator-grouping", grouping_digest)] * 2
 
     armarium_config_checks = []
     armarium_context = SimpleNamespace(
@@ -4137,6 +4139,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
         require_sealed_config=lambda name, observed: armarium_config_checks.append(
             (name, observed)
         ),
+        args=SimpleNamespace(designator_grouping_config=str(grouping_path)),
     )
     (ink_map_page,) = armarium.ink_map_page_rows(armarium_context, {1: {"outcome": "sealed"}}, {})
     assert ink_map_page == {
@@ -4144,7 +4147,9 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
         "initial_outcome": ink_map.INK_NOT_MEASURABLE,
         "remeasured": None,
     }
-    assert armarium_config_checks == [("designator-grouping", grouping_digest)]
+    # Armarium proves the loaded coverage policy, then independently proves the
+    # refusal envelope's recorded configuration before accepting no measurement.
+    assert armarium_config_checks == [("designator-grouping", grouping_digest)] * 2
 
     conservation_manifest = {
         DESIGNATOR: {"artifacts": [{"kind": "conservation", "artifact_id": "low-paper"}]}

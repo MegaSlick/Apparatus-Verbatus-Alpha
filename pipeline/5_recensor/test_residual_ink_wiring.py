@@ -575,7 +575,9 @@ def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monk
     (record,) = producer.published
     assert record["outcome"] == "ink-not-measurable"
     assert record["payload"]["background_config_sha256"] == expected_digest
-    assert producer.required_configs == [("designator-grouping", expected_digest)]
+    # Ink Map reads the background and coverage-audit views independently from
+    # the same sealed file; both readers must prove those bytes against the run.
+    assert producer.required_configs == [("designator-grouping", expected_digest)] * 2
 
     class ConsumerTree:
         def build_manifest(self, _stage):
