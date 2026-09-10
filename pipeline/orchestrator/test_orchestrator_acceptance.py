@@ -1520,10 +1520,21 @@ def _perlector_dissent():
 # pages contain a spanning component. Group rectangles are a coverage surrogate;
 # neither a non-spanning corpus nor actual consecutive-pair behavior is proved.
 # Earlier Audit provenance is archived beside these records and retained in Git.
+# PR111 correction, measured on 8eb1f0a1b5cb1bb8942d148bbd8fd28ac13855b1.
+# Four fresh roots retain 100/111 files and exits 0/3. Against b23016c7,
+# no ordinary output value or ZIP-member size changes; private census dimensions
+# stay out of every emitted leaf. Two seven-to-six configuration prose edits
+# reduce sealed bytes by four, with no numeric policy change. Their digest and
+# reference propagation accounts for the changed pins: 536 happy and 583 review
+# inventory items, including uniquely paired partition and export blobs.
+# Evidence: audit-gates/acceptance-correction-8eb1f0a1/measurement.json and
+# audit-gates/pr111-acceptance-attribution-8eb1.md under the queue evidence above.
+# Measurement SHA256: 253deb4707561d91539cd32a6bc46207e9504be8344536bd602511e2344249de.
+# The v7/v8 semantic reducer and persisted-integrity checks remain unchanged.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "9363da5cfad9c8b2506fbf742ea719334e9b453ad3508fd346849c6bf9353023"
-REVIEW_RUN_TREE_DIGEST = "e4e5f989a7d5e156cbe44b1d03f59a02130e506f8371d5a3facf32d62f65470c"
+HAPPY_RUN_TREE_DIGEST = "5dcc5ae8a7b5d6eb3700885736ec0f9512395edf8f897d7036f96cc7e6dc3330"
+REVIEW_RUN_TREE_DIGEST = "a0150dd17e27dbbd59c460a78394277f31cd25f75e3919ca12495c2cfa88ea9a"
 
 
 def orchestrate(
