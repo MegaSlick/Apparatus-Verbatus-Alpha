@@ -14,7 +14,7 @@ Use the procedure named here only when its trigger fires:
 |---|---|
 | opening or closing a session | `.claude/skills/session-start` or `session-end` |
 | changing a governed path | `.claude/skills/governed-edit` |
-| using agents or chambers | `.claude/agents/README.md`, then `operations/autoclave/README.md` |
+| using agents | `.claude/agents/README.md`, then `operations/seats/README.md` |
 | rebuilding old behavior | `cleanroom/README.md` |
 | notes and handoffs | `workbench/README.md` |
 | live pods or paid infrastructure | `operations/pod/README.md` |
@@ -50,7 +50,7 @@ These numbers are cited by hooks, tests, and agent briefs. Append; never insert 
 11. **Every enforcement can be removed by Tyrel.** Hooks and guards catch accidents;
     they do not outrank him.
 12. **Everything else is open.** Agents may build and review code, tests, CI, hooks, and
-    operations inside the seat boundary — a worktree under the guard, or a chamber.
+    operations inside the seat boundary — a worktree under the guard.
     Agents never push or merge.
 13. **The session decides ordinary engineering.** Unless rule 1 or GOVERNANCE.md reserves
     an action for Tyrel, choose the implementation, structure, names, thresholds, tests,
@@ -103,26 +103,30 @@ Stage only files touched for the task; never `git add -A`.
 
 ## Agents
 
-Repository-writing agents work in a worktree seat by default and in a chamber when the
-work earns one. The host session remains accountable for the goal, decisions, integrated
-diff, and verification. Either seat is pinned to a commit, returns a branch, may not edit
-a governed path, and cannot push, open a pull request, mark one ready, or merge — the guard refuses those
-on the spawned-agent name (refusals 7 and 8), which is what makes hard rules 10 and 12
-mechanical rather than merely written. Use agents for bounded work that benefits from
-independent context; do not create ceremony merely to satisfy a roster.
+Repository-writing agents work in a worktree seat: a linked worktree on this machine
+under the tool-call guard. The host session remains accountable for the goal, decisions,
+integrated diff, and verification. A seat is pinned to a commit, returns a branch, may
+not edit a governed path, and cannot push, open a pull request, mark one ready, or merge
+— the guard refuses the governed-path write (refusal 7) and the push, pull request,
+ready-for-review and merge (refusal 8) on the spawned-agent name, which is what makes
+hard rules 10 and 12 mechanical rather than merely written. Use agents for bounded work
+that benefits from independent context; do not create ceremony merely to satisfy a
+roster.
 
-**Reach for a chamber for two reasons, and say which in the brief.** The work needs the
-window onto the old pipeline, or it installs a dependency this machine should not be
-asked to trust. A container bought its safety from having no route out; a worktree seat
-buys the same result from the guard, at a fraction of the setup. Isolation nobody is
-spending is not a control.
+**There is no container seat.** The chamber (`operations/autoclave/`) is retired (his
+ruling; the dated record is in `history/`). A container bought its
+safety from having no route out; a worktree seat buys the same result from the guard, at a
+fraction of the setup, and isolation nobody is spending is not a control. The two jobs the
+chamber was kept for no longer exist: the window onto the old pipeline is closed, and a
+dependency this machine should not be asked to trust is a reason to ask Tyrel, not to
+build a seat. A vendor calling another vendor's agent for a bounded task — Codex
+dispatching Claude, or the reverse — is an ordinary worktree seat under the same guard.
 
-**A seat builds from this repository and its design notes, not from the old system, and
-a chamber is the only seat that can be given anything else.**
-The notes reach it at `/specs`; the old code reaches it only if `AUTOCLAVE_WINDOW` is set
-on `new`, which is a deliberate act and needs a reason in the brief. A brief that tells a
-chamber to read the old pipeline without that is describing a mount that is not there, and
-the chamber will invent rather than report the gap.
+**A seat builds from this repository and its design notes, not from the old system.**
+The notes reach it by the path the brief names. No seat is given the old code. Write
+briefs against what is actually there: a seat told to consult a location it cannot reach
+is more likely to fill the gap than to report it, and a brief must not rely on it doing
+otherwise.
 
 **A seat builds and audits; the host integrates.** Charge the seat with its own
 independent audit round, then spend the host's attention on the load-bearing claims, the
@@ -145,13 +149,11 @@ Understanding crosses from the old system; bytes cross only when they are the be
 understood line by line, and named as carried in the commit and report. Third-party code
 must have a permitting licence and a citation. `cleanroom/README.md` owns the procedure.
 
-**The chamber window onto the old pipeline is closed.** The rebuild is planned from the
-design notes now, so a chamber sees no old code at all unless `new` was run with
-`AUTOCLAVE_WINDOW` deliberately set. This narrows where the rule above applies; it does
-not soften it.
-Nothing here licenses reading the old tree on the host and carrying a line in silently —
-an unnamed carry is a finding at review wherever the reading happened.
-`operations/autoclave/README.md` carries the ruling and its date.
+**The window onto the old pipeline is closed.** The rebuild is planned from the design
+notes now, and no seat sees old code at all. This narrows where the rule above applies; it
+does not soften it. Nothing here licenses reading the old tree on the host and carrying a
+line in silently — an unnamed carry is a finding at review wherever the reading happened.
+`cleanroom/README.md` carries the ruling and its date.
 
 ## Pushing and merging
 

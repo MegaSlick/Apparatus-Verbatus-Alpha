@@ -61,14 +61,13 @@ suspension. A missing suspensions file is reported, not interpreted.
 
 Print the versions of relevant tools. If agents will be dispatched:
 
-1. read `.claude/agents/README.md`, `operations/autoclave/README.md`, and
-   `operations/autoclave/agent-brief.md`;
-2. run `colima status || colima start`, saying if the VM was started;
-3. rely on `autoclave.sh new` to compare the image's repository-harness fingerprint with the
-   checkout; rebuild when it refuses a mismatch.
+1. read `.claude/agents/README.md` and `operations/seats/README.md`;
+2. list the linked worktrees (`git worktree list`) so a seat is not created on top of one
+   another session still holds;
+3. give each seat its own frozen environment rather than the host's:
+   `uv sync --frozen --group test --group audit` in the worktree.
 
-Do not start the container engine or audit every installed package for a direct task that
-does not use them.
+Do not audit every installed package for a direct task that does not dispatch anything.
 
 ## 5. Settle the goal and begin
 

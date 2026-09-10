@@ -33,9 +33,9 @@ Binding is the exclusive part, not naming. The materialization inventory in
 operator can fetch them before a chair ever resolves; a test reconciles the two lists so
 they cannot drift. Nothing but `models.toml` says which chair a model fills.
 
-**Not "seat".** In `.claude/` and the working notes a *seat* is a model doing an agent's
-job — building, reviewing, auditing. That is harness vocabulary and it stops at the
-pipeline's edge.
+**Not "seat".** In `.claude/`, `operations/seats/` and the working notes a *seat* is a
+model doing an agent's job — building, reviewing, auditing. That is harness vocabulary
+and it stops at the pipeline's edge.
 
 **pod** — a rented cloud machine with a GPU. It bills by the hour while it exists.
 

@@ -8,9 +8,8 @@ the text.
 **Status:** alpha. Governance and architectural *direction* are settled; the staged
 fixture pipeline, its accounting boundaries, and the Armarium product export are
 implemented and exercised by local checks, but the pipeline has not been proven on a
-Tyrel-approved small real-material trial. Agents build in a worktree on this machine under the tool-call guard, or in a sealed
-container when the work needs the window onto the old pipeline or an untrusted
-dependency install. Implementation continues to be discovered during alpha. **GitHub enforces
+Tyrel-approved small real-material trial. Agents build in a linked worktree on this
+machine under the tool-call guard. Implementation continues to be discovered during alpha. **GitHub enforces
 four things on `main`**, and only these four: a change arrives by pull request, the
 automated checks must pass before it can be merged, `main` cannot be force-pushed or
 deleted, and these apply to the owner as well. Everything else in this repository is a
@@ -42,8 +41,8 @@ editing a governed path, and the eighth is a spawned agent pushing, opening a pu
 request, marking one ready for review, updating its branch on the server, or merging
 one — in every `git`, `gh pr`, REST and GraphQL spelling the guard reaches — the two refusals that are not the same for both audiences,
 and the reason built-in agent types can be used here at all. The eighth is what carries
-hard rule 12 now that a build seat may run in a worktree on this machine: a chamber
-never pushed because its container had no route out, while a worktree seat holds the
+hard rule 12 now that a build seat runs in a worktree on this machine: the container
+seat it replaced never pushed because it had no route out, while a worktree seat holds the
 session's own credentials and allow list, so the rule needed a mechanism rather than a
 sentence. It cannot ask — a refusal is final within a session, and the way
 past one is Tyrel. The predecessor asked 503 times in three days and approval became
@@ -120,9 +119,9 @@ attribution discipline in CLAUDE.md depends on it and a ruling's date never goes
 
 **alpha** — a rebuild laboratory. Build the harness first; prove the workflow,
 branches, rules and contracts. Old code was the reference, read through a window that
-Tyrel closed once the rebuild could be planned from its own design notes — closed by
-default, not sealed: one chamber can still be given it deliberately, and
-`cleanroom/README.md` governs what may cross. Its systems are written new here, one piece
+Tyrel closed once the rebuild could be planned from its own design notes — no seat is
+given it now, and `cleanroom/README.md` governs what may cross when a session reads the
+old tree on the host. Its systems are written new here, one piece
 at a time. Alpha does not need to be a finished pipeline.
 
 **Nothing enters this repository uninspected.** Code is written new, read line by line

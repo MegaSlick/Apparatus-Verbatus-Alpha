@@ -220,7 +220,7 @@ def test_a_bounded_drawer_is_not_reopened_by_the_generic_readme_rule():
 
     `HANDOFF.md|*/README.md|*/HANDOFF.md` accepts those two names at *any* depth — `*`
     matches `/` in a shell case pattern — so it admitted
-    `operations/autoclave/briefs/nested/README.md` before the one-level-deep rules
+    `operations/seats/nested/README.md` before the one-level-deep rules
     further down could refuse it. Three drawers are bounded on purpose, and under those
     two filenames all three were not. Found by CodeRabbit on pull request 15.
 
@@ -228,8 +228,8 @@ def test_a_bounded_drawer_is_not_reopened_by_the_generic_readme_rule():
     sits in the same alternation with the same defect.
     """
     reopened = [
-        "operations/autoclave/briefs/nested/README.md",
-        "operations/autoclave/briefs/nested/HANDOFF.md",
+        "operations/seats/nested/README.md",
+        "operations/seats/nested/HANDOFF.md",
         ".claude/agents/nested/README.md",
         ".claude/agents/nested/HANDOFF.md",
         ".github/nested/README.md",
@@ -242,8 +242,8 @@ def test_a_bounded_drawer_is_not_reopened_by_the_generic_readme_rule():
     # The positive control. Tightening the order must not refuse the one-level files
     # those drawers exist to hold, nor an ordinary README anywhere else in the tree.
     for path in (
-        "operations/autoclave/briefs/README.md",
-        "operations/autoclave/README.md",
+        "operations/seats/README.md",
+        "operations/seats/builder.md",
         "workbench/README.md",
         ".claude/agents/README.md",
         "HANDOFF.md",
@@ -721,36 +721,10 @@ def test_install_creates_every_drawer_the_contract_declares(tmp_path):
         "design",
         "tools",
         "raw",
-        "autoclave",
         "quarantine",
     )
     missing = [name for name in declared if not (repo / "workbench" / name).is_dir()]
     assert not missing, f"install.sh did not create: {missing}"
-
-
-def test_tidy_names_the_chamber_drawers_no_installer_fills(tmp_path):
-    """`autoclave.sh` writes `workbench/autoclave/<task>/` and `rm` keeps it.
-
-    Nothing ages it, nothing empties it, and until now nothing counted it: a session
-    read a clean workbench while chamber bundles accumulated beside it. The `scratch/`
-    line is the positive control, because an assertion that `autoclave/` was reported
-    is worth nothing beside a run that never looked at the workbench at all.
-    """
-    repo = init_repo(tmp_path / "repo")
-    copy_hooks(repo, "tidy.py")
-    chamber = repo / "workbench" / "autoclave" / "refactor-designator"
-    chamber.mkdir(parents=True)
-    (chamber / "report.md").write_text("what the chamber did\n")
-    scratch = repo / "workbench" / "scratch"
-    scratch.mkdir(parents=True)
-    (scratch / "grep.txt").write_text("a dump\n")
-
-    result = command(["python3", ".githooks/tidy.py"], cwd=repo)
-
-    assert "scratch/" in result.stdout, "the report never ran"
-    assert "autoclave/ 1 chamber drawers" in result.stdout, result.stdout
-    assert "refactor-designator" in result.stdout, "the report must name the drawers it found"
-    assert (chamber / "report.md").is_file(), "the report changes nothing"
 
 
 def test_fixture_images_are_binary_at_any_depth(tmp_path):

@@ -2,7 +2,7 @@
 
 Build the task from its specification and the repository's current rules. Read
 `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, and
-`CLAUDE.md` from `/work` first.
+`CLAUDE.md` from the seat's own checkout first.
 
 - Write the test that exposes the missing behavior, then make it pass when practical.
 - Fail visibly: unknown is not zero, and missing evidence is not success.

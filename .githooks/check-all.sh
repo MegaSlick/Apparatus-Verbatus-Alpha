@@ -49,13 +49,6 @@ PYTHONSAFEPATH=1
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 export PYTHONNOUSERSITE PYTHONSAFEPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD
 
-chamber_environment_followup() {
-  [ -f /opt/autoclave/CLAUDE.md ] || return 0
-  echo "check-all: this chamber image cannot construct the required checkout-local .venv." >&2
-  echo "check-all: follow-up: install pinned uv==0.12.1 in operations/autoclave/Dockerfile; in cmd_new, after checkout, run '/opt/venv/bin/uv sync --frozen --group test --group audit'; add operations/autoclave/autoclave.sh to operations/autoclave/fingerprint.py INPUTS; then rebuild the image." >&2
-  echo "check-all: do not link .venv to /opt/venv: that image environment is resolved from requirements-dev.txt and does not freeze uv.lock's transitive versions." >&2
-}
-
 # The interpreter must both import from `.venv` and match the current lock. The
 # offline sync runs before that interpreter executes anything; only then does
 # the prefix check reject a PATH shadow.
@@ -64,7 +57,6 @@ UV_PROJECT_ENVIRONMENT="$root/.venv"
 export UV_PROJECT_ENVIRONMENT
 [ -x "$frozen_python" ] || {
   echo "check-all: frozen interpreter is missing at $frozen_python; run 'uv sync --frozen --group test --group audit'" >&2
-  chamber_environment_followup
   exit 1
 }
 
@@ -76,7 +68,6 @@ export UV_PROJECT_ENVIRONMENT
 uv_binary=$(command -v uv 2>/dev/null) || {
   echo "check-all: the frozen environment cannot be verified because uv is missing from PATH" >&2
   echo "check-all: recovery: install pinned uv==0.12.1, then run 'uv sync --frozen --group test --group audit'" >&2
-  chamber_environment_followup
   exit 1
 }
 case "$uv_binary" in
@@ -135,7 +126,6 @@ uv_version=$(/usr/bin/env -i HOME="$uv_home" PATH=/usr/bin:/bin \
   "$uv_binary" --version 2>/dev/null) || {
   echo "check-all: uv is on PATH but could not report its version, so the frozen environment is unverified" >&2
   echo "check-all: recovery: install pinned uv==0.12.1, then run 'uv sync --frozen --group test --group audit'" >&2
-  chamber_environment_followup
   exit 1
 }
 case "$uv_version" in
@@ -143,7 +133,6 @@ case "$uv_version" in
   *)
     echo "check-all: the frozen environment cannot be verified with $uv_version; this gate requires uv 0.12.1" >&2
     echo "check-all: recovery: install pinned uv==0.12.1, then run 'uv sync --frozen --group test --group audit'" >&2
-    chamber_environment_followup
     exit 1
     ;;
 esac
@@ -160,7 +149,6 @@ esac
   "$uv_binary" sync --frozen --offline --group test --group audit --no-config || {
   echo "check-all: uv could not reconcile $root/.venv to uv.lock from the local cache" >&2
   echo "check-all: recovery: run 'uv sync --frozen --group test --group audit' with network access, then retry" >&2
-  chamber_environment_followup
   exit 1
 }
 
@@ -172,7 +160,6 @@ esac
 [ "$("$frozen_python" -c 'import os, sys; print(os.path.realpath(sys.prefix))')" \
   = "$(CDPATH='' cd -- "$root/.venv" && pwd -P)" ] || {
   echo "check-all: $frozen_python does not import from the frozen environment at $root/.venv; run 'uv sync --frozen --group test --group audit'" >&2
-  chamber_environment_followup
   exit 1
 }
 

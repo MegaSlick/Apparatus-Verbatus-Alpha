@@ -37,13 +37,13 @@ rules 10 and 12 need a mechanical half exactly where the reader of the rule is a
 Six of the eight are unrecoverable, or close enough that the difference is a bad night;
 the seventh and eighth are recoverable and are there because the actor cannot be reasoned
 with. The eighth arrived when host worktree seats became the ordinary build seat: a
-chamber could not push because the container had no route out, and a seat in a worktree
+container seat could not push because it had no route out, and a seat in a worktree
 on this machine holds the session's own credentials and allow list. What was mechanical
 by accident is mechanical on purpose now. Everything else passes in silence, including
 things the old guard asked about: a *session's*
 ordinary pushes, `gh` calls, RunPod commands, edits to governed documents. Those are
 now governed by CLAUDE.md and by the session having read it — which is the trade this
-project made when it moved agents into containers. A rule a session has read is a
+project made when it moved agents into seats of their own. A rule a session has read is a
 better control than a prompt it has learned to dismiss.
 
 **Precision, and why it leans the other way from the old file.** The predecessor
@@ -53,8 +53,8 @@ harmless first line cannot hide a later one, and it lifts heredoc bodies out so 
 document that quotes a dangerous command is not read as one. It does not expand
 `sh -c` payloads, follow command substitution, or model git's option table. It is an
 accident-catcher for an accountable session, not a sandbox against an adversary —
-writing agents run in containers now (`operations/autoclave/README.md`) and are not
-this file's problem.
+writing agents run in worktree seats under this same guard (`operations/seats/README.md`),
+bounded by the refusals below rather than by anything adversarial.
 """
 
 from __future__ import annotations
@@ -561,12 +561,12 @@ DISPOSABLE_ROOTS = ("workbench/scratch",)
 # `/tmp` — a scratch clone, a sandbox, or the throwaway project root this file's own
 # tests build — matched in its entirety, so `rm -rf` on that whole tree was waved
 # through. macOS hid it, because `project_root()` resolves and `/var/folders/…` becomes
-# `/private/var/folders/…`, so the suite passed on the host and failed in a chamber.
+# `/private/var/folders/…`, so the suite passed on the host and failed in a container seat.
 #
-# An earlier version of this comment said "every chamber and every CI run clones this
-# repository under `/tmp`". That is false and a review seat caught it: a chamber clones
-# to `/work` and GitHub checks out under `/home/runner/work`. What actually sat under
-# `/tmp` in the chamber was pytest's own fixture root. The defect was real; the reason
+# An earlier version of this comment said "every container seat and every CI run clones
+# this repository under `/tmp`". That is false and a review seat caught it: a container
+# cloned to `/work` and GitHub checks out under `/home/runner/work`. What actually sat
+# under `/tmp` in the container was pytest's own fixture root. The defect was real; the reason
 # given for it was not, and a wrong reason in a comment is what the next reader inherits.
 #
 # Both resolved and unresolved spellings are listed, because `disposable()` requires
@@ -937,7 +937,7 @@ GOVERNED_NAMES = frozenset(
 # agent every `operations/`, `cleanroom/` and `workbench/` README in the tree. Hard rule
 # 12 makes `operations/` agent-written, so that refusal contradicted the rule it sits
 # beside, and a denial is final within a session: the agent had no route forward. It is
-# the likeliest explanation for the denials logged inside a chamber on 2026-08-02, where
+# the likeliest explanation for the denials logged inside a container seat on 2026-08-02, where
 # sub-agents were asked to update exactly those files. Found by CodeRabbit on pull
 # request 15.
 #
@@ -948,7 +948,7 @@ _GOVERNED_ALTERNATION = "|".join(
     sorted(re.escape(name) for name in GOVERNED_NAMES - ROOT_ONLY_NAMES)
 )
 # The root README in shell text: bare or `./`-prefixed, never after a path separator.
-# `/` is in the lookbehind class precisely so `operations/autoclave/README.md` cannot
+# `/` is in the lookbehind class precisely so `operations/seats/README.md` cannot
 # begin a match at its final component.
 _ROOT_README = r"(?<![\w.\-/])(?:\./)?readme\.md"
 # A redirect or an in-place editor naming a governed document. Coarse on purpose: it only
@@ -1149,8 +1149,8 @@ def agent_pushing_or_merging(tool: str, tool_input: Any, payload: dict[str, Any]
     """8. A *spawned agent* pushing, opening a pull request, or merging. Silent for the session.
 
     The second asymmetry, and the one that keeps hard rule 12 true now that a build seat
-    can run in a worktree on this machine instead of in a container. A chamber never
-    pushed because it had no route out; a worktree seat inherits the session's
+    can run in a worktree on this machine instead of in a container. A container seat
+    never pushed because it had no route out; a worktree seat inherits the session's
     credentials and its allow list, so "an agent never pushes" was a sentence with
     nothing behind it. The session is untouched: hard rules 4 and 14 are its to exercise.
 
@@ -1177,7 +1177,7 @@ def agent_pushing_or_merging(tool: str, tool_input: Any, payload: dict[str, Any]
     # Read through `git_calls` (line 472) so every spelling the rest of the file already
     # recognizes is covered at once: `git -C <dir> push`, a force-push, `rtk proxy git
     # push`, a subshell, a `then` clause. `git bundle create` is subcommand `bundle` and
-    # is deliberately not a push — a bundle is how a chamber hands work back.
+    # is deliberately not a push — a bundle is how a seat may hand work back.
     for action, _arguments in git_calls(command):
         if action == "push":
             return "deny", refusal

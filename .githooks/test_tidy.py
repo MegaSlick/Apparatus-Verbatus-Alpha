@@ -38,12 +38,7 @@ def load_tidy(tmp_path):
     mod.ARCHIVE = wb / "archive"
     mod.SCRATCH = wb / "scratch"
     mod.RAW = wb / "raw"
-    # Repointed like every other drawer, and for a reason worth naming: a constant
-    # left pointing at the real `workbench/autoclave` would make these tests read this
-    # machine's chamber drawers, so their output would depend on whoever last ran a
-    # dispatch here.
-    mod.AUTOCLAVE = wb / "autoclave"
-    # The same reason, and it was the one drawer left pointing at the real tree: with
+    # `QUARANTINE` was the one drawer left pointing at the real tree: with
     # `main()` now called directly by several tests, `QUARANTINE` was read out of this
     # machine's own `workbench/quarantine`, so a test's result depended on what the
     # last session happened to stage there. Found by CodeRabbit on pull request 15.
@@ -56,11 +51,32 @@ def load_tidy(tmp_path):
         mod.ARCHIVE,
         mod.SCRATCH,
         mod.RAW,
-        mod.AUTOCLAVE,
         mod.QUARANTINE,
     ):
         d.mkdir(parents=True)
     return mod
+
+
+def test_a_large_archived_file_is_never_hashed_for_the_duplicate_check(tmp_path, capsys):
+    """Filed evidence can run to gigabytes; a note never does.
+
+    The duplicate check exists for notes, so anything above `ARCHIVE_DIGEST_MAX_BYTES`
+    is skipped rather than hashed twice a session. The small pair is the positive
+    control: without it, an assertion that the large pair went unreported would also
+    pass if the whole check had stopped working.
+    """
+    tidy = load_tidy(tmp_path)
+    big = b"b" * (tidy.ARCHIVE_DIGEST_MAX_BYTES + 1)
+    (tidy.ARCHIVE / "bundle.bin").write_bytes(big)
+    (tidy.ACTIVE / "copy.bin").write_bytes(big)
+    (tidy.ARCHIVE / "old.md").write_text("same bytes")
+    (tidy.ACTIVE / "note.md").write_text("same bytes")
+
+    tidy.main([])
+    out = capsys.readouterr().out
+    reported = out.split("already archived")[1].split("\n\n")[0]
+    assert "note.md" in reported, out
+    assert "copy.bin" not in reported, "a file above the cap must not be hashed or matched"
 
 
 def test_duplicate_is_reported_and_nothing_moves(tmp_path, capsys):
@@ -150,29 +166,6 @@ def test_a_clean_drawer_reports_nothing_and_exits_zero(tmp_path, capsys):
     (tidy.STANDING / "SUSPENSIONS.md").write_text("none in force\n")
     assert tidy.main([]) == 0
     assert "nothing wants attention" in capsys.readouterr().out
-
-
-def test_chamber_drawers_are_named_without_being_offered_for_deletion(tmp_path, capsys):
-    """`workbench/autoclave/` survives the chamber that made it, and nothing empties it.
-
-    So a session read a clean workbench while chamber bundles accumulated beside it,
-    unnamed and uncounted. It is reported and the drawers are named — but reporting is
-    not a request to delete, so this must not push the run into the attention arm.
-    """
-    tidy = load_tidy(tmp_path)
-    (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
-    (tidy.STANDING / "SUSPENSIONS.md").write_text("none in force\n")
-    drawer = tidy.AUTOCLAVE / "refactor-designator"
-    drawer.mkdir()
-    (drawer / "report.md").write_bytes(b"r" * 1024)
-    (drawer / "refactor-designator.bundle").write_bytes(b"b" * 2048)
-
-    assert tidy.main([]) == 0, "counting a surviving drawer must not demand attention"
-    out = capsys.readouterr().out
-    assert "autoclave/ 1 chamber drawers, 3 KB" in out, out
-    assert "refactor-designator" in out, "the report must name the drawers it found"
-    assert "nothing wants attention" in out
-    assert (drawer / "report.md").is_file(), "the report changes nothing"
 
 
 def test_a_missing_workbench_is_a_failure_not_a_pass(tmp_path, capsys):

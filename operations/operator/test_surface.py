@@ -278,7 +278,7 @@ def test_no_saved_operator_record_carries_a_spendable_confirmation_phrase(
 
 def _tracked_production_sources() -> list[Path]:
     """Tracked non-test sources only: a bare rglob also sweeps gitignored local
-    material (workbench chambers, stray checkouts, deliberately broken benchmark
+    material (seat worktrees, stray checkouts, deliberately broken benchmark
     fixtures), which are not production call sites and made these scans fail on
     machines that have them."""
     tracked = subprocess.run(
