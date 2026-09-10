@@ -9,6 +9,7 @@ the wrong ID, or ignored an adapter is more expensive than a visible refusal.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -2163,6 +2164,41 @@ def _wait_until(predicate: Callable[[], bool], *, timeout_seconds: float = 5.0) 
         time.sleep(0.02)
 
 
+def _proc_status_is_live(read_status: Callable[[], str]) -> bool:
+    """Classify one `/proc` status sample, including disappearance during its read."""
+    try:
+        status = read_status()
+    except OSError as error:
+        if error.errno in {errno.ENOENT, errno.ESRCH}:
+            return False
+        raise
+    return "(zombie)" not in status
+
+
+def test_proc_status_observer_distinguishes_live_zombie_and_disappearance() -> None:
+    assert _proc_status_is_live(lambda: "State:\tS (sleeping)\n")
+    assert not _proc_status_is_live(lambda: "State:\tZ (zombie)\n")
+
+    for error in (
+        FileNotFoundError(errno.ENOENT, "status entry disappeared"),
+        ProcessLookupError(errno.ESRCH, "process disappeared while status was read"),
+    ):
+
+        def disappeared(error=error):
+            raise error
+
+        assert not _proc_status_is_live(disappeared)
+
+    denied = PermissionError(errno.EACCES, "status entry is unreadable")
+
+    def unreadable():
+        raise denied
+
+    with pytest.raises(PermissionError) as caught:
+        _proc_status_is_live(unreadable)
+    assert caught.value is denied
+
+
 def test_a_still_running_child_polls_none_and_a_terminated_one_reports_its_signal(
     tmp_path: Path,
 ) -> None:
@@ -2272,18 +2308,12 @@ def test_terminate_reaches_a_grandchild_in_the_same_owned_session(tmp_path: Path
         grandchild_pid = int(pidfile.read_text())
 
         def _grandchild_alive() -> bool:
-            # The grandchild is orphaned once its true parent (the direct
-            # child this manager owns) is also killed by the same killpg, so
-            # nothing left in this process tree ever reaps it: a signalled
-            # grandchild becomes an unreapable zombie rather than
-            # disappearing, and plain os.kill(pid, 0) still succeeds against
-            # a zombie. /proc's own state character is the one thing that
-            # distinguishes "signalled and exited" from "still running" here.
-            try:
-                status = Path(f"/proc/{grandchild_pid}/status").read_text()
-            except FileNotFoundError:
-                return False
-            return "(zombie)" not in status
+            # The grandchild's true parent exits under the same killpg. The
+            # host may leave the grandchild observable briefly as a zombie or
+            # reap it before this sample. Plain os.kill(pid, 0) treats a zombie
+            # as present, so /proc's state distinguishes the first case while
+            # the two disappearance errnos distinguish the second.
+            return _proc_status_is_live(Path(f"/proc/{grandchild_pid}/status").read_text)
 
         assert _grandchild_alive(), "grandchild must be running before terminate is asserted"
         process.terminate()
