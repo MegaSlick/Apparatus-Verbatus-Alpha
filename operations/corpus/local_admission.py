@@ -303,13 +303,27 @@ def _receipt(set_root: Path) -> dict[str, Any]:
                 f"{declared!r}"
             )
         digests[filename] = actual
+    # The producer of these sets is outside this repository, so a field of the
+    # wrong JSON type is exactly what this boundary exists to name: held to a
+    # shape here, never carried into the ledger to fail its sealing later.
+    status = receipt.get("status")
+    requested = receipt.get("requested_splits")
+    if not isinstance(status, str) or not status:
+        raise CorpusRefusal(
+            f"malformed-record: {receipt_path} declares status {status!r}, not a non-empty string"
+        )
+    if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
+        raise CorpusRefusal(
+            f"malformed-record: {receipt_path} declares requested_splits {requested!r}, "
+            "not a list of strings"
+        )
     return {
         "path": str(receipt_path),
         # The receipt's own bytes, so the ledger's chain closes back to the file
         # that made the claim and not only to the two files it named.
         "receipt_sha256": digest_bytes(receipt_body),
-        "status": receipt.get("status"),
-        "requested_splits": receipt.get("requested_splits"),
+        "status": status,
+        "requested_splits": requested,
         "digests": digests,
     }
 
@@ -375,6 +389,11 @@ def _page_image_path(set_root: Path, image_rel: Any, page_id: str) -> Path:
             f"{resolved}, which is outside the set root {root}"
         )
     return set_root / candidate
+
+
+def _identity(value: Any) -> str | None:
+    """An identity field as the ledger stores it: the value's text, or `None` when absent."""
+    return None if value is None else str(value)
 
 
 def _canonical_safe(value: Any) -> Any:
@@ -520,10 +539,13 @@ def admit_local_set(
         reason = _reason(error) if isinstance(error, Exception) else error.split(":", 1)[0]
         detail = str(error)
         refused_by_reason[reason] = refused_by_reason.get(reason, 0) + 1
+        # The two identity fields are held to `str | None` by the ledger's own
+        # validator; a raw number here refused one record and then aborted the
+        # whole ledger. The detail string keeps the original value verbatim.
         ledger_rows.append(
             {
-                "record_id": _canonical_safe(row.get("record_id")),
-                "page_id": _canonical_safe(row.get("page_id")),
+                "record_id": _identity(row.get("record_id")),
+                "page_id": _identity(row.get("page_id")),
                 "split": _canonical_safe(row.get("split")),
                 "record_url": _canonical_safe(row.get("record_url")),
                 "iiif_rotation": _canonical_safe(row.get("iiif_rotation")),

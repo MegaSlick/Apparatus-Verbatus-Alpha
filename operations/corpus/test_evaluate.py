@@ -778,6 +778,21 @@ def test_the_validator_refuses_a_category_histogram_that_is_not_counts(sealed_ru
     assert "reference_records_scored_by_export_category" in str(refused.value)
 
 
+def test_the_validator_holds_the_page_records_to_the_pages_compared_count(sealed_run):
+    """A report claiming N compared pages carries N comparison records, or it is refused."""
+    report = json.loads(
+        json.dumps(
+            evaluate_run(sealed_run, [_fixture_reference_for_page_one(sealed_run)], code_ref="test")
+        )
+    )
+    assert report["pages"], "the fixture run compares at least one page"
+    edited = json.loads(json.dumps(report))
+    edited["pages"].pop()
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_evaluation(_reseal(edited))
+    assert "run_pages_compared" in str(refused.value)
+
+
 def test_the_validator_refuses_a_foreign_schema_and_a_label_that_does_not_match(sealed_run):
     report = json.loads(
         json.dumps(

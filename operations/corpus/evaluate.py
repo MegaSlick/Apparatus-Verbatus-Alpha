@@ -905,6 +905,11 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
         )
     if len(report["unmatched_pipeline_acts"]) != totals["pipeline_acts_unmatched"]:
         raise CorpusRefusal("malformed-record: pipeline_acts_unmatched does not count its own rows")
+    if len(report["pages"]) != totals["run_pages_compared"]:
+        raise CorpusRefusal(
+            f"malformed-record: run_pages_compared claims {totals['run_pages_compared']} page(s), "
+            f"the report carries {len(report['pages'])} comparison record(s)"
+        )
     if len(report["pages_without_reference"]) != totals["run_pages_without_reference"]:
         raise CorpusRefusal(
             "malformed-record: run_pages_without_reference does not count its own rows"

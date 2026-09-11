@@ -311,6 +311,41 @@ def test_a_float_in_a_refused_record_does_not_abort_the_whole_admission(tmp_path
     assert validate_local_admission_ledger(dict(ledger))["summary"]["refused"] == 1
 
 
+def test_a_numeric_identity_in_a_refused_record_does_not_abort_the_whole_admission(tmp_path):
+    """The validator holds a refused row's identities to `str | None`; a number is projected.
+
+    A gold row carrying `"record_id": 7` was refused by name and then, stored
+    raw, failed the ledger's own validation after every other record had been
+    admitted (CodeRabbit on PR #114). One bad row must cost one row.
+    """
+    root = _two_page_set(tmp_path / "set", **{"r-rot": {"record_id": 7}})
+    ledger = admit_local_set(root, split="val")
+    assert ledger["summary"]["refused"] == 1 and ledger["summary"]["admitted"] == 2
+    refused = next(row for row in ledger["rows"] if row["decision"] == "refused")
+    assert refused["record_id"] == "7"
+    assert validate_local_admission_ledger(dict(ledger))["summary"]["admitted"] == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "said"),
+    [
+        ("status", 1.0, "status"),
+        ("status", "", "status"),
+        ("requested_splits", "val", "requested_splits"),
+        ("requested_splits", ["val", 3], "requested_splits"),
+    ],
+)
+def test_a_receipt_field_of_the_wrong_type_is_refused_by_name(tmp_path, field, value, said):
+    """The receipt's producer is outside this repository; a wrong JSON type is named, not sealed."""
+    root = _two_page_set(tmp_path / "set")
+    receipt = json.loads((root / "fetch_receipt.json").read_text())
+    receipt[field] = value
+    (root / "fetch_receipt.json").write_text(json.dumps(receipt))
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        admit_local_set(root, split="val")
+    assert said in str(refused.value) and "fetch_receipt.json" in str(refused.value)
+
+
 def test_admission_changes_nothing_in_the_set(tmp_path):
     root = _two_page_set(tmp_path / "set")
     before = {
