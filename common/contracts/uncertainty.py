@@ -75,7 +75,11 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
     assessment = layer["assessment"]
     if not isinstance(assessment, dict) or set(assessment) != _ASSESSMENT_FIELDS:
         raise SchemaRefusal("canonical uncertainty has no closed assessment record")
-    if assessment["state"] not in _ASSESSMENT_STATES:
+    # The string check leads the membership test, as the producer's own
+    # vocabulary check does: `in` against a frozenset raises `TypeError` on an
+    # unhashable value, so a resealed record carrying a list here would crash a
+    # consumer instead of being refused by name.
+    if type(assessment["state"]) is not str or assessment["state"] not in _ASSESSMENT_STATES:
         raise SchemaRefusal(
             f"canonical uncertainty names an unknown assessment state {assessment['state']!r}"
         )

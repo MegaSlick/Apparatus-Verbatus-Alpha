@@ -2222,6 +2222,13 @@ _PERLECTIO_FIELDS: Final = frozenset(
 # The same, for the instrument record. It carries no `basis` -- a nuda reading
 # has no witness basis to record, which is the whole point of it -- and it does
 # carry the sampling design it was drawn under.
+#
+# The doubt report is carried on every record kind a reader answers on, not only
+# on the published Perlectio. The reader answers the same way on an instrument
+# call as on the establishing one, Lectio nuda is the instrument ARCHITECTURE
+# names for telling a reader that reads ink from one that agrees with witnesses
+# -- so a doubt reported there is a measurement -- and GOVERNANCE 2 says a
+# result is not lost quietly (the independent review of 2026-09-11).
 _LECTIO_NUDA_FIELDS: Final = frozenset(
     {
         "act_key",
@@ -2233,6 +2240,7 @@ _LECTIO_NUDA_FIELDS: Final = frozenset(
         "dissent",
         "truncation",
         "uncertain_spans",
+        "uncertainty_assessment",
         "gaps",
         "provenance",
     }
@@ -2248,6 +2256,7 @@ _LECTIO_PRIOR_FIELDS: Final = frozenset(
         "dissent",
         "truncation",
         "uncertain_spans",
+        "uncertainty_assessment",
         "gaps",
         "provenance",
         "protocol",
@@ -2266,6 +2275,7 @@ _PRIMED_WITHOUT_PRIOR_FIELDS: Final = frozenset(
         "dissent",
         "truncation",
         "uncertain_spans",
+        "uncertainty_assessment",
         "gaps",
         "provenance",
         "lectio_kind",
@@ -2619,6 +2629,7 @@ def validate_reading_payload(
             "the truncation field is where that is confirmed or held unknown, never "
             "contradicted"
         )
+    _validate_sealed_doubt(payload, fields=fields)
     if "audit" not in fields:
         annotations.validate_annotations(payload, outcome=outcome)
         return
@@ -2628,6 +2639,59 @@ def validate_reading_payload(
     # payload-only shape check therefore does not guess a bound from final text.
     audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
     annotations.validate_annotations(payload, outcome=outcome)
+
+
+def _validate_sealed_doubt(payload: dict, *, fields: frozenset) -> None:
+    """Refuse a sealed doubt report this producer would never have written.
+
+    The field is in every reading record's closed set, so its presence is
+    already proved; what was never asked is whether its *content* is the record
+    this module builds. A malformed one published here reaches the Recensor as
+    state `None` -- no hold -- and fails at the Archetypus, one stage after the
+    branch that introduced it (the independent review of 2026-09-11).
+
+    The layer rule is asked only of the records with no audit behind them. On
+    those, every span is the reader's own, so a span beside a state that says
+    the reader was never asked is a contradiction. On the established Perlectio
+    the layer is the union of the exhausted-cap projection and the reader's
+    report, and only `common/perlector_audit.validate_chain` -- which can read
+    the finding -- can say which span is whose; it applies exactly this rule
+    there.
+    """
+    record = payload["uncertainty_assessment"]
+    if not isinstance(record, dict) or set(record) != {"state", "problem"}:
+        raise SchemaRefusal(
+            "a Perlector reading carries no closed {state, problem} doubt assessment"
+        )
+    state = record["state"]
+    if type(state) is not str or state not in annotations.ASSESSMENT_STATES:
+        raise SchemaRefusal(f"a Perlector reading names an unknown doubt state {state!r}")
+    problem = record["problem"]
+    if problem is not None and (type(problem) is not str or not problem):
+        raise SchemaRefusal(
+            "a Perlector reading's doubt problem is neither null nor a non-empty string"
+        )
+    if (state == annotations.ASSESSMENT_ASSESSED) != (problem is None):
+        raise SchemaRefusal(
+            "a Perlector reading's doubt report carries a problem exactly when it is not assessed"
+        )
+    if state == annotations.ASSESSMENT_ASSESSED or "audit" in fields:
+        return
+    if payload["uncertain_spans"]:
+        raise SchemaRefusal(
+            f"a {state!r} Perlector reading publishes an uncertain span of its own; a reader "
+            "that was never asked, or whose report was refused, reports no doubt"
+        )
+    gaps = payload["gaps"]
+    # Shape first: this check runs before `validate_annotations`, so it may not
+    # assume the layer is a list of objects.
+    if not isinstance(gaps, list):
+        raise SchemaRefusal("a Perlector reading's gap layer is not a list")
+    if not all(isinstance(gap, dict) and gap.get("position") == "whole-act" for gap in gaps):
+        raise SchemaRefusal(
+            f"a {state!r} Perlector reading publishes a gap of its own; only a reader that "
+            "was asked reports where its sight failed"
+        )
 
 
 def _reproof_call(reproof: dict[str, Any]) -> dict[str, Any] | None:
@@ -2662,6 +2726,53 @@ def _assessed(result: dict[str, Any], *, text: str) -> dict[str, Any]:
         return annotations.validate_assessment(copy.deepcopy(report), text)
     except SchemaRefusal as error:
         return annotations.malformed_assessment(f"the reader's doubt report was refused: {error}")
+
+
+def _union_with_projection(
+    projected: list[dict[str, Any]], reader_spans: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The published span layer: the exhausted-cap projection, then the reader's own.
+
+    A reader span that is field-for-field one of the projected spans is dropped
+    rather than published twice -- two identical entries are one doubt written
+    down twice, and the review surface would print it as two doubts. A span that
+    merely overlaps is kept: two instruments doubting overlapping characters
+    with different alternatives or confidences are two readings of the evidence,
+    and collapsing them would lose one. The stage HANDOFF says so where it
+    describes this order.
+    """
+    return projected + [span for span in reader_spans if span not in projected]
+
+
+def _sealed_assessment(assessment: dict[str, Any]) -> dict[str, Any]:
+    """The two fields of a doubt report that the record seals.
+
+    The spans and gaps the report carried are published in the record's own two
+    annotation layers, so what is sealed here is the state and the problem: one
+    shape, written in one place, for every record kind that carries one.
+    """
+    return {"state": assessment["state"], "problem": assessment["problem"]}
+
+
+def _published_doubt(
+    result: dict[str, Any], *, text: str, outcome: str, whole_act_gaps: list[dict[str, Any]]
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """One call's doubt report as the record publishes it: sealed state, spans, gaps.
+
+    Over an unreadable act the whole-act gap is the one annotation the outcome
+    allows, so the report is re-asked against the empty text the record actually
+    publishes rather than emptied beneath a state that still says `assessed`.
+    A report that cannot anchor to that text becomes `malformed` and is visible;
+    nothing is dropped in silence (independent audit of 2026-09-10, F2).
+    """
+    if outcome == "no-readable-text":
+        return _sealed_assessment(_assessed(result, text="")), [], whole_act_gaps
+    assessment = _assessed(result, text=text)
+    return (
+        _sealed_assessment(assessment),
+        list(assessment["uncertain_spans"]),
+        list(assessment["gaps"]),
+    )
 
 
 def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, text: str) -> str:
@@ -3084,6 +3195,12 @@ def _publish_lectio_nuda(
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
+    nuda_assessment, nuda_spans, nuda_gaps = _published_doubt(
+        result,
+        text=nuda_text,
+        outcome=outcome,
+        whole_act_gaps=_whole_act_gap([], {}),
+    )
     payload = {
         "act_key": act_key,
         "attempt_ordinal": ordinal,
@@ -3096,8 +3213,9 @@ def _publish_lectio_nuda(
         ),
         "dissent": [],
         "truncation": truncation_record,
-        "uncertain_spans": [],
-        "gaps": _whole_act_gap([], {}) if outcome == "no-readable-text" else [],
+        "uncertain_spans": nuda_spans,
+        "uncertainty_assessment": nuda_assessment,
+        "gaps": nuda_gaps,
         "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
     }
     fields = with_engine_call(payload, result, _LECTIO_NUDA_FIELDS)
@@ -3150,6 +3268,12 @@ def _publish_lectio_prior(
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
+    prior_assessment, prior_spans, prior_gaps = _published_doubt(
+        result,
+        text=text,
+        outcome=outcome,
+        whole_act_gaps=_whole_act_gap([], {}),
+    )
     payload = {
         "act_key": act_key,
         "attempt_ordinal": ordinal,
@@ -3158,8 +3282,9 @@ def _publish_lectio_prior(
         "prompt": prompt,
         "dissent": [],
         "truncation": truncation_record,
-        "uncertain_spans": [],
-        "gaps": _whole_act_gap([], {}) if outcome == "no-readable-text" else [],
+        "uncertain_spans": prior_spans,
+        "uncertainty_assessment": prior_assessment,
+        "gaps": prior_gaps,
         "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
         "protocol": {
             "selection_rule": protocol_config["selection_rule"],
@@ -3238,6 +3363,12 @@ def _publish_primed_without_prior(
     # it. Re-reading it here would re-verify the same bytes once per sampled
     # act, and once more per act at the sampling decision below.
     membership = context.run["corpus_frame_membership"]
+    control_assessment, control_spans, control_gaps = _published_doubt(
+        result,
+        text=text,
+        outcome=outcome,
+        whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
+    )
     payload = {
         "act_key": act_key,
         "attempt_ordinal": ordinal,
@@ -3271,10 +3402,9 @@ def _publish_primed_without_prior(
         },
         "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
         "truncation": truncation_record,
-        "uncertain_spans": [],
-        "gaps": _whole_act_gap(testimonia, testimonium_references)
-        if outcome == "no-readable-text"
-        else [],
+        "uncertain_spans": control_spans,
+        "uncertainty_assessment": control_assessment,
+        "gaps": control_gaps,
         "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
         "lectio_kind": "primed-without-prior",
         "protocol": {
@@ -3747,16 +3877,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             )
             for record in testimonia
         }
-        # The reader's own doubts over the text it read. Over an unreadable act
-        # the whole-act gap is the one annotation the outcome allows, so the
-        # report's layers are set aside there and only its state is kept.
-        assessment = _assessed(result, text=reading)
-        if outcome == "no-readable-text":
-            gaps = _whole_act_gap(testimonia, testimonium_references)
-            reader_spans: list[dict[str, Any]] = []
-        else:
-            gaps = list(assessment["gaps"])
-            reader_spans = list(assessment["uncertain_spans"])
+        # The reader's own doubts over the text it read, by the one rubric every
+        # record kind uses (`_published_doubt`).
+        sealed_doubt, reader_spans, gaps = _published_doubt(
+            result,
+            text=reading,
+            outcome=outcome,
+            whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
+        )
 
         provenance = provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref)
         payload = {
@@ -3781,10 +3909,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "truncation": truncation_record,
             "uncertain_spans": reader_spans,
             "gaps": gaps,
-            "uncertainty_assessment": {
-                "state": assessment["state"],
-                "problem": assessment["problem"],
-            },
+            "uncertainty_assessment": sealed_doubt,
             "provenance": provenance,
             "lectio_kind": "primed-with-prior",
             "self_revision": departures(reading, prior["text"]),
@@ -3992,10 +4117,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 # own text, and Pass B's to Pass B's, so nothing is re-anchored
                 # by guesswork and nothing is silently dropped.
                 reproof_assessment = _assessed(reproof, text=final_text)
-                payload["uncertainty_assessment"] = {
-                    "state": reproof_assessment["state"],
-                    "problem": reproof_assessment["problem"],
-                }
+                payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
                 payload["uncertain_spans"] = list(reproof_assessment["uncertain_spans"])
                 payload["gaps"] = list(reproof_assessment["gaps"])
                 # `engine_call` names the call the published text came from, so
@@ -4050,15 +4172,30 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     # absence.
                     final_text = ""
                     payload["text"] = ""
-                    payload["uncertain_spans"] = []
-                    payload["gaps"] = _whole_act_gap(
-                        row["testimonia"],
-                        {
-                            record["artifact_id"]: context.artifact_ref(
-                                ATTESTATORES, "testimonium", record["artifact_id"]
-                            )
-                            for record in row["testimonia"]
-                        },
+                    # Through the one rubric the Pass-B path uses, so the
+                    # re-proof's report is re-asked against the text this record
+                    # now publishes rather than emptied under a state still
+                    # saying `assessed`. That would have sealed "the reader
+                    # assessed this act and reported nothing" over a report that
+                    # was thrown away -- the exact false confidence F2 exists to
+                    # remove (the independent review of 2026-09-11).
+                    (
+                        payload["uncertainty_assessment"],
+                        payload["uncertain_spans"],
+                        payload["gaps"],
+                    ) = _published_doubt(
+                        reproof,
+                        text="",
+                        outcome="no-readable-text",
+                        whole_act_gaps=_whole_act_gap(
+                            row["testimonia"],
+                            {
+                                record["artifact_id"]: context.artifact_ref(
+                                    ATTESTATORES, "testimonium", record["artifact_id"]
+                                )
+                                for record in row["testimonia"]
+                            },
+                        ),
                     )
                     payload["dissent"] = dissent_against(
                         "", dissent_testimonia(row["testimonia"], row["attachment_view"])
@@ -4132,10 +4269,18 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # R8 reconciles the canonical export schema.  An unresolved flag never
         # silently remains a clean `read`: it becomes an explicit span and the
         # Recensor consumes the companion `unresolved` fact below.
-        payload["uncertain_spans"] = [
-            {"start": span["start"], "end": span["end"], "alternatives": [], "confidence": "low"}
-            for span in uncertainty
-        ] + list(payload["uncertain_spans"])
+        payload["uncertain_spans"] = _union_with_projection(
+            [
+                {
+                    "start": span["start"],
+                    "end": span["end"],
+                    "alternatives": [],
+                    "confidence": "low",
+                }
+                for span in uncertainty
+            ],
+            payload["uncertain_spans"],
+        )
         payload["audit"] = {
             "draft_ref": draft_ref,
             "finding_ref": finding_ref,

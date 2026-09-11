@@ -88,6 +88,8 @@ _PRIOR_READING_SCENARIOS = (
     # Same reach as `happy`; their departure is a declared reader doubt report.
     "reader-doubt",
     "reader-doubt-malformed",
+    # A declared doubt colliding with an emptied reading.
+    "reader-doubt-unreadable",
     "refused-page",
     "truncated-reading",
     "genuinely-empty-witness",
@@ -146,6 +148,7 @@ READER_ASSESSMENTS = (
         "problem": "",
         "pass_kind": "audit-reproof",
     },
+    {"scenario": "reader-doubt-unreadable", "act_key": "a1", "state": "assessed", "problem": ""},
 )
 READER_DOUBTS = (
     # "SYNTHETIC ACT ONE alpha beta gamma": "gamma" is [29, 34).
@@ -184,6 +187,16 @@ READER_DOUBTS = (
         "start": 29,
         "end": 99,
         "alternatives": [],
+        "confidence": "low",
+    },
+    # A doubt over an act the reader then reports as unreadable: in bounds for
+    # the declared text, and impossible over the empty text the outcome publishes.
+    {
+        "scenario": "reader-doubt-unreadable",
+        "act_key": "a1",
+        "start": 29,
+        "end": 34,
+        "alternatives": ["gamna"],
         "confidence": "low",
     },
 )
@@ -512,6 +525,14 @@ _UNMATCHABLE_SHA256 = "0" * 64
 READING_FAILURES = (
     {"scenario": "truncated-reading", "act_key": "a1", "outcome": "truncated"},
     {"scenario": "no-readable-text-reading", "act_key": "a1", "outcome": "no-readable-text"},
+    # The same silence, with a reader that also reported a doubt over the act.
+    # The two cannot both be published: the outcome owes a whole-act gap over an
+    # empty text, and the doubt names characters that text does not have. The
+    # producer re-asks the report against the text it actually publishes, so the
+    # report becomes `malformed` and is visible, and the Recensor holds the act
+    # rather than delivering it with an emptied layer under a state still
+    # claiming the reader assessed it.
+    {"scenario": "reader-doubt-unreadable", "act_key": "a1", "outcome": "no-readable-text"},
 )
 
 # The one declared, fixture-only truncation signal (`pipeline/4_perlector/
@@ -1006,6 +1027,17 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "",
         "[[scenario]]",
         'name = "reader-doubt-malformed"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# reader-doubt-unreadable is a declared doubt colliding with an emptied",
+        "# reading: the outcome says nothing was readable, and the doubt names",
+        "# characters the published empty text does not have. It must end as a",
+        "# visible `malformed` assessment and a hold, never as an `assessed`",
+        "# state beside layers that were quietly emptied. It declares no recovery",
+        "# and no hold of its own, so the hold it produces has exactly one origin.",
+        "[[scenario]]",
+        'name = "reader-doubt-unreadable"',
         "recover_acts = []",
         "hold_acts = []",
         "",

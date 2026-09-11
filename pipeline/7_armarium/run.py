@@ -1126,14 +1126,24 @@ def not_measured_basis(
     # canonical layer each act already carries: how many readings were actually
     # assessed for doubt, and how many came from a chair with no channel. An
     # empty span list under `not-assessed` is an absence, not confidence (F2).
-    assessed = sum(
-        1
-        for act in projected_acts
-        if act["category"] == ArmariumCategory.DELIVERED.value
-        and isinstance(act.get("uncertainty"), dict)
-        and isinstance(act["uncertainty"].get("assessment"), dict)
-        and act["uncertainty"]["assessment"].get("state") == "assessed"
-    )
+    #
+    # Both numbers are counted, neither is derived by subtraction: a delivered
+    # act in any third state would otherwise be counted as one with no doubt
+    # channel. `_validate_projection` refuses such an act outright, and these
+    # two counts are what it reconciles against, so a disagreement between the
+    # producer here and the validator there is itself refused.
+    assessed = 0
+    not_assessed = 0
+    for act in projected_acts:
+        if act["category"] != ArmariumCategory.DELIVERED.value:
+            continue
+        uncertainty = act.get("uncertainty")
+        assessment = uncertainty.get("assessment") if isinstance(uncertainty, dict) else None
+        state = assessment.get("state") if isinstance(assessment, dict) else None
+        if state == "assessed":
+            assessed += 1
+        elif state == "not-assessed":
+            not_assessed += 1
     basis = {
         "schema": NOT_MEASURED_BASIS_SCHEMA,
         "page-testimony-content-coverage": {
@@ -1158,7 +1168,7 @@ def not_measured_basis(
             "acts_delivered": delivered,
             "acts_with_uncertain_spans": with_spans,
             "acts_assessed": assessed,
-            "acts_not_assessed": delivered - assessed,
+            "acts_not_assessed": not_assessed,
         },
         "designator-geometry-calibration": {"configurations": geometry_calibration_rows(context)},
     }

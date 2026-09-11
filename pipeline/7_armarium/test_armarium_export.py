@@ -107,6 +107,11 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
 # projections are hand-built shapes with no reader behind them, so the honest
 # state for every layer below is `not-assessed`, and the block's uncertainty
 # instrument declares itself unproduced over them for that reason.
+# The reader's own doubts, for the layers below that actually carry one. The
+# exhausted-cap projection is the only thing that mints a span without a reader
+# (and it mints spans, never gaps, always with no alternatives), so a layer
+# holding an alternative or a gap is a reader's report and its state says so.
+_ASSESSED = {"state": "assessed", "problem": None}
 _NOT_ASSESSED = {
     "state": "not-assessed",
     "problem": "a hand-built projection has no reader to report its doubts",
@@ -194,6 +199,11 @@ def _basis_for_acts(acts, *, sealed_pages=1):
         "acts_delivered": len(delivered),
         "acts_with_uncertain_spans": spans,
         "acts_assessed": assessed,
+        # By subtraction here, deliberately: the production basis counts each
+        # state, and this helper's job is to hand a projection the basis a
+        # producer would have written. A case that delivers an act in a third
+        # state therefore reaches the projection's own refusal of that act,
+        # rather than the partition rule one step earlier.
         "acts_not_assessed": len(delivered) - assessed,
     }
     return basis
@@ -1125,7 +1135,11 @@ def test_projection_identity_refuses_a_self_consistent_package_with_drifted_unce
     members = _members(bundle.data)
     records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
     records[0]["uncertainty"] = {
-        "uncertain_spans": [{"start": 0, "end": 1, "alternatives": ["X"], "confidence": "low"}],
+        # Cap-projection-shaped on purpose (no alternatives), so this forged
+        # copy stays a layer the pipeline could legitimately have written under
+        # a reader with no doubt channel; what the test is about is that it
+        # differs from the layer every other format carries.
+        "uncertain_spans": [{"start": 0, "end": 1, "alternatives": [], "confidence": "low"}],
         "gaps": [],
         "self_revisions": [],
         "assessment": _NOT_ASSESSED,
@@ -1195,7 +1209,7 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
             ],
             "gaps": [],
             "self_revisions": [],
-            "assessment": _NOT_ASSESSED,
+            "assessment": _ASSESSED,
         },
     }
     bundle = build_armarium_bundle(
@@ -1261,7 +1275,7 @@ def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal
         ],
         "gaps": [],
         "self_revisions": [],
-        "assessment": _NOT_ASSESSED,
+        "assessment": _ASSESSED,
     }
     assert validate_uncertainty(other_layer, other_literal) == other_layer
     lines[marker + 1] = json.dumps(other_layer, ensure_ascii=False, sort_keys=True)
@@ -3547,7 +3561,7 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
                 "prior_span": {"start": 0, "end": 0},
             }
         ],
-        "assessment": _NOT_ASSESSED,
+        "assessment": _ASSESSED,
     }
     # A trailing gap is unread ink, so the act's own status is `partial` and the
     # run that delivered it says so; this test is about the offsets surviving,
@@ -3586,7 +3600,7 @@ def _internal_gap_layer(text: str) -> dict:
         "uncertain_spans": [],
         "gaps": [{"position": "internal", "start": middle, "end": middle, "witness_evidence": []}],
         "self_revisions": [],
-        "assessment": _NOT_ASSESSED,
+        "assessment": _ASSESSED,
     }
 
 
@@ -4744,8 +4758,9 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
     asked = replace(original, acts=acts, not_measured_basis=_basis_for_acts(acts))
     assert _entry(_block(asked), "perlector-uncertain-spans")["status"] == "measured"
 
-    # The partial reading of this instrument needs two delivered acts, and every
-    # hand-built projection in this file delivers one, so the derivation is asked
+    # The partial readings of this instrument need two delivered acts, or the
+    # live configuration's own combination, and every hand-built projection in
+    # this file delivers one assessed or unassessed act; the derivation is asked
     # where it lives rather than by inventing a second delivery to reach it.
     assert (
         _not_measured_status(
@@ -4760,6 +4775,55 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
         )
         == "not-measured"
     )
+    # The live configuration under a sealed cap of 0: no reader was asked, and
+    # the exhausted-cap projection minted real spans onto delivered acts anyway.
+    # Something was measured, so the block may not call the instrument
+    # unproduced (GOVERNANCE 10; the independent review of 2026-09-11).
+    assert (
+        _not_measured_status(
+            "perlector-uncertain-spans",
+            {
+                "sealed_audit_round_cap": 0,
+                "acts_delivered": 2,
+                "acts_with_uncertain_spans": 1,
+                "acts_assessed": 0,
+                "acts_not_assessed": 2,
+            },
+        )
+        == "not-measured"
+    )
+
+
+def test_a_delivered_act_whose_doubt_report_was_broken_is_refused_not_counted():
+    """`malformed` is a hold, so a delivered one is a broken tree, never a count.
+
+    `acts_not_assessed` used to be everything that was not assessed, by
+    subtraction, so an act whose reader's report could not be anchored would
+    have been counted as one whose reader had no doubt channel -- two different
+    facts under one number (the independent review of 2026-09-11, and
+    CodeRabbit at the same site).
+    """
+    original = _projection()
+    broken = {
+        **original.acts[0],
+        "uncertainty": {
+            **original.acts[0]["uncertainty"],
+            "assessment": {"state": "malformed", "problem": "the report could not be anchored"},
+        },
+    }
+    acts = (broken, *original.acts[1:])
+
+    with pytest.raises(SchemaRefusal, match="only a reading that was assessed"):
+        _manifest_of(replace(original, acts=acts, not_measured_basis=_basis_for_acts(acts)))
+
+
+def test_the_assessment_counts_must_partition_the_delivered_acts():
+    """Two counts of the same population, refused where they do not add up."""
+    basis = _test_not_measured_basis()
+    basis["perlector-uncertain-spans"]["acts_not_assessed"] = 0
+
+    with pytest.raises(SchemaRefusal, match="do not partition its delivered acts"):
+        _manifest_of(replace(_projection(), not_measured_basis=basis))
 
 
 def test_an_uncalibrated_geometry_configuration_is_a_caveat_on_the_act_boundaries():

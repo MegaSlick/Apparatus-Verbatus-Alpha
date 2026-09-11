@@ -428,6 +428,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "audit-change",
         "reader-doubt",
         "reader-doubt-malformed",
+        "reader-doubt-unreadable",
         "audit-reproof-cutoff",
         "refused-page",
         "refused-first-page",
@@ -625,7 +626,7 @@ def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleto
     that did not succeed. A declaration that named a completed-class outcome
     would exercise nothing, whichever class it actually belongs to."""
     failures = skeleton["reading_failure"]
-    assert len(failures) == 4
+    assert len(failures) == 5
     for row in failures:
         assert row["act_key"] in {act["key"] for act in skeleton["act"]}
         assert classify(PERLECTOR, row["outcome"]) is not OutcomeClass.COMPLETED
@@ -639,6 +640,9 @@ def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleto
         "confirmed-blank": "no-readable-text",
         "blank-with-dissent": "no-readable-text",
         "no-readable-text-reading": "no-readable-text",
+        # The same unresolved outcome, with a reader that also reported a doubt
+        # over the act -- the two claims the producer must not publish together.
+        "reader-doubt-unreadable": "no-readable-text",
     }
     # `truncated` is FAILED-class and still carries text -- the hazard the
     # Archetypus's own guard (spec 09) exists to refuse.
@@ -698,6 +702,12 @@ def test_the_declared_reader_doubt_reports_anchor_to_the_texts_they_are_declared
             "state": "assessed",
             "problem": "",
             "pass_kind": "audit-reproof",
+        },
+        {
+            "scenario": "reader-doubt-unreadable",
+            "act_key": "a1",
+            "state": "assessed",
+            "problem": "",
         },
     ]
     doubts = {(row["scenario"], row.get("pass_kind")): row for row in skeleton["reader_doubt"]}

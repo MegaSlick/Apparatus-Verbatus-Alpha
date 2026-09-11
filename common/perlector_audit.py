@@ -897,7 +897,19 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
 
 
 def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]:
-    """Validate the exact draft/finding/Perlectio relationship once for every reader."""
+    """Validate the exact draft/finding/Perlectio relationship once for every reader.
+
+    **A known limit, stated rather than implied.** Where the sealed assessment
+    says `assessed`, this function proves the exhausted-cap projection leads the
+    published `uncertain_spans` and stops there: what follows is the reader's
+    own report, and no artifact in this run holds that report separately, so
+    nothing here can prove the tail is what a reader actually said. The
+    annotation layer proves those offsets anchor to the exact text; it cannot
+    prove their provenance. Binding the tail needs the doubt report sealed as
+    evidence of its own, which is not built. Under every other state the layers
+    are constrained exactly, because a reader with no channel -- or one whose
+    report was refused -- has nothing of its own to publish.
+    """
     payload = reading.get("payload")
     if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
         raise SchemaRefusal(f"reading of {act_id} has no final text for its Pass-C audit")
@@ -1049,6 +1061,23 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         agrees = published == expected_uncertainty
     if not agrees:
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
+    # The same state rule over the other layer, and the direction that matters
+    # is the one that loses ink: a gap is unread ink (GOALS 1), and an act whose
+    # gap went missing reads as wholly established. Under any state but
+    # `assessed` the only gap a reading may carry is the whole-act gap its
+    # `no-readable-text` outcome owes -- the producer mints no other, and an
+    # invented internal gap here would make a complete reading look partial with
+    # nothing behind it either way.
+    gaps = payload.get("gaps")
+    if not isinstance(gaps, list):
+        raise SchemaRefusal(f"reading of {act_id} has no gap list beside its audit projection")
+    if state != "assessed" and not all(
+        isinstance(gap, dict) and gap.get("position") == "whole-act" for gap in gaps
+    ):
+        raise SchemaRefusal(
+            f"reading of {act_id} publishes a gap of its own although its sealed assessment "
+            f"is {state!r}; only a reader that was asked reports where its sight failed"
+        )
     return {"record": record, "draft": draft, "finding": finding}
 
 

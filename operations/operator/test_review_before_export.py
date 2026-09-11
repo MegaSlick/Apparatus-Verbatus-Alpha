@@ -1015,3 +1015,73 @@ def test_an_object_valued_projection_field_of_the_wrong_type_is_refused_by_name(
     message = str(refused.value)
     assert "entry -1" not in message, "the field itself is wrong, not a row numbered -1"
     assert field in message
+
+
+def _delivered_act(uncertainty: dict) -> dict:
+    return {
+        "run_id": "r",
+        "acts": [
+            {
+                "act_id": "a",
+                "act_key": "a1",
+                "category": "delivered",
+                "crops": [],
+                "row": {"text": "alpha beta", "uncertainty": uncertainty},
+            }
+        ],
+    }
+
+
+def test_a_published_span_is_shown_beside_the_state_that_says_who_did_not_report_it():
+    """The exhausted-cap projection mints spans on acts whose reader has no channel.
+
+    With today's live reader that combination -- `not-assessed` beside real
+    published spans -- is the only way a span reaches this surface at all, and
+    the renderer used to print the state line and return, hiding exactly those
+    (the independent review of 2026-09-11).
+    """
+    lines = review_text.render(
+        _delivered_act(
+            {
+                "assessment": {"state": "not-assessed", "problem": "this chair has no channel"},
+                "uncertain_spans": [
+                    {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+                ],
+                "gaps": [{"position": "internal", "start": 6, "end": 6}],
+            }
+        )
+    )
+    text = "\n".join(lines)
+
+    assert "doubts: not-assessed — this chair has no channel" in text
+    assert "published beside that state, not by the reader: 1 uncertain span(s), 1 gap(s)" in text
+    assert "[0, 5) 'alpha' confidence low" in text
+    assert "gap (internal) at 6" in text
+
+
+def test_a_doubt_layer_entry_that_is_not_an_object_is_refused_by_field_and_index():
+    """The same rule as every other projection list, at the newest one (CodeRabbit)."""
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [{"start": 0, "end": 1}, "not a span"],
+                    "gaps": [],
+                }
+            )
+        )
+    assert refused.value.field == "acts[].row.uncertainty.uncertain_spans"
+    assert refused.value.index == 1
+
+    with pytest.raises(review_text.ProjectionShapeError) as gaps:
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [],
+                    "gaps": "not a list",
+                }
+            )
+        )
+    assert gaps.value.field == "acts[].row.uncertainty.gaps"

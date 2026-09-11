@@ -3135,6 +3135,7 @@ def review_route_from_findings(
     audit_examination: str | None = None,
     audit_reproof_truncation: dict | None = None,
     assessment_malformed: bool = False,
+    assessment_problem: str | None = None,
 ) -> tuple[str, str] | None:
     """Compose every independent review cause in stable priority order.
 
@@ -3142,10 +3143,11 @@ def review_route_from_findings(
     ``None`` means the corresponding measurement does not exist and therefore
     routes like ``False``; absence is not a measured shortfall.
     """
-    # A shape guard, not a live filter: the route inputs are booleans, None or
-    # a closed examination string today, and the one nested object (the
-    # re-proof's truncation record) carries no vocabulary a preference could
-    # ride in, so the walk cannot currently refuse anything. Said plainly
+    # A shape guard, not a live filter: the route inputs are booleans, None, a
+    # closed examination string, one retained free-text problem, and one nested
+    # object (the re-proof's truncation record) that carries no vocabulary a
+    # preference could ride in, so the walk cannot currently refuse anything --
+    # it matches on keys, and the free text is a value. Said plainly
     # rather than left reading as a screen that catches something (GOVERNANCE
     # 10). It is kept because the day one of these carries vocabulary is the
     # day the routing decision could. The screens that do bite are
@@ -3160,6 +3162,7 @@ def review_route_from_findings(
             "audit_examination": audit_examination,
             "audit_reproof_truncation": audit_reproof_truncation,
             "assessment_malformed": assessment_malformed,
+            "assessment_problem": assessment_problem,
             "under_witnessed": under_witnessed,
             "unreconciled": unreconciled,
         },
@@ -3228,13 +3231,22 @@ def review_route_from_findings(
         # output, like a cut-off generation: the text may stand, but whatever
         # the reader tried to say about its own doubts was lost, and an act
         # delivered over that loss would carry an empty layer that reads as
-        # confidence. Held, never re-rolled (GOVERNANCE 11): the retained
-        # problem is on the Perlectio for a person to read.
-        reasons.append(
+        # confidence. Held, never re-rolled (GOVERNANCE 11).
+        #
+        # The retained problem is quoted into the reason, not merely pointed
+        # at. It is the only sentence that says what went wrong, and before
+        # this it appeared in no review record, no export row and nothing the
+        # console prints -- a person reading the queue was told the category
+        # and sent to find the artifact (the independent review of
+        # 2026-09-11).
+        reason = (
             "the reader's doubt report over this act could not be anchored to its text and is "
             "retained as a malformed assessment; the act is held rather than delivered with "
             "its doubts unread"
         )
+        if isinstance(assessment_problem, str) and assessment_problem:
+            reason = f"{reason} ({assessment_problem})"
+        reasons.append(reason)
     if under_witnessed:
         reasons.append(
             "the configured act-level witness floor is not met; a witness failure is not coverage"
@@ -3692,6 +3704,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             audit_examination=audit_examination,
             audit_reproof_truncation=audit_reproof_truncation,
             assessment_malformed=assessment_state == "malformed",
+            assessment_problem=assessment.get("problem") if isinstance(assessment, dict) else None,
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])

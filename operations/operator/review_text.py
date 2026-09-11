@@ -151,26 +151,51 @@ def _one_line(value: Any, limit: int = 160) -> str:
     return f"{text[:limit]}… (first {limit} characters as shown, of a {len(raw)}-character value)"
 
 
-def _doubt_lines(assessment: Any, *, spans: Any, gaps: Any, text: Any) -> list[str]:
+def _doubt_entries(value: Any, label: str) -> list[dict[str, Any]]:
+    """One doubt list, each entry proved an object, or a named shape fault.
+
+    `None` is an absence -- the record carried no such layer -- and renders as
+    nothing. Anything else that is not a list of objects is a fault of the
+    projection this renderer was handed, reported by field and index like every
+    other list here rather than quietly flattened to an empty one: a doubt
+    nobody can see is the defect F2 was about (found by CodeRabbit).
+    """
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise ProjectionShapeError(label, -1, value)
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ProjectionShapeError(label, index, entry)
+    return list(value)
+
+
+def _doubt_lines(assessment: Any, *, spans: Any, gaps: Any, text: Any, label: str) -> list[str]:
     """The reader's own doubt report, rendered the same way wherever it is carried.
 
-    An `assessed` report is shown span by span with the characters it doubts;
-    any other state is shown as the absence it is, with the problem that says
-    why, so an empty layer is never displayed as a reader's confidence
-    (independent audit of 2026-09-10, F2).
+    The state line always comes first and always says which of the three states
+    this record carries, so an empty layer is never displayed as a reader's
+    confidence (independent audit of 2026-09-10, F2). The spans and gaps are
+    then printed whenever there are any, whatever the state -- the exhausted-cap
+    projection mints spans on acts whose reader has no doubt channel at all, and
+    with today's live reader that combination (`not-assessed` beside real
+    published spans) is the ONLY way a span reaches this surface. Returning
+    after the state line hid exactly those.
     """
     if not isinstance(assessment, dict):
         return []
-    spans = spans if isinstance(spans, list) else []
-    gaps = gaps if isinstance(gaps, list) else []
-    if assessment.get("state") != "assessed":
-        return [
-            f"    doubts: {inert(assessment.get('state'))} — "
-            f"{_one_line(assessment.get('problem'), limit=300)}"
-        ]
-    lines = [
-        f"    doubts: assessed by the reader; {len(spans)} uncertain span(s), {len(gaps)} gap(s)"
-    ]
+    spans = _doubt_entries(spans, f"{label}.uncertain_spans")
+    gaps = _doubt_entries(gaps, f"{label}.gaps")
+    state = assessment.get("state")
+    counted = f"{len(spans)} uncertain span(s), {len(gaps)} gap(s)"
+    if state == "assessed":
+        lines = [f"    doubts: assessed by the reader; {counted}"]
+    else:
+        lines = [f"    doubts: {inert(state)} — {_one_line(assessment.get('problem'), limit=300)}"]
+        if spans or gaps:
+            # Named as what they are: not the reader's report, which is what
+            # the state above just said this record does not have.
+            lines.append(f"      published beside that state, not by the reader: {counted}")
     shown_text = text if isinstance(text, str) else ""
     for span in spans:
         start, end = span.get("start"), span.get("end")
@@ -303,6 +328,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                     spans=reading.get("uncertain_spans"),
                     gaps=reading.get("gaps"),
                     text=reading.get("text"),
+                    label="acts[].row.reading",
                 )
             )
         elif isinstance(row.get("text"), str):
@@ -321,6 +347,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                         spans=uncertainty.get("uncertain_spans"),
                         gaps=uncertainty.get("gaps"),
                         text=row.get("text"),
+                        label="acts[].row.uncertainty",
                     )
                 )
         review = _object(row, "review", "acts[].row.review")

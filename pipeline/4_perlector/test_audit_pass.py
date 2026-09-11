@@ -1462,6 +1462,35 @@ def test_the_chain_refuses_perlectio_uncertainty_the_finding_did_not_establish(t
         audit.validate_chain(tree, invented, final["subject_id"])
 
 
+def test_the_chain_refuses_a_gap_an_unassessed_reader_could_not_have_reported(tmp_path):
+    """The same state rule over the other layer, and the direction that loses ink.
+
+    A gap is unread ink: an act that gained one looks partial with nothing
+    behind it, and an act that lost one reads as wholly established. The span
+    layer was constrained by the state and this one was not (the independent
+    review of 2026-09-11).
+    """
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    final = _records(tree, "perlectio")[0]
+    assert final["payload"]["uncertainty_assessment"]["state"] == "not-assessed"
+    assert final["payload"]["gaps"] == []
+
+    invented = copy.deepcopy(final)
+    invented["payload"]["gaps"] = [
+        {"position": "internal", "start": 1, "end": 1, "witness_evidence": []}
+    ]
+    with pytest.raises(SchemaRefusal, match="publishes a gap of its own"):
+        audit.validate_chain(tree, invented, final["subject_id"])
+
+    # Under `assessed` the same gap is the reader's own report and is admitted;
+    # what the chain cannot prove about that tail is stated in the HANDOFF.
+    assessed = copy.deepcopy(invented)
+    assessed["payload"]["uncertainty_assessment"] = {"state": "assessed", "problem": None}
+    audit.validate_chain(tree, assessed, final["subject_id"])
+
+
 def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr

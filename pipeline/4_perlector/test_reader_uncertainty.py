@@ -15,13 +15,16 @@ import dataclasses
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
 import annotations
+import audit
 import pytest
+import reader as reader_module
 
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
@@ -319,8 +322,8 @@ def test_a_declared_doubt_arrives_intact_beside_the_same_text_in_review_and_expo
     assert instrument["detail"]["acts_with_uncertain_spans"] == 1
 
     projection = dataclasses.asdict(ReadOnlyRun(root, "r").projection())
-    reading = next(act for act in projection["acts"] if act["act_key"] == "a1")["row"]
-    assert reading is not None  # the export view carries the export row
+    export_row = next(act for act in projection["acts"] if act["act_key"] == "a1")["row"]
+    assert export_row is not None  # the export view carries the export row
     text = "\n".join(review_text.render(projection))
     assert "doubts: assessed by the reader; 1 uncertain span(s), 1 gap(s)" in text
     assert "[29, 34) 'gamma' confidence low; alternatives: gamna, gaMma" in text
@@ -369,7 +372,6 @@ def test_a_malformed_report_holds_the_act_with_the_problem_retained_and_no_empty
     assert result.returncode == 3, result.stderr
     tree = RunTree(root, "r")
     a1 = _records(tree, PERLECTOR, "perlectio")["a1"]["payload"]
-    assert a1["outcome" if "outcome" in a1 else "text"] is not None
     assert a1["text"] == A1_TEXT, "the reading itself stands"
     assert a1["uncertain_spans"] == [] and a1["gaps"] == []
     assert a1["uncertainty_assessment"]["state"] == "malformed"
@@ -378,6 +380,7 @@ def test_a_malformed_report_holds_the_act_with_the_problem_retained_and_no_empty
     assert review["outcome"] == "held-for-review"
     assert review["payload"]["uncertainty_assessment"] == "malformed"
     assert "doubt report over this act could not be anchored" in review["payload"]["reason"]
+    assert a1["uncertainty_assessment"]["problem"] in review["payload"]["reason"]
     export, manifest, rows = _export(tree)
     assert [act["act_key"] for act in export["delivered"]] == ["a2"]
     (held,) = export["non_delivered"]
@@ -417,3 +420,345 @@ def test_a_cut_off_reproof_keeps_pass_bs_doubtless_assessment_with_pass_bs_text(
     assert a1["uncertainty_assessment"]["state"] == "not-assessed"
     assert a1["audit"]["examination"] == "incomplete"
     assert a1["uncertain_spans"] == []
+
+
+# --- The two layers under one state, and the collisions between them ----------
+
+
+_EXHAUSTED_CAP_CONFIG = (
+    'schema = "perlector-audit.v2"\n'
+    "default_round_cap = 1\n"
+    "absolute_round_cap = 2\n"
+    "round_cap = 0\n"
+    'approval_ref = ""\n'
+)
+
+
+def test_the_cap_projection_leads_the_readers_own_doubts_and_neither_is_dropped(tmp_path):
+    """The one combination the chain check's prefix rule exists for.
+
+    Under a sealed cap of 0 the audit mints its own spans onto every flagged
+    act, and `reader-doubt` declares a reader's doubt over the same act. The
+    published layer must be the projection exactly, in order, at the head, then
+    the reader's own report -- and `validate_chain` must accept that, which is a
+    branch every other test runs with an empty projection, where the comparison
+    is vacuous (named as a gap by the independent review of 2026-09-11).
+    """
+    config = tmp_path / "exhausted.toml"
+    config.write_text(_EXHAUSTED_CAP_CONFIG)
+    root = tmp_path / "runs"
+    assert _run(root, "reader-doubt", "--perlector-audit-config", str(config)).returncode == 3
+    tree = RunTree(root, "r")
+    findings = _records(tree, PERLECTOR, "audit-finding")
+    a1 = _records(tree, PERLECTOR, "perlectio")["a1"]
+    payload = a1["payload"]
+
+    projected = [
+        {"start": span["start"], "end": span["end"], "alternatives": [], "confidence": "low"}
+        for span in findings["a1"]["payload"]["uncertain_spans"]
+    ]
+    assert projected, "a zero cap must leave this act's flags as exhausted-cap spans"
+    assert payload["uncertainty_assessment"] == {"state": "assessed", "problem": None}
+    assert payload["uncertain_spans"][: len(projected)] == projected
+    assert payload["uncertain_spans"][len(projected) :] == [A1_DOUBT]
+    assert payload["gaps"] == [A1_GAP]
+    # Two instruments, no entry written down twice.
+    written = [json.dumps(span, sort_keys=True) for span in payload["uncertain_spans"]]
+    assert len(written) == len(set(written))
+    audit.validate_chain(tree, a1, a1["subject_id"])
+
+
+def test_the_union_drops_an_exact_repeat_and_keeps_an_overlap():
+    """The producer's own union rule, asked directly.
+
+    A fixture cannot declare a doubt at offsets the audit has not computed yet,
+    so the exact-repeat case is unreachable end to end; the rule itself is
+    asked here rather than left as a branch nothing measures (GOVERNANCE 10).
+    """
+    perlector = _perlector()
+    projected = {"start": 3, "end": 7, "alternatives": [], "confidence": "low"}
+    repeat = {"start": 3, "end": 7, "alternatives": [], "confidence": "low"}
+    overlapping = {"start": 5, "end": 9, "alternatives": ["x"], "confidence": "high"}
+
+    assert perlector._union_with_projection([projected], [repeat, overlapping]) == [
+        projected,
+        overlapping,
+    ]
+    # The projection always leads, and is published even when the reader said
+    # nothing at all.
+    assert perlector._union_with_projection([projected], []) == [projected]
+    assert perlector._union_with_projection([], [overlapping]) == [overlapping]
+
+
+def test_a_declared_doubt_over_an_unreadable_act_is_refused_rather_than_emptied(tmp_path):
+    """Pass B: the outcome empties the text, so the report is re-asked against it.
+
+    The reader declared a doubt at offsets its own reading no longer has. The
+    two claims cannot both be published, and the one that is dropped must be
+    visible: the record seals `malformed` with the refusal retained, and the
+    Recensor holds the act rather than delivering it under an `assessed` state
+    beside layers that were quietly emptied.
+    """
+    root = tmp_path / "runs"
+    assert _run(root, "reader-doubt-unreadable").returncode == 3
+    tree = RunTree(root, "r")
+    a1 = _records(tree, PERLECTOR, "perlectio")["a1"]
+    assert a1["outcome"] == "no-readable-text"
+    assert a1["payload"]["text"] == ""
+    assert a1["payload"]["uncertain_spans"] == []
+    assert [gap["position"] for gap in a1["payload"]["gaps"]] == ["whole-act"]
+    assert a1["payload"]["uncertainty_assessment"]["state"] == "malformed"
+    assert "outside text bounds (0..0)" in a1["payload"]["uncertainty_assessment"]["problem"]
+    review = _records(tree, RECENSOR, "review")["a1"]
+    assert review["outcome"] == "held-for-review"
+    assert "could not be anchored" in review["payload"]["reason"]
+    # The retained problem is quoted into the reason a person reads, not merely
+    # pointed at on an artifact they would have to go and find.
+    assert a1["payload"]["uncertainty_assessment"]["problem"] in review["payload"]["reason"]
+    assert [act["act_key"] for act in _export(tree)[0]["delivered"]] == ["a2"]
+
+
+def test_an_emptied_reading_re_asks_the_report_instead_of_emptying_it_under_assessed():
+    """The one rubric both emptying paths use, asked where it lives.
+
+    Pass B and the Pass-C re-proof both publish an empty text with its whole-act
+    gap when the outcome turns `no-readable-text`, and both go through
+    `_published_doubt`. Before the independent review of 2026-09-11 the re-proof
+    path emptied the two layers and left the state alone, sealing "the reader
+    assessed this act and reported nothing" over a report it had just thrown
+    away.
+
+    Asked here rather than through a scenario because the re-proof path cannot
+    be reached end to end: `audit.validate_finding` refuses a re-proof that
+    changes text outside a flagged location, so no re-proof in this fixture can
+    empty an act Pass B read. The Pass-B half of the same rubric IS driven end
+    to end, by `reader-doubt-unreadable` below.
+    """
+    perlector = _perlector()
+    whole_act = [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}]
+    report = {
+        "state": "assessed",
+        "uncertain_spans": [{"start": 0, "end": 5, "alternatives": ["x"], "confidence": "low"}],
+        "gaps": [],
+        "problem": None,
+    }
+
+    sealed, spans, gaps = perlector._published_doubt(
+        {"text": "alpha beta", "assessment": report},
+        text="",
+        outcome="no-readable-text",
+        whole_act_gaps=whole_act,
+    )
+    assert sealed["state"] == "malformed"
+    assert "outside text bounds (0..0)" in sealed["problem"]
+    assert spans == [] and gaps == whole_act
+
+    # And where the reading stands, the report is published as the reader gave it.
+    sealed, spans, gaps = perlector._published_doubt(
+        {"text": "alpha beta", "assessment": report},
+        text="alpha beta",
+        outcome="read",
+        whole_act_gaps=whole_act,
+    )
+    assert sealed == {"state": "assessed", "problem": None}
+    assert spans == report["uncertain_spans"] and gaps == []
+
+
+def test_the_instrument_records_carry_the_doubt_report_too(tmp_path):
+    """A doubt reported on an instrument call is a measurement, not a discard.
+
+    Pass A's `lectio-prior` runs for every act, so it is the record this asserts
+    on; Lectio nuda and the `primed-without-prior` control are sampled and are
+    asserted wherever the run happens to draw them.
+    """
+    root = tmp_path / "runs"
+    assert _run(root, "happy").returncode == 0
+    tree = RunTree(root, "r")
+    priors = _records(tree, PERLECTOR, "lectio-prior")
+    assert priors, "Pass A publishes one retained draft per act"
+    for record in priors.values():
+        assert record["payload"]["uncertainty_assessment"] == {
+            "state": "not-assessed",
+            "problem": annotations.NOT_ASSESSED_REASON,
+        }
+    for kind in ("lectio-nuda", "primed-without-prior"):
+        for record in _records(tree, PERLECTOR, kind).values():
+            assert record["payload"]["uncertainty_assessment"]["state"] == "not-assessed"
+
+
+# --- The fixture's own refusals, and the producer's pre-publication check ------
+
+
+_DOUBT = {
+    "scenario": "happy",
+    "act_key": "a1",
+    "start": 0,
+    "end": 1,
+    "alternatives": [],
+    "confidence": "low",
+}
+
+
+def _fixture(**tables) -> dict:
+    base = {
+        "act": [{"key": "a1", "text": "alpha beta"}],
+        "page": [],
+        "scenario": [{"name": "happy"}],
+    }
+    base.update(tables)
+    return base
+
+
+def _read(fixture: dict, scenario: str = "happy"):
+    return reader_module.FixtureReader(fixture, scenario).read(
+        {"act_id": "act_0000000000000000", "act_key": "a1", "regions": [], "page_renders": []},
+        pass_kind="perlectio",
+    )
+
+
+@pytest.mark.parametrize(
+    ("tables", "expected"),
+    [
+        ({"reader_doubt": [{**_DOUBT, "scenario": "nowhere"}]}, "undeclared scenario"),
+        ({"reader_doubt": [{**_DOUBT, "act_key": "a9"}]}, "undeclared act"),
+        (
+            {"reader_doubt": [{**_DOUBT, "pass_kind": "not-a-pass"}]},
+            "unknown pass kind",
+        ),
+        (
+            {
+                "reader_assessment": [
+                    {"scenario": "happy", "act_key": "a1", "state": "assessed", "problem": ""},
+                    {"scenario": "happy", "act_key": "a1", "state": "malformed", "problem": "x"},
+                ]
+            },
+            "twice",
+        ),
+        # The two refusals the correction added: a detail row that would have
+        # been discarded in silence, and a state whose whole content is missing.
+        ({"reader_doubt": [dict(_DOUBT)]}, "cannot also report one"),
+        (
+            {
+                "reader_assessment": [
+                    {"scenario": "happy", "act_key": "a1", "state": "malformed", "problem": ""}
+                ]
+            },
+            "with no problem",
+        ),
+        # A row naming no pass covers every pass, so a pass-scoped row beside it
+        # is a second answer to the same call, not a second key.
+        (
+            {
+                "reader_assessment": [
+                    {"scenario": "happy", "act_key": "a1", "state": "assessed", "problem": ""},
+                    {
+                        "scenario": "happy",
+                        "act_key": "a1",
+                        "state": "malformed",
+                        "problem": "x",
+                        "pass_kind": "perlectio",
+                    },
+                ]
+            },
+            "with 2 rows",
+        ),
+    ],
+)
+def test_the_fixture_refuses_a_doubt_row_it_cannot_honestly_serve(tables, expected):
+    with pytest.raises(KeyError, match=expected):
+        _read(_fixture(**tables))
+
+
+def test_a_declared_not_assessed_row_reports_this_modules_own_reason():
+    """TOML has no null, so an empty problem is the absence, under that state alone."""
+    result = _read(
+        _fixture(
+            reader_assessment=[
+                {"scenario": "happy", "act_key": "a1", "state": "not-assessed", "problem": ""}
+            ]
+        )
+    )
+
+    assert result["assessment"] == annotations.not_assessed()
+
+
+def test_a_declared_malformed_row_keeps_the_problem_it_stands_in_for():
+    result = _read(
+        _fixture(
+            reader_assessment=[
+                {
+                    "scenario": "happy",
+                    "act_key": "a1",
+                    "state": "malformed",
+                    "problem": "the engine returned a doubt this fixture cannot anchor",
+                }
+            ]
+        )
+    )
+
+    assert result["assessment"]["state"] == "malformed"
+    assert result["assessment"]["uncertain_spans"] == [] and result["assessment"]["gaps"] == []
+    assert "cannot anchor" in result["assessment"]["problem"]
+
+
+@pytest.mark.parametrize(
+    ("assessment", "expected"),
+    [
+        ("not an object", "closed {state, problem}"),
+        ({"state": "assessed"}, "closed {state, problem}"),
+        ({"state": ["assessed"], "problem": None}, "unknown doubt state"),
+        ({"state": "confident", "problem": None}, "unknown doubt state"),
+        ({"state": "malformed", "problem": ""}, "neither null nor a non-empty string"),
+        ({"state": "not-assessed", "problem": None}, "exactly when it is not assessed"),
+        ({"state": "assessed", "problem": "why"}, "exactly when it is not assessed"),
+    ],
+)
+def test_the_producer_refuses_a_sealed_doubt_report_it_would_never_have_written(
+    assessment, expected
+):
+    """Where it was introduced, not one stage later (the review of 2026-09-11).
+
+    Before this, a malformed record published here, reached the Recensor as
+    state `None` -- no hold -- and failed at the Archetypus.
+    """
+    perlector = _perlector()
+    payload = {"uncertainty_assessment": assessment, "uncertain_spans": [], "gaps": []}
+
+    with pytest.raises(SchemaRefusal, match=re.escape(expected)):
+        perlector._validate_sealed_doubt(payload, fields=frozenset({"uncertainty_assessment"}))
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {
+                "uncertainty_assessment": {"state": "not-assessed", "problem": "no channel"},
+                "uncertain_spans": [
+                    {"start": 0, "end": 1, "alternatives": [], "confidence": "low"}
+                ],
+                "gaps": [],
+            },
+            "publishes an uncertain span of its own",
+        ),
+        (
+            {
+                "uncertainty_assessment": {"state": "malformed", "problem": "refused"},
+                "uncertain_spans": [],
+                "gaps": [{"position": "internal", "start": 1, "end": 1, "witness_evidence": []}],
+            },
+            "publishes a gap of its own",
+        ),
+    ],
+)
+def test_an_instrument_record_may_not_publish_a_layer_its_state_denies(payload, expected):
+    """Asked only where there is no audit behind the record, because there every
+    span is the reader's own -- the established Perlectio's layer is a union
+    only `validate_chain` can take apart."""
+    perlector = _perlector()
+
+    with pytest.raises(SchemaRefusal, match=expected):
+        perlector._validate_sealed_doubt(payload, fields=frozenset({"uncertainty_assessment"}))
+    # The same payload under a record that does carry an audit is this check's
+    # business no longer, and passes here.
+    perlector._validate_sealed_doubt(payload, fields=frozenset({"uncertainty_assessment", "audit"}))
