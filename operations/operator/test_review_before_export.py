@@ -382,6 +382,35 @@ def _seal_row(payload: dict[str, object], artifact: str = "") -> dict[str, objec
     }
 
 
+def _review_record(act_id: str, outcome: str, payload: dict[str, object]) -> dict[str, object]:
+    """A Recensor review record shaped the way `latest_attempt` insists on reading one.
+
+    The attempt ordinal in the payload must be bound by the sealed attempt
+    identity, and the identity derives from (subject, operation, ordinal). A
+    synthetic record missing either field is refused for its shape before any
+    assertion about the outcome vocabulary can be reached -- which would have
+    made the refusal test pass for the wrong reason. Found by CodeRabbit.
+    """
+    from common.contracts.identities import attempt_id
+
+    ordinal = payload["attempt_ordinal"]
+    attempt = attempt_id(act_id, "recense", ordinal)
+    return {
+        "stage": "recensor",
+        "artifact_id": f"art_review_{ordinal}",
+        "kind": "review",
+        "subject_id": act_id,
+        "outcome": outcome,
+        "record_ref": {"relative_path": "5_recensor/artifacts/review/b.json", "sha256": ""},
+        "record": {
+            "artifact_id": f"art_review_{ordinal}",
+            "subject_id": act_id,
+            "attempt_id": attempt,
+            "payload": dict(payload),
+        },
+    }
+
+
 def _expected_row(act_id: str, outcome: str = "proposed") -> dict[str, object]:
     return {
         "act_id": act_id,
@@ -397,7 +426,7 @@ def _expected_row(act_id: str, outcome: str = "proposed") -> dict[str, object]:
 @pytest.mark.parametrize(
     "damage, said",
     [
-        ("artifact-id", "not the run's one canonical proposal seal"),
+        ("artifact-id", "no canonical proposal seal"),
         ("self-hash", "does not verify against its own self-hash"),
         ("count", "do not reconcile"),
     ],
@@ -452,24 +481,17 @@ def test_one_act_held_by_both_stages_is_two_labelled_records_and_one_held_act():
         "record_ref": {"relative_path": "2_designator/artifacts/hold/a.json", "sha256": ""},
         "record": {"payload": {"act_key": "a1", "reason": "the margin is torn"}},
     }
-    recensor_review = {
-        "stage": "recensor",
-        "artifact_id": "art_2",
-        "kind": "review",
-        "subject_id": act_id,
-        "outcome": "held-for-review",
-        "record_ref": {"relative_path": "5_recensor/artifacts/review/b.json", "sha256": ""},
-        "record": {
-            "artifact_id": "art_2",
-            "payload": {
-                "act_key": "a1",
-                "reason": "the Designator held this act",
-                "attempt_ordinal": 1,
-                "audit_examination": "complete",
-            },
+    recensor_review = _review_record(
+        act_id,
+        "held-for-review",
+        {
+            "act_key": "a1",
+            "reason": "the Designator held this act",
+            "attempt_ordinal": 1,
+            "audit_examination": "complete",
         },
-    }
-    holds = review._holds([designator_hold, recensor_review])
+    )
+    holds = review._holds([designator_hold, recensor_review], None)
     assert [hold["label"] for hold in holds] == ["Designator hold", "Recensor review of that hold"]
     action = review._next_action(RUN_ID, (), {"present": False}, holds)
     assert action["held_acts"] == 1, "one act, twice attested, is not two held acts"
@@ -484,18 +506,43 @@ def test_a_review_outcome_outside_the_recensor_vocabulary_is_refused_not_skipped
     """A widened vocabulary must not drop an act out of the holds list in silence."""
     from common.contracts.errors import FatalAccounting
 
-    invented = {
-        "stage": "recensor",
-        "artifact_id": "art_3",
-        "kind": "review",
-        "subject_id": "act1",
-        "outcome": "sent-back-for-rework",
-        "record_ref": {"relative_path": "5_recensor/artifacts/review/c.json", "sha256": ""},
-        "record": {"artifact_id": "art_3", "payload": {"act_key": "a1", "attempt_ordinal": 1}},
-    }
+    invented = _review_record(
+        "act1", "sent-back-for-rework", {"act_key": "a1", "attempt_ordinal": 1}
+    )
     with pytest.raises(FatalAccounting) as refused:
-        review._holds([invented])
-    assert "sent-back-for-rework" in str(refused.value)
+        review._holds([invented], None)
+    assert "sent-back-for-rework" in str(refused.value), (
+        "the refusal names the outcome word, so the attempt chain was read and the "
+        "vocabulary check is what refused"
+    )
+
+
+def test_a_vocabulary_refusal_reaches_the_operator_as_a_named_console_refusal(
+    witnessed_run: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """What a person sees, not what the helper raises.
+
+    The refusal cannot be staged on a real run tree: a record carrying an
+    outcome outside its stage's vocabulary is refused by `validate_envelope`
+    (which calls the same `classify`) as the projection reads it, and editing a
+    sealed record's outcome breaks its self-hash first. `_holds`'s own check is
+    therefore a second line rather than the first -- worth keeping, since it is
+    the one that fires if the vocabulary widens under records already written --
+    and what is pinned here is the real `projection()` turning such a refusal
+    into the named console error instead of an unclassifiable problem.
+    """
+    from common.contracts.errors import FatalAccounting
+
+    def refuse(stage_records, found):
+        raise FatalAccounting(
+            "recensor produced outcome 'sent-back-for-rework', which is in no terminal set"
+        )
+
+    monkeypatch.setattr(review, "_holds", refuse)
+    with pytest.raises(OperatorError) as through_surface:
+        _projection(witnessed_run)
+    assert through_surface.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "sent-back-for-rework" in (through_surface.value.detail or "")
 
 
 def test_an_act_with_two_archetypus_records_is_refused_rather_than_read_positionally():
@@ -519,6 +566,200 @@ def test_an_act_with_two_archetypus_records_is_refused_rather_than_read_position
         review._act_summary(rows, _expected_row("act1"))
     assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
     assert "2 Archetypus records" in (refused.value.detail or "")
+
+
+def test_the_excluded_sentence_states_only_what_this_surface_read():
+    """An exclusion is valid only with an approval, and nothing here reads one."""
+    summary = review._act_summary([], _expected_row("act1", "excluded"))
+    assert summary["category"] == "excluded by the Designator"
+    assert "recorded this act as excluded" in summary["reason"]
+    assert "which this surface does not read and does not claim" in summary["reason"]
+    assert "with approval;" not in summary["reason"]
+
+
+def test_a_terminal_act_with_downstream_records_says_the_two_disagree():
+    """Nothing is hidden either way; the disagreement is named rather than left to notice."""
+    testimonium = {
+        "stage": "attestatores",
+        "artifact_id": "art_t",
+        "kind": "testimonium",
+        "subject_id": "act1",
+        "outcome": "read",
+        "record_ref": {
+            "relative_path": "3_attestatores/artifacts/testimonium/t.json",
+            "sha256": "",
+        },
+        "record": {"payload": {"chair": "chair-a", "attempt_ordinal": 1}},
+    }
+    summary = review._act_summary([testimonium], _expected_row("act1", "excluded"))
+    assert summary["category"] == "excluded by the Designator"
+    assert "this run also holds witnesses for this act" in summary["reason"]
+    assert "the export would refuse" in summary["reason"]
+    # And an act with no downstream record says nothing of the kind.
+    assert "also holds" not in review._act_summary([], _expected_row("act1", "excluded"))["reason"]
+
+
+@pytest.mark.parametrize(
+    "field, value, said",
+    [
+        ("page_id", "", "no page_id"),
+        ("page_ordinal", True, "page_ordinal that is not an integer"),
+        ("has_continuation", "yes", "has_continuation that is not true or false"),
+        ("evidence", {}, "evidence value that is not a list"),
+    ],
+)
+def test_the_seal_row_field_types_the_pipeline_requires_are_required_here(
+    field: str, value: object, said: str
+):
+    """A seal the shared reader would refuse is not read out here as if it were whole."""
+    row = _expected_row("act1")
+    row[field] = value
+    seal = _seal_row({"expected_acts": [row], "count": 1})
+    with pytest.raises(OperatorError) as refused:
+        review._expected_acts([seal])
+    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert said in (refused.value.detail or "")
+
+
+def test_a_foreign_proposal_seal_beside_the_canonical_one_is_named_not_a_refusal():
+    """Stricter than the pipeline is the wrong kind of strict on a surface for damaged trees."""
+    rows = [_expected_row("act1")]
+    canonical = _seal_row({"expected_acts": rows, "count": 1})
+    foreign = _seal_row({"expected_acts": rows, "count": 1}, artifact="art_0000000000000000")
+    foreign["record_ref"] = {
+        "relative_path": "2_designator/artifacts/proposal-seal/other.json",
+        "sha256": "",
+    }
+    seal, expected, note = review._expected_acts([canonical, foreign])
+    assert seal is canonical and expected == rows
+    assert "1 further proposal-seal record(s)" in note
+    assert "other.json" in note
+    assert "are not read" in note
+    # With no canonical seal at all, there is nothing to read and it refuses.
+    with pytest.raises(OperatorError) as refused:
+        review._expected_acts([foreign])
+    assert "no canonical proposal seal" in (refused.value.detail or "")
+
+
+def test_an_act_the_seal_calls_held_is_in_the_holds_list_even_with_no_hold_record():
+    """One screen must not say an act is held in one section and count zero in another."""
+    seal = _seal_row(
+        {
+            "expected_acts": [_expected_row("act1", "held"), _expected_row("act2", "failed")],
+            "count": 2,
+        }
+    )
+    found = review._expected_acts([seal])
+    holds = review._holds([seal], found)
+    assert [hold["act_id"] for hold in holds] == ["act1", "act2"]
+    assert {hold["label"] for hold in holds} == {"proposal seal, no hold record found"}
+    assert holds[0]["outcome"] == "held" and holds[1]["outcome"] == "failed"
+    assert "no hold record carrying a reason was found beside it" in holds[0]["reason"]
+    action = review._next_action("r", (), {"present": False}, holds)
+    assert action["held_acts"] == 2
+
+    # A COMPLETED-class outcome is not a hold: `proposed` and `excluded` stay out.
+    ordinary = _seal_row(
+        {
+            "expected_acts": [_expected_row("act1"), _expected_row("act2", "excluded")],
+            "count": 2,
+        }
+    )
+    assert review._holds([ordinary], review._expected_acts([ordinary])) == ()
+
+
+def test_an_act_count_with_no_denominator_says_so_rather_than_reading_as_no_acts():
+    text = "\n".join(
+        review_text.render(
+            {
+                "run_id": "r",
+                "acts": [],
+                "acts_denominator_note": "the Designator has sealed no proposal, so nothing "
+                "in this tree declares how many acts this run has",
+            }
+        )
+    )
+    assert "Acts (0; the Designator has sealed no proposal" in text
+    assert "Acts (0)\n" not in text
+
+
+def test_a_newline_becomes_a_separator_and_the_length_notice_names_two_lengths():
+    """Escaping first meant the replacement found nothing to replace. Found by CodeRabbit."""
+    assert review_text._one_line("alpha\nbeta") == "alpha / beta"
+    cut = review_text._one_line("x" * 500, 300)
+    assert cut.endswith("(first 300 characters as shown, of a 500-character value)")
+    assert cut.count("x") == 300
+
+
+def test_a_crop_line_says_which_attempt_it_was():
+    text = "\n".join(
+        review_text.render(
+            {
+                "run_id": "r",
+                "acts": [
+                    {
+                        "act_id": "a1",
+                        "act_key": "a1",
+                        "category": "held-for-review",
+                        "crops": [
+                            {
+                                "region_id": "r1",
+                                "ordinal": 1,
+                                "attempt_ordinal": 2,
+                                "image_path": "2_designator/blobs/sha256/aa/bb",
+                                "image_sha256": "aabb",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+    assert "(attempt 2)" in text
+
+
+def test_an_empty_queue_row_is_named_by_its_line_number():
+    text = "\n".join(
+        review_text.render(
+            {
+                "run_id": "r",
+                "review_items": [
+                    {"row": {}, "line": 4, "member": "review-items.jsonl", "bundle_path": "b.zip"}
+                ],
+            }
+        )
+    )
+    assert "line 4 of review-items.jsonl: this queue row is empty" in text
+    assert "None: None" not in text
+    # An entry that is not this projection's wrapper is itself the row, and its
+    # content still reaches the screen.
+    raw = "\n".join(
+        review_text.render({"run_id": "r", "review_items": [{"reason": "the margin is torn"}]})
+    )
+    assert "the margin is torn" in raw
+
+
+def test_a_run_authority_that_is_not_an_object_is_a_note_beside_the_page_count(tmp_path: Path):
+    """Not an unclassifiable problem that takes the whole screen with it."""
+
+    class _Authority:
+        root = tmp_path
+
+        def read_run(self):
+            return ["not", "an", "object"]
+
+    class _ArrayAuthority:
+        root = tmp_path
+
+        def read_run(self):
+            raise AttributeError("'list' object has no attribute 'get'")
+
+    count, note = review._declared_page_count(_ArrayAuthority())
+    assert count is None
+    assert "could not be read as an object" in note
+    count, note = review._declared_page_count(_Authority())
+    assert count is None
+    assert "is not an object" in note
 
 
 def test_a_stage_that_wrote_records_but_never_sealed_is_named_interrupted_not_damaged(
@@ -614,7 +855,7 @@ def test_a_shortened_line_says_it_was_shortened_and_how_long_the_text_is():
         ],
     }
     text = "\n".join(review_text.render(projection))
-    assert "(first 300 characters of 900)" in text
+    assert "(first 300 characters as shown, of a 900-character value)" in text
     assert "x" * 300 in text
 
 
