@@ -38,11 +38,18 @@ from __future__ import annotations
 from typing import Final, TypedDict
 
 from common.contracts.errors import ContractError
-from common.perlector_audit import truncation_classification
+from common.perlector_audit import (
+    TRUNCATION_COMPLETE,
+    TRUNCATION_TRUNCATED,
+    TRUNCATION_UNKNOWN,
+    truncation_classification,
+)
 
-COMPLETE: Final = "complete"
-TRUNCATED: Final = "truncated"
-UNKNOWN: Final = "unknown"
+# The one vocabulary, owned by the shared surface every consumer re-derives the
+# sealed verdict with; these names stay for this stage's own readers.
+COMPLETE: Final = TRUNCATION_COMPLETE
+TRUNCATED: Final = TRUNCATION_TRUNCATED
+UNKNOWN: Final = TRUNCATION_UNKNOWN
 
 CLASSIFICATIONS: Final = frozenset({COMPLETE, TRUNCATED, UNKNOWN})
 
@@ -162,7 +169,7 @@ def classify(text: str, *, region_pixels: int, stop_reason: str | None = None) -
     # the decision itself is the shared rule every consumer re-derives the
     # sealed verdict with (`common/perlector_audit.py::truncation_classification`),
     # so producer and validators cannot drift into two spellings of it.
-    _stop_reason_signal(stop_reason)
+    _stop_reason_signal(stop_reason)  # for its refusal alone; the decision is shared
     return {"classification": truncation_classification(signals), "signals": signals}
 
 

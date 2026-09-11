@@ -2639,6 +2639,7 @@ def _reproof_call(reproof: dict[str, Any]) -> dict[str, Any] | None:
         "raw_response_ref": dict(engine_call["raw_response_ref"]),
         "response_sha256": engine_call["response_sha256"],
         "finish_reason": engine_call["finish_reason"],
+        "served_model_id": engine_call["served_model_id"],
     }
 
 

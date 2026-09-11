@@ -69,7 +69,11 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
         raise ContractError(
             f"the Perlector audit declaration at {path} could not be read"
         ) from error
-    if isinstance(policy, dict) and policy.get("schema") in RETIRED_SCHEMAS:
+    if (
+        isinstance(policy, dict)
+        and isinstance(policy.get("schema"), str)
+        and policy["schema"] in RETIRED_SCHEMAS
+    ):
         raise ContractError(
             f"the Perlector audit declaration names {policy['schema']!r}, a retired schema that "
             "could not record whether a delivered re-proof completed; declare "

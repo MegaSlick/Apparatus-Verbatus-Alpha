@@ -66,8 +66,10 @@ AUDIT_CAP_EXHAUSTED: Final = "audit-round-cap-exhausted"
 #   not-due        no flag was raised, so nothing was there to re-prove
 #   cap-exhausted  flags were raised and the sealed cap left no round to spend
 #   complete       one re-proof was delivered and its call ran to completion
-#   incomplete     one re-proof was delivered and its call did not complete --
-#                  the engine said it ran out of budget, or gave no word at all
+#   incomplete     one re-proof was delivered and the truncation instrument did
+#                  not classify its call complete -- the engine said it ran out
+#                  of budget, gave no word at all, or the text it returned
+#                  carried all three of the instrument's own cut-off signals
 # Text equality plays no part in any of them. A re-proof that returns the frozen
 # text after being cut off has confirmed nothing; `incomplete` is what it
 # records, and `unresolved_state` below is what makes that a hold.
@@ -326,7 +328,7 @@ def examination_state(
             "an audit whose frozen plan and cap delivered a re-proof records no termination "
             "for it; a re-examination with no recorded ending cannot be called complete"
         )
-    if reproof_truncation["classification"] == "complete":
+    if reproof_truncation["classification"] == TRUNCATION_COMPLETE:
         return EXAMINATION_COMPLETE
     return EXAMINATION_INCOMPLETE
 
@@ -374,14 +376,20 @@ def truncation_classification(signals: dict[str, Any]) -> str:
 
 
 def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
-    """The sealed shape of one truncation measurement, its verdict re-derived.
+    """The sealed shape of one raw truncation measurement, its verdict re-derived.
 
     The three computed signals cannot be recomputed here -- `region_pixels` is
-    not on the finding -- so they are the producer's word, exactly as the
-    Perlectio's own `truncation` record is. The classification is not: it is a
-    function of the four sealed signals (`truncation_classification`), so a
-    record whose verdict contradicts its own signals is refused, and a
-    declared stop word outside the recognised vocabulary is refused with it.
+    not on the finding -- so they are the producer's word. The classification is
+    not: for the instrument's *raw* output it is a function of the four sealed
+    signals (`truncation_classification`), so a record whose verdict contradicts
+    its own signals is refused, and a declared stop word outside the recognised
+    vocabulary is refused with it. This holds for `reproof_truncation`, which is
+    always raw. It does NOT hold for the Perlectio's own `truncation` record:
+    `pipeline/4_perlector/run.py::_reconciled_truncation` raises `complete` to
+    `unknown` under a declared failure, and `_audited_truncation` floors an
+    audited `complete` back to Pass B's verdict, both on purpose and both with
+    the signals left as measured -- so that record is validated for shape and
+    vocabulary only, and must not be handed to this function.
     """
     if not isinstance(value, dict) or set(value) != {"classification", "signals"}:
         raise SchemaRefusal(f"{label} is not a closed truncation record")
@@ -409,8 +417,14 @@ def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
 
 
 _REPROOF_CALL_FIELDS: Final = frozenset(
-    {"call_record_ref", "raw_response_ref", "response_sha256", "finish_reason"}
+    {"call_record_ref", "raw_response_ref", "response_sha256", "finish_reason", "served_model_id"}
 )
+# The engine's finish reason and the instrument's declared stop word are one
+# fact in two vocabularies (`pipeline/4_perlector/live_reader.py::_mapped_stop_reason`,
+# `common/contracts/serving.py`): `stop` -> "stop", `length` -> "length", nothing
+# -> None. Restated here so the sealed call and the sealed verdict can be held
+# to each other without importing a stage module.
+_FINISH_REASON_TO_STOP_WORD: Final = {"stop": "stop", "length": "length", None: None}
 
 
 def validate_reproof_call(value: Any, *, label: str) -> dict[str, Any] | None:
@@ -431,9 +445,42 @@ def validate_reproof_call(value: Any, *, label: str) -> dict[str, Any] | None:
     validate_input_refs([value["raw_response_ref"]])
     if not is_sha256(value["response_sha256"]):
         raise SchemaRefusal(f"{label} has no response digest")
+    # The live client sets `response_sha256` to the retained raw response's own
+    # digest (`operations/serving/client.py`), so the two must agree here too: a
+    # record naming one response's bytes and another response's digest would
+    # bind the sealed verdict to a call nobody can check it against. Found by
+    # CodeRabbit on the correction candidate.
+    if value["response_sha256"] != value["raw_response_ref"]["sha256"]:
+        raise SchemaRefusal(
+            f"{label} names response digest {value['response_sha256']} but its retained raw "
+            f"response is {value['raw_response_ref']['sha256']}"
+        )
     if value["finish_reason"] is not None and not isinstance(value["finish_reason"], str):
         raise SchemaRefusal(f"{label} has a malformed finish reason")
+    if value["finish_reason"] not in _FINISH_REASON_TO_STOP_WORD:
+        raise SchemaRefusal(
+            f"{label} names finish reason {value['finish_reason']!r}, which no reader maps to "
+            "a stop word"
+        )
+    if not isinstance(value["served_model_id"], str) or not value["served_model_id"]:
+        raise SchemaRefusal(f"{label} names no served model")
     return value
+
+
+def _refuse_call_verdict_disagreement(call: dict[str, Any], termination: dict[str, Any]) -> None:
+    """The retained call's finish reason and the sealed verdict's stop word agree, or refuse.
+
+    Without this, a finding could seal `complete` over clean signals beside a
+    retained call whose engine said `length` -- F1's shape on the very field
+    added to close it (second independent read of candidate 95d0a176).
+    """
+    expected = _FINISH_REASON_TO_STOP_WORD[call["finish_reason"]]
+    declared = termination["signals"]["stop_reason_declared"]
+    if expected != declared:
+        raise SchemaRefusal(
+            f"an audit finding's re-proof call finished {call['finish_reason']!r} but its "
+            f"sealed termination declares stop word {declared!r}"
+        )
 
 
 def audit_request(
@@ -671,6 +718,8 @@ def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -
         raise SchemaRefusal(
             "an audit finding names a re-proof call although no re-proof was delivered"
         )
+    if value["reproof_call"] is not None:
+        _refuse_call_verdict_disagreement(value["reproof_call"], value["reproof_truncation"])
     if value["examination"] != examination:
         raise SchemaRefusal(
             f"an audit finding claims examination {value['examination']!r} but its flags, cap "
@@ -693,9 +742,9 @@ def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -
 def validate_perlectio_audit(record: Any, *, text_length: int | None) -> dict[str, Any]:
     if isinstance(record, dict) and set(record) == _PERLECTIO_AUDIT_FIELDS - {"examination"}:
         raise SchemaRefusal(
-            "a Perlectio audit record was sealed under perlector-audit.v1, which could not "
-            "record whether a delivered re-proof completed; it is refused rather than read "
-            f"forward, and its act is re-read from the sealed evidence under {SCHEMA} in a new "
+            "a Perlectio audit record carries the perlector-audit.v1 field set (no "
+            "`examination`), so it cannot say whether a delivered re-proof completed; it is "
+            f"refused rather than read forward, and its act is re-read under {SCHEMA} in a new "
             "run. The old bytes are evidence and stay as written"
         )
     value = _closed(record, _PERLECTIO_AUDIT_FIELDS, "Perlectio audit record")
@@ -916,6 +965,10 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         raise SchemaRefusal(f"reading of {act_id} names an audit finding with a mismatched digest")
     if record["unresolved"] != finding_payload["unresolved"]:
         raise SchemaRefusal(f"reading of {act_id} contradicts its audit finding's unresolved state")
+    # Defence in depth rather than a live screen: every examination forgery that
+    # survives `validate_perlectio_audit`'s delivery rules is also caught by the
+    # `unresolved` comparison above, the shared-fields equality, or the plan and
+    # request re-derivations below. Kept because it names the exact fact.
     if record["examination"] != finding_payload["examination"]:
         raise SchemaRefusal(
             f"reading of {act_id} contradicts its audit finding's examination state"

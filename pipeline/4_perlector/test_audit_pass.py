@@ -604,12 +604,11 @@ def test_a_directional_or_empty_audit_request_is_refused_at_the_delivery_boundar
         audit.validate_audit_request(widened)
 
 
-# The two forgery tests below accept either of two refusals: since the correction
-# round, `validate_perlectio_audit` refuses a request digest that contradicts the
-# record's own examination before `validate_chain` reaches the draft, so a forged
-# delivery is caught one layer earlier with the record-level wording; the chain's
-# own wording still fires where the record is internally consistent and only the
-# frozen draft disagrees.
+# Since the correction round `validate_perlectio_audit` refuses a request digest
+# that contradicts the record's own examination before `validate_chain` reaches
+# the draft; the chain's own wording fires only where the record is internally
+# consistent and the frozen draft disagrees. Each forgery below names the one
+# layer that catches it.
 def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp_path):
     """The sealed digest is re-derived from the draft, never taken on trust.
 
@@ -625,18 +624,18 @@ def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp
     final = _records(tree, "perlectio")[0]
     assert final["payload"]["audit"]["request_digest"] is not None
 
+    # A wrong digest over a delivered examination is internally consistent, so
+    # only the chain's re-derivation against the frozen draft can catch it.
     forged = copy.deepcopy(final)
     forged["payload"]["audit"]["request_digest"] = "c" * 64
-    with pytest.raises(
-        SchemaRefusal, match="does not name the exact audit request|contradicts its delivery"
-    ):
+    with pytest.raises(SchemaRefusal, match="does not name the exact audit request"):
         audit.validate_chain(tree, forged, final["subject_id"])
 
+    # No digest beside a delivered examination contradicts the record itself,
+    # and the record-level rule refuses it before the draft is ever read.
     undelivered = copy.deepcopy(final)
     undelivered["payload"]["audit"]["request_digest"] = None
-    with pytest.raises(
-        SchemaRefusal, match="does not name the exact audit request|contradicts its delivery"
-    ):
+    with pytest.raises(SchemaRefusal, match="contradicts its delivery"):
         audit.validate_chain(tree, undelivered, final["subject_id"])
 
 
@@ -669,9 +668,12 @@ def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tm
         assert record["request_digest"] is None
         audit.validate_chain(tree, final, final["subject_id"])
 
+        # A digest beside an exhausted cap contradicts the record itself; the
+        # record-level rule refuses it before the chain's own "left nothing to
+        # deliver" would.
         claimed = copy.deepcopy(final)
         claimed["payload"]["audit"]["request_digest"] = "d" * 64
-        with pytest.raises(SchemaRefusal, match="left nothing to deliver|contradicts its delivery"):
+        with pytest.raises(SchemaRefusal, match="contradicts its delivery"):
             audit.validate_chain(tree, claimed, final["subject_id"])
 
 
@@ -1975,7 +1977,7 @@ def test_a_perlectio_audit_record_must_agree_with_its_own_delivery_facts():
         )["examination"]
         == "not-due"
     )
-    with pytest.raises(SchemaRefusal, match="sealed under perlector-audit.v1"):
+    with pytest.raises(SchemaRefusal, match="perlector-audit.v1 field set"):
         audit.validate_perlectio_audit(
             {key: value for key, value in record().items() if key != "examination"},
             text_length=1,
@@ -1995,7 +1997,7 @@ def test_the_chain_refuses_a_record_whose_examination_differs_from_its_finding(t
     forged = copy.deepcopy(cut)
     forged["payload"]["audit"]["examination"] = "cap-exhausted"
     forged["payload"]["audit"]["request_digest"] = None
-    with pytest.raises(SchemaRefusal, match="examination state|audit request"):
+    with pytest.raises(SchemaRefusal, match="contradicts its audit finding's examination state"):
         audit.validate_chain(tree, forged, cut["subject_id"])
 
 
@@ -2018,6 +2020,14 @@ def test_a_fixture_may_declare_pass_bs_word_and_the_reproofs_word_for_one_act():
     )
     with pytest.raises(KeyError, match="twice"):
         fixture_reader._declared_stop_reason("a1", "perlectio")
+    # Only the stop-reason table is keyed on the pass: a stray `pass_kind` on
+    # two prior-reading rows does not make them two rows.
+    fixture["prior_reading"] = [
+        {"scenario": "s", "act_key": "a1", "text": "one", "pass_kind": "perlectio"},
+        {"scenario": "s", "act_key": "a1", "text": "two", "pass_kind": "lectio-prior"},
+    ]
+    with pytest.raises(KeyError, match="twice"):
+        fixture_reader._declared_prior_reading("a1")
 
 
 def test_the_recensor_routes_on_the_examination_and_refuses_a_contradicting_boolean():
@@ -2053,3 +2063,86 @@ def test_the_recensor_routes_on_the_examination_and_refuses_a_contradicting_bool
         )
         is None
     )
+
+
+def test_a_sealed_reproof_call_must_name_the_digest_of_the_response_it_retains():
+    """CodeRabbit on the correction: the two digests are one fact stated twice."""
+    reference = {"relative_path": "4_perlector/blobs/sha256/" + "a" * 64, "sha256": "a" * 64}
+    call = {
+        "call_record_ref": {
+            "relative_path": "4_perlector/blobs/sha256/" + "b" * 64,
+            "sha256": "b" * 64,
+        },
+        "raw_response_ref": reference,
+        "response_sha256": "a" * 64,
+        "finish_reason": "length",
+        "served_model_id": "perlector-under-test",
+    }
+    finding = _finding(reproof_call=call)
+    assert audit.validate_finding(finding, text="abc", flag_text="abc")["reproof_call"] == call
+    # The retained call's finish reason and the sealed verdict's stop word are
+    # one fact: a `stop` call beside a `length` termination is refused.
+    with pytest.raises(SchemaRefusal, match="finished 'stop' but its sealed termination"):
+        audit.validate_finding(
+            _finding(reproof_call={**call, "finish_reason": "stop"}), text="abc", flag_text="abc"
+        )
+    with pytest.raises(SchemaRefusal, match="no reader maps to a stop word"):
+        audit.validate_finding(
+            _finding(reproof_call={**call, "finish_reason": "eos"}), text="abc", flag_text="abc"
+        )
+    assert (
+        audit.validate_finding(
+            _finding(
+                examination="complete",
+                unresolved=False,
+                reproof_truncation=_COMPLETE_TRUNCATION,
+                reproof_call={**call, "finish_reason": "stop"},
+            ),
+            text="abc",
+            flag_text="abc",
+        )["examination"]
+        == "complete"
+    )
+    with pytest.raises(SchemaRefusal, match="names response digest"):
+        audit.validate_finding(
+            _finding(reproof_call={**call, "response_sha256": "c" * 64}),
+            text="abc",
+            flag_text="abc",
+        )
+    with pytest.raises(SchemaRefusal, match="although no re-proof was delivered"):
+        audit.validate_finding(
+            _finding(
+                flags=[],
+                examination="not-due",
+                unresolved=False,
+                reproof_truncation=None,
+                reproof_call=call,
+            ),
+            text="abc",
+            flag_text="abc",
+        )
+
+
+def test_the_audited_truncation_takes_an_already_measured_record_without_remeasuring():
+    """The branch production uses: the re-proof's own measurement is passed through."""
+    perlector = _perlector()
+    measured = perlector.truncation.classify(
+        "alpha beta gamma", region_pixels=18612, stop_reason="length"
+    )
+    via_measured = perlector._audited_truncation(
+        pass_b=_COMPLETE_TRUNCATION,
+        declared_failure=None,
+        text="alpha beta gamma",
+        region_pixels=18612,
+        stop_reason="length",
+        measured=measured,
+    )
+    remeasured = perlector._audited_truncation(
+        pass_b=_COMPLETE_TRUNCATION,
+        declared_failure=None,
+        text="alpha beta gamma",
+        region_pixels=18612,
+        stop_reason="length",
+    )
+    assert via_measured == remeasured == measured
+    assert via_measured["classification"] == "truncated"

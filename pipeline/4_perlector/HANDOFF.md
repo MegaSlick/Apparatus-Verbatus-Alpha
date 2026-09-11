@@ -518,8 +518,9 @@ payload.audit         {draft_ref, finding_ref, finding_digest, unresolved,
 
 The sealed policy schema is `perlector-audit.v2`. `examination` is one of
 `not-due` (no flag), `cap-exhausted` (flags, cap 0), `complete` (a re-proof was
-delivered and its call ran to completion) or `incomplete` (delivered and did not
-complete -- the engine reported `length`, or gave no stop word). `reproof_truncation`
+delivered and its call ran to completion) or `incomplete` (delivered and the truncation
+instrument did not classify its call complete -- the engine reported `length`, gave no
+stop word, or the returned text carried all three of the instrument's own cut-off signals). `reproof_truncation`
 is the truncation instrument run over the re-proof's own text and stop word, or
 `None` where none was delivered; its classification is re-derived from its four sealed
 signals by every validator (`common/perlector_audit.py::truncation_classification`, the

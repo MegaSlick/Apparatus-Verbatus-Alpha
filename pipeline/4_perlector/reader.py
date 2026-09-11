@@ -221,7 +221,7 @@ class FixtureReader:
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
 
-    def _validated_rows(self, table: str, extra_check=None) -> list:
+    def _validated_rows(self, table: str, extra_check=None, *, keyed_by_pass: bool = False) -> list:
         """Every row of one fixture table, after the WHOLE table validates.
 
         One loop for all three tables, because they had started to drift: a
@@ -233,12 +233,15 @@ class FixtureReader:
         declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
         declared_acts = {act["key"] for act in self._fixture["act"]}
         rows = self._fixture.get(table, [])
-        # Keyed on the pass too, where a row names one: a scenario may declare
-        # Pass B's word and the re-proof's word for the same act, and that is
-        # two rows, not a contradiction. Two rows for the same pass still are.
+        # Keyed on the pass too, for the one table whose rows may name one
+        # (`stop_reason`): a scenario may declare Pass B's word and the
+        # re-proof's word for the same act, and that is two rows, not a
+        # contradiction. Two rows for the same pass still are, and every other
+        # table keeps the plain key so a stray `pass_kind` cannot weaken its
+        # duplicate refusal.
         seen: set[tuple[str, str, str | None]] = set()
         for row in rows:
-            key = (row["scenario"], row["act_key"], row.get("pass_kind"))
+            key = (row["scenario"], row["act_key"], row.get("pass_kind") if keyed_by_pass else None)
             if key in seen:
                 raise KeyError(
                     f"{table} declares {key!r} twice; two contradictory rows would "
@@ -443,7 +446,7 @@ class FixtureReader:
             if "pass_kind" in row and row["pass_kind"] not in PASS_KINDS:
                 raise KeyError(f"stop_reason row declares unknown pass kind {row['pass_kind']!r}")
 
-        for row in self._validated_rows("stop_reason", _known_signal):
+        for row in self._validated_rows("stop_reason", _known_signal, keyed_by_pass=True):
             if (
                 row["scenario"] == self._scenario
                 and row["act_key"] == act_key
