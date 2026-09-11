@@ -118,27 +118,59 @@ What it shows, in order:
   seal: interrupted, or still running), `not-run` (nothing written: it has not run, which is
   not damage), or `seal-invalid` (a stored seal that no longer verifies against the disk,
   which is never reported as "not run").
-- **Export** — present or none, and what that means for the rows that follow. Before export,
-  nothing shown is a delivered result.
-- **What you can do next** — the one supported continuation: which stage to resume from, or
-  a warning not to resume while a writer may still be active. When acts are held it says
-  plainly that a hold is resolved only by a new authorized run over the same sealed source,
-  that `advance` records permission to pass one sealed stage boundary and neither certifies a
-  reading nor clears a hold, and that any correction of the text happens outside the pipeline.
+- **Export** — one of three states, and what it means for the rows that follow. `present and
+  complete` is an export whose record says `delivered` over a bundle claiming `complete`;
+  `present but partial` is that record saying `held-for-review` over a bundle that does not,
+  which is a real export of some of the acts and not a finished result; and an export record
+  under an Armarium that never sealed is named as exactly that, because the record is written
+  before the boundary is. Before export, nothing shown is a delivered result.
+- **What you can do next** — every stage's state said out loud, then the one supported
+  continuation: `verbatus run --run-id <run>`, naming the stage it picks up from; or a warning
+  not to resume while a writer may still be active; or, where a seal no longer verifies, that
+  this is evidence to preserve and investigate rather than a run to resume. When acts are held
+  it says plainly that a hold is resolved only by a new authorized run over the same sealed
+  source, that `advance` records permission to pass one sealed stage boundary and neither
+  certifies a reading nor clears a hold, and that any correction of the text happens outside
+  the pipeline.
 - **Held or unresolved acts** — every act the Designator or the Recensor left unresolved,
   with the recorded reason and the record it came from. A re-proof that did not complete
-  appears here with its audit examination named.
+  appears here with its audit examination named. One act can produce two rows — the
+  Designator's hold and the Recensor's review of that hold — and each row says which it is;
+  the count is of acts, and the sentence above says how many records they came from.
 - **Pages** and **Acts** — every page the Exemplar accounted for (sealed with its image and
-  digest, or refused with its reason) and every act the Designator's proposal seal expects,
-  labelled by the furthest stage that has spoken about it (`marked out, awaiting witnesses`,
-  `witnessed, awaiting the Perlector`, `read: …, awaiting the Recensor`, `accepted, awaiting
-  establishment`, `held-for-review`, `established, awaiting export`), with the Perlector's
-  machine reading where one exists and every crop's image file and digest.
+  digest, or refused with its reason), counted against the number of pages the run itself
+  declared, and every act the Designator's proposal seal expects. An act the Designator ended
+  — `excluded by the Designator`, `failed at the Designator`, `held by the Designator` — says
+  so and is not left waiting for a witness. Otherwise the label names the stage that has not
+  spoken (`marked out, awaiting witnesses`, `witnessed, awaiting the Perlector`, `read: …,
+  awaiting the Recensor`, `accepted, awaiting establishment`, `established, awaiting export`)
+  or, where the Recensor has spoken and not accepted, is that stage's own outcome word —
+  today `held-for-review`, `recovery-requested`, `confirmed-blank`, `failed`. That last family
+  is the Recensor's closed vocabulary rather than a list kept here, so a word added there
+  appears on this screen without this paragraph being rewritten. Each act carries the
+  Perlector's machine reading where one exists, its witnesses with the attempt each reported
+  on, and every crop's image file and digest.
+- **Review queue** — only after an export, because the queue is a member of the export bundle.
+  Before one, and where a run exported without that format configured, the line says which of
+  those two silences this is.
 
 Every image named is re-read and re-digested as the view is built; a page or crop whose
 bytes moved is refused by name, and a record that changes while the view is being built is
 refused as well. Opening a run changes nothing in it. After export the same command shows
 the export's own accounting, verified the same way.
+
+Two limits of this screen, stated here rather than discovered at it:
+
+- **Long text is cut in the plain view.** A reading or delivered text longer than 300
+  characters is shown to 300, and the line then says `(first 300 characters of N)`; newlines
+  become ` / ` so one act stays one line. Add `--json` for the whole value, or open the record
+  the line already names.
+- **It is bounded to small runs.** Every sealed page and every crop is read whole and
+  re-digested in one pass before anything is shown, under a single 256 MiB allowance, so a
+  parish-sized run refuses this surface by name rather than exhausting the machine. That
+  allowance is a carried limitation, not the eventual answer: a console for real volumes has
+  to verify one image at a time as the renderer asks for it, which is a change to what the
+  confined child receives.
 
 ## The ScanTailor seam
 

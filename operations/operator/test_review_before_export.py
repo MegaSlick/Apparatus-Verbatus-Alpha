@@ -98,8 +98,11 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
     tree = RunTree(witnessed_run, RUN_ID)
 
     assert projected.export["present"] is False
+    assert projected.export["record_present"] is False
+    assert projected.export["complete"] is False
     assert "no completed export" in projected.export["note"]
     assert projected.export["record_ref"] is None
+    assert projected.export["review_items_absent_because"] == "no-export"
     assert {row["stage"]: row["state"] for row in projected.progress} == {
         "door": "sealed",
         "exemplar": "sealed",
@@ -112,10 +115,19 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
         "armarium": "not-run",
     }
     assert projected.next_action["resume_from"] == "perlector"
-    assert "--from perlector --to armarium" in projected.next_action["summary"]
+    # The operator's own word, complete enough to type, and the stage census
+    # said rather than inferred from the first stage that is not sealed.
+    summary = projected.next_action["summary"]
+    assert f"`verbatus run --run-id {RUN_ID}`" in summary
+    assert "picks up from perlector" in summary
+    assert "door, exemplar, ink-map, designator, attestatores sealed" in summary
+    assert "perlector, recensor, archetypus, armarium left no record or seal here" in summary
+    assert "--from" not in summary, "an operator surface prints no orchestrator flag"
     assert projected.next_action["held_acts"] == 0
+    assert projected.next_action["hold_records"] == 0
     assert projected.review_items is None
     assert projected.holds == ()
+    assert projected.pages_declared == 2
 
     # The exact images, verified against the sealed digests, each row naming
     # the Exemplar or Designator record it came from rather than an export.
@@ -141,12 +153,17 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
         assert act["row"]["review"] is None
         assert act["row"]["established"] is None
         assert len(act["row"]["testimonia"]) == 3
+        assert all(
+            isinstance(witness["attempt_ordinal"], int) for witness in act["row"]["testimonia"]
+        ), "each witness row says which attempt it was"
 
     text = "\n".join(review_text.render(dataclasses.asdict(projected)))
     assert "perlector: not-run" in text
     assert "witnessed, awaiting the Perlector" in text
-    assert "Review queue: not produced" in text
-    assert "resume the run from perlector" in text
+    assert "Review queue: not produced (there is no Armarium export record" in text
+    assert "Pages (2 of 2 declared)" in text
+    assert f"`verbatus run --run-id {RUN_ID}`" in text
+    assert "(attempt 1)" in text
 
 
 def test_opening_an_unfinished_run_changes_no_path_bytes_size_or_mtime(witnessed_run: Path):
@@ -203,18 +220,41 @@ def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
     assert "outside the pipeline" in summary
 
     text = "\n".join(review_text.render(dataclasses.asdict(projected)))
-    assert "held-for-review by the recensor; audit examination incomplete" in text
+    assert "held-for-review by the recensor [Recensor review]; audit examination incomplete" in text
     assert "did not complete" in text
     assert "machine reading:" in text
 
+    # Between the two stages: the accepted act is established and waiting for an
+    # export that does not exist yet, which is its own sentence and not "read,
+    # awaiting the Recensor".
+    established_run = _orchestrate(run_root, "--stage", "archetypus")
+    assert established_run.returncode == 0, established_run.stderr
+    between = _projection(run_root)
+    assert between.export["present"] is False
+    by_key = {act["act_key"]: act for act in between.acts}
+    assert by_key["a2"]["category"] == "established, awaiting export"
+    assert "the Armarium has not exported it" in by_key["a2"]["reason"]
+    assert by_key["a2"]["row"]["established"]["text_status"]
+    assert between.next_action["resume_from"] == "armarium"
+    assert "established, awaiting export" in "\n".join(
+        review_text.render(dataclasses.asdict(between))
+    )
+
     # The export arrives; the same surface now shows its accounting, and the
     # hold neither disappears nor changes its reason.
-    for stage, expected_exit in (("archetypus", 0), ("armarium", 3)):
-        completed = _orchestrate(run_root, "--stage", stage)
-        assert completed.returncode == expected_exit, (stage, completed.stderr)
+    exported = _orchestrate(run_root, "--stage", "armarium")
+    assert exported.returncode == 3, exported.stderr
     after = _projection(run_root)
     assert after.export["present"] is True
+    # A held act means a partial export, and this is the run that produces one:
+    # the surface says so in the record's own words instead of announcing "a
+    # completed export" over a bundle that claims otherwise.
+    assert after.export["complete"] is False
+    assert after.export["outcome"] == "held-for-review"
+    assert after.export["claims_status"] != "complete"
+    assert "partial export (held-for-review)" in after.export["note"]
     assert after.export["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
+    assert after.export["review_items_absent_because"] is None
     assert after.review_items is not None and len(after.review_items) == 1
     assert [hold["act_key"] for hold in after.holds] == ["a1"]
     assert after.holds[0]["reason"] == held["reason"]
@@ -239,6 +279,27 @@ def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
         )
     }
 
+    # The post-export plain rendering -- the most common real use of this
+    # screen, and the one shape no test had ever rendered.
+    exported_text = "\n".join(review_text.render(dataclasses.asdict(after)))
+    assert "Export: present but partial" in exported_text
+    assert "partial export (held-for-review)" in exported_text
+    assert "Review queue (1)" in exported_text
+    assert "delivered text:" in exported_text
+    assert "Pages (2 of 2 declared)" in exported_text
+    # The witnesses survive the export: the same act shows its chairs before and
+    # after, under the export's own field name.
+    assert "witnesses:" in exported_text
+    before_chairs = {entry["chair"] for entry in by_key["a2"]["row"]["testimonia"]}
+    exported_a2 = next(act for act in after.acts if act["act_key"] == "a2")
+    exported_chairs = {entry["chair"] for entry in exported_a2["row"]["testimonia"]}
+    assert exported_chairs, "the witnesses do not vanish once the run exports"
+    assert exported_chairs <= before_chairs, (
+        "the export names the evidence-backed witness basis, never a chair the "
+        "Attestatores did not seal"
+    )
+    assert "review record:" in exported_text
+
 
 @pytest.mark.parametrize("what", ["page", "crop"])
 def test_an_image_whose_bytes_moved_is_refused_by_name_before_export(
@@ -260,6 +321,204 @@ def test_an_image_whose_bytes_moved_is_refused_by_name_before_export(
     assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
     detail = refused.value.detail or ""
     assert relative.rsplit("/", 1)[-1] in detail, "the refusal names the file whose bytes moved"
+
+
+def test_a_seal_that_no_longer_verifies_is_named_as_that_and_never_as_a_stage_that_did_not_run(
+    witnessed_run: Path, tmp_path: Path
+):
+    """The fourth stage state. The suite could only produce the other three."""
+    run_root = _writable_copy(witnessed_run, tmp_path / "runs")
+    tree = RunTree(run_root, RUN_ID)
+    # The ink map's own records are not read by this projection, so removing one
+    # moves the boundary the seal witnesses without making any record it shows
+    # unreadable: the seal is stored, and it no longer describes the disk.
+    removable = [
+        row
+        for row in tree.build_manifest("ink-map", verify_inputs=False)["artifacts"]
+        if row["kind"] != "stage-seal"
+    ]
+    assert removable, "the ink map sealed at least one record in this fixture"
+    tree.resolve(removable[0]["relative_path"]).unlink()
+
+    projected = _projection(run_root)
+    states = {row["stage"]: row for row in projected.progress}
+    assert states["ink-map"]["state"] == "seal-invalid"
+    assert "no longer verifies" in states["ink-map"]["note"]
+    assert states["door"]["state"] == "sealed"
+    assert projected.next_action["resume_from"] is None, (
+        "a broken seal is evidence to investigate, never a stage to resume"
+    )
+    summary = projected.next_action["summary"]
+    assert "ink-map's completion seal no longer verifies" in summary
+    assert "preserve and investigate" in summary
+    assert "ink-map stores a seal that no longer verifies" in summary
+
+    text = "\n".join(review_text.render(dataclasses.asdict(projected)))
+    assert "ink-map: seal-invalid" in text
+    # The stage that has not run is still named as that, on the same screen.
+    assert "perlector: not-run" in text
+    assert "no record and no seal found here" in text
+
+
+def _seal_row(payload: dict[str, object], artifact: str = "") -> dict[str, object]:
+    """One stage-record row of the shape `_record_row` produces, for a seal test."""
+    from common.contracts.canonical import self_hash
+    from common.contracts.identities import artifact_id
+
+    sealed = dict(payload)
+    sealed["self_hash"] = self_hash(sealed)
+    return {
+        "stage": "designator",
+        "artifact_id": artifact
+        or artifact_id("designator", "proposal-seal", "proposal-seal", None),
+        "kind": "proposal-seal",
+        "subject_id": "proposal-seal",
+        "outcome": "sealed",
+        "record_ref": {
+            "relative_path": "2_designator/artifacts/proposal-seal/x.json",
+            "sha256": "",
+        },
+        "record": {"payload": sealed},
+    }
+
+
+def _expected_row(act_id: str, outcome: str = "proposed") -> dict[str, object]:
+    return {
+        "act_id": act_id,
+        "act_key": act_id,
+        "page_id": "p1",
+        "page_ordinal": 1,
+        "has_continuation": False,
+        "outcome": outcome,
+        "evidence": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "damage, said",
+    [
+        ("artifact-id", "not the run's one canonical proposal seal"),
+        ("self-hash", "does not verify against its own self-hash"),
+        ("count", "do not reconcile"),
+    ],
+)
+def test_a_proposal_seal_the_pipeline_would_refuse_is_refused_here_too(damage: str, said: str):
+    """The act denominator is read with the pipeline's own checks, not a weaker set.
+
+    `common/stage.py::expected_acts` verifies the payload's self-hash, that
+    `count` reconciles with the rows, and that the seal is the run's one
+    canonical proposal-seal artifact. A console that checked only "an object
+    with an act_id" would show fewer acts than the seal itself claims, silently,
+    while every stage below read the longer list.
+    """
+    rows = [_expected_row("act1"), _expected_row("act2")]
+    seal = _seal_row({"expected_acts": rows, "count": len(rows)})
+    if damage == "artifact-id":
+        seal["artifact_id"] = "art_0000000000000000"
+    elif damage == "self-hash":
+        seal["record"]["payload"]["count"] = 2  # after the self-hash was computed
+        seal["record"]["payload"]["expected_acts"] = [*rows, _expected_row("act3")]
+    else:
+        seal = _seal_row({"expected_acts": rows, "count": 3})
+
+    with pytest.raises(OperatorError) as refused:
+        review._expected_acts([seal])
+    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert said in (refused.value.detail or "")
+
+
+def test_an_act_the_designator_ended_is_not_left_waiting_for_a_witness():
+    """`excluded` and `failed` are terminal there; nothing downstream will speak."""
+    for outcome, category in (
+        ("excluded", "excluded by the Designator"),
+        ("failed", "failed at the Designator"),
+    ):
+        summary = review._act_summary([], _expected_row("act1", outcome))
+        assert summary["category"] == category
+        assert "no witness, reading or review will follow" in summary["reason"]
+    proposed = review._act_summary([], _expected_row("act1"))
+    assert proposed["category"] == "marked out, awaiting witnesses"
+
+
+def test_one_act_held_by_both_stages_is_two_labelled_records_and_one_held_act():
+    """The Recensor writes its own held review quoting a Designator hold."""
+    act_id = "act1"
+    designator_hold = {
+        "stage": "designator",
+        "artifact_id": "art_1",
+        "kind": "hold",
+        "subject_id": act_id,
+        "outcome": "held",
+        "record_ref": {"relative_path": "2_designator/artifacts/hold/a.json", "sha256": ""},
+        "record": {"payload": {"act_key": "a1", "reason": "the margin is torn"}},
+    }
+    recensor_review = {
+        "stage": "recensor",
+        "artifact_id": "art_2",
+        "kind": "review",
+        "subject_id": act_id,
+        "outcome": "held-for-review",
+        "record_ref": {"relative_path": "5_recensor/artifacts/review/b.json", "sha256": ""},
+        "record": {
+            "artifact_id": "art_2",
+            "payload": {
+                "act_key": "a1",
+                "reason": "the Designator held this act",
+                "attempt_ordinal": 1,
+                "audit_examination": "complete",
+            },
+        },
+    }
+    holds = review._holds([designator_hold, recensor_review])
+    assert [hold["label"] for hold in holds] == ["Designator hold", "Recensor review of that hold"]
+    action = review._next_action(RUN_ID, (), {"present": False}, holds)
+    assert action["held_acts"] == 1, "one act, twice attested, is not two held acts"
+    assert action["hold_records"] == 2
+    assert "1 act(s) are held or unresolved, listed below as 2 record(s)" in action["summary"]
+
+    text = "\n".join(review_text.render({"run_id": "r", "holds": [dict(hold) for hold in holds]}))
+    assert "[Designator hold]" in text and "[Recensor review of that hold]" in text
+
+
+def test_a_review_outcome_outside_the_recensor_vocabulary_is_refused_not_skipped():
+    """A widened vocabulary must not drop an act out of the holds list in silence."""
+    from common.contracts.errors import FatalAccounting
+
+    invented = {
+        "stage": "recensor",
+        "artifact_id": "art_3",
+        "kind": "review",
+        "subject_id": "act1",
+        "outcome": "sent-back-for-rework",
+        "record_ref": {"relative_path": "5_recensor/artifacts/review/c.json", "sha256": ""},
+        "record": {"artifact_id": "art_3", "payload": {"act_key": "a1", "attempt_ordinal": 1}},
+    }
+    with pytest.raises(FatalAccounting) as refused:
+        review._holds([invented])
+    assert "sent-back-for-rework" in str(refused.value)
+
+
+def test_an_act_with_two_archetypus_records_is_refused_rather_than_read_positionally():
+    """The stage writes one established text per act; two is a tree, not a newer version."""
+    rows = [
+        {
+            "stage": "archetypus",
+            "artifact_id": f"art_{index}",
+            "kind": "archetypus",
+            "subject_id": "act1",
+            "outcome": "established",
+            "record_ref": {
+                "relative_path": f"6_archetypus/artifacts/archetypus/{index}.json",
+                "sha256": "",
+            },
+            "record": {"payload": {"text_status": "whole", "text_hash": "x"}},
+        }
+        for index in (1, 2)
+    ]
+    with pytest.raises(OperatorError) as refused:
+        review._act_summary(rows, _expected_row("act1"))
+    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "2 Archetypus records" in (refused.value.detail or "")
 
 
 def test_a_stage_that_wrote_records_but_never_sealed_is_named_interrupted_not_damaged(
@@ -330,6 +589,35 @@ def test_the_plain_rendering_keeps_hostile_text_inert():
     assert "\\u001b" in text, "a control character is spelled out, not dropped"
 
 
+def test_run_tree_text_cannot_imitate_the_tools_own_escaping():
+    """A literal backslash is doubled first, so escaped and escaped-looking differ."""
+    neutralised = review_text.inert("a\x1bz")
+    imitation = review_text.inert("a\\u001bz")
+    assert neutralised == "a\\u001bz"
+    assert imitation == "a\\\\u001bz"
+    assert neutralised != imitation
+
+
+def test_a_shortened_line_says_it_was_shortened_and_how_long_the_text_is():
+    """The plain view is the default; a silent cut on this screen is the whole risk."""
+    long_text = "x" * 900
+    projection = {
+        "run_id": "r",
+        "acts": [
+            {
+                "act_id": "a1",
+                "act_key": "a1",
+                "category": "held-for-review",
+                "crops": [],
+                "row": {"reading": {"outcome": "read", "text": long_text}},
+            }
+        ],
+    }
+    text = "\n".join(review_text.render(projection))
+    assert "(first 300 characters of 900)" in text
+    assert "x" * 300 in text
+
+
 def test_the_review_verb_prints_plain_language_by_default_and_json_on_request(
     witnessed_run: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
@@ -351,7 +639,8 @@ def test_the_review_verb_prints_plain_language_by_default_and_json_on_request(
     cli._review_in_custody(witnessed_run, RUN_ID, ROOT)
     plain = capsys.readouterr().out
     assert "What you can do next" in plain
-    assert "resume the run from perlector" in plain
+    assert f"`verbatus run --run-id {RUN_ID}`" in plain
+    assert "picks up from perlector" in plain
     assert "witnessed, awaiting the Perlector" in plain
     assert not plain.lstrip().startswith("{")
 
@@ -410,3 +699,37 @@ def test_a_projection_list_entry_that_is_not_an_object_is_refused_by_field_and_i
         cli._review_in_custody(witnessed_run, RUN_ID, ROOT)
     assert error.value.code is ErrorCode.CONSOLE_PROJECTION_UNREADABLE
     assert "'holds' entry 0" in (error.value.detail or "")
+
+
+@pytest.mark.parametrize(
+    "projection, field",
+    [
+        ({"export": "present"}, "export"),
+        ({"next_action": 7}, "next_action"),
+        ({"holds": [{"act_id": "a", "record_ref": "somewhere"}]}, "holds[].record_ref"),
+        ({"acts": [{"act_id": "a", "row": "a row"}]}, "acts[].row"),
+        (
+            {"acts": [{"act_id": "a", "row": {"reading": {"audit": 3}}}]},
+            "acts[].row.reading.audit",
+        ),
+        ({"progress": "sealed"}, "progress"),
+    ],
+)
+def test_an_object_valued_projection_field_of_the_wrong_type_is_refused_by_name(
+    projection: dict[str, object], field: str
+):
+    """Not an `AttributeError` the catch-all reports as an unclassifiable problem.
+
+    The list fields were shape-checked from the first candidate and the object
+    fields were not, so `export`, `next_action`, a hold's `record_ref`, a
+    reading's `audit` and an act's `row` each crashed the renderer instead of
+    refusing. Found by CodeRabbit (two minors) and by the same review as
+    finding 12.
+    """
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render({"run_id": "r", **projection})
+    assert refused.value.field == field
+    assert refused.value.index is None
+    message = str(refused.value)
+    assert "entry -1" not in message, "the field itself is wrong, not a row numbered -1"
+    assert field in message
