@@ -133,6 +133,16 @@ act_key = "a2"
 text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
 [[prior_reading]]
+scenario = "audit-reproof-cutoff"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "audit-reproof-cutoff"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
+[[prior_reading]]
 scenario = "refused-page"
 act_key = "a1"
 text = "SYNTHETIC ACT ONE alpha beta ganna"
@@ -514,6 +524,16 @@ name = "audit-change"
 recover_acts = []
 hold_acts = []
 
+# audit-reproof-cutoff declares neither a recovery nor a hold, and no
+# reading failure: a1's Pass-B reading completes, and the only declared
+# departure from `happy` is the `length` stop word on its Pass-C re-proof
+# (STOP_REASONS). Any hold this scenario produces has exactly one origin,
+# the re-examination that did not finish.
+[[scenario]]
+name = "audit-reproof-cutoff"
+recover_acts = []
+hold_acts = []
+
 [[scenario]]
 name = "refused-page"
 recover_acts = []
@@ -664,6 +684,12 @@ outcome = "no-readable-text"
 scenario = "engine-truncated-reading"
 act_key = "a1"
 stop_reason = "length"
+
+[[stop_reason]]
+scenario = "audit-reproof-cutoff"
+act_key = "a1"
+stop_reason = "length"
+pass_kind = "audit-reproof"
 
 # One declared provider RESPONSE per row: an empty body from that chair on
 # that act. The Attestatores derives `genuinely-empty` from the retained

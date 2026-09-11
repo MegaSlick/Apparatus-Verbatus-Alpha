@@ -25,23 +25,35 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.perlector_audit import (  # noqa: F401  (re-export)
+    DECLARED_STOP_WORDS,
+    EXAMINATION_CAP_EXHAUSTED,
+    EXAMINATION_COMPLETE,
+    EXAMINATION_INCOMPLETE,
+    EXAMINATION_NOT_DUE,
+    EXAMINATION_STATES,
     FLAG_CLASSES,
     REPROOF_PASS_KIND,
     REQUEST_SCHEMA,
+    RETIRED_SCHEMAS,
     SCHEMA,
     WITNESS_DERIVED_LOCATION_CLASSES,
     audit_digest,
     audit_request,
     change_record,
+    examination_state,
     neutral_prompt,
     reproof_delivery_due,
     reproof_plan,
     text_change_span,
+    truncation_classification,
+    unresolved_state,
     validate_audit_request,
     validate_chain,
     validate_draft,
     validate_finding,
     validate_perlectio_audit,
+    validate_reproof_call,
+    validate_truncation_record,
 )
 
 _CONFIG_FIELDS: Final = frozenset(
@@ -57,6 +69,16 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
         raise ContractError(
             f"the Perlector audit declaration at {path} could not be read"
         ) from error
+    if (
+        isinstance(policy, dict)
+        and isinstance(policy.get("schema"), str)
+        and policy["schema"] in RETIRED_SCHEMAS
+    ):
+        raise ContractError(
+            f"the Perlector audit declaration names {policy['schema']!r}, a retired schema that "
+            "could not record whether a delivered re-proof completed; declare "
+            f"{SCHEMA!r}. A run sealed under the old declaration is re-read under the current one"
+        )
     if (
         not isinstance(policy, dict)
         or set(policy) != _CONFIG_FIELDS

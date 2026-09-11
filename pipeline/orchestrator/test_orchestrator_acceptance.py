@@ -1531,10 +1531,35 @@ def _perlector_dissent():
 # audit-gates/pr111-acceptance-attribution-8eb1.md under the queue evidence above.
 # Measurement SHA256: 253deb4707561d91539cd32a6bc46207e9504be8344536bd602511e2344249de.
 # The v7/v8 semantic reducer and persisted-integrity checks remain unchanged.
+# Audit contract v2 (independent audit of 2026-09-10, F1), first measured on ed722707a7
+# against the audited baseline 0aa08db7e4 and re-measured on the reviewed correction
+# (the candidate this comment ships in): four fresh runs, happy 100 files/exit 0 and
+# review 111 files/exit 3 on both sides -- file counts unchanged -- with a leaf-by-leaf
+# attribution over every changed file. Happy: 23 leaves byte-identical, 75 JSON leaves
+# changed, 2 content-addressed blobs re-addressed; review: 22 / 87 / 2. (An earlier
+# draft of this paragraph said 101/112 files: the measurement's own orchestrator log,
+# written beside each run tree, had been counted.) Every non-digest change is one
+# of five kinds and there are no others: the new facts on each audit finding
+# (`examination`, `reproof_truncation`, `reproof_call`), on each Perlectio
+# (`audit.examination`) and on each review (`audit_examination`), all `complete` /
+# `None` in these scenarios; `policy.schema` perlector-audit.v1 -> v2 on every audit
+# draft and finding; the fixture declaration itself -- a new `[[scenario]]`, its
+# `[[prior_reading]]` rows and a pass-scoped `[[stop_reason]]` row -- which
+# `common/stage.py` seals whole into `config_digest`, so it moves both pins although
+# neither happy nor review runs that scenario (the standing rule at the top of this
+# block); the content addresses of the one Perlector partition blob and the Armarium
+# bundle zip that carry those records, and every `relative_path` naming them; and the
+# digests that follow (`config_digest`, `self_hash`, `sha256`, `inputs`). No text,
+# outcome, category, crop geometry, count, terminal status, file count or exit code
+# changes. The pins below are read from these two tests' own computation over the
+# candidate; the bare-CLI measurement attributes the change and does not mint the pin.
+# Evidence: workbench/raw/audit-fixes-2026-09-10/f1-pin-attribution/ and
+# f1-fix-suites/pytest.log (retained outside Git, like every other evidence
+# directory this file cites).
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "5dcc5ae8a7b5d6eb3700885736ec0f9512395edf8f897d7036f96cc7e6dc3330"
-REVIEW_RUN_TREE_DIGEST = "a0150dd17e27dbbd59c460a78394277f31cd25f75e3919ca12495c2cfa88ea9a"
+HAPPY_RUN_TREE_DIGEST = "39ed04348209b3b6ce880278bd042fc10611551ed2d930f9d15f4bba53e0883a"
+REVIEW_RUN_TREE_DIGEST = "6e6ff9cf19c6e0f4a370bb0934f6e115275f72b1544dcd647ac73b5f73d96e27"
 
 
 def orchestrate(

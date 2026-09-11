@@ -2629,6 +2629,20 @@ def validate_reading_payload(
     annotations.validate_annotations(payload, outcome=outcome)
 
 
+def _reproof_call(reproof: dict[str, Any]) -> dict[str, Any] | None:
+    """The re-proof's retained call, in the closed shape the finding seals, or `None`."""
+    engine_call = reproof.get("engine_call")
+    if engine_call is None:
+        return None
+    return {
+        "call_record_ref": dict(engine_call["call_record_ref"]),
+        "raw_response_ref": dict(engine_call["raw_response_ref"]),
+        "response_sha256": engine_call["response_sha256"],
+        "finish_reason": engine_call["finish_reason"],
+        "served_model_id": engine_call["served_model_id"],
+    }
+
+
 def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, text: str) -> str:
     """One place the outcome is decided, so the precedence is stated once:
     a scenario's declared engine behaviour outranks the computed detector
@@ -2671,6 +2685,7 @@ def _audited_truncation(
     text: str,
     region_pixels: int,
     stop_reason: str | None,
+    measured: dict | None = None,
 ) -> dict:
     """The truncation instrument, re-measured over an audit-changed reading.
 
@@ -2690,11 +2705,14 @@ def _audited_truncation(
     the earlier classification: the recomputed signals describe the published
     text, but the verdict never improves.
     """
+    # `measured` is the caller's already-taken measurement over the same text
+    # and stop word (the re-proof's own termination record); passing it in makes
+    # this visibly the same measurement rather than two that happen to agree.
     audited = _reconciled_truncation(
         declared_failure=declared_failure,
-        truncation_record=truncation.classify(
-            text, region_pixels=region_pixels, stop_reason=stop_reason
-        ),
+        truncation_record=measured
+        if measured is not None
+        else truncation.classify(text, region_pixels=region_pixels, stop_reason=stop_reason),
     )
     if (
         pass_b["classification"] != truncation.COMPLETE
@@ -3836,7 +3854,17 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         draft_ref = context.input_ref(draft.relative_path)
         final_text = payload["text"]
-        unresolved = bool(flags) and audit_policy["round_cap"] == 0
+        # The truncation instrument's verdict on the re-proof call itself, or
+        # `None` while no re-proof has been delivered. Measured over the
+        # re-proof's own text and stop word, *before* that text is compared with
+        # the frozen semi-final -- because the comparison is exactly what used to
+        # stand in for completion. A re-proof that ran out of output space and
+        # returned the established text byte for byte kept Pass B's `complete`
+        # record and a resolved audit, and two such acts were delivered as a
+        # complete export (independent audit of 2026-09-10, finding F1). The
+        # examination state and `unresolved` are derived from this record below
+        # by the same shared function `validate_finding` re-derives them with.
+        reproof_truncation: dict[str, Any] | None = None
         # The plan this act's frozen flags imply, computed once by the function
         # `validate_chain` re-derives it with and `audit.audit_request` builds
         # the reader's copy from. What is sealed below, what the reader is
@@ -3915,6 +3943,18 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             final_text = reproof["text"]
             pre_audit_text = payload["text"]
             reproof_inputs = engine_call_inputs(context, reproof.get("engine_call"))
+            reproof_truncation = truncation.classify(
+                final_text, region_pixels=row["region_pixels"], stop_reason=reproof["stop_reason"]
+            )
+            # Everything from here to the end of this block is provenance and
+            # projection for a re-proof whose text is the one published. It is
+            # entered on text inequality alone, on purpose: a re-proof that
+            # returned the frozen text confirms Pass B's call as the producer of
+            # the published reading, and moving `engine_call`, `truncation` and
+            # `self_revision` onto it would bind that reading to a response that
+            # did not produce it. Whether the re-proof *completed* is the
+            # separate fact `reproof_truncation` above already holds, and it is
+            # sealed whichever branch runs.
             if final_text != payload["text"]:
                 payload["text"] = final_text
                 # `engine_call` names the call the published text came from, so
@@ -3951,6 +3991,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     text=final_text,
                     region_pixels=row["region_pixels"],
                     stop_reason=reproof["stop_reason"],
+                    measured=reproof_truncation,
                 )
                 row["outcome"] = _resolve_outcome(
                     declared_failure=row["declared_failure"],
@@ -3996,7 +4037,15 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # the change record from the draft's semi-final against the
             # PUBLISHED text, so the record must describe the projected text.
             changes = audit.change_record(pre_audit_text, final_text, flags)
-        if unresolved:
+        # One derivation, shared with every consumer: what became of the
+        # re-examination, and whether that leaves the flags unresolved. Only an
+        # exhausted cap mints exhausted-cap spans; an incomplete re-proof is an
+        # incomplete examination, recorded as that and routed to review by the
+        # Recensor on that fact, never dressed as a span or as a truncation of a
+        # text that did in fact complete.
+        examination = audit.examination_state(flags, audit_policy["round_cap"], reproof_truncation)
+        unresolved = audit.unresolved_state(examination)
+        if examination == audit.EXAMINATION_CAP_EXHAUSTED:
             for flag in flags:
                 start, end = flag["location"]["start"], flag["location"]["end"]
                 if start < end:
@@ -4013,6 +4062,15 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "change_record": changes,
             "uncertain_spans": uncertainty,
             "unresolved": unresolved,
+            "examination": examination,
+            "reproof_truncation": reproof_truncation,
+            # The retained response the termination above was measured over,
+            # where the reader has an engine behind it: the fixture chamber has
+            # none and seals `None`. Named on the finding because the
+            # Perlectio's own `engine_call` stays Pass B's whenever the text is
+            # unchanged, and a later reader must still be able to find the
+            # re-proof's response and check the sealed verdict against it.
+            "reproof_call": _reproof_call(reproof) if reproof_truncation is not None else None,
         }
         audit.validate_finding(
             finding_payload,
@@ -4041,6 +4099,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "finding_ref": finding_ref,
             "finding_digest": audit.audit_digest(finding_payload),
             "unresolved": unresolved,
+            "examination": examination,
             "reproofs": reproofs,
             # Which request the reader was actually handed, or `None` where
             # none was: an act with no flag has nothing to re-prove, and an act

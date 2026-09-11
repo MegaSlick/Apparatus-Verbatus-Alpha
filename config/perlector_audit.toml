@@ -6,7 +6,13 @@
 # to 0 is permitted and routes flagged acts to review.  `absolute_round_cap`
 # declares how far the cap may ever be raised once that pass is built; no
 # configuration can exceed it, and no stage has a runtime switch for either value.
-schema = "perlector-audit.v1"
+#
+# v2 seals, beside every audit finding, what became of the re-proof itself:
+# whether one was due, whether the cap allowed it, and whether the delivered call
+# completed. A v1 record could not say, and a re-proof cut off by its engine that
+# returned the frozen text unchanged was sealed as resolved. Consumers refuse a
+# v1 record by name; nothing reads it forward.
+schema = "perlector-audit.v2"
 default_round_cap = 1
 absolute_round_cap = 2
 round_cap = 1

@@ -185,7 +185,7 @@ class FixtureReader:
                 delivered_pixels=delivered_pixels,
                 audit_request=request,
             ),
-            "stop_reason": self._declared_stop_reason(act_key),
+            "stop_reason": self._declared_stop_reason(act_key, pass_kind),
         }
 
     def _reading_text(
@@ -221,7 +221,7 @@ class FixtureReader:
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
 
-    def _validated_rows(self, table: str, extra_check=None) -> list:
+    def _validated_rows(self, table: str, extra_check=None, *, keyed_by_pass: bool = False) -> list:
         """Every row of one fixture table, after the WHOLE table validates.
 
         One loop for all three tables, because they had started to drift: a
@@ -233,9 +233,15 @@ class FixtureReader:
         declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
         declared_acts = {act["key"] for act in self._fixture["act"]}
         rows = self._fixture.get(table, [])
-        seen: set[tuple[str, str]] = set()
+        # Keyed on the pass too, for the one table whose rows may name one
+        # (`stop_reason`): a scenario may declare Pass B's word and the
+        # re-proof's word for the same act, and that is two rows, not a
+        # contradiction. Two rows for the same pass still are, and every other
+        # table keeps the plain key so a stray `pass_kind` cannot weaken its
+        # duplicate refusal.
+        seen: set[tuple[str, str, str | None]] = set()
         for row in rows:
-            key = (row["scenario"], row["act_key"])
+            key = (row["scenario"], row["act_key"], row.get("pass_kind") if keyed_by_pass else None)
             if key in seen:
                 raise KeyError(
                     f"{table} declares {key!r} twice; two contradictory rows would "
@@ -413,7 +419,7 @@ class FixtureReader:
             return row["text"]
         raise KeyError(f"the fixture declares no prior reading for {self._scenario!r}/{act_key!r}")
 
-    def _declared_stop_reason(self, act_key: str) -> str | None:
+    def _declared_stop_reason(self, act_key: str, pass_kind: str) -> str | None:
         """The engine's own word on why it stopped.
 
         A reader always reports one, because a real serving engine always
@@ -423,13 +429,28 @@ class FixtureReader:
         a different fact: `truncation.classify` holds on it rather than
         calling the reading complete, and nothing in this offline chamber is
         entitled to claim an engine went silent.
+
+        A row may name one `pass_kind`, and then declares the unusual answer for
+        that pass alone: `audit-reproof-cutoff` declares `length` for the
+        re-proof only, so Pass B establishes a complete reading and the
+        re-examination of it is the call that fails. Without that, one row set
+        every pass's stop word at once and the composition the independent
+        audit named (a completed establishment followed by a cut-off re-proof,
+        F1) could not be declared. A row without `pass_kind` covers every pass,
+        exactly as before.
         """
 
         def _known_signal(row):
             if row["stop_reason"] not in {"stop", "length"}:
                 raise KeyError(f"stop_reason row declares unknown signal {row['stop_reason']!r}")
+            if "pass_kind" in row and row["pass_kind"] not in PASS_KINDS:
+                raise KeyError(f"stop_reason row declares unknown pass kind {row['pass_kind']!r}")
 
-        row = self._matching_row("stop_reason", act_key, _known_signal)
-        if row is not None:
-            return row["stop_reason"]
+        for row in self._validated_rows("stop_reason", _known_signal, keyed_by_pass=True):
+            if (
+                row["scenario"] == self._scenario
+                and row["act_key"] == act_key
+                and row.get("pass_kind", pass_kind) == pass_kind
+            ):
+                return row["stop_reason"]
         return "stop"

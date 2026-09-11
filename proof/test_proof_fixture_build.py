@@ -426,6 +426,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "churro-native",
         "churro-truncation",
         "audit-change",
+        "audit-reproof-cutoff",
         "refused-page",
         "refused-first-page",
         "truncated-reading",
@@ -491,6 +492,11 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
             "text": "SYNTHETIC ACT ONE alpha beta gamma!",
         }
     ]
+    # Nothing is held or recovered by configuration: the hold this scenario
+    # produces must come from the re-proof's own declared stop word (the
+    # `stop_reason` row below), or it would prove nothing about F1.
+    assert by_name["audit-reproof-cutoff"]["recover_acts"] == []
+    assert by_name["audit-reproof-cutoff"]["hold_acts"] == []
     assert by_name["refused-page"]["recover_acts"] == []
     assert by_name["refused-page"]["hold_acts"] == []
     assert by_name["refused-first-page"]["recover_acts"] == []
@@ -645,10 +651,19 @@ def test_the_declared_stop_reason_is_the_length_signal_for_a_known_scenario(skel
     stop-reason, authoritative for `truncated` when it says `length`."""
     rows = skeleton["stop_reason"]
     assert rows == [
-        {"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"}
+        {"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},
+        # Pass-scoped: Pass B completes and only the re-proof is cut off, the
+        # composition the independent audit of 2026-09-10 found undeclarable.
+        {
+            "scenario": "audit-reproof-cutoff",
+            "act_key": "a1",
+            "stop_reason": "length",
+            "pass_kind": "audit-reproof",
+        },
     ]
     scenario_names = {scenario["name"] for scenario in skeleton["scenario"]}
     for row in rows:
         assert row["scenario"] in scenario_names
         assert row["act_key"] in {act["key"] for act in skeleton["act"]}
         assert row["stop_reason"] in {"stop", "length"}
+        assert row.get("pass_kind", "audit-reproof") == "audit-reproof"
