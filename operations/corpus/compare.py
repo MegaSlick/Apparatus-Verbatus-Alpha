@@ -59,6 +59,7 @@ supplies `hypotheses: {act_id: (OutputStatus, text_or_None)}`.
 from __future__ import annotations
 
 from fractions import Fraction
+from pathlib import Path
 from typing import Any, Mapping
 
 from common.contracts.canonical import is_sha256, self_hash, verify_self_hash
@@ -449,21 +450,90 @@ class ReadOnlyRunTree:
     def __init__(self, tree: RunTree) -> None:
         self._tree = tree
 
+    # --- the whole read surface, delegated ------------------------------------
+    # Named one by one rather than passed through by `__getattr__`, so a method
+    # added to `RunTree` shows up as a change here rather than slipping through
+    # a catch-all. `test_compare.py` reconciles both lists against `RunTree`'s
+    # own public surface, so neither can drift (round 2 item 12).
+
     def build_manifest(self, stage: str, *, verify_inputs: bool = True) -> dict[str, Any]:
         return self._tree.build_manifest(stage, verify_inputs=verify_inputs)
 
     def read_artifact(self, stage: str, kind: str, artifact_id: str) -> dict[str, Any]:
         return self._tree.read_artifact(stage, kind, artifact_id)
 
+    def read_artifact_snapshot(self, *args: Any, **kwargs: Any) -> Any:
+        return self._tree.read_artifact_snapshot(*args, **kwargs)
+
+    def read_artifact_reference(self, *args: Any, **kwargs: Any) -> Any:
+        return self._tree.read_artifact_reference(*args, **kwargs)
+
     def read_run(self) -> dict[str, Any]:
         return self._tree.read_run()
 
+    def read_run_receipt(self, reference: Any) -> dict[str, Any]:
+        return self._tree.read_run_receipt(reference)
+
+    def read_approval_record(self, reference: Any) -> dict[str, Any]:
+        return self._tree.read_approval_record(reference)
+
+    def read_recensor_partition_receipt(self) -> dict[str, Any]:
+        return self._tree.read_recensor_partition_receipt()
+
+    def read_index(self, stage: str) -> dict[str, Any]:
+        return self._tree.read_index(stage)
+
+    def read_bytes(self, relative_path: str) -> bytes:
+        return self._tree.read_bytes(relative_path)
+
+    def has_artifact(self, stage: str, kind: str, artifact_id: str) -> bool:
+        return self._tree.has_artifact(stage, kind, artifact_id)
+
+    def manifest_agrees_with_disk(self, stage: str) -> bool:
+        return self._tree.manifest_agrees_with_disk(stage)
+
+    def inventory_scope(self) -> tuple[str, ...]:
+        return self._tree.inventory_scope()
+
+    def artifact_path(self, stage: str, kind: str, artifact_id: str) -> str:
+        return self._tree.artifact_path(stage, kind, artifact_id)
+
+    def blob_path(self, stage: str, digest: str) -> str:
+        return self._tree.blob_path(stage, digest)
+
+    def manifest_path(self, stage: str) -> str:
+        return self._tree.manifest_path(stage)
+
+    def index_path(self, stage: str) -> str:
+        return self._tree.index_path(stage)
+
+    def receipt_path(self, digest: str) -> str:
+        return self._tree.receipt_path(digest)
+
+    def recensor_partition_receipt_path(self) -> str:
+        return self._tree.recensor_partition_receipt_path()
+
+    def resolve(self, relative_path: str) -> Path:
+        return self._tree.resolve(relative_path)
+
+    @property
+    def root(self) -> Path:
+        return self._tree.root
+
+    @property
+    def run_id(self) -> str:
+        return self._tree.run_id
+
+    # --- and every write `RunTree` declares, refused by name -------------------
+    # A write method with no stub would fail with an `AttributeError` rather
+    # than the named refusal: still closed, but saying nothing.
     publish_artifact = _refused_write
     put_blob = _refused_write
     write_manifest = _refused_write
     write_index = _refused_write
     write_run_receipt = _refused_write
     write_approval_record = _refused_write
+    write_recensor_partition_receipt = _refused_write
 
 
 # --- The comparison record ---------------------------------------------------
