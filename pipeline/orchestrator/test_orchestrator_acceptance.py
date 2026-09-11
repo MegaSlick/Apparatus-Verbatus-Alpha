@@ -1556,10 +1556,40 @@ def _perlector_dissent():
 # Evidence: workbench/raw/audit-fixes-2026-09-10/f1-pin-attribution/ and
 # f1-fix-suites/pytest.log (retained outside Git, like every other evidence
 # directory this file cites).
+# The reader's own doubt report (independent audit of 2026-09-10, F2), measured on
+# a4833a2a14 against the F1 correction's own candidate trees (the baseline this
+# branch sits on): two fresh runs, happy 100 files/exit 0 and review 111
+# files/exit 3, file counts unchanged on both sides, with a leaf-by-leaf
+# attribution over every changed file. Happy: 23 leaves byte-identical, 75 JSON
+# leaves changed, 2 content-addressed blobs re-addressed, 31 non-digest value
+# changes; review: 22 / 87 / 2 / 35. (Counts are the run tree `r/` alone; the
+# baseline side's own orchestrator log, written beside its tree, is the third
+# only-on-one-side file and is not one of them.) Every non-digest change is one
+# of four kinds and there are no others: the new fact itself --
+# `uncertainty_assessment` on each Perlectio and each Recensor review (2 + 2
+# happy, 3 + 3 review) and `uncertainty.assessment` on each Archetypus record
+# and each delivered export row (2 + 2 happy, 1 + 1 review), every one
+# `not-assessed` with the fixture reader's "no channel for one" problem, which
+# is precisely the absence F2 exists to disclose; the fixture declaration itself
+# -- the `[[reader_assessment]]`, `[[reader_doubt]]` and `[[reader_gap]]` tables
+# and the `reader-doubt` and `reader-doubt-malformed` scenarios -- which
+# `common/stage.py` seals whole into `config_digest`, so it moves both pins
+# although neither happy nor review runs those scenarios (the standing rule at
+# the top of this block); the content addresses of the one Perlector partition
+# blob and the Armarium bundle zip that carry those records, and every
+# `relative_path` naming them (16 happy / 19 review `inputs[]`, 4 / 6
+# `partition_ref`, 1 / 1 `bundle.reference`); and the digests that follow. No
+# text, outcome, category, crop geometry, count, terminal status, file count or
+# exit code changes. The pins below are read from these two tests' own
+# computation over the candidate; the bare-CLI measurement attributes the change
+# and does not mint the pin.
+# Evidence: workbench/raw/audit-fixes-2026-09-11/f2-pin-attribution/ and
+# f2-fix/round2.log (retained outside Git, like every other evidence directory
+# this file cites).
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "39ed04348209b3b6ce880278bd042fc10611551ed2d930f9d15f4bba53e0883a"
-REVIEW_RUN_TREE_DIGEST = "6e6ff9cf19c6e0f4a370bb0934f6e115275f72b1544dcd647ac73b5f73d96e27"
+HAPPY_RUN_TREE_DIGEST = "00a33f9227a6d44413f20a32c5e0f62c2b92bdac2a073fd114c60f01494c457d"
+REVIEW_RUN_TREE_DIGEST = "c4f25fd720fed86fca34939c5b372c6c85a3ee7633f47309ff9d7d19088ea043"
 
 
 def orchestrate(
