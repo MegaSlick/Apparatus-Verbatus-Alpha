@@ -151,6 +151,41 @@ def _one_line(value: Any, limit: int = 160) -> str:
     return f"{text[:limit]}… (first {limit} characters as shown, of a {len(raw)}-character value)"
 
 
+def _doubt_lines(assessment: Any, *, spans: Any, gaps: Any, text: Any) -> list[str]:
+    """The reader's own doubt report, rendered the same way wherever it is carried.
+
+    An `assessed` report is shown span by span with the characters it doubts;
+    any other state is shown as the absence it is, with the problem that says
+    why, so an empty layer is never displayed as a reader's confidence
+    (independent audit of 2026-09-10, F2).
+    """
+    if not isinstance(assessment, dict):
+        return []
+    spans = spans if isinstance(spans, list) else []
+    gaps = gaps if isinstance(gaps, list) else []
+    if assessment.get("state") != "assessed":
+        return [
+            f"    doubts: {inert(assessment.get('state'))} — "
+            f"{_one_line(assessment.get('problem'), limit=300)}"
+        ]
+    lines = [
+        f"    doubts: assessed by the reader; {len(spans)} uncertain span(s), {len(gaps)} gap(s)"
+    ]
+    shown_text = text if isinstance(text, str) else ""
+    for span in spans:
+        start, end = span.get("start"), span.get("end")
+        shown = shown_text[start:end] if isinstance(start, int) and isinstance(end, int) else ""
+        alternatives = ", ".join(inert(a) for a in span.get("alternatives") or [])
+        lines.append(
+            f"      [{inert(start)}, {inert(end)}) {inert(shown)!r} confidence "
+            f"{inert(span.get('confidence'))}"
+            + (f"; alternatives: {alternatives}" if alternatives else "")
+        )
+    for gap in gaps:
+        lines.append(f"      gap ({inert(gap.get('position'))}) at {inert(gap.get('start'))}")
+    return lines
+
+
 def render(projection: dict[str, Any]) -> list[str]:
     """The operator's view of one run, in reading order.
 
@@ -262,40 +297,32 @@ def render(projection: dict[str, Any]) -> list[str]:
             )
             if isinstance(reading.get("text"), str):
                 lines.append(f"    machine reading: {_one_line(reading.get('text'), limit=300)}")
-            assessment = reading.get("uncertainty_assessment")
-            if isinstance(assessment, dict):
-                spans = reading.get("uncertain_spans") or []
-                gaps = reading.get("gaps") or []
-                state = inert(assessment.get("state"))
-                if assessment.get("state") == "assessed":
-                    lines.append(
-                        f"    doubts: assessed by the reader; {len(spans)} uncertain span(s), "
-                        f"{len(gaps)} gap(s)"
-                    )
-                    text = reading.get("text") if isinstance(reading.get("text"), str) else ""
-                    for span in spans:
-                        start, end = span.get("start"), span.get("end")
-                        shown = (
-                            text[start:end]
-                            if isinstance(start, int) and isinstance(end, int)
-                            else ""
-                        )
-                        alternatives = ", ".join(inert(a) for a in span.get("alternatives") or [])
-                        lines.append(
-                            f"      [{inert(start)}, {inert(end)}) {inert(shown)!r} confidence "
-                            f"{inert(span.get('confidence'))}"
-                            + (f"; alternatives: {alternatives}" if alternatives else "")
-                        )
-                    for gap in gaps:
-                        lines.append(
-                            f"      gap ({inert(gap.get('position'))}) at {inert(gap.get('start'))}"
-                        )
-                else:
-                    lines.append(
-                        f"    doubts: {state} — {_one_line(assessment.get('problem'), limit=300)}"
-                    )
+            lines.extend(
+                _doubt_lines(
+                    reading.get("uncertainty_assessment"),
+                    spans=reading.get("uncertain_spans"),
+                    gaps=reading.get("gaps"),
+                    text=reading.get("text"),
+                )
+            )
         elif isinstance(row.get("text"), str):
             lines.append(f"    delivered text: {_one_line(row.get('text'), limit=300)}")
+            # A delivered act has no Perlectio row in this view -- the export
+            # row is what the console shows -- so the doubt report is read off
+            # the canonical layer the export carries. Without this an act that
+            # reached the product unassessed would look, to the one person
+            # reviewing it, exactly like one whose reader found no doubt
+            # (independent audit of 2026-09-10, F2).
+            uncertainty = row.get("uncertainty")
+            if isinstance(uncertainty, dict):
+                lines.extend(
+                    _doubt_lines(
+                        uncertainty.get("assessment"),
+                        spans=uncertainty.get("uncertain_spans"),
+                        gaps=uncertainty.get("gaps"),
+                        text=row.get("text"),
+                    )
+                )
         review = _object(row, "review", "acts[].row.review")
         if review:
             lines.append(

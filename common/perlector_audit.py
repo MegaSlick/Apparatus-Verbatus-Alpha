@@ -1030,11 +1030,24 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
     # assessed doubts, if any, follow them. The projection must be present
     # exactly, in order, at the head -- what follows is the reader's report and
     # is validated against the text by the annotation layer, not here.
+    #
+    # What may follow it is decided by the sealed assessment, not left open: a
+    # reading whose reader was never asked, or whose report could not be
+    # anchored, has no doubts of its own to publish, so its layer must be the
+    # projection and nothing else. Without that, an act with no exhausted-cap
+    # finding -- the ordinary case, where the projection is empty -- would
+    # accept any invented span at all, because every list starts with the empty
+    # one (independent audit of 2026-09-10, F2).
     published = payload.get("uncertain_spans")
-    if (
-        not isinstance(published, list)
-        or published[: len(expected_uncertainty)] != expected_uncertainty
-    ):
+    assessment = payload.get("uncertainty_assessment")
+    state = assessment.get("state") if isinstance(assessment, dict) else None
+    if not isinstance(published, list):
+        raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
+    if state == "assessed":
+        agrees = published[: len(expected_uncertainty)] == expected_uncertainty
+    else:
+        agrees = published == expected_uncertainty
+    if not agrees:
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
     return {"record": record, "draft": draft, "finding": finding}
 

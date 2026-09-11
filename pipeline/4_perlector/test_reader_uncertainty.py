@@ -126,8 +126,14 @@ def test_unicode_offsets_anchor_by_code_point_and_a_repeated_word_by_position():
     )
 
 
+# Each case carries the text its report is anchored against, because one of the
+# refusals only exists over a text that holds nothing: a `whole-act` gap over
+# "alpha beta" is already refused by the gap schema for contradicting the text
+# it sits beside, and the rule that a *reader* may never report one -- an empty
+# reading is the `no-readable-text` outcome, not a doubt -- would then be a
+# branch no case reaches (GOVERNANCE 10).
 @pytest.mark.parametrize(
-    ("report", "problem_fragment"),
+    ("report", "text", "problem_fragment"),
     [
         (
             {
@@ -138,6 +144,7 @@ def test_unicode_offsets_anchor_by_code_point_and_a_repeated_word_by_position():
                 "gaps": [],
                 "problem": None,
             },
+            "alpha beta",
             "outside text bounds",
         ),
         (
@@ -147,7 +154,8 @@ def test_unicode_offsets_anchor_by_code_point_and_a_repeated_word_by_position():
                 "gaps": [{"position": "internal", "start": 1, "end": 3, "witness_evidence": []}],
                 "problem": None,
             },
-            "claims characters",
+            "alpha beta",
+            "may carry no characters of its own",
         ),
         (
             {
@@ -156,7 +164,37 @@ def test_unicode_offsets_anchor_by_code_point_and_a_repeated_word_by_position():
                 "gaps": [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}],
                 "problem": None,
             },
+            "",
             "cannot be whole-act",
+        ),
+        (
+            {
+                "state": "assessed",
+                "uncertain_spans": [],
+                "gaps": [
+                    {
+                        "position": "internal",
+                        "start": 1,
+                        "end": 1,
+                        # Well-formed evidence, so the gap schema accepts it
+                        # and the rule under test is the one that refuses it.
+                        "witness_evidence": [
+                            {
+                                "chair": "attestator_1",
+                                "testimonium_id": "t-1",
+                                "reference": {
+                                    "relative_path": "3_attestatores/t.json",
+                                    "sha256": "0" * 64,
+                                },
+                                "variant": "alpha",
+                            }
+                        ],
+                    }
+                ],
+                "problem": None,
+            },
+            "alpha beta",
+            "carries no witness evidence",
         ),
         (
             {
@@ -167,31 +205,43 @@ def test_unicode_offsets_anchor_by_code_point_and_a_repeated_word_by_position():
                 "gaps": [],
                 "problem": None,
             },
+            "alpha beta",
             "confidence",
         ),
-        ({"state": "sure", "uncertain_spans": [], "gaps": [], "problem": None}, "unknown state"),
-        ({"spans": []}, "closed record"),
+        (
+            {"state": "sure", "uncertain_spans": [], "gaps": [], "problem": None},
+            "alpha beta",
+            "unknown state",
+        ),
+        ({"spans": []}, "alpha beta", "closed record"),
         (
             {"state": "assessed", "uncertain_spans": [], "gaps": [], "problem": "but"},
+            "alpha beta",
             "carries no problem",
         ),
         (
             {"state": "not-assessed", "uncertain_spans": [], "gaps": [], "problem": None},
+            "alpha beta",
+            "must say why",
+        ),
+        (
+            {"state": "malformed", "uncertain_spans": [], "gaps": [], "problem": None},
+            "alpha beta",
             "must say why",
         ),
     ],
 )
 def test_a_report_the_schema_cannot_anchor_becomes_a_visible_malformed_record(
-    report, problem_fragment
+    report, text, problem_fragment
 ):
     """Refused reports are retained as faults with empty layers, never as confidence."""
     perlector = _perlector()
-    record = perlector._assessed({"text": "alpha beta", "assessment": report}, text="alpha beta")
+    record = perlector._assessed({"text": text, "assessment": report}, text=text)
     assert record["state"] == "malformed"
     assert record["uncertain_spans"] == [] and record["gaps"] == []
     assert problem_fragment in record["problem"]
     with pytest.raises(SchemaRefusal):
-        annotations.validate_assessment(report, "alpha beta")
+        annotations.validate_assessment(report, text)
 
 
 def test_the_canonical_layer_refuses_a_perlectio_sealed_before_the_assessment_existed():
@@ -302,6 +352,13 @@ def test_a_chair_without_a_doubt_channel_is_disclosed_as_unproduced_not_confiden
         "acts_assessed": 0,
         "acts_not_assessed": 2,
     }
+
+    # And the one person reviewing the run reads the absence, not a silence.
+    # A delivered act has no Perlectio row in the console projection, so the
+    # state has to be rendered from the export row's own canonical layer.
+    text = "\n".join(review_text.render(dataclasses.asdict(ReadOnlyRun(root, "r").projection())))
+    assert "doubts: not-assessed — the reader reports no doubt assessment" in text
+    assert "doubts: assessed" not in text
 
 
 def test_a_malformed_report_holds_the_act_with_the_problem_retained_and_no_empty_confidence(
