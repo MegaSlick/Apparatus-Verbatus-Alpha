@@ -621,6 +621,47 @@ def test_the_seal_row_field_types_the_pipeline_requires_are_required_here(
     assert said in (refused.value.detail or "")
 
 
+def test_two_records_under_the_canonical_seal_id_refuse_rather_than_pick_the_first():
+    """Two denominators are not a neighbour to name; nothing here chooses between them."""
+    rows = [_expected_row("act1")]
+    first = _seal_row({"expected_acts": rows, "count": 1})
+    second = _seal_row({"expected_acts": rows + [_expected_row("act2")], "count": 2})
+    second["record_ref"] = {
+        "relative_path": "2_designator/artifacts/proposal-seal/again.json",
+        "sha256": "",
+    }
+    with pytest.raises(OperatorError) as refused:
+        review._expected_acts([first, second])
+    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "one of 2 records" in (refused.value.detail or "")
+    assert "again.json" in (refused.value.detail or "")
+
+
+@pytest.mark.parametrize(
+    "value, repeated",
+    [
+        ("happy", "happy"),
+        ("review-2.b_x", "review-2.b_x"),
+        ("happy; rm -rf /", None),
+        ("$(id)", None),
+        ("", None),
+        (" happy", None),
+        ("a" * 65, None),
+    ],
+)
+def test_only_a_scenario_token_is_repeated_into_the_resume_command(value: str, repeated):
+    """The word is typed by a person next; a run tree does not get to write that line."""
+    row = {
+        "stage": review.ARMARIUM,
+        "kind": "export",
+        "subject_id": "r",
+        "artifact_id": review.artifact_id(review.ARMARIUM, "export", "export", None),
+        "record_ref": {"relative_path": "7_armarium/export.json", "sha256": ""},
+        "record": {"payload": {"scenario": value}},
+    }
+    assert review._recorded_scenario([row]) == repeated
+
+
 def test_a_foreign_proposal_seal_beside_the_canonical_one_is_named_not_a_refusal():
     """Stricter than the pipeline is the wrong kind of strict on a surface for damaged trees."""
     rows = [_expected_row("act1")]

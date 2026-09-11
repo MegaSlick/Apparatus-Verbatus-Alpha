@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -581,6 +582,9 @@ def _declared_page_count(tree: RunTree) -> tuple[int | None, str | None]:
     return len(manifest), None
 
 
+_SCENARIO_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
 def _recorded_scenario(stage_records: list[dict[str, Any]]) -> str | None:
     """The scenario this run declared, when a record in the tree names it.
 
@@ -594,7 +598,13 @@ def _recorded_scenario(stage_records: list[dict[str, Any]]) -> str | None:
     for row in _export_rows(stage_records):
         payload = row["record"].get("payload")
         if isinstance(payload, dict) and isinstance(payload.get("scenario"), str):
-            return payload["scenario"]
+            scenario = payload["scenario"]
+            # The word goes into a command a person is invited to type, so only
+            # a scenario-name token is repeated; anything else in that field is
+            # treated as not stated, and the sentence says to add the flag.
+            if _SCENARIO_TOKEN.fullmatch(scenario):
+                return scenario
+            return None
     return None
 
 
@@ -1067,6 +1077,18 @@ def _expected_acts(
             seals[0],
             f"is artifact {seals[0]['artifact_id']}; this run has no canonical proposal seal "
             f"{canonical_id}, so nothing declares how many acts it has",
+        )
+    if len(canonical) > 1:
+        # Two records claiming the one canonical id is not a neighbour to name
+        # beside the count: it is two denominators, and nothing here chooses
+        # between them (the positional pick this surface refused for Archetypus
+        # rows would be the same defect one stage earlier).
+        raise _seal_refusal(
+            canonical[0],
+            f"is one of {len(canonical)} records stored under the canonical proposal-seal "
+            f"artifact {canonical_id} ("
+            f"{', '.join(row['record_ref']['relative_path'] for row in canonical)}); a run "
+            "declares its act count once, and this surface does not choose between two",
         )
     seal = canonical[0]
     extra = [row for row in seals if row["artifact_id"] != canonical_id]
