@@ -131,14 +131,24 @@ def _one_line(value: Any, limit: int = 160) -> str:
 
     A parish act's text routinely passes any limit this screen can hold, and the
     one screen whose purpose is "review each act against its images" showed a
-    silently shortened, reflowed version of it. The cut is now named where it
-    happens, with the full length, so a person reading the plain view knows to
-    reach for `--json` -- or for the record the line already names.
+    silently shortened, reflowed version of it. The cut is named where it
+    happens, so a person reading the plain view knows to reach for `--json` --
+    or for the record the line already names.
+
+    The newline becomes " / " *before* the escaping, not after. Escaping first
+    turned every newline into `\\u000a`, so the replacement found nothing to
+    replace and the multiline rendering the README describes never happened.
+
+    Two lengths, because they are two different facts and one of them was
+    reported as the other: the cut is counted in characters as they appear on
+    screen, where one control character occupies six and one backslash two, and
+    the value's own length is the length of the value.
     """
-    text = inert(value).replace("\n", " / ")
+    text = inert(value.replace("\n", " / ") if isinstance(value, str) else value)
     if len(text) <= limit:
         return text
-    return f"{text[:limit]}… (first {limit} characters of {len(text)})"
+    raw = value if isinstance(value, str) else repr(value)
+    return f"{text[:limit]}… (first {limit} characters as shown, of a {len(raw)}-character value)"
 
 
 def render(projection: dict[str, Any]) -> list[str]:
@@ -228,8 +238,12 @@ def render(projection: dict[str, Any]) -> list[str]:
             )
 
     acts = _rows(projection, "acts")
+    acts_note = projection.get("acts_denominator_note")
     lines.append("")
-    lines.append(f"Acts ({len(acts)})")
+    if acts_note:
+        lines.append(f"Acts ({len(acts)}; {_one_line(acts_note, limit=300)})")
+    else:
+        lines.append(f"Acts ({len(acts)})")
     for act in acts:
         lines.append(
             f"  {inert(act.get('act_key'))} ({inert(act.get('act_id'))}): "
@@ -274,13 +288,22 @@ def render(projection: dict[str, Any]) -> list[str]:
         crops = _nested_rows(act, "crops", "acts[].crops")
         for crop in crops:
             origin = f" ({inert(crop.get('origin'))})" if crop.get("origin") else ""
+            attempt = (
+                f" (attempt {inert(crop.get('attempt_ordinal'))})"
+                if crop.get("attempt_ordinal") is not None
+                else ""
+            )
             lines.append(
                 f"    crop {inert(crop.get('region_id'))} on page {inert(crop.get('ordinal'))}"
-                f"{origin}: {inert(crop.get('image_path'))} sha256 "
+                f"{origin}{attempt}: {inert(crop.get('image_path'))} sha256 "
                 f"{_digest(crop.get('image_sha256'))}"
             )
+        # The projection says why a crop list is empty, because "none recorded"
+        # was a statement about the export row read as a statement about the run.
         if not crops:
-            lines.append("    crops: none recorded")
+            lines.append(f"    crops: {_one_line(act.get('crops_note') or 'none recorded', 300)}")
+        elif act.get("crops_note"):
+            lines.append(f"    crops: {_one_line(act.get('crops_note'), 300)}")
 
     review_items = projection.get("review_items")
     lines.append("")
@@ -298,7 +321,24 @@ def render(projection: dict[str, Any]) -> list[str]:
         review_items = _rows(projection, "review_items")
         lines.append(f"Review queue ({len(review_items)})")
         for item in review_items:
-            row = _object(item, "row", "review_items[].row") or item
+            # Three cases, because the old `or item` fallback collapsed two of
+            # them. This projection wraps each queue row with the bundle member
+            # and line number it came from, so an entry carrying a `row` key is
+            # that wrapper: an empty row there is an empty row, and it is named
+            # by its line rather than printed as "None: None — None" out of the
+            # wrapper's own keys. An entry with no `row` key at all is not this
+            # projection's wrapper, and the entry itself is the row -- dropping
+            # its content would hide what the queue said.
+            if "row" not in item:
+                row = item
+            else:
+                row = _object(item, "row", "review_items[].row")
+                if not row:
+                    lines.append(
+                        f"  line {inert(item.get('line'))} of "
+                        f"{inert(item.get('member'))}: this queue row is empty"
+                    )
+                    continue
             lines.append(
                 f"  {inert(row.get('act_key', row.get('act_id')))}: "
                 f"{inert(row.get('category'))} — {_one_line(row.get('reason'), limit=600)}"

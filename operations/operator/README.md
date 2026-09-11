@@ -149,7 +149,11 @@ What it shows, in order:
   is the Recensor's closed vocabulary rather than a list kept here, so a word added there
   appears on this screen without this paragraph being rewritten. Each act carries the
   Perlector's machine reading where one exists, its witnesses with the attempt each reported
-  on, and every crop's image file and digest.
+  on, and every crop's image file and digest. After an export, a delivered act is described by
+  the export's own accounting; an act it did not deliver carries no crops and no witness basis
+  in that record, so those are read from the sealed Designator and Attestatores records instead
+  and the crop line says where they came from. An act count with no proposal seal behind it
+  says so, rather than reading as a run with no acts.
 - **Review queue** — only after an export, because the queue is a member of the export bundle.
   Before one, and where a run exported without that format configured, the line says which of
   those two silences this is.
@@ -162,9 +166,10 @@ the export's own accounting, verified the same way.
 Two limits of this screen, stated here rather than discovered at it:
 
 - **Long text is cut in the plain view.** A reading or delivered text longer than 300
-  characters is shown to 300, and the line then says `(first 300 characters of N)`; newlines
-  become ` / ` so one act stays one line. Add `--json` for the whole value, or open the record
-  the line already names.
+  characters is shown to 300, and the line then says `(first 300 characters as shown, of an
+  N-character value)` -- two lengths, because a control character occupies six characters on
+  screen and one in the value. Newlines become ` / ` before anything is escaped, so one act
+  stays one line. Add `--json` for the whole value, or open the record the line already names.
 - **It is bounded to small runs.** Every sealed page and every crop is read whole and
   re-digested in one pass before anything is shown, under a single 256 MiB allowance, so a
   parish-sized run refuses this surface by name rather than exhausting the machine. That
