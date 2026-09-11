@@ -455,6 +455,9 @@ class ReadOnlyRunTree:
     def read_artifact(self, stage: str, kind: str, artifact_id: str) -> dict[str, Any]:
         return self._tree.read_artifact(stage, kind, artifact_id)
 
+    def read_run(self) -> dict[str, Any]:
+        return self._tree.read_run()
+
     publish_artifact = _refused_write
     put_blob = _refused_write
     write_manifest = _refused_write

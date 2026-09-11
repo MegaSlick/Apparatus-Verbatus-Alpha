@@ -23,10 +23,32 @@ are what the IoU matrix shows: the full matrix travels in each page's
 comparison record, so a reader can see which pairs were eligible and which the
 assignment chose.
 
+**Two aggregate rates, each labelled by what it counts.** The matched-pairs rate
+is the arithmetic of the pairs the assignment made: a record the pipeline never
+found contributes to neither side of that fraction, so failing to find an act
+cannot improve it and cannot worsen it either. GOALS 1 says a missed act is
+worse than a poorly read act, so the second rate counts every missed record's
+reference units as deletions -- the same treatment a held act already gets --
+and that is the number a capture failure actually moves. Neither rate counts a
+not-attempted record: the run never sealed that page, so it is a gap in the
+trial's coverage rather than a reading the pipeline got wrong, and
+`reference_records_not_attempted` is where a reader sees it.
+
+**What this report measures and what it only states.** The run's own facts come
+from the sealed tree: the export digest, the run and config digests, and whether
+this was a fixture run, which is read from the export payload's own identity
+field (`fixture_id` on a fixture run, `submission_id` on a real one, never both,
+never neither) rather than from a flag the operator could omit. `code_ref` is a
+caller's declaration; it is checked against the commit this checkout has out
+when there is one, and `code_ref_check` names what the check found rather than
+implying one happened. A reference ledger, when passed, is verified: every
+reference page's `self_hash` must appear in it.
+
 **Outside the establishment path, by construction.** `operations/corpus/` may
 not import `pipeline/` and nothing here writes a run tree; the reference text
-is read here and only here, after the run is sealed. This module never trains,
-never tunes, never selects a reading.
+is read here and only here, after the run is sealed, and through the read-only
+wrapper that refuses every write outright. This module never trains, never
+tunes, never selects a reading.
 
 A report built over the synthetic fixture is labelled a fixture result, in the
 record and in the summary a person reads. It proves the driver; it says nothing
@@ -46,12 +68,14 @@ from common.contracts.canonical import (
     digest_of,
     is_sha256,
     self_hash,
+    verify_self_hash,
 )
 from common.contracts.errors import ContractError
 from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
 from common.stage import verify_final_seal
 from operations.spike_perlector.models import OutputStatus
+from operations.spike_perlector.normalization import GRAPHEMIC_V1, character_units, word_units
 
 from . import CorpusRefusal
 from .compare import (
@@ -80,8 +104,12 @@ EVALUATION_REFUSAL_REASONS = frozenset(
         "export-text-mismatch",
         "unknown-export-category",
         "reference-page-collision",
+        "reference-page-not-in-ledger",
+        "ambiguous-run-identity",
         "unestablished-delivered-act",
         "output-exists",
+        "wrong-schema",
+        "self-hash-mismatch",
     }
 )
 
@@ -95,6 +123,78 @@ _CATEGORY_STATUS: dict[str, OutputStatus] = {
     "confirmed-blank": OutputStatus.NO_READABLE_TEXT,
     "excluded-with-approval": OutputStatus.MISSING,
 }
+
+_MATCHED_SCOPE = (
+    "matched pairs only: a reference record the assignment never paired contributes to "
+    "neither side of this fraction"
+)
+_MISSED_SCOPE = (
+    "matched pairs plus every missed record counted as wholly deleted; not-attempted "
+    "records are excluded from both rates and counted separately"
+)
+
+_EDIT_FIELDS = (
+    "reference_units",
+    "hypothesis_units",
+    "matches",
+    "substitutions",
+    "insertions",
+    "deletions",
+)
+
+_RATE_FIELDS = frozenset({"numerator", "denominator"})
+_UNIT_FIELDS = frozenset(set(_EDIT_FIELDS) | {"rate"})
+_AGGREGATE_SCOPE_FIELDS = frozenset({"scope", "cer", "wer"})
+_AGGREGATE_FIELDS = frozenset({"matched_pairs_only", "including_missed_records"})
+_CODE_REF_CHECK_FIELDS = frozenset({"state", "checkout_head"})
+# One closed row shape for all three outcomes. A missed or not-attempted record
+# carries `None` where a scored one carries a measurement, so a reader is never
+# left to infer which questions a row was even asked -- the same repair the
+# admission ledger's rows needed (independent audit of 2026-09-11, finding 9).
+_RECORD_ROW_FIELDS = frozenset(
+    {
+        "physical_act_id",
+        "record_id",
+        "page_ordinal",
+        "page_sha256",
+        "outcome",
+        "pipeline_act_id",
+        "export_category",
+        "text_status",
+        "status",
+        "cer",
+        "wer",
+        "note",
+    }
+)
+_CORPUS_FIELDS = frozenset(
+    {
+        "reference_pages",
+        "reference_records",
+        "reference_ledger_sha256",
+        "reference_ledger_verified",
+        "reference_page_self_hashes",
+        "splits",
+    }
+)
+_TOP_FIELDS = frozenset(
+    {
+        "schema",
+        "fixture",
+        "label",
+        "code_ref",
+        "code_ref_check",
+        "run",
+        "corpus",
+        "denominators",
+        "aggregate",
+        "pages",
+        "records",
+        "unmatched_pipeline_acts",
+        "pages_without_reference",
+        "self_hash",
+    }
+)
 
 
 def hypotheses_from_export(
@@ -161,9 +261,16 @@ def hypotheses_from_export(
     return hypotheses
 
 
-def _established_text_hashes(tree: RunTree) -> dict[str, str]:
+def _established_text_hashes(tree: ReadOnlyRunTree) -> dict[str, str]:
+    """Every Archetypus record's `text_hash`, read with the lineage check left on.
+
+    `verify_inputs=False` is for a caller whose own boundary owns lineage. This
+    caller verifies the Armarium seal, not the Archetypus one, so it has no such
+    boundary and leaves the default alone (independent audit of 2026-09-11,
+    finding 13).
+    """
     hashes: dict[str, str] = {}
-    for entry in tree.build_manifest(ARCHETYPUS, verify_inputs=False)["artifacts"]:
+    for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]:
         if entry["kind"] != "archetypus":
             continue
         record = tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])
@@ -186,15 +293,122 @@ def _rate(edits: Mapping[str, int]) -> dict[str, int]:
 
 
 def _accumulate(total: dict[str, int], part: Mapping[str, int]) -> None:
-    for key in (
-        "reference_units",
-        "hypothesis_units",
-        "matches",
-        "substitutions",
-        "insertions",
-        "deletions",
-    ):
+    for key in _EDIT_FIELDS:
         total[key] = total.get(key, 0) + part[key]
+
+
+def _wholly_deleted(units: int) -> dict[str, int]:
+    """The edit counts of a reference nothing was proposed against."""
+    return {
+        "reference_units": units,
+        "hypothesis_units": 0,
+        "matches": 0,
+        "substitutions": 0,
+        "insertions": 0,
+        "deletions": units,
+    }
+
+
+def _scope(scope: str, cer: Mapping[str, int], wer: Mapping[str, int]) -> dict[str, Any]:
+    return {
+        "scope": scope,
+        "cer": {**cer, "rate": _rate(cer)} if cer.get("reference_units") else None,
+        "wer": {**wer, "rate": _rate(wer)} if wer.get("reference_units") else None,
+    }
+
+
+def _is_commit(value: str) -> bool:
+    return len(value) in (40, 64) and all(character in "0123456789abcdef" for character in value)
+
+
+def _checkout_commit() -> str | None:
+    """The commit this checkout has out, read from `.git` alone, or `None`.
+
+    Stdlib only and no subprocess: a scoring module has no business shelling out.
+    A worktree's `.git` is a file naming the real git directory, and a branch's
+    tip may be loose or packed, so both routes are followed. Anything unexpected
+    returns `None`, which the report records as "no checkout found" rather than
+    as agreement.
+    """
+    for directory in Path(__file__).resolve().parents:
+        marker = directory / ".git"
+        if not marker.exists():
+            continue
+        git_dir = marker
+        if marker.is_file():
+            content = marker.read_text(encoding="utf-8", errors="replace").strip()
+            if not content.startswith("gitdir:"):
+                return None
+            git_dir = Path(content.split(":", 1)[1].strip())
+            if not git_dir.is_absolute():
+                git_dir = (directory / git_dir).resolve()
+        head_file = git_dir / "HEAD"
+        if not head_file.is_file():
+            return None
+        head = head_file.read_text(encoding="utf-8", errors="replace").strip()
+        if not head.startswith("ref:"):
+            # Detached HEAD: the commit itself. 40 hex for a sha1 repository, 64
+            # for a sha256 one; anything else is not a commit and is not guessed at.
+            return head if _is_commit(head) else None
+        ref = head.split(":", 1)[1].strip()
+        # A linked worktree's refs live in the common directory, which
+        # `commondir` names relative to the worktree's own git directory.
+        roots = [git_dir]
+        commondir = git_dir / "commondir"
+        if commondir.is_file():
+            common = Path(commondir.read_text(encoding="utf-8", errors="replace").strip())
+            roots.append(common if common.is_absolute() else (git_dir / common).resolve())
+        for root in roots:
+            loose = root / ref
+            if loose.is_file():
+                tip = loose.read_text(encoding="utf-8", errors="replace").strip()
+                return tip if _is_commit(tip) else None
+            packed = root / "packed-refs"
+            if packed.is_file():
+                for line in packed.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.startswith("#") or line.startswith("^"):
+                        continue
+                    parts = line.split()
+                    if len(parts) == 2 and parts[1] == ref and _is_commit(parts[0]):
+                        return parts[0]
+        return None
+    return None
+
+
+def _code_ref_check(code_ref: str) -> dict[str, Any]:
+    """What checking `code_ref` against this checkout actually found.
+
+    A declaration is not a measurement, and the report says which this is
+    (GOVERNANCE 10; independent audit of 2026-09-11, finding 11).
+    """
+    head = _checkout_commit()
+    if head is None:
+        return {"state": "no-checkout-found", "checkout_head": None}
+    state = (
+        "matches-checkout" if code_ref in (head, head[:12], head[:7]) else "differs-from-checkout"
+    )
+    return {"state": state, "checkout_head": head}
+
+
+def run_is_fixture(export_payload: Mapping[str, Any]) -> bool:
+    """Whether the run was a fixture run, from the export's own sealed identity.
+
+    The Armarium seals exactly one of `fixture_id` (fixture route) and
+    `submission_id` (real ingress), and refuses a manifest naming both or
+    neither. Reading that is a measurement; a `--fixture` flag the operator could
+    omit is not, and omitting it published a fixture score under the live label
+    (independent audit of 2026-09-11, finding 11).
+    """
+    has_fixture = isinstance(export_payload.get("fixture_id"), str)
+    has_submission = isinstance(export_payload.get("submission_id"), str)
+    if has_fixture == has_submission:
+        raise CorpusRefusal(
+            "ambiguous-run-identity: the export names "
+            f"{'both a fixture and a submission' if has_fixture else 'neither a fixture nor a submission'}"
+            "; a run's export must be identified by exactly one, and nothing can be labelled "
+            "until it is"
+        )
+    return has_fixture
 
 
 def evaluate_run(
@@ -202,10 +416,15 @@ def evaluate_run(
     reference_pages: list[dict[str, Any]],
     *,
     code_ref: str,
-    reference_ledger_sha256: str | None,
-    fixture: bool,
+    reference_ledger: Mapping[str, Any] | None = None,
+    reference_ledger_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """One `recordgold-evaluation.v1` report for one sealed run against reference pages."""
+    """One `recordgold-evaluation.v1` report for one sealed run against reference pages.
+
+    `reference_ledger` is a validated `recordgold-local-admission.v1` body; when
+    given, every reference page must appear in it by `self_hash`, so naming a
+    ledger becomes a check rather than a caption.
+    """
     if not isinstance(code_ref, str) or not code_ref:
         raise CorpusRefusal("malformed-record: an evaluation must name the code it ran under")
     if reference_ledger_sha256 is not None and not is_sha256(reference_ledger_sha256):
@@ -220,6 +439,22 @@ def evaluate_run(
             )
         references[digest] = page
 
+    if reference_ledger is not None:
+        in_ledger = {
+            row.get("reference_page_self_hash")
+            for row in reference_ledger.get("rows", [])
+            if isinstance(row, dict)
+        }
+        missing = sorted(
+            page["self_hash"] for page in references.values() if page["self_hash"] not in in_ledger
+        )
+        if missing:
+            raise CorpusRefusal(
+                f"reference-page-not-in-ledger: {len(missing)} reference page(s) do not appear in "
+                f"the named admission ledger, first {missing[0]}; the ledger names truth this "
+                "report was not given"
+            )
+
     try:
         export_record = verify_final_seal(tree)
     except ContractError as error:
@@ -228,14 +463,29 @@ def evaluate_run(
         ) from error
     export_payload = export_record["payload"]
     export_sha256 = digest_bytes(canonical_bytes(export_record))
-    run = tree.read_run()
+    fixture = run_is_fixture(export_payload)
 
     read_only = ReadOnlyRunTree(tree)
-    hypotheses = hypotheses_from_export(export_payload, _established_text_hashes(tree))
+    run = read_only.read_run()
+    hypotheses = hypotheses_from_export(export_payload, _established_text_hashes(read_only))
     page_shas = load_exemplar_page_shas(read_only)
     pipeline_acts = load_pipeline_proposal_acts(read_only)
     excluded = count_excluded_designator_artifacts(read_only)
     sha_by_act = {act["act_id"]: act["page_sha256"] for act in pipeline_acts}
+
+    # One page's bytes sealed at two ordinals would compare that page twice and
+    # count its reference acts twice, which surfaces later as a denominator that
+    # does not reconcile -- a correct outcome under a message that names nothing
+    # (independent audit of 2026-09-11, finding 22). Name the digest instead.
+    repeated = sorted(
+        {sha for sha in page_shas.values() if list(page_shas.values()).count(sha) > 1}
+        & set(references)
+    )
+    if repeated:
+        raise CorpusRefusal(
+            f"malformed-record: the run seals page sha256 {repeated[0]} at more than one ordinal, "
+            "so its reference records would be scored more than once"
+        )
 
     by_category: dict[str, int] = {}
     for hypothesis in hypotheses.values():
@@ -253,6 +503,8 @@ def evaluate_run(
     pages_without_reference: list[dict[str, Any]] = []
     cer_total: dict[str, int] = {}
     wer_total: dict[str, int] = {}
+    cer_with_missed: dict[str, int] = {}
+    wer_with_missed: dict[str, int] = {}
     compared_shas: set[str] = set()
     for ordinal in sorted(page_shas):
         sha = page_shas[ordinal]
@@ -279,6 +531,15 @@ def evaluate_run(
         for act in reference["acts"]:
             pair = matched.get(act["physical_act_id"])
             if pair is None:
+                # GOALS 1: the act nobody found. It scores nothing in the
+                # matched-pairs rate and its whole reference in the other.
+                _accumulate(
+                    cer_with_missed,
+                    _wholly_deleted(len(character_units(act["text"], GRAPHEMIC_V1))),
+                )
+                _accumulate(
+                    wer_with_missed, _wholly_deleted(len(word_units(act["text"], GRAPHEMIC_V1)))
+                )
                 records.append(
                     {
                         "physical_act_id": act["physical_act_id"],
@@ -292,12 +553,18 @@ def evaluate_run(
                         "status": None,
                         "cer": None,
                         "wer": None,
+                        "note": (
+                            "no pipeline act matched this record on a page the run sealed; "
+                            "counted as wholly deleted in the including-missed aggregate"
+                        ),
                     }
                 )
                 continue
             hypothesis = hypotheses[pair["pipeline_act_id"]]
             _accumulate(cer_total, pair["cer"])
             _accumulate(wer_total, pair["wer"])
+            _accumulate(cer_with_missed, pair["cer"])
+            _accumulate(wer_with_missed, pair["wer"])
             records.append(
                 {
                     "physical_act_id": act["physical_act_id"],
@@ -311,6 +578,7 @@ def evaluate_run(
                     "status": pair["status"],
                     "cer": {**pair["cer"], "rate": _rate(pair["cer"])},
                     "wer": {**pair["wer"], "rate": _rate(pair["wer"])},
+                    "note": None,
                 }
             )
         for row in comparison["unmatched_pipeline_acts"]:
@@ -336,8 +604,15 @@ def evaluate_run(
                 {
                     "physical_act_id": act["physical_act_id"],
                     "record_id": act["record_id"],
+                    "page_ordinal": None,
                     "page_sha256": sha,
                     "outcome": "not-attempted",
+                    "pipeline_act_id": None,
+                    "export_category": None,
+                    "text_status": None,
+                    "status": None,
+                    "cer": None,
+                    "wer": None,
                     "note": "the run sealed no page with this digest",
                 }
             )
@@ -350,14 +625,19 @@ def evaluate_run(
             scored_by_category.get(row["export_category"], 0) + 1
         )
     aggregate = {
-        "cer": {**cer_total, "rate": _rate(cer_total)} if cer_total else None,
-        "wer": {**wer_total, "rate": _rate(wer_total)} if wer_total else None,
+        "matched_pairs_only": _scope(_MATCHED_SCOPE, cer_total, wer_total),
+        "including_missed_records": _scope(_MISSED_SCOPE, cer_with_missed, wer_with_missed),
     }
+    splits = sorted({page["split"] for page in references.values()})
+    splits_present = sorted(
+        {split for page in references.values() for split in page["splits_present"]}
+    )
     report = {
         "schema": SCHEMA,
-        "fixture": bool(fixture),
+        "fixture": fixture,
         "label": FIXTURE_LABEL if fixture else LIVE_LABEL,
         "code_ref": code_ref,
+        "code_ref_check": _code_ref_check(code_ref),
         "run": {
             "run_id": run["run_id"],
             "config_digest": run["config_digest"],
@@ -370,7 +650,12 @@ def evaluate_run(
             "reference_pages": len(references),
             "reference_records": sum(len(page["acts"]) for page in references.values()),
             "reference_ledger_sha256": reference_ledger_sha256,
+            "reference_ledger_verified": reference_ledger is not None,
             "reference_page_self_hashes": sorted(page["self_hash"] for page in references.values()),
+            # Which split was scored, and every split those pages carry records
+            # from. A score against `train` or against held-out `test` must never
+            # read like a score against `val` (finding 12).
+            "splits": {"scored": splits, "present_on_pages": splits_present},
         },
         "denominators": {
             "run_pages_sealed": len(page_shas),
@@ -395,29 +680,158 @@ def evaluate_run(
         "unmatched_pipeline_acts": unmatched_pipeline,
         "pages_without_reference": pages_without_reference,
     }
+    report["self_hash"] = self_hash(report)
+    return validate_evaluation(report)
+
+
+def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise CorpusRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
+    return value
+
+
+def _validate_units(value: Any, what: str) -> None:
+    units = _closed(value, _UNIT_FIELDS, what)
+    for field in _EDIT_FIELDS:
+        if not isinstance(units[field], int) or isinstance(units[field], bool) or units[field] < 0:
+            raise CorpusRefusal(f"malformed-record: {what}.{field} must be a count")
+    rate = _closed(units["rate"], _RATE_FIELDS, f"{what}.rate")
+    if rate != _rate(units):
+        raise CorpusRefusal(f"malformed-record: {what}.rate is not the rate of its own edits")
+    if rate["denominator"] <= 0:
+        raise CorpusRefusal(f"malformed-record: {what}.rate divides by a non-positive denominator")
+
+
+def validate_evaluation(report: Any) -> dict[str, Any]:
+    """Refuse an evaluation that is not exactly `recordgold-evaluation.v1`.
+
+    This is the artifact a person reads as the measurement, and it was the one
+    record in this package that nothing held to a shape (independent audit of
+    2026-09-11, finding 10). Closed at every level, self-hashed, with the record
+    denominator and the scored-category histogram reconciled against the rows.
+    """
+    report = _closed(report, _TOP_FIELDS, "evaluation report")
+    if report["schema"] != SCHEMA:
+        raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {report['schema']!r}")
+    if not verify_self_hash(report):
+        raise CorpusRefusal("self-hash-mismatch: the report does not hash to its own self_hash")
+    if not isinstance(report["fixture"], bool):
+        raise CorpusRefusal("malformed-record: fixture must be a boolean")
+    expected_label = FIXTURE_LABEL if report["fixture"] else LIVE_LABEL
+    if report["label"] != expected_label:
+        raise CorpusRefusal(
+            "malformed-record: the label does not match the run's own sealed identity"
+        )
+    if not isinstance(report["code_ref"], str) or not report["code_ref"]:
+        raise CorpusRefusal("malformed-record: an evaluation must name the code it ran under")
+    check = _closed(report["code_ref_check"], _CODE_REF_CHECK_FIELDS, "code_ref_check")
+    if check["state"] not in ("matches-checkout", "differs-from-checkout", "no-checkout-found"):
+        raise CorpusRefusal(f"malformed-record: code_ref_check names state {check['state']!r}")
+    if (check["checkout_head"] is None) != (check["state"] == "no-checkout-found"):
+        raise CorpusRefusal(
+            "malformed-record: code_ref_check carries a checkout head exactly when one was found"
+        )
+
+    corpus = _closed(report["corpus"], _CORPUS_FIELDS, "the corpus block")
+    if corpus["reference_ledger_sha256"] is not None and not is_sha256(
+        corpus["reference_ledger_sha256"]
+    ):
+        raise CorpusRefusal("malformed-record: reference_ledger_sha256 is not a sha256")
+    if not isinstance(corpus["reference_ledger_verified"], bool):
+        raise CorpusRefusal("malformed-record: reference_ledger_verified must be a boolean")
+    hashes = corpus["reference_page_self_hashes"]
+    if not isinstance(hashes, list) or len(hashes) != corpus["reference_pages"]:
+        raise CorpusRefusal(
+            "malformed-record: reference_page_self_hashes does not name every reference page"
+        )
+    splits = _closed(corpus["splits"], frozenset({"scored", "present_on_pages"}), "corpus.splits")
+    for name, value in sorted(splits.items()):
+        if not isinstance(value, list) or value != sorted(set(value)):
+            raise CorpusRefusal(
+                f"malformed-record: corpus.splits.{name} must be a sorted, deduplicated list"
+            )
+    if not splits["scored"]:
+        raise CorpusRefusal("malformed-record: an evaluation must name the split(s) it scored")
+
+    aggregate = _closed(report["aggregate"], _AGGREGATE_FIELDS, "the aggregate")
+    for name, block in sorted(aggregate.items()):
+        block = _closed(block, _AGGREGATE_SCOPE_FIELDS, f"aggregate.{name}")
+        if not isinstance(block["scope"], str) or not block["scope"]:
+            raise CorpusRefusal(f"malformed-record: aggregate.{name} states no scope")
+        for unit in ("cer", "wer"):
+            if block[unit] is not None:
+                _validate_units(block[unit], f"aggregate.{name}.{unit}")
+
     totals = report["denominators"]
+    if not isinstance(totals, dict):
+        raise CorpusRefusal("malformed-record: denominators must be a record")
+    outcomes = {"scored": 0, "missed": 0, "not-attempted": 0}
+    for row in report["records"]:
+        row = _closed(row, _RECORD_ROW_FIELDS, "a record row")
+        if row["outcome"] not in outcomes:
+            raise CorpusRefusal(
+                f"malformed-record: a record row carries outcome {row['outcome']!r}, not one "
+                f"of {sorted(outcomes)}"
+            )
+        if (row["outcome"] == "scored") != (row["cer"] is not None):
+            raise CorpusRefusal(
+                f"malformed-record: record row {row['record_id']!r} carries a rate exactly when "
+                "it was scored"
+            )
+        if row["outcome"] == "scored":
+            for unit in ("cer", "wer"):
+                _validate_units(row[unit], f"record {row['record_id']!r} {unit}")
+        outcomes[row["outcome"]] += 1
     if (
-        totals["reference_records_scored"]
-        + totals["reference_records_missed"]
-        + totals["reference_records_not_attempted"]
-        != report["corpus"]["reference_records"]
+        outcomes["scored"] != totals["reference_records_scored"]
+        or outcomes["missed"] != totals["reference_records_missed"]
+        or outcomes["not-attempted"] != totals["reference_records_not_attempted"]
     ):
         raise CorpusRefusal(
-            "malformed-record: the evaluation's record denominator does not reconcile"
+            "malformed-record: the record rows disagree with the denominators that count them"
         )
-    report["self_hash"] = self_hash(report)
+    if sum(outcomes.values()) != corpus["reference_records"]:
+        raise CorpusRefusal(
+            "malformed-record: the evaluation's record denominator does not reconcile: "
+            f"{sum(outcomes.values())} row(s) for {corpus['reference_records']} reference record(s)"
+        )
+    if sum(totals["reference_records_scored_by_export_category"].values()) != outcomes["scored"]:
+        raise CorpusRefusal(
+            "malformed-record: the scored-by-category histogram does not sum to the scored count"
+        )
+    if len(report["unmatched_pipeline_acts"]) != totals["pipeline_acts_unmatched"]:
+        raise CorpusRefusal("malformed-record: pipeline_acts_unmatched does not count its own rows")
+    if len(report["pages_without_reference"]) != totals["run_pages_without_reference"]:
+        raise CorpusRefusal(
+            "malformed-record: run_pages_without_reference does not count its own rows"
+        )
     return report
+
+
+def _rate_line(name: str, value: Mapping[str, Any] | None) -> str:
+    if value is None:
+        return f"{name}: nothing scored"
+    rate = Fraction(value["rate"]["numerator"], value["rate"]["denominator"])
+    return (
+        f"{name}: {value['rate']['numerator']}/{value['rate']['denominator']} "
+        f"= {float(rate):.4f} (S {value['substitutions']} I {value['insertions']} "
+        f"D {value['deletions']} over {value['reference_units']} reference units)"
+    )
 
 
 def summary_lines(report: Mapping[str, Any]) -> list[str]:
     """The report in the words a person reads first; the record carries the rest."""
     totals = report["denominators"]
+    corpus = report["corpus"]
     lines = [
         f"Evaluation of run {report['run']['run_id']} ({report['run']['export_status']} export) "
-        f"under code {report['code_ref']}",
+        f"under code {report['code_ref']} ({report['code_ref_check']['state']})",
         report["label"],
-        f"reference: {report['corpus']['reference_pages']} page(s), "
-        f"{report['corpus']['reference_records']} record(s)",
+        f"reference: {corpus['reference_pages']} page(s), "
+        f"{corpus['reference_records']} record(s), split(s) "
+        f"{'/'.join(corpus['splits']['scored'])} (records present on those pages from "
+        f"{'/'.join(corpus['splits']['present_on_pages'])}); ledger "
+        f"{'verified' if corpus['reference_ledger_verified'] else 'not given'}",
         f"run pages sealed {totals['run_pages_sealed']}, compared {totals['run_pages_compared']}, "
         f"without reference {totals['run_pages_without_reference']}; reference pages not in run "
         f"{totals['reference_pages_not_in_run']}",
@@ -429,21 +843,19 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"{totals['reference_records_not_attempted']}; pipeline acts unmatched "
         f"{totals['pipeline_acts_unmatched']} (reported, not scored)",
     ]
-    for name in ("cer", "wer"):
-        value = report["aggregate"][name]
-        if value is None:
-            lines.append(f"{name.upper()}: nothing scored")
-        else:
-            rate = Fraction(value["rate"]["numerator"], value["rate"]["denominator"])
-            lines.append(
-                f"{name.upper()}: {value['rate']['numerator']}/{value['rate']['denominator']} "
-                f"= {float(rate):.4f} (S {value['substitutions']} I {value['insertions']} "
-                f"D {value['deletions']} over {value['reference_units']} reference units)"
-            )
+    for block, prefix in (
+        ("matched_pairs_only", "matched pairs only"),
+        ("including_missed_records", "including missed records"),
+    ):
+        lines.append(f"{prefix} — {report['aggregate'][block]['scope']}")
+        for name in ("cer", "wer"):
+            lines.append(f"  {_rate_line(name.upper(), report['aggregate'][block][name])}")
     return lines
 
 
 def write_report(report: Mapping[str, Any], path: str | Path) -> Path:
+    """Write a validated report, refusing to overwrite and refusing an off-shape one."""
+    validate_evaluation(dict(report))
     path = Path(path)
     if path.exists():
         raise CorpusRefusal(f"output-exists: {path} already exists; a report is never overwritten")
@@ -469,26 +881,35 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     import sys
 
+    from .local_admission import load_local_admission_ledger
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--reference-pages", required=True, help="reference-pages.jsonl")
-    parser.add_argument("--reference-ledger", help="the admission ledger the pages came from")
+    parser.add_argument(
+        "--reference-ledger",
+        help=(
+            "the admission ledger the pages came from; every reference page must appear in it "
+            "by self_hash"
+        ),
+    )
     parser.add_argument(
         "--code-ref", required=True, help="the commit the run and this score ran under"
     )
     parser.add_argument("--output", required=True, help="new file for the evaluation record")
-    parser.add_argument("--fixture", action="store_true", help="label the result a fixture result")
     args = parser.parse_args(argv)
-    ledger_sha256 = (
-        digest_bytes(Path(args.reference_ledger).read_bytes()) if args.reference_ledger else None
-    )
+    ledger = None
+    ledger_sha256 = None
+    if args.reference_ledger:
+        ledger = load_local_admission_ledger(args.reference_ledger)
+        ledger_sha256 = digest_bytes(Path(args.reference_ledger).read_bytes())
     report = evaluate_run(
         RunTree(Path(args.run_root), args.run_id),
         load_reference_pages(args.reference_pages),
         code_ref=args.code_ref,
+        reference_ledger=ledger,
         reference_ledger_sha256=ledger_sha256,
-        fixture=args.fixture,
     )
     write_report(report, args.output)
     for line in summary_lines(report):

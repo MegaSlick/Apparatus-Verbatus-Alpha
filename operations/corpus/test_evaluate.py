@@ -1,14 +1,21 @@
 """Tests for `operations/corpus/evaluate.py`: toy outcomes computed by hand, then one real run.
 
 The comparator is never used as its own oracle here. Every toy case states the
-edit counts it expects from the strings it chose, and the one integration case
-reads a run the orchestrator actually sealed and checks the driver's rows against
-the export it reads them from.
+edit counts it expects from the strings it chose, and the integration cases read
+a run the orchestrator actually sealed and check the driver's rows against the
+export it reads them from.
+
+The three outcomes the whole "whole denominator" claim rests on -- a reference
+record missed, a reference record not attempted, and a pipeline act nothing
+matched -- each have their own case here, and every reason in
+`EVALUATION_REFUSAL_REASONS` is shown to fire (independent audit of 2026-09-11,
+finding 15).
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -17,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import self_hash as _self_hash
 from common.runtree.store import RunTree
 from operations.corpus import CorpusRefusal
 from operations.corpus.compare import compare_page, load_exemplar_page_shas
@@ -26,7 +34,10 @@ from operations.corpus.evaluate import (
     SCHEMA,
     evaluate_run,
     hypotheses_from_export,
+    main,
+    run_is_fixture,
     summary_lines,
+    validate_evaluation,
     write_report,
 )
 from operations.corpus.reference import build_reference_page
@@ -216,14 +227,16 @@ def test_an_export_whose_delivered_text_is_not_the_established_text_is_refused_n
     assert good["act_q"]["status"] is OutputStatus.UNAVAILABLE and good["act_q"]["text"] is None
     assert good["act_q"]["category"] == "held-for-review"
 
-    with pytest.raises(CorpusRefusal, match="^export-text-mismatch"):
+    with pytest.raises(CorpusRefusal, match="^export-text-mismatch:"):
         hypotheses_from_export(export, {"act_p": digest_of("alpha bexa")})
-    with pytest.raises(CorpusRefusal, match="^unestablished-delivered-act"):
+    with pytest.raises(CorpusRefusal, match="^unestablished-delivered-act:"):
         hypotheses_from_export(export, {})
     tampered = json.loads(json.dumps(export))
     tampered["non_delivered"][0]["category"] = "delivered-ish"
-    with pytest.raises(CorpusRefusal, match="^unknown-export-category"):
+    with pytest.raises(CorpusRefusal, match="^unknown-export-category:"):
         hypotheses_from_export(tampered, {"act_p": digest_of("alpha beta")})
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        hypotheses_from_export({"delivered": []}, {})
     blank = {
         "delivered": [
             {
@@ -238,9 +251,16 @@ def test_an_export_whose_delivered_text_is_not_the_established_text_is_refused_n
     assert hypotheses_from_export(blank, {"act_b": digest_of("")})["act_b"]["status"] is (
         OutputStatus.NO_READABLE_TEXT
     )
-    assert {"export-text-mismatch", "unestablished-delivered-act", "unknown-export-category"} <= (
-        EVALUATION_REFUSAL_REASONS
-    )
+
+
+def test_the_fixture_label_is_read_from_the_runs_own_sealed_identity_not_from_a_flag():
+    """A flag can be omitted; the export's identity field cannot be (finding 11)."""
+    assert run_is_fixture({"fixture_id": "synthetic-two-page-v0"}) is True
+    assert run_is_fixture({"submission_id": "a" * 64}) is False
+    with pytest.raises(CorpusRefusal, match="^ambiguous-run-identity:"):
+        run_is_fixture({})
+    with pytest.raises(CorpusRefusal, match="^ambiguous-run-identity:"):
+        run_is_fixture({"fixture_id": "f", "submission_id": "s"})
 
 
 def _orchestrate(run_root: Path, scenario: str) -> subprocess.CompletedProcess[str]:
@@ -264,11 +284,36 @@ def _orchestrate(run_root: Path, scenario: str) -> subprocess.CompletedProcess[s
     )
 
 
-def _fixture_reference_for_page_one(tree: RunTree) -> dict:
-    """Reference truth for fixture page 1 from the fixture's own declared acts."""
+def _fixture_acts() -> list[dict]:
     skeleton = tomllib.load((ROOT / "proof" / "skeleton_fixture.toml").open("rb"))
-    page = next(row for row in skeleton["page"] if row["ordinal"] == 1)
-    acts = [row for row in skeleton["act"] if row["page_ordinal"] == 1]
+    return [row for row in skeleton["act"] if row["page_ordinal"] == 1]
+
+
+def _fixture_page() -> dict:
+    skeleton = tomllib.load((ROOT / "proof" / "skeleton_fixture.toml").open("rb"))
+    return next(row for row in skeleton["page"] if row["ordinal"] == 1)
+
+
+def _record_row(act: dict) -> dict:
+    return {
+        "record_id": act["key"],
+        "region": {"x": act["x"], "y": act["y"], "w": act["w"], "h": act["h"]},
+        "split": "val",
+        "text": act["text"],
+        "text_sha256": digest_bytes(act["text"].encode("utf-8")),
+    }
+
+
+def _fixture_reference_for_page_one(tree: RunTree, *, keep=None, extra=None) -> dict:
+    """Reference truth for fixture page 1 from the fixture's own declared acts.
+
+    `keep` narrows which of the fixture's acts are annotated (so the pipeline act
+    for a dropped one becomes an unmatched act, reported and not scored) and
+    `extra` adds an annotated record over ink the pipeline proposed nothing for
+    (a miss).
+    """
+    page = _fixture_page()
+    records = [_record_row(act) for act in _fixture_acts() if keep is None or act["key"] in keep]
     return build_reference_page(
         page={
             "sha256": load_exemplar_page_shas(tree)[1],
@@ -279,30 +324,49 @@ def _fixture_reference_for_page_one(tree: RunTree) -> dict:
         volume="synthetic-two-page-v0",
         designation="page-1",
         split="val",
+        records=records + list(extra or []),
+    )
+
+
+def _page_never_sealed() -> dict:
+    """A reference page whose digest no run sealed: its records are not attempted."""
+    return build_reference_page(
+        page={"sha256": "c" * 64, "width": 1000, "height": 1000},
+        source="fixture",
+        volume="synthetic-two-page-v0",
+        designation="page-elsewhere",
+        split="val",
         records=[
             {
-                "record_id": act["key"],
-                "region": {"x": act["x"], "y": act["y"], "w": act["w"], "h": act["h"]},
+                "record_id": "elsewhere-1",
+                "region": {"x": 1, "y": 1, "w": 100, "h": 50},
                 "split": "val",
-                "text": act["text"],
-                "text_sha256": digest_bytes(act["text"].encode("utf-8")),
+                "text": "un acte sur une page que rien n'a scellée",
+                "text_sha256": digest_bytes(
+                    "un acte sur une page que rien n'a scellée".encode("utf-8")
+                ),
             }
-            for act in acts
         ],
     )
 
 
-def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_counted(tmp_path):
-    """One integration case: the map is derived from a run the orchestrator sealed."""
-    run_root = tmp_path / "runs"
+@pytest.fixture(scope="module")
+def sealed_run(tmp_path_factory):
+    """One orchestrated fixture run, shared by every integration case below."""
+    run_root = tmp_path_factory.mktemp("runs")
     completed = _orchestrate(run_root, "audit-reproof-cutoff")
     assert completed.returncode == 3, completed.stderr
-    tree = RunTree(run_root, "r")
+    return RunTree(run_root, "r")
+
+
+def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_counted(
+    sealed_run, tmp_path
+):
+    """One integration case: the map is derived from a run the orchestrator sealed."""
+    tree = sealed_run
     reference = _fixture_reference_for_page_one(tree)
 
-    report = evaluate_run(
-        tree, [reference], code_ref="test", reference_ledger_sha256="b" * 64, fixture=True
-    )
+    report = evaluate_run(tree, [reference], code_ref="test", reference_ledger_sha256="b" * 64)
     assert report["schema"] == SCHEMA
     assert report["fixture"] is True and report["label"] == FIXTURE_LABEL
     assert report["run"]["export_status"] == "partial"
@@ -312,8 +376,15 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
         "reference_pages": 1,
         "reference_records": 2,
         "reference_ledger_sha256": "b" * 64,
+        "reference_ledger_verified": False,
         "reference_page_self_hashes": [reference["self_hash"]],
+        "splits": {"scored": ["val"], "present_on_pages": ["val"]},
     }
+    assert report["code_ref_check"]["state"] in (
+        "matches-checkout",
+        "differs-from-checkout",
+        "no-checkout-found",
+    )
     totals = report["denominators"]
     assert totals["run_pages_sealed"] == 2 and totals["run_pages_compared"] == 1
     assert totals["run_pages_without_reference"] == 1
@@ -342,29 +413,248 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     assert delivered["status"] == "complete"
     assert delivered["cer"]["rate"]["numerator"] == 0 and delivered["wer"]["rate"]["numerator"] == 0
     # The aggregate is the sum of both rows: the held act's whole reference is
-    # in the numerator, so a held act can never improve a score.
-    assert report["aggregate"]["cer"]["rate"]["numerator"] == held["cer"]["reference_units"]
-    assert report["aggregate"]["cer"]["rate"]["denominator"] == (
+    # in the numerator, so a held act can never improve a score. With nothing
+    # missed, the two aggregates agree exactly.
+    matched = report["aggregate"]["matched_pairs_only"]
+    assert matched["cer"]["rate"]["numerator"] == held["cer"]["reference_units"]
+    assert matched["cer"]["rate"]["denominator"] == (
         held["cer"]["reference_units"] + delivered["cer"]["reference_units"]
     )
+    assert report["aggregate"]["including_missed_records"]["cer"] == matched["cer"]
     assert report["pages_without_reference"] == [
         {"ordinal": 2, "page_sha256": load_exemplar_page_shas(tree)[2]}
     ]
     lines = summary_lines(report)
     assert any("fixture result" in line for line in lines)
     assert any("held-for-review" in line for line in lines)
+    assert any("matched pairs only" in line for line in lines)
+    assert any("including missed records" in line for line in lines)
+    assert any("split(s) val" in line for line in lines)
 
     written = write_report(report, tmp_path / "out" / "evaluation.json")
     assert json.loads(written.read_bytes())["self_hash"] == report["self_hash"]
-    with pytest.raises(CorpusRefusal, match="^output-exists"):
+    with pytest.raises(CorpusRefusal, match="^output-exists:"):
         write_report(report, written)
 
-    # A run whose export was not sealed is refused, not scored.
-    with pytest.raises(CorpusRefusal, match="^no-export"):
-        evaluate_run(
-            RunTree(tmp_path / "nowhere", "r"),
-            [reference],
-            code_ref="test",
-            reference_ledger_sha256=None,
-            fixture=True,
+
+def test_a_missed_record_moves_only_the_aggregate_that_counts_it(sealed_run):
+    """GOALS 1: an act nobody found must be visible in a number, not only in a count."""
+    tree = sealed_run
+    unread = "un acte que le pipeline n'a jamais proposé"
+    missed_record = {
+        "record_id": "never-proposed",
+        "region": {"x": 5, "y": 5, "w": 60, "h": 20},
+        "split": "val",
+        "text": unread,
+        "text_sha256": digest_bytes(unread.encode("utf-8")),
+    }
+    baseline = evaluate_run(tree, [_fixture_reference_for_page_one(tree)], code_ref="test")
+    report = evaluate_run(
+        tree,
+        [_fixture_reference_for_page_one(tree, extra=[missed_record])],
+        code_ref="test",
+    )
+    assert report["denominators"]["reference_records_missed"] == 1
+    missed = next(row for row in report["records"] if row["record_id"] == "never-proposed")
+    assert missed["outcome"] == "missed" and missed["cer"] is None
+    assert missed["pipeline_act_id"] is None and missed["export_category"] is None
+
+    # The matched-pairs rate cannot see the miss at all; the second one does.
+    assert (
+        report["aggregate"]["matched_pairs_only"]["cer"]
+        == baseline["aggregate"]["matched_pairs_only"]["cer"]
+    )
+    with_missed = report["aggregate"]["including_missed_records"]["cer"]
+    matched_only = report["aggregate"]["matched_pairs_only"]["cer"]
+    assert with_missed["deletions"] > matched_only["deletions"]
+    assert with_missed["rate"]["numerator"] > matched_only["rate"]["numerator"]
+    assert "missed" in report["aggregate"]["including_missed_records"]["scope"]
+
+
+def test_a_page_the_run_never_sealed_leaves_its_records_not_attempted_never_scored(sealed_run):
+    tree = sealed_run
+    report = evaluate_run(
+        tree,
+        [_fixture_reference_for_page_one(tree), _page_never_sealed()],
+        code_ref="test",
+    )
+    assert report["denominators"]["reference_pages_not_in_run"] == 1
+    assert report["denominators"]["reference_records_not_attempted"] == 1
+    row = next(row for row in report["records"] if row["record_id"] == "elsewhere-1")
+    assert row["outcome"] == "not-attempted" and row["page_sha256"] == "c" * 64
+    # Not attempted is a coverage gap, not a reading: neither rate counts it.
+    assert (
+        report["aggregate"]["including_missed_records"]["cer"]
+        == (report["aggregate"]["matched_pairs_only"]["cer"])
+    )
+
+
+def test_a_pipeline_act_no_reference_record_covers_is_reported_and_not_scored(sealed_run):
+    tree = sealed_run
+    report = evaluate_run(
+        tree, [_fixture_reference_for_page_one(tree, keep={"a2"})], code_ref="test"
+    )
+    assert report["denominators"]["pipeline_acts_unmatched"] == 1
+    (unmatched,) = report["unmatched_pipeline_acts"]
+    assert unmatched["export_category"] == "held-for-review"
+    assert "records-only" in unmatched["note"]
+    # It moved no rate: the reference it would have been scored against is not
+    # annotated, so scoring it would invent a denominator.
+    assert report["denominators"]["reference_records_scored"] == 1
+    assert report["denominators"]["reference_records_missed"] == 0
+
+
+def test_every_record_row_carries_one_closed_shape_whatever_its_outcome(sealed_run):
+    """A scored, a missed and a not-attempted row all answer the same questions."""
+    tree = sealed_run
+    unread = "un acte que le pipeline n'a jamais proposé"
+    report = evaluate_run(
+        tree,
+        [
+            _fixture_reference_for_page_one(
+                tree,
+                extra=[
+                    {
+                        "record_id": "never-proposed",
+                        "region": {"x": 5, "y": 5, "w": 60, "h": 20},
+                        "split": "val",
+                        "text": unread,
+                        "text_sha256": digest_bytes(unread.encode("utf-8")),
+                    }
+                ],
+            ),
+            _page_never_sealed(),
+        ],
+        code_ref="test",
+    )
+    assert {row["outcome"] for row in report["records"]} == {
+        "scored",
+        "missed",
+        "not-attempted",
+    }
+    assert len({frozenset(row) for row in report["records"]}) == 1
+
+
+def test_two_reference_pages_over_one_page_digest_are_refused(sealed_run):
+    tree = sealed_run
+    reference = _fixture_reference_for_page_one(tree)
+    with pytest.raises(CorpusRefusal, match="^reference-page-collision:"):
+        evaluate_run(tree, [reference, reference], code_ref="test")
+
+
+def test_naming_a_ledger_is_a_check_not_a_caption(sealed_run):
+    tree = sealed_run
+    reference = _fixture_reference_for_page_one(tree)
+    # The ledger body is read for the one fact this boundary needs; the CLI
+    # loads it through `load_local_admission_ledger`, which validates the rest.
+    ledger = {"rows": [{"reference_page_self_hash": reference["self_hash"]}]}
+    report = evaluate_run(tree, [reference], code_ref="test", reference_ledger=ledger)
+    assert report["corpus"]["reference_ledger_verified"] is True
+
+    with pytest.raises(CorpusRefusal, match="^reference-page-not-in-ledger:"):
+        evaluate_run(tree, [reference], code_ref="test", reference_ledger={"rows": []})
+
+
+def test_a_run_with_no_verified_export_is_refused_not_scored(sealed_run, tmp_path):
+    reference = _fixture_reference_for_page_one(sealed_run)
+    with pytest.raises(CorpusRefusal, match="^no-export:"):
+        evaluate_run(RunTree(tmp_path / "nowhere", "r"), [reference], code_ref="test")
+
+
+def test_an_evaluation_must_name_the_code_it_ran_under(sealed_run):
+    reference = _fixture_reference_for_page_one(sealed_run)
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        evaluate_run(sealed_run, [reference], code_ref="")
+
+
+# --- The validator ----------------------------------------------------------------
+
+
+def _reseal(report: dict) -> dict:
+    body = {key: value for key, value in report.items() if key != "self_hash"}
+    body["self_hash"] = _self_hash(body)
+    return body
+
+
+def test_the_validator_refuses_a_report_edited_after_it_was_sealed(sealed_run):
+    report = json.loads(
+        json.dumps(
+            evaluate_run(sealed_run, [_fixture_reference_for_page_one(sealed_run)], code_ref="test")
         )
+    )
+    assert validate_evaluation(dict(report))["self_hash"] == report["self_hash"]
+
+    edited = json.loads(json.dumps(report))
+    edited["denominators"]["reference_records_scored"] = 99
+    with pytest.raises(CorpusRefusal, match="^self-hash-mismatch:"):
+        validate_evaluation(edited)
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_evaluation(_reseal(edited))
+    assert "disagree with the denominators" in str(refused.value)
+
+
+def test_the_validator_refuses_a_foreign_schema_and_a_label_that_does_not_match(sealed_run):
+    report = json.loads(
+        json.dumps(
+            evaluate_run(sealed_run, [_fixture_reference_for_page_one(sealed_run)], code_ref="test")
+        )
+    )
+    tampered = json.loads(json.dumps(report))
+    tampered["schema"] = "something-else.v1"
+    with pytest.raises(CorpusRefusal, match="^wrong-schema:"):
+        validate_evaluation(_reseal(tampered))
+
+    relabelled = json.loads(json.dumps(report))
+    relabelled["fixture"] = False
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_evaluation(_reseal(relabelled))
+    assert "sealed identity" in str(refused.value)
+
+
+def test_write_report_refuses_an_off_shape_record_before_it_reaches_disk(sealed_run, tmp_path):
+    report = json.loads(
+        json.dumps(
+            evaluate_run(sealed_run, [_fixture_reference_for_page_one(sealed_run)], code_ref="test")
+        )
+    )
+    report["extra"] = "a field the schema does not carry"
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        write_report(report, tmp_path / "never-written.json")
+    assert not (tmp_path / "never-written.json").exists()
+
+
+# --- The command-line entry point ---------------------------------------------------
+
+
+def test_the_command_line_scores_a_sealed_run_and_prints_its_summary(sealed_run, tmp_path, capsys):
+    pages = tmp_path / "reference-pages.jsonl"
+    pages.write_text(json.dumps(_fixture_reference_for_page_one(sealed_run)) + "\n")
+    output = tmp_path / "evaluation.json"
+    assert (
+        main(
+            [
+                "--run-root",
+                str(sealed_run.root.parent),
+                "--run-id",
+                "r",
+                "--reference-pages",
+                str(pages),
+                "--code-ref",
+                "test",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    written = validate_evaluation(json.loads(output.read_bytes()))
+    assert written["fixture"] is True
+    assert "fixture result" in capsys.readouterr().out
+
+
+def test_every_declared_evaluation_reason_is_exercised_here():
+    """Derived from this file's own anchored assertions, never hand-typed."""
+    source = Path(__file__).read_text(encoding="utf-8")
+    exercised = set(re.findall(r'pytest\.raises\(CorpusRefusal, match="\^([a-z0-9-]+):"\)', source))
+    missing = EVALUATION_REFUSAL_REASONS - exercised
+    assert missing == set(), f"declared but never shown to fire: {sorted(missing)}"
