@@ -43,7 +43,7 @@ any time to check on things.
 | `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the trio `--models-config config/models-real.toml`, `--serving-recipes-config config/serving_recipes_real.toml`, and `--witness-context-config config/witness_context-real.toml`; all three are sealed into the run and a partial trio is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. It is the one word besides `upload --network-volume` that talks to the volume, so you have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
-| `review` | Opens one run tree read-only and shows its sealed boundaries, page and act images, review queue and recorded decisions. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
+| `review` | Opens one run tree read-only, before or after export, and says in plain words which stages ran, what each act's latest reading and review say, which acts are held and why, the exact page and crop images behind them, and the one supported next action. `--json` prints the whole projection instead. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
 | `advance` | Appends Tyrel's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record it appends is permanent and is never retracted. |
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every published run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded RunTree publication temporaries in the snapshot. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
@@ -99,6 +99,83 @@ does, that tree is on the volume and `export` reads a local one -- then `export`
 the moment you are done. Use `review` to read one run tree without changing anything in
 it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any
 time you are unsure what is happening or costing money.
+
+## `review` on a run that has not finished
+
+A run stops before the Armarium for ordinary reasons — a manual boundary, a hold, an
+interruption — and that is exactly when a person needs to see the images, the readings
+and the reason. `review` opens such a run and reads out what the stages that did run have
+sealed; it used to refuse the whole tree until an export existed (a finding of the
+independent audit of 2026-09-10).
+
+```sh
+.venv/bin/python -m operations.operator.cli review --run-root <folder> --run-id <run>
+```
+
+What it shows, in order:
+
+- **Stages** — each of the nine, as `sealed`, `unsealed` (records written and no completion
+  seal: interrupted, or still running), `not-run` (nothing written: it has not run, which is
+  not damage), or `seal-invalid` (a stored seal that no longer verifies against the disk,
+  which is never reported as "not run").
+- **Export** — one of three states, and what it means for the rows that follow. `present and
+  complete` is an export whose record says `delivered` over a bundle claiming `complete`;
+  `present but partial` is that record saying `held-for-review` over a bundle that does not,
+  which is a real export of some of the acts and not a finished result; and an export record
+  under an Armarium that never sealed is named as exactly that, because the record is written
+  before the boundary is. Before export, nothing shown is a delivered result.
+- **What you can do next** — every stage's state said out loud, then the one supported
+  continuation: `verbatus run --run-id <run>`, naming the stage it picks up from; or a warning
+  not to resume while a writer may still be active; or, where a seal no longer verifies, that
+  this is evidence to preserve and investigate rather than a run to resume. When acts are held
+  it says plainly that a hold is resolved only by a new authorized run over the same sealed
+  source, that `advance` records permission to pass one sealed stage boundary and neither
+  certifies a reading nor clears a hold, and that any correction of the text happens outside
+  the pipeline.
+- **Held or unresolved acts** — every act the Designator or the Recensor left unresolved,
+  with the recorded reason and the record it came from. A re-proof that did not complete
+  appears here with its audit examination named. One act can produce two rows — the
+  Designator's hold and the Recensor's review of that hold — and each row says which it is;
+  the count is of acts, and the sentence above says how many records they came from.
+- **Pages** and **Acts** — every page the Exemplar accounted for (sealed with its image and
+  digest, or refused with its reason), counted against the number of pages the run itself
+  declared, and every act the Designator's proposal seal expects. An act the Designator ended
+  — `excluded by the Designator`, `failed at the Designator`, `held by the Designator` — says
+  so and is not left waiting for a witness. Otherwise the label names the stage that has not
+  spoken (`marked out, awaiting witnesses`, `witnessed, awaiting the Perlector`, `read: …,
+  awaiting the Recensor`, `accepted, awaiting establishment`, `established, awaiting export`)
+  or, where the Recensor has spoken and not accepted, is that stage's own outcome word —
+  today `held-for-review`, `recovery-requested`, `confirmed-blank`, `failed`. That last family
+  is the Recensor's closed vocabulary rather than a list kept here, so a word added there
+  appears on this screen without this paragraph being rewritten. Each act carries the
+  Perlector's machine reading where one exists, its witnesses with the attempt each reported
+  on, and every crop's image file and digest. After an export, a delivered act is described by
+  the export's own accounting; an act it did not deliver carries no crops and no witness basis
+  in that record, so those are read from the sealed Designator and Attestatores records instead
+  and the crop line says where they came from. An act count with no proposal seal behind it
+  says so, rather than reading as a run with no acts.
+- **Review queue** — only after an export, because the queue is a member of the export bundle.
+  Before one, and where a run exported without that format configured, the line says which of
+  those two silences this is.
+
+Every image named is re-read and re-digested as the view is built; a page or crop whose
+bytes moved is refused by name, and a record that changes while the view is being built is
+refused as well. Opening a run changes nothing in it. After export the same command shows
+the export's own accounting, verified the same way.
+
+Two limits of this screen, stated here rather than discovered at it:
+
+- **Long text is cut in the plain view.** A reading or delivered text longer than 300
+  characters is shown to 300, and the line then says `(first 300 characters as shown, of an
+  N-character value)` -- two lengths, because a control character occupies six characters on
+  screen and one in the value. Newlines become ` / ` before anything is escaped, so one act
+  stays one line. Add `--json` for the whole value, or open the record the line already names.
+- **It is bounded to small runs.** Every sealed page and every crop is read whole and
+  re-digested in one pass before anything is shown, under a single 256 MiB allowance, so a
+  parish-sized run refuses this surface by name rather than exhausting the machine. That
+  allowance is a carried limitation, not the eventual answer: a console for real volumes has
+  to verify one image at a time as the renderer asks for it, which is a change to what the
+  confined child receives.
 
 ## The ScanTailor seam
 

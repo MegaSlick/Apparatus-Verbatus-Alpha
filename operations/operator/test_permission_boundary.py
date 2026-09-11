@@ -2606,6 +2606,14 @@ def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_t
     pins that behaviour end to end through the real subprocess pipe, so a
     future change to pretty-print or otherwise hand-format the console's
     output cannot silently drop it.
+
+    That hand-formatting has since arrived: the default route renders the
+    returned JSON in plain language (`review_text.render`) and `--json` is what
+    prints it as it came, so what this test pins is the layer the `--json` route
+    rests on. The default route rests on a third layer beside it,
+    `review_text.inert`, which escapes every control character again as each
+    value reaches a line -- neither layer replaces the other, and neither is
+    `strip_control_bytes`.
     """
     hostile = ReviewProjection(
         run_id="hostile",

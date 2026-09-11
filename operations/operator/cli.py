@@ -17,7 +17,7 @@ from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
 from operations.pod.models import PodCreateRequest, require_utc
 
-from . import console, notify_bridge
+from . import console, notify_bridge, review_text
 from .advance import (
     UnsealedBoundaryRefusal,
     boundary_summary,
@@ -340,6 +340,14 @@ def build_parser() -> PlainParser:
         "--run-root", type=Path, required=True, help="folder containing the run tree"
     )
     review.add_argument("--run-id", required=True, help="the sealed run to inspect")
+    review.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "print the whole projection as JSON instead of the plain-language view; the "
+            "plain view is the same projection read out in words"
+        ),
+    )
     advance = verbs.add_parser(
         "advance",
         help="append Tyrel's confirmed decision to pass one exact sealed stage boundary",
@@ -524,7 +532,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for line in SpendSurface(surface.receipts, surface.now()).show(policy):
                 _print(line)
         elif args.verb == "review":
-            _review_in_custody(args.run_root, args.run_id, workspace)
+            _review_in_custody(args.run_root, args.run_id, workspace, raw=args.json)
         elif args.verb == "advance":
             _advance_with_confirmation(
                 args.run_root,
@@ -601,8 +609,15 @@ def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
         raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
 
 
-def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
-    """Exec the renderer with no credential and a kernel-enforced no-write policy."""
+def _review_in_custody(run_root: Path, run_id: str, workspace: Path, *, raw: bool = False) -> None:
+    """Exec the renderer with no credential and a kernel-enforced no-write policy.
+
+    The child returns the projection as JSON and nothing else; that is what keeps
+    a hostile run tree's bytes inert across the boundary. The parent then reads
+    those bytes out in plain language (`review_text.render`), or prints them as
+    they came when `raw` is asked for. Either way the run tree was opened once,
+    read-only, by the parent, and never by the child.
+    """
 
     # Read before crossing the boundary.  The UI child receives only this
     # immutable value stream, never a run-tree path or a ``RunTree`` object.
@@ -636,7 +651,35 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail=completed.stdout or completed.stderr
         )
-    _print(completed.stdout.rstrip())
+    if raw:
+        _print(completed.stdout.rstrip())
+        return
+    try:
+        returned = json.loads(completed.stdout)
+    except ValueError as error:
+        # The child's own output failed to round-trip; that is a fault of this
+        # tool's pipe, and it must not be reported as a claim about the run tree.
+        raise OperatorError(
+            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
+            detail=(
+                f"the console returned text that is not the projection JSON "
+                f"({type(error).__name__}); the run tree itself is not in question"
+            ),
+        ) from error
+    if not isinstance(returned, dict):
+        raise OperatorError(
+            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
+            detail="the console returned JSON that is not a projection object",
+        )
+    try:
+        lines = review_text.render(returned)
+    except review_text.ProjectionShapeError as error:
+        raise OperatorError(
+            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
+            detail=f"the console returned a projection this tool cannot read out: {error}",
+        ) from error
+    for line in lines:
+        _print(line)
 
 
 def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _workspace: Path) -> None:
