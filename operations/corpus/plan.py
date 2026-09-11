@@ -14,13 +14,21 @@ RecordGold's `record_url` is a IIIF Image API 2 crop request, e.g.
     quality        default
     format         jpg
 
-Every field but the region is a closed vocabulary of one accepted value, and this
-parser refuses anything else **by name** rather than normalising it — `SPEC.md`
-§6 records this as unverified territory ("the exact `record_url` region semantics
-beyond the one example"), and the measured snapshot proves the caution earned its
-keep: 40 of 7,720 rows across `val`/`train` carry `rotation=180`, which this parser
-refuses rather than silently fetching an image whose boxes would not line up with
-its pixels.
+Every field but the region is a closed vocabulary, and this parser refuses
+anything outside it **by name** rather than normalising it — `SPEC.md` §6 records
+this as unverified territory ("the exact `record_url` region semantics beyond the
+one example"), and the measured snapshot proves the caution earned its keep: 40 of
+7,720 rows across `val`/`train` carry `rotation=180`, which this parser refuses
+rather than silently fetching an image whose boxes would not line up with its
+pixels.
+
+**The rotation vocabulary is one value by default and two at most.** Every other
+field accepts exactly one value, always. `rotation` accepts `"0"` unless the
+caller names more, and the only further value it will ever name is `"180"`
+(`SUPPORTED_ROTATIONS`): a caller holding the stored page's dimensions can carry
+a 180-degree box honestly, and `local_admission.py` is that caller. The fetch
+plan and the hold-out ledger keep the default, so for them those 40 rows are
+still refused by name.
 
 Rows are grouped by `identifier`, not by the parquet's `source` column — `source`
 names the collection (`Ardennes`, `Tours`, `Ile de Ré`) but two collections
@@ -118,11 +126,16 @@ class ParsedRecordUrl(NamedTuple):
     region: dict[str, int]
     """`x,y,w,h` exactly as `record_url` states them, in the frame of `rotation`."""
 
-    rotation: str = EXPECTED_ROTATION
-    """The IIIF rotation parameter; `"0"` unless the caller asked to admit another."""
+    rotation: str
+    """The IIIF rotation parameter exactly as `record_url` states it.
+
+    Required, with no default: a `ParsedRecordUrl` built without it would claim
+    the record is upright, which is the one thing a caller carrying boxes must
+    never be told by omission.
+    """
 
 
-def _unsafe_segment(segment: str) -> bool:
+def unsafe_segment(segment: str) -> bool:
     """Whether a decoded identifier path segment is unsafe to carry into a filesystem path.
 
     `SPEC.md` §5.1 turns `volume`/`designation` directly into a submission path in
@@ -203,7 +216,7 @@ def parse_record_url(
             f"structure in {record_url!r}"
         )
     for segment in identifier.split("/"):
-        if _unsafe_segment(segment):
+        if unsafe_segment(segment):
             raise CorpusRefusal(
                 f"unsafe-identifier-segment: identifier {identifier!r} carries the "
                 f"unsafe path segment {segment!r} in {record_url!r} — this parser "
@@ -218,7 +231,7 @@ def parse_record_url(
     )
 
 
-def _volume_and_designation(identifier: str) -> tuple[str, str]:
+def volume_and_designation(identifier: str) -> tuple[str, str]:
     segments = identifier.split("/")
     return "/".join(segments[:-1]), segments[-1]
 
@@ -307,7 +320,7 @@ def build_fetch_plan(
             _refuse(reason, str(error), record_id, record_url, split, source)
             continue
 
-        if not isinstance(source, str) or _unsafe_segment(source) or "/" in source:
+        if not isinstance(source, str) or unsafe_segment(source) or "/" in source:
             _refuse(
                 "unsafe-source-value",
                 f"unsafe-source-value: source {source!r} on record {record_id!r} is not "
@@ -320,7 +333,7 @@ def build_fetch_plan(
             )
             continue
 
-        volume, designation = _volume_and_designation(parsed.identifier)
+        volume, designation = volume_and_designation(parsed.identifier)
         existing_page = pages.get(parsed.identifier)
         if existing_page is not None:
             if existing_page["source"] != source:
