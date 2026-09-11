@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +13,16 @@ from common.contracts.approval import validate_approval_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARMARIUM, DESIGNATOR, EXEMPLAR, STAGES
+from common.contracts.stages import (
+    ARCHETYPUS,
+    ARMARIUM,
+    ATTESTATORES,
+    DESIGNATOR,
+    EXEMPLAR,
+    PERLECTOR,
+    RECENSOR,
+    STAGES,
+)
 from common.runtree.store import RunTree
 from common.stage import latest_attempt
 
@@ -106,6 +115,27 @@ class ReviewProjection:
     acts: tuple[dict[str, Any], ...]
     review_items: tuple[dict[str, Any], ...] | None
     advance_records: tuple[dict[str, Any], ...]
+    # The pre-export view (independent audit of 2026-09-10, F3). Before this,
+    # the projection refused the whole run whenever the Armarium had not
+    # exported -- exactly the moment a person needs to see the images, the
+    # readings and the reason the run stopped. These four are derived from the
+    # same `stage_records` snapshot as everything above, and default so the
+    # seven fields callers construct by position or keyword stay as pinned.
+    #
+    # `export`      whether an export record exists, and what that means for
+    #               the rows above (`present`, `record_ref`, `note`)
+    # `progress`    one row per stage: sealed, unsealed (interrupted or still
+    #               running), not-run, or seal-invalid -- a stage that has not
+    #               run is named as that, never as corruption, and a seal that
+    #               no longer verifies is named as that, never as not-run
+    # `holds`       every act the Designator or the Recensor left unresolved,
+    #               with the recorded reason, pre- and post-export alike
+    # `next_action` the one supported continuation in plain words, and what
+    #               `advance` does and does not do about a hold
+    export: dict[str, Any] = field(default_factory=dict)
+    progress: tuple[dict[str, Any], ...] = ()
+    holds: tuple[dict[str, Any], ...] = ()
+    next_action: dict[str, Any] = field(default_factory=dict)
 
 
 class ReadOnlyRun:
@@ -176,35 +206,72 @@ class ReadOnlyRun:
                         ),
                     }
                 )
-            payload, export_ref = _armarium_payload(tree, stage_records)
+            progress = _progress(boundaries, stage_records)
             # One allowance across pages and crops together: the projection
             # verifies them all in one pass, so bounding either alone would
             # bound nothing.
             budget = _ImageBudget()
-            pages = tuple(_image_row(tree, row, export_ref, budget) for row in payload["pages"])
-            # The two act lists carry different writer contracts: Armarium
-            # attaches `source_regions` to every delivered act and never to a
-            # non-delivered one (pipeline/7_armarium/run.py builds review
-            # entries without it). A delivered act missing its crop list is
-            # therefore a damaged record; a non-delivered act without one is
-            # the record as written.
-            acts = tuple(
-                _act_row(tree, row, export_ref, budget) for row in payload["delivered"]
-            ) + tuple(
-                _act_row(tree, row, export_ref, budget, requires_crops=False)
-                for row in payload["non_delivered"]
-            )
+            if _export_rows(stage_records):
+                payload, export_ref = _armarium_payload(tree, stage_records)
+                pages = tuple(_image_row(tree, row, export_ref, budget) for row in payload["pages"])
+                # The two act lists carry different writer contracts: Armarium
+                # attaches `source_regions` to every delivered act and never to
+                # a non-delivered one (pipeline/7_armarium/run.py builds review
+                # entries without it). A delivered act missing its crop list is
+                # therefore a damaged record; a non-delivered act without one
+                # is the record as written.
+                acts = tuple(
+                    _act_row(tree, row, export_ref, budget) for row in payload["delivered"]
+                ) + tuple(
+                    _act_row(tree, row, export_ref, budget, requires_crops=False)
+                    for row in payload["non_delivered"]
+                )
+                review_items = _review_items(tree, payload, export_ref, budget)
+                export = {
+                    "present": True,
+                    "record_ref": export_ref,
+                    "note": (
+                        "the Armarium export exists; the pages and acts shown are its "
+                        "accounting, verified against the sealed images"
+                    ),
+                }
+            else:
+                # No export: the run stopped, or was stopped, before the
+                # Armarium. Everything a person needs to see at that moment --
+                # the sealed pages, the crops, the latest reading and the
+                # review that held it -- is already sealed by the stages that
+                # did run, so it is projected from those records, each row
+                # naming the record it came from. Nothing here is a delivered
+                # result, and `export` says so where a reader reads.
+                pages = _sealed_pages(tree, stage_records, budget)
+                acts = _progressive_acts(tree, stage_records, budget)
+                review_items = None
+                export = {
+                    "present": False,
+                    "record_ref": None,
+                    "note": (
+                        "there is no Armarium export record; this run has no completed "
+                        "export, so the pages, crops, readings and reviews shown are read "
+                        "from the sealed evidence of the stages that did run, and none of "
+                        "them is a delivered result"
+                    ),
+                }
+            holds = _holds(stage_records)
             return ReviewProjection(
                 tree.run_id,
                 tuple(stage_records),
                 tuple(boundaries),
                 pages,
                 acts,
-                _review_items(tree, payload, export_ref, budget),
+                review_items,
                 _advance_records(
                     tree,
                     {row["stage"]: row for row in boundaries if row.get("seal_present")},
                 ),
+                export=export,
+                progress=progress,
+                holds=holds,
+                next_action=_next_action(progress, export, holds),
             )
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
             # The rendered detail must retain the evidence path from the
@@ -304,16 +371,23 @@ def _verified_export_blob_digest(
     description: str,
     export_ref: dict[str, str],
     budget: _ImageBudget,
+    record_label: str = "the Armarium export record",
 ) -> str:
-    """A fresh digest must not repair a contradictory exported path or digest."""
+    """A fresh digest must not repair a contradictory recorded path or digest.
+
+    `record_label` names the kind of record whose claim is being checked: the
+    Armarium export for the post-export rows, the Exemplar page or Designator
+    region record for the pre-export ones. The check is the same either way --
+    the recorded path must be the digest's own content address and the bytes
+    there must still hash to it -- and a refusal names the record and the file.
+    """
 
     export_path = export_ref["relative_path"]
     if not isinstance(path, str) or not isinstance(expected_digest, str):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
-                f"the Armarium export record {export_path} {description} has no immutable "
-                "image path and digest"
+                f"{record_label} {export_path} {description} has no immutable image path and digest"
             ),
         )
     expected_path = tree.blob_path(stage, expected_digest)
@@ -321,7 +395,7 @@ def _verified_export_blob_digest(
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
-                f"the Armarium export record {export_path} {description} claims digest "
+                f"{record_label} {export_path} {description} claims digest "
                 f"{expected_digest} but names {path}, not its content-addressed path "
                 f"{expected_path}"
             ),
@@ -332,11 +406,471 @@ def _verified_export_blob_digest(
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
-                f"the Armarium export record {export_path} {description} names {path} with "
+                f"{record_label} {export_path} {description} names {path} with "
                 f"digest {expected_digest}, but its bytes have digest {actual_digest}"
             ),
         )
     return actual_digest
+
+
+# --- The pre-export view -------------------------------------------------------
+#
+# Every helper below reads only `stage_records` -- the one snapshot the
+# projection already took, each row bound to its digest by `_record_row` -- and
+# the image bytes those records name. Nothing re-opens the tree for a second
+# opinion, so one projection cannot describe two versions of a run.
+
+_UNRESOLVED_REVIEW_OUTCOMES = frozenset({"held-for-review", "recovery-requested", "failed"})
+
+
+def _export_rows(stage_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    return [
+        row
+        for row in stage_records
+        if row["stage"] == ARMARIUM and row["kind"] == "export" and row["artifact_id"] == export_id
+    ]
+
+
+def _records_of(
+    stage_records: list[dict[str, Any]], stage: str, kind: str, subject_id: str | None = None
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in stage_records
+        if row["stage"] == stage
+        and row["kind"] == kind
+        and (subject_id is None or row["subject_id"] == subject_id)
+    ]
+
+
+def _payload_of(row: dict[str, Any], what: str) -> dict[str, Any]:
+    payload = row["record"].get("payload")
+    if not isinstance(payload, dict):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=f"{what} {row['record_ref']['relative_path']} payload is not an object",
+        )
+    return payload
+
+
+def _latest(
+    stage_records: list[dict[str, Any]],
+    stage: str,
+    kind: str,
+    subject_id: str,
+    *,
+    operation: str,
+) -> dict[str, Any] | None:
+    """The current attempt of one act's records, by the shared attempt rule.
+
+    `latest_attempt` is the same function every stage uses to choose the
+    reading or review it acts on, so what the console shows as "the latest" is
+    what the pipeline itself would consume -- and its refusals (a duplicated
+    ordinal, an attempt id that does not re-derive, a gap in the sequence) are
+    refusals of the evidence by name, not something this view smooths over.
+    """
+    rows = _records_of(stage_records, stage, kind, subject_id)
+    if not rows:
+        return None
+    current = latest_attempt(
+        [row["record"] for row in rows], f"{kind} of {subject_id}", operation=operation
+    )
+    return next(row for row in rows if row["artifact_id"] == current["artifact_id"])
+
+
+def _progress(
+    boundaries: list[dict[str, Any]], stage_records: list[dict[str, Any]]
+) -> tuple[dict[str, Any], ...]:
+    """One row per stage saying what state its evidence is in, in plain words.
+
+    Four states, because a reader has to tell four different things apart and
+    the tree can show any of them: a stage that completed and sealed; one that
+    wrote records but never sealed (interrupted, or still running); one that
+    has not run at all; and one whose stored seal no longer verifies against
+    what is on disk. The last is never reported as "not run" and the third is
+    never reported as damage -- a legitimate absence and a broken promise are
+    different facts (GOVERNANCE 2, 10).
+    """
+    by_stage = {row["stage"]: row for row in boundaries}
+    rows = []
+    for stage in STAGES:
+        boundary = by_stage[stage]
+        artifacts = [
+            row for row in stage_records if row["stage"] == stage and row["kind"] != "stage-seal"
+        ]
+        if boundary["seal_present"] and boundary["sealed"]:
+            state = "sealed"
+            note = f"completed and sealed; {len(artifacts)} record(s)"
+        elif boundary["seal_present"]:
+            state = "seal-invalid"
+            note = (
+                "a completion seal is stored but no longer verifies against the evidence on "
+                f"disk: {boundary['seal_note']}"
+            )
+        elif artifacts:
+            state = "unsealed"
+            note = (
+                f"{len(artifacts)} record(s) written and no completion seal: this stage was "
+                "interrupted or is still running, so nothing it wrote is complete"
+            )
+        else:
+            state = "not-run"
+            note = "no record and no seal: this stage has not run"
+        rows.append(
+            {"stage": stage, "state": state, "artifact_count": len(artifacts), "note": note}
+        )
+    return tuple(rows)
+
+
+def _sealed_pages(
+    tree: RunTree, stage_records: list[dict[str, Any]], budget: _ImageBudget
+) -> tuple[dict[str, Any], ...]:
+    """Every page the Exemplar accounted for, sealed or refused, from its own record.
+
+    The same row shape the export path produces, so one renderer reads both:
+    a sealed page names its image and the digest the bytes were just checked
+    against; a refused page stays visible with its reason and no image.
+    """
+    rows = []
+    for row in _records_of(stage_records, EXEMPLAR, "page"):
+        record = row["record"]
+        payload = _payload_of(row, "the Exemplar page record")
+        projected = {
+            "ordinal": payload.get("ordinal"),
+            "page_id": record["subject_id"] if record["outcome"] == "sealed" else None,
+            "outcome": record["outcome"],
+            "reason": payload.get("reason"),
+            "record_ref": row["record_ref"],
+        }
+        if record["outcome"] != "sealed":
+            rows.append({**projected, "image_path": None, "image_sha256": None})
+            continue
+        digest = _verified_export_blob_digest(
+            tree,
+            stage=EXEMPLAR,
+            path=payload.get("image_path"),
+            expected_digest=payload.get("source_sha256"),
+            description=f"page {payload.get('ordinal')!r}",
+            export_ref=row["record_ref"],
+            budget=budget,
+            record_label="the Exemplar page record",
+        )
+        rows.append({**projected, "image_path": payload["image_path"], "image_sha256": digest})
+    rows.sort(key=lambda page: (not isinstance(page["ordinal"], int), page["ordinal"] or 0))
+    return tuple(rows)
+
+
+def _progressive_crops(
+    tree: RunTree, stage_records: list[dict[str, Any]], act_id: str, budget: _ImageBudget
+) -> list[dict[str, Any]]:
+    crops = []
+    for row in _records_of(stage_records, DESIGNATOR, "region", act_id):
+        payload = _payload_of(row, "the Designator region record")
+        transform = payload.get("transform") if isinstance(payload.get("transform"), dict) else {}
+        digest = _verified_export_blob_digest(
+            tree,
+            stage=DESIGNATOR,
+            path=payload.get("image_path"),
+            expected_digest=payload.get("image_sha256"),
+            description=f"act {act_id!r} region {payload.get('region_id')!r}",
+            export_ref=row["record_ref"],
+            budget=budget,
+            record_label="the Designator region record",
+        )
+        crops.append(
+            {
+                "ordinal": transform.get("source_page_ordinal"),
+                "region_id": payload.get("region_id"),
+                "image_path": payload["image_path"],
+                "image_sha256": digest,
+                "origin": payload.get("origin"),
+                "attempt_ordinal": payload.get("attempt_ordinal"),
+                "record_ref": row["record_ref"],
+            }
+        )
+    crops.sort(
+        key=lambda crop: (
+            not isinstance(crop["attempt_ordinal"], int),
+            crop["attempt_ordinal"] or 0,
+            str(crop["region_id"]),
+        )
+    )
+    return crops
+
+
+def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> dict[str, Any]:
+    """What the stages that ran say about one act, and where it stands.
+
+    The category is derived from the furthest stage that has spoken about the
+    act, in pipeline order, and says plainly which stage has not: "witnessed,
+    awaiting the Perlector" is a different fact from "held-for-review", and a
+    reader must not have to infer either from a missing row. Text shown here is
+    the Perlector's machine reading, never an established or delivered one --
+    the Archetypus and the Armarium are the two stages that would make it so,
+    and their absence is exactly what this view is for.
+    """
+    act_id = act["act_id"]
+    designator_holds = [
+        {
+            "reason_code": _payload_of(row, "the Designator hold record").get("reason_code"),
+            "reason": _payload_of(row, "the Designator hold record").get("reason"),
+            "record_ref": row["record_ref"],
+        }
+        for row in _records_of(stage_records, DESIGNATOR, "hold", act_id)
+    ]
+    testimonia = [
+        {
+            "chair": _payload_of(row, "the Testimonium record").get("chair"),
+            "outcome": row["outcome"],
+            "record_ref": row["record_ref"],
+        }
+        for row in _records_of(stage_records, ATTESTATORES, "testimonium", act_id)
+    ]
+    reading_row = _latest(stage_records, PERLECTOR, "perlectio", act_id, operation="perlegere")
+    reading = None
+    if reading_row is not None:
+        payload = _payload_of(reading_row, "the Perlectio record")
+        truncation = payload.get("truncation")
+        audit = payload.get("audit")
+        reading = {
+            "outcome": reading_row["outcome"],
+            "text": payload.get("text"),
+            "reason": payload.get("reason"),
+            "truncation": truncation.get("classification")
+            if isinstance(truncation, dict)
+            else None,
+            "audit": {
+                "unresolved": audit.get("unresolved"),
+                "examination": audit.get("examination"),
+            }
+            if isinstance(audit, dict)
+            else None,
+            "record_ref": reading_row["record_ref"],
+        }
+    review_row = _latest(stage_records, RECENSOR, "review", act_id, operation="recense")
+    review = None
+    if review_row is not None:
+        payload = _payload_of(review_row, "the Recensor review record")
+        review = {
+            "outcome": review_row["outcome"],
+            "reason": payload.get("reason"),
+            "audit_unresolved": payload.get("audit_unresolved"),
+            "audit_examination": payload.get("audit_examination"),
+            "record_ref": review_row["record_ref"],
+        }
+    established_rows = _records_of(stage_records, ARCHETYPUS, "archetypus", act_id)
+    established = None
+    if established_rows:
+        payload = _payload_of(established_rows[-1], "the Archetypus record")
+        established = {
+            "text_status": payload.get("text_status"),
+            "text_hash": payload.get("text_hash"),
+            "record_ref": established_rows[-1]["record_ref"],
+        }
+
+    if established is not None:
+        category = "established, awaiting export"
+        reason = (
+            f"the Archetypus established this act's text ({established['text_status']}); "
+            "the Armarium has not exported it"
+        )
+    elif review is not None:
+        if review["outcome"] == "accepted":
+            category = "accepted, awaiting establishment"
+        else:
+            category = review["outcome"]
+        reason = review["reason"]
+    elif reading is not None:
+        category = f"read: {reading['outcome']}, awaiting the Recensor"
+        reason = reading["reason"] or (
+            f"the Perlector's latest reading of this act is {reading['outcome']!r}; the "
+            "Recensor has not reviewed it"
+        )
+    elif testimonia:
+        category = "witnessed, awaiting the Perlector"
+        reason = (
+            f"{len(testimonia)} Testimonium record(s) are sealed for this act; the Perlector "
+            "has not read it"
+        )
+    elif designator_holds:
+        category = "held by the Designator"
+        reason = "; ".join(str(hold["reason"]) for hold in designator_holds)
+    else:
+        category = "marked out, awaiting witnesses"
+        reason = "the Designator marked this act out; no witness has reported on it"
+    return {
+        "designator_outcome": act.get("outcome"),
+        "page_ordinal": act.get("page_ordinal"),
+        "page_id": act.get("page_id"),
+        "designator_holds": designator_holds,
+        "testimonia": testimonia,
+        "reading": reading,
+        "review": review,
+        "established": established,
+        "category": category,
+        "reason": reason,
+    }
+
+
+def _progressive_acts(
+    tree: RunTree, stage_records: list[dict[str, Any]], budget: _ImageBudget
+) -> tuple[dict[str, Any], ...]:
+    """Every act the Designator's proposal seal expects, from the sealed evidence.
+
+    The denominator is the seal's own `expected_acts` -- the same list every
+    downstream stage reads through `common/stage.py::expected_acts` -- so an
+    act no later stage has spoken about is still a row here, labelled with
+    which stage has not spoken. No seal means the Designator has not run, and
+    the act list is honestly empty rather than invented from region records.
+    """
+    seals = _records_of(stage_records, DESIGNATOR, "proposal-seal")
+    if not seals:
+        return ()
+    if len(seals) != 1:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Designator proposal seal appeared {len(seals)} times; review requires "
+                "exactly one immutable act denominator"
+            ),
+        )
+    seal = seals[0]
+    expected = _payload_of(seal, "the Designator proposal seal").get("expected_acts")
+    if not isinstance(expected, list):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Designator proposal seal {seal['record_ref']['relative_path']} has no "
+                "expected_acts list"
+            ),
+        )
+    acts = []
+    for act in expected:
+        if not isinstance(act, dict) or not isinstance(act.get("act_id"), str):
+            raise OperatorError(
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=(
+                    f"the Designator proposal seal {seal['record_ref']['relative_path']} "
+                    "names an act that is not an object with an act_id"
+                ),
+            )
+        summary = _act_summary(stage_records, act)
+        acts.append(
+            {
+                "act_id": act["act_id"],
+                "act_key": act.get("act_key"),
+                "category": summary["category"],
+                "reason": summary["reason"],
+                "crops": _progressive_crops(tree, stage_records, act["act_id"], budget),
+                "row": summary,
+                "record_ref": seal["record_ref"],
+            }
+        )
+    return tuple(acts)
+
+
+def _holds(stage_records: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    """Every act left unresolved by the Designator or the Recensor, with its reason.
+
+    Derived from the sealed records rather than from the export's accounting,
+    so it is the same list before and after export -- and so an `advance`
+    record, which touches neither stage's records, can never make an act
+    disappear from it.
+    """
+    rows: list[dict[str, Any]] = []
+    for row in _records_of(stage_records, DESIGNATOR, "hold"):
+        payload = _payload_of(row, "the Designator hold record")
+        rows.append(
+            {
+                "act_id": row["subject_id"],
+                "act_key": payload.get("act_key"),
+                "source": DESIGNATOR,
+                "outcome": row["outcome"],
+                "reason": payload.get("reason"),
+                "audit_examination": None,
+                "record_ref": row["record_ref"],
+            }
+        )
+    reviewed = sorted({row["subject_id"] for row in _records_of(stage_records, RECENSOR, "review")})
+    for act_id in reviewed:
+        current = _latest(stage_records, RECENSOR, "review", act_id, operation="recense")
+        if current is None or current["outcome"] not in _UNRESOLVED_REVIEW_OUTCOMES:
+            continue
+        payload = _payload_of(current, "the Recensor review record")
+        rows.append(
+            {
+                "act_id": act_id,
+                "act_key": payload.get("act_key"),
+                "source": RECENSOR,
+                "outcome": current["outcome"],
+                "reason": payload.get("reason"),
+                "audit_examination": payload.get("audit_examination"),
+                "record_ref": current["record_ref"],
+            }
+        )
+    return tuple(rows)
+
+
+def _next_action(
+    progress: tuple[dict[str, Any], ...],
+    export: dict[str, Any],
+    holds: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    """The one supported continuation, said plainly, and what `advance` is not.
+
+    This reports; it does not act, and it never proposes a shortcut: a hold is
+    resolved by a new authorized run over the same sealed source, correction of
+    the text happens outside the pipeline, and `advance` records a person's
+    permission to pass one sealed stage boundary without certifying a reading
+    or clearing a hold. Saying so beside every hold is what keeps the boundary
+    permission and the act's resolution from being read as one thing.
+    """
+    resume_from = None
+    if export.get("present"):
+        summary = (
+            "This run has a completed export. Review each act below against its images; "
+            "a delivered act is the pipeline's machine reading, not truth."
+        )
+    else:
+        first = next((row for row in progress if row["state"] != "sealed"), None)
+        if first is None:
+            summary = (
+                "Every stage is sealed but no export record was found; treat the tree as "
+                "evidence to preserve and investigate before anything resumes."
+            )
+        elif first["state"] == "not-run":
+            summary = (
+                f"The run stopped before {first['stage']}: every stage before it is sealed and "
+                f"nothing from {first['stage']} onward has run. The supported continuation is to "
+                f"resume the run from {first['stage']} (the orchestrator's --from "
+                f"{first['stage']} --to armarium, or that stage alone with --stage "
+                f"{first['stage']}); a resume reuses the sealed evidence and never rewrites it."
+            )
+            resume_from = first["stage"]
+        elif first["state"] == "unsealed":
+            summary = (
+                f"{first['stage']} has written records but no completion seal: it was "
+                "interrupted or is still running. Do not resume while a writer may still be "
+                f"active; once none is, resuming from {first['stage']} republishes its records "
+                "byte for byte where they are unchanged and refuses where they are not."
+            )
+            resume_from = first["stage"]
+        else:
+            summary = (
+                f"{first['stage']}'s completion seal no longer verifies against the evidence "
+                f"on disk ({first['note']}). This is not a stage that has not run; treat the "
+                "tree as evidence to preserve and investigate before anything resumes."
+            )
+    if holds:
+        summary += (
+            f" {len(holds)} act(s) are held or unresolved; each is listed with its recorded "
+            "reason. A hold is resolved only by a new authorized run over the same sealed "
+            "source: `advance` records permission to pass one sealed stage boundary and "
+            "neither certifies a reading nor clears a hold, and any correction of the text "
+            "happens outside the pipeline."
+        )
+    return {"summary": summary, "resume_from": resume_from, "held_acts": len(holds)}
 
 
 def _image_row(
