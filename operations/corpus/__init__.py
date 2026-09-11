@@ -1,5 +1,5 @@
 """RecordGold corpus: row snapshot, fetch plan, hold-out ledger, fetcher,
-submission builder, reference truth, and comparator.
+submission builder, reference truth, comparator, local admission, and evaluation.
 
 RecordGold (`Teklia/DAI-CReTDHI-RecordGold-ATR`) is a third-party expert-annotated
 corpus this project's drafted real roster names two of its own chairs against
@@ -15,8 +15,11 @@ records group; `holdout.py` names which pages the `test` split protects;
 `submission.py` takes; `submission.py` and `sidecar.py` build a Door-shaped
 submission from cached bytes; `reference.py` mints reference-truth records
 from RecordGold's annotations; `compare.py` scores a sealed pipeline run
-against that reference truth. See `SPEC.md` and `README.md` for each module's
-shape in full.
+against that reference truth; `local_admission.py` admits the RecordGold sets
+already on this machine as reference truth, every record admitted or refused by
+name; `evaluate.py` is the one caller that builds `compare.py`'s hypotheses from
+a real run's sealed Armarium export and writes the evaluation record. See
+`SPEC.md` and `README.md` for each module's shape in full.
 
 **Package rule**, binding every module in this package: `operations/corpus/`
 may not import `pipeline/`, and `pipeline/` may not import `operations.corpus`
