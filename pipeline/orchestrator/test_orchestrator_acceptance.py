@@ -1531,10 +1531,26 @@ def _perlector_dissent():
 # audit-gates/pr111-acceptance-attribution-8eb1.md under the queue evidence above.
 # Measurement SHA256: 253deb4707561d91539cd32a6bc46207e9504be8344536bd602511e2344249de.
 # The v7/v8 semantic reducer and persisted-integrity checks remain unchanged.
+# Audit contract v2 (independent audit of 2026-09-10, F1), measured on ed722707a7 against
+# the audited baseline 0aa08db7e4: four fresh runs, happy 101 files/exit 0 and review
+# 112 files/exit 3 on both sides, leaf-by-leaf attribution over every changed file.
+# Happy: 24 leaves byte-identical, 75 JSON leaves changed, 24 non-digest value changes;
+# review: 23 / 87 / 44. Every non-digest change is one of four kinds and there are no
+# others: the four new facts (`examination` and `reproof_truncation` on each audit
+# finding, `audit.examination` on each Perlectio, `audit_examination` on each review,
+# all `complete` in these scenarios); `policy.schema` perlector-audit.v1 -> v2 on every
+# audit draft and finding; the content addresses of the one Perlector partition blob and
+# the Armarium bundle zip that carry those records, and every `relative_path` naming
+# them; and the digests that follow (`config_digest`, `self_hash`, `sha256`, `inputs`).
+# No text, outcome, category, crop geometry, count, terminal status, file count or exit
+# code changes. The pins below are read from these two tests' own computation over the
+# candidate; the bare-CLI measurement attributes the change and does not mint the pin.
+# Evidence: workbench/raw/audit-fixes-2026-09-10/f1-pin-attribution/ (attribution.md,
+# leaf-diff-happy.json, leaf-diff-review.json, measure.log) and f1-pin-digests/pytest.log.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "5dcc5ae8a7b5d6eb3700885736ec0f9512395edf8f897d7036f96cc7e6dc3330"
-REVIEW_RUN_TREE_DIGEST = "a0150dd17e27dbbd59c460a78394277f31cd25f75e3919ca12495c2cfa88ea9a"
+HAPPY_RUN_TREE_DIGEST = "d800e275128d720ad907ac21393a712d3937f136713284ba06a2a4fde6c9ebb4"
+REVIEW_RUN_TREE_DIGEST = "769ee5a76d5f0dca56a521b7ed189ceff2eacab1d1deae6eb04d7cdfedbb57ed"
 
 
 def orchestrate(
