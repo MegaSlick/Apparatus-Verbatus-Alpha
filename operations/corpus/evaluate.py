@@ -75,7 +75,12 @@ from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
 from common.stage import verify_final_seal
 from operations.spike_perlector.models import OutputStatus
-from operations.spike_perlector.normalization import GRAPHEMIC_V1, character_units, word_units
+from operations.spike_perlector.normalization import (
+    GRAPHEMIC_V1,
+    PROFILES,
+    character_units,
+    word_units,
+)
 
 from . import CorpusRefusal
 from .compare import (
@@ -85,6 +90,7 @@ from .compare import (
     load_exemplar_page_shas,
     load_pipeline_proposal_acts,
 )
+from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
 from .reference import validate_reference_page
 
 SCHEMA = "recordgold-evaluation.v1"
@@ -104,7 +110,11 @@ EVALUATION_REFUSAL_REASONS = frozenset(
         "export-text-mismatch",
         "unknown-export-category",
         "reference-page-collision",
+        "reference-page-invalid",
         "reference-page-not-in-ledger",
+        "reference-ledger-invalid",
+        "missing-input-file",
+        "comparison-refused",
         "ambiguous-run-identity",
         "unestablished-delivered-act",
         "output-exists",
@@ -123,6 +133,12 @@ _CATEGORY_STATUS: dict[str, OutputStatus] = {
     "confirmed-blank": OutputStatus.NO_READABLE_TEXT,
     "excluded-with-approval": OutputStatus.MISSING,
 }
+
+# One normalisation profile for both halves of the missed-inclusive fraction and
+# for `compare_page` itself, passed explicitly rather than left to two defaults
+# that could drift apart (independent audit of 2026-09-11, round 2 item 15). The
+# report records which one ran.
+PROFILE = GRAPHEMIC_V1
 
 _MATCHED_SCOPE = (
     "matched pairs only: a reference record the assignment never paired contributes to "
@@ -145,7 +161,9 @@ _EDIT_FIELDS = (
 _RATE_FIELDS = frozenset({"numerator", "denominator"})
 _UNIT_FIELDS = frozenset(set(_EDIT_FIELDS) | {"rate"})
 _AGGREGATE_SCOPE_FIELDS = frozenset({"scope", "cer", "wer"})
-_AGGREGATE_FIELDS = frozenset({"matched_pairs_only", "including_missed_records"})
+_AGGREGATE_FIELDS = frozenset(
+    {"normalization_profile_id", "matched_pairs_only", "including_missed_records"}
+)
 _CODE_REF_CHECK_FIELDS = frozenset({"state", "checkout_head"})
 # One closed row shape for all three outcomes. A missed or not-attempted record
 # carries `None` where a scored one carries a measurement, so a reader is never
@@ -165,6 +183,33 @@ _RECORD_ROW_FIELDS = frozenset(
         "cer",
         "wer",
         "note",
+    }
+)
+_RUN_FIELDS = frozenset(
+    {
+        "run_id",
+        "config_digest",
+        "sealed_config_digests",
+        "export_sha256",
+        "export_status",
+        "scenario",
+    }
+)
+_DENOMINATOR_FIELDS = frozenset(
+    {
+        "run_pages_sealed",
+        "run_pages_compared",
+        "run_pages_without_reference",
+        "reference_pages_not_in_run",
+        "proposal_regions",
+        "proposed_acts",
+        "exported_acts_by_category",
+        "excluded_designator_artifacts",
+        "reference_records_scored",
+        "reference_records_scored_by_export_category",
+        "reference_records_missed",
+        "reference_records_not_attempted",
+        "pipeline_acts_unmatched",
     }
 )
 _CORPUS_FIELDS = frozenset(
@@ -384,9 +429,13 @@ def _code_ref_check(code_ref: str) -> dict[str, Any]:
     head = _checkout_commit()
     if head is None:
         return {"state": "no-checkout-found", "checkout_head": None}
-    state = (
-        "matches-checkout" if code_ref in (head, head[:12], head[:7]) else "differs-from-checkout"
-    )
+    # Any honest abbreviation of the head, not the three lengths this module
+    # happened to think of: git abbreviates to whatever is unambiguous, and this
+    # repository's own commit tables use ten (independent audit of 2026-09-11,
+    # round 2 item 3). Seven is git's own floor, below which a prefix names too
+    # much.
+    matches = len(code_ref) >= 7 and head.startswith(code_ref)
+    state = "matches-checkout" if matches else "differs-from-checkout"
     return {"state": state, "checkout_head": head}
 
 
@@ -399,8 +448,13 @@ def run_is_fixture(export_payload: Mapping[str, Any]) -> bool:
     omit is not, and omitting it published a fixture score under the live label
     (independent audit of 2026-09-11, finding 11).
     """
-    has_fixture = isinstance(export_payload.get("fixture_id"), str)
-    has_submission = isinstance(export_payload.get("submission_id"), str)
+    has_fixture = bool(
+        isinstance(export_payload.get("fixture_id"), str) and export_payload["fixture_id"].strip()
+    )
+    has_submission = bool(
+        isinstance(export_payload.get("submission_id"), str)
+        and export_payload["submission_id"].strip()
+    )
     if has_fixture == has_submission:
         raise CorpusRefusal(
             "ambiguous-run-identity: the export names "
@@ -417,21 +471,35 @@ def evaluate_run(
     *,
     code_ref: str,
     reference_ledger: Mapping[str, Any] | None = None,
-    reference_ledger_sha256: str | None = None,
 ) -> dict[str, Any]:
     """One `recordgold-evaluation.v1` report for one sealed run against reference pages.
 
-    `reference_ledger` is a validated `recordgold-local-admission.v1` body; when
-    given, every reference page must appear in it by `self_hash`, so naming a
-    ledger becomes a check rather than a caption.
+    `reference_ledger` is a `recordgold-local-admission.v1` body. It is validated
+    here rather than taken on the caller's word, its digest is derived from the
+    body itself, and every reference page must appear in it by `self_hash` -- so
+    `reference_ledger_verified` can only be true of a ledger, and
+    `reference_ledger_sha256` can only be the digest of the ledger that was
+    checked (independent audit of 2026-09-11, round 2 item 6).
     """
     if not isinstance(code_ref, str) or not code_ref:
         raise CorpusRefusal("malformed-record: an evaluation must name the code it ran under")
-    if reference_ledger_sha256 is not None and not is_sha256(reference_ledger_sha256):
-        raise CorpusRefusal("malformed-record: reference_ledger_sha256 is not a sha256")
+    reference_ledger_sha256 = None
+    if reference_ledger is not None:
+        try:
+            reference_ledger = validate_local_admission_ledger(dict(reference_ledger))
+        except CorpusRefusal as error:
+            raise CorpusRefusal(
+                f"reference-ledger-invalid: the named reference ledger does not validate: {error}"
+            ) from error
+        reference_ledger_sha256 = digest_bytes(canonical_bytes(dict(reference_ledger)))
     references: dict[str, dict[str, Any]] = {}
     for page in reference_pages:
-        page = validate_reference_page(page)
+        try:
+            page = validate_reference_page(page)
+        except CorpusRefusal as error:
+            raise CorpusRefusal(
+                f"reference-page-invalid: a reference page does not validate: {error}"
+            ) from error
         digest = page["page"]["sha256"]
         if digest in references:
             raise CorpusRefusal(
@@ -441,9 +509,9 @@ def evaluate_run(
 
     if reference_ledger is not None:
         in_ledger = {
-            row.get("reference_page_self_hash")
-            for row in reference_ledger.get("rows", [])
-            if isinstance(row, dict)
+            row["reference_page_self_hash"]
+            for row in reference_ledger["rows"]
+            if row["decision"] == "admitted"
         }
         missing = sorted(
             page["self_hash"] for page in references.values() if page["self_hash"] not in in_ledger
@@ -455,8 +523,9 @@ def evaluate_run(
                 "report was not given"
             )
 
+    read_only = ReadOnlyRunTree(tree)
     try:
-        export_record = verify_final_seal(tree)
+        export_record = verify_final_seal(read_only)
     except ContractError as error:
         raise CorpusRefusal(
             f"no-export: the run has no verified Armarium export to score ({error})"
@@ -465,7 +534,6 @@ def evaluate_run(
     export_sha256 = digest_bytes(canonical_bytes(export_record))
     fixture = run_is_fixture(export_payload)
 
-    read_only = ReadOnlyRunTree(tree)
     run = read_only.read_run()
     hypotheses = hypotheses_from_export(export_payload, _established_text_hashes(read_only))
     page_shas = load_exemplar_page_shas(read_only)
@@ -514,18 +582,24 @@ def evaluate_run(
             continue
         compared_shas.add(sha)
         acts_on_page = [act for act in pipeline_acts if act["page_sha256"] == sha]
-        comparison = compare_page(
-            reference,
-            acts_on_page,
-            {
-                act["act_id"]: (
-                    hypotheses[act["act_id"]]["status"],
-                    hypotheses[act["act_id"]]["text"],
-                )
-                for act in acts_on_page
-            },
-            excluded_region_counts=excluded,
-        )
+        try:
+            comparison = compare_page(
+                reference,
+                acts_on_page,
+                {
+                    act["act_id"]: (
+                        hypotheses[act["act_id"]]["status"],
+                        hypotheses[act["act_id"]]["text"],
+                    )
+                    for act in acts_on_page
+                },
+                profile=PROFILE,
+                excluded_region_counts=excluded,
+            )
+        except CorpusRefusal as error:
+            raise CorpusRefusal(
+                f"comparison-refused: page {ordinal} ({sha}) could not be compared: {error}"
+            ) from error
         comparisons.append({"ordinal": ordinal, "comparison": comparison})
         matched = {pair["reference_physical_act_id"]: pair for pair in comparison["matched_pairs"]}
         for act in reference["acts"]:
@@ -535,11 +609,9 @@ def evaluate_run(
                 # matched-pairs rate and its whole reference in the other.
                 _accumulate(
                     cer_with_missed,
-                    _wholly_deleted(len(character_units(act["text"], GRAPHEMIC_V1))),
+                    _wholly_deleted(len(character_units(act["text"], PROFILE))),
                 )
-                _accumulate(
-                    wer_with_missed, _wholly_deleted(len(word_units(act["text"], GRAPHEMIC_V1)))
-                )
+                _accumulate(wer_with_missed, _wholly_deleted(len(word_units(act["text"], PROFILE))))
                 records.append(
                     {
                         "physical_act_id": act["physical_act_id"],
@@ -625,6 +697,7 @@ def evaluate_run(
             scored_by_category.get(row["export_category"], 0) + 1
         )
     aggregate = {
+        "normalization_profile_id": PROFILE.profile_id,
         "matched_pairs_only": _scope(_MATCHED_SCOPE, cer_total, wer_total),
         "including_missed_records": _scope(_MISSED_SCOPE, cer_with_missed, wer_with_missed),
     }
@@ -707,8 +780,18 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
 
     This is the artifact a person reads as the measurement, and it was the one
     record in this package that nothing held to a shape (independent audit of
-    2026-09-11, finding 10). Closed at every level, self-hashed, with the record
-    denominator and the scored-category histogram reconciled against the rows.
+    2026-09-11, finding 10).
+
+    **Closed exactly where a name is read**, and the docstring says so rather
+    than claiming more (round 2 item 5): the top level, `run`, `corpus`,
+    `corpus.splits`, `denominators`, `code_ref_check`, `aggregate` with both of
+    its rate blocks and every rate inside them, and every record row. The three
+    lists -- `pages`, `unmatched_pipeline_acts`, `pages_without_reference` --
+    are counted against the denominators that claim them rather than shaped
+    here, because each page's comparison is `compare.py`'s own family and
+    carries its own self-hash. The record is self-hashed, and the record
+    denominator and the scored-category histogram are reconciled against the
+    rows that produced them.
     """
     report = _closed(report, _TOP_FIELDS, "evaluation report")
     if report["schema"] != SCHEMA:
@@ -754,17 +837,27 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
         raise CorpusRefusal("malformed-record: an evaluation must name the split(s) it scored")
 
     aggregate = _closed(report["aggregate"], _AGGREGATE_FIELDS, "the aggregate")
-    for name, block in sorted(aggregate.items()):
-        block = _closed(block, _AGGREGATE_SCOPE_FIELDS, f"aggregate.{name}")
+    # A closed vocabulary, not the current constant: a report sealed under a
+    # profile this module no longer scores with is a historically correct
+    # record, and a validator that refused it would be refusing the past. An
+    # unrecognised profile is a different thing and is refused.
+    if aggregate["normalization_profile_id"] not in PROFILES:
+        raise CorpusRefusal(
+            f"malformed-record: the aggregate names normalisation profile "
+            f"{aggregate['normalization_profile_id']!r}, which is not a declared profile"
+        )
+    for name in ("matched_pairs_only", "including_missed_records"):
+        block = _closed(aggregate[name], _AGGREGATE_SCOPE_FIELDS, f"aggregate.{name}")
         if not isinstance(block["scope"], str) or not block["scope"]:
             raise CorpusRefusal(f"malformed-record: aggregate.{name} states no scope")
         for unit in ("cer", "wer"):
             if block[unit] is not None:
                 _validate_units(block[unit], f"aggregate.{name}.{unit}")
 
-    totals = report["denominators"]
-    if not isinstance(totals, dict):
-        raise CorpusRefusal("malformed-record: denominators must be a record")
+    # Closed before a single name is looked up: indexing an open record by name
+    # raises `KeyError`, which is not a refusal (CodeRabbit on 497034d2).
+    _closed(report["run"], _RUN_FIELDS, "the run block")
+    totals = _closed(report["denominators"], _DENOMINATOR_FIELDS, "the denominators")
     outcomes = {"scored": 0, "missed": 0, "not-attempted": 0}
     for row in report["records"]:
         row = _closed(row, _RECORD_ROW_FIELDS, "a record row")
@@ -865,8 +958,21 @@ def write_report(report: Mapping[str, Any], path: str | Path) -> Path:
 
 
 def load_reference_pages(path: str | Path) -> list[dict[str, Any]]:
+    """One `reference-pages.jsonl`, refused by name rather than by traceback.
+
+    A missing file and a file that is not UTF-8 each refused under this module's
+    own vocabulary, as a line that is not JSON already was (independent audit of
+    2026-09-11, round 2 item 7).
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise CorpusRefusal(f"missing-input-file: {path} is not a file")
+    try:
+        body = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise CorpusRefusal(f"malformed-record: {path} is not UTF-8: {error}") from error
     pages = []
-    for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), start=1):
+    for number, line in enumerate(body.splitlines(), start=1):
         if line.strip():
             try:
                 pages.append(json.loads(line))
@@ -877,11 +983,24 @@ def load_reference_pages(path: str | Path) -> list[dict[str, Any]]:
     return pages
 
 
+def load_reference_ledger(path: str | Path) -> dict[str, Any]:
+    """One admission ledger, refused by name rather than by traceback."""
+    path = Path(path)
+    if not path.is_file():
+        raise CorpusRefusal(f"missing-input-file: {path} is not a file")
+    try:
+        return load_local_admission_ledger(path)
+    except CorpusRefusal as error:
+        raise CorpusRefusal(
+            f"reference-ledger-invalid: the named reference ledger does not validate: {error}"
+        ) from error
+    except ValueError as error:
+        raise CorpusRefusal(f"malformed-record: {path} is not JSON: {error}") from error
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import sys
-
-    from .local_admission import load_local_admission_ledger
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run-root", required=True)
@@ -899,17 +1018,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output", required=True, help="new file for the evaluation record")
     args = parser.parse_args(argv)
-    ledger = None
-    ledger_sha256 = None
-    if args.reference_ledger:
-        ledger = load_local_admission_ledger(args.reference_ledger)
-        ledger_sha256 = digest_bytes(Path(args.reference_ledger).read_bytes())
+    ledger = load_reference_ledger(args.reference_ledger) if args.reference_ledger else None
     report = evaluate_run(
         RunTree(Path(args.run_root), args.run_id),
         load_reference_pages(args.reference_pages),
         code_ref=args.code_ref,
         reference_ledger=ledger,
-        reference_ledger_sha256=ledger_sha256,
     )
     write_report(report, args.output)
     for line in summary_lines(report):

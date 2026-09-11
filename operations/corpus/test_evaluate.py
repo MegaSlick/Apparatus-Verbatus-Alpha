@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from common.contracts.canonical import self_hash as _self_hash
 from common.runtree.store import RunTree
 from operations.corpus import CorpusRefusal
@@ -34,12 +34,16 @@ from operations.corpus.evaluate import (
     SCHEMA,
     evaluate_run,
     hypotheses_from_export,
+    load_reference_ledger,
+    load_reference_pages,
     main,
     run_is_fixture,
     summary_lines,
     validate_evaluation,
     write_report,
 )
+from operations.corpus.local_admission import SCHEMA as LEDGER_SCHEMA
+from operations.corpus.local_admission import validate_local_admission_ledger
 from operations.corpus.reference import build_reference_page
 from operations.spike_perlector.models import OutputStatus
 
@@ -81,6 +85,12 @@ def _pair(comparison: dict, name: str) -> dict:
     return next(
         pair for pair in comparison["matched_pairs"] if pair["pipeline_act_id"] == _act_id(name)
     )
+
+
+def _reseal(report: dict) -> dict:
+    body = {key: value for key, value in report.items() if key != "self_hash"}
+    body["self_hash"] = _self_hash(body)
+    return body
 
 
 BOX_A = {"x": 10, "y": 10, "w": 400, "h": 100}
@@ -261,6 +271,10 @@ def test_the_fixture_label_is_read_from_the_runs_own_sealed_identity_not_from_a_
         run_is_fixture({})
     with pytest.raises(CorpusRefusal, match="^ambiguous-run-identity:"):
         run_is_fixture({"fixture_id": "f", "submission_id": "s"})
+    # A blank identity is no identity, and must not read as a fixture run.
+    with pytest.raises(CorpusRefusal, match="^ambiguous-run-identity:"):
+        run_is_fixture({"fixture_id": "   "})
+    assert run_is_fixture({"fixture_id": "f", "submission_id": ""}) is True
 
 
 def _orchestrate(run_root: Path, scenario: str) -> subprocess.CompletedProcess[str]:
@@ -328,6 +342,78 @@ def _fixture_reference_for_page_one(tree: RunTree, *, keep=None, extra=None) -> 
     )
 
 
+def _ledger_for(*references: dict) -> dict:
+    """A real `recordgold-local-admission.v1` around the given reference pages.
+
+    `evaluate_run` validates the ledger it is handed now, so a test cannot hand
+    it a two-field stand-in: this builds the shape `admit_local_set` produces,
+    one admitted row per act, and seals it the same way.
+    """
+    rows = []
+    for reference in references:
+        for act in reference["acts"]:
+            rows.append(
+                {
+                    "record_id": act["record_id"],
+                    "page_id": reference["designation"],
+                    "split": reference["split"],
+                    "record_url": "https://europe.iiif.teklia.com/iiif/2/"
+                    f"{reference['volume']}%2F{reference['designation']}/"
+                    f"{act['region']['x']},{act['region']['y']},"
+                    f"{act['region']['w']},{act['region']['h']}/full/0/default.jpg",
+                    "iiif_rotation": "0",
+                    "source_bbox": [act["region"][key] for key in ("x", "y", "w", "h")],
+                    "bbox": [act["region"][key] for key in ("x", "y", "w", "h")],
+                    "page_sha256": reference["page"]["sha256"],
+                    "page_width": reference["page"]["width"],
+                    "page_height": reference["page"]["height"],
+                    "page_image": f"pages/{reference['designation']}.jpg",
+                    "physical_page_id": "ppg_"
+                    + digest_bytes(reference["self_hash"].encode("utf-8"))[:16],
+                    "physical_act_id": act["physical_act_id"],
+                    "reference_page_self_hash": reference["self_hash"],
+                    "decision": "admitted",
+                    "reason": None,
+                    "detail": None,
+                }
+            )
+    ledger = {
+        "schema": LEDGER_SCHEMA,
+        "corpus_id": "recordgold",
+        "set_root": "/nowhere/a-synthetic-set",
+        "split": "val",
+        "receipt": {
+            "path": "/nowhere/a-synthetic-set/fetch_receipt.json",
+            "receipt_sha256": digest_bytes(b"receipt"),
+            "status": "complete",
+            "requested_splits": ["val"],
+            "digests": {
+                "gold.jsonl": digest_bytes(b"gold"),
+                "page_manifest.jsonl": digest_bytes(b"manifest"),
+            },
+        },
+        "row_snapshot": {"consulted": False, "self_hash": None, "records_cross_checked": 0},
+        "summary": {
+            "records": len(rows),
+            "admitted": len(rows),
+            "refused": 0,
+            "refused_by_reason": {},
+            "pages_listed": len(references),
+            "pages_by_outcome": {
+                "admitted": len(references),
+                "refused": 0,
+                "no-gold-row": 0,
+                "all-records-refused": 0,
+            },
+            "admitted_by_rotation": {"0": len(rows)},
+        },
+        "rows": rows,
+        "reference_pages": list(references),
+    }
+    ledger["self_hash"] = _self_hash(ledger)
+    return validate_local_admission_ledger(ledger)
+
+
 def _page_never_sealed() -> dict:
     """A reference page whose digest no run sealed: its records are not attempted."""
     return build_reference_page(
@@ -366,7 +452,8 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     tree = sealed_run
     reference = _fixture_reference_for_page_one(tree)
 
-    report = evaluate_run(tree, [reference], code_ref="test", reference_ledger_sha256="b" * 64)
+    ledger = _ledger_for(reference)
+    report = evaluate_run(tree, [reference], code_ref="test", reference_ledger=ledger)
     assert report["schema"] == SCHEMA
     assert report["fixture"] is True and report["label"] == FIXTURE_LABEL
     assert report["run"]["export_status"] == "partial"
@@ -375,16 +462,24 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     assert report["corpus"] == {
         "reference_pages": 1,
         "reference_records": 2,
-        "reference_ledger_sha256": "b" * 64,
-        "reference_ledger_verified": False,
+        # Derived from the ledger's own body, never accepted beside it.
+        "reference_ledger_sha256": digest_bytes(canonical_bytes(ledger)),
+        "reference_ledger_verified": True,
         "reference_page_self_hashes": [reference["self_hash"]],
         "splits": {"scored": ["val"], "present_on_pages": ["val"]},
     }
-    assert report["code_ref_check"]["state"] in (
-        "matches-checkout",
-        "differs-from-checkout",
-        "no-checkout-found",
-    )
+    check = report["code_ref_check"]
+    assert check["state"] in ("matches-checkout", "differs-from-checkout", "no-checkout-found")
+    if check["checkout_head"] is not None:
+        # Any honest abbreviation of the head reads as a match, not just the
+        # three lengths this module first thought of (round 2 item 3).
+        for length in (7, 10, 12, 40):
+            abbreviated = evaluate_run(
+                sealed_run, [reference], code_ref=check["checkout_head"][:length]
+            )
+            assert abbreviated["code_ref_check"]["state"] == "matches-checkout"
+        short = evaluate_run(sealed_run, [reference], code_ref=check["checkout_head"][:6])
+        assert short["code_ref_check"]["state"] == "differs-from-checkout"
     totals = report["denominators"]
     assert totals["run_pages_sealed"] == 2 and totals["run_pages_compared"] == 1
     assert totals["run_pages_without_reference"] == 1
@@ -415,6 +510,17 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     # The aggregate is the sum of both rows: the held act's whole reference is
     # in the numerator, so a held act can never improve a score. With nothing
     # missed, the two aggregates agree exactly.
+    assert report["aggregate"]["normalization_profile_id"] == "graphemic-v1"
+    # The validator holds the profile to the declared vocabulary, not to the
+    # constant this module happens to score with today: a report sealed under
+    # another declared profile is a historically correct record.
+    other = json.loads(json.dumps(report))
+    other["aggregate"]["normalization_profile_id"] = "allographic-v1"
+    assert validate_evaluation(_reseal(other))["fixture"] is True
+    unknown = json.loads(json.dumps(report))
+    unknown["aggregate"]["normalization_profile_id"] = "not-a-profile"
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        validate_evaluation(_reseal(unknown))
     matched = report["aggregate"]["matched_pairs_only"]
     assert matched["cer"]["rate"]["numerator"] == held["cer"]["reference_units"]
     assert matched["cer"]["rate"]["denominator"] == (
@@ -535,6 +641,38 @@ def test_every_record_row_carries_one_closed_shape_whatever_its_outcome(sealed_r
     assert len({frozenset(row) for row in report["records"]}) == 1
 
 
+def test_a_comparison_refusal_travels_under_this_modules_name(sealed_run):
+    """`compare_page` refuses by its own vocabulary; a caller sees this module's.
+
+    A reference page declaring a frame smaller than the one the run sealed its
+    acts in makes `compare_page` refuse `region-outside-page` -- a real
+    disagreement between the two sides, and a name outside
+    `EVALUATION_REFUSAL_REASONS`. Round 2 item 11 settles that a delegated
+    refusal travels under the caller's own name, with the delegate's text kept
+    in the detail.
+    """
+    tree = sealed_run
+    cramped = build_reference_page(
+        page={"sha256": load_exemplar_page_shas(tree)[1], "width": 30, "height": 30},
+        source="fixture",
+        volume="synthetic-two-page-v0",
+        designation="page-1-in-a-smaller-frame",
+        split="val",
+        records=[
+            {
+                "record_id": "r-cramped",
+                "region": {"x": 1, "y": 1, "w": 10, "h": 10},
+                "split": "val",
+                "text": "un acte",
+                "text_sha256": digest_bytes("un acte".encode("utf-8")),
+            }
+        ],
+    )
+    with pytest.raises(CorpusRefusal, match="^comparison-refused:") as refused:
+        evaluate_run(tree, [cramped], code_ref="test")
+    assert "region-outside-page" in str(refused.value)
+
+
 def test_two_reference_pages_over_one_page_digest_are_refused(sealed_run):
     tree = sealed_run
     reference = _fixture_reference_for_page_one(tree)
@@ -543,16 +681,54 @@ def test_two_reference_pages_over_one_page_digest_are_refused(sealed_run):
 
 
 def test_naming_a_ledger_is_a_check_not_a_caption(sealed_run):
+    """`reference_ledger_verified` can only be true of something that is a ledger."""
     tree = sealed_run
     reference = _fixture_reference_for_page_one(tree)
-    # The ledger body is read for the one fact this boundary needs; the CLI
-    # loads it through `load_local_admission_ledger`, which validates the rest.
-    ledger = {"rows": [{"reference_page_self_hash": reference["self_hash"]}]}
+    ledger = _ledger_for(reference)
     report = evaluate_run(tree, [reference], code_ref="test", reference_ledger=ledger)
     assert report["corpus"]["reference_ledger_verified"] is True
+    assert report["corpus"]["reference_ledger_sha256"] == digest_bytes(canonical_bytes(ledger))
 
+    # A ledger that carries other pages does not bless these ones.
     with pytest.raises(CorpusRefusal, match="^reference-page-not-in-ledger:"):
-        evaluate_run(tree, [reference], code_ref="test", reference_ledger={"rows": []})
+        evaluate_run(
+            tree,
+            [reference],
+            code_ref="test",
+            reference_ledger=_ledger_for(_page_never_sealed()),
+        )
+    # And a thing shaped like an answer is not a ledger.
+    with pytest.raises(CorpusRefusal, match="^reference-ledger-invalid:"):
+        evaluate_run(
+            tree,
+            [reference],
+            code_ref="test",
+            reference_ledger={"rows": [{"reference_page_self_hash": reference["self_hash"]}]},
+        )
+
+
+def test_a_reference_page_that_does_not_validate_is_refused_under_this_modules_name(sealed_run):
+    """Round 2 item 11: a delegated refusal travels under the caller's vocabulary."""
+    reference = json.loads(json.dumps(_fixture_reference_for_page_one(sealed_run)))
+    reference["acts"][0]["text"] = " "
+    with pytest.raises(CorpusRefusal, match="^reference-page-invalid:") as refused:
+        evaluate_run(sealed_run, [reference], code_ref="test")
+    assert "empty-normalized-text" in str(refused.value), "the delegate's own name is kept in view"
+
+
+def test_the_command_line_refuses_a_missing_or_damaged_input_by_name(sealed_run, tmp_path):
+    with pytest.raises(CorpusRefusal, match="^missing-input-file:"):
+        load_reference_pages(tmp_path / "nowhere.jsonl")
+    with pytest.raises(CorpusRefusal, match="^missing-input-file:"):
+        load_reference_ledger(tmp_path / "nowhere.json")
+    damaged = tmp_path / "pages.jsonl"
+    damaged.write_bytes(b"\xff\xfe not utf-8 at all\n")
+    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
+        load_reference_pages(damaged)
+    not_a_ledger = tmp_path / "ledger.json"
+    not_a_ledger.write_text(json.dumps({"schema": "something-else.v1"}))
+    with pytest.raises(CorpusRefusal, match="^reference-ledger-invalid:"):
+        load_reference_ledger(not_a_ledger)
 
 
 def test_a_run_with_no_verified_export_is_refused_not_scored(sealed_run, tmp_path):
@@ -568,12 +744,6 @@ def test_an_evaluation_must_name_the_code_it_ran_under(sealed_run):
 
 
 # --- The validator ----------------------------------------------------------------
-
-
-def _reseal(report: dict) -> dict:
-    body = {key: value for key, value in report.items() if key != "self_hash"}
-    body["self_hash"] = _self_hash(body)
-    return body
 
 
 def test_the_validator_refuses_a_report_edited_after_it_was_sealed(sealed_run):

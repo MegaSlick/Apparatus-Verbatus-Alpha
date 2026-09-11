@@ -27,6 +27,18 @@ may not import `pipeline/`, and `pipeline/` may not import `operations.corpus`
 `test_compare.py::test_no_pipeline_module_imports_operations_corpus`, which
 walks `pipeline/` and fails on any import of this package.
 
+**A delegated refusal travels under the calling module's own name.** When a
+module in this package calls another and that call refuses, the caller wraps the
+refusal under one of its own declared reasons and carries the original text in
+the detail. A caller dispatching on a module's closed vocabulary must never meet
+a name from a vocabulary it was not given -- which is exactly what a closed set
+is for -- and the alternative reading, that a delegated module's refusal should
+travel under its own name, would make every declared set open in practice. The
+package was inconsistent with itself here: `local_admission.py` already wrapped
+(`reference-build-refused`, `snapshot-mismatch`) while `evaluate.py` let
+`reference.py`'s and `compare.py`'s names escape. Settled for the package and
+recorded here (independent audit of 2026-09-11, round 2 item 11).
+
 **Not a picker (hard rule 8).** Nothing in this package selects among readings
 or witnesses. `plan.py` groups rows that already exist by the page they already
 belong to; `holdout.py` names pages the `test` split protects; `compare.py`

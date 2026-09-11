@@ -61,7 +61,8 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   page is the upright 180-delivered view, and the flipped box is the one that cuts the
   ink `gold.jsonl` transcribes. A rotation other than `0`/`180` stays a named refusal,
   every listed page ends in exactly one outcome (`pages_by_outcome`), and `--split test`
-  needs `--release-test-split` exactly as the fetcher does. Measured over
+  needs `--release-test-split` exactly as the fetcher does, refused under the fetcher's
+  own name (`holdout-ledger-required`) since it is the same condition. Measured over
   the local sets on 2026-09-10: 784 of 784 validation records admitted (769 at 0, 15 at
   180) and 6,178 of 6,178 training records (6,153 at 0, 25 at 180); nothing under
   `OCR_Gold` is written.
@@ -246,6 +247,19 @@ never fires against the real corpus, but the refusal stays load-bearing rather
 than decorative because a future re-export is not bound by today's measurement.
 Release from hold is an appended, named record — an `advance`, never a
 permanent bar.
+
+**The local-admission route carries one of those three layers, and it is worth
+naming which.** `local_admission.py` mirrors the second layer exactly — `--split
+test` requires `--release-test-split`, that flag is refused with any other
+split, and each row's own `split` is checked against the split the set is being
+admitted as, so a `test`-labelled row can never enter a `val` ledger. It does not
+consult `holdout.py`'s ledger: the sets it reads carry their own split labels and
+were not produced by the fetcher, so there is no plan to reconcile them against.
+Hold-out protection on this route therefore rests on those labels being honest,
+and the only witness from outside the set's own directory is `--row-snapshot`,
+which is optional and whose file is not tracked here. That is a deliberate
+limit, not an oversight, and a ledger built without the snapshot says so in
+`row_snapshot.consulted`.
 
 ## The DAI contamination risk
 
