@@ -59,6 +59,7 @@ LOCAL_ADMISSION_REFUSAL_REASONS = frozenset(
     {
         "malformed-record",
         "receipt-hash-mismatch",
+        "missing-set-file",
         "unknown-split",
         "missing-page-file",
         "non-image-body",
@@ -151,7 +152,7 @@ def _receipt(set_root: Path) -> dict[str, Any]:
     """The set's own receipt, and proof its two files are the bytes it names."""
     receipt_path = set_root / "fetch_receipt.json"
     if not receipt_path.is_file():
-        raise CorpusRefusal(f"malformed-record: {receipt_path} is missing")
+        raise CorpusRefusal(f"missing-set-file: {receipt_path} is not a file")
     receipt = json.loads(receipt_path.read_bytes())
     if not isinstance(receipt, dict) or receipt.get("schema") != RECEIPT_SCHEMA:
         raise CorpusRefusal(f"malformed-record: {receipt_path} does not declare {RECEIPT_SCHEMA!r}")
@@ -164,6 +165,11 @@ def _receipt(set_root: Path) -> dict[str, Any]:
         ("page_manifest_jsonl", "page_manifest.jsonl"),
     ):
         declared = artifacts.get(f"{name}_sha256")
+        if not (set_root / filename).is_file():
+            raise CorpusRefusal(
+                f"missing-set-file: {set_root / filename} is not a file; the set cannot be "
+                "admitted without it"
+            )
         actual = digest_bytes((set_root / filename).read_bytes())
         if not is_sha256(declared) or declared != actual:
             raise CorpusRefusal(

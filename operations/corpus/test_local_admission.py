@@ -325,3 +325,13 @@ def test_a_set_whose_files_are_not_the_receipts_bytes_is_refused_before_any_row(
         admit_local_set(root, split="val")
     with pytest.raises(CorpusRefusal, match="^unknown-split"):
         admit_local_set(root, split="calibration")
+
+
+@pytest.mark.parametrize("missing", ["gold.jsonl", "page_manifest.jsonl", "fetch_receipt.json"])
+def test_a_set_missing_one_of_its_files_is_refused_by_the_files_name(tmp_path, missing):
+    root = _two_page_set(tmp_path / "set")
+    (root / missing).unlink()
+    with pytest.raises(CorpusRefusal, match="^missing-set-file") as refused:
+        admit_local_set(root, split="val")
+    assert missing in str(refused.value)
+    assert "missing-set-file" in LOCAL_ADMISSION_REFUSAL_REASONS
