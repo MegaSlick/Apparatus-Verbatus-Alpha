@@ -383,3 +383,30 @@ def test_the_seven_pinned_projection_fields_still_construct_by_position_and_keyw
     assert by_position == by_keyword
     assert by_position.export == {} and by_position.progress == ()
     assert by_position.holds == () and by_position.next_action == {}
+
+
+def test_a_projection_list_entry_that_is_not_an_object_is_refused_by_field_and_index(
+    witnessed_run: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Refused, never skipped: a row the renderer passed over is a row nobody sees."""
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render({"run_id": "r", "progress": [{"stage": "door"}, "not a row"]})
+    assert refused.value.field == "progress" and refused.value.index == 1
+    with pytest.raises(review_text.ProjectionShapeError) as nested:
+        review_text.render({"run_id": "r", "acts": [{"act_id": "a", "act_key": "a", "crops": [7]}]})
+    assert nested.value.field == "acts[].crops"
+
+    class Backend:
+        def launcher_failure(self, completed):
+            return None
+
+    def confined(command, *, writable, cwd, input_text):
+        return Backend(), types.SimpleNamespace(
+            returncode=0, stdout=json.dumps({"run_id": "r", "holds": [1]}), stderr=""
+        )
+
+    monkeypatch.setattr(cli, "run_confined", confined)
+    with pytest.raises(OperatorError) as error:
+        cli._review_in_custody(witnessed_run, RUN_ID, ROOT)
+    assert error.value.code is ErrorCode.CONSOLE_PROJECTION_UNREADABLE
+    assert "'holds' entry 0" in (error.value.detail or "")

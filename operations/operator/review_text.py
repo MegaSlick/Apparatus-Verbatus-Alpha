@@ -22,6 +22,45 @@ from __future__ import annotations
 from typing import Any
 
 
+class ProjectionShapeError(ValueError):
+    """A projection list carries an entry that is not an object.
+
+    Raised by name -- the list and the index -- rather than skipped: a row the
+    renderer silently passed over would be a row a person never sees, and the
+    parent reports this as a fault of its own pipe, never as a claim about the
+    run tree (`cli._review_in_custody`). Found by CodeRabbit on the first
+    candidate.
+    """
+
+    def __init__(self, field: str, index: int, entry: Any) -> None:
+        super().__init__(
+            f"projection field {field!r} entry {index} is {type(entry).__name__}, not an object"
+        )
+        self.field = field
+        self.index = index
+
+
+def _rows(projection: dict[str, Any], field: str) -> list[dict[str, Any]]:
+    """Every entry of one projection list, each proved to be an object first."""
+    rows = projection.get(field) or ()
+    if not isinstance(rows, (list, tuple)):
+        raise ProjectionShapeError(field, -1, rows)
+    for index, entry in enumerate(rows):
+        if not isinstance(entry, dict):
+            raise ProjectionShapeError(field, index, entry)
+    return list(rows)
+
+
+def _nested_rows(parent: dict[str, Any], field: str, label: str) -> list[dict[str, Any]]:
+    rows = parent.get(field) or ()
+    if not isinstance(rows, (list, tuple)):
+        raise ProjectionShapeError(label, -1, rows)
+    for index, entry in enumerate(rows):
+        if not isinstance(entry, dict):
+            raise ProjectionShapeError(label, index, entry)
+    return list(rows)
+
+
 def inert(value: Any) -> str:
     """One projection value as terminal-safe text, control characters escaped."""
     text = value if isinstance(value, str) else repr(value)
@@ -51,7 +90,7 @@ def render(projection: dict[str, Any]) -> list[str]:
     """
     lines: list[str] = [f"Run {inert(projection.get('run_id'))}"]
 
-    progress = projection.get("progress") or ()
+    progress = _rows(projection, "progress")
     lines.append("")
     lines.append("Stages")
     if not progress:
@@ -75,7 +114,7 @@ def render(projection: dict[str, Any]) -> list[str]:
     lines.append("What you can do next")
     lines.append(f"  {_one_line(next_action.get('summary'), limit=1200)}")
 
-    holds = projection.get("holds") or ()
+    holds = _rows(projection, "holds")
     lines.append("")
     lines.append(f"Held or unresolved acts ({len(holds)})")
     for hold in holds:
@@ -90,7 +129,7 @@ def render(projection: dict[str, Any]) -> list[str]:
         if record_ref:
             lines.append(f"    record: {inert(record_ref.get('relative_path'))}")
 
-    pages = projection.get("pages") or ()
+    pages = _rows(projection, "pages")
     lines.append("")
     lines.append(f"Pages ({len(pages)})")
     for page in pages:
@@ -105,7 +144,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                 f"    image: {inert(page.get('image_path'))} sha256 {_digest(page.get('image_sha256'))}"
             )
 
-    acts = projection.get("acts") or ()
+    acts = _rows(projection, "acts")
     lines.append("")
     lines.append(f"Acts ({len(acts)})")
     for act in acts:
@@ -133,13 +172,17 @@ def render(projection: dict[str, Any]) -> list[str]:
             lines.append(
                 f"    review: {inert(review.get('outcome'))} — {_one_line(review.get('reason'), limit=600)}"
             )
-        testimonia = row.get("testimonia") if isinstance(row, dict) else None
-        if isinstance(testimonia, list) and testimonia:
+        testimonia = (
+            _nested_rows(row, "testimonia", "acts[].row.testimonia")
+            if isinstance(row, dict)
+            else []
+        )
+        if testimonia:
             witnessed = ", ".join(
                 f"{inert(entry.get('chair'))} {inert(entry.get('outcome'))}" for entry in testimonia
             )
             lines.append(f"    witnesses: {witnessed}")
-        crops = act.get("crops") or ()
+        crops = _nested_rows(act, "crops", "acts[].crops")
         for crop in crops:
             origin = f" ({inert(crop.get('origin'))})" if crop.get("origin") else ""
             lines.append(
@@ -155,6 +198,7 @@ def render(projection: dict[str, Any]) -> list[str]:
     if review_items is None:
         lines.append("Review queue: not produced (the Armarium has not run)")
     else:
+        review_items = _rows(projection, "review_items")
         lines.append(f"Review queue ({len(review_items)})")
         for item in review_items:
             row = item.get("row") if isinstance(item.get("row"), dict) else item
@@ -163,7 +207,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                 f"{inert(row.get('category'))} — {_one_line(row.get('reason'), limit=600)}"
             )
 
-    advances = projection.get("advance_records") or ()
+    advances = _rows(projection, "advance_records")
     lines.append("")
     lines.append(f"Advance records ({len(advances)})")
     for record in advances:

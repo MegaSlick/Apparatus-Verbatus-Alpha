@@ -671,7 +671,14 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path, *, raw: boo
             ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
             detail="the console returned JSON that is not a projection object",
         )
-    for line in review_text.render(returned):
+    try:
+        lines = review_text.render(returned)
+    except review_text.ProjectionShapeError as error:
+        raise OperatorError(
+            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
+            detail=f"the console returned a projection this tool cannot read out: {error}",
+        ) from error
+    for line in lines:
         _print(line)
 
 
