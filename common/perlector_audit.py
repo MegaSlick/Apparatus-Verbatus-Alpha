@@ -1026,7 +1026,15 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         }
         for span in finding_payload["uncertain_spans"]
     ]
-    if payload.get("uncertain_spans") != expected_uncertainty:
+    # The exhausted-cap spans lead the Perlectio's layer; the reader's own
+    # assessed doubts, if any, follow them. The projection must be present
+    # exactly, in order, at the head -- what follows is the reader's report and
+    # is validated against the text by the annotation layer, not here.
+    published = payload.get("uncertain_spans")
+    if (
+        not isinstance(published, list)
+        or published[: len(expected_uncertainty)] != expected_uncertainty
+    ):
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
     return {"record": record, "draft": draft, "finding": finding}
 

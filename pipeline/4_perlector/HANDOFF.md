@@ -149,8 +149,20 @@ prompt           -- {serving_recipe, chair_identity_sha256, dossier_digest,
 dissent          -- derived-comparison-view rows (see below)
 truncation       -- {classification, signals}, present on every attempted
                     reading regardless of outcome (see below)
-uncertain_spans  -- [{start, end, alternatives, confidence}, ...]
-gaps             -- [{position, start, end, witness_evidence}, ...]
+uncertain_spans  -- [{start, end, alternatives, confidence}, ...]: the exhausted-cap
+                    projection first (cap 0 only), then the reader's own assessed
+                    doubts over the published text
+gaps             -- [{position, start, end, witness_evidence}, ...]: the whole-act
+                    gap of a `no-readable-text` outcome, or the reader's own
+                    zero-width gaps (empty witness_evidence)
+uncertainty_assessment -- {state, problem}: the reader's doubt-report state for
+                    the call whose text is published -- `assessed`,
+                    `not-assessed` (no doubt channel; the live reader today) or
+                    `malformed` (a report the annotation schema could not anchor,
+                    retained as its problem; the Recensor holds). An empty
+                    `uncertain_spans` under `not-assessed` is an absence, never
+                    confidence (independent audit of 2026-09-10, F2). Travels
+                    into the canonical uncertainty layer as `assessment`.
 audit            -- {draft_ref, finding_ref, finding_digest, unresolved,
                     examination, reproofs, request_digest}: the R5b Pass-C
                     chain, which re-proof instrument was actually delivered,

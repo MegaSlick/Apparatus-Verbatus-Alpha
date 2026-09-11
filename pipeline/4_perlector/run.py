@@ -2209,6 +2209,7 @@ _PERLECTIO_FIELDS: Final = frozenset(
         "dissent",
         "truncation",
         "uncertain_spans",
+        "uncertainty_assessment",
         "gaps",
         "provenance",
         "lectio_kind",
@@ -2641,6 +2642,26 @@ def _reproof_call(reproof: dict[str, Any]) -> dict[str, Any] | None:
         "finish_reason": engine_call["finish_reason"],
         "served_model_id": engine_call["served_model_id"],
     }
+
+
+def _assessed(result: dict[str, Any], *, text: str) -> dict[str, Any]:
+    """The reader's doubt report over `text`, as the closed record the Perlectio seals.
+
+    A reader with no `assessment` key is read as `not-assessed`: the producer
+    never invents a doubt report on a reader's behalf. A report the annotation
+    schema cannot anchor to the exact text -- an offset past its end, a gap with
+    width, an unknown confidence -- becomes a `malformed` record carrying the
+    refusal as its problem, with empty layers: the fault stays visible where a
+    reader would look for the doubt, and never becomes an empty confident list
+    (independent audit of 2026-09-10, F2; GOVERNANCE 10).
+    """
+    report = result.get("assessment")
+    if report is None:
+        return annotations.not_assessed()
+    try:
+        return annotations.validate_assessment(copy.deepcopy(report), text)
+    except SchemaRefusal as error:
+        return annotations.malformed_assessment(f"the reader's doubt report was refused: {error}")
 
 
 def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, text: str) -> str:
@@ -3726,11 +3747,16 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             )
             for record in testimonia
         }
-        gaps = (
-            _whole_act_gap(testimonia, testimonium_references)
-            if outcome == "no-readable-text"
-            else []
-        )
+        # The reader's own doubts over the text it read. Over an unreadable act
+        # the whole-act gap is the one annotation the outcome allows, so the
+        # report's layers are set aside there and only its state is kept.
+        assessment = _assessed(result, text=reading)
+        if outcome == "no-readable-text":
+            gaps = _whole_act_gap(testimonia, testimonium_references)
+            reader_spans: list[dict[str, Any]] = []
+        else:
+            gaps = list(assessment["gaps"])
+            reader_spans = list(assessment["uncertain_spans"])
 
         provenance = provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref)
         payload = {
@@ -3753,8 +3779,12 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "prompt": prompt,
             "dissent": dissent_against(reading, dissent_testimonia(testimonia, attachment_view)),
             "truncation": truncation_record,
-            "uncertain_spans": [],
+            "uncertain_spans": reader_spans,
             "gaps": gaps,
+            "uncertainty_assessment": {
+                "state": assessment["state"],
+                "problem": assessment["problem"],
+            },
             "provenance": provenance,
             "lectio_kind": "primed-with-prior",
             "self_revision": departures(reading, prior["text"]),
@@ -3957,6 +3987,17 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # sealed whichever branch runs.
             if final_text != payload["text"]:
                 payload["text"] = final_text
+                # The doubt report travels with the call whose text is
+                # published: a re-proof's spans are anchored to the re-proof's
+                # own text, and Pass B's to Pass B's, so nothing is re-anchored
+                # by guesswork and nothing is silently dropped.
+                reproof_assessment = _assessed(reproof, text=final_text)
+                payload["uncertainty_assessment"] = {
+                    "state": reproof_assessment["state"],
+                    "problem": reproof_assessment["problem"],
+                }
+                payload["uncertain_spans"] = list(reproof_assessment["uncertain_spans"])
+                payload["gaps"] = list(reproof_assessment["gaps"])
                 # `engine_call` names the call the published text came from, so
                 # it moves with the text. Leaving the establishing call's record
                 # here would bind a published reading to a response that did not
@@ -4009,6 +4050,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     # absence.
                     final_text = ""
                     payload["text"] = ""
+                    payload["uncertain_spans"] = []
                     payload["gaps"] = _whole_act_gap(
                         row["testimonia"],
                         {
@@ -4093,7 +4135,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         payload["uncertain_spans"] = [
             {"start": span["start"], "end": span["end"], "alternatives": [], "confidence": "low"}
             for span in uncertainty
-        ]
+        ] + list(payload["uncertain_spans"])
         payload["audit"] = {
             "draft_ref": draft_ref,
             "finding_ref": finding_ref,

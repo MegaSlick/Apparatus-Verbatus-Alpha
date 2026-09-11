@@ -11,7 +11,13 @@ from typing import Any
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 
-_FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions"})
+_FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment"})
+# The reader's own report state, carried beside its layers so an empty list can
+# never be read as confidence (independent audit of 2026-09-10, F2). Mirrors
+# pipeline/4_perlector/annotations.py's ASSESSMENT_STATES exactly, for the same
+# dependency-direction reason as `_CONFIDENCE` and `_GAP_POSITIONS` above.
+_ASSESSMENT_STATES = frozenset({"assessed", "not-assessed", "malformed"})
+_ASSESSMENT_FIELDS = frozenset({"state", "problem"})
 _CONFIDENCE = frozenset({"low", "medium", "high"})
 # Mirrors pipeline/4_perlector/annotations.py's GAP_POSITIONS exactly (as
 # `_CONFIDENCE` above already mirrors that module's CONFIDENCE_LEVELS): the
@@ -40,10 +46,18 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
         revisions.append(
             {"reading_span": item["reading_span"], "prior_span": item["testimonium_span"]}
         )
+    assessment = payload.get("uncertainty_assessment")
+    if not isinstance(assessment, dict):
+        raise SchemaRefusal(
+            "Perlectio carries no uncertainty_assessment; a reading sealed before the reader's "
+            "doubt report was recorded cannot be projected -- re-read it in a run under the "
+            "current contract"
+        )
     layer = {
         "uncertain_spans": payload.get("uncertain_spans"),
         "gaps": payload.get("gaps"),
         "self_revisions": revisions,
+        "assessment": {"state": assessment.get("state"), "problem": assessment.get("problem")},
     }
     validate(layer, payload.get("text"))
     return layer
@@ -58,6 +72,21 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
     uncertain = layer["uncertain_spans"]
     gaps = layer["gaps"]
     revisions = layer["self_revisions"]
+    assessment = layer["assessment"]
+    if not isinstance(assessment, dict) or set(assessment) != _ASSESSMENT_FIELDS:
+        raise SchemaRefusal("canonical uncertainty has no closed assessment record")
+    if assessment["state"] not in _ASSESSMENT_STATES:
+        raise SchemaRefusal(
+            f"canonical uncertainty names an unknown assessment state {assessment['state']!r}"
+        )
+    if assessment["problem"] is not None and (
+        not isinstance(assessment["problem"], str) or not assessment["problem"]
+    ):
+        raise SchemaRefusal("canonical uncertainty's assessment problem is not null or a string")
+    if (assessment["state"] == "assessed") != (assessment["problem"] is None):
+        raise SchemaRefusal(
+            "canonical uncertainty's assessment carries a problem exactly when it is not assessed"
+        )
     if (
         not isinstance(uncertain, list)
         or not isinstance(gaps, list)

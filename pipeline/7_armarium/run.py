@@ -1122,6 +1122,18 @@ def not_measured_basis(
     delivered = sum(
         1 for act in projected_acts if act["category"] == ArmariumCategory.DELIVERED.value
     )
+    # The reader's own doubt-report state per delivered act, read off the
+    # canonical layer each act already carries: how many readings were actually
+    # assessed for doubt, and how many came from a chair with no channel. An
+    # empty span list under `not-assessed` is an absence, not confidence (F2).
+    assessed = sum(
+        1
+        for act in projected_acts
+        if act["category"] == ArmariumCategory.DELIVERED.value
+        and isinstance(act.get("uncertainty"), dict)
+        and isinstance(act["uncertainty"].get("assessment"), dict)
+        and act["uncertainty"]["assessment"].get("state") == "assessed"
+    )
     basis = {
         "schema": NOT_MEASURED_BASIS_SCHEMA,
         "page-testimony-content-coverage": {
@@ -1145,6 +1157,8 @@ def not_measured_basis(
             "sealed_audit_round_cap": sealed_audit_round_cap(context),
             "acts_delivered": delivered,
             "acts_with_uncertain_spans": with_spans,
+            "acts_assessed": assessed,
+            "acts_not_assessed": delivered - assessed,
         },
         "designator-geometry-calibration": {"configurations": geometry_calibration_rows(context)},
     }

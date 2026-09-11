@@ -426,6 +426,8 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "churro-native",
         "churro-truncation",
         "audit-change",
+        "reader-doubt",
+        "reader-doubt-malformed",
         "audit-reproof-cutoff",
         "refused-page",
         "refused-first-page",
@@ -497,6 +499,12 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # `stop_reason` row below), or it would prove nothing about F1.
     assert by_name["audit-reproof-cutoff"]["recover_acts"] == []
     assert by_name["audit-reproof-cutoff"]["hold_acts"] == []
+    # The reader-doubt pair declares nothing by configuration either: what they
+    # carry is the reader's own report, and the malformed one's hold must come
+    # from the annotation schema refusing that report, or it proves nothing.
+    for name in ("reader-doubt", "reader-doubt-malformed"):
+        assert by_name[name]["recover_acts"] == []
+        assert by_name[name]["hold_acts"] == []
     assert by_name["refused-page"]["recover_acts"] == []
     assert by_name["refused-page"]["hold_acts"] == []
     assert by_name["refused-first-page"]["recover_acts"] == []
@@ -667,3 +675,45 @@ def test_the_declared_stop_reason_is_the_length_signal_for_a_known_scenario(skel
         assert row["act_key"] in {act["key"] for act in skeleton["act"]}
         assert row["stop_reason"] in {"stop", "length"}
         assert row.get("pass_kind", "audit-reproof") == "audit-reproof"
+
+
+def test_the_declared_reader_doubt_reports_anchor_to_the_texts_they_are_declared_over(skeleton):
+    """F2's fixture rows are stated as a model would return them; the offsets
+    named here are the ones the tests downstream assert, so they are pinned."""
+    acts = {act["key"]: act["text"] for act in skeleton["act"]}
+    assert skeleton["reader_assessment"] == [
+        {"scenario": "reader-doubt", "act_key": "a1", "state": "assessed", "problem": ""},
+        {"scenario": "reader-doubt", "act_key": "a2", "state": "assessed", "problem": ""},
+        {"scenario": "reader-doubt-malformed", "act_key": "a1", "state": "assessed", "problem": ""},
+        {
+            "scenario": "audit-change",
+            "act_key": "a1",
+            "state": "assessed",
+            "problem": "",
+            "pass_kind": "perlectio",
+        },
+        {
+            "scenario": "audit-change",
+            "act_key": "a1",
+            "state": "assessed",
+            "problem": "",
+            "pass_kind": "audit-reproof",
+        },
+    ]
+    doubts = {(row["scenario"], row.get("pass_kind")): row for row in skeleton["reader_doubt"]}
+    assert acts["a1"][29:34] == "gamma"
+    assert doubts[("reader-doubt", None)]["start"] == 29
+    assert doubts[("reader-doubt", None)]["end"] == 34
+    assert doubts[("reader-doubt", None)]["alternatives"] == ["gamna", "gaMma"]
+    # Deliberately past the end of a 34-character text: the producer must refuse it.
+    assert doubts[("reader-doubt-malformed", None)]["end"] > len(acts["a1"])
+    reproof_text = next(
+        row["text"] for row in skeleton["audit_reproof"] if row["scenario"] == "audit-change"
+    )
+    assert reproof_text[29:35] == "gamma!"
+    assert doubts[("audit-change", "audit-reproof")]["end"] == 35
+    assert doubts[("audit-change", "perlectio")]["end"] == 34
+    assert skeleton["reader_gap"] == [
+        {"scenario": "reader-doubt", "act_key": "a1", "position": "internal", "offset": 23}
+    ]
+    assert acts["a1"][:23] == "SYNTHETIC ACT ONE alpha"

@@ -41,6 +41,8 @@ from __future__ import annotations
 
 from typing import Any, Final, Protocol, TypedDict
 
+import annotations
+
 from common.contracts.errors import ContractError
 from common.contracts.identities import act_id as derive_act_id
 from common.imaging import grayscale_rows
@@ -76,7 +78,13 @@ class _LectioResultRequired(TypedDict):
 
 class LectioResult(_LectioResultRequired, total=False):
     """What one reading pass returns: the text, the engine's own stop word,
-    and -- live readers only -- the retained evidence it was read from.
+    the reader's own doubt assessment, and -- live readers only -- the retained
+    evidence it was read from.
+
+    `assessment` is the closed record `annotations.validate_assessment`
+    accepts: `assessed` with spans and gaps anchored to `text`, `not-assessed`
+    for a reader with no doubt channel, or `malformed`. A reader that omits the
+    key is read as `not-assessed`; the producer never invents a doubt report.
 
     `engine_call` is optional (`total=False` on this subclass; `text` and
     `stop_reason` keep the base class's required totality). `FixtureReader`
@@ -89,6 +97,7 @@ class LectioResult(_LectioResultRequired, total=False):
     """
 
     engine_call: dict[str, Any]
+    assessment: dict[str, Any]
 
 
 class DeliveredPixels(TypedDict):
@@ -178,15 +187,91 @@ class FixtureReader:
             )
         request = validate_audit_delivery(dossier, pass_kind=pass_kind, audit_request=audit_request)
         act_key = dossier["act_key"]
+        text = self._reading_text(
+            dossier,
+            pass_kind=pass_kind,
+            delivered_pixels=delivered_pixels,
+            audit_request=request,
+        )
         return {
-            "text": self._reading_text(
-                dossier,
-                pass_kind=pass_kind,
-                delivered_pixels=delivered_pixels,
-                audit_request=request,
-            ),
+            "text": text,
             "stop_reason": self._declared_stop_reason(act_key, pass_kind),
+            "assessment": self._declared_assessment(act_key, pass_kind),
         }
+
+    def _declared_assessment(self, act_key: str, pass_kind: str) -> dict[str, Any]:
+        """This scenario's declared doubt report for one act and pass, or an honest absence.
+
+        The fixture stands in for a model with a doubt channel only where a
+        scenario declares one: a `reader_assessment` row names the state, and
+        `reader_doubt` / `reader_gap` rows carry the spans and gaps an
+        `assessed` state publishes. No row means this chamber has no channel,
+        which is `not-assessed` -- the same fact the live reader reports today.
+        Rows are declared exactly as a model would return them and are NOT
+        validated against the text here: a row whose offset falls past the text
+        is the fixture's way of exercising the producer's `malformed` path.
+        """
+        state_row = self._one_row_for("reader_assessment", act_key, pass_kind)
+        if state_row is None:
+            return annotations.not_assessed()
+        if state_row["state"] != annotations.ASSESSMENT_ASSESSED:
+            return {
+                "state": state_row["state"],
+                "uncertain_spans": [],
+                "gaps": [],
+                "problem": state_row["problem"],
+            }
+        return {
+            "state": annotations.ASSESSMENT_ASSESSED,
+            "uncertain_spans": [
+                {
+                    "start": row["start"],
+                    "end": row["end"],
+                    "alternatives": list(row["alternatives"]),
+                    "confidence": row["confidence"],
+                }
+                for row in self._rows_for("reader_doubt", act_key, pass_kind)
+            ],
+            "gaps": [
+                {
+                    "position": row["position"],
+                    "start": row["offset"],
+                    "end": row["offset"],
+                    "witness_evidence": [],
+                }
+                for row in self._rows_for("reader_gap", act_key, pass_kind)
+            ],
+            "problem": None,
+        }
+
+    def _rows_for(self, table: str, act_key: str, pass_kind: str) -> list[dict[str, Any]]:
+        """Every row of a many-per-act fixture table for one scenario, act and pass."""
+        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
+        declared_acts = {act["key"] for act in self._fixture["act"]}
+        selected = []
+        for row in self._fixture.get(table, []):
+            if row["scenario"] not in declared_scenarios:
+                raise KeyError(f"{table} row names undeclared scenario {row['scenario']!r}")
+            if row["act_key"] not in declared_acts:
+                raise KeyError(f"{table} row names undeclared act {row['act_key']!r}")
+            if "pass_kind" in row and row["pass_kind"] not in PASS_KINDS:
+                raise KeyError(f"{table} row declares unknown pass kind {row['pass_kind']!r}")
+            if (
+                row["scenario"] == self._scenario
+                and row["act_key"] == act_key
+                and row.get("pass_kind", pass_kind) == pass_kind
+            ):
+                selected.append(row)
+        return selected
+
+    def _one_row_for(self, table: str, act_key: str, pass_kind: str) -> dict[str, Any] | None:
+        rows = self._rows_for(table, act_key, pass_kind)
+        if len(rows) > 1:
+            raise KeyError(
+                f"{table} declares {(self._scenario, act_key, pass_kind)!r} more than once; two "
+                "contradictory rows would publish whichever is written first"
+            )
+        return rows[0] if rows else None
 
     def _reading_text(
         self,

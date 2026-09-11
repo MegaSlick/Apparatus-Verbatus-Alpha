@@ -262,6 +262,38 @@ def render(projection: dict[str, Any]) -> list[str]:
             )
             if isinstance(reading.get("text"), str):
                 lines.append(f"    machine reading: {_one_line(reading.get('text'), limit=300)}")
+            assessment = reading.get("uncertainty_assessment")
+            if isinstance(assessment, dict):
+                spans = reading.get("uncertain_spans") or []
+                gaps = reading.get("gaps") or []
+                state = inert(assessment.get("state"))
+                if assessment.get("state") == "assessed":
+                    lines.append(
+                        f"    doubts: assessed by the reader; {len(spans)} uncertain span(s), "
+                        f"{len(gaps)} gap(s)"
+                    )
+                    text = reading.get("text") if isinstance(reading.get("text"), str) else ""
+                    for span in spans:
+                        start, end = span.get("start"), span.get("end")
+                        shown = (
+                            text[start:end]
+                            if isinstance(start, int) and isinstance(end, int)
+                            else ""
+                        )
+                        alternatives = ", ".join(inert(a) for a in span.get("alternatives") or [])
+                        lines.append(
+                            f"      [{inert(start)}, {inert(end)}) {inert(shown)!r} confidence "
+                            f"{inert(span.get('confidence'))}"
+                            + (f"; alternatives: {alternatives}" if alternatives else "")
+                        )
+                    for gap in gaps:
+                        lines.append(
+                            f"      gap ({inert(gap.get('position'))}) at {inert(gap.get('start'))}"
+                        )
+                else:
+                    lines.append(
+                        f"    doubts: {state} — {_one_line(assessment.get('problem'), limit=300)}"
+                    )
         elif isinstance(row.get("text"), str):
             lines.append(f"    delivered text: {_one_line(row.get('text'), limit=300)}")
         review = _object(row, "review", "acts[].row.review")

@@ -871,10 +871,16 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
         payload = _payload_of(reading_row, "the Perlectio record")
         truncation = payload.get("truncation")
         audit = payload.get("audit")
+        assessment = payload.get("uncertainty_assessment")
         reading = {
             "outcome": reading_row["outcome"],
             "text": payload.get("text"),
             "reason": payload.get("reason"),
+            "uncertainty_assessment": assessment if isinstance(assessment, dict) else None,
+            "uncertain_spans": payload.get("uncertain_spans")
+            if isinstance(payload.get("uncertain_spans"), list)
+            else None,
+            "gaps": payload.get("gaps") if isinstance(payload.get("gaps"), list) else None,
             "truncation": truncation.get("classification")
             if isinstance(truncation, dict)
             else None,

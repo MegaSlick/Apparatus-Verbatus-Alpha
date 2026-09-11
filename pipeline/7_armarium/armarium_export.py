@@ -799,7 +799,13 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
         }
     ),
     _PERLECTOR_UNCERTAIN_SPANS: frozenset(
-        {"sealed_audit_round_cap", "acts_delivered", "acts_with_uncertain_spans"}
+        {
+            "sealed_audit_round_cap",
+            "acts_delivered",
+            "acts_with_uncertain_spans",
+            "acts_assessed",
+            "acts_not_assessed",
+        }
     ),
     _GEOMETRY_CALIBRATION: frozenset({"configurations"}),
 }
@@ -1022,11 +1028,21 @@ def _validate_not_measured_detail(
             "sealed_audit_round_cap",
             "acts_delivered",
             "acts_with_uncertain_spans",
+            "acts_assessed",
+            "acts_not_assessed",
         ):
             _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
-        if detail["sealed_audit_round_cap"] != 0 and detail["acts_with_uncertain_spans"] != 0:
+        if detail["acts_assessed"] + detail["acts_not_assessed"] != detail["acts_delivered"]:
+            raise SchemaRefusal(f"{subject} assessment counts do not partition its delivered acts")
+        # Under a nonzero cap the exhausted-cap projection cannot mint a span,
+        # so every act carrying one must have been assessed by its reader.
+        if (
+            detail["sealed_audit_round_cap"] != 0
+            and detail["acts_with_uncertain_spans"] > detail["acts_assessed"]
+        ):
             raise SchemaRefusal(
-                f"{subject} names uncertain spans although its nonzero sealed audit cap makes them unreachable"
+                f"{subject} names more acts with uncertain spans than assessed acts although its "
+                "nonzero sealed audit cap makes every other span unreachable"
             )
         if detail["acts_with_uncertain_spans"] > detail["acts_delivered"]:
             raise SchemaRefusal(
@@ -1706,12 +1722,16 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
             return "declared-unproduced"
         return "not-measured" if detail["rows_with_named_absence"] else "measured"
     if instrument == _PERLECTOR_UNCERTAIN_SPANS:
-        # A span can only be minted when a sealed `round_cap` of 0 leaves the
-        # audit no re-proof round to spend, so under any other cap the empty
-        # list is the policy's arithmetic and not a reading's confidence. Said
-        # here rather than left for a reader to infer from a `[]`.
-        if detail["sealed_audit_round_cap"] != 0:
+        # Measured exactly when every delivered reading was assessed for doubt
+        # by its reader. No reading assessed -- a chair with no doubt channel,
+        # which is what the pinned live prompt is today -- is the instrument
+        # declaring itself unproduced, whatever the audit cap; some assessed and
+        # some not is a partial measurement. An empty list under `not-assessed`
+        # is an absence, never a reading's confidence (F2).
+        if detail["acts_delivered"] == 0 or detail["acts_assessed"] == 0:
             return "declared-unproduced"
+        if detail["acts_assessed"] < detail["acts_delivered"]:
+            return "not-measured"
         return "measured"
     if instrument == _GEOMETRY_CALIBRATION:
         return (
@@ -1879,9 +1899,17 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         and bool(act["uncertainty"].get("uncertain_spans"))
         for act in projection.acts
     )
+    assessed_count = sum(
+        act["category"] == ArmariumCategory.DELIVERED.value
+        and isinstance(act.get("uncertainty"), dict)
+        and isinstance(act["uncertainty"].get("assessment"), dict)
+        and act["uncertainty"]["assessment"].get("state") == "assessed"
+        for act in projection.acts
+    )
     if (
         perlector_basis["acts_delivered"] != delivered_count
         or perlector_basis["acts_with_uncertain_spans"] != uncertain_count
+        or perlector_basis["acts_assessed"] != assessed_count
     ):
         raise SchemaRefusal(
             "an Armarium projection's Perlector uncertainty basis does not exactly reconcile "

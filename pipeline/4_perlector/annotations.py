@@ -222,3 +222,102 @@ def validate_annotations(payload: dict[str, Any], *, outcome: str | None = None)
     gaps = validate_gaps(payload["gaps"], text)
     if outcome is not None:
         validate_whole_act_consistency(outcome=outcome, text=text, gaps=gaps)
+
+
+# --- The reader's own doubt report -------------------------------------------
+#
+# `uncertain_spans` and `gaps` above are the two annotation layers over one clean
+# `text`. Until the independent audit of 2026-09-10 (finding F2) nothing could
+# put a reader-reported doubt into them: the live reader returned text and a stop
+# word, and the only spans ever minted were the exhausted-cap projection of Pass
+# C's frozen flags. An empty list therefore said "no doubt was ever asked for",
+# and looked exactly like "assessed, no doubt". The assessment record below is
+# what tells those apart, and it is a fact about the call whose text is
+# published, never a promise about the reading's accuracy.
+#
+#   assessed      the reader reported its doubts over this text: the spans and
+#                 gaps it returned validated against the exact text, and are
+#                 published in the two layers above
+#   not-assessed  the reader has no channel for doubts (the pinned live prompt
+#                 asks for the text alone), so nothing here says the reading is
+#                 confident -- an empty layer under this state is an absence
+#   malformed     the reader returned a doubt report this schema could not
+#                 anchor to the text (an offset past its end, a gap with width,
+#                 an unknown confidence); the problem is retained here and the
+#                 layers stay empty, so a broken report is a visible fault
+#                 rather than an empty confident list (GOVERNANCE 10)
+ASSESSMENT_ASSESSED: Final = "assessed"
+ASSESSMENT_NOT_ASSESSED: Final = "not-assessed"
+ASSESSMENT_MALFORMED: Final = "malformed"
+ASSESSMENT_STATES: Final = frozenset(
+    {ASSESSMENT_ASSESSED, ASSESSMENT_NOT_ASSESSED, ASSESSMENT_MALFORMED}
+)
+_ASSESSMENT_FIELDS: Final = frozenset({"state", "uncertain_spans", "gaps", "problem"})
+NOT_ASSESSED_REASON: Final = (
+    "the reader reports no doubt assessment; this chair has no channel for one"
+)
+
+
+def not_assessed(problem: str = NOT_ASSESSED_REASON) -> dict[str, Any]:
+    """The honest report of a reader that cannot report doubts."""
+    return {
+        "state": ASSESSMENT_NOT_ASSESSED,
+        "uncertain_spans": [],
+        "gaps": [],
+        "problem": problem,
+    }
+
+
+def malformed_assessment(problem: str) -> dict[str, Any]:
+    """A doubt report that could not be anchored: retained as a fault, layers empty."""
+    return {
+        "state": ASSESSMENT_MALFORMED,
+        "uncertain_spans": [],
+        "gaps": [],
+        "problem": problem,
+    }
+
+
+def validate_assessment(assessment: Any, text: str) -> dict[str, Any]:
+    """The closed assessment record, its layers anchored to the exact text.
+
+    Raises `SchemaRefusal` for anything it cannot accept; the producer turns that
+    refusal into a `malformed` record rather than dropping the report, so the
+    caller sees the problem where a reader would have looked for the doubt.
+    A reader-reported gap is zero-width and carries no witness evidence: it says
+    where sight failed, and the witnesses that corroborate an absence are the
+    Recensor's business, not the reader's.
+    """
+    if not isinstance(assessment, dict) or set(assessment) != _ASSESSMENT_FIELDS:
+        raise SchemaRefusal("a doubt assessment is not its closed record")
+    state = assessment["state"]
+    if type(state) is not str or state not in ASSESSMENT_STATES:
+        raise SchemaRefusal(f"a doubt assessment names an unknown state {state!r}")
+    problem = assessment["problem"]
+    if problem is not None and (type(problem) is not str or not problem):
+        raise SchemaRefusal("a doubt assessment's problem must be null or a non-empty string")
+    if state != ASSESSMENT_ASSESSED:
+        if assessment["uncertain_spans"] != [] or assessment["gaps"] != []:
+            raise SchemaRefusal(
+                f"a {state!r} doubt assessment may carry no spans or gaps; an unassessed or "
+                "malformed report has nothing anchored to publish"
+            )
+        if problem is None:
+            raise SchemaRefusal(f"a {state!r} doubt assessment must say why")
+        return assessment
+    if problem is not None:
+        raise SchemaRefusal("an assessed doubt report carries no problem")
+    validate_uncertain_spans(assessment["uncertain_spans"], text)
+    gaps = validate_gaps(assessment["gaps"], text)
+    for index, gap in enumerate(gaps):
+        if gap["position"] == "whole-act":
+            raise SchemaRefusal(
+                f"gaps[{index}]: a reader-reported gap cannot be whole-act; an empty reading "
+                "is the `no-readable-text` outcome, not a doubt"
+            )
+        if gap["witness_evidence"] != []:
+            raise SchemaRefusal(
+                f"gaps[{index}]: a reader-reported gap carries no witness evidence; the reader "
+                "reports where its own sight failed, not what the witnesses said"
+            )
+    return assessment

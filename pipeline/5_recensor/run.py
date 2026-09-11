@@ -3134,6 +3134,7 @@ def review_route_from_findings(
     unreconciled: bool = False,
     audit_examination: str | None = None,
     audit_reproof_truncation: dict | None = None,
+    assessment_malformed: bool = False,
 ) -> tuple[str, str] | None:
     """Compose every independent review cause in stable priority order.
 
@@ -3158,6 +3159,7 @@ def review_route_from_findings(
             "audit_unresolved": audit_unresolved,
             "audit_examination": audit_examination,
             "audit_reproof_truncation": audit_reproof_truncation,
+            "assessment_malformed": assessment_malformed,
             "under_witnessed": under_witnessed,
             "unreconciled": unreconciled,
         },
@@ -3221,6 +3223,18 @@ def review_route_from_findings(
                 "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
                 "they remain explicit uncertainty rather than a silent retry"
             )
+    if assessment_malformed:
+        # A doubt report the schema could not anchor is a fault of the call's
+        # output, like a cut-off generation: the text may stand, but whatever
+        # the reader tried to say about its own doubts was lost, and an act
+        # delivered over that loss would carry an empty layer that reads as
+        # confidence. Held, never re-rolled (GOVERNANCE 11): the retained
+        # problem is on the Perlectio for a person to read.
+        reasons.append(
+            "the reader's doubt report over this act could not be anchored to its text and is "
+            "retained as a malformed assessment; the act is held rather than delivered with "
+            "its doubts unread"
+        )
     if under_witnessed:
         reasons.append(
             "the configured act-level witness floor is not met; a witness failure is not coverage"
@@ -3612,6 +3626,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # "audited, unresolved" (True).
                     "audit_unresolved": None,
                     "audit_examination": None,
+                    "uncertainty_assessment": None,
                     # None for the same reason: a held act was never shown
                     # real capture pixels, so there is no cross-capture
                     # visibility survey to report, universally present like
@@ -3647,6 +3662,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         audit_reproof_truncation = (
             None if audit_facts is None else audit_facts["reproof_truncation"]
         )
+        assessment = latest_payload.get("uncertainty_assessment")
+        assessment_state = assessment.get("state") if isinstance(assessment, dict) else None
         # The survey must come from the exact Perlectio this review assesses.
         cross_coverage = act_cross_capture_coverage(
             context,
@@ -3674,6 +3691,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             unreconciled=declared_unreconciled(scenario, act_key),
             audit_examination=audit_examination,
             audit_reproof_truncation=audit_reproof_truncation,
+            assessment_malformed=assessment_state == "malformed",
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
@@ -3879,6 +3897,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # canonical export is the consumer that would believe it.
                     "audit_unresolved": audit_unresolved,
                     "audit_examination": audit_examination,
+                    "uncertainty_assessment": assessment_state,
                     "cross_capture_coverage": cross_coverage,
                 },
             )
@@ -4083,6 +4102,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # was delivered and did not finish (F1). `None` exactly where
                 # `audit_unresolved` is `None`.
                 "audit_examination": audit_examination,
+                # The reader's own doubt-report state (`assessed`, `not-assessed`,
+                # `malformed`), so a review can say whether an empty uncertainty
+                # layer is an absence of doubt or an absence of a channel (F2).
+                "uncertainty_assessment": assessment_state,
                 "cross_capture_coverage": cross_coverage,
                 # Present only on a `confirmed-blank`, because it is the evidence
                 # that outcome rests on and nothing else has any. Every other
