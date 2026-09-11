@@ -511,7 +511,7 @@ kind="audit-draft"    {act_key, attempt_ordinal, semi_final_text, page_ids,
                        round_cap, policy, flags, flag_location_basis}
 kind="audit-finding"  {act_key, attempt_ordinal, page_ids, round_cap, policy,
                        flags, change_record, uncertain_spans, unresolved,
-                       examination, reproof_truncation}
+                       examination, reproof_truncation, reproof_call}
 payload.audit         {draft_ref, finding_ref, finding_digest, unresolved,
                        examination, reproofs, request_digest}
 ```
@@ -521,7 +521,12 @@ The sealed policy schema is `perlector-audit.v2`. `examination` is one of
 delivered and its call ran to completion) or `incomplete` (delivered and did not
 complete -- the engine reported `length`, or gave no stop word). `reproof_truncation`
 is the truncation instrument run over the re-proof's own text and stop word, or
-`None` where none was delivered. `unresolved` is derived from `examination` alone:
+`None` where none was delivered; its classification is re-derived from its four sealed
+signals by every validator (`common/perlector_audit.py::truncation_classification`, the
+one rule `truncation.classify` also decides with). `reproof_call` names the retained
+call record and raw response that termination was measured over (`None` for the fixture
+chamber, which has no engine), so the verdict can be checked against the response
+itself. `unresolved` is derived from `examination` alone:
 `cap-exhausted` and `incomplete` are unresolved, and the Recensor holds on either,
 naming which. **Text equality plays no part.** A v1 record equated "unresolved" with
 "flags and a zero cap", so a re-proof cut off by its engine that returned the frozen
@@ -881,7 +886,9 @@ the fixture-path claim `with_engine_call` and the mode selector rest on.
   with the call's own `reproof_truncation` beside it and routed to review on that
   fact (F1, above). Each non-empty frozen flag
   location then becomes a low-confidence `audit-round-cap-exhausted` span on the finding
-  and Perlectio (`:3357-3363`, sealed at `:3372` and `:3393`). A zero-width flag remains explicit in the
+  and Perlectio (the `if examination == audit.EXAMINATION_CAP_EXHAUSTED` loop in `run.py`'s
+  audit pass, sealed into `finding_payload["uncertain_spans"]` and projected onto
+  `payload["uncertain_spans"]`). A zero-width flag remains explicit in the
   frozen flags and `unresolved` state because it cannot become a span; Recensor routes it
   to review (`pipeline/4_perlector/test_audit_pass.py:1202`). **The committed policy
   cannot fire this path:**

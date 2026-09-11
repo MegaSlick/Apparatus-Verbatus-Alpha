@@ -38,6 +38,7 @@ from __future__ import annotations
 from typing import Final, TypedDict
 
 from common.contracts.errors import ContractError
+from common.perlector_audit import truncation_classification
 
 COMPLETE: Final = "complete"
 TRUNCATED: Final = "truncated"
@@ -157,20 +158,12 @@ def classify(text: str, *, region_pixels: int, stop_reason: str | None = None) -
         "ends_abruptly": ends_abruptly(text),
     }
 
-    declared = _stop_reason_signal(stop_reason)
-    if declared == TRUNCATED:
-        return {"classification": TRUNCATED, "signals": signals}
-
-    suspicious_votes = sum(
-        (signals["unclosed_structure"], signals["length_suspicious"], signals["ends_abruptly"])
-    )
-    if suspicious_votes == 3:
-        classification = TRUNCATED
-    elif suspicious_votes == 0 and declared == COMPLETE:
-        classification = COMPLETE
-    else:
-        classification = UNKNOWN
-    return {"classification": classification, "signals": signals}
+    # Refuses an unrecognised engine word by name before any decision is made;
+    # the decision itself is the shared rule every consumer re-derives the
+    # sealed verdict with (`common/perlector_audit.py::truncation_classification`),
+    # so producer and validators cannot drift into two spellings of it.
+    _stop_reason_signal(stop_reason)
+    return {"classification": truncation_classification(signals), "signals": signals}
 
 
 def holds_as_failure(classification: str) -> bool:

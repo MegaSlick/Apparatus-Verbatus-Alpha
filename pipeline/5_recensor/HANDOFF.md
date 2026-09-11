@@ -171,7 +171,12 @@ reconciled.
 scenario's declared `hold_acts` (`pipeline/5_recensor/run.py::declared_unreconciled`),
 not by any measurement this stage takes; the only cross-act date/numbering/order
 anomaly computation in the tree is Pass C's flag pass (`pipeline/4_perlector`), and its
-verdict reaches this record through `audit_unresolved`, not `unreconciled`.
+verdict reaches this record through `audit_unresolved` and `audit_examination`, not
+`unreconciled`. `audit_examination` is the fact behind the boolean -- `not-due`,
+`cap-exhausted`, `complete` or `incomplete` (a re-proof delivered whose call the truncation
+instrument did not classify complete) -- and the route is taken on it: an incomplete
+examination holds with a reason naming the instrument's verdict and its sealed signals.
+Both are `None` on a Designator-held act, which has no Perlectio and no audit.
 
 **On a real submission `unreconciled` has no producer at all.** A real run carries no
 fixture and declares no scenario, so `declared_unreconciled` is handed `None` and

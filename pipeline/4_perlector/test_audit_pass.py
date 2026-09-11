@@ -604,6 +604,12 @@ def test_a_directional_or_empty_audit_request_is_refused_at_the_delivery_boundar
         audit.validate_audit_request(widened)
 
 
+# The two forgery tests below accept either of two refusals: since the correction
+# round, `validate_perlectio_audit` refuses a request digest that contradicts the
+# record's own examination before `validate_chain` reaches the draft, so a forged
+# delivery is caught one layer earlier with the record-level wording; the chain's
+# own wording still fires where the record is internally consistent and only the
+# frozen draft disagrees.
 def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp_path):
     """The sealed digest is re-derived from the draft, never taken on trust.
 
@@ -621,12 +627,16 @@ def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp
 
     forged = copy.deepcopy(final)
     forged["payload"]["audit"]["request_digest"] = "c" * 64
-    with pytest.raises(SchemaRefusal, match="does not name the exact audit request"):
+    with pytest.raises(
+        SchemaRefusal, match="does not name the exact audit request|contradicts its delivery"
+    ):
         audit.validate_chain(tree, forged, final["subject_id"])
 
     undelivered = copy.deepcopy(final)
     undelivered["payload"]["audit"]["request_digest"] = None
-    with pytest.raises(SchemaRefusal, match="does not name the exact audit request"):
+    with pytest.raises(
+        SchemaRefusal, match="does not name the exact audit request|contradicts its delivery"
+    ):
         audit.validate_chain(tree, undelivered, final["subject_id"])
 
 
@@ -661,7 +671,7 @@ def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tm
 
         claimed = copy.deepcopy(final)
         claimed["payload"]["audit"]["request_digest"] = "d" * 64
-        with pytest.raises(SchemaRefusal, match="left nothing to deliver"):
+        with pytest.raises(SchemaRefusal, match="left nothing to deliver|contradicts its delivery"):
             audit.validate_chain(tree, claimed, final["subject_id"])
 
 
@@ -1077,6 +1087,7 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
             "unresolved": False,
             "examination": "complete",
             "reproof_truncation": _COMPLETE_TRUNCATION,
+            "reproof_call": None,
         }
     )
     with pytest.raises(SchemaRefusal, match="unknown triggering flag class"):
@@ -1089,6 +1100,7 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
         "finding_digest": "0" * 64,
         "unresolved": False,
         "examination": "complete",
+        "request_digest": "0" * 64,
         "reproofs": [
             {
                 "class": [],
@@ -1096,7 +1108,6 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
                 "prompt": audit.neutral_prompt(start=0, end=1, text_length=1),
             }
         ],
-        "request_digest": None,
     }
     with pytest.raises(SchemaRefusal, match="unknown class or prompt"):
         audit.validate_perlectio_audit(perlectio_audit, text_length=1)
@@ -1256,6 +1267,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
             "unresolved": True,
             "examination": "cap-exhausted",
             "reproof_truncation": None,
+            "reproof_call": None,
         },
         text="abc",
         flag_text="abc",
@@ -1282,6 +1294,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
                 "unresolved": True,
                 "examination": "cap-exhausted",
                 "reproof_truncation": None,
+                "reproof_call": None,
             },
             text="abc",
             flag_text="abc",
@@ -1560,7 +1573,14 @@ def test_an_audit_page_set_cannot_carry_traversal_order_as_durable_state(tmp_pat
 def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_export(
     tmp_path,
 ):
-    """Failing before F1's repair: this run exited 0 with two delivered acts."""
+    """The audit's injection as a declared scenario.
+
+    Half of this test is the repair itself: the pass-scoped stop-reason row that
+    lets a fixture say "Pass B stopped, the re-proof was cut off" did not exist
+    before it, so the pre-repair failure is the audit's own `reproduce.py` (two
+    delivered acts under a complete aggregate, exit 0), retained under
+    workbench/raw/independent-audit-2026-09-10 and re-reproduced on 0aa08db7e4.
+    """
     result = _run(tmp_path / "runs", scenario="audit-reproof-cutoff")
     assert result.returncode == 3, result.stderr
     assert "act a1 is held-for-review" in result.stdout
@@ -1624,7 +1644,15 @@ def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_
 def test_resuming_the_cut_off_run_reuses_sealed_evidence_and_keeps_the_incomplete_examination(
     tmp_path,
 ):
-    """A resume republishes byte-identical records; it does not re-roll the re-proof."""
+    """A resume leaves every sealed manifest unchanged and the examination incomplete.
+
+    What is measured: the three stage manifests -- every artifact id and digest
+    -- before and after a second identical run, and the sealed facts read back
+    afterwards. That is the claim the run tree can make; whether the Perlector
+    re-entered the act and republished the same bytes or found nothing to do
+    is one outcome from the evidence's side, and the stage's own attempt model
+    (`_next_attempt`) is what forbids it appending a second reading.
+    """
     root = tmp_path / "runs"
     first = _run(root, scenario="audit-reproof-cutoff")
     assert first.returncode == 3, first.stderr
@@ -1766,6 +1794,7 @@ def _finding(**overrides) -> dict:
         "unresolved": True,
         "examination": "incomplete",
         "reproof_truncation": _CUT_OFF_TRUNCATION,
+        "reproof_call": None,
     }
     return {**base, **overrides}
 
@@ -1858,3 +1887,169 @@ def test_a_v1_audit_record_is_refused_by_name_and_never_read_forward():
         )
     assert audit.RETIRED_SCHEMAS == frozenset({"perlector-audit.v1"})
     assert audit.SCHEMA == "perlector-audit.v2"
+
+
+# --- The independent review of candidate 0934c057: forged terminations and delivery facts
+
+
+def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused():
+    """Blocking finding 1: the classification is a function of the four sealed signals."""
+    forged_complete = {**_CUT_OFF_TRUNCATION, "classification": "complete"}
+    with pytest.raises(SchemaRefusal, match="own signals make it 'truncated'"):
+        audit.validate_finding(
+            _finding(examination="complete", unresolved=False, reproof_truncation=forged_complete),
+            text="abc",
+            flag_text="abc",
+        )
+    silent = {
+        "classification": "complete",
+        "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": None},
+    }
+    with pytest.raises(SchemaRefusal, match="own signals make it 'unknown'"):
+        audit.validate_truncation_record(silent, label="a test record")
+    with pytest.raises(SchemaRefusal, match="declares stop reason 'banana'"):
+        audit.validate_truncation_record(
+            {
+                "classification": "complete",
+                "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": "banana"},
+            },
+            label="a test record",
+        )
+    # Three suspicious computed signals under a clean stop are `truncated`; one is `unknown`.
+    three = {
+        "classification": "truncated",
+        "signals": {
+            "stop_reason_declared": "stop",
+            "unclosed_structure": True,
+            "length_suspicious": True,
+            "ends_abruptly": True,
+        },
+    }
+    assert audit.validate_truncation_record(three, label="x")["classification"] == "truncated"
+    one = {
+        "classification": "unknown",
+        "signals": {**_COMPLETE_TRUNCATION["signals"], "ends_abruptly": True},
+    }
+    assert audit.validate_truncation_record(one, label="x")["classification"] == "unknown"
+    # The producer's instrument decides with the same shared rule.
+    perlector = _perlector()
+    measured = perlector.truncation.classify("alpha beta-", region_pixels=18612, stop_reason="stop")
+    assert measured["classification"] == audit.truncation_classification(measured["signals"])
+
+
+def test_a_perlectio_audit_record_must_agree_with_its_own_delivery_facts():
+    """Finding 6: a standalone reader refuses a completed re-proof that was never requested."""
+    reference = {"relative_path": "4_perlector/audit.json", "sha256": "0" * 64}
+    plan = [
+        {
+            "class": "testimony-diff",
+            "location": {"start": 0, "end": 1},
+            "prompt": audit.neutral_prompt(start=0, end=1, text_length=1),
+        }
+    ]
+
+    def record(**overrides):
+        base = {
+            "draft_ref": reference,
+            "finding_ref": reference,
+            "finding_digest": "0" * 64,
+            "unresolved": False,
+            "examination": "complete",
+            "reproofs": plan,
+            "request_digest": "1" * 64,
+        }
+        return {**base, **overrides}
+
+    assert audit.validate_perlectio_audit(record(), text_length=1)["examination"] == "complete"
+    with pytest.raises(SchemaRefusal, match="contradicts its delivery"):
+        audit.validate_perlectio_audit(record(request_digest=None), text_length=1)
+    with pytest.raises(SchemaRefusal, match="contradicts its re-proof plan"):
+        audit.validate_perlectio_audit(record(reproofs=[]), text_length=1)
+    with pytest.raises(SchemaRefusal, match="contradicts its re-proof plan"):
+        audit.validate_perlectio_audit(
+            record(examination="not-due", request_digest=None), text_length=1
+        )
+    assert (
+        audit.validate_perlectio_audit(
+            record(examination="not-due", reproofs=[], request_digest=None), text_length=1
+        )["examination"]
+        == "not-due"
+    )
+    with pytest.raises(SchemaRefusal, match="sealed under perlector-audit.v1"):
+        audit.validate_perlectio_audit(
+            {key: value for key, value in record().items() if key != "examination"},
+            text_length=1,
+        )
+
+
+def test_the_chain_refuses_a_record_whose_examination_differs_from_its_finding(tmp_path):
+    """Finding 7: both `cap-exhausted` and `incomplete` are unresolved, so only the
+    examination comparison separates a forged record from its finding."""
+    result = _run(tmp_path / "runs", scenario="audit-reproof-cutoff")
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    cut = next(
+        record for record in _records(tree, "perlectio") if record["payload"]["act_key"] == "a1"
+    )
+    assert cut["payload"]["audit"]["examination"] == "incomplete"
+    forged = copy.deepcopy(cut)
+    forged["payload"]["audit"]["examination"] = "cap-exhausted"
+    forged["payload"]["audit"]["request_digest"] = None
+    with pytest.raises(SchemaRefusal, match="examination state|audit request"):
+        audit.validate_chain(tree, forged, cut["subject_id"])
+
+
+def test_a_fixture_may_declare_pass_bs_word_and_the_reproofs_word_for_one_act():
+    """Finding 5: the row key includes the pass, so the two-row composition is declarable."""
+    fixture = {
+        "scenario": [{"name": "s"}],
+        "act": [{"key": "a1", "text": "alpha"}],
+        "stop_reason": [
+            {"scenario": "s", "act_key": "a1", "stop_reason": "length", "pass_kind": "perlectio"},
+            {"scenario": "s", "act_key": "a1", "stop_reason": "stop", "pass_kind": "audit-reproof"},
+        ],
+    }
+    fixture_reader = reader_module.FixtureReader(fixture, "s")
+    assert fixture_reader._declared_stop_reason("a1", "perlectio") == "length"
+    assert fixture_reader._declared_stop_reason("a1", "audit-reproof") == "stop"
+    assert fixture_reader._declared_stop_reason("a1", "lectio-prior") == "stop"
+    fixture["stop_reason"].append(
+        {"scenario": "s", "act_key": "a1", "stop_reason": "stop", "pass_kind": "perlectio"}
+    )
+    with pytest.raises(KeyError, match="twice"):
+        fixture_reader._declared_stop_reason("a1", "perlectio")
+
+
+def test_the_recensor_routes_on_the_examination_and_refuses_a_contradicting_boolean():
+    """Finding 4: the boolean is derived from the examination; where both arrive they agree."""
+    recensor = _recensor()
+    with pytest.raises(ContractError, match="derives True"):
+        recensor.review_route_from_findings(
+            testimony_shortfall=False,
+            audit_unresolved=False,
+            audit_examination="incomplete",
+            under_witnessed=False,
+        )
+    outcome, reason = recensor.review_route_from_findings(
+        testimony_shortfall=False,
+        audit_unresolved=None,
+        audit_examination="incomplete",
+        audit_reproof_truncation=_CUT_OFF_TRUNCATION,
+        under_witnessed=False,
+    )
+    assert outcome == "held-for-review"
+    # Finding 9: the reason names the instrument's verdict and its signals, not an
+    # engine statement the instrument may never have received.
+    assert "classified the re-proof call 'truncated'" in reason
+    assert "engine stop word 'length'" in reason
+    assert "computed signals raised: none" in reason
+    assert "audit re-proof cap" not in reason
+    assert (
+        recensor.review_route_from_findings(
+            testimony_shortfall=False,
+            audit_unresolved=None,
+            audit_examination="complete",
+            under_witnessed=False,
+        )
+        is None
+    )

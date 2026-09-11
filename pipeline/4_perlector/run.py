@@ -2629,6 +2629,19 @@ def validate_reading_payload(
     annotations.validate_annotations(payload, outcome=outcome)
 
 
+def _reproof_call(reproof: dict[str, Any]) -> dict[str, Any] | None:
+    """The re-proof's retained call, in the closed shape the finding seals, or `None`."""
+    engine_call = reproof.get("engine_call")
+    if engine_call is None:
+        return None
+    return {
+        "call_record_ref": dict(engine_call["call_record_ref"]),
+        "raw_response_ref": dict(engine_call["raw_response_ref"]),
+        "response_sha256": engine_call["response_sha256"],
+        "finish_reason": engine_call["finish_reason"],
+    }
+
+
 def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, text: str) -> str:
     """One place the outcome is decided, so the precedence is stated once:
     a scenario's declared engine behaviour outranks the computed detector
@@ -2671,6 +2684,7 @@ def _audited_truncation(
     text: str,
     region_pixels: int,
     stop_reason: str | None,
+    measured: dict | None = None,
 ) -> dict:
     """The truncation instrument, re-measured over an audit-changed reading.
 
@@ -2690,11 +2704,14 @@ def _audited_truncation(
     the earlier classification: the recomputed signals describe the published
     text, but the verdict never improves.
     """
+    # `measured` is the caller's already-taken measurement over the same text
+    # and stop word (the re-proof's own termination record); passing it in makes
+    # this visibly the same measurement rather than two that happen to agree.
     audited = _reconciled_truncation(
         declared_failure=declared_failure,
-        truncation_record=truncation.classify(
-            text, region_pixels=region_pixels, stop_reason=stop_reason
-        ),
+        truncation_record=measured
+        if measured is not None
+        else truncation.classify(text, region_pixels=region_pixels, stop_reason=stop_reason),
     )
     if (
         pass_b["classification"] != truncation.COMPLETE
@@ -3973,6 +3990,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     text=final_text,
                     region_pixels=row["region_pixels"],
                     stop_reason=reproof["stop_reason"],
+                    measured=reproof_truncation,
                 )
                 row["outcome"] = _resolve_outcome(
                     declared_failure=row["declared_failure"],
@@ -4045,6 +4063,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "unresolved": unresolved,
             "examination": examination,
             "reproof_truncation": reproof_truncation,
+            # The retained response the termination above was measured over,
+            # where the reader has an engine behind it: the fixture chamber has
+            # none and seals `None`. Named on the finding because the
+            # Perlectio's own `engine_call` stays Pass B's whenever the text is
+            # unchanged, and a later reader must still be able to find the
+            # re-proof's response and check the sealed verdict against it.
+            "reproof_call": _reproof_call(reproof) if reproof_truncation is not None else None,
         }
         audit.validate_finding(
             finding_payload,
