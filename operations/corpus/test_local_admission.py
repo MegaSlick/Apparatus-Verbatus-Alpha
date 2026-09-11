@@ -237,8 +237,6 @@ def test_every_record_of_a_set_is_admitted_or_refused_with_rotation_provenance(t
             "no-gold-row": 0,
             "all-records-refused": 0,
         },
-        "pages_admitted": 2,
-        "pages_refused": 0,
         "admitted_by_rotation": {"0": 2, "180": 1},
     }
     assert ledger["receipt"]["digests"]["gold.jsonl"] == digest_bytes(
@@ -297,6 +295,22 @@ def test_every_row_carries_one_closed_shape_whether_admitted_or_refused(tmp_path
     assert refused["reason"] and refused["detail"]
 
 
+def test_a_float_in_a_refused_record_does_not_abort_the_whole_admission(tmp_path):
+    """The canonical serialization refuses a float outright; a refused row must not carry one.
+
+    A box written `239.0` instead of `239` is correctly refused by name -- and
+    then, stored raw, would have aborted the ledger's own sealing step with a
+    bare `TypeError` naming no record at all (round 2 item 2).
+    """
+    root = _two_page_set(tmp_path / "set", **{"r-rot": {"bbox": [140.0, 160, 160, 100]}})
+    ledger = _only_reason(admit_local_set(root, split="val"), "malformed-record")
+    refused = next(row for row in ledger["rows"] if row["record_id"] == "r-rot")
+    assert refused["bbox"] == ["140.0", 160, 160, 100], "the float is projected, not stored"
+    assert "140.0" in refused["detail"], "and the detail still carries it verbatim"
+    # The ledger sealed, and re-validates from disk.
+    assert validate_local_admission_ledger(dict(ledger))["summary"]["refused"] == 1
+
+
 def test_admission_changes_nothing_in_the_set(tmp_path):
     root = _two_page_set(tmp_path / "set")
     before = {
@@ -321,9 +335,9 @@ def test_an_output_directory_inside_the_set_is_refused_before_anything_is_read(t
 
 def test_the_held_split_needs_a_deliberate_release_and_the_flag_releases_nothing_else(tmp_path):
     root = _two_page_set(tmp_path / "set")
-    with pytest.raises(CorpusRefusal, match="^held-split-not-released:"):
+    with pytest.raises(CorpusRefusal, match="^holdout-ledger-required:"):
         admit_local_set(root, split="test")
-    with pytest.raises(CorpusRefusal, match="^held-split-not-released:"):
+    with pytest.raises(CorpusRefusal, match="^holdout-ledger-required:"):
         admit_local_set(root, split="val", release_test_split=True)
     # Released, the held split is admitted like any other -- and every row of
     # this set carries `val`, so each one is refused by its own split.
@@ -421,7 +435,7 @@ def test_two_records_claiming_one_region_refuse_the_page_they_share(tmp_path):
     }
     ledger = admit_local_set(_two_page_set(tmp_path / "set", **{"r-up-2": collision}), split="val")
     _only_reason(ledger, "reference-build-refused", count=2)
-    assert ledger["summary"]["pages_admitted"] == 1
+    assert ledger["summary"]["pages_by_outcome"]["admitted"] == 1
 
 
 def test_a_page_whose_pixels_disagree_with_the_manifest_refuses_every_record_on_it(tmp_path):
@@ -432,7 +446,8 @@ def test_a_page_whose_pixels_disagree_with_the_manifest_refuses_every_record_on_
     (root / "pages" / "page-up.jpg").write_bytes(buffer.getvalue())
     ledger = admit_local_set(root, split="val")
     _only_reason(ledger, "dimension-mismatch", count=2)
-    assert ledger["summary"]["pages_refused"] == 1 and ledger["summary"]["pages_admitted"] == 1
+    outcomes = ledger["summary"]["pages_by_outcome"]
+    assert outcomes["refused"] == 1 and outcomes["admitted"] == 1
     assert {row["record_id"] for row in ledger["rows"] if row["decision"] == "refused"} == {
         "r-up",
         "r-up-2",
@@ -456,7 +471,12 @@ def test_a_manifest_image_path_that_leaves_the_set_is_refused_rather_than_read(t
     image = f"../{outside.name}" if shape == "traversal" else str(outside)
     root = _two_page_set(tmp_path / f"set-{shape}", _manifest={"page-rot": {"image": image}})
     ledger = _only_reason(admit_local_set(root, split="val"), "unsafe-page-image-path")
-    assert ledger["summary"]["pages_refused"] == 1
+    assert ledger["summary"]["pages_by_outcome"]["refused"] == 1
+    # Refused rather than read: the outside file's bytes are nowhere in the
+    # ledger, which is the half of the claim the refusal name alone does not make.
+    outside_digest = digest_bytes(outside.read_bytes())
+    assert outside_digest not in {row["page_sha256"] for row in ledger["rows"]}
+    assert outside_digest not in {page["page"]["sha256"] for page in ledger["reference_pages"]}
 
 
 def test_a_missing_page_file_and_a_duplicate_record_are_refused_by_name(tmp_path):
@@ -652,6 +672,37 @@ def test_the_validator_refuses_a_reason_histogram_that_does_not_sum(tmp_path):
     assert "refused_by_reason" in str(refused.value)
 
 
+def test_the_validator_refuses_a_ledger_whose_pages_and_rows_do_not_name_each_other(tmp_path):
+    """The link `evaluate.py` trusts: an admitted row's page must be in the ledger."""
+    ledger = json.loads(json.dumps(admit_local_set(_two_page_set(tmp_path / "set"), split="val")))
+    # A page from a different set, swapped in: the count still reconciles, and
+    # only the row-to-page link catches it. This is the link `evaluate.py`
+    # trusts when it decides `reference-page-not-in-ledger`.
+    elsewhere = admit_local_set(
+        _two_page_set(tmp_path / "elsewhere", **{"r-rot": {"text": "un tout autre acte"}}),
+        split="val",
+    )
+    swapped = json.loads(json.dumps(ledger))
+    swapped["reference_pages"][0] = json.loads(json.dumps(elsewhere["reference_pages"][0]))
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_local_admission_ledger(_reseal(swapped))
+    assert "named but absent" in str(refused.value)
+
+    # A page that no longer validates at all is refused before the link is read.
+    damaged = json.loads(json.dumps(ledger))
+    damaged["reference_pages"][0]["acts"][0]["text"] = " "
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_local_admission_ledger(_reseal(damaged))
+    assert "does not validate" in str(refused.value)
+
+    # And the count itself still reconciles.
+    short = json.loads(json.dumps(ledger))
+    short["reference_pages"].pop()
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_local_admission_ledger(_reseal(short))
+    assert "admitted page count" in str(refused.value)
+
+
 def test_the_validator_refuses_a_page_census_that_does_not_account_for_the_manifest(tmp_path):
     ledger = json.loads(json.dumps(admit_local_set(_two_page_set(tmp_path / "set"), split="val")))
     ledger["summary"]["pages_listed"] = 5
@@ -701,7 +752,7 @@ def test_the_command_line_writes_a_loadable_ledger_and_prints_its_summary(tmp_pa
 
 def test_the_command_line_refuses_the_held_split_without_its_flag(tmp_path):
     root = _two_page_set(tmp_path / "set")
-    with pytest.raises(CorpusRefusal, match="^held-split-not-released:"):
+    with pytest.raises(CorpusRefusal, match="^holdout-ledger-required:"):
         main([str(root), "--split", "test", "--output-dir", str(tmp_path / "out")])
 
 
@@ -728,12 +779,24 @@ def _exercised_reasons() -> set[str]:
                     if keyword.arg == "match" and isinstance(keyword.value, ast.Constant):
                         found.add(keyword.value.value.lstrip("^").rstrip(":"))
                 if func.attr == "parametrize":
-                    for argument in node.args:
-                        found |= {
-                            item.value
-                            for item in ast.walk(argument)
-                            if isinstance(item, ast.Constant) and isinstance(item.value, str)
-                        }
+                    # Only the reason column -- the last element of each case
+                    # tuple in a table whose parameter names end in "reason".
+                    # Taking every string in the table would count a reason that
+                    # merely appears beside an assertion as exercised by it
+                    # (independent audit of 2026-09-11, round 2 item 8).
+                    names, cases = node.args[0], node.args[1]
+                    if not (
+                        isinstance(names, (ast.Tuple, ast.List))
+                        and isinstance(names.elts[-1], ast.Constant)
+                        and names.elts[-1].value == "reason"
+                        and isinstance(cases, (ast.List, ast.Tuple))
+                    ):
+                        continue
+                    for case in cases.elts:
+                        if isinstance(case, (ast.Tuple, ast.List)) and isinstance(
+                            case.elts[-1], ast.Constant
+                        ):
+                            found.add(case.elts[-1].value)
     return found
 
 

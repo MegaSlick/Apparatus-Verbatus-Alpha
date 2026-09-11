@@ -48,7 +48,13 @@ refuses to validate if the outcomes do not account for the manifest.
 **The held-out split is not admitted by accident.** `split="test"` is the
 DAI-comparability set `holdout.py` protects; it is admitted only when the caller
 passes `release_test_split`, exactly as `fetch.py` requires `--release-test-split`,
-and that flag releases the held split alone.
+and that flag releases the held split alone. It is the same condition as the
+fetcher's, so it refuses under the fetcher's own name --
+`holdout-ledger-required` -- rather than inventing a second word for one concept.
+This route reproduces that layer of the hold-out and not the other two: it never
+consults the hold-out ledger, because the sets it reads carry their own split
+labels and were not produced by the fetcher. `README.md`'s hold-out section says
+so.
 
 Reference truth built here is `reference.py`'s family and nothing more: one
 unnamed expert reading, records-only completeness, no adjudication. The
@@ -78,7 +84,7 @@ from operations.spike_perlector.normalization import GRAPHEMIC_V1, character_uni
 from . import CorpusRefusal
 from .holdout import HELD_SPLIT
 from .plan import SUPPORTED_ROTATIONS, parse_record_url, unsafe_segment, volume_and_designation
-from .reference import CORPUS_ID, SPLITS, build_reference_page
+from .reference import CORPUS_ID, SPLITS, build_reference_page, validate_reference_page
 from .rows import validate_snapshot
 
 SCHEMA = "recordgold-local-admission.v1"
@@ -91,7 +97,7 @@ LOCAL_ADMISSION_REFUSAL_REASONS = frozenset(
         "receipt-hash-mismatch",
         "missing-set-file",
         "unknown-split",
-        "held-split-not-released",
+        "holdout-ledger-required",
         "missing-page-file",
         "non-image-body",
         "dimension-mismatch",
@@ -174,8 +180,6 @@ _SUMMARY_FIELDS = frozenset(
         "refused_by_reason",
         "pages_listed",
         "pages_by_outcome",
-        "pages_admitted",
-        "pages_refused",
         "admitted_by_rotation",
     }
 )
@@ -373,6 +377,27 @@ def _page_image_path(set_root: Path, image_rel: Any, page_id: str) -> Path:
     return set_root / candidate
 
 
+def _canonical_safe(value: Any) -> Any:
+    """A raw field reduced to something `canonical_bytes` can actually seal.
+
+    A refused row copies the record's own values out of the file so a reader can
+    see what was refused. `canonical_bytes` refuses a float outright, so one
+    `239.0` in a `bbox` -- correctly refused by name a moment earlier -- would
+    then abort the whole admission inside `self_hash(ledger)` with a bare
+    `TypeError` naming no record at all. Anything the canonical serialization
+    does not carry becomes its `repr`; the refusal's own detail string already
+    holds the offending value verbatim (independent audit of 2026-09-11, round 2
+    item 2).
+    """
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, list):
+        return [_canonical_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _canonical_safe(item) for key, item in value.items()}
+    return repr(value)
+
+
 def _positive_int(value: Any, what: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise CorpusRefusal(f"malformed-record: {what} must be a positive integer, got {value!r}")
@@ -453,7 +478,7 @@ def admit_local_set(
         raise CorpusRefusal(f"unknown-split: {split!r} is not one of {sorted(SPLITS)}")
     if (split == HELD_SPLIT) != bool(release_test_split):
         raise CorpusRefusal(
-            f"held-split-not-released: release_test_split and split {HELD_SPLIT!r} go together "
+            f"holdout-ledger-required: release_test_split and split {HELD_SPLIT!r} go together "
             "-- admitting the held-out split as reference truth must be a deliberate, separate "
             "act, and the flag releases no other split"
         )
@@ -497,13 +522,13 @@ def admit_local_set(
         refused_by_reason[reason] = refused_by_reason.get(reason, 0) + 1
         ledger_rows.append(
             {
-                "record_id": row.get("record_id"),
-                "page_id": row.get("page_id"),
-                "split": row.get("split"),
-                "record_url": row.get("record_url"),
-                "iiif_rotation": row.get("iiif_rotation"),
-                "source_bbox": row.get("source_bbox"),
-                "bbox": row.get("bbox"),
+                "record_id": _canonical_safe(row.get("record_id")),
+                "page_id": _canonical_safe(row.get("page_id")),
+                "split": _canonical_safe(row.get("split")),
+                "record_url": _canonical_safe(row.get("record_url")),
+                "iiif_rotation": _canonical_safe(row.get("iiif_rotation")),
+                "source_bbox": _canonical_safe(row.get("source_bbox")),
+                "bbox": _canonical_safe(row.get("bbox")),
                 "page_sha256": facts["sha256"] if facts else None,
                 "page_width": facts["width"] if facts else None,
                 "page_height": facts["height"] if facts else None,
@@ -782,8 +807,6 @@ def admit_local_set(
             "refused_by_reason": dict(sorted(refused_by_reason.items())),
             "pages_listed": len(pages),
             "pages_by_outcome": pages_by_outcome,
-            "pages_admitted": pages_by_outcome["admitted"],
-            "pages_refused": pages_by_outcome["refused"],
             "admitted_by_rotation": dict(sorted(rotations.items())),
         },
         "rows": ledger_rows,
@@ -889,11 +912,19 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
                     f"malformed-record: refused row {row['record_id']!r} names reason "
                     f"{row['reason']!r}, which is outside this module's closed vocabulary"
                 )
-            if row["physical_act_id"] is not None or row["reference_page_self_hash"] is not None:
+            if any(
+                row[field] is not None
+                for field in ("physical_act_id", "physical_page_id", "reference_page_self_hash")
+            ):
                 raise CorpusRefusal(
                     f"malformed-record: refused row {row['record_id']!r} carries an identity it "
                     "was never admitted to earn"
                 )
+            for field in ("record_id", "page_id"):
+                if row[field] is not None and not isinstance(row[field], str):
+                    raise CorpusRefusal(
+                        f"malformed-record: refused row carries a non-string {field} {row[field]!r}"
+                    )
         else:
             raise CorpusRefusal(
                 f"malformed-record: row {row['record_id']!r} decides {row['decision']!r}, not "
@@ -925,22 +956,40 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
             f"malformed-record: pages_by_outcome accounts for {sum(outcomes.values())} page(s) "
             f"of the {summary['pages_listed']} the manifest lists"
         )
-    if (outcomes["admitted"], outcomes["refused"]) != (
-        summary["pages_admitted"],
-        summary["pages_refused"],
-    ):
-        raise CorpusRefusal(
-            "malformed-record: pages_admitted/pages_refused disagree with pages_by_outcome"
-        )
-    if sum(summary["admitted_by_rotation"].values()) != admitted:
+    for name, count in sorted(outcomes.items()):
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise CorpusRefusal(f"malformed-record: pages_by_outcome[{name!r}] is not a count")
+    rotations = summary["admitted_by_rotation"]
+    if not isinstance(rotations, dict) or sum(rotations.values()) != admitted:
         raise CorpusRefusal(
             "malformed-record: admitted_by_rotation does not account for every admitted record"
         )
 
     reference_pages = ledger["reference_pages"]
-    if not isinstance(reference_pages, list) or len(reference_pages) != summary["pages_admitted"]:
+    if not isinstance(reference_pages, list) or len(reference_pages) != outcomes["admitted"]:
         raise CorpusRefusal(
             "malformed-record: the ledger's reference pages do not match its admitted page count"
+        )
+    # The pages themselves, and the link the rows claim to them. `evaluate.py`
+    # decides `reference-page-not-in-ledger` from the rows'
+    # `reference_page_self_hash` alone, so a ledger naming page identities no
+    # page in it carries would bless any reference pages at all (independent
+    # audit of 2026-09-11, round 2 item 4).
+    embedded = set()
+    for page in reference_pages:
+        try:
+            embedded.add(validate_reference_page(page)["self_hash"])
+        except CorpusRefusal as error:
+            raise CorpusRefusal(
+                f"malformed-record: the ledger carries a reference page that does not "
+                f"validate: {error}"
+            ) from error
+    claimed = {row["reference_page_self_hash"] for row in rows if row["decision"] == "admitted"}
+    if claimed != embedded:
+        raise CorpusRefusal(
+            "malformed-record: the admitted rows name reference pages the ledger does not "
+            f"carry, or carry pages no row names ({len(claimed - embedded)} named but absent, "
+            f"{len(embedded - claimed)} carried but unnamed)"
         )
     return ledger
 
@@ -952,6 +1001,22 @@ def load_local_admission_ledger(path: str | Path) -> dict[str, Any]:
     nothing downstream can score against a ledger that was never verified.
     """
     return validate_local_admission_ledger(json.loads(Path(path).read_bytes()))
+
+
+def read_row_snapshot(path: str | Path) -> dict[str, Any]:
+    """One `recordgold-rows.v1` file, refused by name rather than by traceback.
+
+    The same boundary `_receipt` and `_load_jsonl` already hold: a missing file,
+    a non-UTF-8 file and a file that is not JSON each refuse under this module's
+    own vocabulary (independent audit of 2026-09-11, round 2 item 7).
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise CorpusRefusal(f"missing-set-file: {path} is not a file")
+    try:
+        return json.loads(_read_text(path, "the row snapshot"))
+    except ValueError as error:
+        raise CorpusRefusal(f"malformed-record: {path} is not JSON: {error}") from error
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -978,7 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    snapshot = json.loads(Path(args.row_snapshot).read_bytes()) if args.row_snapshot else None
+    snapshot = read_row_snapshot(args.row_snapshot) if args.row_snapshot else None
     ledger = admit_local_set(
         args.set_root,
         split=args.split,
