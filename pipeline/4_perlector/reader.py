@@ -185,7 +185,7 @@ class FixtureReader:
                 delivered_pixels=delivered_pixels,
                 audit_request=request,
             ),
-            "stop_reason": self._declared_stop_reason(act_key),
+            "stop_reason": self._declared_stop_reason(act_key, pass_kind),
         }
 
     def _reading_text(
@@ -413,7 +413,7 @@ class FixtureReader:
             return row["text"]
         raise KeyError(f"the fixture declares no prior reading for {self._scenario!r}/{act_key!r}")
 
-    def _declared_stop_reason(self, act_key: str) -> str | None:
+    def _declared_stop_reason(self, act_key: str, pass_kind: str) -> str | None:
         """The engine's own word on why it stopped.
 
         A reader always reports one, because a real serving engine always
@@ -423,13 +423,24 @@ class FixtureReader:
         a different fact: `truncation.classify` holds on it rather than
         calling the reading complete, and nothing in this offline chamber is
         entitled to claim an engine went silent.
+
+        A row may name one `pass_kind`, and then declares the unusual answer for
+        that pass alone: `audit-reproof-cutoff` declares `length` for the
+        re-proof only, so Pass B establishes a complete reading and the
+        re-examination of it is the call that fails. Without that, one row set
+        every pass's stop word at once and the composition the independent
+        audit named (a completed establishment followed by a cut-off re-proof,
+        F1) could not be declared. A row without `pass_kind` covers every pass,
+        exactly as before.
         """
 
         def _known_signal(row):
             if row["stop_reason"] not in {"stop", "length"}:
                 raise KeyError(f"stop_reason row declares unknown signal {row['stop_reason']!r}")
+            if "pass_kind" in row and row["pass_kind"] not in PASS_KINDS:
+                raise KeyError(f"stop_reason row declares unknown pass kind {row['pass_kind']!r}")
 
         row = self._matching_row("stop_reason", act_key, _known_signal)
-        if row is not None:
+        if row is not None and row.get("pass_kind", pass_kind) == pass_kind:
             return row["stop_reason"]
         return "stop"

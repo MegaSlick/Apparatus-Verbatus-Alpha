@@ -83,6 +83,8 @@ _PRIOR_READING_SCENARIOS = (
     # its own priors; its DECLARED audit re-proof (AUDIT_REPROOFS) is what
     # departs.
     "audit-change",
+    # Same reach as `happy`; its one departure is the re-proof's stop word.
+    "audit-reproof-cutoff",
     "refused-page",
     "truncated-reading",
     "genuinely-empty-witness",
@@ -438,7 +440,23 @@ READING_FAILURES = (
 # exercises the detector's own authority -- unlike `truncated-reading` above,
 # nothing here declares the outcome directly; the Perlector must derive
 # `truncated` from the engine signal alone.
-STOP_REASONS = ({"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},)
+#
+# `audit-reproof-cutoff` names a pass: Pass B establishes a1 with a normal stop,
+# and only the Pass-C re-proof of it reports `length` while returning the frozen
+# text unchanged. That is the composition the independent audit of 2026-09-10
+# found undeclarable (F1): one row used to set every pass's stop word at once,
+# so a `length` row made Pass B itself truncated and the failed re-examination
+# of a completed reading could not be exercised. A row without `pass_kind`
+# still covers every pass.
+STOP_REASONS = (
+    {"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},
+    {
+        "scenario": "audit-reproof-cutoff",
+        "act_key": "a1",
+        "stop_reason": "length",
+        "pass_kind": "audit-reproof",
+    },
+)
 
 
 # Derive page-response bodies from the same act declarations to prevent drift.
@@ -862,6 +880,16 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "recover_acts = []",
         "hold_acts = []",
         "",
+        "# audit-reproof-cutoff declares neither a recovery nor a hold, and no",
+        "# reading failure: a1's Pass-B reading completes, and the only declared",
+        "# departure from `happy` is the `length` stop word on its Pass-C re-proof",
+        "# (STOP_REASONS). Any hold this scenario produces has exactly one origin,",
+        "# the re-examination that did not finish.",
+        "[[scenario]]",
+        'name = "audit-reproof-cutoff"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
         "[[scenario]]",
         'name = "refused-page"',
         "recover_acts = []",
@@ -1015,8 +1043,10 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"scenario = {toml_string(row['scenario'])}",
             f"act_key = {toml_string(row['act_key'])}",
             f"stop_reason = {toml_string(row['stop_reason'])}",
-            "",
         ]
+        if "pass_kind" in row:
+            lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
+        lines.append("")
     lines += [
         "# One declared provider RESPONSE per row: an empty body from that chair on",
         "# that act. The Attestatores derives `genuinely-empty` from the retained",

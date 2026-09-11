@@ -152,8 +152,9 @@ truncation       -- {classification, signals}, present on every attempted
 uncertain_spans  -- [{start, end, alternatives, confidence}, ...]
 gaps             -- [{position, start, end, witness_evidence}, ...]
 audit            -- {draft_ref, finding_ref, finding_digest, unresolved,
-                    reproofs, request_digest}: the R5b Pass-C chain, and which
-                    re-proof instrument was actually delivered (see below)
+                    examination, reproofs, request_digest}: the R5b Pass-C
+                    chain, which re-proof instrument was actually delivered,
+                    and what became of the re-examination (see below)
 provenance
 ```
 
@@ -509,10 +510,25 @@ cross-record validation the producer and the Recensor both run:
 kind="audit-draft"    {act_key, attempt_ordinal, semi_final_text, page_ids,
                        round_cap, policy, flags, flag_location_basis}
 kind="audit-finding"  {act_key, attempt_ordinal, page_ids, round_cap, policy,
-                       flags, change_record, uncertain_spans, unresolved}
+                       flags, change_record, uncertain_spans, unresolved,
+                       examination, reproof_truncation}
 payload.audit         {draft_ref, finding_ref, finding_digest, unresolved,
-                       reproofs, request_digest}
+                       examination, reproofs, request_digest}
 ```
+
+The sealed policy schema is `perlector-audit.v2`. `examination` is one of
+`not-due` (no flag), `cap-exhausted` (flags, cap 0), `complete` (a re-proof was
+delivered and its call ran to completion) or `incomplete` (delivered and did not
+complete -- the engine reported `length`, or gave no stop word). `reproof_truncation`
+is the truncation instrument run over the re-proof's own text and stop word, or
+`None` where none was delivered. `unresolved` is derived from `examination` alone:
+`cap-exhausted` and `incomplete` are unresolved, and the Recensor holds on either,
+naming which. **Text equality plays no part.** A v1 record equated "unresolved" with
+"flags and a zero cap", so a re-proof cut off by its engine that returned the frozen
+text byte for byte was sealed as resolved and its act delivered under a `complete`
+aggregate (independent audit of 2026-09-10, F1). Consumers refuse a v1 record by
+name (`RETIRED_SCHEMAS`) rather than read it forward; the act is re-read in a new
+run and the old bytes stay as written.
 
 The flags are computed once per page, before any re-proof result exists, so no
 result can reopen the calculation. `change_record` attributes a changed span to
@@ -857,10 +873,13 @@ the fixture-path claim `with_engine_call` and the mode selector rest on.
   fixed `status = "established"` literal. Archetypus re-derives it from the text,
   annotations, and uncertainty before accepting the record
   (`pipeline/6_archetypus/run.py:824-861`).
-- **Pass-C can emit an `uncertain_span`, but only under a zero cap.** The predicate is
-  `unresolved = bool(flags) and audit_policy["round_cap"] == 0`
-  (`pipeline/4_perlector/run.py:3211`), so spans appear only when the sealed policy allows
-  no re-proof round, not after a permitted round is spent. Each non-empty frozen flag
+- **Pass-C can emit an `uncertain_span`, but only under a zero cap.** Spans are minted
+  exactly when `examination == "cap-exhausted"` (`common/perlector_audit.py::
+  examination_state`), so they appear only when the sealed policy allows no re-proof
+  round, not after a permitted round is spent -- and never for a re-proof that was
+  delivered and did not complete, which is recorded as `examination = "incomplete"`
+  with the call's own `reproof_truncation` beside it and routed to review on that
+  fact (F1, above). Each non-empty frozen flag
   location then becomes a low-confidence `audit-round-cap-exhausted` span on the finding
   and Perlectio (`:3357-3363`, sealed at `:3372` and `:3393`). A zero-width flag remains explicit in the
   frozen flags and `unresolved` state because it cannot become a span; Recensor routes it

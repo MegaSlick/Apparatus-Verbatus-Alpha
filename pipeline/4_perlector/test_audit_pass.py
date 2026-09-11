@@ -16,7 +16,7 @@ import reader as reader_module
 
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import PERLECTOR
+from common.contracts.stages import ARMARIUM, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -291,12 +291,37 @@ def _run(root: Path, *extra: str, scenario: str = "happy"):
     )
 
 
-def _records(tree: RunTree, kind: str) -> list[dict]:
+def _records(tree: RunTree, kind: str, stage: str = PERLECTOR) -> list[dict]:
     return [
-        tree.read_artifact(PERLECTOR, kind, entry["artifact_id"])
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        tree.read_artifact(stage, kind, entry["artifact_id"])
+        for entry in tree.build_manifest(stage)["artifacts"]
         if entry["kind"] == kind
     ]
+
+
+def _export(tree: RunTree) -> dict:
+    exports = _records(tree, "export", ARMARIUM)
+    assert len(exports) == 1, "one immutable Armarium export per run"
+    return exports[0]["payload"]
+
+
+# The truncation instrument's record of a call that ran to completion over a
+# clean text; what a well-formed v2 finding carries for a completed re-proof.
+_COMPLETE_TRUNCATION = {
+    "classification": "complete",
+    "signals": {
+        "stop_reason_declared": "stop",
+        "unclosed_structure": False,
+        "length_suspicious": False,
+        "ends_abruptly": False,
+    },
+}
+# The same instrument over a re-proof its engine cut off: the text signals are
+# clean (it returned the frozen text), and the engine's own word overrules them.
+_CUT_OFF_TRUNCATION = {
+    "classification": "truncated",
+    "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": "length"},
+}
 
 
 def _chain_through_attestatores(root: Path, scenario: str) -> None:
@@ -617,7 +642,7 @@ def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tm
     """
     exhausted = tmp_path / "exhausted.toml"
     exhausted.write_text(
-        'schema = "perlector-audit.v1"\n'
+        'schema = "perlector-audit.v2"\n'
         "default_round_cap = 1\n"
         "absolute_round_cap = 2\n"
         "round_cap = 0\n"
@@ -651,6 +676,15 @@ def test_fixture_produces_each_audit_kind_and_records_unchanged_reproof(tmp_path
     assert all(record["payload"]["flags"] for record in drafts)
     assert all(record["payload"]["change_record"] == [] for record in findings)
     assert all(record["payload"]["unresolved"] is False for record in findings)
+    # v2: resolved because the delivered re-proof *completed*, and the record
+    # says so -- not because its text happened to match.
+    assert all(record["payload"]["examination"] == "complete" for record in findings)
+    assert all(
+        record["payload"]["reproof_truncation"]["classification"] == "complete"
+        and record["payload"]["reproof_truncation"]["signals"]["stop_reason_declared"] == "stop"
+        for record in findings
+    )
+    assert all(final["payload"]["audit"]["examination"] == "complete" for final in finals)
     for final in finals:
         for reproof in final["payload"]["audit"]["reproofs"]:
             prompt = reproof["prompt"].lower()
@@ -1041,6 +1075,8 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
             ],
             "uncertain_spans": [],
             "unresolved": False,
+            "examination": "complete",
+            "reproof_truncation": _COMPLETE_TRUNCATION,
         }
     )
     with pytest.raises(SchemaRefusal, match="unknown triggering flag class"):
@@ -1052,6 +1088,7 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
         "finding_ref": reference,
         "finding_digest": "0" * 64,
         "unresolved": False,
+        "examination": "complete",
         "reproofs": [
             {
                 "class": [],
@@ -1093,7 +1130,7 @@ def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(
     """A sealed cap of 2 with Tyrel's reference would be recorded but never run."""
     approved = tmp_path / "approved.toml"
     approved.write_text(
-        'schema = "perlector-audit.v1"\n'
+        'schema = "perlector-audit.v2"\n'
         "default_round_cap = 1\n"
         "absolute_round_cap = 2\n"
         "round_cap = 2\n"
@@ -1170,14 +1207,14 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
 def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path):
     raised = tmp_path / "raised.toml"
     raised.write_text(
-        'schema = "perlector-audit.v1"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'
+        'schema = "perlector-audit.v2"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'
     )
     with pytest.raises(ContractError, match="Tyrel's approval reference"):
         audit.load(raised)
 
     exhausted = tmp_path / "exhausted.toml"
     exhausted.write_text(
-        'schema = "perlector-audit.v1"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 0\napproval_ref = ""\n'
+        'schema = "perlector-audit.v2"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 0\napproval_ref = ""\n'
     )
     result = _run(tmp_path / "exhausted-runs", "--perlector-audit-config", str(exhausted))
     assert result.returncode == 3, result.stderr
@@ -1209,7 +1246,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
             "page_ids": ["p1"],
             "round_cap": 0,
             "policy": {
-                "schema": "perlector-audit.v1",
+                "schema": "perlector-audit.v2",
                 "sha256": "0" * 64,
                 "approval_ref": "",
             },
@@ -1217,6 +1254,8 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
             "change_record": [],
             "uncertain_spans": [],
             "unresolved": True,
+            "examination": "cap-exhausted",
+            "reproof_truncation": None,
         },
         text="abc",
         flag_text="abc",
@@ -1233,7 +1272,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
                 "page_ids": ["p1"],
                 "round_cap": 0,
                 "policy": {
-                    "schema": "perlector-audit.v1",
+                    "schema": "perlector-audit.v2",
                     "sha256": "0" * 64,
                     "approval_ref": "",
                 },
@@ -1241,6 +1280,8 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
                 "change_record": [],
                 "uncertain_spans": [{"start": 3, "end": 3, "reason": "audit-round-cap-exhausted"}],
                 "unresolved": True,
+                "examination": "cap-exhausted",
+                "reproof_truncation": None,
             },
             text="abc",
             flag_text="abc",
@@ -1500,3 +1541,320 @@ def test_an_audit_page_set_cannot_carry_traversal_order_as_durable_state(tmp_pat
     reordered["page_ids"].reverse()
     with pytest.raises(SchemaRefusal, match="canonical page set"):
         audit.validate_draft(reordered)
+
+
+# --- F1: a re-proof's completion is a fact of its own, not of its text -------
+#
+# Independent audit of 2026-09-10 (finding F1, reproduced on 0aa08db7e4): a
+# completed Pass-B reading followed by a re-proof that returned the same text
+# with `stop_reason="length"` or no stop reason at all kept Pass B's `complete`
+# record, a resolved audit and a `read` outcome, and both real downstream
+# pipelines exported two delivered acts under a `complete` aggregate. The
+# caller entered its truncation re-measurement only on text inequality, so the
+# helper test `test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument`
+# passed while the composition it guards against was never exercised. These
+# tests drive the actual Perlector stage and the actual Recensor and Armarium
+# behind it, over the fixture scenario declared for exactly this composition.
+
+
+def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_export(
+    tmp_path,
+):
+    """Failing before F1's repair: this run exited 0 with two delivered acts."""
+    result = _run(tmp_path / "runs", scenario="audit-reproof-cutoff")
+    assert result.returncode == 3, result.stderr
+    assert "act a1 is held-for-review" in result.stdout
+    tree = RunTree(tmp_path / "runs", "r")
+    finals = {record["payload"]["act_key"]: record for record in _records(tree, "perlectio")}
+    drafts = {record["payload"]["act_key"]: record for record in _records(tree, "audit-draft")}
+    findings = {record["payload"]["act_key"]: record for record in _records(tree, "audit-finding")}
+    cut, control = finals["a1"], finals["a2"]
+
+    # Pass B's reading stands, under Pass B's own record: the published text is
+    # the frozen semi-final, its truncation record is the establishing call's,
+    # and the outcome is still `read`. Nothing about the earlier successful
+    # reading is rewritten or re-attributed to the call that failed.
+    assert cut["outcome"] == "read"
+    assert cut["payload"]["text"] == drafts["a1"]["payload"]["semi_final_text"]
+    assert cut["payload"]["truncation"]["classification"] == "complete"
+    assert cut["payload"]["truncation"]["signals"]["stop_reason_declared"] == "stop"
+    assert cut["payload"]["uncertain_spans"] == []
+    # ...and the re-examination is recorded as the failure it was.
+    assert cut["payload"]["audit"]["examination"] == "incomplete"
+    assert cut["payload"]["audit"]["unresolved"] is True
+    assert cut["payload"]["audit"]["request_digest"] is not None
+    assert findings["a1"]["payload"]["examination"] == "incomplete"
+    assert findings["a1"]["payload"]["unresolved"] is True
+    assert findings["a1"]["payload"]["reproof_truncation"] == _CUT_OFF_TRUNCATION
+    assert findings["a1"]["payload"]["change_record"] == []
+    assert findings["a1"]["payload"]["uncertain_spans"] == []
+    audit.validate_chain(tree, cut, cut["subject_id"])
+
+    # The control act on the same run: an unchanged re-proof that completed.
+    assert control["outcome"] == "read"
+    assert control["payload"]["audit"]["examination"] == "complete"
+    assert control["payload"]["audit"]["unresolved"] is False
+    assert findings["a2"]["payload"]["reproof_truncation"] == _COMPLETE_TRUNCATION
+
+    # The real Recensor holds on that fact, and says which fact.
+    reviews = {record["subject_id"]: record for record in _records(tree, "review", RECENSOR)}
+    held = reviews[cut["subject_id"]]
+    assert held["outcome"] == "held-for-review"
+    assert "audit re-proof of this act did not complete" in held["payload"]["reason"]
+    assert "audit re-proof cap" not in held["payload"]["reason"]
+    assert held["payload"]["audit_unresolved"] is True
+    assert held["payload"]["audit_examination"] == "incomplete"
+    accepted = reviews[control["subject_id"]]
+    assert accepted["outcome"] == "accepted"
+    assert accepted["payload"]["audit_unresolved"] is False
+    assert accepted["payload"]["audit_examination"] == "complete"
+
+    # The real Armarium exports a partial run with the held act named, never a
+    # complete one over a re-examination that did not finish.
+    export = _export(tree)
+    assert export["aggregate"]["status"] == "partial"
+    assert export["aggregate"]["by_category"] == {"delivered": 1, "held-for-review": 1}
+    assert [act["act_key"] for act in export["delivered"]] == ["a2"]
+    (non_delivered,) = export["non_delivered"]
+    assert non_delivered["act_key"] == "a1"
+    assert non_delivered["category"] == "held-for-review"
+    assert "audit re-proof of this act did not complete" in non_delivered["reason"]
+
+
+def test_resuming_the_cut_off_run_reuses_sealed_evidence_and_keeps_the_incomplete_examination(
+    tmp_path,
+):
+    """A resume republishes byte-identical records; it does not re-roll the re-proof."""
+    root = tmp_path / "runs"
+    first = _run(root, scenario="audit-reproof-cutoff")
+    assert first.returncode == 3, first.stderr
+    tree = RunTree(root, "r")
+
+    def sealed(stage: str) -> dict[tuple[str, str], str]:
+        return {
+            (entry["kind"], entry["artifact_id"]): entry["sha256"]
+            for entry in tree.build_manifest(stage)["artifacts"]
+        }
+
+    before = {stage: sealed(stage) for stage in (PERLECTOR, RECENSOR, ARMARIUM)}
+    second = _run(root, scenario="audit-reproof-cutoff")
+    assert second.returncode == 3, second.stderr
+    assert {stage: sealed(stage) for stage in (PERLECTOR, RECENSOR, ARMARIUM)} == before
+    finals = {record["payload"]["act_key"]: record for record in _records(tree, "perlectio")}
+    assert finals["a1"]["payload"]["audit"]["examination"] == "incomplete"
+    assert finals["a1"]["payload"]["audit"]["unresolved"] is True
+    assert _export(tree)["aggregate"]["status"] == "partial"
+
+
+@pytest.mark.parametrize(
+    ("scenario", "stop_reason", "expects_a_changed_text", "expected_classification"),
+    [
+        # Unchanged text and an engine that gave no word: `unknown` holds.
+        ("happy", None, False, "unknown"),
+        # `audit-change` changes a1's text and leaves a2's alone, and the
+        # engine ran out of budget on both. The changed act publishes the
+        # re-proof's text, so its truncation record moves with it and the
+        # outcome is `truncated`; the unchanged act keeps Pass B's `read`. The
+        # examination is `incomplete` for both: character equality buys
+        # neither leniency nor extra strictness.
+        ("audit-change", "length", True, "truncated"),
+    ],
+)
+def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
+    tmp_path, monkeypatch, scenario, stop_reason, expects_a_changed_text, expected_classification
+):
+    """The audit's own injection, kept as a regression through the real stages.
+
+    The fixture cannot declare an engine that went silent (`FixtureReader`
+    refuses to claim one), so the `None` case wraps the declared reader inside
+    the real Perlector `main`, exactly as the audit's `reproduce.py` did.
+    """
+    root = tmp_path / "runs"
+    _chain_through_attestatores(root, scenario)
+    perlector = _perlector()
+    declared = perlector.FixtureReader
+    reproofed: list[str] = []
+
+    class TerminatingReader:
+        def __init__(self, fixture, fixture_scenario):
+            self._inner = declared(fixture, fixture_scenario)
+
+        def read(self, dossier, *, pass_kind, delivered_pixels=None, audit_request=None):
+            result = self._inner.read(
+                dossier,
+                pass_kind=pass_kind,
+                delivered_pixels=delivered_pixels,
+                audit_request=audit_request,
+            )
+            if pass_kind == "audit-reproof":
+                reproofed.append(dossier["act_key"])
+                return {**result, "stop_reason": stop_reason}
+            return result
+
+    monkeypatch.setattr(perlector, "FixtureReader", TerminatingReader)
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            scenario,
+        ],
+    )
+    assert perlector.main() == 0
+    assert reproofed, "the scenario must deliver at least one re-proof"
+
+    tree = RunTree(root, "r")
+    findings = {
+        record["payload"]["act_key"]: record["payload"]
+        for record in _records(tree, "audit-finding")
+    }
+    frozen = {
+        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
+        for record in _records(tree, "audit-draft")
+    }
+    changed_acts: list[str] = []
+    for final in _records(tree, "perlectio"):
+        act_key = final["payload"]["act_key"]
+        if act_key not in reproofed:
+            continue
+        changed = final["payload"]["text"] != frozen[act_key]
+        if changed:
+            changed_acts.append(act_key)
+        assert final["outcome"] == ("truncated" if changed else "read")
+        assert final["payload"]["audit"]["examination"] == "incomplete"
+        assert final["payload"]["audit"]["unresolved"] is True
+        assert final["payload"]["uncertain_spans"] == []
+        termination = findings[act_key]["reproof_truncation"]
+        assert termination["classification"] == expected_classification
+        assert termination["signals"]["stop_reason_declared"] == stop_reason
+        audit.validate_chain(tree, final, final["subject_id"])
+
+    assert bool(changed_acts) is expects_a_changed_text
+
+    # The real downstream stages, one manual boundary at a time: a semi-mode
+    # range would stop at the held Recensor before the Armarium ever wrote the
+    # partial export this test exists to read.
+    # The Archetypus establishes nothing for a run whose every act is held and
+    # exits 0 over that empty work; the Recensor and the Armarium are the two
+    # stages that report the hold.
+    for stage, expected_exit in (("recensor", 3), ("archetypus", 0), ("armarium", 3)):
+        remainder = _run(root, "--stage", stage, scenario=scenario)
+        assert remainder.returncode == expected_exit, (stage, remainder.stderr)
+    export = _export(tree)
+    assert export["aggregate"]["status"] == "partial"
+    assert export["delivered"] == []
+    assert sorted(act["act_key"] for act in export["non_delivered"]) == sorted(reproofed)
+    assert all(act["category"] == "held-for-review" for act in export["non_delivered"])
+
+
+def _finding(**overrides) -> dict:
+    base = {
+        "act_key": "a1",
+        "attempt_ordinal": 1,
+        "page_ids": ["p1"],
+        "round_cap": 1,
+        "policy": {"schema": audit.SCHEMA, "sha256": "0" * 64, "approval_ref": ""},
+        "flags": [{"class": "testimony-diff", "location": {"start": 0, "end": 3}}],
+        "change_record": [],
+        "uncertain_spans": [],
+        "unresolved": True,
+        "examination": "incomplete",
+        "reproof_truncation": _CUT_OFF_TRUNCATION,
+    }
+    return {**base, **overrides}
+
+
+def test_an_audit_finding_cannot_call_a_cut_off_reproof_complete():
+    """The shared validator re-derives the examination; the producer cannot choose it."""
+    # The honest record of a cut-off re-proof validates.
+    assert audit.validate_finding(_finding(), text="abc", flag_text="abc")["unresolved"] is True
+
+    with pytest.raises(SchemaRefusal, match="make it 'incomplete'"):
+        audit.validate_finding(
+            _finding(examination="complete", unresolved=False), text="abc", flag_text="abc"
+        )
+    with pytest.raises(SchemaRefusal, match="unresolved state contradicts its examination"):
+        audit.validate_finding(_finding(unresolved=False), text="abc", flag_text="abc")
+    with pytest.raises(SchemaRefusal, match="cap was not exhausted"):
+        audit.validate_finding(
+            _finding(
+                uncertain_spans=[{"start": 0, "end": 3, "reason": "audit-round-cap-exhausted"}]
+            ),
+            text="abc",
+            flag_text="abc",
+        )
+    # A completed re-proof is resolved -- and only then.
+    assert (
+        audit.validate_finding(
+            _finding(
+                examination="complete", unresolved=False, reproof_truncation=_COMPLETE_TRUNCATION
+            ),
+            text="abc",
+            flag_text="abc",
+        )["examination"]
+        == "complete"
+    )
+    # The three shapes that cannot exist: a termination where nothing was due,
+    # a termination the exhausted cap could not have delivered, and a due
+    # re-proof with no termination at all.
+    with pytest.raises(SchemaRefusal, match="raised no flag"):
+        audit.validate_finding(
+            _finding(flags=[], examination="not-due", unresolved=False), text="abc", flag_text="abc"
+        )
+    with pytest.raises(SchemaRefusal, match="left no round to deliver"):
+        audit.validate_finding(
+            _finding(round_cap=0, examination="cap-exhausted"), text="abc", flag_text="abc"
+        )
+    with pytest.raises(SchemaRefusal, match="records no termination"):
+        audit.validate_finding(_finding(reproof_truncation=None), text="abc", flag_text="abc")
+    with pytest.raises(SchemaRefusal, match="unknown truncation classification"):
+        audit.validate_finding(
+            _finding(reproof_truncation={**_CUT_OFF_TRUNCATION, "classification": "fine"}),
+            text="abc",
+            flag_text="abc",
+        )
+
+    reference = {"relative_path": "4_perlector/audit.json", "sha256": "0" * 64}
+    with pytest.raises(SchemaRefusal, match="contradicts its examination state"):
+        audit.validate_perlectio_audit(
+            {
+                "draft_ref": reference,
+                "finding_ref": reference,
+                "finding_digest": "0" * 64,
+                "unresolved": False,
+                "examination": "incomplete",
+                "reproofs": [],
+                "request_digest": None,
+            },
+            text_length=3,
+        )
+
+
+def test_a_v1_audit_record_is_refused_by_name_and_never_read_forward():
+    """The old schema could not carry F1's fact; its silence is not evidence."""
+    v1_policy = {"schema": "perlector-audit.v1", "sha256": "0" * 64, "approval_ref": ""}
+    with pytest.raises(SchemaRefusal, match="sealed under perlector-audit.v1") as refused:
+        audit.validate_finding(_finding(policy=v1_policy), text="abc", flag_text="abc")
+    assert "could not record whether a delivered re-proof completed" in str(refused.value)
+    assert "stay as written" in str(refused.value)
+    with pytest.raises(SchemaRefusal, match="sealed under perlector-audit.v1"):
+        audit.validate_draft(
+            {
+                "act_key": "a1",
+                "attempt_ordinal": 1,
+                "semi_final_text": "abc",
+                "page_ids": ["p1"],
+                "round_cap": 1,
+                "policy": v1_policy,
+                "flags": [],
+                "flag_location_basis": [],
+            }
+        )
+    assert audit.RETIRED_SCHEMAS == frozenset({"perlector-audit.v1"})
+    assert audit.SCHEMA == "perlector-audit.v2"

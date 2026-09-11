@@ -145,7 +145,7 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
-def audit_state(context, reading: dict, act_id: str) -> bool | None:
+def audit_state(context, reading: dict, act_id: str) -> dict | None:
     """Verify the two R5b artifacts behind a Perlectio's audit claim.
 
     The Perlectio's self-hash only proves that somebody sealed its references;
@@ -171,11 +171,21 @@ def audit_state(context, reading: dict, act_id: str) -> bool | None:
     `change_record` carries at most one span, so `False` is not a per-flag
     resolution claim. Routing is unchanged (`elif audit_unresolved:` treats
     both as falsy); only the record is honest.
+
+    Returned as the two facts the finding seals rather than the one boolean it
+    used to be: `unresolved`, which routes, and `examination`, which says *why*
+    -- an exhausted cap and a re-proof that was delivered and did not complete
+    are both unresolved, and the review a person reads has to tell them apart
+    (independent audit of 2026-09-10, F1: the second case used to be sealed as
+    resolved because its text matched).
     """
     if reading["outcome"] == "not-run":
         return None
     chain = validate_chain(context.tree, reading, act_id)
-    return chain["record"]["unresolved"]
+    return {
+        "unresolved": chain["record"]["unresolved"],
+        "examination": chain["record"]["examination"],
+    }
 
 
 def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
@@ -3099,6 +3109,7 @@ def review_route_from_findings(
     audit_unresolved: bool | None,
     under_witnessed: bool,
     unreconciled: bool = False,
+    audit_examination: str | None = None,
 ) -> tuple[str, str] | None:
     """Compose every independent review cause in stable priority order.
 
@@ -3120,6 +3131,7 @@ def review_route_from_findings(
             "cross_capture_unresolved": cross_capture_unresolved,
             "testimony_shortfall": testimony_shortfall,
             "audit_unresolved": audit_unresolved,
+            "audit_examination": audit_examination,
             "under_witnessed": under_witnessed,
             "unreconciled": unreconciled,
         },
@@ -3146,10 +3158,25 @@ def review_route_from_findings(
             "the same page and the hold is page-scoped by design"
         )
     if audit_unresolved:
-        reasons.append(
-            "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
-            "they remain explicit uncertainty rather than a silent retry"
-        )
+        if audit_examination == "incomplete":
+            # The re-proof was delivered and its engine did not finish it --
+            # it ran out of output budget, or gave no word at all. The
+            # establishing reading stands as evidence and keeps its own call's
+            # provenance; the re-examination the frozen flags required has
+            # simply not happened, whatever text the cut-off call returned, so
+            # nothing here is delivered on the strength of it.
+            reasons.append(
+                "the Perlector's audit re-proof of this act did not complete: the engine's "
+                "own termination says the re-examination was cut off or gave no word, so the "
+                "flag(s) it was sent to settle stand unassessed; the establishing reading and "
+                "the incomplete re-proof are both retained, and the act is held rather than "
+                "delivered on a re-examination that never finished"
+            )
+        else:
+            reasons.append(
+                "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
+                "they remain explicit uncertainty rather than a silent retry"
+            )
     if under_witnessed:
         reasons.append(
             "the configured act-level witness floor is not met; a witness failure is not coverage"
@@ -3540,6 +3567,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # exists" (here) from "audited, resolved" (False) and
                     # "audited, unresolved" (True).
                     "audit_unresolved": None,
+                    "audit_examination": None,
                     # None for the same reason: a held act was never shown
                     # real capture pixels, so there is no cross-capture
                     # visibility survey to report, universally present like
@@ -3569,7 +3597,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # exact reading Recensor assessed.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
-        audit_unresolved = audit_state(context, latest, act_id)
+        audit_facts = audit_state(context, latest, act_id)
+        audit_unresolved = None if audit_facts is None else audit_facts["unresolved"]
+        audit_examination = None if audit_facts is None else audit_facts["examination"]
         # The survey must come from the exact Perlectio this review assesses.
         cross_coverage = act_cross_capture_coverage(
             context,
@@ -3595,6 +3625,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             audit_unresolved=audit_unresolved,
             under_witnessed=coverage["under_witnessed"],
             unreconciled=declared_unreconciled(scenario, act_key),
+            audit_examination=audit_examination,
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
@@ -3799,6 +3830,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # None -- "no audit exists" -- which is false, and R8's
                     # canonical export is the consumer that would believe it.
                     "audit_unresolved": audit_unresolved,
+                    "audit_examination": audit_examination,
                     "cross_capture_coverage": cross_coverage,
                 },
             )
@@ -3997,6 +4029,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # one never checked. R8's canonical export reads uncertainty
                 # spans whose review-side "why" lives exactly here.
                 "audit_unresolved": audit_unresolved,
+                # Beside the boolean, the fact behind it: `not-due`,
+                # `cap-exhausted`, `complete` or `incomplete`, so a review a
+                # person reads can tell an exhausted cap from a re-proof that
+                # was delivered and did not finish (F1). `None` exactly where
+                # `audit_unresolved` is `None`.
+                "audit_examination": audit_examination,
                 "cross_capture_coverage": cross_coverage,
                 # Present only on a `confirmed-blank`, because it is the evidence
                 # that outcome rests on and nothing else has any. Every other
