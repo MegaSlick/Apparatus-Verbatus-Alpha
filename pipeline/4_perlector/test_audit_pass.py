@@ -1677,21 +1677,47 @@ def test_resuming_the_cut_off_run_reuses_sealed_evidence_and_keeps_the_incomplet
 
 
 @pytest.mark.parametrize(
-    ("scenario", "stop_reason", "expects_a_changed_text", "expected_classification"),
+    (
+        "scenario",
+        "stop_reason",
+        "expects_a_changed_text",
+        "expected_classification",
+        "published_doubts",
+    ),
     [
-        # Unchanged text and an engine that gave no word: `unknown` holds.
-        ("happy", None, False, "unknown"),
+        # Unchanged text and an engine that gave no word: `unknown` holds. No
+        # act in this scenario declares a doubt report, so every published
+        # layer is empty under `not-assessed` -- an absence, not a confidence.
+        ("happy", None, False, "unknown", {}),
         # `audit-change` changes a1's text and leaves a2's alone, and the
         # engine ran out of budget on both. The changed act publishes the
         # re-proof's text, so its truncation record moves with it and the
         # outcome is `truncated`; the unchanged act keeps Pass B's `read`. The
         # examination is `incomplete` for both: character equality buys
         # neither leniency nor extra strictness.
-        ("audit-change", "length", True, "truncated"),
+        #
+        # a1 declares a doubt on both calls, and the two are deliberately
+        # different spans: Pass B doubts [29, 34) and the re-proof [29, 35).
+        # A re-proofed act publishes the re-proof's text, so the re-proof's own
+        # span is the one that may appear beside it -- Pass B's would be
+        # anchored to a text this record no longer carries (F2).
+        (
+            "audit-change",
+            "length",
+            True,
+            "truncated",
+            {"a1": [{"start": 29, "end": 35, "alternatives": ["gamma"], "confidence": "medium"}]},
+        ),
     ],
 )
 def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
-    tmp_path, monkeypatch, scenario, stop_reason, expects_a_changed_text, expected_classification
+    tmp_path,
+    monkeypatch,
+    scenario,
+    stop_reason,
+    expects_a_changed_text,
+    expected_classification,
+    published_doubts,
 ):
     """The audit's own injection, kept as a regression through the real stages.
 
@@ -1759,7 +1785,12 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
         assert final["outcome"] == ("truncated" if changed else "read")
         assert final["payload"]["audit"]["examination"] == "incomplete"
         assert final["payload"]["audit"]["unresolved"] is True
-        assert final["payload"]["uncertain_spans"] == []
+        expected_doubts = published_doubts.get(act_key, [])
+        assert final["payload"]["uncertain_spans"] == expected_doubts
+        # And the state that says which kind of empty an empty layer is.
+        assert final["payload"]["uncertainty_assessment"]["state"] == (
+            "assessed" if expected_doubts else "not-assessed"
+        )
         termination = findings[act_key]["reproof_truncation"]
         assert termination["classification"] == expected_classification
         assert termination["signals"]["stop_reason_declared"] == stop_reason

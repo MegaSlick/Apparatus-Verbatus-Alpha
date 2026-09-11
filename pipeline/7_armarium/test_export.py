@@ -494,7 +494,15 @@ def _established_uncertainty_case(armarium, monkeypatch):
     reading_ref = {"relative_path": "perlectio.json", "sha256": "a" * 64}
     review_ref = {"relative_path": "review.json", "sha256": "b" * 64}
     provenance = {"chair": "perlector"}
-    layer = {"uncertain_spans": [], "gaps": [], "self_revisions": []}
+    layer = {
+        "uncertain_spans": [],
+        "gaps": [],
+        "self_revisions": [],
+        "assessment": {
+            "state": "not-assessed",
+            "problem": "this fixture reader has no channel for a doubt report",
+        },
+    }
     reading = {
         "artifact_id": "reading-1",
         "payload": {"text": "Maria", "provenance": provenance},

@@ -266,7 +266,16 @@ def test_the_logical_projection_carries_no_member_act_rows_beside_its_subject(mo
         "provenance": {"chair": "perlector", "revision": "fixture"},
         "annotations": [],
         "uncertainty": from_perlectio(
-            {"text": text, "uncertain_spans": [], "gaps": [], "self_revision": []}
+            {
+                "text": text,
+                "uncertain_spans": [],
+                "gaps": [],
+                "uncertainty_assessment": {
+                    "state": "not-assessed",
+                    "problem": "this fixture reader has no channel for a doubt report",
+                },
+                "self_revision": [],
+            }
         ),
         "evidence_ref": None,
         "cross_capture_dissent_ref": {"relative_path": "dissent", "sha256": "0" * 64},

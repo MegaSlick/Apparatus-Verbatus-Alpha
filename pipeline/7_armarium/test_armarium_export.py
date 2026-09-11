@@ -23,6 +23,7 @@ from armarium_export import (
     NOT_MEASURED_INSTRUMENTS,
     NOT_MEASURED_SCHEMA,
     ArmariumProjection,
+    _not_measured_status,
     _page_ledger_category,
     _terminal_ledger,
     _verify_acts_schema,
@@ -100,6 +101,18 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
     }
 
 
+# The reader's own doubt report, closed into the canonical uncertainty layer on
+# 2026-09-11 (independent audit of 2026-09-10, F2): the span layers alone cannot
+# say whether an empty list is "no doubt" or "no doubt was ever asked for". These
+# projections are hand-built shapes with no reader behind them, so the honest
+# state for every layer below is `not-assessed`, and the block's uncertainty
+# instrument declares itself unproduced over them for that reason.
+_NOT_ASSESSED = {
+    "state": "not-assessed",
+    "problem": "a hand-built projection has no reader to report its doubts",
+}
+
+
 def _test_not_measured_basis(**overrides):
     """A minimal, valid not-measured basis for a hand-built projection.
 
@@ -132,6 +145,8 @@ def _test_not_measured_basis(**overrides):
             "sealed_audit_round_cap": 1,
             "acts_delivered": 1,
             "acts_with_uncertain_spans": 0,
+            "acts_assessed": 0,
+            "acts_not_assessed": 1,
         },
         "designator-geometry-calibration": {
             "configurations": [
@@ -168,10 +183,18 @@ def _basis_for_acts(acts, *, sealed_pages=1):
         isinstance(act.get("uncertainty"), dict) and bool(act["uncertainty"].get("uncertain_spans"))
         for act in delivered
     )
+    assessed = sum(
+        isinstance(act.get("uncertainty"), dict)
+        and isinstance(act["uncertainty"].get("assessment"), dict)
+        and act["uncertainty"]["assessment"]["state"] == "assessed"
+        for act in delivered
+    )
     basis["perlector-uncertain-spans"] = {
         "sealed_audit_round_cap": 0 if spans else 1,
         "acts_delivered": len(delivered),
         "acts_with_uncertain_spans": spans,
+        "acts_assessed": assessed,
+        "acts_not_assessed": len(delivered) - assessed,
     }
     return basis
 
@@ -211,7 +234,12 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "act_key": "one",
                 "category": "delivered",
                 "canonical_clean_text": "Cǣsar d’Amours",
-                "uncertainty": {"uncertain_spans": [], "gaps": [], "self_revisions": []},
+                "uncertainty": {
+                    "uncertain_spans": [],
+                    "gaps": [],
+                    "self_revisions": [],
+                    "assessment": _NOT_ASSESSED,
+                },
                 "text_status": "established",
                 "transcription_annotations": [],
                 "provenance": {"chair": "perlector"},
@@ -1100,6 +1128,7 @@ def test_projection_identity_refuses_a_self_consistent_package_with_drifted_unce
         "uncertain_spans": [{"start": 0, "end": 1, "alternatives": ["X"], "confidence": "low"}],
         "gaps": [],
         "self_revisions": [],
+        "assessment": _NOT_ASSESSED,
     }
     members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
     _refresh_manifest_member(members, "acts.jsonl")
@@ -1166,6 +1195,7 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
             ],
             "gaps": [],
             "self_revisions": [],
+            "assessment": _NOT_ASSESSED,
         },
     }
     bundle = build_armarium_bundle(
@@ -1231,6 +1261,7 @@ def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal
         ],
         "gaps": [],
         "self_revisions": [],
+        "assessment": _NOT_ASSESSED,
     }
     assert validate_uncertainty(other_layer, other_literal) == other_layer
     lines[marker + 1] = json.dumps(other_layer, ensure_ascii=False, sort_keys=True)
@@ -1302,7 +1333,12 @@ def test_a_non_delivered_act_may_not_carry_an_uncertainty_layer(tmp_path):
     original = _projection()
     held = {
         **original.acts[1],
-        "uncertainty": {"uncertain_spans": [], "gaps": [], "self_revisions": []},
+        "uncertainty": {
+            "uncertain_spans": [],
+            "gaps": [],
+            "self_revisions": [],
+            "assessment": _NOT_ASSESSED,
+        },
     }
     with pytest.raises(SchemaRefusal, match="may not carry an uncertainty layer"):
         build_armarium_bundle(
@@ -3511,6 +3547,7 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
                 "prior_span": {"start": 0, "end": 0},
             }
         ],
+        "assessment": _NOT_ASSESSED,
     }
     # A trailing gap is unread ink, so the act's own status is `partial` and the
     # run that delivered it says so; this test is about the offsets surviving,
@@ -3549,6 +3586,7 @@ def _internal_gap_layer(text: str) -> dict:
         "uncertain_spans": [],
         "gaps": [{"position": "internal", "start": middle, "end": middle, "witness_evidence": []}],
         "self_revisions": [],
+        "assessment": _NOT_ASSESSED,
     }
 
 
@@ -4515,6 +4553,10 @@ def test_a_resealed_not_measured_count_is_a_strict_integer(tmp_path):
         block = manifest["claims"]["not_measured"]
         uncertainty = _entry(block, "perlector-uncertain-spans")
         uncertainty["detail"]["sealed_audit_round_cap"] = 0
+        # The instrument is measured when every delivered reading was assessed,
+        # so a status of `measured` must be resealed over a detail that says so.
+        uncertainty["detail"]["acts_assessed"] = uncertainty["detail"]["acts_delivered"]
+        uncertainty["detail"]["acts_not_assessed"] = 0
         uncertainty["status"] = "measured"
         geometry = _entry(block, "designator-geometry-calibration")
         for row in geometry["detail"]["configurations"]:
@@ -4670,31 +4712,54 @@ def test_the_visibility_survey_is_declared_unproduced_and_measured_when_it_runs(
     assert _entry(_block(partial), "act-visibility-survey")["status"] == "not-measured"
 
 
-def test_the_uncertainty_instrument_reports_the_sealed_round_cap_that_silenced_it():
-    """An empty `uncertain_spans` under `round_cap = 1` is policy, not confidence.
+def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_asked():
+    """Who was asked decides this instrument's status; the sealed cap is reported beside it.
 
-    `pipeline/4_perlector/audit.py` can only mint a span when the sealed cap
-    leaves no re-proof round to spend, so under any other cap the empty list is
-    arithmetic. Said in the block rather than left for a reader to infer from a
-    `[]` that looks like a reader who was never uncertain.
+    Until the independent audit of 2026-09-10 (F2) the cap decided it alone: the
+    exhausted-cap projection was the only span the pipeline could mint, so an
+    empty list under any other cap was arithmetic rather than a reading's
+    confidence. The reader's own doubt report is now the measurement, and the
+    cap is one of the two ways a span reaches the layer. So the instrument is
+    produced exactly when every delivered reading was assessed for doubt: none
+    assessed is an instrument that never ran, whatever the cap says, and some
+    assessed is a partial measurement that may not be reported as a whole one
+    (GOVERNANCE 10).
     """
     silenced = _entry(_block(_projection()), "perlector-uncertain-spans")
     assert silenced["status"] == "declared-unproduced"
+    # Still reported, because it is still why a `[]` under a nonzero cap could
+    # never have held the audit's own projected span.
     assert silenced["detail"]["sealed_audit_round_cap"] == 1
+    assert silenced["detail"]["acts_assessed"] == 0
 
-    reachable = replace(
-        _projection(),
-        not_measured_basis=_test_not_measured_basis(
-            **{
-                "perlector-uncertain-spans": {
-                    "sealed_audit_round_cap": 0,
-                    "acts_delivered": 1,
-                    "acts_with_uncertain_spans": 0,
-                }
-            }
-        ),
+    original = _projection()
+    assessed = {
+        **original.acts[0],
+        "uncertainty": {
+            **original.acts[0]["uncertainty"],
+            "assessment": {"state": "assessed", "problem": None},
+        },
+    }
+    acts = (assessed, *original.acts[1:])
+    asked = replace(original, acts=acts, not_measured_basis=_basis_for_acts(acts))
+    assert _entry(_block(asked), "perlector-uncertain-spans")["status"] == "measured"
+
+    # The partial reading of this instrument needs two delivered acts, and every
+    # hand-built projection in this file delivers one, so the derivation is asked
+    # where it lives rather than by inventing a second delivery to reach it.
+    assert (
+        _not_measured_status(
+            "perlector-uncertain-spans",
+            {
+                "sealed_audit_round_cap": 1,
+                "acts_delivered": 2,
+                "acts_with_uncertain_spans": 0,
+                "acts_assessed": 1,
+                "acts_not_assessed": 1,
+            },
+        )
+        == "not-measured"
     )
-    assert _entry(_block(reachable), "perlector-uncertain-spans")["status"] == "measured"
 
 
 def test_an_uncalibrated_geometry_configuration_is_a_caveat_on_the_act_boundaries():
@@ -4826,7 +4891,10 @@ def test_nonzero_audit_cap_refuses_a_basis_that_names_uncertain_spans():
 
 def test_perlector_basis_counts_must_reconcile_with_the_projected_acts():
     basis = _test_not_measured_basis()
+    # The partition rule is a separate refusal asked first, so the counts stay
+    # coherent with each other and only their reconciliation with the acts moves.
     basis["perlector-uncertain-spans"]["acts_delivered"] = 0
+    basis["perlector-uncertain-spans"]["acts_not_assessed"] = 0
     with pytest.raises(SchemaRefusal, match="does not exactly reconcile"):
         _manifest_of(replace(_projection(), not_measured_basis=basis))
 

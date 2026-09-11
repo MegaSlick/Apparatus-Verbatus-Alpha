@@ -941,6 +941,10 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(monkeypat
         "annotations": [wire_note],
         "uncertain_spans": [],
         "gaps": [],
+        "uncertainty_assessment": {
+            "state": "not-assessed",
+            "problem": "this fixture reader has no channel for a doubt report",
+        },
         "self_revision": [],
     }
     perlectio = {"outcome": "read", "payload": payload}
