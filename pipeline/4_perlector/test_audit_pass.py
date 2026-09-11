@@ -2146,3 +2146,34 @@ def test_the_audited_truncation_takes_an_already_measured_record_without_remeasu
     )
     assert via_measured == remeasured == measured
     assert via_measured["classification"] == "truncated"
+
+
+@pytest.mark.parametrize("bad", [["complete"], {"state": "complete"}, 7])
+def test_an_unhashable_or_non_string_vocabulary_value_is_refused_by_name_not_typeerror(bad):
+    """CodeRabbit on PR #112: a list or object at a frozenset check must be a refusal."""
+    with pytest.raises(SchemaRefusal, match="unknown truncation classification"):
+        audit.validate_truncation_record(
+            {**_COMPLETE_TRUNCATION, "classification": bad}, label="a test record"
+        )
+    with pytest.raises(SchemaRefusal, match="malformed sealed policy reference"):
+        audit.validate_finding(
+            _finding(policy={"schema": bad, "sha256": "0" * 64, "approval_ref": ""}),
+            text="abc",
+            flag_text="abc",
+        )
+    reference = {"relative_path": "4_perlector/audit.json", "sha256": "0" * 64}
+    with pytest.raises(SchemaRefusal, match="unknown examination state"):
+        audit.validate_perlectio_audit(
+            {
+                "draft_ref": reference,
+                "finding_ref": reference,
+                "finding_digest": "0" * 64,
+                "unresolved": False,
+                "examination": bad,
+                "reproofs": [],
+                "request_digest": None,
+            },
+            text_length=1,
+        )
+    with pytest.raises(SchemaRefusal, match="is not an audit examination state"):
+        audit.unresolved_state(bad)

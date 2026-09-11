@@ -342,7 +342,7 @@ def unresolved_state(examination: str) -> bool:
     two resolved states, and `complete` is still not a per-flag claim -- one
     call answers every flag at once (Recensor `audit_state`).
     """
-    if examination not in EXAMINATION_STATES:
+    if type(examination) is not str or examination not in EXAMINATION_STATES:
         raise SchemaRefusal(f"{examination!r} is not an audit examination state")
     return examination in {EXAMINATION_CAP_EXHAUSTED, EXAMINATION_INCOMPLETE}
 
@@ -393,7 +393,13 @@ def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
     """
     if not isinstance(value, dict) or set(value) != {"classification", "signals"}:
         raise SchemaRefusal(f"{label} is not a closed truncation record")
-    if value["classification"] not in TRUNCATION_CLASSIFICATIONS:
+    # Type before membership everywhere a frozenset is consulted: an unhashable
+    # value (a list, an object) would otherwise leave as `TypeError`, which the
+    # stage boundary does not classify, instead of the named refusal it owes
+    # (CodeRabbit on PR #112).
+    if type(value["classification"]) is not str or (
+        value["classification"] not in TRUNCATION_CLASSIFICATIONS
+    ):
         raise SchemaRefusal(f"{label} names an unknown truncation classification")
     signals = value["signals"]
     if not isinstance(signals, dict) or set(signals) != _TRUNCATION_SIGNALS:
@@ -456,6 +462,8 @@ def validate_reproof_call(value: Any, *, label: str) -> dict[str, Any] | None:
             f"response is {value['raw_response_ref']['sha256']}"
         )
     if value["finish_reason"] is not None and not isinstance(value["finish_reason"], str):
+        raise SchemaRefusal(f"{label} has a malformed finish reason")
+    if value["finish_reason"] is not None and type(value["finish_reason"]) is not str:
         raise SchemaRefusal(f"{label} has a malformed finish reason")
     if value["finish_reason"] not in _FINISH_REASON_TO_STOP_WORD:
         raise SchemaRefusal(
@@ -588,7 +596,7 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
         "approval_ref",
     }:
         raise SchemaRefusal("an audit record has no sealed policy reference")
-    if value["policy"]["schema"] in RETIRED_SCHEMAS:
+    if type(value["policy"]["schema"]) is str and value["policy"]["schema"] in RETIRED_SCHEMAS:
         raise SchemaRefusal(
             f"an audit record was sealed under {value['policy']['schema']}, which could not "
             "record whether a delivered re-proof completed; it is refused rather than read "
@@ -758,7 +766,7 @@ def validate_perlectio_audit(record: Any, *, text_length: int | None) -> dict[st
         raise SchemaRefusal("a Perlectio audit record has no finding payload digest")
     if not isinstance(value["unresolved"], bool) or not isinstance(value["reproofs"], list):
         raise SchemaRefusal("a Perlectio audit record has malformed resolution facts")
-    if value["examination"] not in EXAMINATION_STATES:
+    if type(value["examination"]) is not str or value["examination"] not in EXAMINATION_STATES:
         raise SchemaRefusal("a Perlectio audit record names an unknown examination state")
     if value["unresolved"] != unresolved_state(value["examination"]):
         raise SchemaRefusal(
