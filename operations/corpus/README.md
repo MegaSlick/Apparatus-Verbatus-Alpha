@@ -40,6 +40,28 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   `operations/submit/submit.py`.
 - `reference.py`, `compare.py` (Unit 4) — the reference-record family and the
   offline IoU comparator.
+- `local_admission.py` — the existing local sets (`recordgold_evaluation_val_v1`,
+  `recordgold_production_train_v1`: `pages/`, `page_manifest.jsonl`, `gold.jsonl`,
+  `fetch_receipt.json`) admitted as reference truth, every record admitted or refused
+  by name in a `recordgold-local-admission.v1` ledger. It holds the stored page's
+  measured dimensions, so it carries the forty records stated in a 180-degree IIIF
+  view into the stored frame by `(W - x - w, H - y - h, w, h)` and records the URL,
+  rotation, original box, carried box, page digest and dimensions of every crossing;
+  `plan.py`'s fetch-time parser still refuses those rows because it has no dimensions
+  to convert with. A rotation other than `0`/`180` stays a named refusal. Measured over
+  the local sets on 2026-09-10: 784 of 784 validation records admitted (769 at 0, 15 at
+  180) and 6,178 of 6,178 training records (6,153 at 0, 25 at 180); nothing under
+  `OCR_Gold` is written.
+- `evaluate.py` — the one caller of `compare_page` that builds its hypotheses from a
+  real run: it reads the sealed Armarium export, re-digests every delivered text against
+  the Archetypus record that established it (`digest_of(text)`), maps each export
+  category to the scorer's response state (a held, refused, blank or excluded act is an
+  empty hypothesis against its reference -- counted, never dropped, never perfect), and
+  writes one `recordgold-evaluation.v1` record binding code ref, run configuration
+  digests, export digest, reference ledger digest and the whole denominator: every
+  reference record scored, missed or not attempted, every proposal region by export
+  category, every unmatched pipeline act reported and not scored. A report over the
+  synthetic fixture is labelled a fixture result in the record and in its summary.
 
 All four units exist as of this commit; the fetch protocol, comparator, and
 hold-out sections below describe behaviour that runs, not a shape still to be

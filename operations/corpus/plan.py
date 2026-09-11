@@ -65,6 +65,16 @@ SCHEMA = "recordgold-fetch-plan.v1"
 EXPECTED_HOST = "europe.iiif.teklia.com"
 EXPECTED_SIZE = "full"
 EXPECTED_ROTATION = "0"
+# The one rotation this parser accepts by default, and the one more it may be
+# asked to accept. A 180-degree IIIF view is a defined geometry -- the region's
+# `x,y,w,h` are stated in the rotated frame and map to the stored page as
+# `(W - x - w, H - y - h, w, h)` -- so a caller that holds the stored page's
+# width and height can carry the box across honestly; `local_admission.py` is
+# that caller, over the forty existing rows this parser measured and refused.
+# The fetch plan itself keeps the default: it has no page dimensions in hand
+# when it parses, so for it a rotated box is still a box in the wrong frame.
+# 90 and 270 swap the axes and are not admitted by either path.
+SUPPORTED_ROTATIONS = frozenset({"0", "180"})
 EXPECTED_QUALITY = "default"
 EXPECTED_FORMAT = "jpg"
 
@@ -106,6 +116,10 @@ class ParsedRecordUrl(NamedTuple):
 
     host: str
     region: dict[str, int]
+    """`x,y,w,h` exactly as `record_url` states them, in the frame of `rotation`."""
+
+    rotation: str = EXPECTED_ROTATION
+    """The IIIF rotation parameter; `"0"` unless the caller asked to admit another."""
 
 
 def _unsafe_segment(segment: str) -> bool:
@@ -124,8 +138,18 @@ def _unsafe_segment(segment: str) -> bool:
     )
 
 
-def parse_record_url(record_url: Any) -> ParsedRecordUrl:
-    """Parse one `record_url`, refusing anything this parser does not recognise."""
+def parse_record_url(
+    record_url: Any, *, rotations: frozenset[str] = frozenset({EXPECTED_ROTATION})
+) -> ParsedRecordUrl:
+    """Parse one `record_url`, refusing anything this parser does not recognise.
+
+    `rotations` names the IIIF rotation values the caller can honestly carry;
+    every other value is refused by name as before. The default admits only
+    `"0"`, so the fetch plan and the hold-out ledger are unchanged. A caller
+    passing `SUPPORTED_ROTATIONS` receives the rotation on the result and owns
+    the frame conversion; a value outside `SUPPORTED_ROTATIONS` is refused even
+    when asked for, because no conversion for it exists here.
+    """
     if not isinstance(record_url, str):
         raise CorpusRefusal(
             f"unparseable-record-url: record_url must be a string, got {record_url!r}"
@@ -148,11 +172,12 @@ def parse_record_url(record_url: Any) -> ParsedRecordUrl:
             f"unsupported-size-parameter: {size!r} in {record_url!r}, only {EXPECTED_SIZE!r} is recognised"
         )
     rotation = match.group("rotation")
-    if rotation != EXPECTED_ROTATION:
+    if rotation not in rotations or rotation not in SUPPORTED_ROTATIONS:
         raise CorpusRefusal(
             f"unsupported-rotation-parameter: {rotation!r} in {record_url!r}, only "
-            f"{EXPECTED_ROTATION!r} is recognised — a non-zero rotation would put the "
-            "region's x,y,w,h in a different frame from the fetched pixels"
+            f"{sorted(rotations & SUPPORTED_ROTATIONS)!r} recognised here — a rotation this "
+            "caller cannot convert would put the region's x,y,w,h in a different frame "
+            "from the stored pixels"
         )
     quality = match.group("quality")
     if quality != EXPECTED_QUALITY:
@@ -189,6 +214,7 @@ def parse_record_url(record_url: Any) -> ParsedRecordUrl:
         identifier_encoded=identifier_encoded,
         host=host,
         region={"x": x, "y": y, "w": w, "h": h},
+        rotation=rotation,
     )
 
 
