@@ -835,6 +835,21 @@ def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
     return value
 
 
+def _counts(value: Any, label: str) -> dict[str, int]:
+    """A histogram: a mapping from names to non-negative integers, or a refusal by name."""
+    if not isinstance(value, dict):
+        raise CorpusRefusal(f"malformed-record: {label} is not a mapping of counts")
+    for name, count in value.items():
+        if (
+            not isinstance(name, str)
+            or not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 0
+        ):
+            raise CorpusRefusal(f"malformed-record: {label}[{name!r}] is not a count")
+    return value
+
+
 def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
     """Refuse a ledger that is not exactly `recordgold-local-admission.v1`.
 
@@ -941,13 +956,16 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
             f"malformed-record: the rows decide {admitted} admitted / {refused} refused, the "
             f"summary claims {summary['admitted']} / {summary['refused']}"
         )
-    histogram = summary["refused_by_reason"]
-    if not isinstance(histogram, dict) or sum(histogram.values()) != refused:
+    # Every histogram is a mapping of non-negative integer counts before any of
+    # them is summed: a list or a bool there is refused by name, never added up
+    # (CodeRabbit on e97d1482).
+    histogram = _counts(summary["refused_by_reason"], "refused_by_reason")
+    if sum(histogram.values()) != refused:
         raise CorpusRefusal(
             "malformed-record: refused_by_reason does not sum to the number of refused rows"
         )
-    outcomes = summary["pages_by_outcome"]
-    if not isinstance(outcomes, dict) or set(outcomes) != set(_PAGE_OUTCOMES):
+    outcomes = _counts(summary["pages_by_outcome"], "pages_by_outcome")
+    if set(outcomes) != set(_PAGE_OUTCOMES):
         raise CorpusRefusal(
             f"malformed-record: pages_by_outcome must name exactly {sorted(_PAGE_OUTCOMES)}"
         )
@@ -956,11 +974,8 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
             f"malformed-record: pages_by_outcome accounts for {sum(outcomes.values())} page(s) "
             f"of the {summary['pages_listed']} the manifest lists"
         )
-    for name, count in sorted(outcomes.items()):
-        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
-            raise CorpusRefusal(f"malformed-record: pages_by_outcome[{name!r}] is not a count")
-    rotations = summary["admitted_by_rotation"]
-    if not isinstance(rotations, dict) or sum(rotations.values()) != admitted:
+    rotations = _counts(summary["admitted_by_rotation"], "admitted_by_rotation")
+    if sum(rotations.values()) != admitted:
         raise CorpusRefusal(
             "malformed-record: admitted_by_rotation does not account for every admitted record"
         )

@@ -763,6 +763,21 @@ def test_the_validator_refuses_a_report_edited_after_it_was_sealed(sealed_run):
     assert "disagree with the denominators" in str(refused.value)
 
 
+@pytest.mark.parametrize("value", [[1], {"delivered": True}, {"delivered": -1}, {"delivered": "1"}])
+def test_the_validator_refuses_a_category_histogram_that_is_not_counts(sealed_run, value):
+    """A list, a bool, a negative or a string is refused by name before it is summed."""
+    report = json.loads(
+        json.dumps(
+            evaluate_run(sealed_run, [_fixture_reference_for_page_one(sealed_run)], code_ref="test")
+        )
+    )
+    tampered = json.loads(json.dumps(report))
+    tampered["denominators"]["reference_records_scored_by_export_category"] = value
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_evaluation(_reseal(tampered))
+    assert "reference_records_scored_by_export_category" in str(refused.value)
+
+
 def test_the_validator_refuses_a_foreign_schema_and_a_label_that_does_not_match(sealed_run):
     report = json.loads(
         json.dumps(

@@ -888,7 +888,18 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
             "malformed-record: the evaluation's record denominator does not reconcile: "
             f"{sum(outcomes.values())} row(s) for {corpus['reference_records']} reference record(s)"
         )
-    if sum(totals["reference_records_scored_by_export_category"].values()) != outcomes["scored"]:
+    by_category = totals["reference_records_scored_by_export_category"]
+    if not isinstance(by_category, dict) or any(
+        not isinstance(name, str)
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or count < 0
+        for name, count in by_category.items()
+    ):
+        raise CorpusRefusal(
+            "malformed-record: reference_records_scored_by_export_category is not a mapping of counts"
+        )
+    if sum(by_category.values()) != outcomes["scored"]:
         raise CorpusRefusal(
             "malformed-record: the scored-by-category histogram does not sum to the scored count"
         )

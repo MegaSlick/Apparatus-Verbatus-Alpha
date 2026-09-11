@@ -672,6 +672,30 @@ def test_the_validator_refuses_a_reason_histogram_that_does_not_sum(tmp_path):
     assert "refused_by_reason" in str(refused.value)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("refused_by_reason", [7]),
+        ("refused_by_reason", {"malformed-record": True}),
+        (
+            "pages_by_outcome",
+            {"admitted": -1, "refused": 3, "no-gold-row": 0, "all-records-refused": 0},
+        ),
+        ("admitted_by_rotation", ["0", "0"]),
+        ("admitted_by_rotation", {"0": "2"}),
+    ],
+)
+def test_the_validator_refuses_a_histogram_that_is_not_counts_before_summing_it(
+    tmp_path, field, value
+):
+    """A list, a bool, a string or a negative is refused by name, never added up."""
+    ledger = json.loads(json.dumps(admit_local_set(_two_page_set(tmp_path / "set"), split="val")))
+    ledger["summary"][field] = value
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_local_admission_ledger(_reseal(ledger))
+    assert field in str(refused.value)
+
+
 def test_the_validator_refuses_a_ledger_whose_pages_and_rows_do_not_name_each_other(tmp_path):
     """The link `evaluate.py` trusts: an admitted row's page must be in the ledger."""
     ledger = json.loads(json.dumps(admit_local_set(_two_page_set(tmp_path / "set"), split="val")))
