@@ -1085,3 +1085,102 @@ def test_a_doubt_layer_entry_that_is_not_an_object_is_refused_by_field_and_index
             )
         )
     assert gaps.value.field == "acts[].row.uncertainty.gaps"
+
+
+def test_an_audited_reading_does_not_credit_the_reader_with_the_audits_own_spans():
+    """The union is not attributable on this surface, so it is not attributed.
+
+    Under a sealed cap of 0 the audit mints exhausted-cap spans, and a reader
+    that also assesses adds its own; the published layer holds both and nothing
+    in it says which is which. Saying "assessed by the reader; 3 span(s)" would
+    credit a person's reading of the screen to an instrument that reported one
+    of them (GOVERNANCE 10).
+    """
+    projected = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+    reader = {"start": 6, "end": 10, "alternatives": ["beta"], "confidence": "high"}
+    audited = "\n".join(
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [projected, reader],
+                    "gaps": [],
+                }
+            )
+        )
+    )
+
+    assert "assessed by the reader; the span(s) below are its report and the audit" in audited
+    assert "projection together; 2 uncertain span(s), 0 gap(s)" in audited
+
+    # A record with no audit behind it -- an instrument reading -- publishes only
+    # the reader's own spans, and there the attribution is provable.
+    instrument = "\n".join(
+        review_text.render(
+            {
+                "run_id": "r",
+                "acts": [
+                    {
+                        "act_id": "a",
+                        "act_key": "a1",
+                        "category": "read: read, awaiting the Recensor",
+                        "crops": [],
+                        "row": {
+                            "reading": {
+                                "outcome": "read",
+                                "text": "alpha beta",
+                                "audit": None,
+                                "uncertainty_assessment": {"state": "assessed", "problem": None},
+                                "uncertain_spans": [reader],
+                                "gaps": [],
+                            }
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    assert "doubts: assessed by the reader; 1 uncertain span(s), 0 gap(s)" in instrument
+
+
+def test_two_instruments_doubting_the_same_characters_are_one_line_naming_both():
+    """The layer keeps both entries; this surface says what the pair means.
+
+    Dropping the repeat in the producer would have erased the only trace that
+    the reader agreed with the audit -- no artifact holds the reader's report
+    separately -- and printing it twice would say two doubts were found where
+    one was, twice over.
+    """
+    span = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+    lines = review_text.render(
+        _delivered_act(
+            {
+                "assessment": {"state": "assessed", "problem": None},
+                "uncertain_spans": [dict(span), dict(span)],
+                "gaps": [],
+            }
+        )
+    )
+    text = "\n".join(lines)
+
+    assert "2 uncertain span(s)" in text
+    assert text.count("[0, 5) 'alpha'") == 1
+    assert "doubted by both instruments" in text
+
+
+def test_a_reading_sealed_before_the_doubt_contract_says_so_rather_than_nothing():
+    """Absent is a fact about the record's age, and prints; malformed is a fault.
+
+    Flattened together, both printed as no doubt line at all -- the pre-F2
+    silence restored on the one surface a person reads.
+    """
+    absent = "\n".join(
+        review_text.render(_delivered_act({"uncertain_spans": [], "gaps": [], "assessment": None}))
+    )
+    assert "doubts: not recorded — this reading was sealed before the reader's doubt" in absent
+
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            _delivered_act({"uncertain_spans": [], "gaps": [], "assessment": "assessed"})
+        )
+    assert refused.value.field == "acts[].row.uncertainty.uncertainty_assessment"

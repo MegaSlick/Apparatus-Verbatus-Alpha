@@ -272,10 +272,18 @@ class FixtureReader:
         }
 
     @staticmethod
-    def _known_pass_kind(row) -> None:
-        """The one per-table check the three doubt tables share."""
-        if "pass_kind" in row and row["pass_kind"] not in PASS_KINDS:
-            raise KeyError(f"a doubt row declares unknown pass kind {row['pass_kind']!r}")
+    def _pass_kind_check(table: str):
+        """The one per-table check the three doubt tables share, naming its table.
+
+        A refusal that says only "a doubt row" sends its reader to three tables
+        to find the one row that is wrong.
+        """
+
+        def _known_pass_kind(row) -> None:
+            if "pass_kind" in row and row["pass_kind"] not in PASS_KINDS:
+                raise KeyError(f"{table} row declares unknown pass kind {row['pass_kind']!r}")
+
+        return _known_pass_kind
 
     def _selected_rows(self, table: str, act_key: str, pass_kind: str) -> list[dict[str, Any]]:
         """Every row of a many-per-act doubt table for one scenario, act and pass.
@@ -287,7 +295,7 @@ class FixtureReader:
         """
         return [
             row
-            for row in self._validated_rows(table, self._known_pass_kind, many=True)
+            for row in self._validated_rows(table, self._pass_kind_check(table), many=True)
             if row["scenario"] == self._scenario
             and row["act_key"] == act_key
             and row.get("pass_kind", pass_kind) == pass_kind
@@ -306,7 +314,7 @@ class FixtureReader:
         """
         matched = [
             row
-            for row in self._validated_rows(table, self._known_pass_kind, keyed_by_pass=True)
+            for row in self._validated_rows(table, self._pass_kind_check(table), keyed_by_pass=True)
             if row["scenario"] == self._scenario
             and row["act_key"] == act_key
             and row.get("pass_kind", pass_kind) == pass_kind

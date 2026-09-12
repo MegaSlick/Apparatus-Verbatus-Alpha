@@ -871,16 +871,22 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
         payload = _payload_of(reading_row, "the Perlectio record")
         truncation = payload.get("truncation")
         audit = payload.get("audit")
-        assessment = payload.get("uncertainty_assessment")
+        # The doubt report and its two layers are carried through EXACTLY as the
+        # record holds them, unnormalised. Mapping an unreadable value to `None`
+        # here spent the one distinction the renderer needs: `None` is a record
+        # written before this contract existed and says so on the screen, while
+        # a present-but-malformed value is a fault of the run tree and is
+        # refused by field and index like every other projection list. Flattened
+        # to `None`, a broken layer printed as no doubt line at all -- the
+        # pre-F2 silence, restored on the one surface a person reads (the
+        # independent review of 2026-09-11).
         reading = {
             "outcome": reading_row["outcome"],
             "text": payload.get("text"),
             "reason": payload.get("reason"),
-            "uncertainty_assessment": assessment if isinstance(assessment, dict) else None,
-            "uncertain_spans": payload.get("uncertain_spans")
-            if isinstance(payload.get("uncertain_spans"), list)
-            else None,
-            "gaps": payload.get("gaps") if isinstance(payload.get("gaps"), list) else None,
+            "uncertainty_assessment": payload.get("uncertainty_assessment"),
+            "uncertain_spans": payload.get("uncertain_spans"),
+            "gaps": payload.get("gaps"),
             "truncation": truncation.get("classification")
             if isinstance(truncation, dict)
             else None,

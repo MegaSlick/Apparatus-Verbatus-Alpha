@@ -25,6 +25,7 @@ import annotations
 import audit
 import pytest
 import reader as reader_module
+from test_prior_protocol import sampling_approval_records
 
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
@@ -288,8 +289,13 @@ def test_a_declared_doubt_arrives_intact_beside_the_same_text_in_review_and_expo
 
     reviews = _records(tree, RECENSOR, "review")
     assert reviews["a1"]["outcome"] == "accepted", "a doubt is displayed, never a hold"
-    assert reviews["a1"]["payload"]["uncertainty_assessment"] == "assessed"
-    assert reviews["a2"]["payload"]["uncertainty_assessment"] == "assessed"
+    # The review carries the same closed object the Perlectio sealed, under the
+    # same name: one field name, one shape, wherever a consumer meets it.
+    assert reviews["a1"]["payload"]["uncertainty_assessment"] == {
+        "state": "assessed",
+        "problem": None,
+    }
+    assert reviews["a2"]["payload"]["uncertainty_assessment"]["state"] == "assessed"
 
     established = _records(tree, ARCHETYPUS, "archetypus")
     assert established["a1"]["payload"]["text"] == A1_TEXT
@@ -325,7 +331,13 @@ def test_a_declared_doubt_arrives_intact_beside_the_same_text_in_review_and_expo
     export_row = next(act for act in projection["acts"] if act["act_key"] == "a1")["row"]
     assert export_row is not None  # the export view carries the export row
     text = "\n".join(review_text.render(projection))
-    assert "doubts: assessed by the reader; 1 uncertain span(s), 1 gap(s)" in text
+    # An established reading's layer is a union of the reader's report and the
+    # audit's projection, and this surface cannot tell which entry is whose, so
+    # it does not credit the reader with all of them.
+    assert (
+        "doubts: assessed by the reader; the span(s) below are its report and the audit "
+        "projection together; 1 uncertain span(s), 1 gap(s)" in text
+    )
     assert "[29, 34) 'gamma' confidence low; alternatives: gamna, gaMma" in text
     assert "gap (internal) at 23" in text
 
@@ -378,7 +390,11 @@ def test_a_malformed_report_holds_the_act_with_the_problem_retained_and_no_empty
     assert "outside text bounds (0..34)" in a1["uncertainty_assessment"]["problem"]
     review = _records(tree, RECENSOR, "review")["a1"]
     assert review["outcome"] == "held-for-review"
-    assert review["payload"]["uncertainty_assessment"] == "malformed"
+    assert review["payload"]["uncertainty_assessment"]["state"] == "malformed"
+    assert (
+        review["payload"]["uncertainty_assessment"]["problem"]
+        == a1["uncertainty_assessment"]["problem"]
+    )
     assert "doubt report over this act could not be anchored" in review["payload"]["reason"]
     assert a1["uncertainty_assessment"]["problem"] in review["payload"]["reason"]
     export, manifest, rows = _export(tree)
@@ -462,18 +478,22 @@ def test_the_cap_projection_leads_the_readers_own_doubts_and_neither_is_dropped(
     assert payload["uncertain_spans"][: len(projected)] == projected
     assert payload["uncertain_spans"][len(projected) :] == [A1_DOUBT]
     assert payload["gaps"] == [A1_GAP]
-    # Two instruments, no entry written down twice.
-    written = [json.dumps(span, sort_keys=True) for span in payload["uncertain_spans"]]
-    assert len(written) == len(set(written))
+    # Nothing beyond those two sources, and nothing dropped between them.
+    assert payload["uncertain_spans"] == projected + [A1_DOUBT]
     audit.validate_chain(tree, a1, a1["subject_id"])
 
 
-def test_the_union_drops_an_exact_repeat_and_keeps_an_overlap():
+def test_the_union_keeps_every_entry_including_an_exact_repeat():
     """The producer's own union rule, asked directly.
 
+    An exact repeat is kept, not dropped: the two entries are the only record
+    that both instruments doubted those characters, because nothing in the run
+    holds the reader's report separately. What a pair means is said once, by the
+    operator console, which coalesces it into one line naming both instruments.
+
     A fixture cannot declare a doubt at offsets the audit has not computed yet,
-    so the exact-repeat case is unreachable end to end; the rule itself is
-    asked here rather than left as a branch nothing measures (GOVERNANCE 10).
+    so this case is unreachable end to end; the rule is asked here rather than
+    left as a branch nothing measures (GOVERNANCE 10).
     """
     perlector = _perlector()
     projected = {"start": 3, "end": 7, "alternatives": [], "confidence": "low"}
@@ -482,6 +502,7 @@ def test_the_union_drops_an_exact_repeat_and_keeps_an_overlap():
 
     assert perlector._union_with_projection([projected], [repeat, overlapping]) == [
         projected,
+        repeat,
         overlapping,
     ]
     # The projection always leads, and is published even when the reader said
@@ -528,11 +549,14 @@ def test_an_emptied_reading_re_asks_the_report_instead_of_emptying_it_under_asse
     assessed this act and reported nothing" over a report it had just thrown
     away.
 
-    Asked here rather than through a scenario because the re-proof path cannot
-    be reached end to end: `audit.validate_finding` refuses a re-proof that
-    changes text outside a flagged location, so no re-proof in this fixture can
-    empty an act Pass B read. The Pass-B half of the same rubric IS driven end
-    to end, by `reader-doubt-unreadable` below.
+    Asked here rather than through a scenario because no scenario in this
+    fixture produces a flag whose location covers the act: `audit.validate_finding`
+    refuses a re-proof that changes text outside a flagged location, and the
+    flags these scenarios mint are narrow testimony diffs, so no re-proof here
+    can empty a text Pass B read. Whether some flag class could cover a whole
+    act and make the path reachable is not settled either way; the end-to-end
+    re-proof path is named as untested. The Pass-B half of the same rubric IS
+    driven end to end, by `reader-doubt-unreadable` above.
     """
     perlector = _perlector()
     whole_act = [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}]
@@ -563,27 +587,72 @@ def test_an_emptied_reading_re_asks_the_report_instead_of_emptying_it_under_asse
     assert sealed == {"state": "assessed", "problem": None}
     assert spans == report["uncertain_spans"] and gaps == []
 
+    # A gap the re-ask CAN anchor to an empty text -- a zero-width `leading` or
+    # `trailing` gap at offset 0 -- would otherwise come back `assessed` and
+    # then be discarded in favour of the outcome's whole-act gap, under a state
+    # saying the reader was asked and answered. Over an empty text the two are
+    # the same claim, but "nothing is dropped in silence" has to be literally
+    # true, so the report is set aside as `malformed` and says why.
+    degenerate = {
+        "state": "assessed",
+        "uncertain_spans": [],
+        "gaps": [{"position": "leading", "start": 0, "end": 0, "witness_evidence": []}],
+        "problem": None,
+    }
+    sealed, spans, gaps = perlector._published_doubt(
+        {"text": "   ", "assessment": degenerate},
+        text="",
+        outcome="no-readable-text",
+        whole_act_gaps=whole_act,
+    )
+    assert sealed["state"] == "malformed"
+    assert "the whole-act gap is the only annotation the outcome allows" in sealed["problem"]
+    assert spans == [] and gaps == whole_act
+
 
 def test_the_instrument_records_carry_the_doubt_report_too(tmp_path):
     """A doubt reported on an instrument call is a measurement, not a discard.
 
-    Pass A's `lectio-prior` runs for every act, so it is the record this asserts
-    on; Lectio nuda and the `primed-without-prior` control are sampled and are
-    asserted wherever the run happens to draw them.
+    Both instruments are sampled, and their default rate is zero, so the run
+    below raises each to 1000 per mille with its approval reference exactly as
+    `test_prior_protocol.py` does. Named because the first version of this test
+    ran the plain `happy` scenario and looped over two empty collections: two
+    assertions that never executed and read as a pass (GOVERNANCE 10; the
+    independent review of 2026-09-11).
     """
     root = tmp_path / "runs"
-    assert _run(root, "happy").returncode == 0
+    perlector = _perlector()
+    sampled = (
+        "--nuda-per-mille",
+        "1000",
+        "--nuda-approval-ref",
+        perlector.NUDA_APPROVAL_SUBJECT,
+        "--perlector-instrument-per-mille",
+        "1000",
+        "--perlector-instrument-approval-ref",
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+    )
+    # A sampled instrument is Tyrel's decision and the Perlector resolves the
+    # approval record it was told to; the run refuses without one on disk. The
+    # records are rebuilt from the flags by the sibling suite's own deterministic
+    # helper rather than copied, so a change to the binding cannot leave this
+    # test placing a record the stage no longer asks for.
+    placed = RunTree(root, "r")
+    for record in sampling_approval_records("happy", *sampled).values():
+        placed.write_approval_record(record)
+    assert _run(root, "happy", *sampled).returncode == 0
+
     tree = RunTree(root, "r")
-    priors = _records(tree, PERLECTOR, "lectio-prior")
-    assert priors, "Pass A publishes one retained draft per act"
-    for record in priors.values():
-        assert record["payload"]["uncertainty_assessment"] == {
-            "state": "not-assessed",
-            "problem": annotations.NOT_ASSESSED_REASON,
-        }
-    for kind in ("lectio-nuda", "primed-without-prior"):
-        for record in _records(tree, PERLECTOR, kind).values():
-            assert record["payload"]["uncertainty_assessment"]["state"] == "not-assessed"
+    expected = {"state": "not-assessed", "problem": annotations.NOT_ASSESSED_REASON}
+
+    for kind in ("lectio-prior", "lectio-nuda", "primed-without-prior"):
+        records = _records(tree, PERLECTOR, kind)
+        assert records, f"this run must publish at least one {kind} record"
+        for record in records.values():
+            assert record["payload"]["uncertainty_assessment"] == expected
+            # And the layers stay empty under that state, which is what
+            # `_validate_sealed_doubt` refuses to publish otherwise.
+            assert record["payload"]["uncertain_spans"] == []
 
 
 # --- The fixture's own refusals, and the producer's pre-publication check ------
@@ -725,7 +794,7 @@ def test_the_producer_refuses_a_sealed_doubt_report_it_would_never_have_written(
     payload = {"uncertainty_assessment": assessment, "uncertain_spans": [], "gaps": []}
 
     with pytest.raises(SchemaRefusal, match=re.escape(expected)):
-        perlector._validate_sealed_doubt(payload, fields=frozenset({"uncertainty_assessment"}))
+        perlector._validate_sealed_doubt(payload, fields=perlector._LECTIO_NUDA_FIELDS)
 
 
 @pytest.mark.parametrize(
@@ -757,8 +826,13 @@ def test_an_instrument_record_may_not_publish_a_layer_its_state_denies(payload, 
     only `validate_chain` can take apart."""
     perlector = _perlector()
 
+    # The real closed field sets, not invented ones: if a record kind ever
+    # gained or lost `audit`, this test moves with it.
+    assert "audit" not in perlector._LECTIO_NUDA_FIELDS
+    assert "audit" in perlector._PERLECTIO_FIELDS
     with pytest.raises(SchemaRefusal, match=expected):
-        perlector._validate_sealed_doubt(payload, fields=frozenset({"uncertainty_assessment"}))
+        perlector._validate_sealed_doubt(payload, fields=perlector._LECTIO_NUDA_FIELDS)
     # The same payload under a record that does carry an audit is this check's
-    # business no longer, and passes here.
-    perlector._validate_sealed_doubt(payload, fields=frozenset({"uncertainty_assessment", "audit"}))
+    # business no longer, and passes here: `validate_chain` applies the rule
+    # there, over the finding that says which span is whose.
+    perlector._validate_sealed_doubt(payload, fields=perlector._PERLECTIO_FIELDS)

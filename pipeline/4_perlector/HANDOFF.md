@@ -151,10 +151,14 @@ truncation       -- {classification, signals}, present on every attempted
                     reading regardless of outcome (see below)
 uncertain_spans  -- [{start, end, alternatives, confidence}, ...]: the exhausted-cap
                     projection first (cap 0 only), then the reader's own assessed
-                    doubts over the published text. A reader span identical to a
-                    projected one is dropped rather than published twice; one that
-                    merely overlaps is kept, and means two instruments doubted
-                    overlapping characters
+                    doubts over the published text. NOTHING is dropped, including
+                    an exact repeat: two identical entries mean both instruments
+                    doubted those characters the same way, and since no artifact
+                    holds the reader's report separately that pair is the only
+                    record of the agreement. An overlap means the two doubted
+                    overlapping characters differently. The operator console
+                    coalesces an identical pair into one line naming both
+                    instruments; consumers that count doubts should do the same
 gaps             -- [{position, start, end, witness_evidence}, ...]: the whole-act
                     gap of a `no-readable-text` outcome, or the reader's own
                     zero-width gaps (empty witness_evidence)

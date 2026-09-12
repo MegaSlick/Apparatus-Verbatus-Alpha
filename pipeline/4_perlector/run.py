@@ -2657,6 +2657,13 @@ def _validate_sealed_doubt(payload: dict, *, fields: frozenset) -> None:
     report, and only `common/perlector_audit.validate_chain` -- which can read
     the finding -- can say which span is whose; it applies exactly this rule
     there.
+
+    What makes that exemption safe is one call, named here so a later path
+    cannot lose it silently: `_read_the_acts` runs `audit.validate_chain` on the
+    assembled reading immediately before the one `perlectio` publish. A path
+    that published an established Perlectio without it would leave this rule
+    unenforced on the only record kind exempted from it (the independent review
+    of 2026-09-11).
     """
     record = payload["uncertainty_assessment"]
     if not isinstance(record, dict) or set(record) != {"state", "problem"}:
@@ -2733,15 +2740,16 @@ def _union_with_projection(
 ) -> list[dict[str, Any]]:
     """The published span layer: the exhausted-cap projection, then the reader's own.
 
-    A reader span that is field-for-field one of the projected spans is dropped
-    rather than published twice -- two identical entries are one doubt written
-    down twice, and the review surface would print it as two doubts. A span that
-    merely overlaps is kept: two instruments doubting overlapping characters
-    with different alternatives or confidences are two readings of the evidence,
-    and collapsing them would lose one. The stage HANDOFF says so where it
+    Nothing is dropped, including an exact repeat. Two entries covering the same
+    characters with the same alternatives and confidence are two instruments
+    doubting the same thing, and no artifact in this run holds the reader's
+    report separately -- so dropping the repeat would erase the only trace that
+    the reader agreed with the audit, which is a fact and not a duplication.
+    The review surface coalesces such a pair into one line naming both
+    instruments; the layer keeps both. The stage HANDOFF says so where it
     describes this order.
     """
-    return projected + [span for span in reader_spans if span not in projected]
+    return projected + list(reader_spans)
 
 
 def _sealed_assessment(assessment: dict[str, Any]) -> dict[str, Any]:
@@ -2766,7 +2774,21 @@ def _published_doubt(
     nothing is dropped in silence (independent audit of 2026-09-10, F2).
     """
     if outcome == "no-readable-text":
-        return _sealed_assessment(_assessed(result, text="")), [], whole_act_gaps
+        reasked = _assessed(result, text="")
+        # A span cannot anchor to an empty text, so a reported span already
+        # comes back `malformed`. A zero-width `leading` or `trailing` gap at
+        # offset 0 does validate over one, and would then be discarded in favour
+        # of the outcome's whole-act gap under a state still saying the reader
+        # was asked and answered. Over an empty text those are the same claim,
+        # but "nothing is dropped in silence" has to be literally true: a report
+        # with any layer of its own is `malformed` here, and visible.
+        if reasked["uncertain_spans"] or reasked["gaps"]:
+            reasked = annotations.malformed_assessment(
+                "the reader's doubt report was set aside: it reports a doubt of its own over "
+                "an act published as unreadable, where the whole-act gap is the only "
+                "annotation the outcome allows"
+            )
+        return _sealed_assessment(reasked), [], whole_act_gaps
     assessment = _assessed(result, text=text)
     return (
         _sealed_assessment(assessment),
@@ -4116,6 +4138,18 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 # published: a re-proof's spans are anchored to the re-proof's
                 # own text, and Pass B's to Pass B's, so nothing is re-anchored
                 # by guesswork and nothing is silently dropped.
+                #
+                # Both layers are replaced outright, which subsumes the case a
+                # separate branch used to clear here: a Pass-B `no-readable-text`
+                # act carried the whole-act gap, and a re-proof that restored
+                # readable text would have published established text beside a
+                # gap claiming the act was empty. The re-proof's own report
+                # cannot carry a whole-act gap -- `annotations.validate_assessment`
+                # refuses a reader-reported one by name, and an unassessed or
+                # malformed report carries no layers at all -- so after this
+                # assignment the old condition can no longer be true, and the
+                # branch that tested it was a line nobody could say was for
+                # anything (the independent review of 2026-09-11).
                 reproof_assessment = _assessed(reproof, text=final_text)
                 payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
                 payload["uncertain_spans"] = list(reproof_assessment["uncertain_spans"])
@@ -4201,17 +4235,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                         "", dissent_testimonia(row["testimonia"], row["attachment_view"])
                     )
                     payload["self_revision"] = departures("", row["prior"]["text"])
-                elif payload["gaps"] and all(
-                    gap.get("position") == "whole-act" for gap in payload["gaps"]
-                ):
-                    # The symmetric direction: a Pass-B no-readable-text act
-                    # carried the whole-act gap, and a re-proof that restored
-                    # readable text would otherwise publish established text
-                    # BESIDE a gap claiming the whole act is empty --
-                    # validate_annotations refuses exactly that, so the valid
-                    # re-proof could never publish. Only the whole-act shape
-                    # clears; a legitimate narrower gap is not this case.
-                    payload["gaps"] = []
             # After the projection, not before it: `validate_chain` recomputes
             # the change record from the draft's semi-final against the
             # PUBLISHED text, so the record must describe the projected text.

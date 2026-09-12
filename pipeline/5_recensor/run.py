@@ -3674,7 +3674,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         audit_reproof_truncation = (
             None if audit_facts is None else audit_facts["reproof_truncation"]
         )
+        # Carried onto the review as the same closed `{state, problem}` object
+        # the Perlectio, the Archetypus record and the export row use, so one
+        # field name has one shape wherever a consumer meets it. It used to be
+        # the bare state string here, which is two types under one name (the
+        # independent review of 2026-09-11). `None` still means "no Perlectio,
+        # so no report", exactly as the Designator-held shape above says.
         assessment = latest_payload.get("uncertainty_assessment")
+        assessment_record = (
+            {"state": assessment.get("state"), "problem": assessment.get("problem")}
+            if isinstance(assessment, dict)
+            else None
+        )
         assessment_state = assessment.get("state") if isinstance(assessment, dict) else None
         # The survey must come from the exact Perlectio this review assesses.
         cross_coverage = act_cross_capture_coverage(
@@ -3910,7 +3921,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # canonical export is the consumer that would believe it.
                     "audit_unresolved": audit_unresolved,
                     "audit_examination": audit_examination,
-                    "uncertainty_assessment": assessment_state,
+                    "uncertainty_assessment": assessment_record,
                     "cross_capture_coverage": cross_coverage,
                 },
             )
@@ -4115,10 +4126,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # was delivered and did not finish (F1). `None` exactly where
                 # `audit_unresolved` is `None`.
                 "audit_examination": audit_examination,
-                # The reader's own doubt-report state (`assessed`, `not-assessed`,
-                # `malformed`), so a review can say whether an empty uncertainty
-                # layer is an absence of doubt or an absence of a channel (F2).
-                "uncertainty_assessment": assessment_state,
+                # The reader's own doubt report, `{state, problem}`, so a review
+                # can say whether an empty uncertainty layer is an absence of
+                # doubt or an absence of a channel (F2), and can quote the
+                # problem where there is one. The same name carries the same
+                # shape on every record that has one.
+                "uncertainty_assessment": assessment_record,
                 "cross_capture_coverage": cross_coverage,
                 # Present only on a `confirmed-blank`, because it is the evidence
                 # that outcome rests on and nothing else has any. Every other
