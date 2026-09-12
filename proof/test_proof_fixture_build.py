@@ -723,6 +723,18 @@ def test_the_declared_reader_doubt_reports_anchor_to_the_texts_they_are_declared
     assert reproof_text[29:35] == "gamma!"
     assert doubts[("audit-change", "audit-reproof")]["end"] == 35
     assert doubts[("audit-change", "perlectio")]["end"] == 34
+    # `reader-doubt-unreadable` declares its doubt for every pass (no `pass_kind`)
+    # and in bounds for the act's declared text -- which the `no-readable-text`
+    # outcome then empties, so the producer must refuse it against the text it
+    # actually publishes. Retrieved by key rather than left to the `==` above, so
+    # a row that lost its scenario or gained a pass kind fails here by name
+    # (found by CodeRabbit on the rebased candidate).
+    unreadable = doubts[("reader-doubt-unreadable", None)]
+    assert unreadable["act_key"] == "a1"
+    assert (unreadable["start"], unreadable["end"]) == (29, 34)
+    assert unreadable["alternatives"] == ["gamna"]
+    assert unreadable["confidence"] == "low"
+    assert unreadable["end"] <= len(acts["a1"])
     assert skeleton["reader_gap"] == [
         {"scenario": "reader-doubt", "act_key": "a1", "position": "internal", "offset": 23}
     ]

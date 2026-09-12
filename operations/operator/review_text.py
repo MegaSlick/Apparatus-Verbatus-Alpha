@@ -151,35 +151,32 @@ def _one_line(value: Any, limit: int = 160) -> str:
     return f"{text[:limit]}… (first {limit} characters as shown, of a {len(raw)}-character value)"
 
 
-def _doubt_entries(value: Any, label: str) -> list[dict[str, Any]]:
-    """One doubt list, each entry proved an object, or a named shape fault.
+def _uncertainty_entries(value: Any, label: str) -> list[dict[str, Any]]:
+    """One uncertainty layer, each entry proved an object, or a named shape fault.
 
     `None` is an absence -- the record carried no such layer -- and renders as
-    nothing. Anything else that is not a list of objects is a fault of the
-    projection this renderer was handed, reported by field and index like every
-    other list here rather than quietly flattened to an empty one: a doubt
-    nobody can see is the defect F2 was about (found by CodeRabbit).
+    nothing. Everything else goes through `_checked_rows` like every other list
+    on this screen: a second copy of that rule is how the two drifted apart once
+    already, when this one kept the `entry -1` sentinel F3 had removed.
     """
-    if value is None:
-        return []
-    if not isinstance(value, (list, tuple)):
-        raise ProjectionShapeError(label, -1, value)
-    for index, entry in enumerate(value):
-        if not isinstance(entry, dict):
-            raise ProjectionShapeError(label, index, entry)
-    return list(value)
+    return _checked_rows(() if value is None else value, label)
 
 
-def _coalesced(spans: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
-    """Identical span entries folded into one, with how many records carried it.
+def _uncertainty_folds(spans: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
+    """Identical span entries folded into one, with how many the layer carried.
 
     The published layer keeps an exhausted-cap projection and an identical
     reader-reported span as two entries, because two instruments doubting the
     same characters is a fact and no artifact holds the reader's report
     separately (`pipeline/4_perlector/run.py::_union_with_projection`). Printing
-    them as two doubts would say something else again, so they are shown once,
-    named as agreement. Order is first appearance, which keeps the projection
-    ahead of the reader's report as the layer does.
+    them as two doubts would say something else again, so they are shown once
+    with the count beside them. Order is first appearance, which keeps the
+    projection ahead of the reader's report as the layer does.
+
+    What a repeat MEANS is not decided here: two audit flags of different
+    classes may share one location, so a fold is not by itself an agreement
+    between the audit and the reader. The caller says which it is, from the
+    state.
     """
     folded: list[tuple[dict[str, Any], int]] = []
     for span in spans:
@@ -192,27 +189,60 @@ def _coalesced(spans: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
     return folded
 
 
-def _doubt_lines(
-    assessment: Any, *, spans: Any, gaps: Any, text: Any, label: str, audited: bool
+def _uncertainty_alternatives(span: dict[str, Any], label: str) -> list[str]:
+    """One span's alternative readings, each proved a string.
+
+    Unchecked, a bare string here iterated character by character and printed
+    `a, b, c` as though the reader had offered three readings, and a number
+    raised out of the renderer into `cli.main`'s catch-all -- the failure
+    `_object` exists to end.
+    """
+    values = span.get("alternatives")
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple)):
+        raise ProjectionShapeError(label, None, values, expected="a list of alternative readings")
+    for index, value in enumerate(values):
+        if not isinstance(value, str):
+            raise ProjectionShapeError(label, index, value, expected="a reading")
+    return list(values)
+
+
+_UNCERTAINTY_STATES = ("assessed", "not-assessed", "malformed")
+
+
+def _uncertainty_lines(
+    assessment: Any,
+    *,
+    spans: Any,
+    gaps: Any,
+    revisions: Any,
+    text: Any,
+    label: str,
+    assessment_key: str,
+    attributable: bool,
 ) -> list[str]:
     """The reader's own doubt report, rendered the same way wherever it is carried.
 
     The state line always comes first and always says which of the three states
     this record carries, so an empty layer is never displayed as a reader's
     confidence (independent audit of 2026-09-10, F2). The spans and gaps are
-    then printed whenever there are any, whatever the state -- the exhausted-cap
-    projection mints spans on acts whose reader has no doubt channel at all, and
-    with today's live reader that combination (`not-assessed` beside real
-    published spans) is the ONLY way a span reaches this surface. Returning
-    after the state line hid exactly those.
+    then printed whenever there are any, whatever the state: the exhausted-cap
+    projection mints spans on acts whose reader has no doubt channel, which is
+    what a chair whose prompt has no doubt grammar reports -- the one bound in
+    `config/models.toml` today has none, so under that configuration
+    `not-assessed` beside real published spans is the only way a span reaches
+    this surface at all. Returning after the state line hid exactly those.
 
-    `audited` says whether an audit stands behind this record. Where one does,
-    the published layer is the union of the audit's exhausted-cap projection and
-    the reader's report, and this surface cannot tell which entry is whose -- so
-    it does not claim. "assessed by the reader" is said only where every span in
-    the layer IS the reader's, which is the records with no audit behind them --
-    every Perlectio carries one, so that form is reserved for a record kind that
-    does not (the independent review of 2026-09-11; GOVERNANCE 10).
+    `attributable` says whether every span in the layer is the reader's own.
+    Where the layer is a union of the audit's exhausted-cap projection and the
+    reader's report, this surface cannot tell which entry is whose, and says so
+    rather than crediting the reader with both. Only a record with no audit
+    behind it is attributable, and every Perlectio carries an audit, so that
+    form is reserved for a record kind no projection puts on this screen today.
+    That last sentence depends on `audit` being in the Perlectio's closed field
+    set (`pipeline/4_perlector/run.py::_PERLECTIO_FIELDS`), which is where it
+    would stop being true (the independent review of 2026-09-11; GOVERNANCE 10).
     """
     if assessment is None:
         # Absent, not malformed: a reading sealed before the doubt report was
@@ -225,38 +255,88 @@ def _doubt_lines(
             "report was part of the record"
         ]
     if not isinstance(assessment, dict):
-        raise ProjectionShapeError(f"{label}.uncertainty_assessment", -1, assessment)
-    spans = _doubt_entries(spans, f"{label}.uncertain_spans")
-    gaps = _doubt_entries(gaps, f"{label}.gaps")
+        raise ProjectionShapeError(
+            f"{label}.{assessment_key}", None, assessment, expected="an object"
+        )
+    spans = _uncertainty_entries(spans, f"{label}.uncertain_spans")
+    gaps = _uncertainty_entries(gaps, f"{label}.gaps")
+    revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
+    alternatives = [
+        _uncertainty_alternatives(span, f"{label}.uncertain_spans[{index}].alternatives")
+        for index, span in enumerate(spans)
+    ]
     state = assessment.get("state")
     counted = f"{len(spans)} uncertain span(s), {len(gaps)} gap(s)"
+    if revisions:
+        counted += f", {len(revisions)} self-revision(s)"
     if state == "assessed":
         who = (
-            "assessed by the reader; the span(s) below are its report and the audit "
-            "projection together"
-            if audited
-            else "assessed by the reader"
+            "assessed by the reader"
+            if attributable
+            else (
+                "assessed by the reader; this view cannot tell which of the span(s) below are "
+                "its report and which the audit's"
+            )
         )
         lines = [f"    doubts: {who}; {counted}"]
     else:
-        lines = [f"    doubts: {inert(state)} — {_one_line(assessment.get('problem'), limit=300)}"]
+        named = (
+            inert(state)
+            if state in _UNCERTAINTY_STATES
+            else f"an unrecognised state ({_one_line(state, limit=60)})"
+        )
+        lines = [f"    doubts: {named} — {_one_line(assessment.get('problem'), limit=300)}"]
         if spans or gaps:
             # Named as what they are: not the reader's report, which is what
             # the state above just said this record does not have.
             lines.append(f"      published beside that state, not by the reader: {counted}")
+    folded = _uncertainty_folds(spans)
+    folded_source = [spans.index(span) for span, _ in folded]
+    if len(folded) != len(spans):
+        lines.append(f"      (shown as {len(folded)} line(s); identical entries are folded)")
     shown_text = text if isinstance(text, str) else ""
-    for span, carried in _coalesced(spans):
+    for position, (span, carried) in enumerate(folded):
         start, end = span.get("start"), span.get("end")
-        shown = shown_text[start:end] if isinstance(start, int) and isinstance(end, int) else ""
-        alternatives = ", ".join(inert(a) for a in span.get("alternatives") or [])
-        lines.append(
-            f"      [{inert(start)}, {inert(end)}) {inert(shown)!r} confidence "
-            f"{inert(span.get('confidence'))}"
-            + (f"; alternatives: {alternatives}" if alternatives else "")
-            + ("; doubted by both instruments" if carried > 1 else "")
+        anchors = (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and not isinstance(start, bool)
+            and not isinstance(end, bool)
+            and 0 <= start <= end <= len(shown_text)
         )
-    for gap in gaps:
-        lines.append(f"      gap ({inert(gap.get('position'))}) at {inert(gap.get('start'))}")
+        # Python slices never complain, so a negative offset from a damaged run
+        # tree would show characters from the END of the act under a line
+        # printing the negative numbers -- ink presented as the doubted region
+        # that is not it (GOALS 5).
+        shown = (
+            f"'{_one_line(shown_text[start:end], limit=120)}'"
+            if anchors
+            else "(these offsets do not anchor to the text shown)"
+        )
+        # Identical entries fold together, so the first occurrence's alternatives
+        # are the fold's: the entries are equal field for field or they would
+        # not have folded.
+        offered = ", ".join(alternatives[folded_source[position]])
+        repeated = (
+            "; doubted by both instruments"
+            if carried > 1 and state == "assessed"
+            else (f"; carried {carried} times in the layer" if carried > 1 else "")
+        )
+        lines.append(
+            f"      [{inert(start)}, {inert(end)}) {shown} confidence "
+            f"{inert(span.get('confidence'))}"
+            + (f"; alternatives: {_one_line(offered, limit=160)}" if offered else "")
+            + repeated
+        )
+    for index, gap in enumerate(gaps):
+        evidence = _checked_rows(
+            gap.get("witness_evidence") or (), f"{label}.gaps[{index}].witness_evidence"
+        )
+        chairs = ", ".join(inert(row.get("chair")) for row in evidence)
+        lines.append(
+            f"      gap ({inert(gap.get('position'))}) at {inert(gap.get('start'))}"
+            + (f"; corroborated by {_one_line(chairs, limit=160)}" if chairs else "")
+        )
     return lines
 
 
@@ -372,15 +452,18 @@ def render(projection: dict[str, Any]) -> list[str]:
             if isinstance(reading.get("text"), str):
                 lines.append(f"    machine reading: {_one_line(reading.get('text'), limit=300)}")
             lines.extend(
-                _doubt_lines(
+                _uncertainty_lines(
                     reading.get("uncertainty_assessment"),
                     spans=reading.get("uncertain_spans"),
                     gaps=reading.get("gaps"),
+                    revisions=reading.get("self_revision"),
                     text=reading.get("text"),
                     label="acts[].row.reading",
-                    # The Perlectio's own audit record, present on every
-                    # established reading and absent from nothing else here.
-                    audited=isinstance(reading.get("audit"), dict),
+                    assessment_key="uncertainty_assessment",
+                    # The Perlectio's own audit record. Where it is present the
+                    # published layer is a union with the audit's projection,
+                    # and no entry says which instrument wrote it.
+                    attributable=not isinstance(reading.get("audit"), dict),
                 )
             )
         elif isinstance(row.get("text"), str):
@@ -391,21 +474,22 @@ def render(projection: dict[str, Any]) -> list[str]:
             # reached the product unassessed would look, to the one person
             # reviewing it, exactly like one whose reader found no doubt
             # (independent audit of 2026-09-10, F2).
-            uncertainty = row.get("uncertainty")
-            if isinstance(uncertainty, dict):
-                lines.extend(
-                    _doubt_lines(
-                        uncertainty.get("assessment"),
-                        spans=uncertainty.get("uncertain_spans"),
-                        gaps=uncertainty.get("gaps"),
-                        text=row.get("text"),
-                        label="acts[].row.uncertainty",
-                        # A delivered act reached the product through the audit
-                        # chain, so its layer is a union like any other
-                        # established reading's.
-                        audited=True,
-                    )
+            uncertainty = _object(row, "uncertainty", "acts[].row.uncertainty")
+            lines.extend(
+                _uncertainty_lines(
+                    uncertainty.get("assessment"),
+                    spans=uncertainty.get("uncertain_spans"),
+                    gaps=uncertainty.get("gaps"),
+                    revisions=uncertainty.get("self_revisions"),
+                    text=row.get("text"),
+                    label="acts[].row.uncertainty",
+                    assessment_key="assessment",
+                    # A delivered act reached the product through the audit
+                    # chain, so its layer is a union like any other established
+                    # reading's and nothing here says which entry is whose.
+                    attributable=False,
                 )
+            )
         review = _object(row, "review", "acts[].row.review")
         if review:
             lines.append(

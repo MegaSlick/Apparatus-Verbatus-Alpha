@@ -812,6 +812,53 @@ _TERMINAL_DESIGNATOR_REASONS: dict[str, tuple[str, str]] = {
 }
 
 
+def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, Any] | None:
+    """The Perlector's current reading of one act, or none, in one vocabulary.
+
+    Built in one place because it is read in two: before the export, where it is
+    the only thing this screen has to show about an act, and after it, where a
+    non-delivered act's export row carries no reading at all and this is where
+    the reading and its doubt report come back from. `_testimonia_rows` exists
+    for the same reason and says the same thing about witnesses.
+
+    The doubt report and its two layers are carried through EXACTLY as the
+    record holds them, unnormalised. Mapping an unreadable value to `None` here
+    spent the one distinction the renderer needs: `None` is a record written
+    before this contract existed and says so on the screen, while a
+    present-but-malformed value is a fault of the run tree and is refused by
+    field like every other projection list. Flattened to `None`, a broken layer
+    printed as no doubt line at all -- the pre-F2 silence, restored on the one
+    surface a person reads (the independent review of 2026-09-11).
+    """
+    reading_row = _latest(stage_records, PERLECTOR, "perlectio", act_id, operation="perlegere")
+    if reading_row is None:
+        return None
+    payload = _payload_of(reading_row, "the Perlectio record")
+    truncation = payload.get("truncation")
+    audit = payload.get("audit")
+    return {
+        "outcome": reading_row["outcome"],
+        "text": payload.get("text"),
+        "reason": payload.get("reason"),
+        "uncertainty_assessment": payload.get("uncertainty_assessment"),
+        "uncertain_spans": payload.get("uncertain_spans"),
+        "gaps": payload.get("gaps"),
+        # The producer's own spelling, not the canonical layer's
+        # `self_revisions`: renaming it here would be a second copy of
+        # `common/contracts/uncertainty.from_perlectio`'s rename, free to drift
+        # from it. The renderer counts whichever key the path it is on carries.
+        "self_revision": payload.get("self_revision"),
+        "truncation": truncation.get("classification") if isinstance(truncation, dict) else None,
+        "audit": {
+            "unresolved": audit.get("unresolved"),
+            "examination": audit.get("examination"),
+        }
+        if isinstance(audit, dict)
+        else None,
+        "record_ref": reading_row["record_ref"],
+    }
+
+
 def _testimonia_rows(stage_records: list[dict[str, Any]], act_id: str) -> list[dict[str, Any]]:
     """Every Testimonium sealed for one act, in the order the stage wrote them.
 
@@ -865,39 +912,7 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
             }
         )
     testimonia = _testimonia_rows(stage_records, act_id)
-    reading_row = _latest(stage_records, PERLECTOR, "perlectio", act_id, operation="perlegere")
-    reading = None
-    if reading_row is not None:
-        payload = _payload_of(reading_row, "the Perlectio record")
-        truncation = payload.get("truncation")
-        audit = payload.get("audit")
-        # The doubt report and its two layers are carried through EXACTLY as the
-        # record holds them, unnormalised. Mapping an unreadable value to `None`
-        # here spent the one distinction the renderer needs: `None` is a record
-        # written before this contract existed and says so on the screen, while
-        # a present-but-malformed value is a fault of the run tree and is
-        # refused by field and index like every other projection list. Flattened
-        # to `None`, a broken layer printed as no doubt line at all -- the
-        # pre-F2 silence, restored on the one surface a person reads (the
-        # independent review of 2026-09-11).
-        reading = {
-            "outcome": reading_row["outcome"],
-            "text": payload.get("text"),
-            "reason": payload.get("reason"),
-            "uncertainty_assessment": payload.get("uncertainty_assessment"),
-            "uncertain_spans": payload.get("uncertain_spans"),
-            "gaps": payload.get("gaps"),
-            "truncation": truncation.get("classification")
-            if isinstance(truncation, dict)
-            else None,
-            "audit": {
-                "unresolved": audit.get("unresolved"),
-                "examination": audit.get("examination"),
-            }
-            if isinstance(audit, dict)
-            else None,
-            "record_ref": reading_row["record_ref"],
-        }
+    reading = _reading_row(stage_records, act_id)
     review_row = _latest(stage_records, RECENSOR, "review", act_id, operation="recense")
     review = None
     if review_row is not None:
@@ -1613,8 +1628,8 @@ def _normalised_act_row(
     before export and none after it -- the same screen, the same run, fewer
     facts once it finished.
 
-    A non-delivered act's export row carries no witness basis at all, because
-    the Armarium writes one only for what it delivered. Mapping cannot recover
+    A non-delivered act's export row carries no witness basis and no reading at
+    all, because the Armarium writes both only for what it delivered. Mapping cannot recover
     what is not there, so those are read from the sealed Attestatores records
     instead, exactly as before the export. Each witness row therefore carries an
     attempt ordinal when it came from the run tree and none when it came from
@@ -1623,8 +1638,20 @@ def _normalised_act_row(
     """
     witnesses = row.get("witnesses")
     if witnesses is None and stage_records is not None and isinstance(row.get("act_id"), str):
+        attached: dict[str, Any] = {}
         testimonia = _testimonia_rows(stage_records, row["act_id"])
-        return {**row, "testimonia": testimonia} if testimonia else row
+        if testimonia:
+            attached["testimonia"] = testimonia
+        # And the reading, for the same reason and from the same place. The
+        # Armarium writes no text and no uncertainty layer for an act it did not
+        # deliver, so a held act -- the one this screen exists for -- showed its
+        # doubt report before the export and nothing after it. The same
+        # asymmetry, one field further on (the independent review of
+        # 2026-09-11).
+        reading = _reading_row(stage_records, row["act_id"])
+        if reading is not None:
+            attached["reading"] = reading
+        return {**row, **attached} if attached else row
     if witnesses is None or "testimonia" in row:
         return row
     if not isinstance(witnesses, list):

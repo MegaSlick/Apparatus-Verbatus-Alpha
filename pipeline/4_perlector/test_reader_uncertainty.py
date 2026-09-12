@@ -335,8 +335,8 @@ def test_a_declared_doubt_arrives_intact_beside_the_same_text_in_review_and_expo
     # audit's projection, and this surface cannot tell which entry is whose, so
     # it does not credit the reader with all of them.
     assert (
-        "doubts: assessed by the reader; the span(s) below are its report and the audit "
-        "projection together; 1 uncertain span(s), 1 gap(s)" in text
+        "doubts: assessed by the reader; this view cannot tell which of the span(s) below "
+        "are its report and which the audit's; 1 uncertain span(s), 1 gap(s)" in text
     )
     assert "[29, 34) 'gamma' confidence low; alternatives: gamna, gaMma" in text
     assert "gap (internal) at 23" in text
