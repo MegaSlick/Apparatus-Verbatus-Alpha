@@ -301,6 +301,10 @@ def test_an_unassessed_layer_is_an_absence_and_never_an_empty_confidence() -> No
         ({"state": "assessed"}, "no closed assessment record"),
         ({"state": "assessed", "problem": None, "extra": 1}, "no closed assessment record"),
         ({"state": "confident", "problem": "why"}, "unknown assessment state"),
+        # Unhashable, so `in` against the frozenset raises `TypeError` unless
+        # the type guard leads: a resealed record would crash a consumer
+        # instead of being refused by name.
+        ({"state": ["assessed"], "problem": "why"}, "unknown assessment state"),
         ({"state": "malformed", "problem": 7}, "problem is not null or a string"),
         ({"state": "malformed", "problem": ""}, "problem is not null or a string"),
         # Both halves of the coupling: an unassessed report that says nothing

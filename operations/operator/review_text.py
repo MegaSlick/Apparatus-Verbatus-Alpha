@@ -265,14 +265,25 @@ def _uncertainty_lines(
     if revisions:
         counted += f", {len(revisions)} self-revision(s)"
     if assessment is None:
-        # Absent, not malformed: a reading sealed before the doubt report was
-        # part of the record. Said in a line rather than shown as no doubt at
-        # all, which is exactly the silence F2 was about. The canonical layer
-        # refuses such a record by name at the Archetypus; this surface is where
-        # a person meets it first.
+        # Absent, not malformed. Two different records arrive here and they are
+        # two different facts: a reading sealed before the doubt report was part
+        # of the record, and a `not-run` record, which is no reading at all --
+        # an act held before the Perlector, a chair that was not there, a run
+        # over capacity. Telling the second that its reading predates a contract
+        # says something about a reading that does not exist. A `not-run`
+        # payload carries no text either, which is what separates them here.
+        #
+        # Either way the line is printed rather than the doubt shown as no doubt
+        # at all, which is exactly the silence F2 was about. The canonical layer
+        # refuses a pre-contract record by name at the Archetypus; this surface
+        # is where a person meets it first.
         lines = [
-            "    doubts: not recorded — this reading was sealed before the reader's doubt "
-            "report was part of the record"
+            "    doubts: not recorded — this act was not read"
+            if text is None
+            else (
+                "    doubts: not recorded — this reading was sealed before the reader's doubt "
+                "report was part of the record"
+            )
         ]
         if spans or gaps:
             lines.append(f"      published beside that absence: {counted}")

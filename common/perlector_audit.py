@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+from common.contracts import uncertainty
 from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
@@ -1051,8 +1052,15 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
     # accept any invented span at all, because every list starts with the empty
     # one (independent audit of 2026-09-10, F2).
     published = payload.get("uncertain_spans")
-    assessment = payload.get("uncertainty_assessment")
-    state = assessment.get("state") if isinstance(assessment, dict) else None
+    # The record is validated before its state is read, by the one function the
+    # canonical layer uses. Reading `state` off an unvalidated record let a
+    # reading saying `assessed` while carrying a problem -- a contradiction the
+    # canonical layer refuses by name -- choose the relaxed prefix rule here and
+    # publish spans and gaps the reader's report never named (found by
+    # CodeRabbit reading against the project's own configuration).
+    state = uncertainty.validate_assessment_record(
+        payload.get("uncertainty_assessment"), f"reading of {act_id}"
+    )["state"]
     if not isinstance(published, list):
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
     if state == "assessed":

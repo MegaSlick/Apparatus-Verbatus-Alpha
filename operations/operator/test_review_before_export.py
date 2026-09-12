@@ -1659,3 +1659,20 @@ def test_a_delivered_export_row_without_a_witness_basis_is_refused_not_recovered
     # witnesses in the run tree here either, so it comes back unchanged rather
     # than refused.
     assert review._normalised_act_row(delivered, export_ref, [], delivered=False) == delivered
+
+
+def test_an_act_that_was_never_read_is_not_told_its_reading_predates_a_contract():
+    """`not-run` is no reading at all: held before the Perlector, no chair, over capacity.
+
+    Those records carry no text either, which is what separates them from a
+    reading sealed before the doubt report was part of the record.
+    """
+    not_run = "\n".join(
+        review_text.render(_reading_act({"outcome": "not-run", "reason": "no chair configured"}))
+    )
+    assert "doubts: not recorded — this act was not read" in not_run
+
+    sealed = "\n".join(
+        review_text.render(_reading_act({"outcome": "read", "text": "alpha beta", "audit": {}}))
+    )
+    assert "doubts: not recorded — this reading was sealed before" in sealed

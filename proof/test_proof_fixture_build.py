@@ -500,10 +500,11 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # `stop_reason` row below), or it would prove nothing about F1.
     assert by_name["audit-reproof-cutoff"]["recover_acts"] == []
     assert by_name["audit-reproof-cutoff"]["hold_acts"] == []
-    # The reader-doubt pair declares nothing by configuration either: what they
-    # carry is the reader's own report, and the malformed one's hold must come
-    # from the annotation schema refusing that report, or it proves nothing.
-    for name in ("reader-doubt", "reader-doubt-malformed"):
+    # The reader-doubt scenarios declare nothing by configuration either: what
+    # they carry is the reader's own report, and the hold each of the latter two
+    # produces must come from the schema refusing that report against the text
+    # actually published, or it proves nothing.
+    for name in ("reader-doubt", "reader-doubt-malformed", "reader-doubt-unreadable"):
         assert by_name[name]["recover_acts"] == []
         assert by_name[name]["hold_acts"] == []
     assert by_name["refused-page"]["recover_acts"] == []
