@@ -1723,11 +1723,9 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
         return "not-measured" if detail["rows_with_named_absence"] else "measured"
     if instrument == _PERLECTOR_UNCERTAIN_SPANS:
         # Measured exactly when every delivered reading was assessed for doubt
-        # by its reader. No reading assessed -- a chair with no doubt channel,
-        # which is what the pinned live prompt is today -- is the instrument
-        # declaring itself unproduced, whatever the audit cap; some assessed and
-        # some not is a partial measurement. An empty list under `not-assessed`
-        # is an absence, never a reading's confidence (F2).
+        # by its reader, and unproduced only when nothing at all was measured.
+        # An empty list under `not-assessed` is an absence, never a reading's
+        # confidence (F2).
         if detail["acts_assessed"] == detail["acts_delivered"] != 0:
             return "measured"
         # Nobody assessed and no span published: the instrument never ran, and
