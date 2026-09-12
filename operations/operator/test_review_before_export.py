@@ -1404,6 +1404,15 @@ def test_an_unrecognised_state_is_named_as_one_rather_than_echoed():
 
     assert "doubts: an unrecognised state (confident) — why" in text
 
+    # And an assessment object with no state at all says so in words, rather
+    # than printing this language's `None` as though it were a measurement.
+    stateless = "\n".join(
+        review_text.render(
+            _delivered_act({"assessment": {"problem": None}, "uncertain_spans": [], "gaps": []})
+        )
+    )
+    assert "doubts: no state recorded —" in stateless
+
 
 def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions():
     """The record holds more than position and offset, and a person reviewing a

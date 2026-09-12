@@ -280,11 +280,15 @@ def _uncertainty_lines(
         )
         lines = [f"    doubts: {who}; {counted}"]
     else:
-        named = (
-            inert(state)
-            if state in _UNCERTAINTY_STATES
-            else f"an unrecognised state ({_one_line(state, limit=60)})"
-        )
+        if state in _UNCERTAINTY_STATES:
+            named = inert(state)
+        elif state is None:
+            # A record whose assessment object has no `state` key at all. "None"
+            # is this language's word, not a person's, and read as a measurement
+            # it says nothing.
+            named = "no state recorded"
+        else:
+            named = f"an unrecognised state ({_one_line(state, limit=60)})"
         lines = [f"    doubts: {named} — {_one_line(assessment.get('problem'), limit=300)}"]
         if spans or gaps:
             # Named as what they are: not the reader's report, which is what
