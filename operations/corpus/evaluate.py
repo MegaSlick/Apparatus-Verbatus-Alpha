@@ -917,12 +917,19 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     # evidence went missing (CodeRabbit on PR #114).
     seen_pages: set[str] = set()
     seen_references: set[str] = set()
+    seen_ordinals: set[int] = set()
     for entry in report["pages"]:
         entry = _closed(entry, _PAGE_ENTRY_FIELDS, "a page comparison entry")
         if not isinstance(entry["ordinal"], int) or isinstance(entry["ordinal"], bool):
             raise CorpusRefusal(
                 "malformed-record: a page comparison entry's ordinal is not an integer"
             )
+        if entry["ordinal"] in seen_ordinals:
+            raise CorpusRefusal(
+                f"malformed-record: page ordinal {entry['ordinal']} carries two comparisons; a "
+                "run seals one page per ordinal"
+            )
+        seen_ordinals.add(entry["ordinal"])
         comparison = validate_comparison(entry["comparison"])
         page_sha = comparison["page"]["sha256"]
         reference = comparison["reference_page_self_hash"]

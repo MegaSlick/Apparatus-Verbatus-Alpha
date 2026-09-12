@@ -802,11 +802,26 @@ def test_the_validator_refuses_a_page_compared_twice_behind_a_whole_count(sealed
     )
     assert report["pages"], "the fixture run compares at least one page"
     duplicated = json.loads(json.dumps(report))
-    duplicated["pages"].append(json.loads(json.dumps(duplicated["pages"][0])))
+    twin = json.loads(json.dumps(duplicated["pages"][0]))
+    twin["ordinal"] = max(entry["ordinal"] for entry in duplicated["pages"]) + 1
+    duplicated["pages"].append(twin)
     duplicated["denominators"]["run_pages_compared"] += 1
     with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
         validate_evaluation(_reseal(duplicated))
     assert "compared twice" in str(refused.value)
+
+    # Two comparisons of different pages under one ordinal: distinct identities,
+    # so the identity check passes, and the ordinal check is what refuses.
+    same_ordinal = json.loads(json.dumps(report))
+    other = json.loads(json.dumps(same_ordinal["pages"][0]))
+    other["comparison"]["page"]["sha256"] = "1" * 64
+    other["comparison"]["reference_page_self_hash"] = "2" * 64
+    other["comparison"] = _reseal(other["comparison"])
+    same_ordinal["pages"].append(other)
+    same_ordinal["denominators"]["run_pages_compared"] += 1
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_evaluation(_reseal(same_ordinal))
+    assert "two comparisons" in str(refused.value)
 
     broken = json.loads(json.dumps(report))
     broken["pages"][0]["comparison"]["schema"] = "something-else.v1"
