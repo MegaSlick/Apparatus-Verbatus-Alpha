@@ -346,6 +346,17 @@ def test_a_receipt_field_of_the_wrong_type_is_refused_by_name(tmp_path, field, v
     assert said in str(refused.value) and "fetch_receipt.json" in str(refused.value)
 
 
+def test_a_split_the_receipt_did_not_request_is_refused_by_name(tmp_path):
+    """A `val` ledger from a set whose receipt requested `train` would carry a contradiction."""
+    root = _two_page_set(tmp_path / "set")
+    receipt = json.loads((root / "fetch_receipt.json").read_text())
+    receipt["requested_splits"] = ["train"]
+    (root / "fetch_receipt.json").write_text(json.dumps(receipt))
+    with pytest.raises(CorpusRefusal, match="^split-not-requested:") as refused:
+        admit_local_set(root, split="val")
+    assert "['train']" in str(refused.value)
+
+
 def test_admission_changes_nothing_in_the_set(tmp_path):
     root = _two_page_set(tmp_path / "set")
     before = {
@@ -374,8 +385,14 @@ def test_the_held_split_needs_a_deliberate_release_and_the_flag_releases_nothing
         admit_local_set(root, split="test")
     with pytest.raises(CorpusRefusal, match="^holdout-ledger-required:"):
         admit_local_set(root, split="val", release_test_split=True)
-    # Released, the held split is admitted like any other -- and every row of
-    # this set carries `val`, so each one is refused by its own split.
+    # Released, the held split still needs the receipt to have requested it.
+    with pytest.raises(CorpusRefusal, match="^split-not-requested:"):
+        admit_local_set(root, split="test", release_test_split=True)
+    receipt = json.loads((root / "fetch_receipt.json").read_text())
+    receipt["requested_splits"] = ["val", "test"]
+    (root / "fetch_receipt.json").write_text(json.dumps(receipt))
+    # Released and requested, the held split is admitted like any other -- and
+    # every row of this set carries `val`, so each one is refused by its own split.
     ledger = admit_local_set(root, split="test", release_test_split=True)
     assert ledger["summary"]["refused_by_reason"] == {"unknown-split": 3}
 

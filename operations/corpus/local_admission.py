@@ -98,6 +98,7 @@ LOCAL_ADMISSION_REFUSAL_REASONS = frozenset(
         "missing-set-file",
         "unknown-split",
         "holdout-ledger-required",
+        "split-not-requested",
         "missing-page-file",
         "non-image-body",
         "dimension-mismatch",
@@ -512,6 +513,12 @@ def admit_local_set(
     sealed = _snapshot_index(row_snapshot)
     sealed_rows = sealed[0] if sealed is not None else None
     receipt = _receipt(set_root)
+    if split not in receipt["requested_splits"]:
+        raise CorpusRefusal(
+            f"split-not-requested: the receipt at {receipt['path']} requested "
+            f"{receipt['requested_splits']!r}; admitting {split!r} from it would give the ledger "
+            "a provenance the set's own record contradicts"
+        )
     manifest_rows = _load_jsonl(set_root / "page_manifest.jsonl", "page_manifest.jsonl")
     gold_rows = _load_jsonl(set_root / "gold.jsonl", "gold.jsonl")
 

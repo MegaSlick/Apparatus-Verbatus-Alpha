@@ -793,6 +793,27 @@ def test_the_validator_holds_the_page_records_to_the_pages_compared_count(sealed
     assert "run_pages_compared" in str(refused.value)
 
 
+def test_the_validator_refuses_a_page_compared_twice_behind_a_whole_count(sealed_run):
+    """Duplicating one comparison keeps the count right and loses a page's evidence."""
+    report = json.loads(
+        json.dumps(
+            evaluate_run(sealed_run, [_fixture_reference_for_page_one(sealed_run)], code_ref="test")
+        )
+    )
+    assert report["pages"], "the fixture run compares at least one page"
+    duplicated = json.loads(json.dumps(report))
+    duplicated["pages"].append(json.loads(json.dumps(duplicated["pages"][0])))
+    duplicated["denominators"]["run_pages_compared"] += 1
+    with pytest.raises(CorpusRefusal, match="^malformed-record:") as refused:
+        validate_evaluation(_reseal(duplicated))
+    assert "compared twice" in str(refused.value)
+
+    broken = json.loads(json.dumps(report))
+    broken["pages"][0]["comparison"]["schema"] = "something-else.v1"
+    with pytest.raises(CorpusRefusal, match="^wrong-schema:"):
+        validate_evaluation(_reseal(broken))
+
+
 def test_the_validator_refuses_a_foreign_schema_and_a_label_that_does_not_match(sealed_run):
     report = json.loads(
         json.dumps(

@@ -89,6 +89,7 @@ from .compare import (
     count_excluded_designator_artifacts,
     load_exemplar_page_shas,
     load_pipeline_proposal_acts,
+    validate_comparison,
 )
 from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
 from .reference import validate_reference_page
@@ -195,6 +196,7 @@ _RUN_FIELDS = frozenset(
         "scenario",
     }
 )
+_PAGE_ENTRY_FIELDS = frozenset({"ordinal", "comparison"})
 _DENOMINATOR_FIELDS = frozenset(
     {
         "run_pages_sealed",
@@ -910,6 +912,27 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
             f"malformed-record: run_pages_compared claims {totals['run_pages_compared']} page(s), "
             f"the report carries {len(report['pages'])} comparison record(s)"
         )
+    # Each comparison is its own validated record, and no page identity appears
+    # twice: a duplicated comparison would keep the count whole while one page's
+    # evidence went missing (CodeRabbit on PR #114).
+    seen_pages: set[str] = set()
+    seen_references: set[str] = set()
+    for entry in report["pages"]:
+        entry = _closed(entry, _PAGE_ENTRY_FIELDS, "a page comparison entry")
+        if not isinstance(entry["ordinal"], int) or isinstance(entry["ordinal"], bool):
+            raise CorpusRefusal(
+                "malformed-record: a page comparison entry's ordinal is not an integer"
+            )
+        comparison = validate_comparison(entry["comparison"])
+        page_sha = comparison["page"]["sha256"]
+        reference = comparison["reference_page_self_hash"]
+        if page_sha in seen_pages or reference in seen_references:
+            raise CorpusRefusal(
+                f"malformed-record: page {page_sha} / reference page {reference} is compared "
+                "twice; one page's comparison evidence would be missing behind a whole count"
+            )
+        seen_pages.add(page_sha)
+        seen_references.add(reference)
     if len(report["pages_without_reference"]) != totals["run_pages_without_reference"]:
         raise CorpusRefusal(
             "malformed-record: run_pages_without_reference does not count its own rows"
