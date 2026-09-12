@@ -71,7 +71,7 @@ from operations.submit import gate, submit
 from . import CorpusRefusal
 from .fetch import validate_fetch_log
 from .holdout import load_holdout, refuse_held_out_page, validate_holdout
-from .plan import _unsafe_segment, load_plan, validate_plan
+from .plan import load_plan, unsafe_segment, validate_plan
 from .rows import validate_snapshot
 from .sidecar import build_sidecar, write_sidecar
 
@@ -218,7 +218,7 @@ def _unsafe_page_segment(page: dict[str, Any]) -> str | None:
     non-empty) that this module joins straight into a filesystem path alongside
     `volume` and `designation`, which `plan.py`'s identifier parser has already
     screened. `source` never passes through that parser, so it is screened here,
-    with the exact rule `plan._unsafe_segment` uses — split on `/` first, exactly
+    with the exact rule `plan.unsafe_segment` uses — split on `/` first, exactly
     as `volume` already is, because `Path(page["source"], ...)` treats an embedded
     `/` in a single caller-supplied string as more path components, not literal
     text: `"../../escaped"` is unsafe precisely because it *is* two `..`
@@ -229,7 +229,7 @@ def _unsafe_page_segment(page: dict[str, Any]) -> str | None:
         *page["volume"].split("/"),
         page["designation"],
     ):
-        if _unsafe_segment(segment):
+        if unsafe_segment(segment):
             return segment
     return None
 

@@ -398,6 +398,7 @@ def test_reads_only_through_a_read_only_wrapper(tmp_path):
         ("write_index", {"stage": DESIGNATOR, "index": {}}),
         ("write_run_receipt", {"receipt": {}}),
         ("write_approval_record", {"record": {}}),
+        ("write_recensor_partition_receipt", {"record": {}}),
     ],
 )
 def test_read_only_wrapper_refuses_every_write(tmp_path, method, kwargs):
@@ -405,6 +406,30 @@ def test_read_only_wrapper_refuses_every_write(tmp_path, method, kwargs):
     wrapped = ReadOnlyRunTree(tree)
     with pytest.raises(CorpusRefusal, match="run-tree-write-refused"):
         getattr(wrapped, method)(**kwargs)
+
+
+def test_the_read_only_wrapper_covers_every_method_run_tree_declares():
+    """Neither list may drift from `RunTree`'s own surface.
+
+    A write with no stub fails with `AttributeError` rather than the named
+    refusal -- closed, but silent -- and a read with no delegate fails the same
+    way in the middle of a caller that had every right to it. Reconciled here
+    rather than kept in step by hand (independent audit of 2026-09-11, round 2
+    item 12; `write_recensor_partition_receipt` was the one that was missing).
+    """
+    declared = {
+        name
+        for name in dir(RunTree)
+        # `create` is the classmethod that makes a tree, not part of the surface
+        # a caller reaches through a wrapper around one that already exists.
+        if not name.startswith("_") and name != "create" and callable(getattr(RunTree, name))
+    }
+    missing = {name for name in declared if not hasattr(ReadOnlyRunTree, name)}
+    assert missing == set(), f"RunTree methods the read-only wrapper does not answer: {missing}"
+    writes = {name for name in declared if name.startswith(("write_", "put_", "publish_"))}
+    for name in sorted(writes):
+        with pytest.raises(CorpusRefusal, match="run-tree-write-refused"):
+            getattr(ReadOnlyRunTree(None), name)()
 
 
 # --- Assignment and scoring over one page -------------------------------------

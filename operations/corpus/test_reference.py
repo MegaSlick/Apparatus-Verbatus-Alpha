@@ -218,6 +218,25 @@ def test_validate_refuses_empty_text_on_an_act():
         validate_reference_page(tampered)
 
 
+def test_validate_refuses_text_that_normalises_to_nothing():
+    """Non-empty ink that no scorer could ever measure against is refused here.
+
+    `local_admission.py` refuses it at admission, but the evaluate command line
+    reads reference pages from a file rather than from an admission ledger, so a
+    page carrying `" "` would otherwise reach the scorer -- which refuses a blank
+    checked reference in a vocabulary this package does not declare, naming
+    neither the record nor the page.
+    """
+    reference = _build()
+    tampered = dict(reference)
+    tampered_acts = [dict(act) for act in reference["acts"]]
+    tampered_acts[0]["text"] = " \u00a0 "
+    tampered_acts[0]["text_sha256"] = digest_bytes(tampered_acts[0]["text"].encode("utf-8"))
+    tampered["acts"] = tampered_acts
+    with pytest.raises(CorpusRefusal, match="^empty-normalized-text:"):
+        validate_reference_page(tampered)
+
+
 def test_build_refuses_a_whitespace_only_designation_as_unmintable():
     with pytest.raises(CorpusRefusal, match="^unmintable-physical-act:"):
         _build(designation="   ")

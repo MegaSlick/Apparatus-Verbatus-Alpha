@@ -474,3 +474,30 @@ def test_load_plan_refuses_a_tampered_file(tmp_path):
     output_path.write_text(json.dumps(tampered))
     with pytest.raises(CorpusRefusal, match="^self-hash-mismatch:"):
         load_plan(output_path)
+
+
+# --- parse_record_url: a caller that can convert may admit a 180-degree view ----
+
+ROTATED_URL = (
+    "https://europe.iiif.teklia.com/iiif/2/dai-cretdhi%2FIle_de_re%2Fimg%2Fx.jpg/"
+    "376,1585,1544,324/full/180/default.jpg"
+)
+
+
+def test_the_default_parser_still_refuses_a_rotated_view_by_name():
+    """The fetch plan holds no page dimensions, so for it the box is in the wrong frame."""
+    with pytest.raises(CorpusRefusal, match="^unsupported-rotation-parameter"):
+        parse_record_url(ROTATED_URL)
+    assert parse_record_url(ONE_PAGE_URL).rotation == "0"
+
+
+def test_a_caller_naming_the_supported_rotations_receives_the_rotation_it_must_convert():
+    from operations.corpus.plan import SUPPORTED_ROTATIONS
+
+    parsed = parse_record_url(ROTATED_URL, rotations=SUPPORTED_ROTATIONS)
+    assert parsed.rotation == "180"
+    assert parsed.region == {"x": 376, "y": 1585, "w": 1544, "h": 324}, "stated in the view's frame"
+    # Asking for a rotation nothing here can convert is refused even when asked.
+    with pytest.raises(CorpusRefusal, match="^unsupported-rotation-parameter"):
+        parse_record_url(ROTATED_URL.replace("/180/", "/90/"), rotations=frozenset({"0", "90"}))
+    assert SUPPORTED_ROTATIONS == frozenset({"0", "180"})

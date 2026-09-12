@@ -40,6 +40,59 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   `operations/submit/submit.py`.
 - `reference.py`, `compare.py` (Unit 4) — the reference-record family and the
   offline IoU comparator.
+- `local_admission.py` — the existing local sets (`recordgold_evaluation_val_v1`,
+  `recordgold_production_train_v1`: `pages/`, `page_manifest.jsonl`, `gold.jsonl`,
+  `fetch_receipt.json`) admitted as reference truth, every record admitted or refused
+  by name in a self-hashed `recordgold-local-admission.v1` ledger with its own
+  validator and loader. **Those sets were not written by `fetch.py` and their producer
+  is outside this repository**: the receipt's schema string is the only identity the
+  material carries, so the receipt is trusted for one thing — that `gold.jsonl` and
+  `page_manifest.jsonl` are the bytes it names — and everything else is measured
+  against the stored pixels and the row's own `record_url`. Pass `--row-snapshot` and
+  every row is also held to the sealed `recordgold-rows.v1` record, which is the only
+  witness that was never in the set's own directory; no snapshot is tracked here, so
+  without that flag the ledger records `row_snapshot.consulted: false` and the receipt
+  is the only witness. It holds the stored page's
+  measured dimensions, so it carries the forty records stated in a 180-degree IIIF
+  view into the stored frame by `(W - x - w, H - y - h, w, h)` and records the URL,
+  rotation, original box, carried box, page digest and dimensions of every crossing;
+  `plan.py`'s fetch-time parser still refuses those rows because it has no dimensions
+  to convert with. That carry was checked against real pixels on 2026-09-11: the stored
+  page is the upright 180-delivered view, and the flipped box is the one that cuts the
+  ink `gold.jsonl` transcribes. A rotation other than `0`/`180` stays a named refusal,
+  every listed page ends in exactly one outcome (`pages_by_outcome`), and `--split test`
+  needs `--release-test-split` exactly as the fetcher does, refused under the fetcher's
+  own name (`holdout-ledger-required`) since it is the same condition. Measured over
+  the local sets on 2026-09-10: 784 of 784 validation records admitted (769 at 0, 15 at
+  180) and 6,178 of 6,178 training records (6,153 at 0, 25 at 180); nothing under
+  `OCR_Gold` is written.
+- `evaluate.py` — the one caller of `compare_page` that builds its hypotheses from a
+  real run: it reads the sealed Armarium export, re-digests every delivered text against
+  the Archetypus record that established it (`digest_of(text)`), maps each export
+  category to the scorer's response state (a held, refused, blank or excluded act is an
+  empty hypothesis against its reference -- counted, never dropped, never perfect), and
+  writes one validated, self-hashed `recordgold-evaluation.v1` record carrying run
+  configuration digests, export digest, reference ledger digest, the splits scored, and
+  the whole denominator: every
+  reference record scored, missed or not attempted, every proposal region by export
+  category, every unmatched pipeline act reported and not scored. **Two aggregate
+  rates, each labelled**: `matched_pairs_only` is the arithmetic of the pairs the
+  assignment made, which a missed act cannot move in either direction, and
+  `including_missed_records` counts a missed record's reference units as deletions,
+  which is the number GOALS 1 cares about. A not-attempted record is in neither rate and
+  is counted on its own. Two facts the record states are measured rather than declared:
+  the fixture label is read from the export's own sealed identity (`fixture_id` against
+  `submission_id`), not from a flag an operator could omit, and a named reference ledger
+  is verified — every reference page must appear in it by `self_hash`. `code_ref`
+  remains a declaration, and `code_ref_check` says whether it matched this checkout.
+
+  **An act excluded with Tyrel's approval is scored as a total loss against its
+  reference.** That is the conservative choice and it is deliberate — an approved
+  exclusion is still an act whose text this pipeline did not deliver — but it means the
+  aggregate is not pure model reading quality: a run with approved exclusions scores
+  exactly as if those acts had been misread. `denominators.exported_acts_by_category`
+  and `reference_records_scored_by_export_category` are where a reader separates the
+  two.
 
 All four units exist as of this commit; the fetch protocol, comparator, and
 hold-out sections below describe behaviour that runs, not a shape still to be
@@ -85,7 +138,9 @@ Every module in this package carries its own closed refusal set, not that one:
 run-level set — a request-ceiling or 403-stop refusal never reaches a fetch-log
 entry, so it cannot share the per-page set), `integrate.INTEGRATE_REFUSAL_REASONS`,
 `submission.SUBMISSION_REFUSAL_REASONS`, `sidecar.SIDECAR_REFUSAL_REASONS`,
-`reference.REFERENCE_REFUSAL_REASONS`, and `compare.COMPARE_REFUSAL_REASONS`.
+`reference.REFERENCE_REFUSAL_REASONS`, `compare.COMPARE_REFUSAL_REASONS`,
+`local_admission.LOCAL_ADMISSION_REFUSAL_REASONS`, and
+`evaluate.EVALUATION_REFUSAL_REASONS`.
 Every refusal in this package is a `CorpusRefusal` whose message leads with its
 reason token, dispatched by `str(error).split(":", 1)[0]` (`__init__.py`).
 
@@ -192,6 +247,19 @@ never fires against the real corpus, but the refusal stays load-bearing rather
 than decorative because a future re-export is not bound by today's measurement.
 Release from hold is an appended, named record — an `advance`, never a
 permanent bar.
+
+**The local-admission route carries one of those three layers, and it is worth
+naming which.** `local_admission.py` mirrors the second layer exactly — `--split
+test` requires `--release-test-split`, that flag is refused with any other
+split, and each row's own `split` is checked against the split the set is being
+admitted as, so a `test`-labelled row can never enter a `val` ledger. It does not
+consult `holdout.py`'s ledger: the sets it reads carry their own split labels and
+were not produced by the fetcher, so there is no plan to reconcile them against.
+Hold-out protection on this route therefore rests on those labels being honest,
+and the only witness from outside the set's own directory is `--row-snapshot`,
+which is optional and whose file is not tracked here. That is a deliberate
+limit, not an oversight, and a ledger built without the snapshot says so in
+`row_snapshot.consulted`.
 
 ## The DAI contamination risk
 

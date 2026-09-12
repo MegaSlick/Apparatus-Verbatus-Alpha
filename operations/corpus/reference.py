@@ -51,6 +51,7 @@ from common.contracts.identities import (
     physical_act_id,
     physical_page_id,
 )
+from operations.spike_perlector.normalization import GRAPHEMIC_V1, character_units
 
 from . import CorpusRefusal
 
@@ -81,6 +82,7 @@ REFERENCE_REFUSAL_REASONS = frozenset(
         "act-count-mismatch",
         "region-outside-page",
         "empty-text",
+        "empty-normalized-text",
         "text-sha256-mismatch",
         "wrong-identity-family",
         "unmintable-physical-act",
@@ -392,6 +394,20 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
         text = act["text"]
         if not isinstance(text, str) or not text:
             raise CorpusRefusal(f"empty-text: reference act {record_id!r} carries no text")
+        # Non-empty ink that normalises to nothing is not scoreable: the scorer
+        # refuses a blank checked reference (`spike_perlector/scoring.py`) with a
+        # `MeasurementRefusal` that names neither record nor page and that no
+        # caller in this package catches. `local_admission.py` refuses it at
+        # admission, but the evaluate command line reads reference pages from a
+        # file rather than from an admission ledger, so the family's own
+        # validator is the boundary that must hold (independent audit of
+        # 2026-09-11, round 2 item 1).
+        if not character_units(text, GRAPHEMIC_V1):
+            raise CorpusRefusal(
+                f"empty-normalized-text: reference act {record_id!r} carries text {text!r}, "
+                f"which normalises to nothing under {GRAPHEMIC_V1.profile_id} and could never "
+                "be scored against"
+            )
         expected_text_sha256 = digest_bytes(text.encode("utf-8"))
         if act["text_sha256"] != expected_text_sha256:
             raise CorpusRefusal(
