@@ -166,17 +166,17 @@ def _uncertainty_folds(spans: list[dict[str, Any]]) -> list[tuple[dict[str, Any]
     """Identical span entries folded into one, with how many the layer carried.
 
     The published layer keeps an exhausted-cap projection and an identical
-    reader-reported span as two entries, because two instruments doubting the
-    same characters is a fact and no artifact holds the reader's report
-    separately (`pipeline/4_perlector/run.py::_union_with_projection`). Printing
-    them as two doubts would say something else again, so they are shown once
-    with the count beside them. Order is first appearance, which keeps the
-    projection ahead of the reader's report as the layer does.
+    reader-reported span as two entries, because the layer records that those
+    characters were doubted twice
+    (`pipeline/4_perlector/run.py::_union_with_projection`). Printing them as two
+    doubts would say something else again, so they are shown once with the count
+    beside them. Order is first appearance, which keeps the projection ahead of
+    the reader's report as the layer does.
 
-    What a repeat MEANS is not decided here: two audit flags of different
-    classes may share one location, so a fold is not by itself an agreement
-    between the audit and the reader. The caller says which it is, from the
-    state.
+    What a repeat MEANS is not decided here, or anywhere else on this screen: no
+    artifact names the instrument behind any one span, and two audit flags of
+    different classes may share one location, so a fold is evidence of a repeat
+    and of nothing else.
     """
     folded: list[tuple[dict[str, Any], int]] = []
     for span in spans:
@@ -244,20 +244,15 @@ def _uncertainty_lines(
     set (`pipeline/4_perlector/run.py::_PERLECTIO_FIELDS`), which is where it
     would stop being true (the independent review of 2026-09-11; GOVERNANCE 10).
     """
-    if assessment is None:
-        # Absent, not malformed: a reading sealed before the doubt report was
-        # part of the record. Said in a line rather than shown as no doubt at
-        # all, which is exactly the silence F2 was about. The canonical layer
-        # refuses such a record by name at the Archetypus; this surface is where
-        # a person meets it first.
-        return [
-            "    doubts: not recorded — this reading was sealed before the reader's doubt "
-            "report was part of the record"
-        ]
-    if not isinstance(assessment, dict):
+    if assessment is not None and not isinstance(assessment, dict):
         raise ProjectionShapeError(
             f"{label}.{assessment_key}", None, assessment, expected="an object"
         )
+    # The layers are validated and rendered whether or not the assessment is
+    # there. Returning on the absence first meant a malformed layer BESIDE a
+    # missing assessment was never looked at, and the spans such a record did
+    # carry were never shown -- the same silence one field over (found by
+    # CodeRabbit on the round-4 head).
     spans = _uncertainty_entries(spans, f"{label}.uncertain_spans")
     gaps = _uncertainty_entries(gaps, f"{label}.gaps")
     revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
@@ -265,11 +260,23 @@ def _uncertainty_lines(
         _uncertainty_alternatives(span, f"{label}.uncertain_spans[{index}].alternatives")
         for index, span in enumerate(spans)
     ]
-    state = assessment.get("state")
+    state = assessment.get("state") if assessment is not None else None
     counted = f"{len(spans)} uncertain span(s), {len(gaps)} gap(s)"
     if revisions:
         counted += f", {len(revisions)} self-revision(s)"
-    if state == "assessed":
+    if assessment is None:
+        # Absent, not malformed: a reading sealed before the doubt report was
+        # part of the record. Said in a line rather than shown as no doubt at
+        # all, which is exactly the silence F2 was about. The canonical layer
+        # refuses such a record by name at the Archetypus; this surface is where
+        # a person meets it first.
+        lines = [
+            "    doubts: not recorded — this reading was sealed before the reader's doubt "
+            "report was part of the record"
+        ]
+        if spans or gaps:
+            lines.append(f"      published beside that absence: {counted}")
+    elif state == "assessed":
         who = (
             "assessed by the reader"
             if attributable
@@ -321,11 +328,12 @@ def _uncertainty_lines(
         # are the fold's: the entries are equal field for field or they would
         # not have folded.
         offered = ", ".join(alternatives[folded_source[position]])
-        repeated = (
-            "; doubted by both instruments"
-            if carried > 1 and state == "assessed"
-            else (f"; carried {carried} times in the layer" if carried > 1 else "")
-        )
+        # The count, never a provenance. No artifact records which instrument
+        # wrote which span: two audit flags of different classes may share one
+        # location, so a fold is evidence that the layer carried the entry
+        # twice and of nothing else -- under `assessed` exactly as under every
+        # other state (found by CodeRabbit on the round-4 head; GOVERNANCE 10).
+        repeated = f"; carried {carried} times in the layer" if carried > 1 else ""
         lines.append(
             f"      [{inert(start)}, {inert(end)}) {shown} confidence "
             f"{inert(span.get('confidence'))}"
@@ -333,12 +341,38 @@ def _uncertainty_lines(
             + repeated
         )
     for index, gap in enumerate(gaps):
+        witness_evidence = gap.get("witness_evidence")
+        # Only absent defaults to empty. `or ()` swallowed `""`, `0` and `{}`,
+        # each of which is a malformed value this screen would then have shown
+        # as a gap nobody corroborated (found by CodeRabbit on the round-4 head).
         evidence = _checked_rows(
-            gap.get("witness_evidence") or (), f"{label}.gaps[{index}].witness_evidence"
+            () if witness_evidence is None else witness_evidence,
+            f"{label}.gaps[{index}].witness_evidence",
         )
         chairs = ", ".join(inert(row.get("chair")) for row in evidence)
+        start, end = gap.get("start"), gap.get("end")
+        # A gap is where sight failed and carries no characters of its own, so
+        # its two offsets are one position inside the text. Anything else is a
+        # damaged record, and printing it as an anchored position would point a
+        # person at ink the record does not name.
+        anchored = (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and not isinstance(start, bool)
+            and not isinstance(end, bool)
+            and start == end
+            and 0 <= start <= len(shown_text)
+        )
+        where = (
+            f"at {inert(start)}"
+            if anchored
+            else (
+                f"at [{inert(start)}, {inert(end)}), which does not anchor to the text shown "
+                "as one zero-width position"
+            )
+        )
         lines.append(
-            f"      gap ({inert(gap.get('position'))}) at {inert(gap.get('start'))}"
+            f"      gap ({inert(gap.get('position'))}) {where}"
             + (f"; corroborated by {_one_line(chairs, limit=160)}" if chairs else "")
         )
     return lines

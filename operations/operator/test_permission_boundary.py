@@ -1884,10 +1884,13 @@ def test_review_refuses_an_act_whose_export_row_lost_its_crop_list():
         )
     assert "source_regions value is missing" in (excinfo.value.detail or "")
 
-    # An act that genuinely records an empty crop list is still projected.
+    # An act that genuinely records an empty crop list is still projected. It
+    # carries a witness basis because a delivered export row does, and one
+    # without it is refused by `_normalised_act_row` as a damaged record rather
+    # than recovered from the run tree.
     projected = review._act_row(
         types.SimpleNamespace(),
-        {"act_id": "act_example", "act_key": "a1", "source_regions": []},
+        {"act_id": "act_example", "act_key": "a1", "source_regions": [], "witnesses": []},
         _EXPORT_REF,
     )
     assert projected["crops"] == []

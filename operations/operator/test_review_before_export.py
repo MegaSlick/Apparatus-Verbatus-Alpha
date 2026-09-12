@@ -1150,48 +1150,38 @@ def test_an_audited_reading_does_not_credit_the_reader_with_the_audits_own_spans
     assert "doubts: assessed by the reader; 1 uncertain span(s), 0 gap(s)" in instrument
 
 
-def test_two_instruments_doubting_the_same_characters_are_one_line_naming_both():
-    """The layer keeps both entries; this surface says what the pair means.
+def test_an_identical_pair_is_one_line_with_the_count_and_no_claim_about_its_source():
+    """The layer records that the characters were doubted twice, and nothing else.
 
-    Dropping the repeat in the producer would have erased the only trace that
-    the reader agreed with the audit -- no artifact holds the reader's report
-    separately -- and printing it twice would say two doubts were found where
-    one was, twice over.
+    Dropping the repeat in the producer would have erased that the layer carried
+    it twice, and printing it twice would say two doubts were found where one
+    entry appears twice. Naming the two instruments would say a third thing no
+    artifact records: nothing in the run names the instrument behind any one
+    span, and two audit flags of different classes may share one location, so a
+    fold is evidence of a repeat and of nothing else (GOVERNANCE 10).
     """
     span = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
-    lines = review_text.render(
-        _delivered_act(
-            {
-                "assessment": {"state": "assessed", "problem": None},
-                "uncertain_spans": [dict(span), dict(span)],
-                "gaps": [],
-            }
-        )
-    )
-    text = "\n".join(lines)
-
-    assert "2 uncertain span(s)" in text
-    assert text.count("[0, 5) 'alpha'") == 1
-    assert "(shown as 1 line(s); identical entries are folded)" in text
-    assert "doubted by both instruments" in text
-
-    # The same fold under a state that says the reader reported nothing is NOT
-    # an agreement: two audit flags of different classes may share one location,
-    # and "doubted by both instruments" directly under "not-assessed" would be
-    # two contradictory sentences about one span (GOVERNANCE 10).
-    unassessed = "\n".join(
-        review_text.render(
-            _delivered_act(
-                {
-                    "assessment": {"state": "not-assessed", "problem": "no channel"},
-                    "uncertain_spans": [dict(span), dict(span)],
-                    "gaps": [],
-                }
+    for state, assessment in (
+        ("assessed", {"state": "assessed", "problem": None}),
+        ("not-assessed", {"state": "not-assessed", "problem": "no channel"}),
+    ):
+        text = "\n".join(
+            review_text.render(
+                _delivered_act(
+                    {
+                        "assessment": assessment,
+                        "uncertain_spans": [dict(span), dict(span)],
+                        "gaps": [],
+                    }
+                )
             )
         )
-    )
-    assert "carried 2 times in the layer" in unassessed
-    assert "doubted by both instruments" not in unassessed
+
+        assert "2 uncertain span(s)" in text, state
+        assert text.count("[0, 5) 'alpha'") == 1, state
+        assert "(shown as 1 line(s); identical entries are folded)" in text, state
+        assert "carried 2 times in the layer" in text, state
+        assert "instrument" not in text, state
 
 
 def test_a_reading_sealed_before_the_doubt_contract_says_so_rather_than_nothing():
@@ -1549,3 +1539,123 @@ def test_a_stopped_runs_own_render_carries_a_doubt_line_for_every_reading(
     assert "machine reading:" in text
     assert text.count("doubts:") == len(projection["acts"])
     assert "doubts: not-assessed — the reader reports no doubt assessment" in text
+
+
+def test_a_malformed_layer_beside_a_missing_assessment_is_still_refused():
+    """The absence line used to return before the layers were looked at.
+
+    A record with no assessment and a damaged span list printed one honest
+    sentence about the assessment and said nothing at all about the layer --
+    the same silence, one field over.
+    """
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            _delivered_act({"assessment": None, "uncertain_spans": "not a list", "gaps": []})
+        )
+    assert refused.value.field == "acts[].row.uncertainty.uncertain_spans"
+    assert refused.value.index is None
+
+
+def test_spans_published_without_an_assessment_are_still_shown():
+    """And the valid entries such a record does carry are printed, not swallowed."""
+    text = "\n".join(
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": None,
+                    "uncertain_spans": [
+                        {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+                    ],
+                    "gaps": [],
+                }
+            )
+        )
+    )
+
+    assert "doubts: not recorded — this reading was sealed before" in text
+    assert "published beside that absence: 1 uncertain span(s), 0 gap(s)" in text
+    assert "[0, 5) 'alpha' confidence low" in text
+
+
+def test_a_gaps_offsets_are_checked_before_it_is_printed_as_a_position():
+    """A gap carries no characters of its own, so its two offsets are one position.
+
+    Anything else is a damaged record, and printing it as an anchored position
+    points a person at ink the record does not name (GOALS 5).
+    """
+    text = "\n".join(
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [],
+                    "gaps": [
+                        {"position": "internal", "start": 6, "end": 6},
+                        {"position": "internal", "start": 2, "end": 5},
+                        {"position": "trailing", "start": 99, "end": 99},
+                        {"position": "leading", "start": True, "end": True},
+                    ],
+                }
+            )
+        )
+    )
+
+    assert "gap (internal) at 6" in text
+    assert text.count("does not anchor to the text shown as one zero-width position") == 3
+
+
+def test_a_falsey_witness_evidence_value_is_refused_rather_than_read_as_none():
+    """`or ()` swallowed `""`, `0` and `{}`, each of which is a damaged value."""
+    for value in ("", 0, {}):
+        with pytest.raises(review_text.ProjectionShapeError) as refused:
+            review_text.render(
+                _delivered_act(
+                    {
+                        "assessment": {"state": "assessed", "problem": None},
+                        "uncertain_spans": [],
+                        "gaps": [
+                            {
+                                "position": "internal",
+                                "start": 6,
+                                "end": 6,
+                                "witness_evidence": value,
+                            }
+                        ],
+                    }
+                )
+            )
+        assert refused.value.field == "acts[].row.uncertainty.gaps[0].witness_evidence"
+        assert refused.value.index is None
+
+
+def test_a_malformed_audit_on_a_reading_is_refused_rather_than_read_as_absent():
+    """Mapped to `None` at the projection, a fault printed as an ordinary absence."""
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            _reading_act({"outcome": "read", "text": "alpha beta", "audit": "complete"})
+        )
+    assert refused.value.field == "acts[].row.reading.audit"
+    assert refused.value.index is None
+
+
+def test_a_delivered_export_row_without_a_witness_basis_is_refused_not_recovered():
+    """Recovery is for the rows the Armarium deliberately writes thin.
+
+    A delivered act is described entirely by its export record, so one with no
+    witness basis is damaged. Reading its witnesses and its reading out of the
+    run tree instead would paper over that and show the delivered text beside a
+    reading the export never named.
+    """
+    export_ref = {"relative_path": "7_armarium/artifacts/export/x.json", "sha256": "0" * 64}
+    delivered = {"act_id": "act_0123456789abcdef", "act_key": "a1", "text": "alpha"}
+
+    with pytest.raises(OperatorError) as refused:
+        review._normalised_act_row(delivered, export_ref, [], delivered=True)
+    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    detail = refused.value.detail or ""
+    assert "delivers act" in detail and "no witness basis" in detail
+
+    # The same row, not delivered, is the thin shape recovery exists for: no
+    # witnesses in the run tree here either, so it comes back unchanged rather
+    # than refused.
+    assert review._normalised_act_row(delivered, export_ref, [], delivered=False) == delivered

@@ -152,13 +152,14 @@ truncation       -- {classification, signals}, present on every attempted
 uncertain_spans  -- [{start, end, alternatives, confidence}, ...]: the exhausted-cap
                     projection first (cap 0 only), then the reader's own assessed
                     doubts over the published text. NOTHING is dropped, including
-                    an exact repeat: two identical entries mean both instruments
-                    doubted those characters the same way, and since no artifact
-                    holds the reader's report separately that pair is the only
-                    record of the agreement. An overlap means the two doubted
-                    overlapping characters differently. The operator console
-                    coalesces an identical pair into one line naming both
-                    instruments; consumers that count doubts should do the same
+                    an exact repeat: the layer records that those characters were
+                    doubted twice. It does NOT record by what -- no artifact in
+                    the run names the instrument behind any one span, and two
+                    audit flags of different classes may share one location, so a
+                    repeat is not by itself an agreement between the audit and
+                    the reader. The operator console shows an identical pair once
+                    with the count beside it and claims nothing more; consumers
+                    that count doubts should do the same
 gaps             -- [{position, start, end, witness_evidence}, ...]: the whole-act
                     gap of a `no-readable-text` outcome, or the reader's own
                     zero-width gaps (empty witness_evidence)
