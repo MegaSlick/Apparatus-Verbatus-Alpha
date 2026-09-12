@@ -210,8 +210,9 @@ def _doubt_lines(
     the published layer is the union of the audit's exhausted-cap projection and
     the reader's report, and this surface cannot tell which entry is whose -- so
     it does not claim. "assessed by the reader" is said only where every span in
-    the layer IS the reader's, which is the records with no audit behind them
-    (the independent review of 2026-09-11; GOVERNANCE 10).
+    the layer IS the reader's, which is the records with no audit behind them --
+    every Perlectio carries one, so that form is reserved for a record kind that
+    does not (the independent review of 2026-09-11; GOVERNANCE 10).
     """
     if assessment is None:
         # Absent, not malformed: a reading sealed before the doubt report was

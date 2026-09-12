@@ -1113,8 +1113,11 @@ def test_an_audited_reading_does_not_credit_the_reader_with_the_audits_own_spans
     assert "assessed by the reader; the span(s) below are its report and the audit" in audited
     assert "projection together; 2 uncertain span(s), 0 gap(s)" in audited
 
-    # A record with no audit behind it -- an instrument reading -- publishes only
-    # the reader's own spans, and there the attribution is provable.
+    # A record with no audit behind it publishes only the reader's own spans, and
+    # there the attribution is provable. Every Perlectio carries an audit, so
+    # this form is reserved for a record kind that does not -- the instrument
+    # readings, which no projection puts on this screen today. Kept as the
+    # rule's other half rather than left to a reader to assume.
     instrument = "\n".join(
         review_text.render(
             {
