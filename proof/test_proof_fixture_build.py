@@ -711,13 +711,21 @@ def test_the_declared_reader_doubt_reports_anchor_to_the_texts_they_are_declared
             "problem": "",
         },
     ]
-    # Grouped, not keyed: a repeated row would replace its twin under one key
-    # and the assertion would pass having read only the last of them.
-    grouped: dict[tuple[str, str | None], list[dict]] = {}
-    for row in skeleton["reader_doubt"]:
-        grouped.setdefault((row["scenario"], row.get("pass_kind")), []).append(row)
-    assert all(len(rows) == 1 for rows in grouped.values()), "one doubt row per scenario and pass"
-    doubts = {key: rows[0] for key, rows in grouped.items()}
+    # The complete ordered table, every row, before anything is read by key:
+    # `reader_doubt` is a many-row table (a reader may report several doubts on
+    # one act), so a repeated row is valid and must be seen, not folded away
+    # under one key (CodeRabbit on PR #115, twice).
+    assert [
+        (r["scenario"], r["act_key"], r.get("pass_kind"), r["start"], r["end"], r["alternatives"])
+        for r in skeleton["reader_doubt"]
+    ] == [
+        ("reader-doubt", "a1", None, 29, 34, ["gamna", "gaMma"]),
+        ("audit-change", "a1", "perlectio", 29, 34, ["gamma"]),
+        ("audit-change", "a1", "audit-reproof", 29, 35, ["gamma"]),
+        ("reader-doubt-malformed", "a1", None, 29, 99, []),
+        ("reader-doubt-unreadable", "a1", None, 29, 34, ["gamna"]),
+    ]
+    doubts = {(row["scenario"], row.get("pass_kind")): row for row in skeleton["reader_doubt"]}
     assert acts["a1"][29:34] == "gamma"
     assert doubts[("reader-doubt", None)]["start"] == 29
     assert doubts[("reader-doubt", None)]["end"] == 34
