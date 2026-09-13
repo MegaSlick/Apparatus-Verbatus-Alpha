@@ -37,7 +37,8 @@ thread is not an automated approval.
    `origin/main` baseline as above. Run at most one routine local baseline review:
 
    ```sh
-   coderabbit review --agent --committed --base origin/main --config operations/review/README.md
+   coderabbit review --agent --committed --base origin/main \
+     --config .coderabbit.yaml CLAUDE.md operations/review/README.md
    ```
 
    Record every finding as fixed or declined, with the concrete trigger, impact, evidence, and
@@ -49,7 +50,7 @@ thread is not an automated approval.
 
    ```sh
    coderabbit review --agent --committed --base-commit <preceding-candidate> \
-     --config operations/review/README.md
+     --config .coderabbit.yaml CLAUDE.md operations/review/README.md
    ```
 
    This is a review of the material correction, not a new whole-branch baseline. Add
@@ -93,13 +94,8 @@ The CLI runs on CodeRabbit's defaults unless the repository's configuration is p
 explicitly; `.coderabbit.yaml` at the root is read by the GitHub app, not by the CLI. A local
 pass that omits it runs without the assertive profile, the project's own checks (no witness
 picker, nothing lost silently, carried bytes) and the per-path instructions, and reports
-clean on changes the GitHub review then refuses. Every pre-push pass is therefore:
-
-```sh
-coderabbit review --agent --committed --base origin/main \
-  --config .coderabbit.yaml CLAUDE.md operations/review/README.md
-```
-
-For a narrow follow-up on a correction round, `--base` is the previous candidate. Findings
-are advisory (`.coderabbit.yaml` sets `request_changes_workflow: false`); the session
-disposes of each one with a reason, and hard rule 14 decides the merge.
+clean on changes the GitHub review then flags. That is why steps 1 and 2 above pass
+`.coderabbit.yaml`, `CLAUDE.md` and this file on every pass, the baseline and the narrow
+follow-up alike; a pass without them is not the project's review. Findings are advisory
+(`.coderabbit.yaml` sets `request_changes_workflow: false`); the session disposes of each
+one with a reason, and hard rule 14 decides the merge.
