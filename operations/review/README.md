@@ -86,3 +86,20 @@ The repository YAML is the shared GitHub configuration; validate edits locally w
 any organization overrides. For public repositories where opening reviews do not trigger,
 request `@coderabbitai review` manually and verify its completion. A configured tool or a
 passing schema validator is not evidence that a remote review actually ran.
+
+## The local CodeRabbit pass
+
+The CLI runs on CodeRabbit's defaults unless the repository's configuration is passed
+explicitly; `.coderabbit.yaml` at the root is read by the GitHub app, not by the CLI. A local
+pass that omits it runs without the assertive profile, the project's own checks (no witness
+picker, nothing lost silently, carried bytes) and the per-path instructions, and reports
+clean on changes the GitHub review then refuses. Every pre-push pass is therefore:
+
+```sh
+coderabbit review --agent --committed --base origin/main \
+  --config .coderabbit.yaml CLAUDE.md operations/review/README.md
+```
+
+For a narrow follow-up on a correction round, `--base` is the previous candidate. Findings
+are advisory (`.coderabbit.yaml` sets `request_changes_workflow: false`); the session
+disposes of each one with a reason, and hard rule 14 decides the merge.

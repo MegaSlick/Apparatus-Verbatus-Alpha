@@ -190,8 +190,10 @@ round measures the same tree three times. Use fresh, independent review where a 
 would be expensive or quiet. Consequential review targets
 one clean candidate commit through `operations/review/README.md`, never a moving index. A
 fix creates a new candidate and invalidates earlier reviews; the pushed tip is the exact
-candidate the final reviewers read. Pre-push CodeRabbit uses the CLI against `origin/main`;
-after the push, wait for the automatic GitHub review before replying. Fix or decline every
+candidate the final reviewers read. Pre-push CodeRabbit uses the CLI against `origin/main`
+with the repository's own configuration passed — the CLI does not read `.coderabbit.yaml`
+on its own; `operations/review/README.md` carries the command. After the push, wait for
+the automatic GitHub review before replying. Fix or decline every
 real finding with a reason. A commit records both halves of its provenance, separately:
 `Co-Authored-By:` names the model that wrote the lines, and `Reviewed-by:` names the model
 that reviewed them. A pull request records decisions and rationale; it does not carry
