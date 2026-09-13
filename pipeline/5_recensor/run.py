@@ -3134,6 +3134,8 @@ def review_route_from_findings(
     unreconciled: bool = False,
     audit_examination: str | None = None,
     audit_reproof_truncation: dict | None = None,
+    assessment_malformed: bool = False,
+    assessment_problem: str | None = None,
 ) -> tuple[str, str] | None:
     """Compose every independent review cause in stable priority order.
 
@@ -3141,10 +3143,11 @@ def review_route_from_findings(
     ``None`` means the corresponding measurement does not exist and therefore
     routes like ``False``; absence is not a measured shortfall.
     """
-    # A shape guard, not a live filter: the route inputs are booleans, None or
-    # a closed examination string today, and the one nested object (the
-    # re-proof's truncation record) carries no vocabulary a preference could
-    # ride in, so the walk cannot currently refuse anything. Said plainly
+    # A shape guard, not a live filter: the route inputs are booleans, None, a
+    # closed examination string, one retained free-text problem, and one nested
+    # object (the re-proof's truncation record) that carries no vocabulary a
+    # preference could ride in, so the walk cannot currently refuse anything --
+    # it matches on keys, and the free text is a value. Said plainly
     # rather than left reading as a screen that catches something (GOVERNANCE
     # 10). It is kept because the day one of these carries vocabulary is the
     # day the routing decision could. The screens that do bite are
@@ -3158,6 +3161,8 @@ def review_route_from_findings(
             "audit_unresolved": audit_unresolved,
             "audit_examination": audit_examination,
             "audit_reproof_truncation": audit_reproof_truncation,
+            "assessment_malformed": assessment_malformed,
+            "assessment_problem": assessment_problem,
             "under_witnessed": under_witnessed,
             "unreconciled": unreconciled,
         },
@@ -3221,6 +3226,27 @@ def review_route_from_findings(
                 "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
                 "they remain explicit uncertainty rather than a silent retry"
             )
+    if assessment_malformed:
+        # A doubt report the schema could not anchor is a fault of the call's
+        # output, like a cut-off generation: the text may stand, but whatever
+        # the reader tried to say about its own doubts was lost, and an act
+        # delivered over that loss would carry an empty layer that reads as
+        # confidence. Held, never re-rolled (GOVERNANCE 11).
+        #
+        # The retained problem is quoted into the reason, not merely pointed
+        # at. It is the only sentence that says what went wrong, and before
+        # this it appeared in no review record, no export row and nothing the
+        # console prints -- a person reading the queue was told the category
+        # and sent to find the artifact (the independent review of
+        # 2026-09-11).
+        reason = (
+            "the reader's doubt report over this act could not be anchored to its text and is "
+            "retained as a malformed assessment; the act is held rather than delivered with "
+            "its doubts unread"
+        )
+        if isinstance(assessment_problem, str) and assessment_problem:
+            reason = f"{reason} ({assessment_problem})"
+        reasons.append(reason)
     if under_witnessed:
         reasons.append(
             "the configured act-level witness floor is not met; a witness failure is not coverage"
@@ -3612,6 +3638,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # "audited, unresolved" (True).
                     "audit_unresolved": None,
                     "audit_examination": None,
+                    "uncertainty_assessment": None,
                     # None for the same reason: a held act was never shown
                     # real capture pixels, so there is no cross-capture
                     # visibility survey to report, universally present like
@@ -3647,6 +3674,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         audit_reproof_truncation = (
             None if audit_facts is None else audit_facts["reproof_truncation"]
         )
+        # Carried onto the review as the same closed `{state, problem}` object
+        # the Perlectio, the Archetypus record and the export row use, so one
+        # field name has one shape wherever a consumer meets it. It used to be
+        # the bare state string here, which is two types under one name (the
+        # independent review of 2026-09-11). `None` still means "no Perlectio,
+        # so no report", exactly as the Designator-held shape above says.
+        assessment = latest_payload.get("uncertainty_assessment")
+        assessment_record = (
+            {"state": assessment.get("state"), "problem": assessment.get("problem")}
+            if isinstance(assessment, dict)
+            else None
+        )
+        assessment_state = assessment.get("state") if isinstance(assessment, dict) else None
         # The survey must come from the exact Perlectio this review assesses.
         cross_coverage = act_cross_capture_coverage(
             context,
@@ -3674,6 +3714,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             unreconciled=declared_unreconciled(scenario, act_key),
             audit_examination=audit_examination,
             audit_reproof_truncation=audit_reproof_truncation,
+            assessment_malformed=assessment_state == "malformed",
+            assessment_problem=assessment.get("problem") if isinstance(assessment, dict) else None,
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
@@ -3879,6 +3921,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # canonical export is the consumer that would believe it.
                     "audit_unresolved": audit_unresolved,
                     "audit_examination": audit_examination,
+                    "uncertainty_assessment": assessment_record,
                     "cross_capture_coverage": cross_coverage,
                 },
             )
@@ -4083,6 +4126,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # was delivered and did not finish (F1). `None` exactly where
                 # `audit_unresolved` is `None`.
                 "audit_examination": audit_examination,
+                # The reader's own doubt report, `{state, problem}`, so a review
+                # can say whether an empty uncertainty layer is an absence of
+                # doubt or an absence of a channel (F2), and can quote the
+                # problem where there is one. The same name carries the same
+                # shape on every record that has one.
+                "uncertainty_assessment": assessment_record,
                 "cross_capture_coverage": cross_coverage,
                 # Present only on a `confirmed-blank`, because it is the evidence
                 # that outcome rests on and nothing else has any. Every other

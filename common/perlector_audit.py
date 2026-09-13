@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+from common.contracts import uncertainty
 from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
@@ -897,7 +898,19 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
 
 
 def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]:
-    """Validate the exact draft/finding/Perlectio relationship once for every reader."""
+    """Validate the exact draft/finding/Perlectio relationship once for every reader.
+
+    **A known limit, stated rather than implied.** Where the sealed assessment
+    says `assessed`, this function proves the exhausted-cap projection leads the
+    published `uncertain_spans` and stops there: what follows is the reader's
+    own report, and no artifact in this run holds that report separately, so
+    nothing here can prove the tail is what a reader actually said. The
+    annotation layer proves those offsets anchor to the exact text; it cannot
+    prove their provenance. Binding the tail needs the doubt report sealed as
+    evidence of its own, which is not built. Under every other state the layers
+    are constrained exactly, because a reader with no channel -- or one whose
+    report was refused -- has nothing of its own to publish.
+    """
     payload = reading.get("payload")
     if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
         raise SchemaRefusal(f"reading of {act_id} has no final text for its Pass-C audit")
@@ -1026,8 +1039,75 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         }
         for span in finding_payload["uncertain_spans"]
     ]
-    if payload.get("uncertain_spans") != expected_uncertainty:
+    # The exhausted-cap spans lead the Perlectio's layer; the reader's own
+    # assessed doubts, if any, follow them. The projection must be present
+    # exactly, in order, at the head -- what follows is the reader's report and
+    # is validated against the text by the annotation layer, not here.
+    #
+    # What may follow it is decided by the sealed assessment, not left open: a
+    # reading whose reader was never asked, or whose report could not be
+    # anchored, has no doubts of its own to publish, so its layer must be the
+    # projection and nothing else. Without that, an act with no exhausted-cap
+    # finding -- the ordinary case, where the projection is empty -- would
+    # accept any invented span at all, because every list starts with the empty
+    # one (independent audit of 2026-09-10, F2).
+    published = payload.get("uncertain_spans")
+    # The record is validated before its state is read, by the one function the
+    # canonical layer uses. Reading `state` off an unvalidated record let a
+    # reading saying `assessed` while carrying a problem -- a contradiction the
+    # canonical layer refuses by name -- choose the relaxed prefix rule here and
+    # publish spans and gaps the reader's report never named (found by
+    # CodeRabbit reading against the project's own configuration).
+    assessment_record = uncertainty.validate_assessment_record(
+        payload.get("uncertainty_assessment"), f"reading of {act_id}"
+    )
+    state = assessment_record["state"]
+    if not isinstance(published, list):
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
+    if state == "assessed":
+        agrees = published[: len(expected_uncertainty)] == expected_uncertainty
+    else:
+        agrees = published == expected_uncertainty
+    if not agrees:
+        raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
+    # The same state rule over the other layer, and the direction that matters
+    # is the one that loses ink: a gap is unread ink (GOALS 1), and an act whose
+    # gap went missing reads as wholly established. Under any state but
+    # `assessed` the only gap a reading may carry is the whole-act gap its
+    # `no-readable-text` outcome owes -- the producer mints no other, and an
+    # invented internal gap here would make a complete reading look partial with
+    # nothing behind it either way.
+    gaps = payload.get("gaps")
+    if not isinstance(gaps, list):
+        raise SchemaRefusal(f"reading of {act_id} has no gap list beside its audit projection")
+    if state != "assessed" and not all(
+        isinstance(gap, dict) and gap.get("position") == "whole-act" for gap in gaps
+    ):
+        raise SchemaRefusal(
+            f"reading of {act_id} publishes a gap of its own although its sealed assessment "
+            f"is {state!r}; only a reader that was asked reports where its sight failed"
+        )
+    # What follows the projection under `assessed` is the reader's own report,
+    # and this is the last check before the Recensor publishes: the spans and
+    # gaps are bound to the text here by the canonical validator itself, so a
+    # span past the end of `text` never reaches a review record to be printed
+    # as offsets that do not anchor (CodeRabbit on PR #115). Self-revisions are
+    # left out on purpose: their offsets index the prior draft, not this text,
+    # and the canonical projection at the Archetypus is where they are held.
+    try:
+        uncertainty.validate(
+            {
+                "uncertain_spans": published,
+                "gaps": gaps,
+                "self_revisions": [],
+                "assessment": assessment_record,
+            },
+            payload.get("text"),
+        )
+    except SchemaRefusal as error:
+        raise SchemaRefusal(
+            f"reading of {act_id} carries an uncertainty layer its text cannot anchor: {error}"
+        ) from error
     return {"record": record, "draft": draft, "finding": finding}
 
 

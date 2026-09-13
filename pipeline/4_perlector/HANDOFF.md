@@ -149,8 +149,32 @@ prompt           -- {serving_recipe, chair_identity_sha256, dossier_digest,
 dissent          -- derived-comparison-view rows (see below)
 truncation       -- {classification, signals}, present on every attempted
                     reading regardless of outcome (see below)
-uncertain_spans  -- [{start, end, alternatives, confidence}, ...]
-gaps             -- [{position, start, end, witness_evidence}, ...]
+uncertain_spans  -- [{start, end, alternatives, confidence}, ...]: the exhausted-cap
+                    projection first (cap 0 only), then the reader's own assessed
+                    doubts over the published text. NOTHING is dropped, including
+                    an exact repeat: the layer records that those characters were
+                    doubted twice. It does NOT record by what -- no artifact in
+                    the run names the instrument behind any one span, and two
+                    audit flags of different classes may share one location, so a
+                    repeat is not by itself an agreement between the audit and
+                    the reader. The operator console shows an identical pair once
+                    with the count beside it and claims nothing more; consumers
+                    that count doubts should do the same
+gaps             -- [{position, start, end, witness_evidence}, ...]: the whole-act
+                    gap of a `no-readable-text` outcome, or the reader's own
+                    zero-width gaps (empty witness_evidence)
+uncertainty_assessment -- {state, problem}: the reader's doubt-report state for
+                    the call whose text is published -- `assessed`,
+                    `not-assessed` (no doubt channel; the live reader today) or
+                    `malformed` (a report the annotation schema could not anchor,
+                    retained as its problem; the Recensor holds). An empty
+                    `uncertain_spans` under `not-assessed` is an absence, never
+                    confidence (independent audit of 2026-09-10, F2). Travels
+                    into the canonical uncertainty layer as `assessment`.
+                    Carried on the three instrument records too (Lectio nuda,
+                    `lectio-prior`, `primed-without-prior`): a reader answers the
+                    same way on an instrument call, and a doubt reported on a
+                    nuda reading is a measurement (GOVERNANCE 2).
 audit            -- {draft_ref, finding_ref, finding_digest, unresolved,
                     examination, reproofs, request_digest}: the R5b Pass-C
                     chain, which re-proof instrument was actually delivered,
@@ -165,6 +189,25 @@ consumers actually read (`common/stage.py::reading_basis_regions` walks
 The envelope's direct inputs bind every full-resolution crop, every downscaled
 page-context render and its sealed source page, and every Testimonium reference.
 The dossier is therefore not the sole claim that the reader saw its page context.
+
+**Two named limits of the doubt report, stated rather than implied.**
+
+*The live prompt has no doubt grammar yet.* The pinned instruction asks the
+engine for the transcribed ink and nothing else, so a live reading is always
+`not-assessed` and the export discloses that per act. Giving the live prompt a
+grammar for reporting doubt -- and measuring what a real reader answers through
+it -- is future work, and is deliberately not done from an offline chamber where
+no real answer can be observed.
+
+*The assessed tail is not bound to a reader.* Where the state is `assessed`,
+`common/perlector_audit.py::validate_chain` proves the exhausted-cap projection
+leads `uncertain_spans` and stops there; the annotation layer proves the
+remaining offsets anchor to the exact text, but no artifact holds the reader's
+report separately, so nothing proves the tail is what a reader actually said.
+Under every other state both layers are constrained exactly (no span at all, and
+no gap but the whole-act gap the `no-readable-text` outcome owes), because a
+reader with no channel has nothing of its own to publish. Binding the tail needs
+the doubt report sealed as evidence of its own; that is not built.
 
 **The field set above is closed and checked before publication**
 (`run.py::validate_reading_payload`). Three of the four failures spec 08's

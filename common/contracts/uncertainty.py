@@ -11,7 +11,13 @@ from typing import Any
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 
-_FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions"})
+_FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment"})
+# The reader's own report state, carried beside its layers so an empty list can
+# never be read as confidence (independent audit of 2026-09-10, F2). Mirrors
+# pipeline/4_perlector/annotations.py's ASSESSMENT_STATES exactly, for the same
+# dependency-direction reason as `_CONFIDENCE` and `_GAP_POSITIONS` above.
+_ASSESSMENT_STATES = frozenset({"assessed", "not-assessed", "malformed"})
+_ASSESSMENT_FIELDS = frozenset({"state", "problem"})
 _CONFIDENCE = frozenset({"low", "medium", "high"})
 # Mirrors pipeline/4_perlector/annotations.py's GAP_POSITIONS exactly (as
 # `_CONFIDENCE` above already mirrors that module's CONFIDENCE_LEVELS): the
@@ -40,13 +46,57 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
         revisions.append(
             {"reading_span": item["reading_span"], "prior_span": item["testimonium_span"]}
         )
+    assessment = payload.get("uncertainty_assessment")
+    if not isinstance(assessment, dict):
+        raise SchemaRefusal(
+            "Perlectio carries no uncertainty_assessment; a reading sealed before the reader's "
+            "doubt report was recorded cannot be projected -- re-read it in a run under the "
+            "current contract"
+        )
+    # Asked here, of the record as the producer wrote it, rather than only of
+    # the two keys projected out of it: `{"state": ..., "problem": ...}` built
+    # with `.get` turns a record carrying a third field into a well-formed one,
+    # and the projection would then be the first place that field went missing.
+    validate_assessment_record(assessment, "the Perlectio's uncertainty_assessment")
     layer = {
         "uncertain_spans": payload.get("uncertain_spans"),
         "gaps": payload.get("gaps"),
         "self_revisions": revisions,
+        "assessment": {"state": assessment["state"], "problem": assessment["problem"]},
     }
     validate(layer, payload.get("text"))
     return layer
+
+
+def validate_assessment_record(assessment: Any, subject: str = "canonical uncertainty") -> dict:
+    """The closed `{state, problem}` doubt record, refused by name or returned.
+
+    One function because three callers need the same answer and had three
+    different fractions of it: this module's `validate` asked all of it,
+    `from_perlectio` asked only that the field was an object before projecting
+    two keys out of it, and `common/perlector_audit.validate_chain` read the
+    state without asking anything -- so a record saying `assessed` while
+    carrying a problem chose the relaxed span rule in one place and was refused
+    in another (found by CodeRabbit reading against the project's own
+    configuration).
+    """
+    if not isinstance(assessment, dict) or set(assessment) != _ASSESSMENT_FIELDS:
+        raise SchemaRefusal(f"{subject} has no closed assessment record")
+    # The string check leads the membership test, as the producer's own
+    # vocabulary check does: `in` against a frozenset raises `TypeError` on an
+    # unhashable value, so a resealed record carrying a list here would crash a
+    # consumer instead of being refused by name.
+    if type(assessment["state"]) is not str or assessment["state"] not in _ASSESSMENT_STATES:
+        raise SchemaRefusal(f"{subject} names an unknown assessment state {assessment['state']!r}")
+    if assessment["problem"] is not None and (
+        not isinstance(assessment["problem"], str) or not assessment["problem"]
+    ):
+        raise SchemaRefusal(f"{subject}'s assessment problem is not null or a string")
+    if (assessment["state"] == "assessed") != (assessment["problem"] is None):
+        raise SchemaRefusal(
+            f"{subject}'s assessment carries a problem exactly when it is not assessed"
+        )
+    return assessment
 
 
 def validate(layer: Any, text: Any) -> dict[str, Any]:
@@ -58,6 +108,7 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
     uncertain = layer["uncertain_spans"]
     gaps = layer["gaps"]
     revisions = layer["self_revisions"]
+    validate_assessment_record(layer["assessment"])
     if (
         not isinstance(uncertain, list)
         or not isinstance(gaps, list)

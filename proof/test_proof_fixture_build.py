@@ -426,6 +426,9 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "churro-native",
         "churro-truncation",
         "audit-change",
+        "reader-doubt",
+        "reader-doubt-malformed",
+        "reader-doubt-unreadable",
         "audit-reproof-cutoff",
         "refused-page",
         "refused-first-page",
@@ -497,6 +500,13 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # `stop_reason` row below), or it would prove nothing about F1.
     assert by_name["audit-reproof-cutoff"]["recover_acts"] == []
     assert by_name["audit-reproof-cutoff"]["hold_acts"] == []
+    # The reader-doubt scenarios declare nothing by configuration either: what
+    # they carry is the reader's own report, and the hold each of the latter two
+    # produces must come from the schema refusing that report against the text
+    # actually published, or it proves nothing.
+    for name in ("reader-doubt", "reader-doubt-malformed", "reader-doubt-unreadable"):
+        assert by_name[name]["recover_acts"] == []
+        assert by_name[name]["hold_acts"] == []
     assert by_name["refused-page"]["recover_acts"] == []
     assert by_name["refused-page"]["hold_acts"] == []
     assert by_name["refused-first-page"]["recover_acts"] == []
@@ -617,7 +627,7 @@ def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleto
     that did not succeed. A declaration that named a completed-class outcome
     would exercise nothing, whichever class it actually belongs to."""
     failures = skeleton["reading_failure"]
-    assert len(failures) == 4
+    assert len(failures) == 5
     for row in failures:
         assert row["act_key"] in {act["key"] for act in skeleton["act"]}
         assert classify(PERLECTOR, row["outcome"]) is not OutcomeClass.COMPLETED
@@ -631,6 +641,9 @@ def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleto
         "confirmed-blank": "no-readable-text",
         "blank-with-dissent": "no-readable-text",
         "no-readable-text-reading": "no-readable-text",
+        # The same unresolved outcome, with a reader that also reported a doubt
+        # over the act -- the two claims the producer must not publish together.
+        "reader-doubt-unreadable": "no-readable-text",
     }
     # `truncated` is FAILED-class and still carries text -- the hazard the
     # Archetypus's own guard (spec 09) exists to refuse.
@@ -667,3 +680,77 @@ def test_the_declared_stop_reason_is_the_length_signal_for_a_known_scenario(skel
         assert row["act_key"] in {act["key"] for act in skeleton["act"]}
         assert row["stop_reason"] in {"stop", "length"}
         assert row.get("pass_kind", "audit-reproof") == "audit-reproof"
+
+
+def test_the_declared_reader_doubt_reports_anchor_to_the_texts_they_are_declared_over(skeleton):
+    """F2's fixture rows are stated as a model would return them; the offsets
+    named here are the ones the tests downstream assert, so they are pinned."""
+    acts = {act["key"]: act["text"] for act in skeleton["act"]}
+    assert skeleton["reader_assessment"] == [
+        {"scenario": "reader-doubt", "act_key": "a1", "state": "assessed", "problem": ""},
+        {"scenario": "reader-doubt", "act_key": "a2", "state": "assessed", "problem": ""},
+        {"scenario": "reader-doubt-malformed", "act_key": "a1", "state": "assessed", "problem": ""},
+        {
+            "scenario": "audit-change",
+            "act_key": "a1",
+            "state": "assessed",
+            "problem": "",
+            "pass_kind": "perlectio",
+        },
+        {
+            "scenario": "audit-change",
+            "act_key": "a1",
+            "state": "assessed",
+            "problem": "",
+            "pass_kind": "audit-reproof",
+        },
+        {
+            "scenario": "reader-doubt-unreadable",
+            "act_key": "a1",
+            "state": "assessed",
+            "problem": "",
+        },
+    ]
+    # The complete ordered table, every row, before anything is read by key:
+    # `reader_doubt` is a many-row table (a reader may report several doubts on
+    # one act), so a repeated row is valid and must be seen, not folded away
+    # under one key (CodeRabbit on PR #115, twice).
+    assert [
+        (r["scenario"], r["act_key"], r.get("pass_kind"), r["start"], r["end"], r["alternatives"])
+        for r in skeleton["reader_doubt"]
+    ] == [
+        ("reader-doubt", "a1", None, 29, 34, ["gamna", "gaMma"]),
+        ("audit-change", "a1", "perlectio", 29, 34, ["gamma"]),
+        ("audit-change", "a1", "audit-reproof", 29, 35, ["gamma"]),
+        ("reader-doubt-malformed", "a1", None, 29, 99, []),
+        ("reader-doubt-unreadable", "a1", None, 29, 34, ["gamna"]),
+    ]
+    doubts = {(row["scenario"], row.get("pass_kind")): row for row in skeleton["reader_doubt"]}
+    assert acts["a1"][29:34] == "gamma"
+    assert doubts[("reader-doubt", None)]["start"] == 29
+    assert doubts[("reader-doubt", None)]["end"] == 34
+    assert doubts[("reader-doubt", None)]["alternatives"] == ["gamna", "gaMma"]
+    # Deliberately past the end of a 34-character text: the producer must refuse it.
+    assert doubts[("reader-doubt-malformed", None)]["end"] > len(acts["a1"])
+    reproof_text = next(
+        row["text"] for row in skeleton["audit_reproof"] if row["scenario"] == "audit-change"
+    )
+    assert reproof_text[29:35] == "gamma!"
+    assert doubts[("audit-change", "audit-reproof")]["end"] == 35
+    assert doubts[("audit-change", "perlectio")]["end"] == 34
+    # `reader-doubt-unreadable` declares its doubt for every pass (no `pass_kind`)
+    # and in bounds for the act's declared text -- which the `no-readable-text`
+    # outcome then empties, so the producer must refuse it against the text it
+    # actually publishes. Retrieved by key rather than left to the `==` above, so
+    # a row that lost its scenario or gained a pass kind fails here by name
+    # (found by CodeRabbit on the rebased candidate).
+    unreadable = doubts[("reader-doubt-unreadable", None)]
+    assert unreadable["act_key"] == "a1"
+    assert (unreadable["start"], unreadable["end"]) == (29, 34)
+    assert unreadable["alternatives"] == ["gamna"]
+    assert unreadable["confidence"] == "low"
+    assert unreadable["end"] <= len(acts["a1"])
+    assert skeleton["reader_gap"] == [
+        {"scenario": "reader-doubt", "act_key": "a1", "position": "internal", "offset": 23}
+    ]
+    assert acts["a1"][:23] == "SYNTHETIC ACT ONE alpha"

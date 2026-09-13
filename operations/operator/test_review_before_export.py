@@ -201,7 +201,7 @@ def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
     assert cut["category"] == "held-for-review"
     assert cut["reason"] == held["reason"]
     assert cut["row"]["reading"]["outcome"] == "read"
-    assert cut["row"]["reading"]["truncation"] == "complete"
+    assert cut["row"]["reading"]["truncation"]["classification"] == "complete"
     assert cut["row"]["reading"]["audit"] == {"unresolved": True, "examination": "incomplete"}
     assert isinstance(cut["row"]["reading"]["text"], str) and cut["row"]["reading"]["text"]
     assert cut["row"]["review"]["outcome"] == "held-for-review"
@@ -994,6 +994,10 @@ def test_a_projection_list_entry_that_is_not_an_object_is_refused_by_field_and_i
             {"acts": [{"act_id": "a", "row": {"reading": {"audit": 3}}}]},
             "acts[].row.reading.audit",
         ),
+        (
+            {"acts": [{"act_id": "a", "row": {"reading": {"truncation": "length"}}}]},
+            "acts[].row.reading.truncation",
+        ),
         ({"progress": "sealed"}, "progress"),
     ],
 )
@@ -1015,3 +1019,672 @@ def test_an_object_valued_projection_field_of_the_wrong_type_is_refused_by_name(
     message = str(refused.value)
     assert "entry -1" not in message, "the field itself is wrong, not a row numbered -1"
     assert field in message
+
+
+def _delivered_act(uncertainty: dict, text: str = "alpha beta") -> dict:
+    return {
+        "run_id": "r",
+        "acts": [
+            {
+                "act_id": "a",
+                "act_key": "a1",
+                "category": "delivered",
+                "crops": [],
+                "row": {"text": text, "uncertainty": uncertainty},
+            }
+        ],
+    }
+
+
+def test_a_published_span_is_shown_beside_the_state_that_says_who_did_not_report_it():
+    """The exhausted-cap projection mints spans on acts whose reader has no channel.
+
+    With today's live reader that combination -- `not-assessed` beside real
+    published spans -- is the only way a span reaches this surface at all, and
+    the renderer used to print the state line and return, hiding exactly those
+    (the independent review of 2026-09-11).
+    """
+    lines = review_text.render(
+        _delivered_act(
+            {
+                "assessment": {"state": "not-assessed", "problem": "this chair has no channel"},
+                "uncertain_spans": [
+                    {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+                ],
+                "gaps": [{"position": "internal", "start": 6, "end": 6}],
+            }
+        )
+    )
+    text = "\n".join(lines)
+
+    assert "doubts: not-assessed — this chair has no channel" in text
+    assert "published beside that state, not by the reader: 1 uncertain span(s), 1 gap(s)" in text
+    assert "[0, 5) 'alpha' confidence low" in text
+    assert "gap (internal) at 6" in text
+
+
+def test_a_doubt_layer_entry_that_is_not_an_object_is_refused_by_field_and_index():
+    """The same rule as every other projection list, at the newest one (CodeRabbit)."""
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [{"start": 0, "end": 1}, "not a span"],
+                    "gaps": [],
+                }
+            )
+        )
+    assert refused.value.field == "acts[].row.uncertainty.uncertain_spans"
+    assert refused.value.index == 1
+
+    with pytest.raises(review_text.ProjectionShapeError) as gaps:
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [],
+                    "gaps": "not a list",
+                }
+            )
+        )
+    assert gaps.value.field == "acts[].row.uncertainty.gaps"
+    assert gaps.value.index is None
+    assert "entry -1" not in str(gaps.value)
+
+
+def test_an_audited_reading_does_not_credit_the_reader_with_the_audits_own_spans():
+    """The union is not attributable on this surface, so it is not attributed.
+
+    Under a sealed cap of 0 the audit mints exhausted-cap spans, and a reader
+    that also assesses adds its own; the published layer holds both and nothing
+    in it says which is which. Saying "assessed by the reader; 3 span(s)" would
+    credit a person's reading of the screen to an instrument that reported one
+    of them (GOVERNANCE 10).
+    """
+    projected = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+    reader = {"start": 6, "end": 10, "alternatives": ["beta"], "confidence": "high"}
+    audited = "\n".join(
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [projected, reader],
+                    "gaps": [],
+                }
+            )
+        )
+    )
+
+    assert "assessed by the reader; this view cannot tell which of the span(s) below are" in (
+        audited
+    )
+    assert "its report and which the audit's; 2 uncertain span(s), 0 gap(s)" in audited
+
+    # A record with no audit behind it publishes only the reader's own spans, and
+    # there the attribution is provable. Every Perlectio carries an audit, so
+    # this form is reserved for a record kind that does not -- the instrument
+    # readings, which no projection puts on this screen today. Kept as the
+    # rule's other half rather than left to a reader to assume.
+    instrument = "\n".join(
+        review_text.render(
+            {
+                "run_id": "r",
+                "acts": [
+                    {
+                        "act_id": "a",
+                        "act_key": "a1",
+                        "category": "read: read, awaiting the Recensor",
+                        "crops": [],
+                        "row": {
+                            "reading": {
+                                "outcome": "read",
+                                "text": "alpha beta",
+                                "audit": None,
+                                "uncertainty_assessment": {"state": "assessed", "problem": None},
+                                "uncertain_spans": [reader],
+                                "gaps": [],
+                            }
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    assert "doubts: assessed by the reader; 1 uncertain span(s), 0 gap(s)" in instrument
+
+
+def test_an_identical_pair_is_one_line_with_the_count_and_no_claim_about_its_source():
+    """The layer records that the characters were doubted twice, and nothing else.
+
+    Dropping the repeat in the producer would have erased that the layer carried
+    it twice, and printing it twice would say two doubts were found where one
+    entry appears twice. Naming the two instruments would say a third thing no
+    artifact records: nothing in the run names the instrument behind any one
+    span, and two audit flags of different classes may share one location, so a
+    fold is evidence of a repeat and of nothing else (GOVERNANCE 10).
+    """
+    span = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+    for state, assessment in (
+        ("assessed", {"state": "assessed", "problem": None}),
+        ("not-assessed", {"state": "not-assessed", "problem": "no channel"}),
+    ):
+        text = "\n".join(
+            review_text.render(
+                _delivered_act(
+                    {
+                        "assessment": assessment,
+                        "uncertain_spans": [dict(span), dict(span)],
+                        "gaps": [],
+                    }
+                )
+            )
+        )
+
+        assert "2 uncertain span(s)" in text, state
+        assert text.count("[0, 5) 'alpha'") == 1, state
+        assert "(shown as 1 line(s); identical entries are folded)" in text, state
+        assert "carried 2 times in the layer" in text, state
+        assert "instrument" not in text, state
+
+
+def test_a_reading_sealed_before_the_doubt_contract_says_so_rather_than_nothing():
+    """Absent is a fact about the record's age, and prints; malformed is a fault.
+
+    Flattened together, both printed as no doubt line at all -- the pre-F2
+    silence restored on the one surface a person reads.
+    """
+    absent = "\n".join(
+        review_text.render(_delivered_act({"uncertain_spans": [], "gaps": [], "assessment": None}))
+    )
+    assert "doubts: not recorded — this reading was sealed before the reader's doubt" in absent
+
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            _delivered_act({"uncertain_spans": [], "gaps": [], "assessment": "assessed"})
+        )
+    # The canonical layer's key is `assessment`; a person sent to look for
+    # `uncertainty_assessment` inside an export row would not find one.
+    assert refused.value.field == "acts[].row.uncertainty.assessment"
+    # `index=None` says the FIELD is wrong, not one of its rows. `entry -1` sent
+    # a person looking for a row that was never there (F3), and the rebase
+    # brought that spelling back with F2's own two sites.
+    assert refused.value.index is None
+    assert "entry -1" not in str(refused.value)
+
+
+def _reading_act(reading: dict) -> dict:
+    return {
+        "run_id": "r",
+        "acts": [
+            {
+                "act_id": "a",
+                "act_key": "a1",
+                "category": "read: read, awaiting the Recensor",
+                "crops": [],
+                "row": {"reading": reading},
+            }
+        ],
+    }
+
+
+def test_a_delivered_act_with_no_uncertainty_layer_still_says_so():
+    """An absent or damaged layer printed nothing at all after the export.
+
+    Indistinguishable, to the person reviewing the act, from a reader that found
+    no doubt -- the precise silence this change exists to remove, and on the
+    half of the screen the act reaches last.
+    """
+    absent = "\n".join(
+        review_text.render(
+            {
+                "run_id": "r",
+                "acts": [
+                    {
+                        "act_id": "a",
+                        "act_key": "a1",
+                        "category": "delivered",
+                        "crops": [],
+                        "row": {"text": "alpha beta"},
+                    }
+                ],
+            }
+        )
+    )
+    assert "doubts: not recorded" in absent
+
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            {
+                "run_id": "r",
+                "acts": [
+                    {
+                        "act_id": "a",
+                        "act_key": "a1",
+                        "category": "delivered",
+                        "crops": [],
+                        "row": {"text": "alpha beta", "uncertainty": "not an object"},
+                    }
+                ],
+            }
+        )
+    assert refused.value.field == "acts[].row.uncertainty"
+    assert refused.value.index is None
+
+
+def test_the_doubted_characters_and_the_alternatives_are_cut_like_every_other_value():
+    """A span may legitimately cover a whole act, and an act is longer than a line.
+
+    The machine reading above it is cut at 300 with a notice; this line printed
+    the same characters whole, and `repr` re-escaped what `inert` had already
+    made safe, so the tool's own escaping stopped being distinguishable from
+    text that merely looks like it.
+    """
+    act_text = "x" * 400
+    lines = review_text.render(
+        _delivered_act(
+            {
+                "assessment": {"state": "assessed", "problem": None},
+                "uncertain_spans": [
+                    {
+                        "start": 0,
+                        "end": len(act_text),
+                        "alternatives": ["y" * 400],
+                        "confidence": "low",
+                    }
+                ],
+                "gaps": [],
+            },
+            text=act_text,
+        )
+    )
+    span_line = next(line for line in lines if line.strip().startswith("[0, 400)"))
+
+    assert "characters as shown, of a 400-character value" in span_line
+    assert "x" * 400 not in span_line
+    assert "y" * 400 not in span_line
+
+
+def test_a_backslash_in_the_doubted_text_is_escaped_once_not_twice():
+    """`inert` doubles it so the tool's escaping stays distinguishable; `repr` did it again."""
+    lines = review_text.render(
+        _delivered_act(
+            {
+                "assessment": {"state": "assessed", "problem": None},
+                "uncertain_spans": [
+                    {"start": 0, "end": 2, "alternatives": [], "confidence": "low"}
+                ],
+                "gaps": [],
+            },
+            text="\\u001b and more",
+        )
+    )
+    span_line = next(line for line in lines if line.strip().startswith("[0, 2)"))
+
+    assert span_line.endswith("confidence low")
+    assert "'\\\\u'" in span_line
+
+
+def test_a_malformed_alternatives_list_is_refused_rather_than_spelled_out():
+    """A bare string iterated character by character and printed three readings."""
+    with pytest.raises(review_text.ProjectionShapeError) as flat:
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [
+                        {"start": 0, "end": 1, "alternatives": "abc", "confidence": "low"}
+                    ],
+                    "gaps": [],
+                }
+            )
+        )
+    assert flat.value.field == "acts[].row.uncertainty.uncertain_spans[0].alternatives"
+    assert flat.value.index is None
+
+    with pytest.raises(review_text.ProjectionShapeError) as entry:
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [
+                        {"start": 0, "end": 1, "alternatives": ["ok", 7], "confidence": "low"}
+                    ],
+                    "gaps": [],
+                }
+            )
+        )
+    assert entry.value.field == "acts[].row.uncertainty.uncertain_spans[0].alternatives"
+    assert entry.value.index == 1
+
+
+def test_offsets_that_cannot_anchor_show_no_ink_at_all():
+    """Python slicing never complains: a negative start showed the act's END.
+
+    Ink presented as the doubted region that is not it (GOALS 5), under a line
+    printing the offsets that would have told a careful reader something was
+    wrong.
+    """
+    lines = review_text.render(
+        _delivered_act(
+            {
+                "assessment": {"state": "assessed", "problem": None},
+                "uncertain_spans": [
+                    {"start": -3, "end": 2, "alternatives": [], "confidence": "low"},
+                    {"start": 0, "end": 99, "alternatives": [], "confidence": "low"},
+                ],
+                "gaps": [],
+            }
+        )
+    )
+    text = "\n".join(lines)
+
+    assert text.count("(these offsets do not anchor to the text shown)") == 2
+    assert "'eta'" not in text
+
+
+def test_an_unrecognised_state_is_named_as_one_rather_than_echoed():
+    """The vocabulary is three words; a tampered tree may hold a fourth."""
+    lines = review_text.render(
+        _delivered_act(
+            {
+                "assessment": {"state": "confident", "problem": "why"},
+                "uncertain_spans": [],
+                "gaps": [],
+            }
+        )
+    )
+    text = "\n".join(lines)
+
+    assert "doubts: an unrecognised state (confident) — why" in text
+
+    # And an assessment object with no state at all says so in words, rather
+    # than printing this language's `None` as though it were a measurement.
+    stateless = "\n".join(
+        review_text.render(
+            _delivered_act({"assessment": {"problem": None}, "uncertain_spans": [], "gaps": []})
+        )
+    )
+    assert "doubts: no state recorded —" in stateless
+
+
+def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions():
+    """The record holds more than position and offset, and a person reviewing a
+    gap against the ink should see what it holds (GOALS 5). Naming the chairs an
+    absence rests on is not a selection among them: nothing here chooses, and no
+    witness reading is shown as text (hard rule 8)."""
+    lines = review_text.render(
+        _delivered_act(
+            {
+                "assessment": {"state": "assessed", "problem": None},
+                "uncertain_spans": [],
+                "gaps": [
+                    {
+                        "position": "internal",
+                        "start": 6,
+                        "end": 6,
+                        "witness_evidence": [
+                            {"chair": "attestator_1", "variant": "beta"},
+                            {"chair": "attestator_2", "variant": ""},
+                        ],
+                    }
+                ],
+                "self_revisions": [
+                    {"reading_span": {"start": 0, "end": 1}, "prior_span": {"start": 0, "end": 1}}
+                ],
+            }
+        )
+    )
+    text = "\n".join(lines)
+
+    assert "1 uncertain span(s), 1 gap(s), 1 self-revision(s)" not in text
+    assert "0 uncertain span(s), 1 gap(s), 1 self-revision(s)" in text
+    assert "gap (internal) at 6; corroborated by attestator_1, attestator_2" in text
+
+
+@pytest.fixture(scope="module")
+def exported_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One run carried through the Armarium, holding at least one act.
+
+    `audit-reproof-cutoff` holds a1 on a re-examination that did not finish, so
+    the run is partial, exits 3, and writes an export that delivers one act and
+    not the other -- which is the pair this screen has to show after the export.
+    """
+    run_root = tmp_path_factory.mktemp("exported") / "runs"
+    completed = _orchestrate(run_root)
+    assert completed.returncode == 3, completed.stderr
+    return run_root
+
+
+def test_a_held_acts_reading_and_doubt_survive_the_export(exported_run: Path):
+    """The screen this exists for shows a held act; the export writes it no text.
+
+    F3 closed this asymmetry for crops and witnesses by reading them from the
+    run tree; the reading and its doubt report were still on the wrong side of
+    it, so a held act showed its doubt line before the export and nothing after.
+    """
+    projection = dataclasses.asdict(_projection(exported_run))
+    assert projection["export"]["present"] is True
+    held = [
+        act
+        for act in projection["acts"]
+        if (act.get("row") or {}).get("text") is None and (act.get("row") or {}).get("reading")
+    ]
+    assert held, "this exported run must carry a non-delivered act with a sealed reading"
+    text = "\n".join(review_text.render(projection))
+
+    # Both halves of the same screen: the delivered act's layer, and the held
+    # act's reading read back from the run tree.
+    assert text.count("doubts:") == len(projection["acts"])
+    assert "doubts: not-assessed — the reader reports no doubt assessment" in text
+
+
+def test_the_pre_export_reading_path_prints_every_state_the_same_way():
+    """Four of the five earlier cases drove only the post-export layer.
+
+    The pre-export path reads different keys off a different object, so it needs
+    its own cases: it is the path a person meets while a run is still stopped,
+    which is what this screen is for.
+    """
+    absent = "\n".join(
+        review_text.render(_reading_act({"outcome": "read", "text": "alpha beta", "audit": {}}))
+    )
+    assert "doubts: not recorded — this reading was sealed before" in absent
+
+    audited = "\n".join(
+        review_text.render(
+            _reading_act(
+                {
+                    "outcome": "read",
+                    "text": "alpha beta",
+                    "audit": {"unresolved": False, "examination": "complete"},
+                    "uncertainty_assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [
+                        {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+                    ],
+                    "gaps": [],
+                }
+            )
+        )
+    )
+    assert "assessed by the reader; this view cannot tell which of the span(s) below are" in audited
+
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            _reading_act(
+                {
+                    "outcome": "read",
+                    "text": "alpha beta",
+                    "audit": {},
+                    "uncertainty_assessment": "assessed",
+                }
+            )
+        )
+    assert refused.value.field == "acts[].row.reading.uncertainty_assessment"
+    assert refused.value.index is None
+
+
+def test_a_stopped_runs_own_render_carries_a_doubt_line_for_every_reading(
+    witnessed_run: Path, tmp_path: Path
+):
+    """The projection keys are pinned by a real run, not only by hand-built rows.
+
+    Before this, the keys `_reading_row` carries could have been renamed or
+    dropped and no test over a real tree would have noticed: the end-to-end
+    render assertions never looked for a doubt line.
+    """
+    run_root = _writable_copy(witnessed_run, tmp_path / "runs")
+    resumed = _orchestrate(run_root, "--from", "perlector", "--to", "recensor")
+    assert resumed.returncode == 3, resumed.stderr
+    projection = dataclasses.asdict(_projection(run_root))
+    assert projection["export"]["present"] is False
+    text = "\n".join(review_text.render(projection))
+
+    assert "machine reading:" in text
+    assert text.count("doubts:") == len(projection["acts"])
+    assert "doubts: not-assessed — the reader reports no doubt assessment" in text
+
+
+def test_a_malformed_layer_beside_a_missing_assessment_is_still_refused():
+    """The absence line used to return before the layers were looked at.
+
+    A record with no assessment and a damaged span list printed one honest
+    sentence about the assessment and said nothing at all about the layer --
+    the same silence, one field over.
+    """
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            _delivered_act({"assessment": None, "uncertain_spans": "not a list", "gaps": []})
+        )
+    assert refused.value.field == "acts[].row.uncertainty.uncertain_spans"
+    assert refused.value.index is None
+
+
+def test_spans_published_without_an_assessment_are_still_shown():
+    """And the valid entries such a record does carry are printed, not swallowed."""
+    text = "\n".join(
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": None,
+                    "uncertain_spans": [
+                        {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+                    ],
+                    "gaps": [],
+                }
+            )
+        )
+    )
+
+    assert "doubts: not recorded — this reading was sealed before" in text
+    assert "published beside that absence: 1 uncertain span(s), 0 gap(s)" in text
+    assert "[0, 5) 'alpha' confidence low" in text
+
+
+def test_a_gaps_offsets_are_checked_before_it_is_printed_as_a_position():
+    """A gap carries no characters of its own, so its two offsets are one position.
+
+    Anything else is a damaged record, and printing it as an anchored position
+    points a person at ink the record does not name (GOALS 5).
+    """
+    text = "\n".join(
+        review_text.render(
+            _delivered_act(
+                {
+                    "assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [],
+                    "gaps": [
+                        {"position": "internal", "start": 6, "end": 6},
+                        {"position": "internal", "start": 2, "end": 5},
+                        {"position": "trailing", "start": 99, "end": 99},
+                        {"position": "leading", "start": True, "end": True},
+                    ],
+                }
+            )
+        )
+    )
+
+    assert "gap (internal) at 6" in text
+    assert text.count("does not anchor to the text shown as one zero-width position") == 3
+
+
+def test_a_falsey_witness_evidence_value_is_refused_rather_than_read_as_none():
+    """`or ()` swallowed `""`, `0` and `{}`, each of which is a damaged value."""
+    for value in ("", 0, {}):
+        with pytest.raises(review_text.ProjectionShapeError) as refused:
+            review_text.render(
+                _delivered_act(
+                    {
+                        "assessment": {"state": "assessed", "problem": None},
+                        "uncertain_spans": [],
+                        "gaps": [
+                            {
+                                "position": "internal",
+                                "start": 6,
+                                "end": 6,
+                                "witness_evidence": value,
+                            }
+                        ],
+                    }
+                )
+            )
+        assert refused.value.field == "acts[].row.uncertainty.gaps[0].witness_evidence"
+        assert refused.value.index is None
+
+
+def test_a_malformed_audit_on_a_reading_is_refused_rather_than_read_as_absent():
+    """Mapped to `None` at the projection, a fault printed as an ordinary absence."""
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(
+            _reading_act({"outcome": "read", "text": "alpha beta", "audit": "complete"})
+        )
+    assert refused.value.field == "acts[].row.reading.audit"
+    assert refused.value.index is None
+
+
+def test_a_delivered_export_row_without_a_witness_basis_is_refused_not_recovered():
+    """Recovery is for the rows the Armarium deliberately writes thin.
+
+    A delivered act is described entirely by its export record, so one with no
+    witness basis is damaged. Reading its witnesses and its reading out of the
+    run tree instead would paper over that and show the delivered text beside a
+    reading the export never named.
+    """
+    export_ref = {"relative_path": "7_armarium/artifacts/export/x.json", "sha256": "0" * 64}
+    delivered = {"act_id": "act_0123456789abcdef", "act_key": "a1", "text": "alpha"}
+
+    with pytest.raises(OperatorError) as refused:
+        review._normalised_act_row(delivered, export_ref, [], delivered=True)
+    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    detail = refused.value.detail or ""
+    assert "delivers act" in detail and "no witness basis" in detail
+
+    # The same row, not delivered, is the thin shape recovery exists for: no
+    # witnesses in the run tree here either, so it comes back unchanged rather
+    # than refused.
+    assert review._normalised_act_row(delivered, export_ref, [], delivered=False) == delivered
+
+
+def test_an_act_that_was_never_read_is_not_told_its_reading_predates_a_contract():
+    """`not-run` is no reading at all: held before the Perlector, no chair, over capacity.
+
+    Those records carry no text either, which is what separates them from a
+    reading sealed before the doubt report was part of the record.
+    """
+    not_run = "\n".join(
+        review_text.render(_reading_act({"outcome": "not-run", "reason": "no chair configured"}))
+    )
+    assert "doubts: not recorded — this act was not read" in not_run
+
+    sealed = "\n".join(
+        review_text.render(_reading_act({"outcome": "read", "text": "alpha beta", "audit": {}}))
+    )
+    assert "doubts: not recorded — this reading was sealed before" in sealed
+
+    # A reading that ran and carries no text is a damaged record, not an act
+    # that was never read: refused by field, never printed as the unread line.
+    for text in (None, 7, {"text": "alpha"}, ["alpha"]):
+        with pytest.raises(review_text.ProjectionShapeError) as refused:
+            review_text.render(_reading_act({"outcome": "read", "text": text, "reason": "damaged"}))
+        assert refused.value.field == "acts[].row.reading.text"
+        assert refused.value.index is None

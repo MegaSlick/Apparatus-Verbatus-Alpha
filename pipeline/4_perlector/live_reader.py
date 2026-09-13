@@ -63,6 +63,7 @@ import base64
 from pathlib import Path
 from typing import Any, Final, Mapping
 
+import annotations
 import prompts
 from reader import PASS_KINDS, DeliveredPixels, LectioResult, validate_audit_delivery
 
@@ -393,7 +394,21 @@ class VLLMReader:
             act_key=dossier.get("act_key"),
             raw_response_ref=response.raw_response_ref,
         )
-        result: LectioResult = {"text": response.content, "stop_reason": stop_reason}
+        # The pinned instruction asks the engine for the text and nothing else,
+        # so this reader has no channel through which a doubt could arrive, and
+        # says so: `not-assessed` is a fact about this chair's capability, never
+        # a claim that the reading is confident. A doubt grammar for the live
+        # prompt is a later change, made where a real answer can be observed;
+        # until then the export discloses the absence per act (independent
+        # audit of 2026-09-10, F2).
+        result: LectioResult = {
+            "text": response.content,
+            "stop_reason": stop_reason,
+            "assessment": annotations.not_assessed(
+                "the live reader's pinned instruction asks for the text alone; this chair "
+                "reports no doubts"
+            ),
+        }
         result["engine_call"] = {
             "call_record_ref": dict(response.call_record_ref),
             "raw_response_ref": dict(response.raw_response_ref),

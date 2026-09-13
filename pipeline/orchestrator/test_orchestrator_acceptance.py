@@ -1556,10 +1556,54 @@ def _perlector_dissent():
 # Evidence: workbench/raw/audit-fixes-2026-09-10/f1-pin-attribution/ and
 # f1-fix-suites/pytest.log (retained outside Git, like every other evidence
 # directory this file cites).
+# The reader's own doubt report (independent audit of 2026-09-10, F2), measured
+# three times as the branch was reviewed and corrected: first at a4833a2a14, then
+# at c1353558e5 (which widened the three instrument records by the same field),
+# and last at 07f7865f44, the commit below this one, which made the Recensor's
+# review record carry the same `{state, problem}` object as every other record
+# instead of a bare state string. Each measurement is two fresh runs against the
+# F1 correction's own candidate trees -- the baseline this branch sits on -- with
+# a leaf-by-leaf attribution over every changed file; the numbers below are the
+# last one. Happy 100 files/exit 0 and review 111 files/exit 3, file counts
+# unchanged on both sides. Happy: 23 leaves byte-identical, 75 JSON leaves
+# changed, 2 content-addressed blobs re-addressed, 24 non-digest value changes;
+# review: 22 / 87 / 2 / 29. (Counts are the run tree `r/` alone; the baseline
+# side's own orchestrator log, written beside its tree, is the third
+# only-on-one-side file and is not one of them.) Every non-digest change is one
+# of three kinds and there are no others:
+#
+# 1. The new fact, `uncertainty_assessment` / `uncertainty.assessment`, on every
+#    record a reader answers on and every record derived from one. 12 additions
+#    per scenario: in happy, 2 Perlectiones, 2 Pass-A `lectio-prior` drafts, 2
+#    Recensor reviews, 2 Archetypus records, 2 Armarium manifest entries and the
+#    2 delivered rows of the export record; in review, 3 / 3 / 3 / 1 / 1 / 1.
+#    All 24 are the identical object -- `not-assessed` with the fixture reader's
+#    "no channel for one" problem -- which is precisely the absence F2 exists to
+#    disclose.
+# 2. The fixture declaration itself -- the `[[reader_assessment]]`,
+#    `[[reader_doubt]]` and `[[reader_gap]]` tables, the `reader-doubt`,
+#    `reader-doubt-malformed` and `reader-doubt-unreadable` scenarios and their
+#    prior readings -- which `common/stage.py` seals whole into `config_digest`,
+#    so it moves both pins although none of those scenarios runs here (the
+#    standing rule at the top of this block).
+# 3. The content addresses of the one Perlector partition blob and the Armarium
+#    bundle zip that carry those records, and every `relative_path` naming them
+#    (7 happy / 10 review `inputs[]`, 4 / 6 `partition_ref`, 1 / 1
+#    `bundle.reference`); these are the two only-on-one-side blobs per scenario.
+#
+# And the digests that follow all three (`config_digest`, `self_hash`, `sha256`,
+# `inputs[].sha256`), classified as digest changes and not counted above. No
+# text, outcome, category, crop geometry, count, terminal status, file count or
+# exit code changes. The pins below are read from these two tests' own
+# computation over the candidate; the bare-CLI measurement attributes the change
+# and does not mint the pin.
+# Evidence: workbench/raw/audit-fixes-2026-09-11/f2-pin-attribution/round3/ and
+# f2-fix/pins-round3.log (retained outside Git, like every other evidence
+# directory this file cites).
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "39ed04348209b3b6ce880278bd042fc10611551ed2d930f9d15f4bba53e0883a"
-REVIEW_RUN_TREE_DIGEST = "6e6ff9cf19c6e0f4a370bb0934f6e115275f72b1544dcd647ac73b5f73d96e27"
+HAPPY_RUN_TREE_DIGEST = "6c487d80af1eeea771abae11d3152e34a7ff070964c0baac83a425075239b4f3"
+REVIEW_RUN_TREE_DIGEST = "905bb7731d3557a2bb53345785c505317456ae3c03836df63899678dada8de6d"
 
 
 def orchestrate(

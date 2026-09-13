@@ -41,6 +41,8 @@ from __future__ import annotations
 
 from typing import Any, Final, Protocol, TypedDict
 
+import annotations
+
 from common.contracts.errors import ContractError
 from common.contracts.identities import act_id as derive_act_id
 from common.imaging import grayscale_rows
@@ -76,7 +78,13 @@ class _LectioResultRequired(TypedDict):
 
 class LectioResult(_LectioResultRequired, total=False):
     """What one reading pass returns: the text, the engine's own stop word,
-    and -- live readers only -- the retained evidence it was read from.
+    the reader's own doubt assessment, and -- live readers only -- the retained
+    evidence it was read from.
+
+    `assessment` is the closed record `annotations.validate_assessment`
+    accepts: `assessed` with spans and gaps anchored to `text`, `not-assessed`
+    for a reader with no doubt channel, or `malformed`. A reader that omits the
+    key is read as `not-assessed`; the producer never invents a doubt report.
 
     `engine_call` is optional (`total=False` on this subclass; `text` and
     `stop_reason` keep the base class's required totality). `FixtureReader`
@@ -89,6 +97,7 @@ class LectioResult(_LectioResultRequired, total=False):
     """
 
     engine_call: dict[str, Any]
+    assessment: dict[str, Any]
 
 
 class DeliveredPixels(TypedDict):
@@ -178,15 +187,145 @@ class FixtureReader:
             )
         request = validate_audit_delivery(dossier, pass_kind=pass_kind, audit_request=audit_request)
         act_key = dossier["act_key"]
+        text = self._reading_text(
+            dossier,
+            pass_kind=pass_kind,
+            delivered_pixels=delivered_pixels,
+            audit_request=request,
+        )
         return {
-            "text": self._reading_text(
-                dossier,
-                pass_kind=pass_kind,
-                delivered_pixels=delivered_pixels,
-                audit_request=request,
-            ),
+            "text": text,
             "stop_reason": self._declared_stop_reason(act_key, pass_kind),
+            "assessment": self._declared_assessment(act_key, pass_kind),
         }
+
+    def _declared_assessment(self, act_key: str, pass_kind: str) -> dict[str, Any]:
+        """This scenario's declared doubt report for one act and pass, or an honest absence.
+
+        The fixture stands in for a model with a doubt channel only where a
+        scenario declares one: a `reader_assessment` row names the state, and
+        `reader_doubt` / `reader_gap` rows carry the spans and gaps an
+        `assessed` state publishes. No row means this chamber has no channel,
+        which is `not-assessed` -- the same fact the live reader reports today.
+        Rows are declared exactly as a model would return them and are NOT
+        validated against the text here: a row whose offset falls past the text
+        is the fixture's way of exercising the producer's `malformed` path.
+
+        The detail rows are read before the state is consulted, and a detail row
+        sitting under any state but `assessed` is refused by name. Reading the
+        state first and returning early discarded them in silence, so a scenario
+        that declared a doubt and -- by a typo, or by never writing the
+        `reader_assessment` row -- left the state unassessed exercised the
+        no-channel path while its author read the doubt in the file. A fixture
+        cannot both declare a doubt and declare that it has no channel for one.
+
+        TOML has no null, so a declared row spells "no problem stated" as the
+        empty string. That is read as the absence only under `not-assessed`,
+        where this module already owns the sentence that says why; a `malformed`
+        row must state the problem it stands in for, because the problem *is*
+        what that state carries.
+        """
+        doubts = self._selected_rows("reader_doubt", act_key, pass_kind)
+        gaps = self._selected_rows("reader_gap", act_key, pass_kind)
+        state_row = self._selected_row("reader_assessment", act_key, pass_kind)
+        state = state_row["state"] if state_row is not None else annotations.ASSESSMENT_NOT_ASSESSED
+        if state != annotations.ASSESSMENT_ASSESSED and (doubts or gaps):
+            raise KeyError(
+                f"the fixture declares {len(doubts)} doubt(s) and {len(gaps)} gap(s) for "
+                f"{(self._scenario, act_key, pass_kind)!r} under a {state!r} assessment; a "
+                "reader with no channel for a doubt cannot also report one"
+            )
+        if state_row is None:
+            return annotations.not_assessed()
+        if state != annotations.ASSESSMENT_ASSESSED:
+            problem = state_row["problem"]
+            if problem == "":
+                if state != annotations.ASSESSMENT_NOT_ASSESSED:
+                    raise KeyError(
+                        f"the fixture declares a {state!r} assessment for "
+                        f"{(self._scenario, act_key, pass_kind)!r} with no problem; the "
+                        "problem is the whole content of that state"
+                    )
+                return annotations.not_assessed()
+            return {"state": state, "uncertain_spans": [], "gaps": [], "problem": problem}
+        return {
+            "state": annotations.ASSESSMENT_ASSESSED,
+            "uncertain_spans": [
+                {
+                    "start": row["start"],
+                    "end": row["end"],
+                    "alternatives": list(row["alternatives"]),
+                    "confidence": row["confidence"],
+                }
+                for row in doubts
+            ],
+            "gaps": [
+                {
+                    "position": row["position"],
+                    "start": row["offset"],
+                    "end": row["offset"],
+                    "witness_evidence": [],
+                }
+                for row in gaps
+            ],
+            "problem": None,
+        }
+
+    @staticmethod
+    def _pass_kind_check(table: str):
+        """The one per-table check the three doubt tables share, naming its table.
+
+        A refusal that says only "a doubt row" sends its reader to three tables
+        to find the one row that is wrong.
+        """
+
+        def _known_pass_kind(row) -> None:
+            if "pass_kind" in row and row["pass_kind"] not in PASS_KINDS:
+                raise KeyError(f"{table} row declares unknown pass kind {row['pass_kind']!r}")
+
+        return _known_pass_kind
+
+    def _selected_rows(self, table: str, act_key: str, pass_kind: str) -> list[dict[str, Any]]:
+        """Every row of a many-per-act doubt table for one scenario, act and pass.
+
+        Through `_validated_rows` like every other table, so the WHOLE table is
+        validated before any row is selected: a row naming a scenario or act
+        nobody declared is refused whichever scenario is running, rather than
+        waiting for its own to come round.
+        """
+        return [
+            row
+            for row in self._validated_rows(table, self._pass_kind_check(table), many=True)
+            if row["scenario"] == self._scenario
+            and row["act_key"] == act_key
+            and row.get("pass_kind", pass_kind) == pass_kind
+        ]
+
+    def _selected_row(self, table: str, act_key: str, pass_kind: str) -> dict[str, Any] | None:
+        """The one row of a one-per-act-and-pass doubt table, or none.
+
+        Two refusals, because they catch different things. The whole table's
+        (`keyed_by_pass`) refuses two rows written for the same key, in whatever
+        scenario, before any selection happens. This one refuses the pair the
+        key cannot see: a row that names no `pass_kind` covers every pass, so it
+        and a pass-scoped row for the same act are two different keys that both
+        answer this call, and returning the first would publish one reader's
+        state and discard the other in silence.
+        """
+        matched = [
+            row
+            for row in self._validated_rows(table, self._pass_kind_check(table), keyed_by_pass=True)
+            if row["scenario"] == self._scenario
+            and row["act_key"] == act_key
+            and row.get("pass_kind", pass_kind) == pass_kind
+        ]
+        if len(matched) > 1:
+            raise KeyError(
+                f"{table} answers {(self._scenario, act_key, pass_kind)!r} with {len(matched)} "
+                "rows; a row naming no pass covers every pass, and a second row for this one "
+                "contradicts it"
+            )
+        return matched[0] if matched else None
 
     def _reading_text(
         self,
@@ -221,10 +360,12 @@ class FixtureReader:
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
 
-    def _validated_rows(self, table: str, extra_check=None, *, keyed_by_pass: bool = False) -> list:
+    def _validated_rows(
+        self, table: str, extra_check=None, *, keyed_by_pass: bool = False, many: bool = False
+    ) -> list:
         """Every row of one fixture table, after the WHOLE table validates.
 
-        One loop for all three tables, because they had started to drift: a
+        One loop for every table, because they had started to drift: a
         duplicate pair or a row naming a scenario or act nobody declared would
         otherwise sit unnoticed while the first match answered, and the next
         table copied whichever validator its author happened to read. Each
@@ -239,15 +380,19 @@ class FixtureReader:
         # contradiction. Two rows for the same pass still are, and every other
         # table keeps the plain key so a stray `pass_kind` cannot weaken its
         # duplicate refusal.
+        # `many` names the tables whose rows are a list per act rather than one
+        # answer (`reader_doubt`, `reader_gap`): a second row there is a second
+        # doubt, not a contradiction, so only the name and pass checks apply.
         seen: set[tuple[str, str, str | None]] = set()
         for row in rows:
             key = (row["scenario"], row["act_key"], row.get("pass_kind") if keyed_by_pass else None)
-            if key in seen:
-                raise KeyError(
-                    f"{table} declares {key!r} twice; two contradictory rows would "
-                    "publish whichever is written first and discard the other silently"
-                )
-            seen.add(key)
+            if not many:
+                if key in seen:
+                    raise KeyError(
+                        f"{table} declares {key!r} twice; two contradictory rows would "
+                        "publish whichever is written first and discard the other silently"
+                    )
+                seen.add(key)
             if row["scenario"] not in declared_scenarios:
                 raise KeyError(f"{table} row names undeclared scenario {row['scenario']!r}")
             if row["act_key"] not in declared_acts:

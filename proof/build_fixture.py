@@ -85,6 +85,11 @@ _PRIOR_READING_SCENARIOS = (
     "audit-change",
     # Same reach as `happy`; its one departure is the re-proof's stop word.
     "audit-reproof-cutoff",
+    # Same reach as `happy`; their departure is a declared reader doubt report.
+    "reader-doubt",
+    "reader-doubt-malformed",
+    # A declared doubt colliding with an emptied reading.
+    "reader-doubt-unreadable",
     "refused-page",
     "truncated-reading",
     "genuinely-empty-witness",
@@ -110,6 +115,94 @@ PRIOR_READINGS = tuple(
     {"scenario": scenario, "act_key": act_key, "text": text}
     for scenario in _PRIOR_READING_SCENARIOS
     for act_key, text in _DEFAULT_PRIOR_TEXT.items()
+)
+
+# The reader's own doubt report, declared per scenario, act and (optionally) pass,
+# exactly as a model with a doubt channel would return it (independent audit of
+# 2026-09-10, F2). `reader-doubt`: a1 is assessed with one uncertain span over the
+# name-like token "gamma" (offsets in a1's declared text) with an alternative, and
+# one internal gap; a2 is assessed and reports no doubt at all -- the case an
+# empty list must be able to mean honestly. `reader-doubt-malformed`: a1's report
+# names an offset past the end of its text, so the producer must seal a
+# `malformed` assessment and the Recensor must hold the act. Every other scenario
+# declares nothing and its reader is `not-assessed`, as the live reader is today.
+# `audit-change` also declares a report for each of a1's two calls: Pass B's
+# doubt is anchored to the establishing text and the re-proof's to the changed
+# text it publishes. The Perlectio must carry the re-proof's report and only
+# that, because its text is the one published -- nothing is re-anchored.
+READER_ASSESSMENTS = (
+    {"scenario": "reader-doubt", "act_key": "a1", "state": "assessed", "problem": ""},
+    {"scenario": "reader-doubt", "act_key": "a2", "state": "assessed", "problem": ""},
+    {"scenario": "reader-doubt-malformed", "act_key": "a1", "state": "assessed", "problem": ""},
+    {
+        "scenario": "audit-change",
+        "act_key": "a1",
+        "state": "assessed",
+        "problem": "",
+        "pass_kind": "perlectio",
+    },
+    {
+        "scenario": "audit-change",
+        "act_key": "a1",
+        "state": "assessed",
+        "problem": "",
+        "pass_kind": "audit-reproof",
+    },
+    {"scenario": "reader-doubt-unreadable", "act_key": "a1", "state": "assessed", "problem": ""},
+)
+READER_DOUBTS = (
+    # "SYNTHETIC ACT ONE alpha beta gamma": "gamma" is [29, 34).
+    {
+        "scenario": "reader-doubt",
+        "act_key": "a1",
+        "start": 29,
+        "end": 34,
+        "alternatives": ["gamna", "gaMma"],
+        "confidence": "low",
+    },
+    # audit-change, Pass B over the establishing text "SYNTHETIC ACT ONE alpha beta
+    # gamma": [29, 34) "gamma".
+    {
+        "scenario": "audit-change",
+        "act_key": "a1",
+        "start": 29,
+        "end": 34,
+        "alternatives": ["gamma"],
+        "confidence": "low",
+        "pass_kind": "perlectio",
+    },
+    # audit-change, re-proof over "SYNTHETIC ACT ONE alpha beta gamma!": [29, 35) "gamma!".
+    {
+        "scenario": "audit-change",
+        "act_key": "a1",
+        "start": 29,
+        "end": 35,
+        "alternatives": ["gamma"],
+        "confidence": "medium",
+        "pass_kind": "audit-reproof",
+    },
+    {
+        "scenario": "reader-doubt-malformed",
+        "act_key": "a1",
+        "start": 29,
+        "end": 99,
+        "alternatives": [],
+        "confidence": "low",
+    },
+    # A doubt over an act the reader then reports as unreadable: in bounds for
+    # the declared text, and impossible over the empty text the outcome publishes.
+    {
+        "scenario": "reader-doubt-unreadable",
+        "act_key": "a1",
+        "start": 29,
+        "end": 34,
+        "alternatives": ["gamna"],
+        "confidence": "low",
+    },
+)
+READER_GAPS = (
+    # Between "alpha" and " beta": offset 23 is strictly inside the text.
+    {"scenario": "reader-doubt", "act_key": "a1", "position": "internal", "offset": 23},
 )
 
 # Fixture-only Pass-C response. It is deliberately separate from R5a's
@@ -432,6 +525,14 @@ _UNMATCHABLE_SHA256 = "0" * 64
 READING_FAILURES = (
     {"scenario": "truncated-reading", "act_key": "a1", "outcome": "truncated"},
     {"scenario": "no-readable-text-reading", "act_key": "a1", "outcome": "no-readable-text"},
+    # The same silence, with a reader that also reported a doubt over the act.
+    # The two cannot both be published: the outcome owes a whole-act gap over an
+    # empty text, and the doubt names characters that text does not have. The
+    # producer re-asks the report against the text it actually publishes, so the
+    # report becomes `malformed` and is visible, and the Recensor holds the act
+    # rather than delivering it with an emptied layer under a state still
+    # claiming the reader assessed it.
+    {"scenario": "reader-doubt-unreadable", "act_key": "a1", "outcome": "no-readable-text"},
 )
 
 # The one declared, fixture-only truncation signal (`pipeline/4_perlector/
@@ -744,6 +845,40 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"act_key = {toml_string(reproof['act_key'])}",
             f"text = {toml_string(reproof['text'])}",
         ]
+    for row in READER_ASSESSMENTS:
+        lines += [
+            "",
+            "[[reader_assessment]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"act_key = {toml_string(row['act_key'])}",
+            f"state = {toml_string(row['state'])}",
+            f"problem = {toml_string(row['problem'])}",
+        ]
+        if "pass_kind" in row:
+            lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
+    for row in READER_DOUBTS:
+        alternatives = ", ".join(toml_string(value) for value in row["alternatives"])
+        lines += [
+            "",
+            "[[reader_doubt]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"act_key = {toml_string(row['act_key'])}",
+            f"start = {row['start']}",
+            f"end = {row['end']}",
+            f"alternatives = [{alternatives}]",
+            f"confidence = {toml_string(row['confidence'])}",
+        ]
+        if "pass_kind" in row:
+            lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
+    for row in READER_GAPS:
+        lines += [
+            "",
+            "[[reader_gap]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"act_key = {toml_string(row['act_key'])}",
+            f"position = {toml_string(row['position'])}",
+            f"offset = {row['offset']}",
+        ]
 
     # One act runs across the page break. The continuation is a region of the
     # same act, not a third act: two acts, one cross-page continuation.
@@ -877,6 +1012,32 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "",
         "[[scenario]]",
         'name = "audit-change"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# reader-doubt and reader-doubt-malformed declare neither a recovery nor a",
+        "# hold; their only departure from `happy` is the reader's declared doubt",
+        "# report (READER_ASSESSMENTS / READER_DOUBTS / READER_GAPS). The hold the",
+        "# malformed scenario produces has exactly one origin: a report the",
+        "# annotation schema could not anchor to the text.",
+        "[[scenario]]",
+        'name = "reader-doubt"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "reader-doubt-malformed"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# reader-doubt-unreadable is a declared doubt colliding with an emptied",
+        "# reading: the outcome says nothing was readable, and the doubt names",
+        "# characters the published empty text does not have. It must end as a",
+        "# visible `malformed` assessment and a hold, never as an `assessed`",
+        "# state beside layers that were quietly emptied. It declares no recovery",
+        "# and no hold of its own, so the hold it produces has exactly one origin.",
+        "[[scenario]]",
+        'name = "reader-doubt-unreadable"',
         "recover_acts = []",
         "hold_acts = []",
         "",

@@ -50,6 +50,25 @@ REGION = {
 }
 
 
+# The reader's own doubt assessment, closed into the canonical uncertainty layer
+# on 2026-09-11 (independent audit of 2026-09-10, F2): the span layers alone
+# cannot say whether an empty list is "no doubt" or "no doubt was ever asked
+# for". `assessed` is the state every record below wants, because it is the only
+# one under which the spans and gaps may be non-empty.
+_ASSESSED = {"state": "assessed", "problem": None}
+
+
+def _uncertainty(**overrides) -> dict:
+    """A canonical uncertainty layer, empty but for what a case overrides."""
+    return {
+        "uncertain_spans": [],
+        "gaps": [],
+        "self_revisions": [],
+        "assessment": _ASSESSED,
+        **overrides,
+    }
+
+
 def seal_record(**overrides) -> dict:
     """A record with a correct self-hash, whether or not it is otherwise valid.
 
@@ -66,7 +85,7 @@ def seal_record(**overrides) -> dict:
         "regions": [dict(REGION)],
         "provenance": {"chair": "perlector"},
         "annotations": [],
-        "uncertainty": {"uncertain_spans": [], "gaps": [], "self_revisions": []},
+        "uncertainty": _uncertainty(),
         "evidence_ref": None,
         "dissent_ref": READING_REF,
         "perlectio_ref": READING_REF,
@@ -224,7 +243,7 @@ def test_record_validation_accepts_a_partial_text_with_an_internal_gap():
 
     record = make_record(
         text_status="partial",
-        uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []},
+        uncertainty=_uncertainty(gaps=[gap]),
     )
 
     assert record["text_status"] == "partial"
@@ -372,9 +391,7 @@ def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own
     would have refused to write.
     """
     with pytest.raises(SchemaRefusal, match=expected):
-        archetypus.validate_record(
-            seal_record(uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []})
-        )
+        archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
 
 
 def test_record_validation_refuses_a_self_revision_with_a_negative_prior_offset():
@@ -390,20 +407,14 @@ def test_record_validation_refuses_a_self_revision_with_a_negative_prior_offset(
         "prior_span": {"start": -5, "end": -1},
     }
     with pytest.raises(SchemaRefusal, match="negative offset"):
-        archetypus.validate_record(
-            seal_record(
-                uncertainty={"uncertain_spans": [], "gaps": [], "self_revisions": [revision]}
-            )
-        )
+        archetypus.validate_record(seal_record(uncertainty=_uncertainty(self_revisions=[revision])))
 
 
 def test_record_validation_refuses_an_uncertain_span_outside_the_canonical_text():
     """Canonical offsets are measured only against this record's one text."""
     span = {"start": 0, "end": 6, "alternatives": ["Mariam"], "confidence": "low"}
     with pytest.raises(SchemaRefusal, match="outside the canonical text's Unicode offsets"):
-        archetypus.validate_record(
-            seal_record(uncertainty={"uncertain_spans": [span], "gaps": [], "self_revisions": []})
-        )
+        archetypus.validate_record(seal_record(uncertainty=_uncertainty(uncertain_spans=[span])))
 
 
 def test_record_validation_refuses_a_whole_act_gap_beside_any_other_gap():
@@ -418,7 +429,7 @@ def test_record_validation_refuses_a_whole_act_gap_beside_any_other_gap():
                 text="",
                 text_hash=digest_of(""),
                 text_status="partial",
-                uncertainty={"uncertain_spans": [], "gaps": gaps, "self_revisions": []},
+                uncertainty=_uncertainty(gaps=gaps),
             )
         )
 
@@ -446,7 +457,7 @@ def test_record_validation_refuses_a_proved_blank_that_also_declares_a_gap():
                 text_hash=digest_of(""),
                 text_status="no_readable_text",
                 evidence_ref=READING_REF,
-                uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []},
+                uncertainty=_uncertainty(gaps=[gap]),
             )
         )
 
@@ -460,9 +471,7 @@ def test_record_validation_refuses_unvalidated_gap_witness_evidence():
         "witness_evidence": [{"chair": "attestator_1"}],
     }
     with pytest.raises(SchemaRefusal, match=r"witness_evidence\[0\].*record"):
-        archetypus.validate_record(
-            seal_record(uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []})
-        )
+        archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
 
 
 def test_record_validation_refuses_gap_evidence_with_a_non_digest_reference():
@@ -475,9 +484,7 @@ def test_record_validation_refuses_gap_evidence_with_a_non_digest_reference():
     }
     gap = {"position": "internal", "start": 2, "end": 2, "witness_evidence": [evidence]}
     with pytest.raises(SchemaRefusal, match="has no sha256 digest"):
-        archetypus.validate_record(
-            seal_record(uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []})
-        )
+        archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
 
 
 def test_record_validation_refuses_an_open_self_revision_bound():
@@ -487,11 +494,7 @@ def test_record_validation_refuses_an_open_self_revision_bound():
         "prior_span": {"start": 0, "end": 0},
     }
     with pytest.raises(SchemaRefusal, match="reading_span has no exact offset range"):
-        archetypus.validate_record(
-            seal_record(
-                uncertainty={"uncertain_spans": [], "gaps": [], "self_revisions": [revision]}
-            )
-        )
+        archetypus.validate_record(seal_record(uncertainty=_uncertainty(self_revisions=[revision])))
 
 
 def test_from_perlectio_refuses_a_non_object_self_revision_by_name():

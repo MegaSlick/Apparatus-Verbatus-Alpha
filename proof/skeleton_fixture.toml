@@ -143,6 +143,36 @@ act_key = "a2"
 text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
 [[prior_reading]]
+scenario = "reader-doubt"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "reader-doubt"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
+[[prior_reading]]
+scenario = "reader-doubt-malformed"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "reader-doubt-malformed"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
+[[prior_reading]]
+scenario = "reader-doubt-unreadable"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "reader-doubt-unreadable"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
+[[prior_reading]]
 scenario = "refused-page"
 act_key = "a1"
 text = "SYNTHETIC ACT ONE alpha beta ganna"
@@ -326,6 +356,92 @@ text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 scenario = "audit-change"
 act_key = "a1"
 text = "SYNTHETIC ACT ONE alpha beta gamma!"
+
+[[reader_assessment]]
+scenario = "reader-doubt"
+act_key = "a1"
+state = "assessed"
+problem = ""
+
+[[reader_assessment]]
+scenario = "reader-doubt"
+act_key = "a2"
+state = "assessed"
+problem = ""
+
+[[reader_assessment]]
+scenario = "reader-doubt-malformed"
+act_key = "a1"
+state = "assessed"
+problem = ""
+
+[[reader_assessment]]
+scenario = "audit-change"
+act_key = "a1"
+state = "assessed"
+problem = ""
+pass_kind = "perlectio"
+
+[[reader_assessment]]
+scenario = "audit-change"
+act_key = "a1"
+state = "assessed"
+problem = ""
+pass_kind = "audit-reproof"
+
+[[reader_assessment]]
+scenario = "reader-doubt-unreadable"
+act_key = "a1"
+state = "assessed"
+problem = ""
+
+[[reader_doubt]]
+scenario = "reader-doubt"
+act_key = "a1"
+start = 29
+end = 34
+alternatives = ["gamna", "gaMma"]
+confidence = "low"
+
+[[reader_doubt]]
+scenario = "audit-change"
+act_key = "a1"
+start = 29
+end = 34
+alternatives = ["gamma"]
+confidence = "low"
+pass_kind = "perlectio"
+
+[[reader_doubt]]
+scenario = "audit-change"
+act_key = "a1"
+start = 29
+end = 35
+alternatives = ["gamma"]
+confidence = "medium"
+pass_kind = "audit-reproof"
+
+[[reader_doubt]]
+scenario = "reader-doubt-malformed"
+act_key = "a1"
+start = 29
+end = 99
+alternatives = []
+confidence = "low"
+
+[[reader_doubt]]
+scenario = "reader-doubt-unreadable"
+act_key = "a1"
+start = 29
+end = 34
+alternatives = ["gamna"]
+confidence = "low"
+
+[[reader_gap]]
+scenario = "reader-doubt"
+act_key = "a1"
+position = "internal"
+offset = 23
 
 [[continuation]]
 act_key = "a2"
@@ -524,6 +640,32 @@ name = "audit-change"
 recover_acts = []
 hold_acts = []
 
+# reader-doubt and reader-doubt-malformed declare neither a recovery nor a
+# hold; their only departure from `happy` is the reader's declared doubt
+# report (READER_ASSESSMENTS / READER_DOUBTS / READER_GAPS). The hold the
+# malformed scenario produces has exactly one origin: a report the
+# annotation schema could not anchor to the text.
+[[scenario]]
+name = "reader-doubt"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "reader-doubt-malformed"
+recover_acts = []
+hold_acts = []
+
+# reader-doubt-unreadable is a declared doubt colliding with an emptied
+# reading: the outcome says nothing was readable, and the doubt names
+# characters the published empty text does not have. It must end as a
+# visible `malformed` assessment and a hold, never as an `assessed`
+# state beside layers that were quietly emptied. It declares no recovery
+# and no hold of its own, so the hold it produces has exactly one origin.
+[[scenario]]
+name = "reader-doubt-unreadable"
+recover_acts = []
+hold_acts = []
+
 # audit-reproof-cutoff declares neither a recovery nor a hold, and no
 # reading failure: a1's Pass-B reading completes, and the only declared
 # departure from `happy` is the `length` stop word on its Pass-C re-proof
@@ -652,6 +794,11 @@ outcome = "truncated"
 
 [[reading_failure]]
 scenario = "no-readable-text-reading"
+act_key = "a1"
+outcome = "no-readable-text"
+
+[[reading_failure]]
+scenario = "reader-doubt-unreadable"
 act_key = "a1"
 outcome = "no-readable-text"
 

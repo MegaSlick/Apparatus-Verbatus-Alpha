@@ -293,6 +293,8 @@ def _not_measured_basis(
             "sealed_audit_round_cap": 1,
             "acts_delivered": 0,
             "acts_with_uncertain_spans": 0,
+            "acts_assessed": 0,
+            "acts_not_assessed": 0,
         },
         "designator-geometry-calibration": {
             "configurations": [
@@ -657,6 +659,14 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
             "annotations": [],
             "uncertain_spans": [],
             "gaps": [],
+            # The reader's own doubt report, closed into the Perlectio on
+            # 2026-09-11 (F2). A fixture joint reader declares no doubts, and
+            # `not-assessed` is what says so: the empty layers above are an
+            # absence of a channel, never a reading's confidence.
+            "uncertainty_assessment": {
+                "state": "not-assessed",
+                "problem": "this fixture reader has no channel for a doubt report",
+            },
             "self_revision": [],
         },
     }
@@ -785,6 +795,8 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
                 "sealed_audit_round_cap": 1,
                 "acts_delivered": 1,
                 "acts_with_uncertain_spans": 0,
+                "acts_assessed": 0,
+                "acts_not_assessed": 1,
             }
         },
         fixture_id="u19d-composed",
@@ -974,6 +986,14 @@ def _reading_inputs(
             "annotations": [],
             "uncertain_spans": [],
             "gaps": [],
+            # The reader's own doubt report, closed into the Perlectio on
+            # 2026-09-11 (F2). A fixture joint reader declares no doubts, and
+            # `not-assessed` is what says so: the empty layers above are an
+            # absence of a channel, never a reading's confidence.
+            "uncertainty_assessment": {
+                "state": "not-assessed",
+                "problem": "this fixture reader has no channel for a doubt report",
+            },
             "self_revision": [],
         },
     }

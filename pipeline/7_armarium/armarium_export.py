@@ -799,7 +799,13 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
         }
     ),
     _PERLECTOR_UNCERTAIN_SPANS: frozenset(
-        {"sealed_audit_round_cap", "acts_delivered", "acts_with_uncertain_spans"}
+        {
+            "sealed_audit_round_cap",
+            "acts_delivered",
+            "acts_with_uncertain_spans",
+            "acts_assessed",
+            "acts_not_assessed",
+        }
     ),
     _GEOMETRY_CALIBRATION: frozenset({"configurations"}),
 }
@@ -1022,11 +1028,21 @@ def _validate_not_measured_detail(
             "sealed_audit_round_cap",
             "acts_delivered",
             "acts_with_uncertain_spans",
+            "acts_assessed",
+            "acts_not_assessed",
         ):
             _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
-        if detail["sealed_audit_round_cap"] != 0 and detail["acts_with_uncertain_spans"] != 0:
+        if detail["acts_assessed"] + detail["acts_not_assessed"] != detail["acts_delivered"]:
+            raise SchemaRefusal(f"{subject} assessment counts do not partition its delivered acts")
+        # Under a nonzero cap the exhausted-cap projection cannot mint a span,
+        # so every act carrying one must have been assessed by its reader.
+        if (
+            detail["sealed_audit_round_cap"] != 0
+            and detail["acts_with_uncertain_spans"] > detail["acts_assessed"]
+        ):
             raise SchemaRefusal(
-                f"{subject} names uncertain spans although its nonzero sealed audit cap makes them unreachable"
+                f"{subject} names more acts with uncertain spans than assessed acts although its "
+                "nonzero sealed audit cap makes every other span unreachable"
             )
         if detail["acts_with_uncertain_spans"] > detail["acts_delivered"]:
             raise SchemaRefusal(
@@ -1706,13 +1722,23 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
             return "declared-unproduced"
         return "not-measured" if detail["rows_with_named_absence"] else "measured"
     if instrument == _PERLECTOR_UNCERTAIN_SPANS:
-        # A span can only be minted when a sealed `round_cap` of 0 leaves the
-        # audit no re-proof round to spend, so under any other cap the empty
-        # list is the policy's arithmetic and not a reading's confidence. Said
-        # here rather than left for a reader to infer from a `[]`.
-        if detail["sealed_audit_round_cap"] != 0:
+        # Measured exactly when every delivered reading was assessed for doubt
+        # by its reader, and unproduced only when nothing at all was measured.
+        # An empty list under `not-assessed` is an absence, never a reading's
+        # confidence (F2).
+        if detail["acts_assessed"] == detail["acts_delivered"] != 0:
+            return "measured"
+        # Nobody assessed and no span published: the instrument never ran, and
+        # the block says so rather than reporting a `[]` as a clean result.
+        if detail["acts_assessed"] == 0 and detail["acts_with_uncertain_spans"] == 0:
             return "declared-unproduced"
-        return "measured"
+        # Otherwise something was measured and not everything was: either some
+        # readers were asked and others were not, or -- the live configuration
+        # under a sealed cap of 0 -- no reader was asked and the exhausted-cap
+        # projection minted real spans onto delivered acts anyway. Calling that
+        # second case unproduced would deny a measurement that partly happened
+        # (GOVERNANCE 10; the independent review of 2026-09-11).
+        return "not-measured"
     if instrument == _GEOMETRY_CALIBRATION:
         return (
             "measured"
@@ -1879,9 +1905,37 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         and bool(act["uncertainty"].get("uncertain_spans"))
         for act in projection.acts
     )
+    # Counted by state, never by subtraction. `acts_not_assessed` used to be
+    # "everything that is not assessed", so a delivered act whose reader's
+    # report was broken would have been counted as one with no doubt channel --
+    # two different facts under one number. A delivered `malformed` act is a
+    # broken tree rather than a count: the Recensor holds one, so it can only
+    # reach here through a projection that did not come from a run
+    # (the independent review of 2026-09-11, and CodeRabbit at the same site).
+    assessed_count = 0
+    not_assessed_count = 0
+    for act in projection.acts:
+        if act["category"] != ArmariumCategory.DELIVERED.value:
+            continue
+        uncertainty = act.get("uncertainty")
+        assessment = uncertainty.get("assessment") if isinstance(uncertainty, dict) else None
+        state = assessment.get("state") if isinstance(assessment, dict) else None
+        if state == "assessed":
+            assessed_count += 1
+        elif state == "not-assessed":
+            not_assessed_count += 1
+        else:
+            raise SchemaRefusal(
+                f"an Armarium projection delivers act {act.get('act_key')!r} whose sealed doubt "
+                f"assessment is {state!r}; only a reading that was assessed, or one whose reader "
+                "had no channel, is deliverable -- a doubt report that could not be anchored is "
+                "held for review, never counted"
+            )
     if (
         perlector_basis["acts_delivered"] != delivered_count
         or perlector_basis["acts_with_uncertain_spans"] != uncertain_count
+        or perlector_basis["acts_assessed"] != assessed_count
+        or perlector_basis["acts_not_assessed"] != not_assessed_count
     ):
         raise SchemaRefusal(
             "an Armarium projection's Perlector uncertainty basis does not exactly reconcile "

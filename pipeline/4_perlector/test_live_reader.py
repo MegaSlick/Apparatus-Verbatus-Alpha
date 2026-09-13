@@ -1253,7 +1253,11 @@ def test_a_fixture_reading_never_publishes_the_engine_call_key() -> None:
         {"act_id": "act_0000000000000000", "act_key": "a1", "regions": [], "page_renders": []},
         pass_kind="perlectio",
     )
-    assert set(result) == {"text", "stop_reason"}
+    # The doubt assessment joined the result on 2026-09-11 (F2); this fixture
+    # declares none, so the reader reports the honest absence rather than an
+    # empty layer that would read as confidence.
+    assert set(result) == {"text", "stop_reason", "assessment"}
+    assert result["assessment"]["state"] == "not-assessed"
 
 
 # --- prompt fidelity: every pass kind sends exactly the byte-exact template --

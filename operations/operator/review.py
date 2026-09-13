@@ -812,6 +812,64 @@ _TERMINAL_DESIGNATOR_REASONS: dict[str, tuple[str, str]] = {
 }
 
 
+def _projected_audit(audit: Any) -> Any:
+    """The two audit facts this screen reads, or the value as the record holds it."""
+    if audit is None or not isinstance(audit, dict):
+        return audit
+    return {"unresolved": audit.get("unresolved"), "examination": audit.get("examination")}
+
+
+def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, Any] | None:
+    """The Perlector's current reading of one act, or none, in one vocabulary.
+
+    Built in one place because it is read in two: before the export, where it is
+    the only thing this screen has to show about an act, and after it, where a
+    non-delivered act's export row carries no reading at all and this is where
+    the reading and its doubt report come back from. `_testimonia_rows` exists
+    for the same reason and says the same thing about witnesses.
+
+    The doubt report and its two layers are carried through EXACTLY as the
+    record holds them, unnormalised. Mapping an unreadable value to `None` here
+    spent the one distinction the renderer needs: `None` is a record written
+    before this contract existed and says so on the screen, while a
+    present-but-malformed value is a fault of the run tree and is refused by
+    field like every other projection list. Flattened to `None`, a broken layer
+    printed as no doubt line at all -- the pre-F2 silence, restored on the one
+    surface a person reads (the independent review of 2026-09-11).
+    """
+    reading_row = _latest(stage_records, PERLECTOR, "perlectio", act_id, operation="perlegere")
+    if reading_row is None:
+        return None
+    payload = _payload_of(reading_row, "the Perlectio record")
+    truncation = payload.get("truncation")
+    audit = payload.get("audit")
+    return {
+        "outcome": reading_row["outcome"],
+        "text": payload.get("text"),
+        "reason": payload.get("reason"),
+        "uncertainty_assessment": payload.get("uncertainty_assessment"),
+        "uncertain_spans": payload.get("uncertain_spans"),
+        "gaps": payload.get("gaps"),
+        # The producer's own spelling, not the canonical layer's
+        # `self_revisions`: renaming it here would be a second copy of
+        # `common/contracts/uncertainty.from_perlectio`'s rename, free to drift
+        # from it. The renderer counts whichever key the path it is on carries.
+        "self_revision": payload.get("self_revision"),
+        # Carried whole, like the audit and the doubt layers: the renderer reads
+        # the classification off an object and refuses anything else by field.
+        "truncation": truncation,
+        # Absent stays absent; an object is projected to the two fields this
+        # screen reads; anything else is carried through EXACTLY as the record
+        # holds it, for the reason the doubt layers above are. Mapping a
+        # malformed value to `None` here spent the distinction: the renderer
+        # would read "this reading had no audit", and a fault of the run tree
+        # would print as an ordinary absence (found by CodeRabbit on the
+        # round-4 head).
+        "audit": _projected_audit(audit),
+        "record_ref": reading_row["record_ref"],
+    }
+
+
 def _testimonia_rows(stage_records: list[dict[str, Any]], act_id: str) -> list[dict[str, Any]]:
     """Every Testimonium sealed for one act, in the order the stage wrote them.
 
@@ -865,27 +923,7 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
             }
         )
     testimonia = _testimonia_rows(stage_records, act_id)
-    reading_row = _latest(stage_records, PERLECTOR, "perlectio", act_id, operation="perlegere")
-    reading = None
-    if reading_row is not None:
-        payload = _payload_of(reading_row, "the Perlectio record")
-        truncation = payload.get("truncation")
-        audit = payload.get("audit")
-        reading = {
-            "outcome": reading_row["outcome"],
-            "text": payload.get("text"),
-            "reason": payload.get("reason"),
-            "truncation": truncation.get("classification")
-            if isinstance(truncation, dict)
-            else None,
-            "audit": {
-                "unresolved": audit.get("unresolved"),
-                "examination": audit.get("examination"),
-            }
-            if isinstance(audit, dict)
-            else None,
-            "record_ref": reading_row["record_ref"],
-        }
+    reading = _reading_row(stage_records, act_id)
     review_row = _latest(stage_records, RECENSOR, "review", act_id, operation="recense")
     review = None
     if review_row is not None:
@@ -1582,7 +1620,9 @@ def _act_row(
         "reason": row.get("reason"),
         "crops": crops,
         "crops_note": crops_note,
-        "row": _normalised_act_row(row, export_ref, stage_records),
+        # `requires_crops` is the delivered/non-delivered distinction this
+        # function is called with; the normalisation needs the same fact.
+        "row": _normalised_act_row(row, export_ref, stage_records, delivered=requires_crops),
         "record_ref": export_ref,
     }
 
@@ -1591,6 +1631,8 @@ def _normalised_act_row(
     row: dict[str, Any],
     export_ref: dict[str, str],
     stage_records: list[dict[str, Any]] | None = None,
+    *,
+    delivered: bool = True,
 ) -> dict[str, Any]:
     """One field vocabulary for both act shapes, so no witness vanishes at export.
 
@@ -1601,8 +1643,8 @@ def _normalised_act_row(
     before export and none after it -- the same screen, the same run, fewer
     facts once it finished.
 
-    A non-delivered act's export row carries no witness basis at all, because
-    the Armarium writes one only for what it delivered. Mapping cannot recover
+    A non-delivered act's export row carries no witness basis and no reading at
+    all, because the Armarium writes both only for what it delivered. Mapping cannot recover
     what is not there, so those are read from the sealed Attestatores records
     instead, exactly as before the export. Each witness row therefore carries an
     attempt ordinal when it came from the run tree and none when it came from
@@ -1610,9 +1652,36 @@ def _normalised_act_row(
     absent rather than filled with a number nothing said.
     """
     witnesses = row.get("witnesses")
+    if witnesses is None and delivered:
+        # Recovery is for the rows the Armarium deliberately writes thin. A
+        # DELIVERED row is described entirely by its export record, so one
+        # without a witness basis is a damaged record, and reading its witnesses
+        # and its reading out of the run tree instead would paper over that and
+        # show the delivered text beside a reading the export never named
+        # (found by CodeRabbit on the round-4 head).
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} delivers act "
+                f"{row.get('act_id')!r} with no witness basis; a delivered act's export row "
+                "carries one, so this row is damaged rather than thin"
+            ),
+        )
     if witnesses is None and stage_records is not None and isinstance(row.get("act_id"), str):
+        attached: dict[str, Any] = {}
         testimonia = _testimonia_rows(stage_records, row["act_id"])
-        return {**row, "testimonia": testimonia} if testimonia else row
+        if testimonia:
+            attached["testimonia"] = testimonia
+        # And the reading, for the same reason and from the same place. The
+        # Armarium writes no text and no uncertainty layer for an act it did not
+        # deliver, so a held act -- the one this screen exists for -- showed its
+        # doubt report before the export and nothing after it. The same
+        # asymmetry, one field further on (the independent review of
+        # 2026-09-11).
+        reading = _reading_row(stage_records, row["act_id"])
+        if reading is not None:
+            attached["reading"] = reading
+        return {**row, **attached} if attached else row
     if witnesses is None or "testimonia" in row:
         return row
     if not isinstance(witnesses, list):
