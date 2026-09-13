@@ -221,8 +221,14 @@ def _uncertainty_lines(
     label: str,
     assessment_key: str,
     attributable: bool,
+    outcome: Any,
 ) -> list[str]:
     """The reader's own doubt report, rendered the same way wherever it is carried.
+
+    `outcome` is the record's own word for whether a reading exists. Only a
+    `not-run` record carries no text; a reading with any other outcome and no
+    string text is a damaged record, refused by field rather than printed as an
+    act that was never read (CodeRabbit on the round-5 head).
 
     The state line always comes first and always says which of the three states
     this record carries, so an empty layer is never displayed as a reader's
@@ -277,6 +283,10 @@ def _uncertainty_lines(
         # at all, which is exactly the silence F2 was about. The canonical layer
         # refuses a pre-contract record by name at the Archetypus; this surface
         # is where a person meets it first.
+        if text is None and outcome != "not-run":
+            raise ProjectionShapeError(
+                f"{label}.text", None, text, expected="a string on a reading that ran"
+            )
         lines = [
             "    doubts: not recorded — this act was not read"
             if text is None
@@ -513,6 +523,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                     # published layer is a union with the audit's projection,
                     # and no entry says which instrument wrote it.
                     attributable=not isinstance(reading.get("audit"), dict),
+                    outcome=reading.get("outcome"),
                 )
             )
         elif isinstance(row.get("text"), str):
@@ -537,6 +548,9 @@ def render(projection: dict[str, Any]) -> list[str]:
                     # chain, so its layer is a union like any other established
                     # reading's and nothing here says which entry is whose.
                     attributable=False,
+                    # A delivered act was read by definition; its text is the
+                    # string this branch was entered on.
+                    outcome="read",
                 )
             )
         review = _object(row, "review", "acts[].row.review")
