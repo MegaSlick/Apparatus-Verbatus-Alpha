@@ -283,7 +283,7 @@ def _uncertainty_lines(
         # at all, which is exactly the silence F2 was about. The canonical layer
         # refuses a pre-contract record by name at the Archetypus; this surface
         # is where a person meets it first.
-        if text is None and outcome != "not-run":
+        if outcome != "not-run" and not isinstance(text, str):
             raise ProjectionShapeError(
                 f"{label}.text", None, text, expected="a string on a reading that ran"
             )

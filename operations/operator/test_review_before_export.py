@@ -1679,7 +1679,8 @@ def test_an_act_that_was_never_read_is_not_told_its_reading_predates_a_contract(
 
     # A reading that ran and carries no text is a damaged record, not an act
     # that was never read: refused by field, never printed as the unread line.
-    with pytest.raises(review_text.ProjectionShapeError) as refused:
-        review_text.render(_reading_act({"outcome": "read", "reason": "sealed but textless"}))
-    assert refused.value.field == "acts[].row.reading.text"
-    assert refused.value.index is None
+    for text in (None, 7, {"text": "alpha"}, ["alpha"]):
+        with pytest.raises(review_text.ProjectionShapeError) as refused:
+            review_text.render(_reading_act({"outcome": "read", "text": text, "reason": "damaged"}))
+        assert refused.value.field == "acts[].row.reading.text"
+        assert refused.value.index is None
