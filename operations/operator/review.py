@@ -855,7 +855,9 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
         # `common/contracts/uncertainty.from_perlectio`'s rename, free to drift
         # from it. The renderer counts whichever key the path it is on carries.
         "self_revision": payload.get("self_revision"),
-        "truncation": truncation.get("classification") if isinstance(truncation, dict) else None,
+        # Carried whole, like the audit and the doubt layers: the renderer reads
+        # the classification off an object and refuses anything else by field.
+        "truncation": truncation,
         # Absent stays absent; an object is projected to the two fields this
         # screen reads; anything else is carried through EXACTLY as the record
         # holds it, for the reason the doubt layers above are. Mapping a

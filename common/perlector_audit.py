@@ -1058,9 +1058,10 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
     # canonical layer refuses by name -- choose the relaxed prefix rule here and
     # publish spans and gaps the reader's report never named (found by
     # CodeRabbit reading against the project's own configuration).
-    state = uncertainty.validate_assessment_record(
+    assessment_record = uncertainty.validate_assessment_record(
         payload.get("uncertainty_assessment"), f"reading of {act_id}"
-    )["state"]
+    )
+    state = assessment_record["state"]
     if not isinstance(published, list):
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
     if state == "assessed":
@@ -1086,6 +1087,27 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
             f"reading of {act_id} publishes a gap of its own although its sealed assessment "
             f"is {state!r}; only a reader that was asked reports where its sight failed"
         )
+    # What follows the projection under `assessed` is the reader's own report,
+    # and this is the last check before the Recensor publishes: the spans and
+    # gaps are bound to the text here by the canonical validator itself, so a
+    # span past the end of `text` never reaches a review record to be printed
+    # as offsets that do not anchor (CodeRabbit on PR #115). Self-revisions are
+    # left out on purpose: their offsets index the prior draft, not this text,
+    # and the canonical projection at the Archetypus is where they are held.
+    try:
+        uncertainty.validate(
+            {
+                "uncertain_spans": published,
+                "gaps": gaps,
+                "self_revisions": [],
+                "assessment": assessment_record,
+            },
+            payload.get("text"),
+        )
+    except SchemaRefusal as error:
+        raise SchemaRefusal(
+            f"reading of {act_id} carries an uncertainty layer its text cannot anchor: {error}"
+        ) from error
     return {"record": record, "draft": draft, "finding": finding}
 
 

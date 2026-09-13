@@ -503,9 +503,10 @@ def render(projection: dict[str, Any]) -> list[str]:
         reading = _object(row, "reading", "acts[].row.reading")
         if reading:
             audit = _object(reading, "audit", "acts[].row.reading.audit")
+            truncation = _object(reading, "truncation", "acts[].row.reading.truncation")
             lines.append(
                 f"    reading: {inert(reading.get('outcome'))}; truncation "
-                f"{inert(reading.get('truncation'))}; audit examination "
+                f"{inert(truncation.get('classification'))}; audit examination "
                 f"{inert(audit.get('examination'))}"
             )
             if isinstance(reading.get("text"), str):

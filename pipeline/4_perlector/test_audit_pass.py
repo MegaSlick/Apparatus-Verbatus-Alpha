@@ -1462,6 +1462,30 @@ def test_the_chain_refuses_perlectio_uncertainty_the_finding_did_not_establish(t
         audit.validate_chain(tree, invented, final["subject_id"])
 
 
+def test_the_chain_binds_an_assessed_readers_span_to_the_text_it_publishes(tmp_path):
+    """Under `assessed` the tail of the layer is the reader's own; it is still bound to the text.
+
+    The prefix rule leaves what follows the projection to the reader, and this
+    is the last check before the Recensor publishes, so a span past the end of
+    the text is refused here rather than carried to a review record and printed
+    as offsets that do not anchor (CodeRabbit on PR #115).
+    """
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    final = _records(tree, "perlectio")[0]
+    assert final["payload"]["uncertain_spans"] == []
+
+    overrun = copy.deepcopy(final)
+    overrun["payload"]["uncertainty_assessment"] = {"state": "assessed", "problem": None}
+    end = len(overrun["payload"]["text"]) + 5
+    overrun["payload"]["uncertain_spans"] = [
+        {"start": 0, "end": end, "alternatives": [], "confidence": "low"}
+    ]
+    with pytest.raises(SchemaRefusal, match="cannot anchor"):
+        audit.validate_chain(tree, overrun, final["subject_id"])
+
+
 def test_the_chain_refuses_a_gap_an_unassessed_reader_could_not_have_reported(tmp_path):
     """The same state rule over the other layer, and the direction that loses ink.
 

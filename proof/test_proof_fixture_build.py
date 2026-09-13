@@ -711,7 +711,13 @@ def test_the_declared_reader_doubt_reports_anchor_to_the_texts_they_are_declared
             "problem": "",
         },
     ]
-    doubts = {(row["scenario"], row.get("pass_kind")): row for row in skeleton["reader_doubt"]}
+    # Grouped, not keyed: a repeated row would replace its twin under one key
+    # and the assertion would pass having read only the last of them.
+    grouped: dict[tuple[str, str | None], list[dict]] = {}
+    for row in skeleton["reader_doubt"]:
+        grouped.setdefault((row["scenario"], row.get("pass_kind")), []).append(row)
+    assert all(len(rows) == 1 for rows in grouped.values()), "one doubt row per scenario and pass"
+    doubts = {key: rows[0] for key, rows in grouped.items()}
     assert acts["a1"][29:34] == "gamma"
     assert doubts[("reader-doubt", None)]["start"] == 29
     assert doubts[("reader-doubt", None)]["end"] == 34

@@ -201,7 +201,7 @@ def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
     assert cut["category"] == "held-for-review"
     assert cut["reason"] == held["reason"]
     assert cut["row"]["reading"]["outcome"] == "read"
-    assert cut["row"]["reading"]["truncation"] == "complete"
+    assert cut["row"]["reading"]["truncation"]["classification"] == "complete"
     assert cut["row"]["reading"]["audit"] == {"unresolved": True, "examination": "incomplete"}
     assert isinstance(cut["row"]["reading"]["text"], str) and cut["row"]["reading"]["text"]
     assert cut["row"]["review"]["outcome"] == "held-for-review"
@@ -993,6 +993,10 @@ def test_a_projection_list_entry_that_is_not_an_object_is_refused_by_field_and_i
         (
             {"acts": [{"act_id": "a", "row": {"reading": {"audit": 3}}}]},
             "acts[].row.reading.audit",
+        ),
+        (
+            {"acts": [{"act_id": "a", "row": {"reading": {"truncation": "length"}}}]},
+            "acts[].row.reading.truncation",
         ),
         ({"progress": "sealed"}, "progress"),
     ],
