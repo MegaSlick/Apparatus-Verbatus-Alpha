@@ -777,6 +777,33 @@ any of it. A held page is not tiled, its ink reconciles as conservation
 residual, and the run exits `EXIT_HELD`; the retained bytes, `parse_outcome`
 and `prompt_sha256` are the evidence.
 
+**Resuming the pass.** A page whose `structure-answer` this tree already holds
+is **read back, never asked again** (`_sealed_structure_answer`,
+`structure_pass.sealed_page_answer`). A live chair cannot reproduce its own
+bytes — every answer embeds the serving session's `receipt_ref`,
+`call_record_ref` and `custody_ref`, and all three move on every chair start —
+so a second ask would build different bytes under an artifact identity the
+store has already fixed, and the run would die on `IncompatibleReuse` one page
+into the resume. This is the Perlector's `_reading_already_sealed` and the
+Attestatores' `sealed_pairs`, for this stage; GOVERNANCE 4 is why all three
+exist. With every page already answered, **no chair is started at all**.
+
+Each fresh answer is published **inside** the asking loop, as it arrives, not
+after the loop: an interruption at page 900 of 1000 otherwise leaves nothing on
+disk, hides 899 answers that did arrive, and repeats every model call already
+paid for (GOVERNANCE 2, and a rented card's hours). The resume then asks only
+for the pages nothing answered.
+
+Because a resumed run may take more than one serving session to answer its
+pages, **provenance is per page**: each page's status and each crop cut from it
+carry the session that answered *that* page, read off the page's own answer
+record, rather than the whole run being restamped with whichever session ran
+last (GOVERNANCE 6). The `proposal-seal` carries one run-level block and takes
+it from the first page's answer — the only value that is the same on every
+later resume, and therefore the only one under which the seal can republish
+byte for byte. The seal is not where a reader learns which session answered a
+given page; each page's own records are.
+
 **Minting.** For each rectangle in reading order: validated against the page,
 minted once per distinct rectangle (a repeat is a `duplicate-rectangle` finding
 on the answer record naming both ordinals — the class-and-bounds identity has
