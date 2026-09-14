@@ -118,6 +118,23 @@ _RENDER_SETTINGS_FIELD: Final = "render_settings"
 # alone can *name* the policy bytes that governed the run instead of only being
 # able to test a candidate file against a hash of everything at once.
 _SEALED_CONFIG_DIGESTS_FIELD: Final = "sealed_config_digests"
+# The commit the code that *created* this run was at. Sealed into the authority
+# because a tree handed to a fresh session could otherwise prove its configuration
+# bytes by digest and still not say which code produced them -- the commit lived
+# only in the pod-run report and the operator's launch receipt, and neither travels
+# with the tree.
+#
+# Deliberately *not* a bound field. A run id names one set of inputs and one
+# configuration; it does not name one build, and binding this would refuse every
+# resume made after a fix. What the project does want is for such a resume not to be
+# silent, and an immutable authority cannot record it: run.json is created once, by
+# the Door, and never rewritten, so this names the creating commit and nothing else.
+# The commit that ran each later stage is recorded per invocation in the stage
+# timing journal `pod_run` gives the orchestrator on the volume, which is where a
+# cross-commit resume actually becomes visible -- and which is outside this tree
+# precisely because a clock cannot live in a tree that is pinned byte-identical
+# on rerun and resume.
+_REPOSITORY_COMMIT_FIELD: Final = "repository_commit"
 
 
 class PublishResult:
@@ -200,6 +217,7 @@ class RunTree:
         ingress: dict[str, Any] | None = None,
         render_settings: dict[str, Any] | None = None,
         sealed_config_digests: dict[str, str] | None = None,
+        repository_commit: str | None = None,
     ) -> "RunTree":
         """Open a run, creating it if new and refusing an incompatible reuse.
 
@@ -295,6 +313,14 @@ class RunTree:
                     "point of use could ask for"
                 )
             authority[_SEALED_CONFIG_DIGESTS_FIELD] = dict(sorted(sealed_config_digests.items()))
+        if repository_commit is not None:
+            if not _is_full_commit(repository_commit):
+                raise SchemaRefusal(
+                    "a run's repository_commit must be forty lowercase hexadecimal "
+                    "characters; a short or decorated revision names a commit only against "
+                    "the repository that resolved it, which a fetched tree no longer has"
+                )
+            authority[_REPOSITORY_COMMIT_FIELD] = repository_commit
         authority["self_hash"] = self_hash(authority)
 
         run_file = tree.root / RUN_FILE
@@ -1500,6 +1526,14 @@ def _run_creation_lock(parent: Path) -> Iterator[None]:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)
+
+
+def _is_full_commit(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, Any]) -> None:

@@ -1630,6 +1630,16 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         default=None,
         help="append-only corpus register to snapshot at ingress and verify at later stages",
     )
+    parser.add_argument(
+        "--repository-commit",
+        default=None,
+        help=(
+            "the commit this run's code is at, forwarded by the orchestrator from its own "
+            "caller (on a pod, the commit the bootstrap checked out and verified). The Door "
+            "seals it into the run authority so a fetched tree can say which code produced "
+            "its bytes; absent means nobody named one, and the run records none"
+        ),
+    )
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument(
         "--decoding-config",

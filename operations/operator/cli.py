@@ -15,6 +15,7 @@ from typing import Sequence
 
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
+from operations.pod.launch import launch_evidence_keys
 from operations.pod.models import PodCreateRequest, require_utc
 
 from . import console, notify_bridge, review_text
@@ -113,6 +114,53 @@ def _warn_about_abandoned_state_dir(workspace: Path, *, using_default: bool) -> 
         "the default state location outside the checkout. They are not read here "
         f"automatically — point at them explicitly with: --state-dir {old_state}"
     )
+
+
+_UNREADABLE_RECEIPT = (
+    OSError,
+    UnicodeDecodeError,
+    json.JSONDecodeError,
+    KeyError,
+    TypeError,
+    ValueError,
+)
+
+
+def _derived_evidence_keys(receipt: Path | None) -> tuple[str, ...]:
+    """The launch-bound evidence keys a saved launch receipt already names.
+
+    ``fetch-run`` will not guess at the launch-token-named reports -- guessing
+    means listing a whole volume that also holds the submission's page images --
+    so it asks for them by key. Nobody should have to retype a 32-hex token out
+    of a JSON receipt to supply one; the receipt holds the sealed
+    ``docker_start_cmd`` those paths were bound into, and
+    ``launch.launch_evidence_keys`` is the derivation.
+
+    Refused loudly rather than skipped when the receipt cannot be read: an
+    operator who named a receipt and silently got no keys would believe the
+    reports came home.
+    """
+
+    if receipt is None:
+        return ()
+    try:
+        raw = json.loads(receipt.read_text(encoding="utf-8"))
+        request = raw["request"]
+        command = request["docker_start_cmd"]
+        mount = request["volume_mount_path"]
+        if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
+            raise ValueError("docker_start_cmd is not a list of words")
+        if not isinstance(mount, str) or not mount:
+            raise ValueError("volume_mount_path is missing")
+    except _UNREADABLE_RECEIPT as error:
+        raise OperatorError(
+            ErrorCode.FETCH_RUN_FAILED,
+            detail=(
+                f"the launch receipt {receipt} does not carry a readable launch request, so "
+                f"no evidence key could be derived from it: {error}"
+            ),
+        ) from error
+    return launch_evidence_keys(command, volume_mount_path=mount)
 
 
 def _print(text: str = "") -> None:
@@ -310,6 +358,26 @@ def build_parser() -> PlainParser:
         "launch's preflight/ tree comes home on its own; the bootstrap and run reports and "
         "the bootstrap journal are named with the launch token at paths this verb cannot "
         "derive, so name them here. The receipt says which were fetched and which were not",
+    )
+    fetch_run.add_argument(
+        "--evidence-prefix",
+        action="append",
+        metavar="PREFIX",
+        help="a volume prefix to bring home into <into>/evidence/, repeatable; the default "
+        "is the whole preflight/ tree. A volume is reused across launches, so preflight/ "
+        "holds every launch's evidence and a later reader cannot say which measured the "
+        "chairs for THIS run. Name this run's own stem -- preflight/<bootstrap report stem>, "
+        "which carries the launch token -- to bring back exactly one launch's evidence",
+    )
+    fetch_run.add_argument(
+        "--launch-receipt",
+        type=Path,
+        metavar="PATH",
+        help="the saved launch receipt for this run. Its sealed docker_start_cmd already "
+        "names the launch-token-bound report paths, so the exact --evidence-key values are "
+        "derived from it and printed rather than retyped from a 32-hex token by hand. "
+        "Derivation rule: each --report-path in that command, made relative to "
+        "volume_mount_path, plus its -hold/-liveness/-transcript/-terminating siblings",
     )
 
     export = verbs.add_parser(
@@ -513,12 +581,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 witness_context_config=args.witness_context_config,
             )
         elif args.verb == "fetch-run":
-            surface.fetch_run(
-                run_id=args.run_id,
-                into=args.into,
-                volume=volume,
-                evidence_keys=tuple(args.evidence_key or ()),
-            )
+            derived = _derived_evidence_keys(args.launch_receipt)
+            for key in derived:
+                _print(f"Derived from the launch receipt: --evidence-key {key}")
+            evidence_keys = tuple(dict.fromkeys((*(args.evidence_key or ()), *derived)))
+            fetch_arguments: dict[str, object] = {
+                "run_id": args.run_id,
+                "into": args.into,
+                "volume": volume,
+                "evidence_keys": evidence_keys,
+            }
+            # Passed only when named, so the surface's own default (the whole
+            # preflight/ tree) stays the default rather than being restated here.
+            if args.evidence_prefix:
+                fetch_arguments["evidence_prefixes"] = tuple(args.evidence_prefix)
+            surface.fetch_run(**fetch_arguments)  # type: ignore[arg-type]
         elif args.verb == "export":
             surface.export(run_id=args.run_id)
         elif args.verb == "close":
@@ -1228,18 +1305,34 @@ def _interactive_arguments() -> list[str]:
         # The launch's preflight/ tree comes home on its own; the bootstrap
         # report, the pod-run report, and the bootstrap journal are named
         # with the launch token at paths this verb cannot derive on its own
-        # (`fetch_run.add_argument("--evidence-key", ...)` above), so this
-        # route asks for each by name -- optional, blank skips it -- rather
-        # than only being reachable through the command line's repeatable
-        # `--evidence-key`.
-        for label in (
-            "Volume key for the bootstrap report (leave blank to skip)",
-            "Volume key for the pod-run report (leave blank to skip)",
-            "Volume key for the bootstrap journal (leave blank to skip)",
-        ):
-            evidence_key = _ask(label)
-            if evidence_key:
-                arguments.extend(("--evidence-key", evidence_key))
+        # (`fetch_run.add_argument("--evidence-key", ...)` above). The launch
+        # receipt the operator's own machine wrote *does* name them, so this
+        # route asks for the receipt first and derives every key from it;
+        # typing a 32-hex token by hand is the step that gets skipped on a
+        # phone. The per-record prompts stay as the fallback for a run whose
+        # receipt is not to hand.
+        receipt = _ask("Saved launch receipt for this run (leave blank to name keys by hand)")
+        if receipt:
+            arguments.extend(("--launch-receipt", receipt))
+        else:
+            for label in (
+                "Volume key for the bootstrap report (leave blank to skip)",
+                "Volume key for the pod-run report (leave blank to skip)",
+                "Volume key for the bootstrap journal (leave blank to skip)",
+            ):
+                evidence_key = _ask(label)
+                if evidence_key:
+                    arguments.extend(("--evidence-key", evidence_key))
+        # A volume is reused across launches, so preflight/ holds every
+        # launch's tree and a later reader cannot say which measured the
+        # chairs for this run. Naming this run's own stem is how one launch's
+        # evidence comes home on its own.
+        prefix = _ask(
+            "This run's preflight stem, as preflight/<bootstrap report stem> "
+            "(leave blank for every launch's preflight tree)"
+        )
+        if prefix:
+            arguments.extend(("--evidence-prefix", prefix))
         return arguments
     if verb == "export":
         return ["export"]

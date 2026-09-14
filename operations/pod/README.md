@@ -419,7 +419,51 @@ check.
   the run tree, both reports, the journal and the preflight evidence are on the
   volume, which outlives the pod, and `verbatus fetch-run` reads it over S3 with
   no pod running. Which way it went is in the run report's
-  `held_to_hard_deadline`. `test_pod_run.py` drives all of it
+  `held_to_hard_deadline`.
+  **Nothing the run printed dies with the pod.** The orchestrator's stdout and
+  stderr are merged into one pipe and teed into
+  `<run report stem>-transcript.log` beside the report; because the orchestrator
+  inherits `pod_run`'s streams and every stage inherits the orchestrator's, that
+  one pipe captures the whole tree — a stage's `ContractError`, the
+  Attestatores' hold reason, the traceback behind an `EXIT_FATAL`. The same text
+  still reaches the container log as it always did; the transcript is the copy
+  that survives the pod. It is bounded: eight megabytes of head written as it
+  arrives, then the final megabyte kept and appended after a named truncation
+  marker when the child exits. Only the head is durable while the run is live,
+  which is stated in `BoundedTranscript`'s own docstring rather than left to be
+  discovered. The report names the file, and a held or halted report's `detail`
+  now says where the stage's reason is instead of being `null`.
+  **A crashed supervisor leaves a stale tick, not a `running` report.** While
+  the orchestrator child lives, `pod_run` re-journals
+  `<run report stem>-liveness.json` on the same interval the hold loop uses,
+  carrying the child's pid, the tick number and the moment it was last seen. The
+  last write of a normal run says `alive: false`, so a tick reading `alive: true`
+  stamped hours before the hard deadline is a supervisor that stopped while its
+  child was still running — which is what an OOM kill or a container teardown
+  looks like, and is a different fact from a run that finished (GOVERNANCE 2).
+  **The run tree names the commit its code ran at.** `pod_run` forwards the
+  bootstrap plan's own `--repository-commit` to the orchestrator, which passes
+  it to the Door, which seals it into `run.json`. It is the commit `REPOSITORY`
+  checked out *and read back* — a proven fact about the running code, not a
+  re-derivation the orchestrator would have to pay a subprocess for. It is
+  deliberately not one of the run authority's bound fields: a run id names one
+  set of inputs and one configuration, not one build, and binding it would
+  refuse every resume made after a fix. `run.json` therefore names only the
+  commit that *created* the run; the commit that ran each later stage is in the
+  timing journal below.
+  **The clock lives beside the report, not in the run tree.** `pod_run` passes
+  the orchestrator `--stage-timing-journal <run report stem>-timings.json`, and
+  the orchestrator appends one entry per stage invocation: the member's own name
+  (the Door and the Exemplar named apart although they share `1_exemplar/`), the
+  operation, the act a recovery invocation named, start, finish, duration in
+  milliseconds, exit code, and the commit that ran it. Two entries naming two
+  commits is how a resume made at a different commit becomes visible — `run.json`
+  cannot show it, being created once by the Door and never rewritten. The journal
+  is outside the run tree because a run tree is pinned byte-identical across a
+  rerun, a resume, a restored backup and every driver mode, and a clock is by
+  definition not that; a local run that names no journal writes none and its tree
+  is unchanged. Writing it is best effort: a stopwatch never fails a stage.
+  `test_pod_run.py` drives all of it
   against a fakes-only bootstrap and a recorded orchestrator: no chair is
   served, no model is called, no provider is reached.
   **The roster, serving catalogue, and witness declaration are one selection.**
@@ -735,6 +779,20 @@ the durable report records the attempt count and the final close's evidence (not
 intermediate attempt). The deliberately still-running workload child is left to the
 pod's destruction, since the timer is the container's primary process.
 
+**A truncated pod-side report is the expected shape, not a fault.** Every step of a close
+— the DELETE, the status polls, the absence verification, the close record — runs inside
+the container the DELETE is destroying, so in practice the process is killed part-way
+through and the durable artefact left on the volume is the *pre*-close report:
+`bootstrap: running`, `close: null`, `green: false`. That reads exactly like a timer that
+never tried to close anything. Immediately before the first DELETE the timer therefore
+writes `<report stem>-terminating.json` beside its report — the reason, the moment, the
+requested cutoff, and how many attempts were allowed — so the durable trail distinguishes
+"never tried" from "tried and was destroyed mid-verification". The breadcrumb is best
+effort and never blocks a close: a pod's shutdown is not traded for its own paperwork
+(GOVERNANCE 8). **The laptop-side close record is the authoritative verified close**; the
+pod-side report is corroboration, and its being truncated says nothing about whether the
+pod is gone.
+
 Run the fake checks with:
 
 ```sh
@@ -954,9 +1012,38 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   Record, per chair, whether the pod-rendered golden page's witness was read back and
   what `nvidia-smi` reported around the read.
 - [ ] After the run, bring the tree back with `verbatus fetch-run --run-id <id> --into
-  <local root> --network-volume DATACENTER:VOLUME_ID` and record whether every object
-  under `runs/<id>/` listed, fetched and reconciled with the tree's own manifests. The
-  listing and `GetObject` path has never run against a real endpoint.
+  <local root> --network-volume DATACENTER:VOLUME_ID --launch-receipt <saved launch
+  receipt> --evidence-prefix preflight/<this launch's bootstrap report stem>` and record
+  whether every object under `runs/<id>/` listed, fetched and reconciled with the tree's
+  own manifests. The listing and `GetObject` path has never run against a real endpoint.
+  **`--launch-receipt` is what keeps the reports from being left behind:** `runs/<id>/`
+  and `preflight/` come home on their own, and every other launch-scoped record is named
+  with the launch token at a path `fetch-run` will not guess at. The receipt already
+  carries the sealed `docker_start_cmd` those paths were bound into, so the keys are
+  derived from it and printed rather than retyped from a 32-hex token. **`--evidence-prefix`
+  is what makes the evidence attributable:** a volume is reused, so plain `preflight/`
+  brings home every launch's tree with nothing saying which measured this run's chairs.
+- [ ] Record which of the launch's volume paths actually arrived. One launch writes, and
+  only the first two come home without being named:
+
+  | Path on the volume | What it is |
+  |---|---|
+  | `runs/<run id>/` | the run tree: artifacts, blobs, manifests, receipts, `run.json` |
+  | `preflight/<bootstrap report stem>/` | this launch's golden page, serving logs, serving receipts, launch audits, evidence manifests |
+  | `pod-runtime-report-<token>.json` | the pod timer's report: `bootstrap`, `close`, `green`, `close_attempts` |
+  | `pod-runtime-report-<token>-terminating.json` | the pre-DELETE breadcrumb: reason, requested cutoff, attempts allowed |
+  | `<pod-run report stem>-<token>.json` | `pod_run`'s report: state, exit code, detail, orchestrator argv, placement tier, approved and skipped storage roots |
+  | `<pod-run report stem>-<token>-liveness.json` | the liveness tick while the orchestrator lived: pid, tick, last seen, alive |
+  | `<pod-run report stem>-<token>-hold.json` | the hold line after a finished run, to the hard deadline |
+  | `<pod-run report stem>-<token>-timings.json` | one entry per stage invocation: stage, operation, act, start, finish, duration, exit code, commit |
+  | `<pod-run report stem>-<token>-transcript.log` | the orchestrator's and every stage's merged output, bounded head-then-tail |
+  | `<bootstrap report stem>-<token>.json` and its journal | the bootstrap's own report and step journal |
+  | `pod-transfer-journal.json` | which submission rows were verified against target-observed bytes |
+
+  `pod-transfer-journal.json` has no derivation and is not in the `--launch-receipt` set;
+  name it with `--evidence-key` if the launch ran a transfer. Everything above is
+  destroyed with the volume under the retention decision, so anything not fetched is
+  gone (GOVERNANCE 2, 6).
 - [ ] At the first real response, require Spec 05's harness to publish an immutable
   run-tree artifact on the attached network volume before requesting the next response;
   interrupt the harness and read it back. Stage 04 does not own this response path. Repeat

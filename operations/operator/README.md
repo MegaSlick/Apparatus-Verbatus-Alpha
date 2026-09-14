@@ -269,6 +269,40 @@ The receipt states that limit and how many keys the call named — it does not c
 went unfetched when the operator named them — and `objects` and `refusals` say which of
 the named keys arrived. Nothing is left to be inferred from an empty folder.
 
+**You do not have to retype the token.** The launch receipt this computer saved carries
+the sealed `docker_start_cmd`, and that command already names the bound report paths, so
+`--launch-receipt <path>` derives every key from it and prints each one before the fetch.
+The derivation rule, if you want to check it by hand: take each `--report-path` in that
+command (the outer one is the pod timer's, the one nested inside
+`--bootstrap-command-json` is the bootstrap child's), make it relative to the request's
+`volume_mount_path`, and add its siblings — `-terminating.json` for the timer's report,
+and `-hold.json`, `-liveness.json`, `-timings.json` and `-transcript.log` for `pod_run`'s.
+A receipt that cannot be read refuses by name rather than quietly deriving nothing.
+
+**Name this run's own preflight tree.** A volume is reused across launches, so
+`preflight/` accumulates one subtree per launch and a later reader of `evidence/` cannot
+say which one measured the chairs for *this* run. `--evidence-prefix <prefix>`
+(repeatable) replaces the default `preflight` with exactly the prefixes you want;
+this run's is `preflight/<its bootstrap report stem>`, and that stem carries the launch
+token. The receipt records the prefixes the call used, so the choice is in the record.
+
+**What the fetched evidence looks like.** Beside the run tree you will find, per launch:
+the pod timer's report (`pod-runtime-report-<token>.json`, with `bootstrap`, `close` and
+`green`); its `-terminating.json` breadcrumb, written immediately before the DELETE —
+if it is present and the report still says `close: null`, the close *was* attempted and
+the container was destroyed mid-verification, which is the normal shape, not a fault;
+`pod_run`'s report (`state`, `exit_code`, `detail`, `orchestrator_argv`, the measured
+`placement_tier`, and the paths of the three records below); its `-liveness.json` tick
+(`pid`, `tick`, `last_seen`, `alive`) — a tick reading `alive: true` stamped long before
+the hard deadline means the supervisor stopped while its child was still running;
+its `-hold.json` line for the paid idle time after a finished run; its
+`-timings.json` journal, one entry per stage invocation with the duration, the exit code
+and the commit that ran it — two entries naming two commits is how a resume at a
+different commit shows itself, since `run.json` names only the commit that *created* the
+run; and its `-transcript.log`, the orchestrator's and every stage's merged output,
+head-first with a named truncation marker before the final window if it outgrew its
+bound.
+
 ## `spend show`: inspect the reviewed guard
 
 Choose **spend** in the double-click window, or run `verbatus spend show`. It shows a

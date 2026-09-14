@@ -1622,6 +1622,8 @@ def orchestrate(
     submission_manifest: Path | None = None,
     data_gate_policy: Path | None = None,
     placement_tier: str | None = None,
+    stage_timing_journal: Path | None = None,
+    repository_commit: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     if nuda_per_mille and nuda_approval_ref == NUDA_APPROVAL_SUBJECT:
@@ -1675,6 +1677,10 @@ def orchestrate(
         command.extend(("--data-gate-policy", str(data_gate_policy)))
     if placement_tier is not None:
         command.extend(("--placement-tier", placement_tier))
+    if stage_timing_journal is not None:
+        command.extend(("--stage-timing-journal", str(stage_timing_journal)))
+    if repository_commit is not None:
+        command.extend(("--repository-commit", repository_commit))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -5646,6 +5652,103 @@ def test_armarium_refuses_two_established_records_instead_of_selecting_one(tmp_p
     assert result.returncode == 2
     assert "carries 2 Archetypus records" in result.stderr
     assert snapshot(root) == before
+
+
+# --- the commit and the clock the tree could not carry (F098) ------------------
+
+
+COMMIT = "a1b2c3d4" * 5
+
+
+def test_the_run_authority_names_the_commit_the_code_ran_at(tmp_path):
+    """A tree handed to a fresh session could prove its configuration bytes by
+    digest and still not say which code produced them.
+
+    The commit comes from the caller, not from a lookup here: on a pod the
+    bootstrap has already read the running checkout back against the pin, so
+    `pod_run` forwards a proven fact rather than paying for a weaker one.
+    """
+
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy", repository_commit=COMMIT).returncode == 0
+
+    assert RunTree(root, "r").read_run()["repository_commit"] == COMMIT
+
+
+def test_a_run_whose_caller_names_no_commit_records_none_rather_than_a_placeholder(tmp_path):
+    """GOVERNANCE 10: not measured is recorded as not measured, never invented."""
+
+    root = tmp_path / "runs"
+    journal = tmp_path / "timings.json"
+    assert orchestrate(root, "r", "happy", stage_timing_journal=journal).returncode == 0
+
+    assert "repository_commit" not in RunTree(root, "r").read_run()
+    entry = json.loads(journal.read_text(encoding="utf-8"))["entries"][0]
+    assert entry["repository_commit"] is None
+    assert "no --repository-commit was named" in entry["repository_commit_detail"]
+
+
+def test_a_short_or_decorated_revision_is_refused_before_the_door_runs(tmp_path):
+    """A revision that names a commit only against the repository that resolved
+    it is worthless to a fetched tree."""
+
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "happy", repository_commit="a1b2c3d")
+
+    assert result.returncode == 2
+    assert "is not a full lowercase" in result.stderr
+    assert not (root / "r").exists()
+
+
+def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tmp_path):
+    """Outside the tree deliberately: a run tree is pinned byte-identical across a
+    rerun, a resume and a restored backup, and a clock is not that. `pod_run` names
+    this journal beside its report on the volume, where the transcript and the
+    liveness tick already live."""
+
+    root = tmp_path / "runs"
+    journal = tmp_path / "timings" / "pod-run-report-timings.json"
+
+    assert (
+        orchestrate(
+            root, "r", "happy", stage_timing_journal=journal, repository_commit=COMMIT
+        ).returncode
+        == 0
+    )
+
+    record = json.loads(journal.read_text(encoding="utf-8"))
+    assert record["schema"] == "stage-timing-journal.v1"
+    assert record["run_id"] == "r"
+    stages = [entry["stage"] for entry in record["entries"]]
+    # Every program the automatic sequence invokes, the Door and the Exemplar
+    # named apart although they share `1_exemplar/`.
+    assert stages[:2] == ["door", "exemplar"]
+    assert stages[-1] == "armarium"
+    for entry in record["entries"]:
+        assert entry["exit_code"] == 0
+        assert entry["duration_ms"] >= 0
+        assert entry["operation"] == "run"
+        assert entry["started_at"].endswith("Z") and entry["finished_at"].endswith("Z")
+        assert entry["repository_commit"] == COMMIT
+        assert entry["repository_commit_detail"] is None
+
+
+def test_naming_no_timing_journal_leaves_the_run_tree_exactly_as_it_was(tmp_path):
+    """The journal is opt-in precisely so the byte-identity checks below still
+    measure the same tree."""
+
+    with_journal = tmp_path / "with"
+    without = tmp_path / "without"
+    assert (
+        orchestrate(
+            with_journal, "r", "happy", stage_timing_journal=tmp_path / "timings.json"
+        ).returncode
+        == 0
+    )
+    assert orchestrate(without, "r", "happy").returncode == 0
+
+    assert snapshot(with_journal) == snapshot(without)
+    assert not (with_journal / "r" / "timings.json").exists()
 
 
 # --- 2. Repeating the identical command changes nothing ------------------------

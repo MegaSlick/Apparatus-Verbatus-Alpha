@@ -128,6 +128,9 @@ def make_approval_record(**overrides):
     return record
 
 
+COMMIT = "a1b2c3d4" * 5
+
+
 def make_recensor_partition_receipt():
     return build_recensor_partition_receipt(
         run_id="r1",
@@ -1961,6 +1964,29 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
         assert any(path == prefix or path.startswith(prefix) for prefix in scope), (
             f"{path} is written by the store but falls outside the inventory scope"
         )
+
+
+# --- The commit and the clock a tree used to carry nowhere (F098) --------------
+
+
+def test_a_run_authority_seals_the_commit_the_code_that_created_it_ran_at(tmp_path):
+    """A fetched tree could prove its config bytes and not say which code made them."""
+
+    tree = make_run(tmp_path, repository_commit=COMMIT)
+
+    assert tree.read_run()["repository_commit"] == COMMIT
+
+
+def test_an_authority_without_a_commit_is_still_a_whole_authority(tmp_path):
+    """A source export with no version control records no commit, not a placeholder."""
+
+    assert "repository_commit" not in make_run(tmp_path).read_run()
+
+
+@pytest.mark.parametrize("value", ["a1b2c3d", "A" * 40, "", COMMIT + "-dirty"])
+def test_a_commit_that_is_not_a_full_lowercase_revision_is_refused(tmp_path, value):
+    with pytest.raises(SchemaRefusal, match="forty lowercase hexadecimal"):
+        make_run(tmp_path, repository_commit=value)
 
 
 def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
