@@ -1727,10 +1727,12 @@ def test_upload_refuses_a_bad_sealed_manifest_as_refused_not_partial(tmp_path: P
     A malformed or non-canonical manifest raises `SubmitRefusal` (a
     `ContractError`) from inside that call, which the surrounding
     `(TransferFailure, VolumeTransferRefusal, OSError, ValueError)` tuple does
-    not catch -- previously an unclassified crash. It must land as a refused
-    manifest (`UPLOAD_MANIFEST_MISSING`), never `UPLOAD_PARTIAL`: nothing was
-    transferred, so reporting a partial transfer would be a false statement
-    about what happened.
+    not catch -- previously an unclassified crash. It must land as
+    `UPLOAD_REFUSED`: never `UPLOAD_PARTIAL`, because nothing was transferred
+    and reporting a partial transfer would be a false statement about what
+    happened, and not `UPLOAD_MANIFEST_MISSING` either, whose copy sends the
+    operator to find a record that is sitting readable at the path they named.
+    The receipt binds the digest of the record that was refused.
     """
 
     surface = _surface(tmp_path)
@@ -1743,9 +1745,13 @@ def test_upload_refuses_a_bad_sealed_manifest_as_refused_not_partial(tmp_path: P
     with pytest.raises(OperatorError) as refusal:
         surface.upload(source, sealed_manifest=manifest)
 
-    assert refusal.value.code is ErrorCode.UPLOAD_MANIFEST_MISSING
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
     payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
     assert payload["state"] == "manifest-refused"
+    assert (
+        payload["submission_manifest_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    )
+    assert payload["zero_gpu_hours"] is True
     # Nothing was transferred: the fixture volume directory may already exist
     # (it is prepared before the manifest is parsed), but no object may be in it.
     fixture_volume = surface.state_root / "fixture-volume"
@@ -5144,6 +5150,89 @@ def test_fetch_run_refuses_a_hostilely_nested_manifest_instead_of_crashing(
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
 
     assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+
+
+def test_fetch_run_records_a_memory_error_from_the_walk_instead_of_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G13: the handler's `MemoryError` arm is the one that catches what a size
+    ceiling did not. A run tree is untrusted input, the walk reads files whole,
+    and an allocation that fails anywhere inside it must still leave a receipt
+    and `FETCH_RUN_FAILED` rather than an unclassified crash.
+    """
+
+    _volume, reader = _volume_run(tmp_path)
+
+    def _starved(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise MemoryError("cannot allocate the manifest")
+
+    monkeypatch.setattr(surface_module, "_fetched_manifest", _starved)
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    payload = surface.receipts.read(surface._descriptor_receipt("fetch-run"))["payload"]
+    assert payload["state"] == "partial"
+    assert "cannot allocate the manifest" in payload["detail"]
+
+
+def test_fetch_run_refuses_a_rebuildable_index_that_is_not_a_readable_record(
+    tmp_path: Path,
+) -> None:
+    """G13: a stage index or derived receipt is read whole and parsed too.
+
+    Two ways it can defeat a named refusal, and the same arm must answer both:
+    nesting thousands deep, which breaks the parser rather than any size bound,
+    and sheer length, which `MAX_FETCH_OBJECT_BYTES` alone does not bound to
+    anything a *record* may be.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    index = volume / "runs" / "brought-home" / "2_designator" / "index.json"
+    index.write_bytes(b'{"extra":' + b"[" * 10_000 + b"]" * 10_000 + b"}")
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as nested:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local-nested", reader=reader)
+
+    assert nested.value.code is ErrorCode.FETCH_RUN_FAILED
+    payload = surface.receipts.read(surface._descriptor_receipt("fetch-run"))["payload"]
+    assert "index.json is not readable JSON" in payload["detail"]
+
+    # The size arm, measured rather than assumed: the ceiling is lowered to a
+    # number this index is over and every genuine record in the fixture tree is
+    # under, so what refuses is the index and not the manifest beside it.
+    ceiling = 4096
+    index.write_bytes(b"[" + b'"x",' * 1024 + b'"x"]')
+    manifest_path = volume / "runs" / "brought-home" / "2_designator" / "manifest.json"
+    assert index.stat().st_size > ceiling
+    assert manifest_path.stat().st_size < ceiling
+    surface = _surface(tmp_path)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(surface_module, "MAX_RECORD_READ_BYTES", ceiling)
+        with pytest.raises(OperatorError) as oversized:
+            surface.fetch_run(run_id="brought-home", into=tmp_path / "local-big", reader=reader)
+
+    assert oversized.value.code is ErrorCode.FETCH_RUN_FAILED
+    payload = surface.receipts.read(surface._descriptor_receipt("fetch-run"))["payload"]
+    assert "limit for a JSON record" in payload["detail"]
+
+
+def test_the_tree_read_ceiling_stays_below_what_fetch_run_will_pull() -> None:
+    """G13, and the reason this diff needed a second pass: a read ceiling set
+    above every other ceiling on the path it guards can never fire there.
+
+    `fetch_run` pulls objects bounded by `MAX_FETCH_OBJECT_BYTES`, so a tree
+    read bound above that number is decoration on this path, not a bound. The
+    record ceiling is the tighter of the two and must stay that way.
+    """
+
+    from common.runtree import store as runtree_store
+
+    assert runtree_store._MAX_TREE_READ_BYTES < surface_module.MAX_FETCH_OBJECT_BYTES
+    assert runtree_store.MAX_RECORD_READ_BYTES <= runtree_store._MAX_TREE_READ_BYTES
 
 
 def test_fetch_run_never_overwrites_a_local_file_that_differs(tmp_path: Path) -> None:

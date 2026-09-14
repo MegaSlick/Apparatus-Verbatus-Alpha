@@ -30,12 +30,13 @@ from typing import Any, Callable, Iterator, Protocol, Sequence
 
 from common.chairs.config import load_models_toml
 from common.contracts.canonical import canonical_bytes, digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, validate_run_id
 from common.contracts.stages import ARMARIUM, WRITING_DIRECTORIES
 from common.runtree.store import (
     DOOR_MANIFEST_FILE,
     MANIFEST_FILE,
+    MAX_RECORD_READ_BYTES,
     RECEIPTS_DIR,
     RUN_FILE,
     RunTree,
@@ -750,12 +751,28 @@ class OperatorSurface:
             # `submission_door.load_manifest` before it transfers a single
             # file, and a malformed or non-canonical manifest raises
             # `SubmitRefusal` (a `ContractError`), not one of the transfer
-            # exceptions below. Nothing was sent, so this is a refused
-            # manifest -- the same shape as `UPLOAD_MANIFEST_MISSING` above --
-            # never `UPLOAD_PARTIAL`, which would tell an operator that some
-            # files were verified when none were touched (G13).
-            self._record_failure("upload", "manifest-refused", str(error))
-            raise OperatorError(ErrorCode.UPLOAD_MANIFEST_MISSING, detail=str(error)) from error
+            # exceptions below. Nothing was sent, so this is never
+            # `UPLOAD_PARTIAL`, which would tell an operator that some files
+            # were verified when none were touched (G13).
+            #
+            # `UPLOAD_REFUSED`, not `UPLOAD_MANIFEST_MISSING`: the record is
+            # present and readable at the path the operator named, and it was
+            # refused for what it says. Sending them to "create or locate the
+            # sealed submission record" would send them looking for a file
+            # sitting where they left it, while `UPLOAD_REFUSED` says exactly
+            # what happened -- nothing transferred, no pod started, correct the
+            # named file -- and is what `submit_and_upload` already reports for
+            # a door refusal of the same record.
+            self._record_failure(
+                "upload",
+                "manifest-refused",
+                str(error),
+                bound={
+                    "submission_manifest_sha256": manifest_sha256,
+                    "zero_gpu_hours": True,
+                },
+            )
+            raise OperatorError(ErrorCode.UPLOAD_REFUSED, detail=str(error)) from error
         except (TransferFailure, VolumeTransferRefusal, OSError, ValueError) as error:
             receipt = self._write_action(
                 "upload",
@@ -2067,7 +2084,16 @@ class OperatorSurface:
                 )
             raise OperatorError(failure_code, detail=detail) from error
 
-    def _record_failure(self, action: str, state: str, detail: str) -> None:
+    def _record_failure(
+        self, action: str, state: str, detail: str, *, bound: dict[str, Any] | None = None
+    ) -> None:
+        """Write the failure receipt, binding whatever provenance the caller already has.
+
+        `bound` carries facts the failure was already holding when it happened
+        -- a digest, a zero-spend statement -- into the receipt, because
+        GOVERNANCE 6 wants provenance to travel with the record and a fact
+        computed and then dropped is a fact the operator cannot read back.
+        """
         try:
             self._write_action(
                 action,
@@ -2075,6 +2101,7 @@ class OperatorSurface:
                     "summary": f"{action.capitalize()} did not complete: {state}.",
                     "state": state,
                     "detail": detail,
+                    **(bound or {}),
                 },
                 descriptor_action=action,
             )
@@ -3252,6 +3279,13 @@ def _fetch_run_tree(
                 # JSON, digested into the receipt, verified by the tree's own
                 # readers when a verb next opens it.
                 try:
+                    size = target.stat().st_size
+                    if size > MAX_RECORD_READ_BYTES:
+                        raise FetchRunRefusal(
+                            f"{relative} is {size} bytes, above the "
+                            f"{MAX_RECORD_READ_BYTES}-byte limit for a JSON record; it is "
+                            "not readable here as one."
+                        )
                     json.loads(target.read_bytes().decode("utf-8"))
                 except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     # `RecursionError` because nesting, not length, is what breaks
@@ -3475,11 +3509,20 @@ def _fetch_or_compare(reader: RunObjectReader, key: str, target: Path) -> tuple[
 
 def _fetched_manifest(tree: RunTree, relative: str) -> dict[str, Any]:
     try:
-        manifest = json.loads(tree.read_bytes(relative).decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError, OSError) as error:
+        # The record ceiling by name, not the tree's blob-sized default: this
+        # file came off a volume and is about to be parsed, and `json.loads`
+        # costs several times the bytes again in parsed objects, so a manifest
+        # the size an *image* may legitimately be is already too large to read
+        # here (G13). Without the explicit bound, the ceiling that does apply
+        # sits above `MAX_FETCH_OBJECT_BYTES` and can never fire on this path.
+        manifest = json.loads(
+            tree.read_bytes(relative, max_bytes=MAX_RECORD_READ_BYTES).decode("utf-8")
+        )
+    except (UnicodeDecodeError, ValueError, RecursionError, OSError, SchemaRefusal) as error:
         # `RecursionError` because nesting, not length, is what breaks the JSON
         # parser -- a hostile `manifest.json` (~10k nesting suffices) is otherwise
-        # a crash on the fetch-run path rather than this named refusal (G13).
+        # a crash on the fetch-run path rather than this named refusal; and
+        # `SchemaRefusal` because that is what the ceiling above raises (G13).
         raise FetchRunRefusal(f"{relative} is not a readable manifest: {error}") from error
     if (
         not isinstance(manifest, dict)

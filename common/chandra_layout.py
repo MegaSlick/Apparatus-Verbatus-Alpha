@@ -506,13 +506,14 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
         return None, f"expected 4 space-separated components, found {len(parts)}"
     if not all(_BBOX_COMPONENT.fullmatch(part) for part in parts):
         return None, "components are not plain decimal integers"
-    try:
-        box = [int(part) for part in parts]
-    except ValueError:
-        # Belt-and-suspenders on top of the digit-count bound above: any
-        # component `int()` still refuses becomes this function's named
-        # refusal, never an escaping exception (G13).
-        return None, "components are not plain decimal integers"
+    # `int()` is total here and needs no guard of its own: every part has just
+    # been `fullmatch`ed against `_BBOX_COMPONENT`, so it is a sign and at most
+    # `_MAX_BBOX_COMPONENT_DIGITS` digits -- far under CPython's 4,300-digit
+    # integer-string limit, which is the only way this call can raise. A guard
+    # here would be code no test can reach, implying a failure mode the regex
+    # has already removed; the bound above is what keeps that true, and the
+    # regression test measures it (G13).
+    box = [int(part) for part in parts]
     if not all(0 <= component <= BBOX_SCALE for component in box):
         return None, f"components outside [0, {BBOX_SCALE}]"
     if box[2] <= box[0] or box[3] <= box[1]:

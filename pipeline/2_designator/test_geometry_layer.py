@@ -375,6 +375,36 @@ def test_chandra_custody_refuses_a_reference_whose_blob_is_gone(removed):
         )
 
 
+def test_chandra_custody_retains_a_pathologically_nested_response_unparsed():
+    """G13, the write door's half: `retain_chandra_response` asks
+    `_is_custody_binding` whether the bytes it was handed are themselves a
+    canonical binding, and that question is answered by `json.loads`.
+
+    A response nested ~10k deep makes that question raise `RecursionError`
+    rather than return an answer. The predicate must read that as "not a
+    binding" -- which is true; a binding is a closed four-field object -- and
+    the response must be retained as the opaque custody it is, never parsed and
+    never a crash on the Designator's live structure pass.
+    """
+    tree = _FixtureTree()
+    nested = (b"[" * 10_000) + (b"]" * 10_000)
+    stored = retain_chandra_response(
+        tree, nested, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+    )
+
+    assert (
+        read_retained_chandra_response(
+            tree,
+            stored["response_ref"],
+            RECEIPT,
+            stored["custody_ref"],
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
+        == nested
+    )
+
+
 def test_chandra_custody_refuses_a_pathologically_nested_binding():
     """G13: a well-formed but ~10k-deep custody binding blob is this boundary's
     named refusal, never an escaping `RecursionError`.

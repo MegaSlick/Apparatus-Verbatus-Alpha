@@ -108,17 +108,44 @@ _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 _MAX_MANIFEST_ARTIFACT_BYTES: Final = 64 * 1024 * 1024
 _MAX_MANIFEST_WALK_ENTRIES: Final = 100_000
 # The same reasoning applies to every other file this store reads whole into
-# memory -- `run.json`, a retained response blob, a custody binding, an
-# arbitrary artifact fetched back off a volume -- not only the manifest walk:
-# `Path.read_bytes()` has no ceiling of its own, so a run tree that is damaged,
-# corrupted in transit, or genuinely hostile (a fetched run, a resumed one)
-# could otherwise be read whole before anything here gets a chance to refuse it
-# (G13, "read_bytes is unbounded"). Set well above any legitimate artifact --
-# the largest ordinary artifact is a sealed page image bounded by
-# `common.imaging.MAX_PIXELS`, not a manifest record -- so this never refuses
-# real data; it only turns an unbounded read into a named refusal instead of
-# `MemoryError`.
-_MAX_TREE_READ_BYTES: Final = 512 * 1024 * 1024
+# memory -- `run.json`, an index, a receipt, a retained response blob, a custody
+# binding, an arbitrary artifact fetched back off a volume -- not only the
+# manifest walk: `Path.read_bytes()` has no ceiling of its own, so a run tree
+# that is damaged, corrupted in transit, or genuinely hostile (a fetched run, a
+# resumed one) could otherwise be read whole before anything here gets a chance
+# to refuse it (G13, "read_bytes is unbounded").
+#
+# Two ceilings, because a run tree holds two kinds of file and one number cannot
+# describe both honestly.
+#
+# `MAX_RECORD_READ_BYTES` bounds a JSON record -- a manifest, an index, a
+# receipt, an artifact envelope. It is the same 64 MiB the manifest walk already
+# applies to every artifact it reads, and it is generous at that size rather
+# than asserted to be: the largest legitimate record is a stage manifest, and
+# `_MAX_MANIFEST_WALK_ENTRIES` (100_000) entries of a few hundred bytes each is
+# tens of megabytes. Public, because a record can be read through `read_bytes`
+# by a caller outside this module -- `operations/operator/surface.py` reads a
+# `manifest.json` that just arrived from a volume -- and such a caller must be
+# able to ask for the record-sized ceiling by name instead of settling for the
+# blob-sized one.
+#
+# `_MAX_TREE_READ_BYTES` bounds everything else, and what else means here is a
+# page blob. Blobs are deliberately not read by the manifest walk (see
+# `_walk_blobs`: "they may be full page images"), so nothing else in this module
+# bounds them. The value is calibrated from the bounds the pipeline already puts
+# on an image rather than guessed: an admitted source is refused above
+# `MAX_SOURCE_BYTES` (64 MiB) and a rendered page is bounded to
+# `MAX_PNG_DECODED_BYTES` (128 MiB) of decoded pixels, both in
+# `pipeline/1_exemplar/image_formats.py`. 192 MiB is half again the larger of
+# those, and it is deliberately *below* `MAX_FETCH_OBJECT_BYTES` (256 MiB, in
+# `operations/operator/surface.py`), which is the ceiling on every object the
+# fetch verb pulls off a volume: a read ceiling set above every other ceiling on
+# the path where untrusted bytes actually arrive can never fire there, which is
+# what an audit found the first value (512 MiB) did. A test in
+# `operations/operator/test_surface.py` pins that ordering so neither number can
+# drift past the other unnoticed.
+MAX_RECORD_READ_BYTES: Final = _MAX_MANIFEST_ARTIFACT_BYTES
+_MAX_TREE_READ_BYTES: Final = 192 * 1024 * 1024
 _DIRECTORY_OPEN_FLAGS: Final = (
     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 )
@@ -598,8 +625,15 @@ class RunTree:
                     "cannot legitimately differ between two passes over the same run"
                 )
             try:
-                if target.read_bytes() == data:
+                # Bounded by the bytes being published: a file longer than
+                # `data` cannot be the same receipt, and reading it whole to
+                # discover that is exactly the unbounded read this store no
+                # longer performs. A refusal here means "longer, so different",
+                # which is what a mismatch means -- rewrite it (G13).
+                if _read_bytes_bounded(target, max_bytes=len(data)) == data:
                     return PublishResult(relative, reused=True)
+            except SchemaRefusal:
+                pass
             except FileNotFoundError:
                 # Gone between `exists()` above and here. Nothing to reuse and
                 # nothing to refuse: fall through and publish it, which is what
@@ -705,7 +739,14 @@ class RunTree:
             _atomic_create(target, data)
         except FileExistsError:
             try:
-                existing = target.read_bytes()
+                # Bounded by the bytes being published, for the reason given in
+                # `_publish_recensor_partition_receipt`: a file longer than
+                # `data` is already different, and this is the generic publish
+                # path, reached for every artifact -- including one written into
+                # a tree that was fetched or resumed (G13).
+                existing: bytes | None = _read_bytes_bounded(target, max_bytes=len(data))
+            except SchemaRefusal:
+                existing = None
             except OSError as error:
                 raise IncompatibleReuse(
                     f"{relative} appeared while it was being published and could not be read; "
@@ -800,8 +841,16 @@ class RunTree:
             )
         return record
 
-    def read_bytes(self, relative_path: str) -> bytes:
-        return _read_bytes_bounded(self.resolve(relative_path))
+    def read_bytes(self, relative_path: str, *, max_bytes: int | None = None) -> bytes:
+        """One file's bytes, under the blob-sized tree ceiling unless told otherwise.
+
+        A caller that knows it is reading a JSON record rather than a page blob
+        passes `max_bytes=MAX_RECORD_READ_BYTES`, so the bytes it is about to
+        hand to `json.loads` -- which costs several times their size again in
+        parsed objects -- are bounded by what a record can legitimately be and
+        not by what an image can (G13).
+        """
+        return _read_bytes_bounded(self.resolve(relative_path), max_bytes=max_bytes)
 
     def has_artifact(self, stage: str, kind: str, artifact_id: str) -> bool:
         return self.resolve(self.artifact_path(stage, kind, artifact_id)).exists()
@@ -1684,12 +1733,19 @@ def _read_bytes_bounded(path: Path, *, max_bytes: int | None = None) -> bytes:
     """Read one file with a hard byte ceiling instead of `Path.read_bytes()`'s none.
 
     Checked twice -- once from `fstat` before the read, once against what was
-    actually read -- because a file on disk can grow between the two. Every
-    call in this module that used to read a run-tree file whole now routes
-    through here (`read_bytes`, `read_run` via `_read_json`/
-    `_read_json_with_bytes`), so a damaged, corrupted-in-transit, or hostile
-    run tree gets this module's own named refusal instead of `MemoryError`
-    (G13).
+    actually read -- because a file on disk can grow between the two.
+
+    Four call sites, each asking for the ceiling its own bytes deserve, so that
+    a damaged, corrupted-in-transit, or hostile run tree gets this module's own
+    named refusal instead of `MemoryError` (G13): `read_bytes`, at the
+    blob-sized default or at whatever its caller names; `_read_json_with_bytes`
+    (and `read_run`, `read_artifact`, the index and receipt readers through it)
+    at `MAX_RECORD_READ_BYTES`; and the two publish-time reuse comparisons
+    (`_publish_bytes`, `_publish_recensor_partition_receipt`) at the length of
+    the bytes being published, since a longer file is already a different one.
+    `_read_manifest_artifact` is the one whole-file read that does not come
+    through here: it needs its own no-follow descriptor chain, and applies the
+    same record ceiling itself.
 
     `max_bytes` reads `_MAX_TREE_READ_BYTES` at call time rather than as an
     ordinary default parameter, so a test can still monkeypatch the module
@@ -1739,12 +1795,13 @@ def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
     # differently; one tuple-returning body survives, under this name, and it
     # decodes and returns the exact same bytes a caller may later digest.
     try:
-        data = _read_bytes_bounded(path)
+        # Every path through here is a JSON record, so the record ceiling, not
+        # the blob one. A `SchemaRefusal` from the ceiling is already this
+        # module's own named refusal and needs no arm of its own: it derives
+        # from `ContractError`, not from anything the tuple below names, so it
+        # propagates unwrapped.
+        data = _read_bytes_bounded(path, max_bytes=MAX_RECORD_READ_BYTES)
         return json.loads(data.decode("utf-8")), data
-    except SchemaRefusal:
-        # Already this module's own named refusal (a size-ceiling case from
-        # `_read_bytes_bounded`) -- re-raised as is, not re-wrapped.
-        raise
     except (OSError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
 
