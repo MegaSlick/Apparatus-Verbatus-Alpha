@@ -1129,7 +1129,18 @@ against a real submission by name, before touching `--act` or
 `--recovery-request`, rather than let the generic fixture-accessor refusal
 (`common/stage.py`) stand in for it. Bounded recovery from a real submission
 is not built; when it is, this stage will need a source for a recrop's
-geometry that a real page can supply. The request must be the exact current, digest-checked Recensor
+geometry that a real page can supply.
+
+**Nothing publishes a request this refusal would meet any more.** Since findings
+F068/F083, `pipeline/5_recensor/run.py` gates its fallback-recrop publication on
+the ingress route (`recrop_dispatchable`) and holds the act for review instead,
+and `pipeline/orchestrator/run.py` screens the same route before it dispatches
+anything. So this refusal is a backstop over a run tree written before that gate
+landed, and it says so: a request nothing can answer used to end the run fatally
+with no export at all, which is the failure the Recensor-side gate exists to
+prevent, not one this stage could fix by answering.
+
+The request must be the exact current, digest-checked Recensor
 request for that act, its next ordinal, its Perlectio evidence, and the
 run-bound `config/recovery.toml` policy, including its reconciled total and
 per-kind budget counters. This stage fulfils `fallback-recrop` only; it refuses a
