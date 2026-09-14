@@ -2206,6 +2206,15 @@ def _publish_page_fallback(
     page_bounds = {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]}
     act_id = derive_minted_act_id(page_id, "page-fallback", page_bounds)
     act_key = fallback_page_act_key(ordinal)
+    # A page's own fallback act never claims against its own grid. The tiles are
+    # cut with `origin == "proposal"`, exactly like a declared crop, so a second
+    # pass over a tree that already holds them would subtract them from
+    # themselves, find no uncovered pixel, mint nothing, and seal a denominator
+    # one act shorter than the crops already on disk -- a `complete` run missing
+    # a page (GOVERNANCE 2, GOALS 1). Filtered by act identity rather than by
+    # origin, so the declared crops on this page are still subtracted and no
+    # pixel is read under two act identities.
+    claimed = [claim for claim in claimed if claim["act_id"] != act_id]
     tiles = _unclaimed_fallback_tiles(analysis["groups"], claimed)
     if not tiles:
         return None

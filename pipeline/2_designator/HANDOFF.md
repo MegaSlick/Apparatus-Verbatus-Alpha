@@ -804,6 +804,29 @@ later resume, and therefore the only one under which the seal can republish
 byte for byte. The seal is not where a reader learns which session answered a
 given page; each page's own records are.
 
+What "republishes byte for byte" rests on differs by disposition, and only a
+`detected` page's artifacts are a function of the answer's own rectangles. A
+`fallback-tiles` page is cut from the grid its sealed dimensions and thresholds
+determine, and those tiles are clipped against the proposal regions the tree
+already holds — which include, on a resume, the page's own tiles from the first
+pass. `_publish_page_fallback` therefore excludes the page's own fallback act
+from that clip; without it the second pass subtracts the tiles from themselves,
+mints no act, and seals a denominator missing a page whose crops are on disk —
+`complete` over a lost act, which GOVERNANCE 2 and GOALS 1 both forbid, and
+which the immutable seal would then make permanent. A `held` page cut nothing
+and has nothing to reproduce. All three dispositions are resumed under test.
+
+What a resume does **not** check is that the build asking for the remaining
+pages is the build that answered the earlier ones. `_sealed_structure_answer`
+re-validates the reused serving provenance — the chair pin, the adapter recipe
+and the sealed decoding config all refuse if they moved — but not the answer's
+`prompt_sha256`, `prompt_version`, `text_view` or `vendor`. A resume across a
+prompt-version or vendor-pin bump therefore marks one run out under two
+prompts. Each answer record names the prompt it was given, so the mixture is
+visible per page and nothing is lost; nothing refuses it or reports it at run
+level. The Perlector's own resume guard has the same shape, so closing this is
+a cross-stage decision rather than a Designator one.
+
 **Minting.** For each rectangle in reading order: validated against the page,
 minted once per distinct rectangle (a repeat is a `duplicate-rectangle` finding
 on the answer record naming both ordinals — the class-and-bounds identity has

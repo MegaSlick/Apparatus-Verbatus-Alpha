@@ -1199,3 +1199,135 @@ def test_an_interrupted_live_pass_keeps_its_answers_and_asks_only_for_the_rest(
     # every act the happy single-session pass mints, sealed and reconcilable.
     acts = expected_acts(open_at(run_root, designated.catalogue, ATTESTATORES))
     assert sorted(row["act_key"] for row in acts) == sorted(ACT_KEYS)
+
+
+def blank_second_page_answers() -> list[ScriptedAnswer]:
+    """Page 1 answered with its acts; page 2 declared blank, so page 2 is tiled.
+
+    The `fallback-tiles` disposition, which the two resume tests above do not
+    reach: `happy_structure_answers()` puts `detected` on both pages, and a
+    fallback page's seal row is built from the page's grid and from what the
+    tree already holds rather than from the answer alone, so it is the
+    disposition a resume can lose.
+    """
+    return [
+        scripted_structure_answer(PAGE_ONE_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
+        scripted_structure_answer(
+            (),
+            PAGE_WIDTH,
+            PAGE_HEIGHT,
+            body=structure_blank_page_body(),
+            expect_proposals=(),
+        ),
+    ]
+
+
+def test_a_resumed_live_pass_keeps_the_page_it_fell_back_to_tiles_on(designated, tmp_path):
+    """The disposition a blank or unanswerable page gets, resumed.
+
+    A fallback page's crops are cut with `origin == "proposal"`, the same
+    origin the declared rectangles carry, and the tiles are clipped against
+    every proposal region already on the page. Left alone, the second pass
+    therefore subtracts the page's own tiles from themselves, finds nothing
+    uncovered, mints no act, and seals a denominator one act shorter than the
+    one the first pass sealed — an immutable `proposal-seal` that no longer
+    accounts for crops sitting on disk, which is GOVERNANCE 2 and invariant 8
+    both. The page's own fallback act is excluded from its claim set for
+    exactly that reason, so the grid is the same on every pass.
+    """
+    run_root = fresh_tree(designated, tmp_path)
+    _world, exit_code = mark_out(
+        designated, run_root, tmp_path / "world-first", blank_second_page_answers()
+    )
+    assert exit_code == EXIT_COMPLETE
+    before = designator_state(run_root)
+    assert set(seal_rows(run_root)) == {"proposal:1:0", "proposal:1:1", "page-fallback:2"}
+
+    world, exit_code = mark_out(
+        designated,
+        run_root,
+        tmp_path / "world-second",
+        [
+            scripted_structure_answer(PAGE_ONE_REDRAWN, PAGE_WIDTH, PAGE_HEIGHT),
+            scripted_structure_answer(PAGE_TWO_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
+        ],
+    )
+    assert exit_code == EXIT_COMPLETE
+    assert world.endpoint is None, "a resumed pass with nothing left to ask started a chair"
+    assert designator_state(run_root) == before
+    acts = expected_acts(open_at(run_root, designated.catalogue, ATTESTATORES))
+    assert sorted(row["act_key"] for row in acts) == [
+        "page-fallback:2",
+        "proposal:1:0",
+        "proposal:1:1",
+    ]
+
+
+def test_a_pass_interrupted_after_its_fallback_tiles_seals_them_on_the_resume(
+    designated, tmp_path, monkeypatch
+):
+    """The crash between the tiles and the seal, which used to seal a short run.
+
+    Page 2's tiles and their crops reach disk, then the pass dies before the
+    `proposal-seal` exists. The resume has to recompute the same grid and reach
+    the same denominator: a seal that silently dropped `page-fallback:2` would
+    exit 0 over a run whose next stage refuses it as an unaccounted act, and
+    the seal's own immutability would make every later pass reproduce the same
+    short denominator (GOVERNANCE 2, GOALS 1).
+    """
+    run_root = fresh_tree(designated, tmp_path)
+    world = StructureWorld(
+        designated.catalogue, tmp_path / "world-first", blank_second_page_answers()
+    )
+
+    def die(*_args, **_kwargs):
+        raise RuntimeError("interrupted between the fallback tiles and the seal")
+
+    monkeypatch.setattr(designator, "_publish_page_conservation", die)
+    with pytest.raises(RuntimeError):
+        run_in_process(
+            designator,
+            run_root,
+            designated.catalogue,
+            placement_tier=TIER,
+            serving_factory=world.factory,
+        )
+    monkeypatch.undo()
+    (fallback,) = artifacts(run_root, DESIGNATOR, "page-fallback")
+    assert fallback["payload"]["page_ordinal"] == 2
+    assert not artifacts(run_root, DESIGNATOR, "proposal-seal"), "the seal was already written"
+
+    _world, exit_code = mark_out(
+        designated, run_root, tmp_path / "world-second", blank_second_page_answers()
+    )
+    assert exit_code == EXIT_COMPLETE
+    assert set(seal_rows(run_root)) == {"proposal:1:0", "proposal:1:1", "page-fallback:2"}
+    acts = expected_acts(open_at(run_root, designated.catalogue, ATTESTATORES))
+    assert sorted(row["act_key"] for row in acts) == sorted(seal_rows(run_root))
+
+
+def test_a_resumed_live_pass_keeps_the_page_it_held(designated, tmp_path):
+    """The third disposition, resumed: a held page stays held and is never re-asked.
+
+    A hold is the one outcome a resume could plausibly be read as an invitation
+    to retry, and it is not one (GOVERNANCE 7, GOVERNANCE 11: a bad answer is
+    flagged, never re-rolled until it looks better). The second pass is handed
+    a chair scripted to answer page 2 cleanly; it never reaches the script,
+    because the held answer is already on disk. The run exits `EXIT_HELD` both
+    times over a byte-identical tree.
+    """
+    run_root = fresh_tree(designated, tmp_path)
+    held_answers = [
+        scripted_structure_answer(PAGE_ONE_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
+        scripted_structure_cut_off(PAGE_TWO_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
+    ]
+    _world, exit_code = mark_out(designated, run_root, tmp_path / "world-first", held_answers)
+    assert exit_code == EXIT_HELD
+    before = designator_state(run_root)
+
+    world, exit_code = mark_out(
+        designated, run_root, tmp_path / "world-second", happy_structure_answers()
+    )
+    assert exit_code == EXIT_HELD
+    assert world.endpoint is None, "a resumed pass re-asked a page it had already held"
+    assert designator_state(run_root) == before

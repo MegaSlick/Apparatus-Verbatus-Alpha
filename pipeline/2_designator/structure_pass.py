@@ -1066,11 +1066,28 @@ def sealed_page_answer(record: Mapping[str, Any]) -> PageAnswer:
     one page into the resume (GOVERNANCE 4: evidence is never overwritten).
 
     Reading the record back instead is what makes the rest of the pass
-    idempotent. Everything downstream of an answer -- the page's status, its
-    crops, its act groups, its seal rows -- is a function of the answer's own
-    rectangles and of the provenance the answer carries, so a page rebuilt from
-    its sealed record republishes byte-identical artifacts and the store reuses
-    them.
+    idempotent: a page rebuilt from its sealed record republishes
+    byte-identical artifacts and the store reuses them. What that rests on
+    differs by disposition, and only the first of the three is a function of
+    the answer's rectangles alone:
+
+    * `detected` -- the page's status, crops, act groups and seal rows all come
+      from the rectangles this record carries and the provenance it names.
+    * `fallback-tiles` -- the answer decides only *that* the page is tiled. The
+      grid comes from the page's own sealed dimensions and thresholds, and the
+      tiles are then clipped against the proposal regions already in the tree,
+      so this row reproduces only because the Designator's
+      `_publish_page_fallback` excludes the page's own fallback act from that
+      clip. Without that exclusion a second pass subtracts the tiles from
+      themselves, mints nothing, and seals a denominator missing a page whose
+      crops are on disk.
+    * `held` -- no crop was cut, so there is none to reproduce. The page's
+      status names the reason code this record carries, and its ink reconciles
+      as the same conservation residual it did the first time.
+
+    The claim is idempotence per disposition, and each of the three is tested
+    as one in `pipeline/test_structure_chair_e2e.py`. It is not a claim that
+    the answer alone determines every downstream byte.
 
     `mint` is rebuilt by putting the published act rows back through
     `dedupe_rectangles`, the same reduction the first pass applied to the
