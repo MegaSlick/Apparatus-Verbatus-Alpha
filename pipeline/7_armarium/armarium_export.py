@@ -832,13 +832,21 @@ _NOT_MEASURED_RECORDED_IN: Final = {
     ),
     _GEOMETRY_CALIBRATION: (
         "the `provenance` blocks of the sealed Designator padding, geometry and grouping "
-        "configurations, whose digests this run's `config_digest` binds"
+        "configurations and of the Perlector protocol's `[truncation]` table, whose digests "
+        "this run's `config_digest` binds"
     ),
 }
+# Every sealed configuration this survey reports, in canonical order. The
+# instrument's name is older than the list: `perlector-protocol` carries the
+# truncation instrument's length floor, which is not Designator geometry, and it
+# is here because the survey is the one surface on which an export discloses a
+# threshold nobody calibrated (pre-launch review, F082/F088). Extend the list
+# rather than the name -- the name is on every bundle already.
 _GEOMETRY_CONFIGURATION_NAMES: Final = (
     "designator-padding",
     "designator-geometry",
     "designator-grouping",
+    "perlector-protocol",
 )
 
 
@@ -1053,7 +1061,10 @@ def _validate_not_measured_detail(
         if not isinstance(configurations, list) or len(configurations) != len(
             _GEOMETRY_CONFIGURATION_NAMES
         ):
-            raise SchemaRefusal(f"{subject} must name three configurations in canonical order")
+            raise SchemaRefusal(
+                f"{subject} must name {len(_GEOMETRY_CONFIGURATION_NAMES)} configurations "
+                "in canonical order"
+            )
         for expected_name, configuration in zip(
             _GEOMETRY_CONFIGURATION_NAMES, configurations, strict=True
         ):
@@ -1064,7 +1075,7 @@ def _validate_not_measured_detail(
             )
             if row["configuration"] != expected_name:
                 raise SchemaRefusal(
-                    f"{subject} does not name the three sealed configurations in canonical order"
+                    f"{subject} does not name the sealed configurations in canonical order"
                 )
             if not isinstance(row["calibrated_for_this_corpus"], bool):
                 raise SchemaRefusal(f"a row in {subject} has untyped values")

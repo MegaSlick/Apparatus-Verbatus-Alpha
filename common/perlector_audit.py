@@ -103,9 +103,16 @@ _TRUNCATION_SIGNALS: Final = frozenset(
     {"stop_reason_declared", "unclosed_structure", "length_suspicious", "ends_abruptly"}
 )
 # What the length signal was judged from, on the record since 2026-09-14 so a
-# reader holding the sealed `[truncation]` floor can re-derive that signal
-# rather than take the producer's word for it (pre-launch review, F082/F088).
-_TRUNCATION_MEASURE: Final = frozenset({"region_pixels", "page_pixels", "characters"})
+# reader can re-derive that signal rather than take the producer's word for it
+# (pre-launch review, F082/F088). Every term of the predicate is here,
+# including the floor itself: the record protects the past on its own, without
+# the run's `config/perlector_protocol.toml` in hand (GOVERNANCE 6).
+_TRUNCATION_MEASURE: Final = frozenset(
+    {"region_pixels", "page_pixels", "characters", "length_floor_characters_per_page"}
+)
+# `characters` counts a reading that may legitimately be empty; the three areas
+# and the floor are all positive or the signal could not have been judged.
+_TRUNCATION_MEASURE_MAY_BE_ZERO: Final = frozenset({"characters"})
 FLAG_CLASSES: Final = frozenset(
     {"date-sequence", "numbering", "order", "testimony-diff", "repetition", "within-crop"}
 )
@@ -352,6 +359,27 @@ def unresolved_state(examination: str) -> bool:
     return examination in {EXAMINATION_CAP_EXHAUSTED, EXAMINATION_INCOMPLETE}
 
 
+def length_signal(*, characters: int, region_pixels: int, page_pixels: int, floor: int) -> bool:
+    """The truncation length signal, as a pure function of its four terms.
+
+    `characters * page_pixels < floor * region_pixels`, in integers: the
+    reading's characters scaled from its own region to the whole page's area,
+    against the sealed floor. An empty reading is never suspicious --
+    `no-readable-text` is the honest outcome for that and it is decided
+    elsewhere, never smuggled in here as a truncation.
+
+    Declared here, on the shared surface, for the reason
+    `truncation_classification` is: the producer
+    (`pipeline/4_perlector/truncation.py::is_length_suspicious`) computes the
+    signal with this function and `validate_truncation_record` re-derives it
+    with the same one, so a record cannot carry a signal that disagrees with
+    the geometry it was supposedly judged from. Bounds are each caller's own
+    business -- the producer raises, the validator refuses -- because the
+    arithmetic is what must not drift, not the refusal wording.
+    """
+    return characters > 0 and characters * page_pixels < floor * region_pixels
+
+
 def truncation_classification(signals: dict[str, Any]) -> str:
     """The truncation instrument's decision, as a pure function of its four signals.
 
@@ -380,19 +408,25 @@ def truncation_classification(signals: dict[str, Any]) -> str:
     return TRUNCATION_UNKNOWN
 
 
-def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
+def validate_truncation_record(
+    value: Any, *, label: str, text: str | None = None
+) -> dict[str, Any]:
     """The sealed shape of one raw truncation measurement, its verdict re-derived.
 
     Two of the three computed signals are the producer's word: they need the
-    text, which is not on the record. The third, `length_suspicious`, is judged
-    from the `measure` block the record carries -- region and page area and the
-    character count -- under the sealed `[truncation]` floor of the run, which
-    this validator does not hold and so checks the block for shape only. The
-    classification is not the producer's word: for the instrument's *raw*
-    output it is a function of the four sealed
-    signals (`truncation_classification`), so a record whose verdict contradicts
-    its own signals is refused, and a declared stop word outside the recognised
-    vocabulary is refused with it. This holds for `reproof_truncation`, which is
+    text, which is not on the record. The third, `length_suspicious`, is not:
+    the `measure` block carries every term of its predicate -- region and page
+    area, the character count, and the floor those were judged under -- so this
+    validator re-derives it with the producer's own function (`length_signal`)
+    and refuses a record whose signal disagrees with its own geometry, rather
+    than checking the block for shape. `text`, where the caller holds the
+    reading the record was measured over, binds `characters` to it as well,
+    because a re-derivation from a character count nobody checked is still the
+    producer's word in another form. The classification is not the producer's
+    word either: for the instrument's *raw* output it is a function of the four
+    sealed signals (`truncation_classification`), so a record whose verdict
+    contradicts its own signals is refused, and a declared stop word outside the
+    recognised vocabulary is refused with it. This holds for `reproof_truncation`, which is
     always raw. It does NOT hold for the Perlectio's own `truncation` record:
     `pipeline/4_perlector/run.py::_reconciled_truncation` raises `complete` to
     `unknown` under a declared failure, and `_audited_truncation` floors an
@@ -426,12 +460,32 @@ def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
     if not isinstance(measure, dict) or set(measure) != _TRUNCATION_MEASURE:
         raise SchemaRefusal(f"{label} does not carry the length signal's closed measure")
     for name in sorted(_TRUNCATION_MEASURE):
-        floor = 0 if name == "characters" else 1
+        floor = 0 if name in _TRUNCATION_MEASURE_MAY_BE_ZERO else 1
         if type(measure[name]) is not int or measure[name] < floor:
             raise SchemaRefusal(
                 f"{label} measure {name} is not a {'non-negative' if floor == 0 else 'positive'} "
                 "integer"
             )
+    # The recomputation is only worth as much as `characters`, and `characters`
+    # was the producer's word until a caller that holds the measured text binds
+    # it here (independent audit of 2026-09-14). `text is None` is the caller
+    # that does not hold it and says so, never a silent skip.
+    if text is not None and measure["characters"] != len(text):
+        raise SchemaRefusal(
+            f"{label} measure counts {measure['characters']} characters but the text it was "
+            f"measured over has {len(text)}"
+        )
+    derived_length_signal = length_signal(
+        characters=measure["characters"],
+        region_pixels=measure["region_pixels"],
+        page_pixels=measure["page_pixels"],
+        floor=measure["length_floor_characters_per_page"],
+    )
+    if signals["length_suspicious"] != derived_length_signal:
+        raise SchemaRefusal(
+            f"{label} claims length_suspicious {signals['length_suspicious']!r} but the geometry "
+            f"and floor on its own measure make it {derived_length_signal!r}"
+        )
     derived = truncation_classification(signals)
     if value["classification"] != derived:
         raise SchemaRefusal(
@@ -736,8 +790,16 @@ def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -
         if span["start"] == span["end"] or span["reason"] != AUDIT_CAP_EXHAUSTED:
             raise SchemaRefusal("an audit uncertainty span has no exhausted-cap reason or width")
     if value["reproof_truncation"] is not None:
+        # `text` is the re-proof's own returned text, which is what the
+        # termination record was measured over
+        # (`pipeline/4_perlector/run.py`: one `final_text` feeds
+        # `truncation.classify` and this validation), so the record's character
+        # count is bound to the reading rather than taken on the producer's
+        # word (independent audit of 2026-09-14).
         validate_truncation_record(
-            value["reproof_truncation"], label="an audit finding's re-proof termination"
+            value["reproof_truncation"],
+            label="an audit finding's re-proof termination",
+            text=text,
         )
     validate_reproof_call(value["reproof_call"], label="an audit finding's re-proof call")
     examination = examination_state(value["flags"], value["round_cap"], value["reproof_truncation"])

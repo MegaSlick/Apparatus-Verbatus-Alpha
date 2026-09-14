@@ -43,6 +43,7 @@ from common.perlector_audit import (
     TRUNCATION_COMPLETE,
     TRUNCATION_TRUNCATED,
     TRUNCATION_UNKNOWN,
+    length_signal,
     truncation_classification,
 )
 
@@ -87,13 +88,22 @@ class TruncationMeasure(TypedDict):
 
     The three text signals were the producer's word until 2026-09-14 because
     `region_pixels` was not on the record. It is now, with the page area it was
-    read against and the character count, so a consumer holding the sealed
-    floor can recompute `length_suspicious` rather than trust it.
+    read against, the character count, and the floor those three were judged
+    under -- every term of the predicate, so a consumer holding nothing but
+    this block recomputes `length_suspicious` rather than trusting it. The
+    floor travels on the record and not only in the run's config_digest for
+    the reason the Armarium's re-measurement row carries its own noise floor
+    (`pipeline/7_armarium/run.py::ink_map_page_rows`): configuration protects
+    reproducibility going forward, the record itself protects the past
+    (GOVERNANCE 6), and a reader who has the record but not that run's
+    `config/perlector_protocol.toml` could otherwise only take the signal on
+    trust.
     """
 
     region_pixels: int
     page_pixels: int
     characters: int
+    length_floor_characters_per_page: int
 
 
 class TruncationRecord(TypedDict):
@@ -143,9 +153,11 @@ def is_length_suspicious(
     `region_pixels` and `page_pixels` are each summed over the pages it spans,
     which keeps the ratio the same one.
 
-    An empty reading is not this check's business -- `no-readable-text` is
-    the honest outcome for that, decided elsewhere, never smuggled in here as
-    a truncation.
+    The arithmetic itself is `common/perlector_audit.py::length_signal`, the one
+    spelling `validate_truncation_record` re-derives the recorded signal with;
+    what this function adds is the bounds a producer owes. An empty reading is
+    not this check's business -- `no-readable-text` is the honest outcome for
+    that, decided elsewhere, never smuggled in here as a truncation.
     """
     if region_pixels <= 0:
         raise ValueError("region_pixels must be positive to judge a reading against it")
@@ -153,9 +165,12 @@ def is_length_suspicious(
         raise ValueError("page_pixels must be positive to judge a reading against it")
     if length_floor_characters_per_page <= 0:
         raise ValueError("length_floor_characters_per_page must be positive; zero never fires")
-    if not text:
-        return False
-    return len(text) * page_pixels < length_floor_characters_per_page * region_pixels
+    return length_signal(
+        characters=len(text),
+        region_pixels=region_pixels,
+        page_pixels=page_pixels,
+        floor=length_floor_characters_per_page,
+    )
 
 
 def ends_abruptly(text: str) -> bool:
@@ -202,6 +217,13 @@ def classify(
     is silence from the engine: neither is resolved toward `complete`, because
     an ambiguous signal is exactly what "unknown holds" means.
     """
+    # Absence is refused by name exactly as a wrong type is. The sealed path
+    # cannot reach it -- `protocol.validate_truncation_table` guarantees the
+    # key -- but a hand-built policy is what the tests and any later caller
+    # pass, and a bare `KeyError` is the one boundary in this module that would
+    # escape unnamed (independent audit of 2026-09-14).
+    if LENGTH_FLOOR_FIELD not in truncation_policy:
+        raise ContractError(f"the truncation policy declares no {LENGTH_FLOOR_FIELD}")
     floor = truncation_policy[LENGTH_FLOOR_FIELD]
     if not isinstance(floor, int) or isinstance(floor, bool):
         raise ContractError(f"the truncation policy's {LENGTH_FLOOR_FIELD} is not an integer")
@@ -217,6 +239,7 @@ def classify(
         "region_pixels": region_pixels,
         "page_pixels": page_pixels,
         "characters": len(text),
+        "length_floor_characters_per_page": floor,
     }
 
     # Refuses an unrecognised engine word by name before any decision is made;

@@ -38,7 +38,7 @@ def run_logical_passes(
     autopsia: dict[str, Any],
     dossier: dict[str, Any],
     read_bytes: Callable[[str], bytes],
-    protocol_config: dict[str, str | int],
+    protocol_config: dict[str, Any],
     nuda_sampled: bool,
     control_sampled: bool,
     draft_fed: bool = True,

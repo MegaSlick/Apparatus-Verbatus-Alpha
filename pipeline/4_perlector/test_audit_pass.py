@@ -315,6 +315,9 @@ def _export(tree: RunTree) -> dict:
 _TRUNCATION_POLICY = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]["truncation"]
 _TEST_REGION_PIXELS = 18612
 _TEST_PAGE_PIXELS = _TEST_REGION_PIXELS * 10
+# The sealed floor every measure below was judged under. It travels on the
+# record since 2026-09-14, so a fixture that omits it is not a closed record.
+_FLOOR = _TRUNCATION_POLICY[protocol.LENGTH_FLOOR_FIELD]
 
 # The truncation instrument's record of a call that ran to completion over a
 # clean text; what a well-formed v2 finding carries for a completed re-proof.
@@ -330,19 +333,26 @@ _COMPLETE_TRUNCATION = {
         "region_pixels": _TEST_REGION_PIXELS,
         "page_pixels": _TEST_PAGE_PIXELS,
         "characters": len("alpha beta gamma"),
+        "length_floor_characters_per_page": _FLOOR,
     },
 }
 # The same instrument over a re-proof its engine cut off: the text signals are
 # clean (it returned the frozen text), and the engine's own word overrules them.
 # Measured over fixture act a1 as the Perlector measures it: its 34-character
 # reading over the padded 188x99 crop (18,612 px) of the 200x260 page.
-_FIXTURE_A1_MEASURE = {"region_pixels": 18612, "page_pixels": 52_000, "characters": 34}
+_FIXTURE_A1_MEASURE = {
+    "region_pixels": 18612,
+    "page_pixels": 52_000,
+    "characters": 34,
+    "length_floor_characters_per_page": _FLOOR,
+}
 # Fixture act a2 in the continuation scenario: 40 characters over its two padded
 # crops on two 200x260 pages, region and page area each summed over both.
 _FIXTURE_A2_CONTINUATION_MEASURE = {
     "region_pixels": 37412,
     "page_pixels": 104_000,
     "characters": 40,
+    "length_floor_characters_per_page": _FLOOR,
 }
 _CUT_OFF_TRUNCATION = {
     "classification": "truncated",
@@ -1904,6 +1914,30 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
     assert all(act["category"] == "held-for-review" for act in export["non_delivered"])
 
 
+# The three-character reading every `_finding` unit test validates against, and
+# the geometry its re-proof termination is measured over. Since 2026-09-14 the
+# shared validator binds `measure.characters` to the reading the record was
+# measured over and re-derives `length_suspicious` from the block, so a fixture
+# pairing a 34-character measurement with a three-character text would be
+# refused for exactly the reason the binding exists (independent audit of
+# 2026-09-14). A small region on a whole page keeps the length signal clean at
+# these lengths, so each test still exercises the property it is about.
+_FINDING_TEXT = "abc"
+_FINDING_MEASURE = {
+    "region_pixels": 1_000,
+    "page_pixels": 52_000,
+    "characters": len(_FINDING_TEXT),
+    "length_floor_characters_per_page": _FLOOR,
+}
+
+
+def _termination_over(record: dict | None, text: str) -> dict | None:
+    """The same termination record, re-measured over `text`."""
+    if record is None:
+        return None
+    return {**record, "measure": {**_FINDING_MEASURE, "characters": len(text)}}
+
+
 def _finding(**overrides) -> dict:
     base = {
         "act_key": "a1",
@@ -1919,7 +1953,9 @@ def _finding(**overrides) -> dict:
         "reproof_truncation": _CUT_OFF_TRUNCATION,
         "reproof_call": None,
     }
-    return {**base, **overrides}
+    finding = {**base, **overrides}
+    finding["reproof_truncation"] = _termination_over(finding["reproof_truncation"], _FINDING_TEXT)
+    return finding
 
 
 def test_an_audit_finding_cannot_call_a_cut_off_reproof_complete():
@@ -2049,7 +2085,13 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
             "length_suspicious": True,
             "ends_abruptly": True,
         },
-        "measure": dict(_COMPLETE_TRUNCATION["measure"]),
+        # A whole page returning sixteen characters really is length-suspicious
+        # under the sealed floor; the validator re-derives that signal from this
+        # block, so the record has to mean what its signals say.
+        "measure": {
+            **_COMPLETE_TRUNCATION["measure"],
+            "region_pixels": _TEST_PAGE_PIXELS,
+        },
     }
     assert audit.validate_truncation_record(three, label="x")["classification"] == "truncated"
     one = {

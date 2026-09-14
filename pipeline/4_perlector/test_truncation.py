@@ -31,7 +31,9 @@ FIXTURE_TEXT = "SYNTHETIC ACT ONE alpha beta gamma"
 
 # A photographed 300-DPI letter leaf and a single line band cut from it, the
 # geometry the pre-launch review measured the retired constant against (F082):
-# 2,550x104 is one line at the 104 px pitch `config/pdf_render.toml` records.
+# 2,550x104 is one line at a 104 px pitch, doubled from the 52 px at 150 DPI
+# `config/pdf_render.toml` records measuring -- that file states no 300-DPI
+# pitch of its own.
 LEAF_PAGE = 2550 * 3300
 LINE_BAND = 2550 * 104
 # A realistic character count for one dense register line.
@@ -64,12 +66,14 @@ def test_a_clean_short_reading_whose_engine_reported_stop_is_complete():
         "length_suspicious": False,
         "ends_abruptly": False,
     }
-    # What the length signal was judged from travels on the record, so a reader
-    # holding the sealed floor can re-derive the signal rather than trust it.
+    # What the length signal was judged from travels on the record -- every term
+    # of the predicate, the floor included, so a reader holding nothing but the
+    # record re-derives the signal rather than trusting it.
     assert record["measure"] == {
         "region_pixels": 1000,
         "page_pixels": FIXTURE_PAGE,
         "characters": len("alpha beta gamma."),
+        "length_floor_characters_per_page": FLOOR,
     }
 
 
@@ -325,6 +329,51 @@ def test_the_fixture_acts_clear_the_floor_with_room_for_a_recrop():
     )
 
 
+def test_a_real_act_crop_cut_off_after_one_line_is_not_caught_by_the_length_signal():
+    """The residual risk this floor leaves, pinned rather than only described.
+
+    The fixture bounds the floor from above, so on real material the length
+    signal is weak in one direction: it can no longer hold a complete act by an
+    accident of scale (F082), but a 2,400x420 act crop that should carry about
+    380 characters and returned its first line's 40 is NOT length-suspicious,
+    and under a clean engine stop that act is established `complete`. That is
+    the silent loss GOVERNANCE 2 refuses, left standing because no real ink has
+    been read through this instrument yet, and it is pinned here so that
+    re-deriving the floor against a real run's own Perlectiones must move this
+    test rather than pass it quietly. What still catches the same reading is
+    pinned beside it (independent audit of 2026-09-14).
+    """
+    crop = 2400 * 420
+    cut_off = "L'an mil sept cent quarante deux le douze de may"[:40]
+    assert len(cut_off) == 40
+    assert length_suspicious(cut_off, crop, page_pixels=LEAF_PAGE) is False
+    assert (
+        classify(cut_off, region_pixels=crop, page_pixels=LEAF_PAGE, stop_reason="stop")[
+            "classification"
+        ]
+        == truncation.COMPLETE
+    )
+    # At this geometry the floor fires only at five characters or fewer, the
+    # figure the sealed caveat names.
+    assert length_suspicious("x" * 5, crop, page_pixels=LEAF_PAGE) is True
+    assert length_suspicious("x" * 6, crop, page_pixels=LEAF_PAGE) is False
+    # The three that do catch it, on the same reading and the same geometry.
+    assert (
+        classify(cut_off, region_pixels=crop, page_pixels=LEAF_PAGE, stop_reason="length")[
+            "classification"
+        ]
+        == truncation.TRUNCATED
+    )
+    for unclean in (cut_off + "-", cut_off + " (Jean"):
+        assert (
+            classify(unclean, region_pixels=crop, page_pixels=LEAF_PAGE, stop_reason="stop")[
+                "classification"
+            ]
+            == truncation.UNKNOWN
+        )
+    assert "RESIDUAL RISK NOW RUNS THE OTHER WAY" in POLICY["provenance"]["caveat"]
+
+
 def test_the_floor_is_far_below_a_real_pages_density_and_that_is_stated():
     """At 300 DPI a full line band reads at about 2,200 characters per
     page-equivalent, so the floor is a fortieth of a real page's density. That
@@ -353,6 +402,91 @@ def test_the_shared_validator_refuses_a_record_without_its_measure():
     for bad in ({"region_pixels": 1}, {**record["measure"], "region_pixels": 0}):
         with pytest.raises(SchemaRefusal, match="measure"):
             validate_truncation_record({**record, "measure": bad}, label="x")
+
+
+def test_the_record_carries_the_floor_it_was_judged_under():
+    """GOVERNANCE 6: the record protects the past on its own.
+
+    A consumer holding this block and nothing else -- not the run's
+    `config/perlector_protocol.toml` -- has every term of the predicate and can
+    say for itself whether the signal follows (independent audit of
+    2026-09-14). The Armarium's ink re-measurement row already took this
+    standard for its own noise floor; this is the same one applied twice.
+    """
+    record = classify("alpha beta gamma.", stop_reason="stop")
+    measure = record["measure"]
+    assert measure["length_floor_characters_per_page"] == FLOOR
+    assert (
+        measure["characters"] * measure["page_pixels"]
+        < measure["length_floor_characters_per_page"] * measure["region_pixels"]
+    ) is record["signals"]["length_suspicious"]
+
+
+def test_the_shared_validator_re_derives_the_length_signal_from_the_measure():
+    """The signal is no longer the producer's word: the block proves it.
+
+    A record whose `length_suspicious` disagrees with its own geometry and
+    floor is refused, which is what makes the `measure` block load-bearing
+    rather than decorative.
+    """
+    from common.contracts.errors import SchemaRefusal
+    from common.perlector_audit import validate_truncation_record
+
+    # One character over a whole page is genuinely suspicious; the same record
+    # claiming otherwise is refused, and so is the mirror of it.
+    suspicious = classify("x", region_pixels=FIXTURE_PAGE, stop_reason="stop")
+    assert suspicious["signals"]["length_suspicious"] is True
+    assert validate_truncation_record(suspicious, label="x") == suspicious
+    lying = {
+        **suspicious,
+        "classification": truncation.COMPLETE,
+        "signals": {**suspicious["signals"], "length_suspicious": False},
+    }
+    with pytest.raises(SchemaRefusal, match="make it True"):
+        validate_truncation_record(lying, label="x")
+    clean = classify(FIXTURE_TEXT, stop_reason="stop")
+    assert clean["signals"]["length_suspicious"] is False
+    overclaiming = {
+        **clean,
+        "classification": truncation.UNKNOWN,
+        "signals": {**clean["signals"], "length_suspicious": True},
+    }
+    with pytest.raises(SchemaRefusal, match="make it False"):
+        validate_truncation_record(overclaiming, label="x")
+
+
+def test_the_shared_validator_binds_the_character_count_to_the_text():
+    """A re-derivation is only worth the character count it runs on.
+
+    The caller that holds the reading the record was measured over passes it,
+    and a record counting some other text is refused rather than validating
+    cleanly on its own word (independent audit of 2026-09-14).
+    """
+    from common.contracts.errors import SchemaRefusal
+    from common.perlector_audit import validate_truncation_record
+
+    record = classify(FIXTURE_TEXT, stop_reason="stop")
+    assert validate_truncation_record(record, label="x", text=FIXTURE_TEXT) == record
+    with pytest.raises(SchemaRefusal, match="characters but the text"):
+        validate_truncation_record(record, label="x", text=FIXTURE_TEXT + "!")
+
+
+def test_a_policy_with_no_floor_at_all_is_refused_by_name():
+    """Every other boundary in this module refuses by name; so does this one.
+
+    The sealed path cannot reach it -- `protocol.validate_truncation_table`
+    guarantees the key -- but a hand-built policy could, and a bare `KeyError`
+    is not a refusal the stage boundary classifies (independent audit of
+    2026-09-14).
+    """
+    with pytest.raises(ContractError, match="declares no length_floor_characters_per_page"):
+        truncation.classify(
+            "alpha",
+            region_pixels=FIXTURE_REGION,
+            page_pixels=FIXTURE_PAGE,
+            truncation_policy={},
+            stop_reason="stop",
+        )
 
 
 def _protocol_with(replacement: str, tmp_path: Path) -> Path:

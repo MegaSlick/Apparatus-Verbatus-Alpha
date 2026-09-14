@@ -19,6 +19,7 @@ from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.residual_ink import (
+    MINIMUM_INK_PIXELS_FIELD,
     edge_ink_from_runs,
     load_coverage_audit_config,
     resolve_coverage_audit_policy,
@@ -687,11 +688,64 @@ def test_the_noise_floor_argument_has_no_fail_open_default():
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
     with pytest.raises(TypeError, match="minimum_ink_pixels"):
         recensor.unclaimed_ink_observations(maps, [{"bounds": box}], 1, {})
-    # And the sealed value is what the live caller reads: the same floor this
-    # module's stimuli are built against.
-    source = RECENSOR.read_text(encoding="utf-8")
-    assert 'coverage_config["coverage_audit"]["minimum_ink_pixels"]' in source
-    assert "minimum_ink_pixels=minimum_ink_pixels" in source
+
+
+# The sealed table the floor lives under. `common/residual_ink.py` spells it as
+# a literal at its own read sites and exports no name for it, so this is the
+# reader's own copy rather than an import that does not exist.
+_COVERAGE_AUDIT_TABLE = "coverage_audit"
+
+
+def _sealed_floor_read(node: ast.expr) -> bool:
+    """True for a `<something>["coverage_audit"]["minimum_ink_pixels"]` read."""
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == MINIMUM_INK_PIXELS_FIELD
+        and isinstance(node.value, ast.Subscript)
+        and isinstance(node.value.slice, ast.Constant)
+        and node.value.slice.value == _COVERAGE_AUDIT_TABLE
+    )
+
+
+def test_the_live_caller_passes_the_floor_it_read_from_the_sealed_table():
+    """The wiring itself, read structurally rather than by substring.
+
+    Two substrings anywhere in the file would pass while proving nothing: they
+    could sit in unrelated lines, and a rename that changed nothing would break
+    them (independent audit of 2026-09-14). So this walks `main`'s own syntax
+    and proves the one thing worth proving -- the name `unclaimed_ink_observations`
+    is given comes from a read of the sealed `[coverage_audit]` table in the
+    same function, and from nothing else. It cannot prove the table was the
+    sealed bytes; `require_sealed_config` at the point of use does that, and the
+    Recensor's own seal suites cover it.
+    """
+    tree = ast.parse(RECENSOR.read_text(encoding="utf-8"))
+    main = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    bound = {
+        target.id
+        for node in ast.walk(main)
+        if isinstance(node, ast.Assign) and _sealed_floor_read(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert bound, "main binds no name from the sealed noise floor"
+    calls = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "unclaimed_ink_observations"
+    ]
+    assert calls, "main no longer calls unclaimed_ink_observations"
+    for call in calls:
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+        passed = keywords.get(MINIMUM_INK_PIXELS_FIELD)
+        assert isinstance(passed, ast.Name) and passed.id in bound, (
+            "the live caller funds recovery under a floor it did not read from the sealed table"
+        )
 
 
 # The capture identity the Unit 19C gate is asked about. `run.json`'s

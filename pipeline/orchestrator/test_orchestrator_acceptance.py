@@ -1633,10 +1633,38 @@ def _perlector_dissent():
 # does not mint the pin.
 # Evidence: workbench/raw/prelaunch-g1-2026-09-14/pin-attribution/ (retained
 # outside Git, like every other evidence directory this file cites).
+# The independent audit of that correction (2026-09-14) moved the pins once
+# more, and the attribution was taken the same way: two fresh runs of the
+# audited head 48cd47e7's own tree (exported with `git archive`, run under its
+# own `common/`) against this candidate, compared leaf by leaf. Happy 100
+# files/exit 0 and review 111 files/exit 3, file counts and exit codes unchanged
+# on both sides, two content-addressed blobs re-addressed per scenario (the
+# Perlector partition and the Armarium bundle) and no other file added or
+# removed. Across every JSON leaf of both run trees there are exactly two kinds
+# of non-digest change and no others:
+#
+# 1. `length_floor_characters_per_page` added to every truncation `measure`
+#    block -- the floor the signal was judged under, now on the record so a
+#    reader holding the record alone re-derives `length_suspicious` (GOVERNANCE
+#    6). Happy: 4 on `payload.truncation` and 2 on `payload.reproof_truncation`;
+#    review: 6 and 3. Nothing else was added and nothing removed.
+# 2. In the export manifest, the `designator-geometry-calibration` survey gains
+#    a fourth row, `perlector-protocol` / `calibrated_for_this_corpus = false` /
+#    `sample_count = 0`, and its `recorded_in` names that table: the truncation
+#    instrument's uncalibrated floor now travels with the product instead of
+#    stopping in `config/`.
+#
+# Everything else is a digest (`config_digest` -- `config/perlector_protocol.toml`
+# and `config/designator_grouping.toml` both changed bytes -- `self_hash`,
+# `sha256`, and the references that carry them). In the exported `acts.jsonl`
+# every difference is a reference digest: no established text, outcome,
+# category, crop geometry or count moved (GOVERNANCE 5).
+# Evidence: the comparison scripts and both run trees were built in this
+# session's scratch and are not retained in Git.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "b77ad5c7f3f3a27de53619e276e8f5ff1d3947f3e9875a1696e529daf8a385ec"
-REVIEW_RUN_TREE_DIGEST = "eca658a8819038ed028c86fdee8c8f826bed41c93d8173ac8d57af8913e8e5b4"
+HAPPY_RUN_TREE_DIGEST = "0176d071fa079af290683c6aa73de404f3e76900878f9124356cec1f77a6956c"
+REVIEW_RUN_TREE_DIGEST = "1f49ee36bdad741cb8bbcec965ff9c24a980b7eb36dcb073826320de377dd40c"
 
 
 def orchestrate(
