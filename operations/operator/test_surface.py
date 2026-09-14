@@ -3298,7 +3298,8 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
     bootstrap journal and the volume-root transfer journal -- exactly what
     ``--evidence-key`` is for, each independently optional. The liveness report
     and the transfer journal were not asked for at all while they had no route
-    home."""
+    home. A saved launch receipt is asked for first and derives the token-bound
+    keys itself; this is the route for a run whose receipt is not to hand."""
 
     answers = iter(
         (
@@ -3306,12 +3307,14 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
             "brought-home",
             "/local/into",
             "EU-CZ-1:vol123",
+            "",  # no saved launch receipt to hand: name the keys one by one
             "runs/brought-home/bootstrap-report.json",
             "runs/brought-home/pod-run-report.json",
             "runs/brought-home/pod-run-report-hold.json",
             "pod-runtime-report.json",
             "",  # bootstrap journal left blank
             "pod-transfer-journal.json",
+            "",  # every launch's preflight tree, not one stem
         )
     )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
@@ -3340,10 +3343,19 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
 def test_interactive_fetch_run_needs_no_evidence_key_at_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Six blank answers mean none, not a refusal: every evidence key is optional."""
+    """Blank answers mean none, not a refusal: the launch receipt, every evidence
+    key and the preflight stem are each optional."""
 
     answers = iter(
-        ("fetch-run", "brought-home", "/local/into", "EU-CZ-1:vol123", "", "", "", "", "", "")
+        (
+            "fetch-run",
+            "brought-home",
+            "/local/into",
+            "EU-CZ-1:vol123",
+            "",  # launch receipt
+            *([""] * 6),  # the six evidence keys
+            "",  # preflight stem
+        )
     )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 
