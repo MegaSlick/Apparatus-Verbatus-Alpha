@@ -192,11 +192,11 @@ class SystemGpuProbe:
         self.disk_usage = disk_usage or shutil.disk_usage
 
     def profile(self, dtype: str, *, expected_gpu_count: int | None = None) -> GpuProfile:
-        """Measure the visible card(s). `expected_gpu_count`, when the caller
+        """Measure the visible card(s).
 
-        knows it (the create request's own `gpuCount`), is checked against what
-        `nvidia-smi` actually measured rather than left as two independent
-        numbers (F064).
+        `expected_gpu_count`, when the caller knows it (the create request's
+        own `gpuCount`), is checked against what `nvidia-smi` actually
+        measured rather than left as two independent numbers (F064).
         """
         disk_detail = ""
         try:
