@@ -38,7 +38,7 @@ from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
-from common.runtree.store import RunTree
+from common.runtree.store import SERVING_LOGS_DIR, RunTree
 from operations.serving.client import ChairClient, ServingModeRefusal
 from operations.serving.config import (
     ServingConfigInputs,
@@ -56,7 +56,7 @@ from operations.serving.fakes import (
     ScriptedAnswer,
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
-from operations.serving.residency import FileResidencyLease
+from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
 ROOT = Path(__file__).resolve().parents[2]
 CHAIN_THROUGH_ATTESTATORES = (
@@ -955,14 +955,22 @@ def test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written(
     )
 
 
-def test_default_serving_factory_writes_its_log_and_lease_under_the_run_tree(live_run, monkeypatch):
+def test_default_serving_factory_logs_under_the_run_tree_and_leases_off_it(live_run, monkeypatch):
     """`default_serving_factory` is the only path a real run takes, and nothing
     else in this suite ever constructs it -- the injected `_serving_factory`
     above deliberately diverges on the two things production alone decides:
     where the serving log directory and the pod-GPU residency lease live.
     Constructing the client starts nothing (`ChairClient.__init__` only stores
     its manager), so this proves both locations, and the manager keyword set
-    that builds them, without starting a service or needing a card."""
+    that builds them, without starting a service or needing a card.
+
+    **The two locations are deliberately not the same, and this used to pin the
+    lease under the run tree.** The logs belong to the run and travel with it.
+    The lease belongs to the *card*, which belongs to the pod: a lease resolved
+    inside a run tree let two stages resumed under different run ids each
+    acquire their own and co-reside on one GPU, never met the pod preflight's
+    own lock at all, and put an advisory lock on a network mount that is not
+    known to honour one."""
     root, catalogue = live_run
     monkeypatch.chdir(ROOT)
     monkeypatch.setattr(
@@ -996,7 +1004,9 @@ def test_default_serving_factory_writes_its_log_and_lease_under_the_run_tree(liv
     client = factory(context, _perlector_identity(), TIER)
     tree_root = context.tree.root
     assert client._manager.log_root.is_relative_to(tree_root)
-    assert client._manager.residency_lease.path.is_relative_to(tree_root)
+    assert client._manager.log_root.name == SERVING_LOGS_DIR
+    assert client._manager.residency_lease.path == POD_RESIDENCY_LOCK_PATH
+    assert not client._manager.residency_lease.path.is_relative_to(tree_root)
     # Neither write disturbs the witnessed inventory (`build_manifest` walks
     # only `<stage>/artifacts`, the blob inventory only `<stage>/blobs`), so the
     # seal must still succeed with these paths named but nothing started.

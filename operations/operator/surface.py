@@ -38,6 +38,7 @@ from common.runtree.store import (
     MANIFEST_FILE,
     RECEIPTS_DIR,
     RUN_FILE,
+    SERVING_LOGS_DIR,
     RunTree,
 )
 from common.stage import load_fixture
@@ -845,6 +846,15 @@ class OperatorSurface:
         its name recorded. A local file that already exists is compared, never
         replaced: identical bytes are reused, different bytes refuse by name.
 
+        **One class of object in the tree cannot be verified, and says so.** A
+        stage that served a chair leaves the engine's launch log under
+        ``<stage>/serving-logs/``. No manifest records it and nothing ever
+        digested it, so it is fetched as side evidence: digested on arrival,
+        listed in the receipt under ``unverified_serving_logs``, and never
+        counted among what was checked. Refusing the whole tree for it -- which
+        is what happened while the inventory scope did not name the path --
+        brought home nothing at all from a run that had already billed a card.
+
         **The run tree is not the whole record, so the evidence comes too.** A
         launch's PREFLIGHT tree (``preflight/``) is written outside
         ``runs/<run_id>/`` and says which chairs were preflighted, against which
@@ -853,12 +863,18 @@ class OperatorSurface:
         will destroy. Everything under ``evidence_prefixes`` is fetched into
         ``<into>/evidence/``, each object recorded in the receipt with its
         digest and the content-addressed ones checked against their own names.
-        Two records cannot be found this way: the launch-bound bootstrap and
-        run reports and the bootstrap journal carry this launch's token in
-        names an operator chose, at paths this verb has no way to derive, and
-        guessing at them would mean listing the whole volume -- which holds the
-        submission's own page images. ``evidence_keys`` takes their exact keys
-        from the operator who does know them, and the receipt names that
+        Six records lie under neither prefix and are named rather than
+        fetched. Five carry this launch's token in names an operator chose --
+        the bootstrap report, the pod-run report, that report's ``-hold``
+        liveness sibling, the pod-timer runtime report, and the bootstrap
+        journal -- at paths this verb has no way to derive; guessing at them
+        would mean listing the whole volume, which holds the submission's own
+        page images. The sixth, ``pod-transfer-journal.json``, sits at the
+        volume root under a fixed name and is the only durable record of which
+        submission rows were verified against target-observed bytes.
+        ``evidence_keys`` takes their exact keys from the operator,
+        ``operations/pod/README.md`` lists the complete set and how each key is
+        derived, and the receipt names that
         derivation limit -- with how many keys this call named, never a blanket
         claim that they went unfetched -- rather than passing over it in silence.
 
@@ -930,6 +946,12 @@ class OperatorSurface:
             f"Run {checked_id} was brought back and verified: "
             f"{outcome.fetched} object(s) fetched, {outcome.reused} reused."
         )
+        if outcome.unverified_serving_logs:
+            summary += (
+                f" {len(outcome.unverified_serving_logs)} object(s) in the tree are serving "
+                "logs, which no manifest records: they came home as side evidence, digested "
+                "but unverified."
+            )
         if partial:
             summary += (
                 f" {', '.join(outcome.unmanifested_stages)} reached no manifest.json -- its "
@@ -950,6 +972,10 @@ class OperatorSurface:
                 "stages_verified": list(outcome.stages),
                 "unmanifested_stages": list(outcome.unmanifested_stages),
                 "envelope_only_artifacts": list(outcome.envelope_only_artifacts),
+                "unverified_serving_logs": [
+                    {"relative_path": relative, "sha256": digest}
+                    for relative, digest in outcome.unverified_serving_logs
+                ],
                 "excluded_publication_temporaries": list(outcome.excluded),
                 "evidence": {
                     "into": str(destination_root / EVIDENCE_DIRECTORY),
@@ -962,10 +988,14 @@ class OperatorSurface:
                     "prefixes_with_nothing_stored": list(evidence.empty_prefixes),
                     "refusals": list(evidence.refusals),
                     "records_only_by_name": (
-                        "the launch-bound bootstrap and pod-run reports and the bootstrap "
-                        "journal: their names carry this launch's token at paths an operator "
-                        "chose, which this verb cannot derive and will not guess at by listing "
-                        "the whole volume, so they come home only when named as --evidence-key. "
+                        "the launch-bound bootstrap report, the pod-run report, that report's "
+                        "'-hold' liveness sibling, the pod-timer runtime report, the bootstrap "
+                        "journal, and 'pod-transfer-journal.json' at the volume root: five of "
+                        "them carry this launch's token at paths an operator chose, which this "
+                        "verb cannot derive and will not guess at by listing the whole volume, "
+                        "and the transfer journal lies outside both prefixes, so all six come "
+                        "home only when named as --evidence-key. operations/pod/README.md "
+                        "lists the complete set and how each key is derived. "
                         + (
                             "No key was named this call, so none of them is in this tree."
                             if not evidence_keys
@@ -993,6 +1023,13 @@ class OperatorSurface:
                 f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
                 f"identical, every one checked against the run tree's own digests."
             )
+        if outcome.unverified_serving_logs:
+            self.present(
+                f"{len(outcome.unverified_serving_logs)} serving log(s) came home as side "
+                "evidence, not as verified run-tree objects: no manifest records an engine "
+                "log, so each is recorded in the receipt with the digest of the bytes that "
+                "arrived and checked against nothing else."
+            )
         if outcome.excluded:
             self.present(
                 f"{len(outcome.excluded)} publication temporar{'y' if len(outcome.excluded) == 1 else 'ies'} "
@@ -1009,15 +1046,17 @@ class OperatorSurface:
             )
         if evidence_keys:
             self.present(
-                "The launch-bound reports and the bootstrap journal come home only when named: "
+                "The launch-bound reports, their '-hold' siblings, the bootstrap journal and "
+                "the volume-root transfer journal come home only when named: "
                 f"{len(evidence_keys)} key(s) were named this call, and the receipt says which "
                 "of them arrived."
             )
         else:
             self.present(
-                "The launch-bound reports and the bootstrap journal cannot be found by name -- "
-                "none was named this call, so none came home; pass --evidence-key for each. The "
-                "receipt says so too."
+                "The launch-bound reports, their '-hold' siblings, the bootstrap journal and "
+                "the volume-root transfer journal lie under neither prefix -- none was named "
+                "this call, so none came home; pass --evidence-key for each. "
+                "operations/pod/README.md lists the complete set. The receipt says so too."
             )
         self.present(f"Saved receipt: {receipt}")
         return receipt
@@ -3127,6 +3166,14 @@ class FetchRunOutcome:
     # "verified-partial", never "verified".
     unmanifested_stages: tuple[str, ...] = ()
     envelope_only_artifacts: tuple[str, ...] = ()
+    # `<stage>/serving-logs/`: the vLLM launch log a served chair leaves in the
+    # run tree. No manifest records an engine log and nothing ever digested one,
+    # so it cannot be verified the way the rest of the tree is -- but refusing
+    # the whole tree for it, which is what an unnamed path did, threw away the
+    # evidence the run existed to produce. It comes home as side evidence, named
+    # here and digested in the receipt so the local copy can be told apart from
+    # a later one, and never counted among what was verified (GOVERNANCE 10).
+    unverified_serving_logs: tuple[tuple[str, str], ...] = ()
 
 
 def _fetch_run_tree(
@@ -3182,6 +3229,7 @@ def _fetch_run_tree(
     fetched = reused = total = 0
     expected: dict[str, str] = {}
     manifests: dict[str, dict[str, Any]] = {}
+    serving_logs: list[tuple[str, str]] = []
     unresolved: dict[str, str] = {}  # every fetched artifact -> its digest, resolved below
     # Every target this call itself wrote fresh (never one already on disk that
     # was only compared). A refusal anywhere below -- including one raised well
@@ -3208,6 +3256,15 @@ def _fetch_run_tree(
                 manifests[relative] = manifest
                 for entry in manifest["artifacts"]:
                     expected[entry["relative_path"]] = entry["sha256"]
+            elif _is_serving_log(relative):
+                # Side evidence, not run-tree evidence: an engine log is in no
+                # manifest, is not content-addressed, and is not JSON. Digest
+                # what arrived so the receipt can name it, and check it against
+                # nothing, because there is nothing to check it against. Asked
+                # before the artifact arm: the two prefixes are disjoint, but a
+                # log whose own name contained "/artifacts/" would otherwise be
+                # taken for an artifact and refuse the tree as orphaned.
+                serving_logs.append((relative, _sha256_of(target)))
             elif "/artifacts/" in relative:
                 # Manifests sort before artifacts (see `ordered` above), so every
                 # manifest that exists on the volume is already in `expected`.
@@ -3322,7 +3379,20 @@ def _fetch_run_tree(
         tuple(excluded),
         tuple(sorted(unmanifested_stages)),
         tuple(sorted(name for name in unresolved if name not in manifest_recorded)),
+        tuple(sorted(serving_logs)),
     )
+
+
+def _is_serving_log(relative: str) -> bool:
+    """True for `<writing directory>/serving-logs/...`, the served engine's own log.
+
+    A classification, not a boundary: `inventory_scope()` has already refused
+    anything that is not under a writing directory's serving-log prefix by the
+    time this is asked.
+    """
+
+    parts = relative.split("/")
+    return len(parts) > 2 and parts[1] == SERVING_LOGS_DIR
 
 
 @dataclass(frozen=True, slots=True)

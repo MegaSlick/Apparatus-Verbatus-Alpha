@@ -2077,6 +2077,49 @@ def test_the_inventory_scope_covers_every_producer(tmp_path):
         assert any(prefix.startswith(f"{directory}/") for prefix in scope)
 
 
+def test_the_inventory_scope_names_the_serving_log_directory_the_launcher_writes(tmp_path):
+    """Harvest #13 is about every managed path *any* code writes, not only this store's.
+
+    A stage that serves a chair leaves the engine's launch log at
+    `<stage>/serving-logs/<name>.log`, written by the serving launcher. While
+    the scope did not name it, a consumer reading the scope as the whole of what
+    a run tree may hold -- `operator.surface._fetch_run_tree` does -- refused
+    the entire served run tree at the first log it listed, and brought home
+    nothing from a run that had already billed a card.
+    """
+    from common.contracts.stages import WRITING_DIRECTORIES
+
+    scope = make_run(tmp_path).inventory_scope()
+    for directory in sorted(set(WRITING_DIRECTORIES.values())):
+        prefix = f"{directory}/{runtree_store.SERVING_LOGS_DIR}/"
+        assert prefix in scope, f"{prefix} is written in the tree but falls outside the scope"
+        log = f"{prefix}vllm-attestator_1-0123456789ab.log"
+        assert any(log.startswith(item) for item in scope)
+
+
+def test_a_serving_log_is_not_inventoried_as_evidence(tmp_path):
+    """In scope so it can be accounted for; in no manifest, because nothing digested it.
+
+    `build_manifest` walks `<stage>/artifacts` and the blob inventory
+    `<stage>/blobs`, so an engine still writing its log while the stage seals
+    cannot make the witnessed inventory false -- which is the whole reason the
+    log may sit inside the tree at all.
+    """
+    tree = make_run(tmp_path)
+    tree.publish_artifact(make_envelope())
+    before = tree.build_manifest(DESIGNATOR)
+
+    logs = tree.resolve(f"{writing_directory(DESIGNATOR)}/{runtree_store.SERVING_LOGS_DIR}")
+    logs.mkdir(parents=True)
+    (logs / "vllm-designator-0123456789ab.log").write_bytes(b"INFO: engine started")
+
+    assert tree.build_manifest(DESIGNATOR) == before
+    assert not any(
+        runtree_store.SERVING_LOGS_DIR in entry["relative_path"]
+        for entry in before["artifacts"] + before["blobs"]
+    )
+
+
 # --- Atomic publication ---------------------------------------------------------
 
 

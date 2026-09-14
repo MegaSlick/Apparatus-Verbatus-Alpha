@@ -10,12 +10,62 @@ but closing the descriptor afterward does not.
 from __future__ import annotations
 
 import fcntl
+import re
 from pathlib import Path
 
 import pytest
 
 from .errors import ResidencyError, ServiceStopError
-from .residency import FileResidencyLease
+from .residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
+
+_REPOSITORY = Path(__file__).resolve().parents[2]
+
+# Every production caller that serves a chair on the one card a pod rents. The
+# pod preflight and the three pipeline stages had disjoint lock paths: the
+# preflight on container-local disk, the stages inside their own run trees, so
+# preflight and run never contended, and two stages resumed under different run
+# ids each acquired their own lease and co-resided on one GPU.
+_SERVING_CALLERS = (
+    "operations/pod/bootstrap_main.py",
+    "pipeline/2_designator/structure_pass.py",
+    "pipeline/3_attestatores/run.py",
+    "pipeline/4_perlector/run.py",
+)
+
+
+def test_the_pod_lease_path_is_container_local_and_not_a_run_tree_path() -> None:
+    """The boundary is the card, which belongs to the pod, not to any run tree.
+
+    A lock under `<volume>/runs/<id>/` is both scoped to the wrong thing and
+    asked of a network mount whose honouring of advisory locks is unknown -- and
+    it put an object inside the run tree that `fetch-run` then refused the whole
+    tree for.
+    """
+
+    assert POD_RESIDENCY_LOCK_PATH.is_absolute()
+    assert POD_RESIDENCY_LOCK_PATH.parent == Path("/tmp")
+    assert "runs" not in POD_RESIDENCY_LOCK_PATH.parts
+
+
+def test_every_serving_caller_takes_the_one_pod_wide_lease_path() -> None:
+    """Read from source, so a fifth caller added later with its own literal fails here.
+
+    The lease is only a boundary if every manager on the card opens the same
+    file; three call-site literals and a fourth default were four boundaries.
+    """
+
+    for relative in _SERVING_CALLERS:
+        source = (_REPOSITORY / relative).read_text(encoding="utf-8")
+        assert "POD_RESIDENCY_LOCK_PATH" in source, (
+            f"{relative} serves a chair but does not name the one pod-wide lease path"
+        )
+        assert not re.search(r"FileResidencyLease\((?!POD_RESIDENCY_LOCK_PATH|chosen\.)", source), (
+            f"{relative} builds a residency lease from something other than the one "
+            "pod-wide lease path; a second boundary is no boundary"
+        )
+        assert "pod-gpu.lock" not in source, (
+            f"{relative} still names a run-tree lock file; the lease is pod-wide"
+        )
 
 
 def test_acquire_is_non_blocking_and_refuses_a_second_holder(tmp_path: Path) -> None:

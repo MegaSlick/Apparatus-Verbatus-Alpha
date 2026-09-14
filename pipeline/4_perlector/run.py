@@ -106,7 +106,7 @@ from common.native_witness import (  # noqa: E402
     validate_presented_page_binding,
     verify_native_capture_blob,
 )
-from common.runtree.store import RECEIPTS_DIR  # noqa: E402
+from common.runtree.store import RECEIPTS_DIR, SERVING_LOGS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -138,7 +138,10 @@ from operations.serving.manager import (  # noqa: E402
     StageContextReceiptPublisher,
 )
 from operations.serving.process import SubprocessLauncher  # noqa: E402
-from operations.serving.residency import FileResidencyLease  # noqa: E402
+from operations.serving.residency import (  # noqa: E402
+    POD_RESIDENCY_LOCK_PATH,
+    FileResidencyLease,
+)
 
 # A sampling gate has to inspect the shared receipt directory because the sealed
 # experiment selector cannot contain the content address of the approval that
@@ -146,15 +149,15 @@ from operations.serving.residency import FileResidencyLease  # noqa: E402
 # into a named refusal instead of an unbounded preflight.  Real receipts are a
 # few kilobytes; these ceilings allow a large alpha run while keeping both one
 # object and the aggregate scan finite.
-# A live chair's engine logs and its residency lease, both inside the run tree so
-# they travel with the evidence they belong to. The logs sit beside this stage's
-# artifacts and blobs rather than among them: `_stage_blob_inventory` walks
-# `<stage>/blobs` alone, so an engine still writing its log while the stage seals
-# cannot make the witnessed inventory false. The lease is run-scoped, not
-# stage-scoped, because the card is: the Attestatores' witness chairs and this
-# reader must contend for one lock, or two stages co-reside on one GPU.
-SERVING_LOG_DIRECTORY: Final = "serving-logs"
-RESIDENCY_LOCK_FILE: Final = "pod-gpu.lock"
+# A live chair's engine logs, inside the run tree so they travel with the
+# evidence they belong to. They sit beside this stage's artifacts and blobs
+# rather than among them: `_stage_blob_inventory` walks `<stage>/blobs` alone,
+# so an engine still writing its log while the stage seals cannot make the
+# witnessed inventory false. `RunTree.inventory_scope()` names the directory,
+# which is what lets `fetch-run` bring the logs home as unverified side
+# evidence instead of refusing the whole served tree at the first one it lists.
+# The residency lease is not here: see `POD_RESIDENCY_LOCK_PATH`.
+SERVING_LOG_DIRECTORY: Final = SERVING_LOGS_DIR
 
 MAX_SAMPLING_APPROVAL_RECEIPTS: Final = 100_000
 MAX_SAMPLING_APPROVAL_RECEIPT_BYTES: Final = 4 * 1024 * 1024
@@ -1914,11 +1917,14 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
             log_root=context.tree.resolve(
                 f"{writing_directory(context.stage)}/{SERVING_LOG_DIRECTORY}"
             ),
-            # One card, one resident chair, one lease file for the whole run
-            # tree: the Attestatores' witness chairs and this reader contend for
-            # the same GPU, and the lease is what makes a second start refuse
-            # instead of co-residing.
-            residency_lease=FileResidencyLease(context.tree.resolve(RESIDENCY_LOCK_FILE)),
+            # One card, one resident chair, one lease -- and the card belongs
+            # to the pod, not to this run tree. `POD_RESIDENCY_LOCK_PATH` is
+            # the container-local path the pod preflight and the other serving
+            # stages take, so the Attestatores' witness chairs and this reader
+            # contend for one lease even when they run under different run ids,
+            # and the lock is not asked of a network mount that is not known to
+            # honour one.
+            residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
             producer="pipeline/4_perlector/run.py",
         )
         return ChairClient(

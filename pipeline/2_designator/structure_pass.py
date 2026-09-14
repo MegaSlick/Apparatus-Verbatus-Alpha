@@ -108,6 +108,7 @@ from common.request_capacity import (
     sealed_prompt_tokens,
     sendable_max_tokens,
 )
+from common.runtree.store import SERVING_LOGS_DIR
 from common.stage import (
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     DESIGNATOR_CHAIR,
@@ -124,7 +125,7 @@ from operations.serving.errors import ServingError
 from operations.serving.http import EndpointUnavailable, UrllibHttpTransport
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.process import SubprocessLauncher
-from operations.serving.residency import FileResidencyLease
+from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
 # The per-page record's second parse state; the first is `common.stage`'s
 # `STRUCTURE_ANSWER_PARSED`, named there because the consumer reads it back.
@@ -255,11 +256,14 @@ def _reconcile_finding_kinds() -> None:
 
 _reconcile_finding_kinds()
 
-# One card, one resident chair, one lease file for the whole run tree: the
-# same names the Attestatores and the Perlector use, so a structure chair
-# still running when a witness starts refuses instead of co-residing.
-SERVING_LOG_DIRECTORY: Final = "serving-logs"
-RESIDENCY_LOCK_FILE: Final = "pod-gpu.lock"
+# One card, one resident chair, one lease: `POD_RESIDENCY_LOCK_PATH` is the
+# container-local path the pod preflight and every other serving stage take, so
+# a structure chair still running when a witness starts refuses instead of
+# co-residing -- including across two run trees, which a lease resolved inside
+# one of them could not see. The serving logs stay in this stage's own
+# directory, where `RunTree.inventory_scope()` names them and `fetch-run`
+# brings them home as unverified side evidence.
+SERVING_LOG_DIRECTORY: Final = SERVING_LOGS_DIR
 
 _SHARED_DETECTION_RATIONALE: Final = (
     "the ink scan found one region covering at least half of this rectangle, but the "
@@ -460,7 +464,7 @@ def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) ->
         http=UrllibHttpTransport(),
         receipt_publisher=StageContextReceiptPublisher(context),
         log_root=context.tree.resolve(f"2_designator/{SERVING_LOG_DIRECTORY}"),
-        residency_lease=FileResidencyLease(context.tree.resolve(RESIDENCY_LOCK_FILE)),
+        residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/2_designator/run.py",
     )
     return ChairClient(

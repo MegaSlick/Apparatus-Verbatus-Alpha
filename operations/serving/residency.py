@@ -13,11 +13,28 @@ from __future__ import annotations
 import fcntl
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import Final, Protocol, TextIO
 
 from common.chairs.models import ChairIdentity
 
 from .errors import ResidencyError, ServiceStopError
+
+# The one lease path every serving caller on one pod must share -- the pod
+# preflight and each pipeline stage that serves a chair.
+#
+# Container-local, not on the network volume, for two reasons that the run-tree
+# path this replaced satisfied neither of. First, an advisory lock on a network
+# mount is not something the mount is known to honour, and a lock that silently
+# grants itself to everyone is the co-residency the single-resident rule exists
+# to prevent. Second, the boundary is the *card*, which belongs to the pod and
+# not to any one run: two stages resumed under different run ids each resolved
+# their own lock inside their own run tree, so both acquired, and two vLLM
+# servers contended for one GPU with no named refusal.
+#
+# A path, not a run-tree resolution: a caller that wants a different boundary
+# (a developer machine serving two unrelated trees) passes its own path to
+# `FileResidencyLease`, which is what the stage tests do.
+POD_RESIDENCY_LOCK_PATH: Final = Path("/tmp/verbatus-pod-gpu.lock")
 
 
 class ResidencyHandle(Protocol):
