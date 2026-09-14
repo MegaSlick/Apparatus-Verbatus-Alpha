@@ -5720,3 +5720,50 @@ def test_a_readiness_probe_never_outlives_what_is_left_of_the_watchdog(tmp_path:
     manager.start(chair, TIER)
 
     assert recorder.health_budgets == [2.0, 2.0, 1.0]
+
+
+def test_a_credential_shaped_token_in_the_launch_log_never_travels_with_the_refusal() -> None:
+    """The tail now reaches journals, pod reports and notifications; the log did not.
+
+    A launch log is the child's own stdout, so it is untrusted content going
+    somewhere it has never been. The shape test is the one `bootstrap_main`'s
+    argv refusal and `fixture.py`'s drill scrub already share.
+    """
+
+    error = _watchdog_timeout(
+        FakeProcess(
+            4242,
+            log_tail=(
+                "INFO: retrying with token hf9QRs3xKm7ZtPvN1cWb4L\n"
+                "Loading safetensors checkpoint shards: 12% Completed | 3/28\n"
+            ),
+        ),
+        last="loopback endpoint unavailable: connection refused",
+        unavailable=True,
+        budget_seconds=300.0,
+    )
+
+    assert "hf9QRs3xKm7ZtPvN1cWb4L" not in error.detail
+    assert "[redacted]" in error.detail
+    # The redaction does not cost the diagnosis its evidence.
+    assert "Loading safetensors checkpoint shards: 12% Completed | 3/28" in error.detail
+
+
+def test_a_budget_gone_before_the_first_probe_answers_claims_no_observation() -> None:
+    """A one-second `startup_timeout_seconds` can expire before any probe comes back.
+
+    Reporting that as "connection refused" or as "answered but never ready"
+    would put a claim about an endpoint nobody reached into a durable record,
+    so the third state stays distinct.
+    """
+
+    error = _watchdog_timeout(
+        FakeProcess(4242, log_tail="INFO: nothing here\n"),
+        last="service did not become ready",
+        unavailable=None,
+        budget_seconds=1.0,
+    )
+
+    assert "no readiness probe was ever answered" in error.detail
+    assert "connection refused" not in error.detail
+    assert "answered but never ready" not in error.detail

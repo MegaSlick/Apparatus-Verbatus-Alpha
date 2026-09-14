@@ -984,15 +984,24 @@ class ChannelControllerArmer:
                 next_probe = waited + self.container_poll_seconds
                 try:
                     started_at = self.liveness.started_at()
+                    stamped = (
+                        None
+                        if started_at is None
+                        else _stamp(require_utc(started_at, "container start"))
+                    )
                 except Exception as error:
-                    # A read-only status call failing is not evidence about the
-                    # pod, and closing a paid pod over it would be the same
-                    # mistake this whole split exists to undo. Recorded, and
-                    # tried again on the next pass.
+                    # A read-only status call failing -- or answering with a
+                    # value this cannot date -- is not evidence about the pod,
+                    # and closing a paid pod over it would be the same mistake
+                    # this whole split exists to undo. Recorded, and tried
+                    # again on the next pass. The stamping is inside the same
+                    # `try` deliberately: an exception escaping here would
+                    # leave `arm` through `launch._arm_or_close`'s catch-all
+                    # and terminate the pod, which is exactly the posture this
+                    # method refuses to take on an optional signal.
                     probe_error = str(error)
                 else:
-                    if started_at is not None:
-                        stamped = _stamp(require_utc(started_at, "container start"))
+                    if stamped is not None:
                         return (
                             replace(
                                 attempt,
@@ -1055,7 +1064,7 @@ class ChannelControllerArmer:
         lease: PodLease,
         record: PodRecord,
         process: SupervisorProcess,
-        since: datetime | None = None,
+        since: datetime,
     ) -> _ArmingAttempt:
         """Read until the report appears, the bound expires, or something breaks.
 
@@ -1072,7 +1081,7 @@ class ChannelControllerArmer:
         not that.
         """
 
-        started = attempt.started_at if since is None else since
+        started = since
         while True:
             exited = _exit_status(process)
             if exited is not None:

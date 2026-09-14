@@ -39,6 +39,7 @@ from common.chairs.models import (
     VerifiedSnapshot,
     is_sha256,
 )
+from operations.pod.models import looks_like_credential_value
 
 from .config import (
     FixtureProfile,
@@ -991,8 +992,10 @@ class ServingManager:
         # Which kind of not-ready the last round saw, tracked rather than
         # sniffed back out of `last`: "the port never answered" and "the engine
         # answered and refused" are different facts and only one of them is
-        # what a still-loading server looks like from here.
-        unavailable = False
+        # what a still-loading server looks like from here. `None` until a
+        # probe has come back either way, so a budget that expires before the
+        # first round cannot be reported as an observation of the endpoint.
+        unavailable: bool | None = None
         while True:
             # Each probe below is bounded by whichever is smaller, its own
             # per-request budget or what is left of the watchdog's. Without the
@@ -1910,6 +1913,28 @@ travels with the refusal.
 """
 
 
+def _redacted(text: str) -> str:
+    """Blank out credential-shaped tokens before a launch log leaves the machine.
+
+    This refusal now carries launch-log bytes into places the log itself never
+    went -- a journal record, a pod report, a phone notification -- and a log is
+    the child's own stdout, not a value this module composed. `models
+    .looks_like_credential_value` is the shape test `bootstrap_main`'s argv
+    refusal and `fixture.py`'s drill scrub already share, and its docstring asks
+    new boundaries to reuse it rather than re-express it; a tail that travels is
+    one. Whitespace is preserved line by line so the progress line a reader is
+    meant to recognise still reads as one.
+    """
+
+    return "\n".join(
+        " ".join(
+            "[redacted]" if looks_like_credential_value(token) else token
+            for token in line.split(" ")
+        )
+        for line in text.splitlines()
+    )
+
+
 def _progress_log_line(tail: str) -> str | None:
     """The most recent launch-log line showing engine startup progress, if any."""
 
@@ -1924,7 +1949,7 @@ def _progress_log_line(tail: str) -> str | None:
 
 
 def _watchdog_timeout(
-    process: ServerProcess, *, last: str, unavailable: bool, budget_seconds: float
+    process: ServerProcess, *, last: str, unavailable: bool | None, budget_seconds: float
 ) -> ReadinessError:
     """Say which kind of not-ready this was, and carry the evidence for it.
 
@@ -1936,11 +1961,18 @@ def _watchdog_timeout(
     log can tell them apart, and it was already read every poll for fatal
     signatures -- it just never reached the refusal.
 
+    ``unavailable`` is three-valued on purpose: ``True`` for a port that never
+    answered, ``False`` for an engine that answered and was not ready, and
+    ``None`` for a budget that ran out before any probe came back at all --
+    which a one-second ``startup_timeout_seconds`` can reach. Collapsing the
+    third into either of the others would put a claim about an endpoint nobody
+    reached into a durable record.
+
     The diagnosis and the last readiness answer stay on the first line, ahead
     of the log tail, because that is where every reader of this message looks.
     """
 
-    tail = process.read_tail()
+    tail = _redacted(process.read_tail())
     if tail.startswith("VLLM_LOG_UNREADABLE:"):
         return ReadinessError(
             "VLLM_WATCHDOG_TIMEOUT",
@@ -1959,17 +1991,23 @@ def _watchdog_timeout(
             "(config/serving_recipes_real.toml records the derivation per row) rather than "
             "reading this as a failure to start"
         )
-    elif unavailable:
+    elif unavailable is True:
         diagnosis = (
             f"connection refused, not still loading: {last} -- and after "
             f"{budget_seconds:.0f}s nothing in this launch log shows the engine loading "
             "weights, capturing graphs or initializing, so raising "
             "startup_timeout_seconds is unlikely to help"
         )
-    else:
+    elif unavailable is False:
         diagnosis = (
             f"answered but never ready: {last} -- after {budget_seconds:.0f}s the endpoint "
             "was reachable and nothing in this launch log shows the engine still loading"
+        )
+    else:
+        diagnosis = (
+            f"no readiness probe was ever answered: {last} -- the "
+            f"{budget_seconds:.0f}s startup_timeout_seconds bound was gone before the "
+            "first round completed, so nothing here observed the endpoint at all"
         )
     excerpt = tail[-_WATCHDOG_TAIL_BYTES:].strip()
     if not excerpt:

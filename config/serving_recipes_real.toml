@@ -214,7 +214,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -245,7 +245,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -276,7 +276,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -307,7 +307,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -338,7 +338,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -369,7 +369,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -402,7 +402,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -433,7 +433,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -464,7 +464,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -495,7 +495,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -526,7 +526,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -557,7 +557,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "auto"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: derive from weight bytes / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -594,7 +594,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder, and the least plausible one here: 51.7 GiB of weights / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder, least plausible here: 51.7 GiB / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -628,7 +628,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder, and the least plausible one here: 51.7 GiB of weights / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder, least plausible here: 51.7 GiB / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -659,7 +659,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder, and the least plausible one here: 51.7 GiB of weights / the volume read rate the first boot measures, plus graph capture; see the header
+startup_timeout_seconds = 300  # UNMEASURED placeholder, least plausible here: 51.7 GiB / volume read rate + graph capture (see the header)
 poll_interval_seconds = 2
 request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }

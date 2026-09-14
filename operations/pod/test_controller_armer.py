@@ -147,7 +147,8 @@ class FakeLiveness:
 
     ``starts_after`` is the number of probes that answer ``None`` before the
     start moment appears, which is what an image pull looks like from the
-    launcher: the pod exists and nothing has run in it yet.
+    launcher: the pod exists and nothing has run in it yet. ``answers`` lets a
+    drill hand back a value that is not a datable start moment at all.
     """
 
     def __init__(
@@ -157,11 +158,13 @@ class FakeLiveness:
         starts_after: int = 0,
         never: bool = False,
         error: Exception | None = None,
+        answers: object = None,
     ) -> None:
         self.clock = clock
         self.starts_after = starts_after
         self.never = never
         self.error = error
+        self.answers = answers
         self.probes = 0
         self.probed_at: list[float] = []
 
@@ -172,6 +175,8 @@ class FakeLiveness:
             raise self.error
         if self.never or self.probes <= self.starts_after:
             return None
+        if self.answers is not None:
+            return self.answers  # type: ignore[return-value]
         return self.clock.now()
 
 
@@ -1300,3 +1305,40 @@ def test_an_object_that_is_not_a_liveness_probe_is_refused_at_construction() -> 
         ChannelControllerArmer(
             channel=InMemoryChannel(), supervisor_argv=("python",), liveness=object()
         )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [datetime(2026, 9, 2, 9, 0), "2026-09-02T09:00:00Z", 1_756_800_000],
+    ids=["naive-datetime", "string", "epoch-seconds"],
+)
+def test_a_probe_answering_with_something_undatable_never_reaches_the_launcher(
+    tmp_path: Path, answer: object
+) -> None:
+    """A probe that answers badly must not close a paid pod.
+
+    `require_utc` raises on a naive datetime or a non-datetime, and an
+    exception escaping the container wait would leave `arm` through
+    `launch._arm_or_close`'s catch-all as a non-armed verdict -- terminating
+    the pod over an optional signal, which is the exact posture this split
+    exists to remove. It is recorded as a probe that could not answer instead.
+    """
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock, lifetime=3600)
+    channel = InMemoryChannel({REPORT_OBJECT: report(lease, record)})
+    liveness = FakeLiveness(clock, answers=answer)
+
+    result = arm(
+        armer(
+            clock, channel, FakeStarter(channel), liveness=liveness, container_timeout_seconds=30
+        ),
+        ask,
+        record,
+        store,
+        lease,
+    )
+
+    assert result.armed
+    assert "the last probe could not answer" in result.detail
+    assert "container start" in result.detail
