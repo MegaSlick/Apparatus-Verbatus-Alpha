@@ -9,10 +9,12 @@ import os
 import pwd
 import stat
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Final, Sequence
 
+from common.checkout import missing_checkout_resources
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
 from operations.pod.models import PodCreateRequest, require_utc
@@ -27,12 +29,136 @@ from .advance import (
 from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .ingest import ingest_in_custody
+from .records import DescriptorStore, ReceiptStore
 from .review import ReadOnlyRun
 from .spend import SpendSurface
-from .surface import DEFAULT_FIXTURE, OperatorSurface
+from .surface import DEFAULT_FIXTURE, OperatorSurface, bounded_tail
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
 MAX_REQUEST_BYTES = 1024 * 1024
+
+_CHECKOUT_RESOURCES_BY_VERB: Final[dict[str, tuple[str, ...]]] = {
+    # What each word reads from the workspace by checkout-relative path
+    # (`common/checkout.py` names the three). `status`, `export`, `close`,
+    # `fetch-run`, `review`, `advance`, `backup`, `upload` and `scantailor`
+    # are absent on purpose: their workspace is legitimately not the checkout
+    # -- a folder of run trees, a backup drive -- and refusing them there
+    # would refuse the operator's own data.
+    "run": ("pipeline", "config", "proof"),
+    "boot": ("config", "proof"),
+    "ingest": ("config",),
+    "triage": ("config",),
+    "launch": ("config",),
+    "spend": ("config",),
+}
+
+
+def _checkout_resources_read(args: argparse.Namespace) -> tuple[str, ...]:
+    """The checkout directories this exact invocation will read from its workspace."""
+
+    needed = _CHECKOUT_RESOURCES_BY_VERB.get(args.verb, ())
+    # A reviewed file named on the command line replaces the workspace default
+    # it would otherwise have been read from.
+    if args.verb == "launch" and args.spend is not None:
+        return ()
+    if args.verb == "spend" and args.policy is not None:
+        return ()
+    if args.verb == "ingest" and args.policy is not None:
+        return ()
+    return needed
+
+
+def _require_workspace_checkout(workspace: Path, args: argparse.Namespace) -> None:
+    """Refuse, before anything starts, a workspace missing what this word reads.
+
+    `entry.main` checks the directory the code was imported from, which is
+    right for an installed wheel and wrong for the case that actually happens:
+    the `verbatus` script started from a folder that is not the checkout. Every
+    run resolves its stage programs, configuration and proof material from
+    `--workspace`, and that is what is checked here -- for exactly the
+    directories the chosen word reads, so a word whose workspace is not the
+    checkout is never refused for lacking one.
+    """
+
+    needed = _checkout_resources_read(args)
+    if not needed:
+        return
+    missing = tuple(name for name in missing_checkout_resources(workspace) if name in needed)
+    if missing:
+        raise OperatorError(
+            ErrorCode.NOT_A_CHECKOUT,
+            detail=(
+                f"`verbatus {args.verb}` reads {', '.join(needed)} from its workspace, and "
+                f"{workspace} has no {', '.join(missing)} directory; start from the checkout "
+                "or name it with --workspace"
+            ),
+        )
+
+
+def record_unexpected(
+    error: BaseException, arguments: Sequence[str], state: Path | None
+) -> OperatorError:
+    """Turn an unclassified failure into the operator message, with a receipt behind it.
+
+    The catch-all used to keep only `str(error)` -- no receipt, no trace -- so
+    the one failure class with nothing to hand to a later session was the one
+    nobody had prepared for. The receipt carries the exception, a bounded
+    trace, the command and the working directory; the message names the
+    receipt first, because `sanitize_detail` cuts a rendered detail at a
+    traceback header and an exception message can contain one.
+    """
+
+    described = f"{type(error).__name__}: {error}"
+    if state is None:
+        # The failure came before `--state-dir` was resolved; the default
+        # location is where the operator's other records already are.
+        try:
+            state = _default_state_dir()
+        except Exception:  # noqa: BLE001 -- best effort; the message below says so
+            state = None
+    if state is None:
+        return OperatorError(
+            ErrorCode.UNEXPECTED,
+            detail=f"No receipt could be saved (no state directory could be resolved). {described}",
+        )
+    # Bounded like a child's output: a receipt past `MAX_RECORD_BYTES` cannot
+    # be read back, and an exception message can carry a whole document.
+    message = bounded_tail(str(error))
+    payload = {
+        "summary": (
+            "Verbatus met a problem it could not classify: "
+            f"{type(error).__name__}: {_first_line(message)}"
+        ),
+        "state": "unexpected",
+        "exception_type": type(error).__name__,
+        "message": message,
+        "traceback": bounded_tail(
+            "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        ),
+        "argv": [str(word) for word in arguments],
+        "cwd": os.getcwd(),
+    }
+    try:
+        receipt = ReceiptStore(state).write("unexpected", payload)
+        DescriptorStore(state).record("unexpected", receipt)
+    except Exception as record_error:  # noqa: BLE001 -- said aloud, never over the failure
+        return OperatorError(
+            ErrorCode.UNEXPECTED,
+            detail=(
+                f"No receipt could be saved under {state} ({record_error}); this message is "
+                f"the only record. {described}"
+            ),
+        )
+    return OperatorError(
+        ErrorCode.UNEXPECTED, detail=f"Saved unexpected receipt: {receipt}. {described}"
+    )
+
+
+def _first_line(text: str) -> str:
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
 
 
 def _is_within(path: Path, directory: Path) -> bool:
@@ -427,6 +553,7 @@ def build_parser() -> PlainParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    state: Path | None = None
     try:
         # Parser construction resolves the environment-derived state root and
         # belongs inside the same refusal boundary as parsing and execution.
@@ -444,6 +571,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
         else:
             state = _default_state_dir(workspace)
+        _require_workspace_checkout(workspace, args)
         _warn_about_abandoned_state_dir(workspace, using_default=not explicit_state)
         surface = OperatorSurface(
             workspace,
@@ -545,7 +673,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 to_stage=args.to_stage,
             )
         elif args.verb == "backup":
-            _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace)
+            _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace, surface)
         elif args.verb == "triage":
             _triage_queue(args, workspace)
         elif args.verb == "scantailor":
@@ -577,8 +705,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     # Raw implementation failures must reach the same three-part operator contract.
     except Exception as error:
-        wrapped = OperatorError(ErrorCode.UNEXPECTED, detail=str(error))
-        _print(wrapped.render())
+        _print(record_unexpected(error, arguments, state).render())
         return 2
     return 0
 
@@ -682,8 +809,20 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path, *, raw: boo
         _print(line)
 
 
-def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _workspace: Path) -> None:
-    """Copy evidence only in the no-network, credential-free custody child."""
+def _backup_in_custody(
+    run_root: Path,
+    run_id: str,
+    mac_directory: Path,
+    _workspace: Path,
+    surface: OperatorSurface,
+) -> None:
+    """Copy evidence only in the no-network, credential-free custody child.
+
+    ``surface`` is where the operator's own receipt of the attempt goes: which
+    run root was copied where, with what snapshot, or why it was refused. A
+    backup used to leave only its snapshot on the destination, so `status`
+    could not say a backup had ever happened.
+    """
 
     from .backup import (
         BackupRefusal,
@@ -695,6 +834,11 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
         verify_backup_snapshot,
     )
 
+    facts = {
+        "run_id": run_id,
+        "run_root": str(Path(run_root).absolute()),
+        "mac_directory": str(Path(mac_directory).absolute()),
+    }
     # The parent must reject overlap before creating the layout; otherwise its
     # setup can write `objects/` and `snapshots/` inside the sealed source.
     # Custody grants the child publication rights but deliberately withholds
@@ -705,6 +849,7 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
         source_identity = required_identity(source, what="source run tree")
         destination_identity = destination_identities(destination)
     except BackupRefusal as refusal:
+        surface.record_backup(state="refused", facts=facts, detail=str(refusal))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
     # `--workspace` selects project data for other verbs; it is not authority to
     # replace this custody worker's code: the surviving python_module_command
@@ -729,6 +874,7 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
         detail = launcher or completed.stderr.strip() or completed.stdout.strip()
         if not detail:
             detail = f"backup worker exited {completed.returncode} without a diagnostic"
+        surface.record_backup(state="worker-failed", facts=facts, detail=detail)
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=detail)
     try:
         report = BackupReport.from_record(json.loads(completed.stdout))
@@ -739,11 +885,14 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
             expected_destination_identities=destination_identity,
         )
     except (BackupRefusal, ValueError, RecursionError) as error:
+        surface.record_backup(state="unverified", facts=facts, detail=str(error))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
+    receipt = surface.record_backup(state="complete", facts=facts, report=report.to_record())
     _print(
         "Mac backup complete: "
         f"{report.copied} copied, {report.reused} reused; snapshot {report.snapshot_sha256}."
     )
+    _print(f"Saved backup receipt: {receipt}")
 
 
 def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:

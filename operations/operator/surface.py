@@ -14,6 +14,8 @@ import hashlib
 import json
 import os
 import secrets
+import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -26,7 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterator, Protocol, Sequence
+from typing import Any, Callable, Final, Iterator, Protocol, Sequence
 
 from common.chairs.config import load_models_toml
 from common.contracts.canonical import canonical_bytes, digest_bytes
@@ -583,7 +585,7 @@ class OperatorSurface:
                         "summary": f"Paid {prepared.action} did not become ready: {result.state.value}.",
                         "state": result.state.value,
                         "detail": result.detail,
-                        "confirmation_receipt": str(confirmation_receipt),
+                        "confirmation_receipt": self._state_relative(confirmation_receipt),
                         "presented_review_sha256": prepared.review_digest,
                         "current_preview": (
                             None
@@ -627,8 +629,15 @@ class OperatorSurface:
                     "action": prepared.action,
                     "pod": _pod_record(result.record),
                     "request": _request_record(prepared.request),
-                    "confirmation_receipt": str(confirmation_receipt),
-                    "lease": str(result.lease_path) if result.lease_path is not None else None,
+                    "confirmation_receipt": self._state_relative(confirmation_receipt),
+                    # Relative to the state root, like every reference a receipt
+                    # makes to a file under it: `close` rejoins it, so a moved
+                    # or restored state directory still finds its own lease.
+                    "lease": (
+                        self._state_relative(result.lease_path)
+                        if result.lease_path is not None
+                        else None
+                    ),
                     "controller_arming": (
                         result.controller_arming.to_record()
                         if result.controller_arming is not None
@@ -752,13 +761,17 @@ class OperatorSurface:
                     "summary": "Upload is partial and can be resumed from its verified files.",
                     "state": "partial-transfer",
                     "submission_manifest_sha256": manifest_sha256,
+                    "volume": _volume_record(volume),
                     "detail": str(error),
                     "zero_gpu_hours": True,
                 },
                 descriptor_action="upload",
             )
+            # The cause on the screen as well as in the receipt, like every
+            # sibling refusal here: a receipt path where the reason should be
+            # sends the operator to open a JSON file to learn what to fix.
             raise OperatorError(
-                ErrorCode.UPLOAD_PARTIAL, detail=f"Saved receipt: {receipt}"
+                ErrorCode.UPLOAD_PARTIAL, detail=f"{error} Saved receipt: {receipt}"
             ) from error
         receipt = self._write_action(
             "upload",
@@ -770,6 +783,7 @@ class OperatorSurface:
                 ),
                 "state": "complete",
                 "submission_manifest_sha256": manifest_sha256,
+                "volume": _volume_record(volume),
                 "transfer": report.to_record(),
                 "zero_gpu_hours": True,
             },
@@ -800,9 +814,13 @@ class OperatorSurface:
                 else "Boot report is red; the fixture-only environment is not ready."
             ),
             "report": report.to_record(),
-            "bootstrap_journal": str(journal.path),
-            "launch_receipt": str(launch_receipt) if launch_receipt is not None else None,
-            "upload_receipt": str(upload_receipt) if upload_receipt is not None else None,
+            "bootstrap_journal": self._state_relative(journal.path),
+            "launch_receipt": (
+                self._state_relative(launch_receipt) if launch_receipt is not None else None
+            ),
+            "upload_receipt": (
+                self._state_relative(upload_receipt) if upload_receipt is not None else None
+            ),
         }
         receipt = self._write_action("boot", payload, descriptor_action="boot")
         if not report.green:
@@ -911,6 +929,7 @@ class OperatorSurface:
                     "run_id": checked_id,
                     "prefix": prefix,
                     "into": str(destination_root),
+                    "volume": _volume_record(volume),
                     "detail": str(error),
                     "zero_gpu_hours": True,
                 },
@@ -944,6 +963,10 @@ class OperatorSurface:
                 "run_id": checked_id,
                 "prefix": prefix,
                 "into": str(destination_root),
+                # Which volume the tree came from: the one identifier needed
+                # to go back for a missing object, and the only way to tell
+                # two volumes' runs of the same id apart.
+                "volume": _volume_record(volume),
                 "fetched": outcome.fetched,
                 "reused": outcome.reused,
                 "bytes": outcome.bytes,
@@ -1061,12 +1084,23 @@ class OperatorSurface:
 
         run_root = self.state_root / "runs"
         ingress_mode = "real" if submission_folder is not None else "synthetic-fixture"
+        started_at = utc_stamp(self.now())
         prior_state = self._prior_run_state(run_id)
         if submission_folder is None:
             pages, acts, declared_ok = _declared_work(self.workspace)
             if not declared_ok:
-                self.present(
-                    "The declared fixture could not be read; naming pages and acts generically."
+                # Not a naming inconvenience: the orchestrator reads the same
+                # fixture from the same place, so a run started here would fail
+                # a moment later for a reason the operator never sees. This is
+                # the condition `NOT_A_CHECKOUT` was written for, said before
+                # anything starts.
+                raise OperatorError(
+                    ErrorCode.NOT_A_CHECKOUT,
+                    detail=(
+                        f"the declared fixture could not be read from {self.workspace / 'proof'}; "
+                        "a run reads its fixture, stage programs and configuration from the "
+                        "checkout it is started in, so nothing was started"
+                    ),
                 )
             extent = f"Checking {', '.join(pages)}."
         else:
@@ -1077,7 +1111,10 @@ class OperatorSurface:
                 "checks against the data-handling policy."
             )
 
-        if prior_state == "interrupted-recoverable":
+        if prior_state in {"interrupted-recoverable", "started"}:
+            # `started` with no later record is a run that never reported an
+            # end state -- killed, or its terminal closed -- which is the same
+            # resumable position the crash drill records explicitly.
             opening = f"Resuming run {run_id}. {extent}"
         elif prior_state is not None:
             opening = (
@@ -1095,44 +1132,6 @@ class OperatorSurface:
             )
         else:
             self.present("This run sends the recorded real submission to the Door's data gate.")
-        if self.faults.laptop_crash:
-            self.faults.laptop_crash = False
-            ingress_label = "real submission" if submission_folder is not None else "fixture"
-            observed_work = (
-                "The real submission's pages reached the Door."
-                if submission_folder is not None
-                else "The fixture pages reached the Door."
-            )
-            self._run_door_stage(
-                run_root,
-                run_id,
-                scenario,
-                submission_folder=submission_folder,
-                submission_manifest=submission_manifest,
-                data_gate_policy=data_gate_policy,
-                roster_argv=roster_argv,
-            )
-            receipt = self._write_action(
-                "run",
-                {
-                    "summary": (
-                        f"Run interrupted after the Door recorded the {ingress_label}'s page "
-                        "evidence; it can resume."
-                    ),
-                    "state": "interrupted-recoverable",
-                    "ingress": ingress_mode,
-                    "run_root": str(run_root),
-                    "run_id": run_id,
-                    "scenario": scenario,
-                    "fixture": fixture,
-                    "last_observed_work": observed_work,
-                },
-                descriptor_action="run",
-            )
-            self.present(
-                f"The laptop-crash drill interrupted after the {ingress_label} reached the Door."
-            )
-            raise OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
         command = [
             sys.executable,
             str(self.workspace / "pipeline" / "orchestrator" / "run.py"),
@@ -1153,30 +1152,146 @@ class OperatorSurface:
             )
         )
         command.extend(roster_argv)
-        completed = self.runner(
-            command,
-            cwd=self.workspace,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=_stage_environment(),
+        # Every receipt this run writes carries the same identity, whatever its
+        # end state: which run, where its tree is, what was asked for, which
+        # commit and which configuration files (by digest) it ran under, and
+        # when it started. A held run's receipt was the one that most needed
+        # these and had none of them; a later session diagnosing a run from
+        # the state directory alone has nothing else to go on.
+        commit, commit_unreadable = _repository_commit_or_reason(self.workspace)
+        facts: dict[str, Any] = {
+            "ingress": ingress_mode,
+            "run_root": self._state_relative(run_root),
+            "run_id": run_id,
+            "scenario": scenario,
+            "fixture": fixture,
+            "started_at": started_at,
+            "argv": list(command),
+            "repository_commit": commit,
+            "repository_commit_unreadable": commit_unreadable,
+            "configuration": {
+                "models_config": _config_binding(models_config),
+                "serving_recipes_config": _config_binding(serving_recipes_config),
+                "witness_context_config": _config_binding(witness_context_config),
+                "submission_manifest": _config_binding(submission_manifest),
+                "data_gate_policy": _config_binding(data_gate_policy),
+            },
+        }
+        # Written before the child starts, so a run killed by a signal this
+        # process cannot catch (SIGKILL, the pod timer, a closed laptop lid)
+        # still leaves a record naming the run and its tree. `status` used to
+        # report an empty machine over a half-written run tree.
+        self._write_action(
+            "run",
+            {
+                **facts,
+                "summary": (
+                    f"Run {run_id} started; this receipt records the start only, not an end state."
+                ),
+                "state": "started",
+            },
+            descriptor_action="run",
         )
-        if completed.returncode not in {0, 3}:
+        if self.faults.laptop_crash:
+            self.faults.laptop_crash = False
+            ingress_label = "real submission" if submission_folder is not None else "fixture"
+            observed_work = (
+                "The real submission's pages reached the Door."
+                if submission_folder is not None
+                else "The fixture pages reached the Door."
+            )
+            self._run_door_stage(
+                run_root,
+                run_id,
+                scenario,
+                submission_folder=submission_folder,
+                submission_manifest=submission_manifest,
+                data_gate_policy=data_gate_policy,
+                roster_argv=roster_argv,
+            )
             receipt = self._write_action(
                 "run",
                 {
-                    "summary": "Run ended before its Armarium record was available.",
-                    "state": "failed",
-                    "ingress": ingress_mode,
-                    "run_root": str(run_root),
-                    "run_id": run_id,
-                    "scenario": scenario,
-                    "fixture": fixture,
-                    "detail": completed.stderr or completed.stdout,
+                    **facts,
+                    "summary": (
+                        f"Run interrupted after the Door recorded the {ingress_label}'s page "
+                        "evidence; it can resume."
+                    ),
+                    "state": "interrupted-recoverable",
+                    "last_observed_work": observed_work,
                 },
                 descriptor_action="run",
             )
-            raise OperatorError(ErrorCode.RUN_FAILED, detail=f"Saved run receipt: {receipt}")
+            self.present(
+                f"The laptop-crash drill interrupted after the {ingress_label} reached the Door."
+            )
+            self._present_review_command(run_root, run_id)
+            raise OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
+        try:
+            completed = self._run_orchestrator(command)
+        except KeyboardInterrupt:
+            # Ctrl+C, or SIGTERM turned into the same thing by
+            # `_run_orchestrator`. The child is gone; what it sealed is in the
+            # tree, and the receipt says so instead of the run vanishing from
+            # every screen.
+            receipt = self._write_action(
+                "run",
+                {
+                    **facts,
+                    "summary": (
+                        f"Run {run_id} was interrupted before the orchestrator reported an "
+                        "end state; it can resume."
+                    ),
+                    "state": "interrupted-recoverable",
+                    "interrupted_at": utc_stamp(self.now()),
+                    "last_observed_work": (
+                        "The orchestrator was interrupted by a signal before it reported an "
+                        "end state; every stage it sealed remains in the run tree."
+                    ),
+                },
+                descriptor_action="run",
+            )
+            self.present(f"Run {run_id} was interrupted before it reported an end state.")
+            self._present_review_command(run_root, run_id)
+            raise OperatorError(
+                ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}"
+            ) from None
+        ended: dict[str, Any] = {
+            **facts,
+            "ended_at": utc_stamp(self.now()),
+            "exit_code": completed.returncode,
+            "stderr_tail": bounded_tail(completed.stderr),
+            "stdout_tail": bounded_tail(completed.stdout),
+        }
+        # The stages speak on stderr -- the Door's refusal count, a hold's
+        # reason -- and only the crash drill used to show it. Shown here for
+        # every exit, the way `_run_door_stage` already argues it must be.
+        for line in completed.stderr.rstrip().splitlines():
+            self.present(line)
+        if completed.returncode not in {0, 3}:
+            output = completed.stderr or completed.stdout
+            reason = _last_line(output) or (
+                f"the orchestrator exited {completed.returncode} without any output"
+            )
+            receipt = self._write_action(
+                "run",
+                {
+                    **ended,
+                    "summary": "Run ended before its Armarium record was available.",
+                    "state": "failed",
+                    "reason": reason,
+                    "detail": bounded_tail(output),
+                },
+                descriptor_action="run",
+            )
+            self.present(f"Run {run_id} failed: {reason}")
+            self._present_review_command(run_root, run_id)
+            # The reason travels on the screen as well as in the receipt: a
+            # path where the cause should be sends the operator to `status`,
+            # which then has to show it -- and did not.
+            raise OperatorError(
+                ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}"
+            )
         try:
             export_payload = self._armarium_export(run_root, run_id)
             aggregate = export_payload["aggregate"]
@@ -1188,23 +1303,94 @@ class OperatorSurface:
             if not isinstance(page_records, list):
                 raise ValueError("the Armarium export's page record is not a list")
         except Exception as error:
-            self._record_failure("run", "armarium-record-unreadable", str(error))
-            raise OperatorError(ErrorCode.RUN_FAILED, detail=str(error)) from error
+            if completed.returncode == 3:
+                # Held before the Armarium -- the Attestatores' hold, or a
+                # staged-mode boundary -- so no export record exists to carry
+                # the reason; the orchestrator named it on stderr and that is
+                # what the receipt keeps. This was filed as a failed run with
+                # no run id and the reason discarded.
+                reason = (
+                    _last_line(completed.stderr)
+                    or _last_line(completed.stdout)
+                    or "the orchestrator reported a hold, and no Armarium export record "
+                    "exists to name the reason"
+                )
+                receipt = self._write_action(
+                    "run",
+                    {
+                        **ended,
+                        "summary": (
+                            f"Run {run_id} is held before the Armarium; the hold is recorded "
+                            "in the run tree and no export record exists yet."
+                        ),
+                        "state": "held",
+                        "reason": reason,
+                        "reasons": [reason],
+                        "armarium_export": None,
+                        "armarium_export_unreadable": str(error),
+                    },
+                    descriptor_action="run",
+                )
+                self.present("Run is held. It was not called complete.")
+                self.present(f"Hold reason: {reason}")
+                self._present_review_command(run_root, run_id)
+                self._notify(
+                    "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
+                )
+                raise OperatorError(
+                    ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
+                ) from error
+            reason = f"the Armarium export record could not be read: {error}"
+            receipt = self._write_action(
+                "run",
+                {
+                    **ended,
+                    "summary": "Run ended before its Armarium record was available.",
+                    "state": "armarium-record-unreadable",
+                    "reason": reason,
+                    "detail": reason,
+                    "armarium_export_unreadable": str(error),
+                },
+                descriptor_action="run",
+            )
+            self._present_review_command(run_root, run_id)
+            raise OperatorError(
+                ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}"
+            ) from error
+        # `reasons` is external data: only a list may feed decision output, or a
+        # string would become one hold reason per character and a mapping its keys.
+        reasons = aggregate.get("reasons")
+        if isinstance(reasons, list):
+            malformed: str | None = None
+            notification_reasons = reasons
+        else:
+            malformed = (
+                "the Armarium record's hold reasons were not a list and were not read; "
+                "the run is still held"
+            )
+            notification_reasons = [malformed]
+            reasons = []
+        expected = export_payload.get("expected_acts")
         receipt = self._write_action(
             "run",
             {
+                **ended,
                 "summary": f"Run finished with recorded state: {state}.",
                 "state": state,
-                "ingress": ingress_mode,
-                "run_root": str(run_root),
-                "run_id": run_id,
-                "scenario": scenario,
-                "fixture": fixture,
-                "armarium_export": _armarium_reference(run_root, run_id),
+                "armarium_export": self._state_relative(
+                    Path(_armarium_reference(run_root, run_id))
+                ),
+                # The aggregate's own reasons, kept where `status` can show
+                # them before any export exists.
+                "reasons": [
+                    reason if isinstance(reason, str) else str(reason) for reason in reasons
+                ],
+                "reasons_unreadable": malformed,
+                "expected_acts": expected if isinstance(expected, int) else None,
+                "pages_accounted_for": len(page_records),
             },
             descriptor_action="run",
         )
-        expected = export_payload.get("expected_acts")
         expected_on_screen = f"{expected} total" if expected is not None else "total not recorded"
         expected_in_notice = (
             f"{expected} act(s) accounted for" if expected is not None else "act total not recorded"
@@ -1224,30 +1410,19 @@ class OperatorSurface:
         if state == "complete":
             self.present("Run complete. Its pages and acts reached the Armarium record.")
             self.present(f"Saved run receipt: {receipt}")
+            self._present_review_command(run_root, run_id)
             self._notify(
                 "milestone",
                 f"Verbatus run {run_id} finished: {len(page_records)} page(s), "
                 f"{expected_in_notice}.",
             )
             return RunOutcome(state, run_root, run_id, aggregate, export_payload)
-        # `reasons` is external data: only a list may feed decision output, or a
-        # string would become one hold reason per character and a mapping its keys.
-        reasons = aggregate.get("reasons")
-        if isinstance(reasons, list):
-            malformed: str | None = None
-            notification_reasons = reasons
-        else:
-            malformed = (
-                "the Armarium record's hold reasons were not a list and were not read; "
-                "the run is still held"
-            )
-            notification_reasons = [malformed]
-            reasons = []
         self.present("Run is held. It was not called complete.")
         if malformed is not None:
             self.present(f"Hold reason: UNREADABLE. {malformed}")
         for reason in reasons:
             self.present(f"Hold reason: {reason}")
+        self._present_review_command(run_root, run_id)
         # A hold is the pipeline asking a person to decide: the `decision`
         # moment, sent when the hold happens rather than when someone looks.
         # `notification_reasons` carries the UNREADABLE marker even when the
@@ -1258,27 +1433,95 @@ class OperatorSurface:
             f"Verbatus run {run_id} is held and needs a decision: "
             f"{'; '.join(str(reason) for reason in notification_reasons) or 'no reason recorded'}",
         )
-        raise OperatorError(ErrorCode.RUN_HELD, detail=f"Saved run receipt: {receipt}")
+        raise OperatorError(
+            ErrorCode.RUN_HELD,
+            detail=(
+                f"{len(notification_reasons)} hold reason(s) are recorded above and in the "
+                f"receipt. Saved run receipt: {receipt}"
+            ),
+        )
+
+    def _run_orchestrator(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        """Run the orchestrator child, with SIGTERM meaning what SIGINT already means.
+
+        `subprocess.run` kills its child and re-raises on `KeyboardInterrupt`,
+        so a Ctrl+C reaches `run` as an interruption it can record. A SIGTERM
+        -- the pod timer, a closed session, `kill` -- ended this process with
+        no output and no receipt at all, leaving a half-written run tree that
+        `status` reported as an empty machine. For the child's lifetime it is
+        turned into the same interruption. SIGKILL cannot be caught by anyone;
+        the receipt `run` writes before this starts covers that case.
+        """
+
+        def interrupted(signum: int, frame: object) -> None:
+            del signum, frame
+            raise KeyboardInterrupt
+
+        installed = False
+        previous: Any = None
+        try:
+            previous = signal.signal(signal.SIGTERM, interrupted)
+            installed = True
+        except ValueError:
+            # Not the main thread: a handler cannot be installed here, and the
+            # receipt written before the child started still names the run.
+            pass
+        try:
+            return self.runner(
+                command,
+                cwd=self.workspace,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=_stage_environment(),
+            )
+        finally:
+            if installed:
+                # `signal.signal` reports `None` for a handler not installed
+                # from Python; restoring that spelling is a TypeError, and the
+                # default disposition is what such a process had.
+                signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
+
+    def _present_review_command(self, run_root: Path, run_id: str) -> None:
+        """The one thing `review`, `backup` and `advance` all need and no verb printed."""
+
+        self.present(f"Review it read-only with: {review_command(run_root, run_id)}")
 
     # -- export ---------------------------------------------------------------
 
     def export(self, *, run_id: str | None = None) -> Path:
-        """Make a local evidence bundle from the base-tree Armarium artifact."""
+        """Make a local evidence bundle from the base-tree Armarium artifact.
 
-        run_receipt = self._descriptor_receipt("run")
-        if run_receipt is None:
+        The run is named first, before any work: with no `run_id` the most
+        recently recorded run is chosen and said so, rather than discovered
+        from a bundle filename after the fact. With one, the latest receipt for
+        that run is used even when another run was recorded since.
+        """
+
+        run_records = self._run_receipts()
+        if not run_records:
             raise OperatorError(ErrorCode.EXPORT_MISSING)
-        run_record = self.receipts.read(run_receipt)["payload"]
-        recorded_id = run_record.get("run_id")
-        if not isinstance(recorded_id, str):
-            raise OperatorError(ErrorCode.EXPORT_MISSING)
-        if run_id is not None and run_id != recorded_id:
+        if run_id is None:
+            latest = run_records[-1][1].get("run_id")
+            if not isinstance(latest, str):
+                raise OperatorError(ErrorCode.EXPORT_MISSING)
+            recorded_id = latest
+            self.present(
+                f"No run was named, so this exports run {recorded_id}, the run recorded most "
+                "recently in this operator state."
+            )
+        else:
+            recorded_id = run_id
+        matching = [payload for _, payload in run_records if payload.get("run_id") == recorded_id]
+        if not matching:
             raise OperatorError(
                 ErrorCode.EXPORT_MISSING,
-                detail="that run is not the run recorded for this operator session",
+                detail=f"run {recorded_id} is not a run recorded in this operator state",
             )
+        run_record = matching[-1]
         try:
-            run_root = Path(str(run_record["run_root"]))
+            run_root = self._state_path(str(run_record["run_root"]))
+            self.present(f"Exporting run {recorded_id} from run root {run_root}.")
             export_payload = self._armarium_export(run_root, recorded_id)
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
@@ -1312,24 +1555,55 @@ class OperatorSurface:
             # export showed no export at all and the only account of it was one
             # terminal line.
             staged.unlink(missing_ok=True)
-            self._record_failure("export", "local-copy-failed", str(error.detail or error))
+            self._record_failure(
+                "export",
+                "local-copy-failed",
+                str(error.detail or error),
+                facts={"run_id": recorded_id, "run_root": self._state_relative(run_root)},
+            )
             raise
         except (OSError, zipfile.BadZipFile) as error:
             staged.unlink(missing_ok=True)
-            self._record_failure("export", "local-copy-failed", str(error))
+            self._record_failure(
+                "export",
+                "local-copy-failed",
+                str(error),
+                facts={"run_id": recorded_id, "run_root": self._state_relative(run_root)},
+            )
             raise OperatorError(ErrorCode.EXPORT_FAILED, detail=str(error)) from error
         table = reconciliation_table(export_payload)
         for line in table:
             self.present(line)
+        # The receipt's state, the exit status and the notice all follow the
+        # aggregate's own status. A receipt hardcoded to `complete` over a
+        # partial run, exiting 0, is the partial result presented as complete
+        # that GOVERNANCE 2 forbids -- the screen was honest, the exit status
+        # and the record were not.
+        aggregate = export_payload.get("aggregate")
+        recorded_status = aggregate.get("status") if isinstance(aggregate, dict) else None
+        state = recorded_status if isinstance(recorded_status, str) else "unknown"
+        complete = state == "complete"
+        reasons = aggregate.get("reasons") if isinstance(aggregate, dict) else None
         receipt = self._write_action(
             "export",
             {
-                "summary": "Base Armarium evidence bundle copied locally.",
-                "state": "complete",
+                "summary": (
+                    "Base Armarium evidence bundle copied locally."
+                    if complete
+                    else "Base Armarium evidence bundle copied locally for a run whose "
+                    f"recorded state is {state}: a partial result, not a finished one."
+                ),
+                "state": state,
                 "run_id": recorded_id,
-                "bundle": str(destination),
+                "run_root": self._state_relative(run_root),
+                "bundle": self._state_relative(destination),
                 "sha256": digest,
                 "reconciliation": table,
+                "reasons": (
+                    [reason if isinstance(reason, str) else str(reason) for reason in reasons]
+                    if isinstance(reasons, list)
+                    else None
+                ),
                 "assumption": "Spec 11 is not in this tree; this is a copy of the base Armarium evidence, not a Spec 11 product bundle.",
             },
             descriptor_action="export",
@@ -1337,8 +1611,26 @@ class OperatorSurface:
         self.present(f"Local Armarium evidence bundle: {destination}")
         self.present("This is base Armarium evidence, not a Spec 11 product bundle.")
         self.present(f"Saved export receipt: {receipt}")
-        self._notify("milestone", f"Verbatus export for run {recorded_id} landed: {destination}")
-        return destination
+        if complete:
+            self._notify(
+                "milestone", f"Verbatus export for run {recorded_id} landed: {destination}"
+            )
+            return destination
+        self.present(
+            f"This export is PARTIAL: the run's recorded state is {state}, and the bundle holds "
+            "only what was delivered."
+        )
+        self._notify(
+            "milestone",
+            f"Verbatus export for run {recorded_id} landed as {state}, not complete: {destination}",
+        )
+        raise OperatorError(
+            ErrorCode.EXPORT_PARTIAL,
+            detail=(
+                f"recorded run state {state}; the reconciliation above lists every recorded "
+                f"reason. Saved export receipt: {receipt}"
+            ),
+        )
 
     # -- close ---------------------------------------------------------------
 
@@ -1352,7 +1644,7 @@ class OperatorSurface:
         launch_receipt = self._active_launch_receipt()
         if launch_receipt is None:
             raise OperatorError(ErrorCode.CLOSE_NOTHING)
-        launch = self.receipts.read(launch_receipt)["payload"]
+        launch = self._read_receipt(launch_receipt)["payload"]
         pod_raw = launch.get("pod")
         if not isinstance(pod_raw, dict):
             raise OperatorError(ErrorCode.CLOSE_NOTHING)
@@ -1364,7 +1656,7 @@ class OperatorSurface:
             )
         close_receipt = self._descriptor_receipt("close")
         if close_receipt is not None:
-            prior = self.receipts.read(close_receipt)["payload"]
+            prior = self._read_receipt(close_receipt)["payload"]
             if prior.get("pod_id") == record.pod_id:
                 prior_report = prior.get("close_report")
                 if (
@@ -1450,10 +1742,10 @@ class OperatorSurface:
                 {
                     "summary": "Close is UNVERIFIED because the safety lease could not record the provider evidence.",
                     "pod_id": record.pod_id,
-                    "confirmation_receipt": str(confirmation_receipt),
+                    "confirmation_receipt": self._state_relative(confirmation_receipt),
                     "close_report": report.to_record(),
                     "lease_reconciled": False,
-                    "lease": str(lease_store.path),
+                    "lease": self._state_relative(lease_store.path),
                     "lease_record_error": str(error),
                     "spend_policy_error": policy_error,
                 },
@@ -1483,10 +1775,10 @@ class OperatorSurface:
                     else "Close is UNVERIFIED; manual reconciliation is required."
                 ),
                 "pod_id": record.pod_id,
-                "confirmation_receipt": str(confirmation_receipt),
+                "confirmation_receipt": self._state_relative(confirmation_receipt),
                 "close_report": report.to_record(),
                 "lease_reconciled": True,
-                "lease": str(lease_store.path),
+                "lease": self._state_relative(lease_store.path),
                 "spend_policy_error": policy_error,
             },
             descriptor_action="close",
@@ -1535,20 +1827,59 @@ class OperatorSurface:
             for action, path_texts in sorted(descriptor["history"].items()):
                 if action == "active-launch":
                     continue
+                # Read every record of the action first: a run's `started`
+                # receipt is rendered differently once a later receipt of the
+                # same run recorded its end, and that later receipt is further
+                # down the same list.
+                loaded: list[tuple[int, Path | None, dict[str, Any] | None, str | None]] = []
                 for number, path_text in enumerate(path_texts, start=1):
                     try:
-                        record = self.receipts.read(Path(path_text))
-                        payload = record["payload"]
-                        summary = payload.get("summary")
-                        lines.append(
-                            f"- {action} record {number}: "
-                            + (summary if isinstance(summary, str) else "saved record")
+                        receipt_path = self.descriptor.receipt_path(path_text)
+                        loaded.append(
+                            (
+                                number,
+                                receipt_path,
+                                self.receipts.read(receipt_path)["payload"],
+                                None,
+                            )
                         )
-                        lines.extend(_status_projection(action, payload))
+                    except RecordError as error:
+                        loaded.append((number, None, None, str(error)))
+                for number, receipt_path, payload, failure in loaded:
+                    if payload is None or receipt_path is None:
+                        label = f"{action} record {number}"
+                        unreadable.append(f"{label}: {failure}")
+                        lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
+                        continue
+                    summary = payload.get("summary")
+                    lines.append(
+                        f"- {action} record {number}: "
+                        + (summary if isinstance(summary, str) else "saved record")
+                    )
+                    ended_later = action == "run" and any(
+                        later_payload is not None
+                        and later_payload.get("run_id") == payload.get("run_id")
+                        and later_payload.get("state") != "started"
+                        for later_number, _, later_payload, _ in loaded
+                        if later_number > number
+                    )
+                    try:
+                        lines.extend(
+                            _status_projection(
+                                action,
+                                payload,
+                                state_root=self.state_root,
+                                ended_later=ended_later,
+                            )
+                        )
                     except RecordError as error:
                         label = f"{action} record {number}"
                         unreadable.append(f"{label}: {error}")
                         lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
+                        continue
+                    # The file every failure message tells the operator to
+                    # preserve, named where they are told to look for it.
+                    lines.append(f"  Saved receipt: {receipt_path}")
         for line in lines:
             self.present(line)
         if unreadable:
@@ -1782,14 +2113,110 @@ class OperatorSurface:
     def _descriptor_receipt(self, *actions: str) -> Path | None:
         """The receipt for the first named action the descriptor actually carries."""
 
-        descriptor = self.descriptor.load()
+        descriptor = self._load_descriptor()
         if descriptor is None:
             return None
         for action in actions:
             value = descriptor["actions"].get(action)
             if isinstance(value, str):
-                return Path(value)
+                try:
+                    return self.descriptor.receipt_path(value)
+                except RecordError as error:
+                    raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
         return None
+
+    def _load_descriptor(self) -> dict[str, Any] | None:
+        """The descriptor, or the same named refusal `status` gives for an unreadable one.
+
+        Every verb that reads its own records used to let `RecordError` escape
+        to the unclassified handler, whose copy told the operator to photograph
+        the screen and ask for help over a record `status` would have named.
+        """
+
+        try:
+            return self.descriptor.load()
+        except RecordError as error:
+            raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
+
+    def _read_receipt(self, path: Path) -> dict[str, Any]:
+        """One receipt, with an unreadable one named the way `status` names it."""
+
+        try:
+            return self.receipts.read(path)
+        except RecordError as error:
+            raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
+
+    def _run_receipts(self) -> list[tuple[Path, dict[str, Any]]]:
+        """Every run receipt this state root indexes, oldest first, each read whole."""
+
+        descriptor = self._load_descriptor()
+        if descriptor is None:
+            return []
+        loaded: list[tuple[Path, dict[str, Any]]] = []
+        for entry in descriptor["history"].get("run", []):
+            try:
+                path = self.descriptor.receipt_path(entry)
+            except RecordError as error:
+                raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
+            loaded.append((path, self._read_receipt(path)["payload"]))
+        return loaded
+
+    def _state_relative(self, path: Path) -> str:
+        """Record a path under the state root relative to it.
+
+        A receipt that names its run root, its lease or a sibling receipt by
+        absolute path is bound to the directory it was written in; after a copy,
+        a restore or a move every such reference is stale. Under the state root
+        the reference is kept relative and rejoined on read (`_state_path`);
+        anything outside it stays absolute, because there is nothing to rejoin
+        it to.
+        """
+
+        try:
+            return path.resolve().relative_to(self.state_root).as_posix()
+        except (OSError, ValueError):
+            return str(path)
+
+    def _state_path(self, text: str) -> Path:
+        """Rejoin a recorded path: state-relative against this root, absolute as it is."""
+
+        candidate = Path(text)
+        return candidate if candidate.is_absolute() else self.state_root / candidate
+
+    def record_backup(
+        self,
+        *,
+        state: str,
+        facts: dict[str, Any],
+        detail: str | None = None,
+        report: dict[str, Any] | None = None,
+    ) -> Path | None:
+        """The backup verb's receipt, so `status` can say which run went where.
+
+        A backup left only a snapshot on its destination and nothing in the
+        operator's own records; the sequence "ran, backed up, exported" could
+        not be read back without the terminal. A failed attempt is recorded the
+        way every other verb's failure is (`_record_failure`: said aloud, never
+        raised over the failure it records). A verified snapshot's receipt is
+        the verb's own result, and failing to write it is the command's failure.
+        """
+
+        if state != "complete":
+            self._record_failure("backup", state, detail or "", facts=facts)
+            return None
+        return self._write_action(
+            "backup",
+            {
+                **facts,
+                "summary": (
+                    f"Backup of run {facts.get('run_id')} is complete: a verified snapshot is "
+                    f"at {facts.get('mac_directory')}."
+                ),
+                "state": "complete",
+                "report": report,
+            },
+            descriptor_action="backup",
+        )
 
     def _active_launch_receipt(self) -> Path | None:
         return self._descriptor_receipt("active-launch", "launch")
@@ -1811,7 +2238,7 @@ class OperatorSurface:
             launch_receipt = self._active_launch_receipt()
             if launch_receipt is None:
                 return
-            launch = self.receipts.read(launch_receipt)["payload"]
+            launch = self._read_receipt(launch_receipt)["payload"]
             pod_raw = launch.get("pod")
             if not isinstance(pod_raw, dict):
                 # A plain launch receipt with no pod is a recorded refusal, not an
@@ -2009,16 +2436,19 @@ class OperatorSurface:
                     pass
 
     def _prior_run_state(self, run_id: str) -> str | None:
-        """Use the explicitly named prior run receipt, never a search for a convenient one."""
+        """The state this run's own latest receipt records, whatever ran since.
 
-        receipt = self._descriptor_receipt("run")
-        if receipt is None:
-            return None
-        payload = self.receipts.read(receipt)["payload"]
-        if payload.get("run_id") != run_id:
-            return None
-        state = payload.get("state")
-        return state if isinstance(state, str) else None
+        The receipts are read by the run id they carry, never chosen by
+        timestamp or filename; only the last run's receipt used to be
+        consulted, so a run interrupted before another one started was
+        greeted as new.
+        """
+
+        for _path, payload in reversed(self._run_receipts()):
+            if payload.get("run_id") == run_id:
+                state = payload.get("state")
+                return state if isinstance(state, str) else None
+        return None
 
     def _write_action(
         self,
@@ -2043,11 +2473,21 @@ class OperatorSurface:
                 )
             raise OperatorError(failure_code, detail=detail) from error
 
-    def _record_failure(self, action: str, state: str, detail: str) -> None:
+    def _record_failure(
+        self, action: str, state: str, detail: str, *, facts: dict[str, Any] | None = None
+    ) -> None:
+        """Record a verb's failure beside its cause, and any identity the verb had.
+
+        `facts` is what the failed step already knew -- the run id and run root
+        an export was reading, the volume a fetch named -- so the receipt says
+        *which* export or backup failed and not only that one did.
+        """
+
         try:
             self._write_action(
                 action,
                 {
+                    **(facts or {}),
                     "summary": f"{action.capitalize()} did not complete: {state}.",
                     "state": state,
                     "detail": detail,
@@ -2267,7 +2707,10 @@ class OperatorSurface:
                 detail="the launch receipt does not name its safety lease",
             )
         try:
-            lease_path = Path(lease_text).resolve()
+            # Recorded relative to the state root (`launch`), so a moved or
+            # restored state directory still finds the lease it wrote; an
+            # older absolute reference is taken as it is.
+            lease_path = self._state_path(lease_text).resolve()
             lease_root = (self.state_root / "leases").resolve()
             if not lease_path.is_relative_to(lease_root):
                 raise ValueError("the launch lease is outside this operator state")
@@ -2379,8 +2822,21 @@ def reconciliation_table(export_payload: dict[str, Any]) -> list[str]:
     return rows
 
 
-def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
-    """Present selected already-recorded ledger facts without deriving a new truth."""
+def _status_projection(
+    action: str,
+    payload: dict[str, Any],
+    *,
+    state_root: Path | None = None,
+    ended_later: bool = False,
+) -> list[str]:
+    """Present selected already-recorded ledger facts without deriving a new truth.
+
+    ``state_root`` is where a state-relative path in a receipt (a run root, a
+    bundle) is rejoined for display; the receipt itself keeps the relative
+    spelling so a moved state directory still describes its own files.
+    ``ended_later`` says a later receipt of the same run recorded its end, so a
+    `started` receipt is not read as a run that never came back.
+    """
 
     lines: list[str] = []
     if action == "boot":
@@ -2413,17 +2869,111 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
             ):
                 raise RecordError("saved upload record does not bind its submission record digest")
             lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
+        lines.extend(_volume_status_lines(payload.get("volume")))
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            lines.append(f"  Reason: {detail}")
     elif action == "run":
+        run_id = payload.get("run_id")
+        run_root = _display_path(payload.get("run_root"), state_root)
         state = payload.get("state")
+        if isinstance(run_id, str):
+            # Every run record used to render identically; a state directory
+            # that saw three runs, or one run that failed two ways, showed
+            # three indistinguishable lines.
+            lines.append(f"  Run: {run_id}" + (f"; run root: {run_root}" if run_root else "") + ".")
         if isinstance(state, str):
             lines.append(f"  Saved run state: {state}.")
+        if state == "started" and isinstance(run_id, str) and not ended_later:
+            lines.append(
+                "  No later record of this run is saved here, so it never reported an end "
+                "state: it was interrupted or killed, or is still running. Once no writer is "
+                f"active, `verbatus run --run-id {run_id}` resumes it."
+            )
+        reason = payload.get("reason")
+        reasons = payload.get("reasons")
+        listed = reasons if isinstance(reasons, list) else []
+        if isinstance(reason, str) and reason and reason not in listed:
+            lines.append(f"  Reason: {reason}")
+        unreadable = payload.get("reasons_unreadable")
+        if isinstance(unreadable, str) and unreadable:
+            lines.append(f"  Hold reason: UNREADABLE. {unreadable}")
+        for item in listed:
+            lines.append(f"  Hold reason: {item}")
         observed = payload.get("last_observed_work")
         if isinstance(observed, str):
             lines.append(f"  Saved last recorded work: {observed}")
+        lines.extend(_recorded_output_lines(payload.get("detail"), reason))
+        if isinstance(run_id, str) and run_root:
+            lines.append(f"  Review it read-only with: {review_command(Path(run_root), run_id)}")
     elif action == "export":
+        run_id = payload.get("run_id")
+        bundle = _display_path(payload.get("bundle"), state_root)
+        state = payload.get("state")
+        if isinstance(run_id, str):
+            lines.append(f"  Run: {run_id}" + (f"; bundle: {bundle}" if bundle else "") + ".")
+        if isinstance(state, str):
+            lines.append(f"  Saved export state: {state}.")
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            lines.append(f"  Reason: {detail}")
         table = payload.get("reconciliation")
         if isinstance(table, list):
             lines.extend(f"  {line}" for line in table if isinstance(line, str))
+    elif action == "fetch-run":
+        run_id = payload.get("run_id")
+        into = payload.get("into")
+        state = payload.get("state")
+        if isinstance(run_id, str):
+            lines.append(
+                f"  Run: {run_id}"
+                + (f"; fetched into: {into}" if isinstance(into, str) else "")
+                + "."
+            )
+        lines.extend(_volume_status_lines(payload.get("volume")))
+        if isinstance(state, str):
+            lines.append(f"  Saved fetch state: {state}.")
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            lines.append(f"  Reason: {detail}")
+        if isinstance(run_id, str) and isinstance(into, str):
+            lines.append(f"  Review it read-only with: {review_command(Path(into), run_id)}")
+    elif action == "backup":
+        run_id = payload.get("run_id")
+        run_root = payload.get("run_root")
+        destination = payload.get("mac_directory")
+        state = payload.get("state")
+        if isinstance(run_id, str):
+            lines.append(
+                f"  Run: {run_id}"
+                + (f"; run root: {run_root}" if isinstance(run_root, str) else "")
+                + (f"; destination: {destination}" if isinstance(destination, str) else "")
+                + "."
+            )
+        if isinstance(state, str):
+            lines.append(f"  Saved backup state: {state}.")
+        report = payload.get("report")
+        if isinstance(report, dict):
+            lines.append(
+                f"  Snapshot {report.get('snapshot_sha256')}: {report.get('copied')} copied, "
+                f"{report.get('reused')} reused."
+            )
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            lines.append(f"  Reason: {detail}")
+    elif action == "unexpected":
+        exception_type = payload.get("exception_type")
+        message = payload.get("message")
+        if isinstance(exception_type, str):
+            # One line on the screen; the receipt keeps the whole message.
+            first = message.strip().splitlines() if isinstance(message, str) else []
+            lines.append(f"  {exception_type}: {first[0] if first else ''}")
+        argv = payload.get("argv")
+        if isinstance(argv, list) and all(isinstance(word, str) for word in argv):
+            lines.append(f"  Command: verbatus {' '.join(argv)}")
+        cwd = payload.get("cwd")
+        if isinstance(cwd, str):
+            lines.append(f"  Working directory: {cwd}")
     elif action == "close":
         report = payload.get("close_report")
         if not isinstance(report, dict):
@@ -2446,6 +2996,58 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
                 "  Saved retained-volume price: $" + volume["ongoing_hourly_usd"] + " per hour."
             )
     return lines
+
+
+STATUS_OUTPUT_LINES: Final = 12
+"""How many lines of a run's recorded output `status` shows before pointing at
+the receipt for the rest. The receipt keeps the bounded tail whole; the screen
+shows enough to name the cause without burying the rows around it."""
+
+
+def _recorded_output_lines(detail: object, reason: object) -> list[str]:
+    """The last lines of a failed run's recorded output, for the `status` screen."""
+
+    if not isinstance(detail, str) or not detail.strip() or detail.strip() == reason:
+        return []
+    every_line = detail.rstrip().splitlines()
+    shown = every_line[-STATUS_OUTPUT_LINES:]
+    heading = "  Recorded output"
+    if len(shown) < len(every_line):
+        heading += f" (last {len(shown)} of {len(every_line)} lines; the receipt holds all of them)"
+    return [f"{heading}:", *(f"    {line}" for line in shown)]
+
+
+def _volume_status_lines(volume: object) -> list[str]:
+    """Which volume a fetch or upload receipt names, or nothing when it names none."""
+
+    if not isinstance(volume, dict):
+        return []
+    datacenter = volume.get("datacenter_id")
+    volume_id = volume.get("volume_id")
+    endpoint = volume.get("endpoint_url")
+    if not isinstance(datacenter, str) or not isinstance(volume_id, str):
+        return []
+    line = f"  Volume: {datacenter}:{volume_id}"
+    if isinstance(endpoint, str):
+        line += f" at {endpoint}"
+    return [line + "."]
+
+
+def _display_path(value: object, state_root: Path | None) -> str | None:
+    """A recorded path as the operator can open it: state-relative ones rejoined."""
+
+    if not isinstance(value, str) or not value:
+        return None
+    candidate = Path(value)
+    if candidate.is_absolute() or state_root is None:
+        return value
+    return str(state_root / candidate)
+
+
+def review_command(run_root: Path, run_id: str) -> str:
+    """The ready-to-paste `review` invocation for one run, quoted for a shell."""
+
+    return f"verbatus review --run-root {shlex.quote(str(run_root))} --run-id {shlex.quote(run_id)}"
 
 
 def _read_sealed_manifest(path: Path) -> bytes:
@@ -3018,6 +3620,79 @@ def _repository_commit(workspace: Path) -> str:
             ErrorCode.BOOT_RED, detail="the current repository commit could not be read"
         )
     return value
+
+
+def _repository_commit_or_reason(workspace: Path) -> tuple[str | None, str | None]:
+    """The commit a run is about to use, or the reason it could not be read.
+
+    `boot` refuses without one; a run does not, because a workspace that is
+    not a git checkout (a copied tree on a pod) can still run. The receipt then
+    says the commit was unreadable and why, rather than omitting the field.
+    """
+
+    try:
+        return _repository_commit(workspace), None
+    except OperatorError as error:
+        return None, error.detail or str(error)
+
+
+def _config_binding(path: str | Path | None) -> dict[str, Any] | None:
+    """One configuration input as the receipt records it: its path and digest.
+
+    Absent inputs stay `None` (the orchestrator's default applies and is
+    sealed by the stage itself). A named file that cannot be digested is
+    recorded with the reason, never silently without a digest.
+    """
+
+    if path is None:
+        return None
+    absolute = Path(path).absolute()
+    try:
+        return {"path": str(absolute), "sha256": sha256_file(absolute)}
+    except OSError as error:
+        return {"path": str(absolute), "sha256": None, "unreadable": str(error)}
+
+
+MAX_RECEIPT_OUTPUT_CHARACTERS: Final = 64_000
+"""How much of a child's stderr or stdout one receipt keeps.
+
+A receipt above `MAX_RECORD_BYTES` cannot be read back at all, so an unbounded
+stderr would make the one record of a failure unreadable exactly when it is
+long. The tail is kept because a stage's last words name the failure; the cut
+is named inside the record, so a shortened tail never reads as the whole."""
+
+
+def bounded_tail(text: str) -> str:
+    """The last `MAX_RECEIPT_OUTPUT_CHARACTERS` of a child's output, cut named."""
+
+    if len(text) <= MAX_RECEIPT_OUTPUT_CHARACTERS:
+        return text
+    omitted = len(text) - MAX_RECEIPT_OUTPUT_CHARACTERS
+    return (
+        f"[{omitted} earlier characters omitted from this receipt]\n"
+        + text[-MAX_RECEIPT_OUTPUT_CHARACTERS:]
+    )
+
+
+def _last_line(text: str) -> str:
+    """The last non-blank line of a child's output: where a stage names its failure."""
+
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _volume_record(volume: VolumeSpec | None) -> dict[str, str] | None:
+    """Which volume a transfer receipt names -- the identity, never the keys."""
+
+    if volume is None:
+        return None
+    return {
+        "datacenter_id": volume.datacenter_id,
+        "volume_id": volume.volume_id,
+        "endpoint_url": volume.endpoint_url,
+    }
 
 
 def _armarium_reference(run_root: Path, run_id: str) -> str:

@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import threading
 import tracemalloc
@@ -61,6 +63,7 @@ from .surface import (
     reconciliation_table,
 )
 from .volume_cost import ACCRUAL_FACT
+from .volume_s3 import VolumeSpec
 
 UTC = timezone.utc
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
@@ -887,9 +890,11 @@ def test_a_repeated_receipt_never_corrupts_the_descriptors_own_history_invariant
 
     loaded = surface.descriptor.load()
     assert loaded is not None
-    assert loaded["actions"]["boot"] == str(first)
-    assert loaded["history"]["boot"][-1] == str(first)
-    assert loaded["history"]["boot"].count(str(first)) == 1
+    # Entries are basenames: the receipt is content-addressed and the index
+    # must survive the state directory being moved.
+    assert loaded["actions"]["boot"] == first.name
+    assert loaded["history"]["boot"][-1] == first.name
+    assert loaded["history"]["boot"].count(first.name) == 1
 
     # And the descriptor must still be readable and writable afterward.
     third = surface.receipts.write("boot", {"summary": "third"})
@@ -1380,7 +1385,7 @@ def test_six_words_end_to_end_and_status_is_strictly_read_only(tmp_path: Path) -
     assert bundle.is_file()
     assert close.verified
     launch_receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
-    lease = LeaseStore(Path(str(launch_receipt["lease"]))).load()
+    lease = LeaseStore(surface.state_root / str(launch_receipt["lease"])).load()
     assert lease is not None and lease.phase == "closed-verified"
     assert any("page 1" in line and "page 2" in line for line in messages)
     assert any("act a1" in line and "act a2" in line for line in messages)
@@ -1790,12 +1795,12 @@ def test_failed_close_is_loud_then_can_be_rechecked(tmp_path: Path) -> None:
     assert any("UNVERIFIED CLOSE" in line for line in messages)
     assert any("both saved checks" in line for line in messages)
     launch_receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
-    lease = LeaseStore(Path(str(launch_receipt["lease"]))).load()
+    lease = LeaseStore(surface.state_root / str(launch_receipt["lease"])).load()
     assert lease is not None and lease.phase == "close-unverified"
     verified = surface.close(surface.prepare_close(), phrase)
 
     assert verified.verified
-    reconciled = LeaseStore(Path(str(launch_receipt["lease"]))).load()
+    reconciled = LeaseStore(surface.state_root / str(launch_receipt["lease"])).load()
     assert reconciled is not None and reconciled.phase == "closed-verified"
 
 
@@ -2089,6 +2094,11 @@ def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
     source = tmp_path / "approved" / "source"
     ledger = tmp_path / "approved" / "ledger.json"
     policy = tmp_path / "policy.json"
+    # `run` is refused before dispatch on a workspace that is not a checkout;
+    # this test is about the arguments reaching the surface, so the workspace
+    # carries the three directories a run reads.
+    for resource in ("pipeline", "config", "proof"):
+        (tmp_path / resource).mkdir()
 
     assert (
         cli.main(
@@ -2799,15 +2809,21 @@ def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
 def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> None:
     """A fixture that cannot be read must not silently become a placeholder.
 
-    Before this fix, `run` fell back to the generic "the declared pages"/"the
-    declared acts" labels with no comment at all — exactly the progress detail
-    Spec 12 asks for ("names pages and acts, not percentages") quietly
-    replaced by a placeholder with nothing to say it happened.
+    Before the first fix, `run` fell back to the generic "the declared
+    pages"/"the declared acts" labels with no comment at all — exactly the
+    progress detail Spec 12 asks for ("names pages and acts, not percentages")
+    quietly replaced by a placeholder with nothing to say it happened. Saying
+    so and then launching the orchestrator anyway was the second half of the
+    same defect: the orchestrator reads the same fixture from the same place,
+    so the run failed a moment later for a reason the operator never saw. An
+    unreadable fixture is the precondition failure `NOT_A_CHECKOUT` names, and
+    it is refused before anything starts.
     """
 
     workspace = tmp_path / "workspace-with-no-fixture"
     workspace.mkdir()
     messages: list[str] = []
+    launched: list[object] = []
     clock = FastElapsedClock()
     surface = OperatorSurface(
         workspace,
@@ -2818,18 +2834,23 @@ def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> 
         monotonic=clock.monotonic,
         sleeper=clock.sleep,
     )
-    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
-        args=[], returncode=0, stdout="", stderr=""
+
+    def never(*args, **kwargs):  # type: ignore[no-untyped-def]
+        launched.append(args)
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    surface.runner = never  # type: ignore[method-assign]
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.run(run_id="unreadable-fixture-run")
+
+    assert refusal.value.code is ErrorCode.NOT_A_CHECKOUT
+    assert "declared fixture could not be read" in str(refusal.value.detail)
+    assert str(workspace / "proof") in str(refusal.value.detail)
+    assert launched == [], "the orchestrator must not start on a workspace with no fixture"
+    assert not (tmp_path / "operator-state" / "receipts").exists(), (
+        "nothing started, nothing recorded"
     )
-    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
-        "aggregate": {"status": "complete"},
-        "pages": [],
-        "expected_acts": 0,
-    }
-
-    surface.run(run_id="unreadable-fixture-run")
-
-    assert any("declared fixture could not be read" in line for line in messages)
 
 
 def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_bundle(
@@ -3065,14 +3086,23 @@ def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_n
 
 
 def test_console_entry_renders_an_application_import_failure(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def broken_application():  # type: ignore[no-untyped-def]
         raise RuntimeError("Traceback (most recent call last): missing fixture application")
 
     monkeypatch.setattr(entry, "_load_application", broken_application)
+    # The boundary now records the failure in the default state directory;
+    # that must be this test's, not the developer's.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
     assert entry.main(["status"]) == 2
+    receipts = list((tmp_path / "xdg-state" / "verbatus" / "receipts").glob("unexpected-*.json"))
+    assert len(receipts) == 1
+    saved = json.loads(receipts[0].read_text(encoding="utf-8"))["payload"]
+    assert saved["exception_type"] == "RuntimeError"
+    assert saved["argv"] == ["status"]
+    assert "missing fixture application" in saved["traceback"]
     captured = capsys.readouterr().out
     assert "What happened:" in captured
     assert "What it means:" in captured
@@ -4638,6 +4668,10 @@ def test_cli_run_carries_the_roster_trio_to_the_operator_surface(
     roster = tmp_path / "models-real.toml"
     catalogue = tmp_path / "serving_recipes_real.toml"
     witness_context = tmp_path / "witness_context-real.toml"
+    # `run` is refused before dispatch on a workspace that is not a checkout;
+    # this test is about the arguments reaching the surface.
+    for resource in ("pipeline", "config", "proof"):
+        (tmp_path / resource).mkdir()
 
     assert (
         cli.main(
@@ -5278,3 +5312,530 @@ def test_cli_upload_still_names_itself_on_a_malformed_volume(
     printed = capsys.readouterr().out
     assert "verbatus upload" in printed
     assert "verbatus fetch-run" not in printed
+
+
+# -- operator records that can diagnose a run from the state directory alone ---
+
+
+def _complete_export(run_root, run_id):  # type: ignore[no-untyped-def]
+    del run_root, run_id
+    return {
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [{}],
+        "non_delivered": [],
+        "expected_acts": 1,
+    }
+
+
+def _run_receipts(surface: OperatorSurface, run_id: str) -> list[dict[str, object]]:
+    return [
+        payload for _path, payload in surface._run_receipts() if payload.get("run_id") == run_id
+    ]
+
+
+def test_every_run_receipt_carries_identity_configuration_commit_and_output(
+    tmp_path: Path,
+) -> None:
+    """A run's receipt is enough to say what ran, from what, under which commit and config.
+
+    A held run's receipt was the one that most needed these and had none: no
+    argv, no start time, no commit, no config digests, and the stderr that
+    named the hold discarded once the terminal closed.
+    """
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="run r: complete\n", stderr="1 door refusal(s); see report\n"
+    )
+    surface._armarium_export = _complete_export  # type: ignore[method-assign]
+    roster = ROOT / "config" / "models-real.toml"
+    catalogue = ROOT / "config" / "serving_recipes_real.toml"
+    witness_context = ROOT / "config" / "witness_context-real.toml"
+
+    surface.run(
+        run_id="documented-run",
+        models_config=roster,
+        serving_recipes_config=catalogue,
+        witness_context_config=witness_context,
+    )
+
+    started, finished = _run_receipts(surface, "documented-run")
+    assert started["state"] == "started"
+    assert finished["state"] == "complete"
+    for receipt in (started, finished):
+        assert receipt["run_root"] == "runs", "state-relative, so a moved state root still reads"
+        assert receipt["scenario"] == "happy"
+        assert receipt["started_at"] == "2026-08-09T12:00:00Z"
+        argv = receipt["argv"]
+        assert isinstance(argv, list) and "--run-id" in argv and "documented-run" in argv
+        assert "--models-config" in argv
+        configuration = receipt["configuration"]
+        assert configuration["models_config"] == {
+            "path": str(roster),
+            "sha256": sha256_file(roster),
+        }
+        assert configuration["serving_recipes_config"]["sha256"] == sha256_file(catalogue)
+        assert configuration["witness_context_config"]["sha256"] == sha256_file(witness_context)
+        assert configuration["submission_manifest"] is None
+        commit = receipt["repository_commit"]
+        assert (commit is None) != (receipt["repository_commit_unreadable"] is None)
+        if commit is not None:
+            assert commit == _repository_commit(ROOT)
+    assert finished["exit_code"] == 0
+    assert finished["stderr_tail"] == "1 door refusal(s); see report\n"
+    assert finished["stdout_tail"] == "run r: complete\n"
+    assert finished["ended_at"] == "2026-08-09T12:00:00Z"
+    assert str(finished["armarium_export"]).startswith("runs/documented-run/")
+    assert finished["reasons"] == []
+    # The stages' own stderr reaches the screen -- the Door's refusal count was
+    # swallowed on every exit but the crash drill's.
+    assert "1 door refusal(s); see report" in messages
+    assert any(
+        line == f"Review it read-only with: verbatus review --run-root "
+        f"{surface.state_root / 'runs'} --run-id documented-run"
+        for line in messages
+    )
+
+
+def test_a_failed_run_names_its_cause_on_screen_in_the_receipt_and_in_status(
+    tmp_path: Path,
+) -> None:
+    """Six different causes produced the same four opaque lines; each had a one-line
+    explanation sitting unread in the receipt, and `status` withheld it too."""
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "pipeline/orchestrator/run.py", line 1, in <module>\n'
+        "IncompatibleReuse: run failed-run is bound to different config_digest\n"
+    )
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=2, stdout="", stderr=stderr
+    )
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="failed-run")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    rendered = failure.value.render()
+    assert "IncompatibleReuse: run failed-run is bound to different config_digest" in rendered
+    assert "Saved run receipt:" in rendered
+    assert "Traceback" not in rendered
+    _started, failed = _run_receipts(surface, "failed-run")
+    assert failed["state"] == "failed"
+    assert failed["exit_code"] == 2
+    assert (
+        failed["reason"] == "IncompatibleReuse: run failed-run is bound to different config_digest"
+    )
+    assert failed["detail"] == stderr
+    assert failed["stderr_tail"] == stderr
+    assert any(line.startswith("Run failed-run failed: IncompatibleReuse") for line in messages)
+
+    lines = surface.status()
+
+    run_root = surface.state_root / "runs"
+    assert f"  Run: failed-run; run root: {run_root}." in lines
+    assert "  Saved run state: failed." in lines
+    assert (
+        "  Reason: IncompatibleReuse: run failed-run is bound to different config_digest" in lines
+    )
+    assert "  Recorded output:" in lines
+    assert "    IncompatibleReuse: run failed-run is bound to different config_digest" in lines
+    review = (
+        f"  Review it read-only with: verbatus review --run-root {run_root} --run-id failed-run"
+    )
+    assert review in lines
+    receipt = surface._descriptor_receipt("run")
+    assert f"  Saved receipt: {receipt}" in lines
+
+
+def test_a_run_held_before_the_armarium_is_a_held_run_that_keeps_its_reason(
+    tmp_path: Path,
+) -> None:
+    """An Attestatores hold exits 3 with no export record.
+
+    That was filed as `armarium-record-unreadable` under RUN_FAILED with no
+    run id and the hold reason -- on stderr -- discarded, so a legitimately
+    held run read as a broken tool and `status` could not say why.
+    """
+
+    messages: list[str] = []
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path, output=messages)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[],
+        returncode=3,
+        stdout="",
+        stderr="attestatores: held: 2 chair(s) reported no outcome for act a1\n",
+    )
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="held-early")
+
+    assert failure.value.code is ErrorCode.RUN_HELD
+    reason = "attestatores: held: 2 chair(s) reported no outcome for act a1"
+    assert reason in failure.value.render()
+    _started, held = _run_receipts(surface, "held-early")
+    assert held["state"] == "held"
+    assert held["run_id"] == "held-early"
+    assert held["reasons"] == [reason]
+    assert held["armarium_export"] is None
+    assert isinstance(held["armarium_export_unreadable"], str)
+    assert f"Hold reason: {reason}" in messages
+    assert notifications == [
+        ("decision", f"Verbatus run held-early is held and needs a decision: {reason}")
+    ]
+    assert f"  Hold reason: {reason}" in surface.status()
+
+
+def test_an_interrupt_or_a_sigterm_during_the_run_leaves_a_resumable_receipt(
+    tmp_path: Path,
+) -> None:
+    """A signal-killed run left no operator record and `status` reported the machine empty.
+
+    RUN_INTERRUPTED's copy -- "run again with the same run name to resume; this
+    is safe" -- was reachable only through the crash drill. SIGTERM ended the
+    process with no output at all.
+    """
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    before = signal.getsignal(signal.SIGTERM)
+
+    def terminated(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise AssertionError("SIGTERM must interrupt the run before the runner returns")
+
+    surface.runner = terminated  # type: ignore[method-assign]
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(run_id="killed-run")
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    assert signal.getsignal(signal.SIGTERM) == before, "the handler is scoped to the child"
+    _started, interrupted = _run_receipts(surface, "killed-run")
+    assert interrupted["state"] == "interrupted-recoverable"
+    assert interrupted["run_root"] == "runs"
+    assert "interrupted by a signal" in str(interrupted["last_observed_work"])
+    assert any("Review it read-only with:" in line for line in messages)
+
+    def keyboard(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt
+
+    surface.runner = keyboard  # type: ignore[method-assign]
+    messages.clear()
+    with pytest.raises(OperatorError) as second:
+        surface.run(run_id="killed-run")
+
+    assert second.value.code is ErrorCode.RUN_INTERRUPTED
+    assert messages[0].startswith("Resuming run killed-run.")
+    assert "  Saved run state: interrupted-recoverable." in surface.status()
+
+
+def test_a_run_killed_outright_is_still_on_record_because_its_start_was_written_first(
+    tmp_path: Path,
+) -> None:
+    """SIGKILL cannot be caught by anyone, so the receipt is written before the child starts."""
+
+    class Killed(BaseException):
+        """Stands in for a kill this process never sees."""
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+
+    def killed(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise Killed
+
+    surface.runner = killed  # type: ignore[method-assign]
+    with pytest.raises(Killed):
+        surface.run(run_id="vanished-run")
+
+    (started,) = _run_receipts(surface, "vanished-run")
+    assert started["state"] == "started"
+    lines = surface.status()
+    assert "  Saved run state: started." in lines
+    assert any(
+        "never reported an end state" in line and "`verbatus run --run-id vanished-run`" in line
+        for line in lines
+    )
+    # The next run of that name resumes rather than starting afresh.
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = _complete_export  # type: ignore[method-assign]
+    messages.clear()
+    surface.run(run_id="vanished-run")
+    assert messages[0].startswith("Resuming run vanished-run.")
+    # Once the run has ended, the start receipt no longer reads as a lost run.
+    assert not any("never reported an end state" in line for line in surface.status())
+
+
+def _fake_bundle(bundle_bytes: bytes):  # type: ignore[no-untyped-def]
+    def write(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]
+        del self
+        destination.write_bytes(bundle_bytes)
+
+    return write
+
+
+def test_export_names_its_run_first_and_exits_partial_over_a_held_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`export` exited 0 over a held run with a receipt hardcoded to `complete`.
+
+    The screen was honest; the exit status, the receipt and the milestone were
+    not -- and a script gating on the exit status called one act of two a
+    success. With no `--run-id` it also exported whichever run was recorded
+    last without saying so before doing the work.
+    """
+
+    messages: list[str] = []
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path, output=messages)
+    surface._write_action(
+        "run",
+        {"summary": "test run", "state": "partial", "run_root": "runs", "run_id": "held-run"},
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "partial", "reasons": ["act a2 is held-for-review"]},
+        "pages": [{}, {}],
+        "delivered": [{}],
+        "non_delivered": [{"category": "held-for-review"}],
+        "expected_acts": 2,
+    }
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"partial"))
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    with pytest.raises(OperatorError) as partial:
+        surface.export()
+
+    assert partial.value.code is ErrorCode.EXPORT_PARTIAL
+    assert "recorded run state partial" in partial.value.render()
+    assert messages[0] == (
+        "No run was named, so this exports run held-run, the run recorded most recently in "
+        "this operator state."
+    )
+    assert messages[1] == f"Exporting run held-run from run root {surface.state_root / 'runs'}."
+    receipt = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert receipt["state"] == "partial"
+    assert receipt["run_id"] == "held-run"
+    assert receipt["run_root"] == "runs"
+    assert receipt["reasons"] == ["act a2 is held-for-review"]
+    assert receipt["bundle"].startswith("exports/held-run-armarium-base-")
+    assert (surface.state_root / receipt["bundle"]).read_bytes() == b"partial"
+    assert notifications == [
+        (
+            "milestone",
+            "Verbatus export for run held-run landed as partial, not complete: "
+            f"{surface.state_root / receipt['bundle']}",
+        )
+    ]
+    lines = surface.status()
+    assert "  Saved export state: partial." in lines
+    assert any(line.startswith("  Run: held-run; bundle: ") for line in lines)
+
+
+def test_export_with_a_run_id_uses_that_run_even_after_another_was_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    for run_id, root in (("older", "older-runs"), ("newer", "runs")):
+        surface._write_action(
+            "run",
+            {"summary": "test run", "state": "complete", "run_root": root, "run_id": run_id},
+            descriptor_action="run",
+        )
+    seen: list[tuple[Path, str]] = []
+
+    def export_of(root, run_id):  # type: ignore[no-untyped-def]
+        seen.append((root, run_id))
+        return _complete_export(root, run_id)
+
+    surface._armarium_export = export_of  # type: ignore[method-assign]
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"older"))
+
+    bundle = surface.export(run_id="older")
+
+    assert seen == [(surface.state_root / "older-runs", "older")]
+    assert bundle.name.startswith("older-armarium-base-")
+    with pytest.raises(OperatorError) as missing:
+        surface.export(run_id="never-recorded")
+    assert missing.value.code is ErrorCode.EXPORT_MISSING
+    assert "never-recorded" in missing.value.render()
+
+
+def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    volume, reader = _volume_run(tmp_path)
+    spec = VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol123")
+    surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader, volume=spec)
+    fetched = surface.receipts.read(surface._descriptor_receipt("fetch-run"))["payload"]
+    assert fetched["volume"] == {
+        "datacenter_id": "EU-CZ-1",
+        "volume_id": "vol123",
+        "endpoint_url": "https://s3api-eu-cz-1.runpod.io/",
+    }
+    source, manifest = _manifest(tmp_path)
+    surface.upload(
+        source,
+        sealed_manifest=manifest,
+        volume=spec,
+        target=LocalFixtureObjectStore(tmp_path / "stand-in-volume"),
+    )
+    uploaded = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert uploaded["volume"]["volume_id"] == "vol123"
+    unexpected = cli.record_unexpected(RuntimeError("boom"), ["status"], surface.state_root)
+    assert unexpected.code is ErrorCode.UNEXPECTED
+
+    lines = surface.status()
+
+    assert f"  Run: brought-home; fetched into: {(tmp_path / 'local').resolve()}." in lines
+    assert lines.count("  Volume: EU-CZ-1:vol123 at https://s3api-eu-cz-1.runpod.io/.") == 2
+    assert "  Saved fetch state: verified." in lines
+    assert "  RuntimeError: boom" in lines
+    assert "  Command: verbatus status" in lines
+    assert f"  Working directory: {os.getcwd()}" in lines
+    assert any(line.startswith("- unexpected record 1: ") for line in lines)
+
+
+def test_the_cli_catch_all_writes_an_unexpected_receipt_and_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one failure class with nothing to hand to a later session now leaves a record."""
+
+    class BrokenSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def status(self) -> None:
+            raise RuntimeError("boom: Traceback (most recent call last): looks like a trace")
+
+    monkeypatch.setattr(cli, "OperatorSurface", BrokenSurface)
+    state = tmp_path / "state"
+
+    assert cli.main(["--state-dir", str(state), "status"]) == 2
+
+    printed = capsys.readouterr().out
+    assert "Verbatus met a problem it could not classify." in printed
+    receipts = sorted((state / "receipts").glob("unexpected-*.json"))
+    assert len(receipts) == 1
+    assert f"Saved unexpected receipt: {receipts[0]}" in printed
+    saved = json.loads(receipts[0].read_text(encoding="utf-8"))["payload"]
+    assert saved["exception_type"] == "RuntimeError"
+    assert saved["message"].startswith("boom")
+    assert "RuntimeError: boom" in saved["traceback"]
+    assert saved["argv"] == ["--state-dir", str(state), "status"]
+    assert saved["cwd"] == os.getcwd()
+    loaded = DescriptorStore(state).load()
+    assert loaded is not None and loaded["actions"]["unexpected"] == receipts[0].name
+
+
+def test_a_workspace_that_is_not_a_checkout_refuses_run_and_boot_but_not_status(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`entry.main` checked the directory the code was imported from, not the workspace.
+
+    The `verbatus` script started from a folder that is not the checkout passed
+    that check, announced the run, and failed a moment later inside the
+    orchestrator with `can't open file .../pipeline/orchestrator/run.py`. The
+    check is against `--workspace`, for exactly the directories the word
+    reads, so a word whose workspace is not the checkout is never refused.
+    """
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    state = tmp_path / "state"
+    common = ["--workspace", str(elsewhere), "--state-dir", str(state)]
+
+    assert cli.main([*common, "run", "--run-id", "x"]) == 2
+    printed = capsys.readouterr().out
+    assert "not a source checkout" in printed
+    assert str(elsewhere) in printed
+    assert "`verbatus run` reads pipeline, config, proof" in printed
+    assert not state.exists(), "nothing was started and nothing was recorded"
+
+    assert cli.main([*common, "boot"]) == 2
+    assert "`verbatus boot` reads config, proof" in capsys.readouterr().out
+
+    # A word whose workspace is legitimately not the checkout is answered on
+    # its own terms: here, that there are no records yet.
+    assert cli.main([*common, "status"]) == 2
+    printed = capsys.readouterr().out
+    assert "There are no saved operator records to show." in printed
+    assert "not a source checkout" not in printed
+
+
+def test_a_copied_state_directory_reads_exports_closes_and_resumes_at_its_new_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every reference a receipt makes to a file under the state root survives a move.
+
+    The descriptor indexed receipts by absolute path, the run receipt named its
+    run root absolutely, and the launch receipt named its lease absolutely; a
+    state directory copied elsewhere read every intact receipt as damaged,
+    `export` reached the unclassified handler, and `close` could not find its
+    lease.
+    """
+
+    original = tmp_path / "original" / "state"
+    surface = OperatorSurface(
+        ROOT,
+        original,
+        provider=OperatorFakeProvider(now=lambda: START),
+        now=lambda: START,
+        present=lambda _line="": None,
+    )
+    launched = _launch(surface, _spend_policy(tmp_path))
+    assert launched.record is not None
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = _complete_export  # type: ignore[method-assign]
+    surface.run(run_id="portable-run")
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"bundle"))
+    surface.export(run_id="portable-run")
+    launch_receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
+    assert launch_receipt["lease"].startswith("leases/")
+    assert launch_receipt["confirmation_receipt"].startswith("receipts/launch-confirmation-")
+
+    moved = tmp_path / "restored" / "elsewhere" / "state"
+    shutil.copytree(original, moved)
+    lines: list[str] = []
+    relocated = OperatorSurface(
+        ROOT,
+        moved,
+        provider=OperatorFakeProvider(now=lambda: START),
+        now=lambda: START,
+        present=lines.append,
+    )
+    relocated._armarium_export = _complete_export  # type: ignore[method-assign]
+
+    status = relocated.status()
+
+    assert not any("UNREADABLE" in line for line in status)
+    assert f"  Run: portable-run; run root: {moved / 'runs'}." in status
+    assert relocated._prior_run_state("portable-run") == "complete"
+    bundle = relocated.export(run_id="portable-run")
+    assert bundle.parent == moved / "exports"
+    prepared = relocated.prepare_close()
+    assert prepared.lease.pod_id == launched.record.pod_id
+    assert prepared.lease_store.path.parent == moved / "leases"
+    relocated.runner = surface.runner
+    lines.clear()
+    relocated.run(run_id="portable-run")
+    assert lines[0].startswith("Run portable-run already has saved state complete")
