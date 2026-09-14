@@ -72,6 +72,7 @@ from common.stage import (  # noqa: E402
     RUN_MODES,
     WITNESS_CONTEXT_REGIMES,
     current_recovery_request,
+    is_real_ingress,
     latest_attempt,
     load_fixture,
     require_sealed_config,
@@ -706,6 +707,59 @@ def report_halt(args, tally: dict) -> None:
             print(f"  - {kind}: {subjects}")
 
 
+def undispatchable_recovery_reason(recovery_kind: str, *, real_route: bool) -> str | None:
+    """Why this orchestrator cannot answer one outstanding request, or `None`.
+
+    Only the recrop operation has a real implementation today, and on a real
+    submission not even that: `pipeline/2_designator/run.py` refuses
+    `--operation recover` by name, because a recovery still reads the fixture's
+    declared rectangle. Refusing any other kind loudly is what naming the kind
+    exists to stop — a silent conflation with a substitute crop — and naming the
+    real route here is what stops the same refusal reaching an operator as a bare
+    `pipeline/2_designator/run.py exited 2` with the cause a stage away
+    (findings F068/F083).
+
+    The Recensor no longer publishes a real-ingress request, so this branch is a
+    backstop over trees written before that gate landed. It is still checked,
+    because a bound nobody checks is not a bound.
+    """
+    if recovery_kind != FALLBACK_RECROP:
+        return (
+            f"names recovery_kind {recovery_kind!r}, which this orchestrator has no dispatch "
+            f"for; only {FALLBACK_RECROP!r} (a Designator recrop) is implemented today, and "
+            "the page-level reread belongs to the Perlector, which has not built it"
+        )
+    if real_route:
+        return (
+            "is a fallback recrop on a real submission, which the Designator refuses by name: "
+            "a recovery still reads the fixture's declared rectangle, which a real submission "
+            "does not carry. The Recensor now holds such an act for review instead, so this "
+            "request predates that gate; its coverage evidence is in the request artifact and "
+            "the Recensor review beside it, and re-running the Recensor is what supersedes it"
+        )
+    return None
+
+
+def report_undispatchable_recoveries(args, refused: list[tuple[str, str, str, str]]) -> None:
+    """Say every refused dispatch out loud, by act, before the run stops.
+
+    GOVERNANCE 2, and the one place this refusal is recorded. The orchestrator
+    keeps no file of its own (the module docstring says why: resume is a property
+    of the artifacts, never of a checkpoint that could disagree with them), so its
+    record of a dispatch it would not make is the run's own output — and it names
+    every affected act, not only the one the raised exception happens to carry.
+    The durable evidence stays where it was published: each request artifact and
+    its `recovery-requested` Recensor review are immutable in the run tree, and
+    nothing here writes to or changes them.
+    """
+    print(
+        f"run {args.run_id}: recovery cannot be dispatched for {len(refused)} outstanding "
+        "request(s); no stage was invoked and nothing in the run tree was changed"
+    )
+    for act_id, request_id, recovery_kind, reason in refused:
+        print(f"  - act {act_id} (request {request_id}, kind {recovery_kind}): {reason}")
+
+
 def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     """Dispatch every outstanding recovery request, then re-read and re-review.
 
@@ -713,6 +767,11 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     stage that cuts one. Keeping that ownership is why recovery lives here and not
     inside the Recensor, where it would be one short step from a stage recropping
     its own evidence until it liked it.
+
+    Every round screens the whole outstanding batch before dispatching any of
+    it (`undispatchable_recovery_reason`), so a request nothing here can answer
+    refuses by its own cause and leaves no half-finished round behind it, and
+    every refused act is recorded before the refusal is raised.
 
     Returns the hard-failure tally if the run-level cap trips partway through.
     A recovery round is one completed Designator section followed by one
@@ -725,6 +784,12 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     recovery_policy = load_recovery_policy(args.recovery_config)
+    # One read of the run authority, used for both the sealed-policy proof below
+    # and the ingress route the dispatch screen consults. Read here rather than
+    # before the policy load, so the order in which those two can refuse is the
+    # order it always was.
+    run = tree.read_run()
+    real_route = is_real_ingress(run)
     # The orchestrator is not a stage and holds no `StageContext`, so it proves the
     # policy it dispatches under against the digests the run authority recorded for
     # itself. Without this, the dispatcher bounded the whole recovery loop — the
@@ -733,7 +798,7 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     # this the third point of use). Checked before the first round, so a swapped
     # policy stops the loop rather than being discovered by the stage it dispatched.
     require_sealed_config(
-        run_sealed_config_digests(tree.read_run()), "recovery", recovery_policy["config_sha256"]
+        run_sealed_config_digests(run), "recovery", recovery_policy["config_sha256"]
     )
     maximum_rounds = recovery_policy["absolute_cap"]
 
@@ -746,20 +811,19 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
                 f"recovery is still outstanding for {outstanding} after "
                 f"{maximum_rounds} rounds. The run-bound policy stops the loop"
             )
-        for act_id, _request_id, recovery_kind in outstanding:
-            # Only the recrop operation has a real implementation today. Refuse
-            # loudly rather than silently dispatching any other kind as though
-            # it were one — that silent conflation is what naming the kind
-            # exists to stop, not a gap to paper over with a substitute crop.
-            # Checked for the whole batch before any of it is dispatched, so an
-            # unanswerable request does not leave half a round behind it.
-            if recovery_kind != FALLBACK_RECROP:
-                raise ContractError(
-                    f"act {act_id}'s outstanding recovery request names recovery_kind "
-                    f"{recovery_kind!r}, which this orchestrator has no dispatch for; only "
-                    f"{FALLBACK_RECROP!r} (a Designator recrop) is implemented today, and "
-                    "the page-level reread belongs to the Perlector, which has not built it"
-                )
+        # Checked for the whole batch before any of it is dispatched, so an
+        # unanswerable request does not leave half a round behind it, and
+        # recorded act by act before the refusal is raised so the run says which
+        # requests it could not answer rather than only that one existed.
+        refused = []
+        for act_id, request_id, recovery_kind in outstanding:
+            reason = undispatchable_recovery_reason(recovery_kind, real_route=real_route)
+            if reason is not None:
+                refused.append((act_id, request_id, recovery_kind, reason))
+        if refused:
+            report_undispatchable_recoveries(args, refused)
+            first_act, _first_request, _first_kind, first_reason = refused[0]
+            raise ContractError(f"act {first_act}'s outstanding recovery request {first_reason}")
         for act_id, request_id, _recovery_kind in outstanding:
             result = invoke(
                 STAGE_PROGRAMS[DESIGNATOR],

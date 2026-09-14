@@ -1289,10 +1289,12 @@ and the number of review items is a property of how well the structure pass
 performed as much as of the page. Today's pass is one modal-background ink scan
 at a 20-level margin, so a run in which *every* page carries a `page-residual`
 hold is the legible first-run signal that the structure pass does not work on
-this corpus — a true finding delivered on run one. But if roadmap item 4 lands a
-real structural Designator and real pages still trip the bound, the bound is
-measuring the wrong thing and must be revisited rather than raised. The first
-real run's `page-residual` count is the measurement that settles it.
+this corpus — a true finding delivered on run one. The real structural
+Designator has since landed (`live_initial_pass` asks a served structure chair
+for every sealed page), so the condition is now live rather than prospective: if
+real pages under the live pass still trip the bound, the bound is measuring the
+wrong thing and must be revisited rather than raised. The first real run's
+`page-residual` count is the measurement that settles it.
 
 There is no ordinal arithmetic left to bound: residual identities are
 class-namespaced (`act_id(page_id, "residual", bounds)`), so disjointness from
