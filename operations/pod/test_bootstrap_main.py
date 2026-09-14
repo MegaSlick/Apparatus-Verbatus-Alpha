@@ -1045,13 +1045,17 @@ def test_build_actions_does_not_read_models_config_before_configuration_runs(
     assert str(ws.models_config) in refusal.value.detail
 
 
-def test_build_actions_refuses_a_plan_with_no_submission_manifest() -> None:
-    """A non-hold-only ``Plan`` with ``submission_manifest=None`` must be a named
-    refusal at build time, not a bare ``AttributeError`` inside the TRANSFER
-    step (or, under ``python -O``, a stripped ``assert`` that lets it through
-    silently). ``resolve_plan`` always fills this in for a real launch; this
-    drives the invariant guard directly the way a future caller of
-    ``build_actions`` might trip it.
+def test_a_plan_with_no_submission_manifest_makes_transfer_a_vacuous_success() -> None:
+    """A consuming pod names no manifest, and TRANSFER says so rather than refusing.
+
+    ``--submission-manifest`` used to default to
+    ``<volume>/submission/manifest.json`` -- where ``verbatus upload`` puts a
+    real submission and what ``pod_run`` then requires to exist -- so the
+    default configuration of a real run made TRANSFER a red step *after*
+    UV_ENVIRONMENT had paid for the whole wheel download. ``None`` is now the
+    ordinary shape for a pod that is reading a submission already on its
+    volume, and the step records "nothing to transfer" instead of a refusal or
+    an ``AttributeError``.
     """
 
     from .bootstrap_main import Plan, build_actions
@@ -1076,8 +1080,67 @@ def test_build_actions_refuses_a_plan_with_no_submission_manifest() -> None:
         transfer_source_root=Path("/volume"),
     )
 
-    with pytest.raises(PlanRefusal, match="no submission manifest"):
-        build_actions(plan)
+    record = build_actions(plan).resume_transfer()
+
+    assert record["state"] == "nothing-to-transfer"
+    assert record["submission_manifest"] == "absent"
+
+
+def test_a_submission_manifest_with_no_transfer_target_is_refused_at_plan_time(
+    tmp_path: Path,
+) -> None:
+    """Half the transfer pair is refused before UV_ENVIRONMENT, not after it.
+
+    The in-step refusal this replaces ran after the ~10 GB sync, so the pod had
+    already paid for the download before being told its transfer was
+    misconfigured.
+    """
+
+    ws = _workspace(tmp_path)
+    manifest = ws.volume / "submission" / "manifest.json"
+
+    with pytest.raises(PlanRefusal, match="names nowhere to send it"):
+        resolve_plan(
+            build_parser().parse_args(_argv(ws, extra=("--submission-manifest", str(manifest))))
+        )
+
+
+def test_a_transfer_target_with_no_submission_manifest_is_refused_at_plan_time(
+    tmp_path: Path,
+) -> None:
+    """The other half: a configured target with nothing to send would report a
+    success that moved nothing (GOVERNANCE 2)."""
+
+    ws = _workspace(tmp_path)
+
+    with pytest.raises(PlanRefusal, match="--submission-manifest names none"):
+        resolve_plan(
+            build_parser().parse_args(
+                _argv(ws, extra=("--transfer-target-factory", "some.module:target"))
+            )
+        )
+
+
+def test_a_submission_manifest_outside_the_volume_is_refused(tmp_path: Path) -> None:
+    """The manifest is read on the volume; a path outside it is not the pod's to send."""
+
+    ws = _workspace(tmp_path)
+    outside = tmp_path / "elsewhere" / "manifest.json"
+
+    with pytest.raises(PlanRefusal, match="--submission-manifest"):
+        resolve_plan(
+            build_parser().parse_args(
+                _argv(
+                    ws,
+                    extra=(
+                        "--submission-manifest",
+                        str(outside),
+                        "--transfer-target-factory",
+                        "some.module:target",
+                    ),
+                )
+            )
+        )
 
 
 # --- a refusal leaves a durable, readable reason on the volume --------------

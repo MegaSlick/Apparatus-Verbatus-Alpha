@@ -28,6 +28,7 @@ from operations.pod.launch import LaunchResult, LaunchState
 from operations.pod.lease import LeaseStore
 from operations.pod.models import (
     BILLING_CUTOFF_MARGIN_ENV,
+    DEFAULT_CONTAINER_DISK_GB,
     PodCreateRequest,
     PodRecord,
     ProviderFailure,
@@ -781,6 +782,42 @@ def test_a_verified_close_releases_the_launch_the_open_lease_refused(
         "first-pod",
         "second-pod",
     ]
+
+
+def test_the_saved_request_keeps_the_container_disk_it_was_created_with() -> None:
+    """A field outside the saved record is a field a reconstruction silently changes.
+
+    The saved request is what `close` reconstructs from and what the adopt path
+    compares digests against, so a container disk that survived the create and
+    not the record would make the same launch hash two different ways.
+    """
+
+    from dataclasses import replace as _replace
+
+    request = _replace(_request(), container_disk_gb=123)
+
+    record = _request_record(request)
+
+    assert record["container_disk_gb"] == 123
+    restored = _request_from_record(record)
+    assert restored.container_disk_gb == 123
+    assert restored.reviewed_digest() == request.reviewed_digest()
+
+
+def test_a_saved_request_written_before_the_container_disk_existed_still_loads() -> None:
+    """`close` is the verb that reads this record, and it must never fail to.
+
+    A record that predates the field reads as the reviewed default rather than
+    as an unreadable record, because the alternative is a pod that keeps
+    billing while the reader refuses its own history.
+    """
+
+    record = _request_record(_request())
+    del record["container_disk_gb"]
+
+    restored = _request_from_record(record)
+
+    assert restored.container_disk_gb == DEFAULT_CONTAINER_DISK_GB
 
 
 def test_saved_request_and_pod_reconstruction_refuse_type_coercion(tmp_path: Path) -> None:

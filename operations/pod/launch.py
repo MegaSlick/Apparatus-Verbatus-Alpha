@@ -29,6 +29,7 @@ from .durable import atomic_write, canonical_json
 from .lease import LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
+    NESTED_LAUNCH_BOUND_FLAGS,
     AccountBalanceObservation,
     PendingCreateIntent,
     PodCreateRequest,
@@ -128,13 +129,17 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     happens once, here, at sealing time -- the request's own validation then
     refuses a report path that does not carry the sealed token.
 
-    This binds two things, not one: the outer timer's own ``--report-path``,
-    and, when the nested bootstrap argv sealed inside
-    ``--bootstrap-command-json`` carries its own ``--report-path``, that path
-    too.  Only the outer path was bound before; ``bootstrap_main.resolve_plan``
-    requires the same sealed ``VERBATUS_LAUNCH_TOKEN`` in *its* report path's
-    name (``_require_launch_token_named``), so an unbound nested path refused
-    at pod-side plan time -- after the pod had already started billing.
+    This binds the outer timer's own ``--report-path`` and, inside the nested
+    bootstrap argv sealed in ``--bootstrap-command-json``, every flag
+    ``models.NESTED_LAUNCH_BOUND_FLAGS`` names -- its ``--report-path`` and its
+    ``--journal``.  Only the outer path was bound before;
+    ``bootstrap_main.resolve_plan`` requires the same sealed
+    ``VERBATUS_LAUNCH_TOKEN`` in the name of *both* of those
+    (``_require_launch_token_named``), so an unbound one refused at pod-side
+    plan time -- after the pod had already started billing.  The journal half
+    is what a full bootstrap plan needs: ``--journal`` is required for every
+    non-``--hold-only`` plan, so until it was bound here the only launchable
+    shape was the drill.
     ``operations/pod/boot_a_request.py``'s own docstring named this as an
     unbound seam left for this unit; it is closed here rather than left for a
     later one, per CLAUDE.md hard rule 13.
@@ -205,10 +210,9 @@ def _bind_nested_report_path(bootstrap_command_json: str, launch_token: str) -> 
     by accident.
     """
 
-    argv = json.loads(bootstrap_command_json)
-    bound = rebind_nested_flag(
-        argv, "--report-path", lambda raw: _bound_report_path(raw, launch_token)
-    )
+    bound = json.loads(bootstrap_command_json)
+    for flag in NESTED_LAUNCH_BOUND_FLAGS:
+        bound = rebind_nested_flag(bound, flag, lambda raw: _bound_report_path(raw, launch_token))
     return json.dumps(bound)
 
 

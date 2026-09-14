@@ -15,7 +15,11 @@ from typing import Sequence
 
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
-from operations.pod.models import PodCreateRequest, require_utc
+from operations.pod.models import (
+    DEFAULT_CONTAINER_DISK_GB,
+    PodCreateRequest,
+    require_utc,
+)
 
 from . import console, notify_bridge, review_text
 from .advance import (
@@ -988,6 +992,7 @@ def load_request(path: str | Path) -> PodCreateRequest:
         "docker_start_cmd",
         "hard_deadline",
         "repository_commit",
+        "container_disk_gb",
         "template",
         "metadata",
         "interruptible",
@@ -1022,6 +1027,9 @@ def load_request(path: str | Path) -> PodCreateRequest:
             docker_start_cmd=tuple(command),
             hard_deadline=require_utc(deadline, "hard deadline"),
             repository_commit=raw["repository_commit"],
+            # Absent means the reviewed default, not the provider's: a request
+            # file that names no container disk still asks for a stated size.
+            container_disk_gb=raw.get("container_disk_gb", DEFAULT_CONTAINER_DISK_GB),
             template=raw.get("template"),
             metadata=metadata,
             interruptible=interruptible,

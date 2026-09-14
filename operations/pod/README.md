@@ -798,6 +798,72 @@ under different run ids each acquired their own and co-resided on one GPU, and t
 preflight's own lock was never met at all — and it asked an advisory lock of a network
 mount that is not known to honour one. It dies with the pod, as a lock should.
 
+## The pod image contract
+
+Everything below is what the bootstrap assumes about the machine it starts on. None of it
+was written down until a pre-launch review read it out of the code, which meant every one
+of these facts was discoverable only on a pod that was already billing. The contract is
+now enforced as well as written: `bootstrap.verify_image_contract` runs as the first thing
+the `REPOSITORY` step does — before `git fetch`, and long before the ~10 GB environment
+sync — and a pod whose image does not meet it goes red with a named reason and a remedy
+instead of a `ModuleNotFoundError` or an authentication prompt nobody can see.
+
+**The image carries a checkout. The bootstrap does not clone.** `checkout_commit` runs
+`git fetch --no-tags origin <sha>` and `git checkout --detach --force <sha>` with its
+working directory set to `--repository`. So the path named there must already be a git
+checkout with an `origin` remote. `operations/pod/boot_b_request.py` renders
+`/opt/verbatus` for this, on container-local disk: the repository cannot live on the
+network volume, because the bootstrap requires the lockfile and every config file inside
+`--repository` while the volume's own paths are separately constrained, and because the
+volume holds evidence rather than code.
+
+**`origin` must be reachable with no HOME.** `BOOTSTRAP_ENVIRONMENT` is explicit and
+short — `PATH`, `LANG`, `LC_ALL`, `UV_CACHE_DIR` — and deliberately supplies no `HOME`.
+Git therefore reads no `~/.gitconfig`, no global credential helper and no
+`~/.git-credentials`: a credential configured the way a human would configure it on a
+laptop is invisible to this process. What *is* visible is the repository's own
+`.git/config`. So a private fetch needs one of: a credential helper set in the
+repository-local config, an `http.<url>.extraheader` carrying a token (what a tokenised
+clone leaves behind), credentials embedded in the remote URL, or an SSH remote whose key
+the pod user can reach. The check refuses an `http`/`https` origin that has none of them.
+
+**The tools are absolute paths, and PATH is never searched.** `git` at `/usr/bin/git` and
+`uv` at `/usr/local/bin/uv` (`BOOTSTRAP_EXECUTABLES`). The default `uv` installer puts the
+binary in `~/.local/bin`, which is not that path, so an image built by running the
+installer as an ordinary user does not satisfy this without a move or a link.
+
+**The primary process runs `<repository>/.venv`'s interpreter, and that venv is
+pre-built.** Two separate reasons, both expensive to discover late:
+
+- `bootstrap_main` imports `operations.serving.smoke` at module scope, which imports PIL.
+  Even the `--hold-only` drill therefore needs a synced environment before the first line
+  of the bootstrap runs — `uv sync` is a step *inside* the bootstrap, far too late to
+  provide it. The image must ship the environment.
+- `ServingManager` launches vLLM as `sys.executable -m vllm.entrypoints.cli.main` and
+  verifies the pinned versions with `importlib.metadata` on that same interpreter. If the
+  pod's `python` is the system interpreter rather than `<repository>/.venv/bin/python`,
+  `uv sync --group pod` fills a venv nothing then uses, and PREFLIGHT fails on a missing
+  pin **after** the whole download has been paid for.
+
+**The working directory must make `python -m operations.pod.pod_timer` resolve**, since
+the `dockerStartCmd` sets none. Starting the container inside `<repository>` with
+`<repository>/.venv/bin/python` as `python` satisfies this and the point above together.
+
+**The container disk is stated in the request, and measured on the pod.** The bootstrap
+spends container-local disk twice over — the wheel cache under `UV_CACHE_DIR`, then the
+unpacked install in `<repository>/.venv` — so `PodCreateRequest.container_disk_gb` names a
+size on every create (`containerDiskInGb` in the v1 body) rather than taking the image's
+or the account's default, and `sync_uv_environment` reads the free space actually present
+before it starts and refuses by name when it is short. Both numbers are bounds, not
+measurements: the first boot records the real footprint and they are replaced by what it
+observed.
+
+**A checkout the image carries is not the same as a checkout the image trusts.** Nothing
+here delivers a credential, and nothing here writes one down. The route by which the pod
+gets its git credentials — and, separately, the provider capability the pod-side timer
+needs in order to be able to close the pod at all — is an out-of-tree decision, and both
+have a row in the checklist below.
+
 ## The serving stack, re-planned and locked
 
 The stack the real roster asks for is now a `pod` dependency group in
@@ -946,6 +1012,29 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   token-bound pod report, survives a process restart, and supports the run tree's
   immutable hard-link publication. Write a control report and one pipeline artifact
   there, read both back, and record the filesystem result.
+- [ ] **Settle how the pod-side timer gets its provider capability, and prove it, before
+  Boot A is worth running.** `timer_context_from_environment` refuses to construct
+  without `RUNPOD_API_KEY` in the pod's environment, and `pod_timer.main` then prints
+  "nothing can close this pod" and exits 2 — the container dies, the pod stays `EXITED`
+  and billing, and only the laptop supervisor's next status tick closes it. The tracked
+  launch path cannot deliver the value: the one pod environment it can set is
+  `PodCreateRequest.metadata`, and that refuses every credential-shaped key by name
+  (which is the right refusal — a capability in a reviewed request file is a capability
+  in a file). So pick one route and record which: confirm that the provider injects
+  `RUNPOD_API_KEY` for this pod type and image, or create a provider template holding it
+  and require `template` on every real request. Record the same answer for `HF_TOKEN` /
+  `HUGGING_FACE_HUB_TOKEN`, because `--keep-env HF_TOKEN` keeps a variable that must
+  first have been set by something. Never record the value itself — only the route, and
+  whether it was observed to work.
+- [ ] **Read an `EXITED` pod's console log before closing it.** The create body requests
+  no ports and no SSH, so there is no route into a pod, and every fact about a failed
+  boot has to arrive through the volume — which is exactly what several of the predicted
+  failures (an unmounted mount, a refused write, an unsupported hard link, a container
+  that died before the timer constructed) prevent from being written. The provider
+  console's log for the container is then the only evidence that the boot ever produced,
+  and closing the pod destroys it. So: read it, copy it into `workbench/raw/` beside the
+  drill's fixture, and only then close. Closing still happens — an unread log is not a
+  reason to keep a pod billing — but it happens after the copy, not before.
 - [ ] Run **Boot A, the drill**, before Boot B: the cheapest available card, a short
   `hard_lifetime_seconds` (roughly 900), `ObservingControllerArmer`, and
   `bootstrap_main --hold-only`. It closes its pod immediately by construction — the
@@ -994,6 +1083,11 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   to make before paying for the ~10 GB download, not after. Then record whether
   `uv sync --group pod` completed, how long the wheel download took, and whether each
   chair's weights loaded under `vllm 0.27.1`, since no offline check can answer that.
+  **Record the container disk's free space before and after the sync, and the size of
+  `<repository>/.venv` when it finishes.** Those three numbers are what replace the
+  bounds in `models.DEFAULT_CONTAINER_DISK_GB` and `bootstrap.UV_CACHE_REQUIRED_BYTES` /
+  `REPOSITORY_VENV_REQUIRED_BYTES`, which are stated as bounds precisely because nothing
+  has ever weighed them.
   Record, per chair, whether the pod-rendered golden page's witness was read back and
   what `nvidia-smi` reported around the read.
 - [ ] After the run, bring the tree back with `verbatus fetch-run --run-id <id> --into
@@ -1082,6 +1176,18 @@ cheap card.
 **Boot B, the real thing.** Roadmap item 7 as written: `ChannelControllerArmer` with its
 poll bound set from Boot A's measured delay, materialize, preflight, the full checklist,
 no reading yet.
+
+`operations/pod/boot_b_request.py` renders it, the way `boot_a_request.py` renders the
+drill, and **validates what it renders**: every rendered request is built into a real
+`PodCreateRequest` before it is printed, so a shape the create gate would refuse cannot
+be published here. That mattered more than it sounds. Boot B's `docker_start_cmd` is the
+only shape in this tree that nests two argv halves — `pod_run`'s own, then
+`bootstrap_main`'s after a literal `--` — and each half requires its own `--report-path`,
+which `pod_run` then requires to be two different files. The create gate counted both
+halves together, so **every** Boot B request that could exist was refused before any
+preview, lease or provider call, and the offline suite was green over it because nothing
+had ever composed one. The gate now counts one report path per half, binds the launch
+token into both and into the nested `--journal`, and refuses a pair that names one file.
 
 The argument for the split costs nothing in the failure case: Boot B alone would have
 ended in the same immediate close, having also wasted the image pull and the session.

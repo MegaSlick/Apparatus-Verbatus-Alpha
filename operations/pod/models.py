@@ -203,13 +203,37 @@ def validate_pod_report_identity(
     require_utc(parsed_acknowledged_at, "pod report acknowledged_at")
 
 
+DEFAULT_CONTAINER_DISK_GB = 60
+"""How much container-local disk every request asks for, in gigabytes.
+
+The bootstrap spends this disk twice over and the request used to name none, so
+the pod took whatever the image or the account defaulted to -- commonly 20 GB,
+under which ``uv sync --group pod`` fills the disk and fails with ENOSPC after
+paying for the whole download. The arithmetic behind the number:
+``uv sync --locked --group pod`` downloads the serving stack into the
+container-local ``UV_CACHE_DIR`` (``bootstrap.py`` sizes that at "on the order
+of ten gigabytes of wheels"), then installs an unpacked copy of the same
+torch+CUDA stack into ``<repository>/.venv``, which is larger again; the image
+itself also sits on this disk.
+
+**It is a bound, not a measurement**, in the same sense as the spend template's
+figures: no pod has ever been booted from this tree, so nothing here has been
+weighed. The first boot records the real footprint (the README's checklist row
+asks for it) and this number is replaced by the measured one. The pod-side
+refusal in ``bootstrap.sync_uv_environment`` is the half that does measure: it
+reads the free space actually present before the download starts.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class PodCreateRequest:
     """The complete requested pod shape, before a provider sees it.
 
     ``interruptible`` is typed and checked here because allowing a spot reclaim
     is a silent-loss path.  A volume is supplied at creation time; there is no
-    later attach operation in this runtime.
+    later attach operation in this runtime.  ``container_disk_gb`` is stated
+    rather than left to the provider's default, because the bootstrap's own
+    downloads land on that disk.
     """
 
     name: str
@@ -220,6 +244,7 @@ class PodCreateRequest:
     docker_start_cmd: tuple[str, ...]
     hard_deadline: datetime
     repository_commit: str
+    container_disk_gb: int = DEFAULT_CONTAINER_DISK_GB
     template: str | None = None
     metadata: Mapping[str, str] = field(default_factory=dict)
     interruptible: bool = False
@@ -248,6 +273,12 @@ class PodCreateRequest:
         _required_timer_arguments(self.docker_start_cmd, self.volume_mount_path, self.metadata)
         if self.interruptible is not False:
             raise ValueError("pod runtime requires interruptible=false")
+        if (
+            not isinstance(self.container_disk_gb, int)
+            or isinstance(self.container_disk_gb, bool)
+            or self.container_disk_gb <= 0
+        ):
+            raise ValueError("container_disk_gb must be a positive whole number of gigabytes")
         if not isinstance(self.recovery_only, bool):
             raise ValueError("recovery_only must be boolean")
         require_utc(self.hard_deadline, "hard_deadline")
@@ -366,6 +397,38 @@ def _nested_flag_values(argv: list[str], flag: str) -> list[str | None]:
     return values
 
 
+NESTED_LAUNCH_BOUND_FLAGS = ("--report-path", "--journal")
+"""Nested bootstrap flags whose value the launch binds to this launch's token.
+
+Every durable record a pod writes onto a retained volume needs a name no second
+launch can land on (GOVERNANCE 4), and ``bootstrap_main`` refuses both of these
+on the pod when the token is absent from the name. ``launch`` binds each of
+them at sealing time and this module re-validates the result on the money path,
+so the binder and the validator read one list rather than drifting apart.
+"""
+
+
+def _nested_argv_halves(argv: list[str]) -> list[list[str]]:
+    """The nested argv's own halves, split at the first literal ``--``.
+
+    ``pod_run`` splits its argv at the first ``--`` and hands everything after
+    it to ``bootstrap_main`` (``pod_run.split_argv``), so one nested command
+    legitimately carries two parsers' flags -- and each parser requires its own
+    ``--report-path``. A validator that reads the decoded argv as one flat list
+    sees two occurrences of a flag that may appear once, which is how the only
+    launchable shape left was the ``--hold-only`` drill.
+
+    Splitting at the *first* ``--`` matches ``pod_run.split_argv`` exactly; a
+    later ``--`` belongs to the bootstrap half and stays inside it, so this
+    returns at most two halves however many separators the argv contains.
+    """
+
+    if "--" not in argv:
+        return [list(argv)]
+    index = argv.index("--")
+    return [argv[:index], argv[index + 1 :]]
+
+
 def rebind_nested_flag(argv: list[str], flag: str, transform) -> list[str]:
     """Rewrite a flag's value in a decoded nested argv, in either spelling.
 
@@ -453,30 +516,69 @@ def _required_timer_arguments(
     # time, after billing had already started. Re-validated here, at the same
     # money-path gate as the outer path, so that gap is closed before create
     # rather than found on the pod.
-    nested_report_paths = _nested_flag_values(bootstrap, "--report-path")
-    if len(nested_report_paths) > 1:
-        raise ValueError("pod bootstrap command must carry at most one nested --report-path value")
-    if nested_report_paths and nested_report_paths[0] is None:
-        raise ValueError("pod bootstrap command's nested --report-path flag carries no value")
-    if nested_report_paths:
-        nested_report_path = nested_report_paths[0]
-        nested_path = PurePosixPath(nested_report_path)
-        if (
-            ".." in nested_report_path.split("/")
-            or not nested_path.is_absolute()
-            or nested_path == volume_path
-            or not nested_path.is_relative_to(volume_path)
-        ):
-            raise ValueError(
-                "pod bootstrap command's nested --report-path must be inside the "
-                "attached volume mount"
-            )
-        if launch_token and launch_token not in nested_path.name:
-            raise ValueError(
-                "pod bootstrap command's nested --report-path must include this "
-                "launch's token, so a second launch on the same volume cannot "
-                "overwrite its evidence"
-            )
+    #
+    # Counted per half, not over the whole nested argv. ``pod_run`` -- the one
+    # tracked entrypoint that runs the pipeline on a pod -- is itself a nested
+    # argv of two halves joined by a literal ``--``: its own ``--report-path``
+    # for the run report, then ``bootstrap_main``'s for the bootstrap report,
+    # which ``pod_run.resolve_run_plan`` requires to be two different files.
+    # Counting both halves together refused every possible Boot B request
+    # before any preview, lease or provider call, which made the first real
+    # pipeline run unconstructible; no test composed a ``pod_run`` argv, so
+    # the suite stayed green over it. One ``--report-path`` per half is the
+    # rule, and every half is held to the same containment and token binding,
+    # because ``rebind_nested_flag`` rewrites every occurrence it finds.
+    #
+    # ``--journal`` is held to the same rules as ``--report-path``, because
+    # ``bootstrap_main.resolve_plan`` holds it to the same rules on the pod: a
+    # journal path that does not name the launch token is refused there, and
+    # the token is minted inside ``create``, so no operator can pre-write it.
+    # An unbound journal therefore refused every full bootstrap plan on the pod
+    # after billing began -- the same shape as the nested report path before
+    # ``launch`` learned to bind it.
+    nested_halves = _nested_argv_halves(bootstrap)
+    seen_nested_paths: list[str] = []
+    for flag in NESTED_LAUNCH_BOUND_FLAGS:
+        for half in nested_halves:
+            nested_values = _nested_flag_values(half, flag)
+            if len(nested_values) > 1:
+                raise ValueError(
+                    f"pod bootstrap command must carry at most one nested {flag} value"
+                )
+            if nested_values and nested_values[0] is None:
+                raise ValueError(f"pod bootstrap command's nested {flag} flag carries no value")
+            if not nested_values:
+                continue
+            nested_value = nested_values[0]
+            nested_path = PurePosixPath(nested_value)
+            if (
+                ".." in nested_value.split("/")
+                or not nested_path.is_absolute()
+                or nested_path == volume_path
+                or not nested_path.is_relative_to(volume_path)
+            ):
+                raise ValueError(
+                    f"pod bootstrap command's nested {flag} must be inside the "
+                    "attached volume mount"
+                )
+            if launch_token and launch_token not in nested_path.name:
+                raise ValueError(
+                    f"pod bootstrap command's nested {flag} must include this "
+                    "launch's token, so a second launch on the same volume cannot "
+                    "overwrite its evidence"
+                )
+            if flag == "--report-path":
+                seen_nested_paths.append(nested_value)
+    # Two halves naming one file is the collision `pod_run.resolve_run_plan`
+    # refuses on the pod, after the pod exists and is billing. The launch
+    # token is folded into both names identically, so a pair that is equal
+    # here is still equal once sealed: refused before the create instead.
+    if len(seen_nested_paths) > 1 and len(set(seen_nested_paths)) != len(seen_nested_paths):
+        raise ValueError(
+            "pod bootstrap command's two nested --report-path values name one file; "
+            "the run report and the bootstrap report are two records and may not "
+            "overwrite each other"
+        )
     # A bad interval would refuse inside the pod -- for a non-numeric value,
     # in argparse before the timer object even exists -- so refuse it here,
     # before any paid create, where refusals belong.  Both argv spellings the
