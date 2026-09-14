@@ -424,10 +424,15 @@ def test_an_a4_page_at_three_percent_scatter_is_held_as_one_item(tmp_path, monke
 
     Budget: measured at ~104 seconds on this build's development machine, of
     which ~89 is `grouping.group_page` over a quarter of a million components
-    and ~4 each is the structure scan and the reconciliation. `structure.py`'s
-    own docstring says the pass proves mechanism rather than production scale,
-    and roadmap item 4 replaces it rather than optimising it; `full` is the
-    marker that keeps it out of the everyday leg until then.
+    and ~4 each is the structure scan and the reconciliation. `full` is the
+    marker that keeps that cost out of the everyday leg; it is not a marker
+    waiting on a replacement. The live structural pass has landed and does not
+    replace this scan: `live_initial_pass` calls the same `_analyze_page` for
+    every sealed page, so the ink scan, the grouping and the residual holds this
+    test bounds are on the live route too. What `structure.py`'s docstring names
+    as outstanding is narrower -- `ink_pixels` still materialises one tuple per
+    ink pixel, which is the remaining share of the measured memory -- and it is
+    named there rather than deferred silently.
 
     The scatter goes on page **2**, which carries one declared act rather than
     two. At this scale the chain gap resolves to 81px, which is wider than the

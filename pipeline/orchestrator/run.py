@@ -733,9 +733,14 @@ def undispatchable_recovery_reason(recovery_kind: str, *, real_route: bool) -> s
         return (
             "is a fallback recrop on a real submission, which the Designator refuses by name: "
             "a recovery still reads the fixture's declared rectangle, which a real submission "
-            "does not carry. The Recensor now holds such an act for review instead, so this "
-            "request predates that gate; its coverage evidence is in the request artifact and "
-            "the Recensor review beside it, and re-running the Recensor is what supersedes it"
+            "does not carry. This request predates the gate that now withholds it. Nothing "
+            "supersedes it in this run tree: the Designator will not cut the recrop, and the "
+            "Recensor holds the act without republishing while the request is outstanding, so "
+            "no sequence of stage invocations reaches an export here and this run ends with "
+            "none. Its coverage evidence stays readable in the request artifact and the "
+            "Recensor review beside it; a fresh run of the same submission from the Door does "
+            "not reach this state, because the Recensor now holds such an act for review "
+            "instead of publishing a request"
         )
     return None
 
@@ -751,13 +756,25 @@ def report_undispatchable_recoveries(args, refused: list[tuple[str, str, str, st
     The durable evidence stays where it was published: each request artifact and
     its `recovery-requested` Recensor review are immutable in the run tree, and
     nothing here writes to or changes them.
+
+    Written to stderr, which is the half of this program's output the operator
+    surface keeps: it records a failed run's detail as
+    `completed.stderr or completed.stdout` (`operations/operator/surface.py`),
+    and the `ContractError` raised immediately after this is printed to stderr
+    by the entry point below — so stderr is never empty on this path and a
+    per-act listing on stdout would be dropped from the receipt and never seen.
+    A record the one consumer discards is GOVERNANCE 2 claimed, not met.
     """
     print(
         f"run {args.run_id}: recovery cannot be dispatched for {len(refused)} outstanding "
-        "request(s); no stage was invoked and nothing in the run tree was changed"
+        "request(s); no stage was invoked and nothing in the run tree was changed",
+        file=sys.stderr,
     )
     for act_id, request_id, recovery_kind, reason in refused:
-        print(f"  - act {act_id} (request {request_id}, kind {recovery_kind}): {reason}")
+        print(
+            f"  - act {act_id} (request {request_id}, kind {recovery_kind}): {reason}",
+            file=sys.stderr,
+        )
 
 
 def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
@@ -789,7 +806,6 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     # before the policy load, so the order in which those two can refuse is the
     # order it always was.
     run = tree.read_run()
-    real_route = is_real_ingress(run)
     # The orchestrator is not a stage and holds no `StageContext`, so it proves the
     # policy it dispatches under against the digests the run authority recorded for
     # itself. Without this, the dispatcher bounded the whole recovery loop — the
@@ -800,6 +816,13 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     require_sealed_config(
         run_sealed_config_digests(run), "recovery", recovery_policy["config_sha256"]
     )
+    # Read after the sealed-policy proof, not before it. `is_real_ingress` parses
+    # the run's ingress record and can refuse on a malformed one, so reading it
+    # first would let a run carrying both a bad ingress record and a swapped
+    # recovery policy report the former while the policy this loop is bounded by
+    # is still unproven. The proof that bounds the dispatch comes first; the
+    # route the dispatch screen consults comes after it.
+    real_route = is_real_ingress(run)
     maximum_rounds = recovery_policy["absolute_cap"]
 
     for round_number in range(maximum_rounds + 1):
@@ -821,6 +844,18 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
             if reason is not None:
                 refused.append((act_id, request_id, recovery_kind, reason))
         if refused:
+            # A refusal, not a per-act hold, and that is a decision rather than
+            # an omission. Holding the refused acts and dispatching the rest
+            # would not give this run an export: `recovery-requested` maps to no
+            # terminal Armarium category (`common/contracts/outcomes.py`), so the
+            # Armarium refuses the act fatally whatever this function does, and
+            # skipping here would only move the same dead end a stage later while
+            # losing the named cause at the boundary that knows it. Turning it
+            # into an export instead would mean making `recovery-requested`
+            # terminal, which would also let a fixture run whose recovery was
+            # simply never driven deliver as a partial — a genuinely half-driven
+            # run reported as a finished one. So this run stops here and says so;
+            # what the tree keeps is the immutable request and its review.
             report_undispatchable_recoveries(args, refused)
             first_act, _first_request, _first_kind, first_reason = refused[0]
             raise ContractError(f"act {first_act}'s outstanding recovery request {first_reason}")

@@ -3365,16 +3365,18 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
         # The Recensor no longer publishes a request this refusal would meet:
         # `pipeline/5_recensor/run.py` gates the coverage-observation
         # fallback-recrop on the ingress route and holds the act for review
-        # instead, so the run ends partial with an export rather than at a
-        # ContractError with none (F068/F083). This stays the backstop, and a
-        # tree that still carries such a request was written before that gate
-        # landed; the message says so rather than leaving an operator to
-        # discover it from an exit code.
+        # instead (F068/F083). This stays the backstop, and the message says so
+        # rather than leaving an operator to discover it from an exit code.
+        # Conditioned, because this branch is taken before `--act` and
+        # `--recovery-request` are read: a caller invoking `--operation recover`
+        # on a real run with no request at all must not be told a fact about a
+        # run tree this stage never looked at (GOVERNANCE 10).
         raise ContractError(
             "bounded recovery from a real submission is not built; a recovery still reads "
             "the fixture's declared rectangle, which a real submission does not carry. The "
-            "Recensor holds these acts for review instead of requesting a recrop, so an "
-            "outstanding real-ingress recovery request was published before that gate landed"
+            "Recensor holds such an act for review instead of requesting a recrop, so if "
+            "this run tree carries an outstanding real-ingress recovery request, it was "
+            "published before that gate landed and nothing here can answer it"
         )
     if args.operation == "recover":
         if not args.act:
