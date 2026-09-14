@@ -1456,10 +1456,12 @@ def categorize(
     if review["outcome"] == "recovery-requested":
         # The refusal stands: an act mid-recovery has no established reading to
         # export, and exporting it as anything would be a partial delivered as
-        # complete. What the operator was not told is which of the two shapes
-        # this is, and on a real submission the second one has no way out at all
-        # (F068/F083). Both are named here rather than left to be derived from a
-        # stage a run away.
+        # complete. What the operator was not told is which of two shapes this
+        # is: a fixture run whose recovery has simply not been driven yet, which
+        # ends here again once it is, or a real submission, where no stage can
+        # cut the recrop and the run has no export at all (F068/F083). Both are
+        # named here rather than left to be derived from a stage a run away, and
+        # neither names a remedy this tree does not implement.
         raise FatalAccounting(
             f"act {act_id} has an outstanding recovery request; its recrop must be reread "
             "before an Archetypus can exist. On the fixture route the Designator cuts that "
