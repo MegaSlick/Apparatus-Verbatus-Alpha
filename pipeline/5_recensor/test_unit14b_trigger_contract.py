@@ -19,11 +19,15 @@ from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.residual_ink import (
-    MINIMUM_INK_PIXELS,
     edge_ink_from_runs,
     load_coverage_audit_config,
     resolve_coverage_audit_policy,
 )
+
+# The sealed noise floor, read from `[coverage_audit.noise_floor]` the way the
+# stage reads it: since 2026-09-14 it is not a module constant, and a stimulus
+# anchored on this name moves with the sealed value.
+MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"]["minimum_ink_pixels"]
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
@@ -280,10 +284,17 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
     )
 
     empty_maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [])}))
-    assert recensor.unclaimed_ink_observations(empty_maps, [observation], 1, {}) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            empty_maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
 
     inked_maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
-    result = recensor.unclaimed_ink_observations(inked_maps, [observation], 1, {})
+    result = recensor.unclaimed_ink_observations(
+        inked_maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    )
     assert result == [{"page_ordinal": 1, "outside_ink_pixels": 25}]
 
 
@@ -301,7 +312,9 @@ def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
         {"kind": "unrouted-observation", "bounds": chair_2_box, "disagrees_with": 1},
     ]
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [])}))
-    outside_ink_requests = recensor.unclaimed_ink_observations(maps, observations, 1, {})
+    outside_ink_requests = recensor.unclaimed_ink_observations(
+        maps, observations, 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    )
     assert outside_ink_requests == []
     assert _wants_recovery(outside_ink_requests) is False
 
@@ -314,7 +327,12 @@ def test_ink_below_the_minimum_pixel_floor_still_refuses():
     box = {"x": 0, "y": 0, "w": MINIMUM_INK_PIXELS - 1, "h": 1}
     observation = {"kind": "unrouted-observation", "bounds": box}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(MINIMUM_INK_PIXELS, 20, [box])}))
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
 
 
 def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice():
@@ -331,7 +349,12 @@ def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice()
         "kind": "unrouted-observation",
         "bounds": {"x": 0, "y": -10, "w": 40, "h": 5},
     }
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
 
 
 def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
@@ -346,11 +369,16 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     observation = {"kind": "unrouted-observation", "bounds": box}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
 
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == [
-        {"page_ordinal": 1, "outside_ink_pixels": 100}
-    ]
+    assert recensor.unclaimed_ink_observations(
+        maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 100}]
     cut = {1: [{"x": 0, "y": 0, "w": 20, "h": 20}]}
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, cut) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, cut, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
     # These two straddle the floor: 20 px is under it and 30 px is over. The
     # geometry is written out because whole rows of a 10-wide box read more
     # plainly than an expression, so the straddle is asserted against the
@@ -361,11 +389,16 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
         "are built to sit either side of; rebuild the geometry around the new floor"
     )
     partial = {1: [{"x": 0, "y": 0, "w": 10, "h": 8}]}  # leaves 2 rows = 20 px
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, partial) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, partial, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
     smaller = {1: [{"x": 0, "y": 0, "w": 10, "h": 7}]}  # leaves 3 rows = 30 px
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, smaller) == [
-        {"page_ordinal": 1, "outside_ink_pixels": 30}
-    ]
+    assert recensor.unclaimed_ink_observations(
+        maps, [observation], 1, smaller, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30}]
 
 
 def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice():
@@ -376,9 +409,9 @@ def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice()
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
     overlapping = {1: [{"x": 0, "y": 0, "w": 6, "h": 10}, {"x": 3, "y": 0, "w": 4, "h": 10}]}
     # Union covers x 0..7 on every row: 3 columns x 10 rows remain outside.
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, overlapping) == [
-        {"page_ordinal": 1, "outside_ink_pixels": 30}
-    ]
+    assert recensor.unclaimed_ink_observations(
+        maps, [observation], 1, overlapping, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30}]
 
 
 def test_unordered_ink_runs_are_refused_rather_than_double_counted():
@@ -422,7 +455,9 @@ def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
             "Restore the page's sealed Ink Map artifact"
         ),
     ):
-        recensor.unclaimed_ink_observations(maps, [observation], 1, {})
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
 
 
 @pytest.mark.parametrize(
@@ -462,7 +497,9 @@ def test_a_retained_observation_with_no_readable_bounds_is_refused_not_skipped(o
         FatalAccounting,
         match="retained unclaimed witness observation with no .x, y, w, h. bounds",
     ):
-        recensor.unclaimed_ink_observations(maps, [observation], 1, {})
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
 
 
 def test_one_observation_funds_one_request_on_its_page():
@@ -636,6 +673,25 @@ def test_the_mask_argument_has_no_fail_open_default():
     # back in unnoticed.
     with pytest.raises(TypeError, match="unclaimed_ink_observations"):
         recensor.unclaimed_ink_observations(maps, [{"bounds": box}], 1)
+
+
+def test_the_noise_floor_argument_has_no_fail_open_default():
+    """The floor a pointer's ink must clear is the sealed one or nothing.
+
+    Since 2026-09-14 it is read from `[coverage_audit.noise_floor]` under the
+    run's seal rather than from a module constant; a default here would let a
+    caller fund recovery under a floor the run never sealed.
+    """
+    recensor = _recensor()
+    box = {"x": 0, "y": 0, "w": 10, "h": 10}
+    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    with pytest.raises(TypeError, match="minimum_ink_pixels"):
+        recensor.unclaimed_ink_observations(maps, [{"bounds": box}], 1, {})
+    # And the sealed value is what the live caller reads: the same floor this
+    # module's stimuli are built against.
+    source = RECENSOR.read_text(encoding="utf-8")
+    assert 'coverage_config["coverage_audit"]["minimum_ink_pixels"]' in source
+    assert "minimum_ink_pixels=minimum_ink_pixels" in source
 
 
 # The capture identity the Unit 19C gate is asked about. `run.json`'s

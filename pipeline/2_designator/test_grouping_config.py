@@ -112,6 +112,12 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     assert config["coverage_audit"]["edge_band_bp"] == 100
     assert config["coverage_audit"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["coverage_audit"]["provenance"]["sample_count"] == 44
+    # The noise floor and fraction gate, sealed beside the gates on 2026-09-14
+    # under their own, truthfully unmeasured, provenance.
+    assert config["coverage_audit"]["minimum_ink_pixels"] == 24
+    assert config["coverage_audit"]["minimum_fraction_outside_bp"] == 200
+    assert config["coverage_audit"]["noise_floor_provenance"]["calibrated_for_this_corpus"] is False
+    assert config["coverage_audit"]["noise_floor_provenance"]["sample_count"] == 0
 
 
 def test_default_config_is_valid_toml_matching_the_loaded_shape():
@@ -131,6 +137,14 @@ def test_default_config_is_valid_toml_matching_the_loaded_shape():
     assert set(raw["coverage_audit"]) == {
         "substantial_ink_area_bp",
         "edge_band_bp",
+        "provenance",
+        "noise_floor",
+    }
+    # The unmeasured pair sits in a sub-table with a provenance block of its
+    # own, so the calibration claim above is not read as covering it.
+    assert set(raw["coverage_audit"]["noise_floor"]) == {
+        "minimum_ink_pixels",
+        "minimum_fraction_outside_bp",
         "provenance",
     }
 
@@ -287,6 +301,19 @@ sample_count = 44
 statistic = 'vst'
 calibrated_for_this_corpus = true
 caveat = 'vcv'
+
+[coverage_audit.noise_floor]
+minimum_ink_pixels = 24
+minimum_fraction_outside_bp = 200
+
+[coverage_audit.noise_floor.provenance]
+source = 'ns'
+corpus = 'nc'
+sample_unit = 'nu'
+sample_count = 0
+statistic = 'nst'
+calibrated_for_this_corpus = false
+caveat = 'ncv'
 """
 
 _VALID_PROVENANCE = """\
@@ -541,9 +568,14 @@ def test_provenance_negative_sample_count_refused(tmp_path):
 
 
 def test_provenance_refuses_calibrated_claim_with_zero_samples(tmp_path):
+    # Scoped to `[grouping.provenance]` by its preceding line: the noise-floor
+    # block below it truthfully says `false` with zero samples as well, and a
+    # document-wide replacement would trip that block first.
     body = _valid_toml().replace(
-        "calibrated_for_this_corpus = false", "calibrated_for_this_corpus = true"
+        'statistic = "st"\ncalibrated_for_this_corpus = false',
+        'statistic = "st"\ncalibrated_for_this_corpus = true',
     )
+    assert body != _valid_toml()
     path = _write(tmp_path, body)
     with pytest.raises(
         ContractError,
@@ -941,3 +973,22 @@ def test_a_forbidden_margin_name_is_refused_inside_the_page_area_table_too(tmp_p
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="primary_margin"):
         load_grouping_config(path)
+
+
+def test_the_noise_floor_sub_table_must_carry_its_own_provenance(tmp_path):
+    """A number with no declared source may not ship as a default, and the
+    two noise-floor values do not inherit the gates' block above them."""
+    block = "[coverage_audit.noise_floor.provenance]\n"
+    body = _valid_toml()
+    head, tail = body.split(block)
+    without = head + tail.split("\n\n", 1)[1]
+    assert block not in without and "[coverage_audit.noise_floor]" in without
+    with pytest.raises(ContractError, match=r"no \[coverage_audit.noise_floor.provenance\] table"):
+        load_grouping_config(_write(tmp_path, without))
+    claimed = body.replace(
+        "statistic = 'nst'\ncalibrated_for_this_corpus = false",
+        "statistic = 'nst'\ncalibrated_for_this_corpus = true",
+    )
+    assert claimed != body
+    with pytest.raises(ContractError, match=r"noise_floor.provenance\] says calibrated"):
+        load_grouping_config(_write(tmp_path, claimed))

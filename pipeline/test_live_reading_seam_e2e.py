@@ -210,9 +210,9 @@ CHURRO_PAGE_ONE_UNRELATED = (
 DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta gamma"
 DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 # Long enough that `truncation.is_length_suspicious` never fires on this
-# fixture's small regions: these tests are about the engine's own stop word,
-# and a reading the length heuristic independently called suspicious would
-# prove something else.
+# fixture's regions under the sealed `[truncation]` floor: these tests are about
+# the engine's own stop word, and a reading the length heuristic independently
+# called suspicious would prove something else.
 READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
 
 

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
+from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.approval import ApprovalRecordBinding
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError
@@ -32,11 +33,100 @@ PASS_B_FRAGMENT: Final = (
     "the image, preserve what the ink supports, and change only what the image justifies."
 )
 _FIELDS: Final = frozenset(
-    {"selection_rule", "page_shared_prefix_policy", "pass_b_fragment", "max_images"}
+    {"selection_rule", "page_shared_prefix_policy", "pass_b_fragment", "max_images", "truncation"}
+)
+_STRING_FIELDS: Final = frozenset(
+    {"selection_rule", "page_shared_prefix_policy", "pass_b_fragment"}
+)
+
+# The truncation instrument's one sealed number, in this file so the length
+# signal's floor rides on the `perlector-protocol` seal every reading is already
+# proven against, rather than in source where a change between two runs left
+# their provenance byte-identical (pre-launch review, F082 and F088). The table
+# carries its own provenance block, held to the same closed schema the
+# Designator's grouping policy holds its blocks to, because a number with no
+# declared source may not ship as a default.
+TRUNCATION_TABLE: Final = "truncation"
+LENGTH_FLOOR_FIELD: Final = "length_floor_characters_per_page"
+_TRUNCATION_FIELDS: Final = frozenset({LENGTH_FLOOR_FIELD, "provenance"})
+_PROVENANCE_FIELDS: Final = frozenset(
+    {
+        "source",
+        "corpus",
+        "sample_unit",
+        "sample_count",
+        "statistic",
+        "calibrated_for_this_corpus",
+        "caveat",
+    }
+)
+_STRING_PROVENANCE_FIELDS: Final = frozenset(
+    {"source", "corpus", "sample_unit", "statistic", "caveat"}
 )
 
 
-def load(path: str | Path) -> tuple[dict[str, str | int], str]:
+def _plain_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_truncation_table(table: Any) -> dict[str, Any]:
+    """The sealed `[truncation]` table, checked against its bounds and returned.
+
+    Zero is refused: a floor of zero can never fire and is the signal switched
+    off by a value rather than by a decision, which is the same refusal the
+    coverage audit's gates carry. The provenance block is required, not
+    optional, and a `calibrated_for_this_corpus` claim must carry sample
+    evidence -- the shared rule `common/calibration.py` holds every config to.
+    """
+    where = f"[{TRUNCATION_TABLE}]"
+    if not isinstance(table, dict):
+        raise ContractError(f"the Perlector protocol declaration has no {where} table")
+    if set(table) != _TRUNCATION_FIELDS:
+        raise ContractError(
+            f"the Perlector protocol declaration's {where} is not its closed schema "
+            f"{sorted(_TRUNCATION_FIELDS)}; an unread policy field cannot be applied"
+        )
+    floor = table[LENGTH_FLOOR_FIELD]
+    if not _plain_int(floor) or floor <= 0:
+        raise ContractError(
+            f"the Perlector protocol declaration's {where} {LENGTH_FLOOR_FIELD} is not a "
+            "positive integer; a floor of zero never fires and is the length signal switched "
+            "off by a value rather than by a decision"
+        )
+    provenance = table["provenance"]
+    if not isinstance(provenance, dict) or set(provenance) != _PROVENANCE_FIELDS:
+        raise ContractError(
+            f"the Perlector protocol declaration's {where}.provenance is not the closed "
+            f"provenance schema {sorted(_PROVENANCE_FIELDS)}; a policy value with no declared "
+            "source may not be shipped as a default"
+        )
+    for field in sorted(_STRING_PROVENANCE_FIELDS):
+        if not isinstance(provenance[field], str) or not provenance[field].strip():
+            raise ContractError(
+                f"the Perlector protocol declaration's {where}.provenance field {field!r} is "
+                "not a non-empty string"
+            )
+    if not _plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
+        raise ContractError(
+            f"the Perlector protocol declaration's {where}.provenance sample_count is not a "
+            "non-negative integer"
+        )
+    if not isinstance(provenance["calibrated_for_this_corpus"], bool):
+        raise ContractError(
+            f"the Perlector protocol declaration's {where}.provenance "
+            "calibrated_for_this_corpus is not a boolean"
+        )
+    if not calibrated_claim_has_sample_evidence(
+        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
+    ):
+        raise ContractError(
+            f"the Perlector protocol declaration's {where}.provenance says "
+            "calibrated_for_this_corpus but records no sample"
+        )
+    return {LENGTH_FLOOR_FIELD: floor, "provenance": dict(provenance)}
+
+
+def load(path: str | Path) -> tuple[dict[str, Any], str]:
     """Read the exact policy bytes a Perlector pass will use."""
     try:
         raw = Path(path).read_bytes()
@@ -45,10 +135,9 @@ def load(path: str | Path) -> tuple[dict[str, str | int], str]:
         raise ContractError(
             f"the Perlector protocol declaration at {path} could not be read"
         ) from error
-    if set(record) != _FIELDS or not all(
-        isinstance(record[key], str) for key in _FIELDS - {"max_images"}
-    ):
+    if set(record) != _FIELDS or not all(isinstance(record[key], str) for key in _STRING_FIELDS):
         raise ContractError("the Perlector protocol declaration is not its closed schema")
+    record[TRUNCATION_TABLE] = validate_truncation_table(record[TRUNCATION_TABLE])
     if (
         not isinstance(record["max_images"], int)
         or isinstance(record["max_images"], bool)

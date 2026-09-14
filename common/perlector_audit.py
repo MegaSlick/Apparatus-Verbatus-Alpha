@@ -102,6 +102,10 @@ DECLARED_STOP_WORDS: Final = frozenset({"stop", "length"})
 _TRUNCATION_SIGNALS: Final = frozenset(
     {"stop_reason_declared", "unclosed_structure", "length_suspicious", "ends_abruptly"}
 )
+# What the length signal was judged from, on the record since 2026-09-14 so a
+# reader holding the sealed `[truncation]` floor can re-derive that signal
+# rather than take the producer's word for it (pre-launch review, F082/F088).
+_TRUNCATION_MEASURE: Final = frozenset({"region_pixels", "page_pixels", "characters"})
 FLAG_CLASSES: Final = frozenset(
     {"date-sequence", "numbering", "order", "testimony-diff", "repetition", "within-crop"}
 )
@@ -379,9 +383,13 @@ def truncation_classification(signals: dict[str, Any]) -> str:
 def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
     """The sealed shape of one raw truncation measurement, its verdict re-derived.
 
-    The three computed signals cannot be recomputed here -- `region_pixels` is
-    not on the finding -- so they are the producer's word. The classification is
-    not: for the instrument's *raw* output it is a function of the four sealed
+    Two of the three computed signals are the producer's word: they need the
+    text, which is not on the record. The third, `length_suspicious`, is judged
+    from the `measure` block the record carries -- region and page area and the
+    character count -- under the sealed `[truncation]` floor of the run, which
+    this validator does not hold and so checks the block for shape only. The
+    classification is not the producer's word: for the instrument's *raw*
+    output it is a function of the four sealed
     signals (`truncation_classification`), so a record whose verdict contradicts
     its own signals is refused, and a declared stop word outside the recognised
     vocabulary is refused with it. This holds for `reproof_truncation`, which is
@@ -392,7 +400,7 @@ def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
     the signals left as measured -- so that record is validated for shape and
     vocabulary only, and must not be handed to this function.
     """
-    if not isinstance(value, dict) or set(value) != {"classification", "signals"}:
+    if not isinstance(value, dict) or set(value) != {"classification", "signals", "measure"}:
         raise SchemaRefusal(f"{label} is not a closed truncation record")
     # Type before membership everywhere a frozenset is consulted: an unhashable
     # value (a list, an object) would otherwise leave as `TypeError`, which the
@@ -414,6 +422,16 @@ def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
     for name in ("unclosed_structure", "length_suspicious", "ends_abruptly"):
         if type(signals[name]) is not bool:
             raise SchemaRefusal(f"{label} has a non-boolean {name} signal")
+    measure = value["measure"]
+    if not isinstance(measure, dict) or set(measure) != _TRUNCATION_MEASURE:
+        raise SchemaRefusal(f"{label} does not carry the length signal's closed measure")
+    for name in sorted(_TRUNCATION_MEASURE):
+        floor = 0 if name == "characters" else 1
+        if type(measure[name]) is not int or measure[name] < floor:
+            raise SchemaRefusal(
+                f"{label} measure {name} is not a {'non-negative' if floor == 0 else 'positive'} "
+                "integer"
+            )
     derived = truncation_classification(signals)
     if value["classification"] != derived:
         raise SchemaRefusal(

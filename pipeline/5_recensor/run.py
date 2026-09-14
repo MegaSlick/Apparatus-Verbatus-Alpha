@@ -91,7 +91,6 @@ from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
     INK_RUNS_SCHEMA,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
-    MINIMUM_INK_PIXELS,
     load_coverage_audit_config,
     reconcile_edge_finding_with_runs,
     residual_ink,
@@ -2018,6 +2017,8 @@ def unclaimed_ink_observations(
     unclaimed_observations: list,
     page_ordinal: int,
     cut_regions: dict[int, list[dict]],
+    *,
+    minimum_ink_pixels: int,
 ) -> list[dict]:
     """Which of this page's retained unclaimed observations point at real ink.
 
@@ -2025,7 +2026,12 @@ def unclaimed_ink_observations(
     ink outside every current cut; agreement, overlap scores, chair identity,
     and other witness-derived quantities cannot authorize it. ``cut_regions``
     is required because an omitted mask would count already-covered ink as a
-    reason to cut it again.
+    reason to cut it again. ``minimum_ink_pixels`` is the sealed noise floor
+    the ink under a pointer must clear, keyword-only with no default: it was
+    the module constant `MINIMUM_INK_PIXELS` until 2026-09-14 and is read from
+    `[coverage_audit.noise_floor]` under the run's own seal now, so a caller
+    that forgets it fails loudly rather than funding recovery under a floor
+    nobody sealed.
 
     A retained observation with no map row is a fatal accounting gap, not an
     empty result: absence of the independent evidence cannot honestly be read
@@ -2081,7 +2087,7 @@ def unclaimed_ink_observations(
                 "Recensor."
             )
         ink_pixels = _ink_outside_cuts_in_box(evidence, bounds, covered)
-        if ink_pixels >= MINIMUM_INK_PIXELS:
+        if ink_pixels >= minimum_ink_pixels:
             requests.append({"page_ordinal": page_ordinal, "outside_ink_pixels": ink_pixels})
     return requests
 
@@ -3568,6 +3574,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     geometry_inputs = geometry_coverage_inputs(context)
     content_findings = testimony_content_findings(context)
     ink_maps = ink_map_by_page(context)
+    # The noise floor a witness pointer's ink must clear before it may fund
+    # recovery, read from the sealed `[coverage_audit.noise_floor]` and proven
+    # against this run's own seal at the point of use, the way every other
+    # reader of that file proves its bytes. Read once for the run: it is a flat
+    # count and does not resolve per page.
+    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
+    minimum_ink_pixels = coverage_config["coverage_audit"]["minimum_ink_pixels"]
     # The remaining page-level inputs read once per run for the same reason:
     # the sealed occlusion records by page, and a cache of the local-act
     # proposal geometry every cross-capture view asks for.
@@ -3754,6 +3768,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             content_coverage.get("unclaimed_observations", []),
             act["page_ordinal"],
             cut_regions,
+            minimum_ink_pixels=minimum_ink_pixels,
         )
         wants_recovery = (
             declared_recovery(scenario, act_key)
