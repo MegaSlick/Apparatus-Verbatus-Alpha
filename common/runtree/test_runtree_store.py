@@ -2332,6 +2332,11 @@ def test_the_shared_snapshot_fails_loudly_on_a_descendant_it_cannot_read(tmp_pat
     (locked / "inside").write_bytes(b"x")
     locked.chmod(0)
     try:
+        if os.access(locked, os.R_OK):  # pragma: no cover - running as root
+            pytest.skip(
+                f"this process (uid={os.getuid()}) can read a mode-000 directory; "
+                "the case cannot be built"
+            )
         with pytest.raises(OSError):
             tree_snapshot(root)
     finally:
