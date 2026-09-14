@@ -3361,9 +3361,20 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
         # no fixture and this stage has no other source for a recrop's bounds.
         # Refuse by name here rather than let the generic fixture accessor's
         # message stand in for it.
+        #
+        # The Recensor no longer publishes a request this refusal would meet:
+        # `pipeline/5_recensor/run.py` gates the coverage-observation
+        # fallback-recrop on the ingress route and holds the act for review
+        # instead, so the run ends partial with an export rather than at a
+        # ContractError with none (F068/F083). This stays the backstop, and a
+        # tree that still carries such a request was written before that gate
+        # landed; the message says so rather than leaving an operator to
+        # discover it from an exit code.
         raise ContractError(
             "bounded recovery from a real submission is not built; a recovery still reads "
-            "the fixture's declared rectangle, which a real submission does not carry"
+            "the fixture's declared rectangle, which a real submission does not carry. The "
+            "Recensor holds these acts for review instead of requesting a recrop, so an "
+            "outstanding real-ingress recovery request was published before that gate landed"
         )
     if args.operation == "recover":
         if not args.act:

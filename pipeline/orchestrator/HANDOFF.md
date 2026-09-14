@@ -17,6 +17,23 @@ Recovery is a genuine member with no stage program of its own, not hidden work p
 before the Archetypus. That is what makes `--stage archetypus` execute the same boundary
 code `--all` does at that point.
 
+**Every round screens the whole outstanding batch before it dispatches any of it.**
+`undispatchable_recovery_reason` answers, per request, why this orchestrator cannot
+dispatch it: a `recovery_kind` other than `fallback-recrop` (the page-level reread belongs
+to the Perlector, which has not built it), or a recrop on a real submission (the Designator
+refuses `--operation recover` there by name, because a recrop's geometry still comes from a
+fixture's declared rectangle). Screening the batch first is what keeps an unanswerable
+request from leaving half a round behind it, and screening the route here is what stops the
+Designator's refusal reaching an operator as a bare `pipeline/2_designator/run.py exited 2`.
+`report_undispatchable_recoveries` then names every refused act and request before the
+`ContractError` is raised — this module writes no file of its own, so the run's own output
+is where it records a dispatch it would not make (GOVERNANCE 2); the durable evidence is the
+immutable request artifact and its `recovery-requested` review, which nothing here touches.
+
+Since findings F068/F083 the Recensor no longer publishes a real-ingress request at all, so
+the route branch is a backstop over a tree written before that gate landed. It is still
+checked: a bound nobody checks is not a bound.
+
 ## The three selections
 
 An invocation runs one **contiguous** subsequence, named one of three ways:

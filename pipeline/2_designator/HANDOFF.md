@@ -1129,7 +1129,18 @@ against a real submission by name, before touching `--act` or
 `--recovery-request`, rather than let the generic fixture-accessor refusal
 (`common/stage.py`) stand in for it. Bounded recovery from a real submission
 is not built; when it is, this stage will need a source for a recrop's
-geometry that a real page can supply. The request must be the exact current, digest-checked Recensor
+geometry that a real page can supply.
+
+**Nothing publishes a request this refusal would meet any more.** Since findings
+F068/F083, `pipeline/5_recensor/run.py` gates its fallback-recrop publication on
+the ingress route (`recrop_dispatchable`) and holds the act for review instead,
+and `pipeline/orchestrator/run.py` screens the same route before it dispatches
+anything. So this refusal is a backstop over a run tree written before that gate
+landed, and it says so: a request nothing can answer used to end the run fatally
+with no export at all, which is the failure the Recensor-side gate exists to
+prevent, not one this stage could fix by answering.
+
+The request must be the exact current, digest-checked Recensor
 request for that act, its next ordinal, its Perlectio evidence, and the
 run-bound `config/recovery.toml` policy, including its reconciled total and
 per-kind budget counters. This stage fulfils `fallback-recrop` only; it refuses a
@@ -1289,10 +1300,12 @@ and the number of review items is a property of how well the structure pass
 performed as much as of the page. Today's pass is one modal-background ink scan
 at a 20-level margin, so a run in which *every* page carries a `page-residual`
 hold is the legible first-run signal that the structure pass does not work on
-this corpus — a true finding delivered on run one. But if roadmap item 4 lands a
-real structural Designator and real pages still trip the bound, the bound is
-measuring the wrong thing and must be revisited rather than raised. The first
-real run's `page-residual` count is the measurement that settles it.
+this corpus — a true finding delivered on run one. The real structural
+Designator has since landed (`live_initial_pass` asks a served structure chair
+for every sealed page), so the condition is now live rather than prospective: if
+real pages under the live pass still trip the bound, the bound is measuring the
+wrong thing and must be revisited rather than raised. The first real run's
+`page-residual` count is the measurement that settles it.
 
 There is no ordinal arithmetic left to bound: residual identities are
 class-namespaced (`act_id(page_id, "residual", bounds)`), so disjointness from

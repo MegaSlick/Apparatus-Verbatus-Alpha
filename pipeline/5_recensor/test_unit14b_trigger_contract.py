@@ -628,13 +628,15 @@ def test_a_second_request_is_replaced_by_a_loud_hold_not_an_acceptance():
     """The one-grant bound preserves the unresolved pointer as a live hold."""
     recensor = _recensor()
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
-    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, {1})
+    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, {1}, real_route=False)
     assert outcome == "held-for-review"
     assert "one observation-funded recovery request is already recorded" in reason
-    exhausted_outcome, exhausted_reason = recensor.unresolved_observation_hold(confirmed, 1, set())
+    exhausted_outcome, exhausted_reason = recensor.unresolved_observation_hold(
+        confirmed, 1, set(), real_route=False
+    )
     assert exhausted_outcome == "held-for-review"
     assert "bounded recovery policy cannot admit another request" in exhausted_reason
-    assert recensor.unresolved_observation_hold([], 1, {1}) is None
+    assert recensor.unresolved_observation_hold([], 1, {1}, real_route=False) is None
 
     source = RECENSOR.read_text(encoding="utf-8")
     assert source.count("observation_hold = unresolved_observation_hold(") == 1
@@ -644,6 +646,127 @@ def test_a_second_request_is_replaced_by_a_loud_hold_not_an_acceptance():
         )
         == 1
     ), "the live terminal route no longer turns the unresolved pointer into a loud hold"
+
+
+def _live_publication_gate(source: str | None = None):
+    """Compile the conditional that actually guards the recovery-request write.
+
+    The sibling helper above compiles `wants_recovery`, which says whether the
+    act *wants* a recrop. This compiles the `if` that decides whether the want
+    becomes a published request -- the two are deliberately different questions
+    since F068/F083, and only the second one knows whether anything downstream
+    could answer what it published.
+    """
+    tree = _tree(source)
+    publications = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and any(
+            keyword.arg == "kind"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "recovery-request"
+            for keyword in node.keywords
+        )
+    ]
+    assert len(publications) == 1, "Unit 14B must have exactly one recovery-request publication"
+    guards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "wants_recovery" in _names(node.test)
+        and any(
+            publications[0] is child for statement in node.body for child in ast.walk(statement)
+        )
+    ]
+    assert len(guards) == 1, "the recovery-request publication is no longer guarded by one gate"
+    return compile(ast.Expression(guards[0].test), str(RECENSOR), "eval")
+
+
+def _publishes(*, recrop_dispatchable: bool, source: str | None = None) -> bool:
+    """Evaluate the live gate with every coverage and budget conjunct satisfied."""
+    return bool(
+        eval(  # noqa: S307 -- compile input is this checked-in module's one conditional.
+            _live_publication_gate(source),
+            {},
+            {
+                "continuation_shortfall": False,
+                "wants_recovery": True,
+                "recrop_dispatchable": recrop_dispatchable,
+                "used_fallback": 0,
+                "allowed_fallback": 1,
+                "used_total": 0,
+                "budget": {"allowed": 1, "absolute_cap": 3},
+            },
+        )
+    )
+
+
+def test_no_recovery_request_is_published_on_a_route_that_cannot_answer_one():
+    """F068/F083: an unanswerable request is a run with no export, not a recovery.
+
+    The Designator refuses `--operation recover` on a real submission by name,
+    the orchestrator turns that exit 2 into a run abort, and the Armarium then
+    refuses the outstanding request -- so a request published on the real route
+    strands every act already read, with no sequence of stage invocations that
+    reaches an export. With every coverage and budget conjunct satisfied, the
+    route alone decides, and on the route that cannot cut a recrop nothing is
+    published (ARCHITECTURE invariant 8: the act ends as a review item instead).
+    """
+    assert _publishes(recrop_dispatchable=True) is True
+    assert _publishes(recrop_dispatchable=False) is False
+
+
+def test_the_dispatchability_conjunct_is_the_runs_own_ingress_route():
+    """The gate's new conjunct is a route fact, read through the shared reader.
+
+    A conjunct that could be satisfied by anything else -- a flag, a scenario
+    field, a stage-local default -- would pass the test above while leaving the
+    real route publishing requests. So the live source is required to derive it
+    from `real_ingress`, the same reader `declared_scenario` and every other
+    stage's `real_ingress(context)` go through.
+    """
+    source = RECENSOR.read_text(encoding="utf-8")
+    assert source.count("real_route = real_ingress(context)") == 1
+    assert source.count("recrop_dispatchable = not real_route") == 1
+
+
+def test_a_real_submission_holds_the_pointer_and_names_the_recovery_it_has_no_producer_for():
+    """The route is the reason, and it outranks whatever the grant would say.
+
+    Reporting a spent page grant or an exhausted budget on a run where no recrop
+    can be cut at all would name the wrong fault (GOVERNANCE 10), and would send
+    an operator looking for a budget to raise. The evidence itself stays visible
+    either way: a still-confirmed pointer never reaches an accepted review.
+    """
+    recensor = _recensor()
+    confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
+
+    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, set(), real_route=True)
+    assert outcome == "held-for-review"
+    assert "bounded recovery from a real submission is not built" in reason
+    assert "bounded recovery policy cannot admit another request" not in reason
+
+    funded_outcome, funded_reason = recensor.unresolved_observation_hold(
+        confirmed, 1, {1}, real_route=True
+    )
+    assert (funded_outcome, funded_reason) == (outcome, reason)
+
+    # No pointer, no hold: the real route does not invent a review item of its own.
+    assert recensor.unresolved_observation_hold([], 1, set(), real_route=True) is None
+
+
+def test_the_observation_hold_refuses_to_answer_without_being_told_the_route():
+    """`real_route` is keyword-only and required, so no caller can forget it.
+
+    A defaulted parameter would let a new call site publish the grant sentence
+    over a real submission -- the exact wrong-fault report the test above pins
+    against -- and would do it silently.
+    """
+    recensor = _recensor()
+    confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
+    with pytest.raises(TypeError, match="real_route"):
+        recensor.unresolved_observation_hold(confirmed, 1, set())
 
 
 def test_a_recovery_request_with_no_recorded_origin_is_refused():

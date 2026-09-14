@@ -2169,11 +2169,33 @@ def recovery_request_origin(*, declared: bool, outside_ink_requests: list) -> st
 
 
 def unresolved_observation_hold(
-    outside_ink_requests: list, page_ordinal: int, funded_pages: set[int]
+    outside_ink_requests: list,
+    page_ordinal: int,
+    funded_pages: set[int],
+    *,
+    real_route: bool,
 ) -> tuple[str, str] | None:
-    """Keep a still-confirmed pointer visible when no request can be published."""
+    """Keep a still-confirmed pointer visible when no request can be published.
+
+    Three reasons a request cannot be published, told apart because an operator
+    acts on them differently.  The route is asked first: on a real submission no
+    fallback recrop can be cut at all, whatever the page's grant or the act's
+    budget would otherwise have allowed, so naming a spent budget there would
+    report the wrong fault (GOVERNANCE 10).  `real_route` is required rather than
+    defaulted -- a caller that forgot it would publish the grant sentence over a
+    run whose recovery does not exist (F068/F083).
+    """
     if not outside_ink_requests:
         return None
+    if real_route:
+        return (
+            "held-for-review",
+            "Unit 9 still confirms ink in a witness-reported pointer outside every "
+            "current cut, but bounded recovery from a real submission is not built — the "
+            "Designator's recovery pass still reads a fixture's declared rectangle — so no "
+            "fallback recrop can be cut for it; the unresolved coverage evidence is held "
+            "visibly rather than published as a request nothing downstream could answer",
+        )
     grant_state = (
         "the page's one observation-funded recovery request is already recorded"
         if page_ordinal in funded_pages
@@ -3551,6 +3573,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # The declared scenario on the fixture route; nothing on a real submission.
     # `hold_acts` and `recover_acts` are the two things read from it, below.
     scenario = declared_scenario(context)
+    # The same route, read as its own fact rather than inferred from `scenario
+    # is None`. `declared_scenario` is defined in terms of this reader, so the
+    # two cannot disagree; what they mean differs, and only one of them belongs
+    # in the recovery gate. This one answers "can anything downstream cut a
+    # recrop for this run at all" (F068/F083), not "did a fixture declare one".
+    real_route = real_ingress(context)
     floor = context.witness_floor
 
     # This pass must precede publication.  `latest_attempt` refuses duplicate
@@ -3775,8 +3803,23 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             or (bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)
         ) and used_total == 0
         observation_hold = unresolved_observation_hold(
-            outside_ink_requests, act["page_ordinal"], funded_pages
+            outside_ink_requests, act["page_ordinal"], funded_pages, real_route=real_route
         )
+        # Whether a published `fallback-recrop` could actually be answered. On a
+        # real submission it cannot: `pipeline/2_designator/run.py` refuses
+        # `--operation recover` by name because a recovery still reads the
+        # fixture's declared rectangle, the orchestrator turns that exit 2 into a
+        # run abort, and the Armarium then refuses the outstanding request -- so a
+        # request published here is a run with no export by any sequence of stage
+        # invocations (F068/F083). This is not a fact about the reading or its
+        # coverage, and it does not change what the act WANTS: it decides only
+        # whether the want becomes a request or the loud hold below. It is the
+        # same rule this stage already applies to `page-level-reread`, stated in
+        # the comment inside the branch below: "this stage does not request an
+        # operation nothing downstream can honor, because a request the
+        # orchestrator can only refuse turns a graceful hold into a hard failure
+        # for no gain."
+        recrop_dispatchable = not real_route
         ordinal = used_total + 1
 
         # The cap is enforced at the request boundary rather than by convention
@@ -3790,6 +3833,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # the Unit 14B ink observation and bounded grants do. The survey
             # covers the current proposal, not the unclaimed ink outside it.
             and wants_recovery
+            # Not a budget: the budget says how many recrops this act may spend,
+            # this says whether one can be cut at all on this run's ingress
+            # route. Refused here rather than downstream so the act ends as a
+            # visible review item and the Armarium can still export partial
+            # (ARCHITECTURE invariant 8, GOVERNANCE 2 and 11).
+            and recrop_dispatchable
             and used_fallback < allowed_fallback
             and used_total < budget["allowed"]
             and used_total < budget["absolute_cap"]
@@ -3996,7 +4045,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # confirming ink in a witness pointer outside every cut is
                     # exactly the shortfall the three conditions above exist to
                     # keep out of a terminal seal: with the page's one grant
-                    # already spent, or the budget exhausted, no request is
+                    # already spent, the budget exhausted, or the run on the
+                    # real route where no recrop can be cut, no request is
                     # published, so this cause appears only in the chain below
                     # and `confirmed-blank` would silently override it. An act
                     # sealed COMPLETED-class over measured, unclaimed ink is the

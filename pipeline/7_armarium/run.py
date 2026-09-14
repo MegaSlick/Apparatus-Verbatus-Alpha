@@ -1462,9 +1462,18 @@ def categorize(
         return terminal, review, None
 
     if review["outcome"] == "recovery-requested":
+        # The refusal stands: an act mid-recovery has no established reading to
+        # export, and exporting it as anything would be a partial delivered as
+        # complete. What it must not become is a run with no route out, which is
+        # what it was on a real submission before the Recensor stopped publishing
+        # a request nothing downstream could answer (F068/F083). The route is
+        # named here so an operator meeting this does not have to derive it.
         raise FatalAccounting(
             f"act {act_id} has an outstanding recovery request; its recrop must be reread "
-            "before an Archetypus can exist"
+            "before an Archetypus can exist. The Designator cuts the recrop, dispatched by "
+            "the orchestrator's recovery member; on a real submission no such request is "
+            "published any more, so one found here predates that gate and is superseded by "
+            "re-running the Recensor"
         )
 
     established = artifacts_for(context, ARCHETYPUS, "archetypus", act_id, manifest_cache)
