@@ -100,6 +100,24 @@ the moment you are done. Use `review` to read one run tree without changing anyt
 it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any
 time you are unsure what is happening or costing money.
 
+Every `run` ends by printing the exact `verbatus review --run-root … --run-id …` line for
+its tree, whether it completed, was held, failed or was interrupted; `status` prints the
+same line under every run it lists. `export` names the run it is about to export before
+it does anything -- with no `--run-id` it takes the run recorded most recently and says
+so -- and it is only called a success when the run's own recorded state is `complete`:
+over a held or partial run it still copies what was delivered, prints every recorded
+reason, and then exits with `export-partial` rather than 0. A hold is not cleared by
+running the same run name again; that republishes the same sealed hold. It is resolved
+only by a new authorized run over the same sealed source, which is what the `run-held`
+message and `review` both say.
+
+`run`, `boot`, `ingest`, `triage`, `launch` and `spend` read configuration, stage code
+or proof material from the workspace, so each refuses in one sentence (`not-a-checkout`)
+when the folder it was started in -- or the one named with `--workspace` -- has no
+`pipeline/`, `config/` or `proof/` that word needs. `status`, `export`, `fetch-run`,
+`review`, `backup`, `advance` and `close` do not read those, and are never refused for
+running elsewhere.
+
 ## `review` on a run that has not finished
 
 A run stops before the Armarium for ordinary reasons — a manual boundary, a hold, an
@@ -336,11 +354,31 @@ Every failure message says three things, always in the same order:
 You will never see a raw error with no explanation. If you ever do, that is a defect in
 this tool and not something you did — save the text and pass it on.
 
+A failed `run` names its cause on the screen (the last line the pipeline wrote) beside the
+path of its saved run record, and that record keeps the run's output, exit status,
+arguments, start and end times, the repository commit, and the path and SHA-256 of every
+configuration file named on the command line -- for every end state, including a hold.
+A run that is interrupted (Ctrl+C or a termination signal) writes an
+`interrupted-recoverable` record and tells you to run it again with the same name; a run
+that is killed outright still leaves the `started` record written before the pipeline
+began, so `status` can name the run and its tree rather than report an empty machine.
+A failure the tool could not classify (`unexpected`) writes an `unexpected` record
+carrying the exception, its technical trace, the command and the working directory, and
+the message names that record; only when even that cannot be written is the screen the
+sole record, and the message says so.
+
 ## `status`: the one you can run any time
 
 `status` never starts, spends or changes anything. It reads records this tool already
 saved and repeats them **exactly as recorded** — it does not recalculate anything, so what
 it shows you and what is on file cannot drift apart. Run it whenever you are unsure.
+
+Every run it lists is named -- the run id, its run root, its recorded state, the reason it
+failed or every reason it is held, the last lines of its recorded output, the
+ready-to-paste `verbatus review` line, and the path of the record itself. Exports show
+the run and the bundle; `fetch-run` and `upload` records show the volume and datacenter
+they named; `backup` records show which run root was copied where and the verified
+snapshot; `unexpected` records show the failure and the command that met it.
 
 It also lists any **safety lease** with no verified close recorded against it, because that
 is the one place a machine can be billing without a machine record to show you. A lease it
@@ -363,6 +401,12 @@ checkout, is ignored), outside the project checkout; `--state-dir` moves it.
 Each record is written once and named after a
 checksum of its own contents, so a record cannot be quietly edited afterwards and still
 read back. You do not need to look in there — `status` shows you what matters.
+
+The whole directory is portable: the index names each record by that checksum name, and
+every reference a record makes to something under the directory -- a run root, a lease,
+an export bundle, another record -- is kept relative to it. Copy or move the directory, or
+restore it from a backup at a different path, and `status`, `export`, `run` and `close`
+read it there unchanged.
 
 ## Alpha shortcuts this surface ships
 

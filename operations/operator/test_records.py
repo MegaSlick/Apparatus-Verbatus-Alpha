@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import os
+import shutil
 import threading
 from contextlib import contextmanager
 from datetime import datetime
@@ -115,7 +116,8 @@ def test_descriptor_lock_serializes_a_second_writer(
     """A second writer cannot enter its read-modify-write while the first owns the lock."""
 
     store = records.DescriptorStore(tmp_path)
-    receipt = tmp_path / "receipt.json"
+    (tmp_path / records.RECEIPTS_DIRECTORY).mkdir()
+    receipt = tmp_path / records.RECEIPTS_DIRECTORY / "receipt.json"
     attempted_lock = threading.Event()
     entered_record = threading.Event()
     finished = threading.Event()
@@ -159,7 +161,61 @@ def test_descriptor_lock_serializes_a_second_writer(
     assert raised == []
     assert order == ["first-holds", "first-releases", "second-entered"]
     loaded = store.load()
-    assert loaded is not None and loaded["actions"]["boot"] == str(receipt.resolve())
+    assert loaded is not None and loaded["actions"]["boot"] == receipt.name
+
+
+def test_a_moved_state_directory_reads_its_receipts_through_the_descriptor(
+    tmp_path: Path,
+) -> None:
+    """The descriptor names receipts by basename, so a relocated state root still reads.
+
+    It recorded `str(receipt.resolve())`, and `ReceiptStore.read` refuses any
+    path outside the *current* receipt directory -- so a state directory copied
+    to another computer, restored from a backup at a new path, or simply moved
+    reported every intact, digest-verifying receipt as unreadable evidence to
+    "repair or replace". Receipts are content-addressed; the name already
+    carries the identity the absolute path was standing in for.
+    """
+
+    original = tmp_path / "state"
+    store = records.ReceiptStore(original, now=lambda: datetime(2026, 8, 24, tzinfo=records.UTC))
+    receipt = store.write("run", {"summary": "a run", "state": "complete"})
+    descriptor = records.DescriptorStore(original)
+    descriptor.record("run", receipt)
+    loaded = descriptor.load()
+    assert loaded is not None and loaded["actions"]["run"] == receipt.name
+    assert "/" not in loaded["actions"]["run"]
+
+    moved = tmp_path / "elsewhere" / "state-restored"
+    shutil.copytree(original, moved)
+    moved_descriptor = records.DescriptorStore(moved)
+    moved_store = records.ReceiptStore(moved)
+    relocated = moved_descriptor.load()
+    assert relocated is not None
+    path = moved_descriptor.receipt_path(relocated["actions"]["run"])
+    assert path.parent == moved / records.RECEIPTS_DIRECTORY
+    assert moved_store.read(path)["payload"] == {"summary": "a run", "state": "complete"}
+
+    # An index written before this change carried absolute paths; only the
+    # name is used from those, so the old index reads at the new location too.
+    legacy = moved_descriptor.receipt_path(str(receipt))
+    assert legacy == path
+    assert moved_store.read(legacy)["kind"] == "run"
+
+
+def test_the_descriptor_refuses_to_index_a_receipt_outside_its_receipt_directory(
+    tmp_path: Path,
+) -> None:
+    """A basename entry must resolve to the file it names, so the file must be there."""
+
+    store = records.DescriptorStore(tmp_path / "state")
+    stray = tmp_path / "elsewhere.json"
+    stray.write_bytes(b"{}")
+
+    with pytest.raises(records.RecordError, match="only receipts in its receipt directory"):
+        store.record("run", stray)
+    with pytest.raises(records.RecordError, match="blank receipt"):
+        store.receipt_path("")
 
 
 def test_descriptor_lock_acquisition_failure_is_named_and_closes_the_handle(

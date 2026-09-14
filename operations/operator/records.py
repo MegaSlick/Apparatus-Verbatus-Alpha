@@ -15,7 +15,7 @@ import stat
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final, Iterator
 
 from common.contracts.canonical import canonical_bytes as _pipeline_canonical_bytes
@@ -24,6 +24,19 @@ from operations.pod.durable import sync_directory
 UTC = timezone.utc
 SCHEMA = "operator-receipt.v1"
 DESCRIPTOR_SCHEMA = "operator-surface.v2"
+
+RECEIPTS_DIRECTORY: Final = "receipts"
+"""The one directory under a state root that holds receipts.
+
+Named once because two things resolve it: the store that writes receipts and
+the descriptor that indexes them by name. A descriptor entry is a receipt's
+basename, never a path -- a receipt is content-addressed, so its name is its
+identity and the directory it lives in is wherever the state root is *now*.
+Recording the absolute path bound every intact receipt to the machine and
+directory it was written on: a state directory copied to another computer,
+restored from a backup, or moved read every receipt as "outside the receipt
+directory" and told the operator to repair evidence that was sound.
+"""
 
 BLOCK_BYTES: Final = 1024 * 1024
 
@@ -131,7 +144,7 @@ class ReceiptStore:
 
     @property
     def receipts(self) -> Path:
-        return self.root / "receipts"
+        return self.root / RECEIPTS_DIRECTORY
 
     def write(self, kind: str, payload: dict[str, Any]) -> Path:
         """Write a single immutable fact and return its content-addressed path."""
@@ -369,8 +382,24 @@ class DescriptorStore:
     """
 
     def __init__(self, root: str | Path) -> None:
-        self.path = Path(root) / "operator-surface.json"
+        self.root = Path(root)
+        self.path = self.root / "operator-surface.json"
         self.lock_path = self.path.with_name(f".{self.path.name}.lock")
+        self.receipts = self.root / RECEIPTS_DIRECTORY
+
+    def receipt_path(self, entry: str) -> Path:
+        """Where a recorded receipt lives now, whatever the entry was written as.
+
+        Entries are receipt basenames (see `RECEIPTS_DIRECTORY`). A descriptor
+        written before that change recorded absolute paths; only the name is
+        taken from those too, so a state directory that has since been copied
+        or moved reads through the same index. The name is never a claim: the
+        reader still checks the bytes against the digest in that name.
+        """
+
+        if not isinstance(entry, str) or not entry:
+            raise RecordError("operator descriptor names a blank receipt")
+        return self.receipts / PurePosixPath(entry).name
 
     @contextmanager
     def _lock(self) -> Iterator[None]:
@@ -444,7 +473,17 @@ class DescriptorStore:
             if current is None
             else {name: list(paths) for name, paths in current["history"].items()}
         )
-        receipt_text = str(receipt.resolve())
+        try:
+            resolved = receipt.resolve()
+            inside = resolved.parent == self.receipts.resolve()
+        except OSError as error:
+            raise RecordError("operator receipt path cannot be resolved") from error
+        if not inside:
+            # The index names receipts by basename and resolves them against
+            # this state root's receipt directory, so a receipt anywhere else
+            # would be indexed under a name that resolves to nothing.
+            raise RecordError("operator descriptor indexes only receipts in its receipt directory")
+        receipt_text = resolved.name
         actions[action] = receipt_text
         entries = history.setdefault(action, [])
         # Move-to-end, never skip-if-present. Receipts are content-addressed,
