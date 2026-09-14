@@ -68,6 +68,7 @@ from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
+from common.runtree.store import SERVING_LOGS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -95,7 +96,10 @@ from operations.serving.errors import ServingError  # noqa: E402
 from operations.serving.http import UrllibHttpTransport  # noqa: E402
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
 from operations.serving.process import SubprocessLauncher  # noqa: E402
-from operations.serving.residency import FileResidencyLease  # noqa: E402
+from operations.serving.residency import (  # noqa: E402
+    POD_RESIDENCY_LOCK_PATH,
+    FileResidencyLease,
+)
 
 # A witness may report one of these ordinal self-assessments. They are retained
 # as testimony about its own response, never promoted into a model ranking or
@@ -4554,8 +4558,16 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         launcher=SubprocessLauncher(),
         http=UrllibHttpTransport(),
         receipt_publisher=StageContextReceiptPublisher(context),
-        log_root=context.tree.resolve(f"{ATTESTATORES}/serving-logs"),
-        residency_lease=FileResidencyLease(context.tree.resolve("pod-gpu.lock")),
+        # The logs stay in this stage's own directory, where
+        # `RunTree.inventory_scope()` names them and `fetch-run` brings them
+        # home as unverified side evidence. The lease does not: one card is one
+        # pod's boundary, not one run tree's, so it takes the container-local
+        # path the pod preflight and every other serving stage take. A lease
+        # resolved inside a run tree let two stages resumed under different run
+        # ids both acquire and co-reside on one GPU, and put an advisory lock
+        # on a network mount that is not known to honour one.
+        log_root=context.tree.resolve(f"{ATTESTATORES}/{SERVING_LOGS_DIR}"),
+        residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/3_attestatores/run.py",
     )
     return ChairClient(

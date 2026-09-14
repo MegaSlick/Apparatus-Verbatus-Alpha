@@ -307,9 +307,12 @@ def build_parser() -> PlainParser:
         action="append",
         metavar="KEY",
         help="one more volume key to bring home beside the run tree, repeatable. The "
-        "launch's preflight/ tree comes home on its own; the bootstrap and run reports and "
-        "the bootstrap journal are named with the launch token at paths this verb cannot "
-        "derive, so name them here. The receipt says which were fetched and which were not",
+        "launch's preflight/ tree comes home on its own; the bootstrap report, the pod-run "
+        "report, that report's '-hold' liveness sibling and the bootstrap journal are named "
+        "with the launch token at paths this verb cannot derive, and "
+        "'pod-transfer-journal.json' sits at the volume root outside both prefixes, so name "
+        "each here. operations/pod/README.md lists the complete set and how each key is "
+        "derived. The receipt says which were fetched and which were not",
     )
 
     export = verbs.add_parser(
@@ -1225,17 +1228,24 @@ def _interactive_arguments() -> list[str]:
             )
             return []
         arguments = ["fetch-run", "--run-id", run_id, "--into", into, "--network-volume", volume]
-        # The launch's preflight/ tree comes home on its own; the bootstrap
-        # report, the pod-run report, and the bootstrap journal are named
-        # with the launch token at paths this verb cannot derive on its own
-        # (`fetch_run.add_argument("--evidence-key", ...)` above), so this
-        # route asks for each by name -- optional, blank skips it -- rather
-        # than only being reachable through the command line's repeatable
-        # `--evidence-key`.
+        # The launch's preflight/ tree comes home on its own; the six records
+        # below do not (`fetch_run.add_argument("--evidence-key", ...)` above
+        # and operations/pod/README.md), so this route asks for each by name --
+        # optional, blank skips it -- rather than only being reachable through
+        # the command line's repeatable `--evidence-key`. The liveness report,
+        # the runtime report and the transfer journal are prompted for like the
+        # rest: leaving an operator to remember three of the six is how they
+        # were lost with the volume, and the '-hold' key is derived from the
+        # pod-run key the previous answer already gave.
         for label in (
             "Volume key for the bootstrap report (leave blank to skip)",
             "Volume key for the pod-run report (leave blank to skip)",
+            "Volume key for the pod-run '-hold' liveness report, the pod-run key with "
+            "'-hold' before its suffix (leave blank to skip)",
+            "Volume key for the pod-timer runtime report (leave blank to skip)",
             "Volume key for the bootstrap journal (leave blank to skip)",
+            "Volume key for the transfer journal, normally pod-transfer-journal.json at "
+            "the volume root (leave blank to skip)",
         ):
             evidence_key = _ask(label)
             if evidence_key:

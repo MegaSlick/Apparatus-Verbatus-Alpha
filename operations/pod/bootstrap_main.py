@@ -113,7 +113,7 @@ from operations.serving.errors import ServingConfigurationError
 from operations.serving.http import HttpTransport
 from operations.serving.manager import PackageInspector, ReceiptPublication
 from operations.serving.process import ProcessLauncher
-from operations.serving.residency import FileResidencyLease
+from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 from operations.serving.smoke import (
     NvidiaSmiUtilization,
     VisionSmokeCall,
@@ -385,8 +385,10 @@ class PreflightSeams:
     fetcher_factory: Callable[[], SnapshotFetcher] = HuggingFaceFetcher.from_huggingface_hub
     # The one lock every serving manager on this card must share; on
     # container-local disk, because an advisory lock on a network volume is
-    # not something the mount is known to honour.
-    residency_lock: Path = Path("/tmp/verbatus-pod-gpu.lock")
+    # not something the mount is known to honour. The pipeline stages that
+    # serve a chair take the same constant, so the preflight and the run it
+    # precedes contend for one lease rather than two disjoint ones.
+    residency_lock: Path = POD_RESIDENCY_LOCK_PATH
 
 
 def build_parser() -> argparse.ArgumentParser:

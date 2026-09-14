@@ -244,6 +244,16 @@ against a stored manifest at all; its artifacts are checked by envelope alone, a
 receipt records `"state": "verified-partial"` instead of `"verified"` — a partial run
 never appears complete.
 
+**One class of object in the tree cannot be checked, and is named rather than counted.**
+A stage that served a chair leaves the engine's launch log under `<stage>/serving-logs/`.
+No manifest records an engine log and nothing ever digested one, so each comes home as
+side evidence: fetched, digested on arrival, listed in the receipt under
+`unverified_serving_logs`, and left out of every claim about what was verified. This is
+not a softening of the refusal above — it is the one path the run tree's own inventory
+scope names for it. While the scope did not name it, a real served run tree was refused
+whole at the first log listed, and a run that had already billed a card brought home
+nothing at all.
+
 A file that already exists locally is compared, never replaced: identical bytes are reused
 and counted, different bytes refuse by name and leave the local run untouched. Nothing an
 attempt fetched is kept when it refuses; only files an earlier fetch already verified
@@ -261,13 +271,21 @@ arrived and the content-addressed ones checked against their own names. An evide
 object that cannot be fetched is named in the receipt and never takes the verified run
 tree down with it.
 
-Two records this verb cannot find on its own: the bootstrap and pod-run **reports** and
-the bootstrap **journal**. Their names carry the launch token at paths an operator chose,
-and finding them would mean listing the whole volume — which holds the submission's own
-page images. `--evidence-key <key>` (repeatable) brings each one home by its exact key.
-The receipt states that limit and how many keys the call named — it does not claim they
-went unfetched when the operator named them — and `objects` and `refusals` say which of
-the named keys arrived. Nothing is left to be inferred from an empty folder.
+**Six records lie under neither prefix**, and `operations/pod/README.md` §"What a launch
+writes on the volume, and how each part comes home" lists them with the derivation of each
+key, so the `--evidence-key` list is assembled from a document rather than from memory.
+Five carry the launch token at paths an operator chose — the bootstrap **report**, the
+pod-run **report**, that report's **`-hold` liveness sibling** (the pod-run key with
+`-hold` before its suffix, and the only record that the pod stayed alive to the hard
+deadline), the pod-timer **runtime report**, and the bootstrap **journal** — and finding
+them would mean listing the whole volume, which holds the submission's own page images.
+The sixth, **`pod-transfer-journal.json`**, sits at the volume root under a fixed name and
+is the only durable record of which submission rows were verified against target-observed
+bytes. `--evidence-key <key>` (repeatable) brings each one home by its exact key, and the
+double-click route prompts for all six by name. The receipt states that limit and how
+many keys the call named — it does not claim they went unfetched when the operator named
+them — and `objects` and `refusals` say which of the named keys arrived. Nothing is left
+to be inferred from an empty folder.
 
 ## `spend show`: inspect the reviewed guard
 

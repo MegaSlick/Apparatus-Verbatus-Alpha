@@ -83,6 +83,14 @@ ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
 RECEIPTS_DIR: Final = "receipts/sha256"
 RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.json"
+# Not a store writer: the serving assembly's launcher writes an engine log per
+# started chair into `<stage>/serving-logs/` while a stage is running. The store
+# never publishes there and never reads it, but harvest invariant #13 is about
+# every managed path *any* code writes in the tree, not only this module's own
+# -- so it is named here, and `inventory_scope()` covers it. Leaving it unnamed
+# is what made `fetch-run` refuse a whole served run tree by the first log it
+# listed.
+SERVING_LOGS_DIR: Final = "serving-logs"
 
 # The facts a run id is bound to. Changing any of them means this is a different
 # run wearing an old name, and reuse is refused rather than resumed.
@@ -1458,6 +1466,11 @@ class RunTree:
         inside the inventory scope, and adding a managed path without extending
         the scope fails a static drift test, loudly, naming the path. The test
         beside this module reads the writers from source and compares.
+
+        "Any code", not only this store: `<stage>/serving-logs/` is written by
+        the serving launcher while a stage runs, and a consumer that reads this
+        scope as the whole of what a run tree may hold — `fetch-run` does —
+        refuses a real served run tree outright if the scope omits it.
         """
         prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/", RECENSOR_PARTITION_RECEIPT_FILE]
         for directory in sorted(set(_all_writing_directories())):
@@ -1465,6 +1478,12 @@ class RunTree:
             prefixes.append(f"{directory}/{BLOBS_DIR}/")
             prefixes.append(f"{directory}/{MANIFEST_FILE}")
             prefixes.append(f"{directory}/{INDEX_FILE}")
+            # Written by the serving launcher, not by this store, and carrying
+            # no digest anybody recorded: in scope so a reader of the tree can
+            # account for it, never inventoried as evidence. `build_manifest`
+            # walks `<stage>/artifacts` alone and the blob inventory
+            # `<stage>/blobs`, so naming it here adds nothing to either.
+            prefixes.append(f"{directory}/{SERVING_LOGS_DIR}/")
         prefixes.append(f"{writing_directory(DOOR)}/{DOOR_MANIFEST_FILE}")
         return tuple(prefixes)
 

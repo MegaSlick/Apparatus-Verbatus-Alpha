@@ -3147,9 +3147,13 @@ def test_interactive_upload_keeps_an_existing_sealed_manifest_primary(
 def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The double-click route asks by name for the bootstrap report, the
-    pod-run report, and the bootstrap journal -- exactly what
-    ``--evidence-key`` is for -- each independently optional."""
+    """The double-click route asks by name for all six records that lie under
+    neither fetched prefix -- the bootstrap report, the pod-run report, that
+    report's ``-hold`` liveness sibling, the pod-timer runtime report, the
+    bootstrap journal and the volume-root transfer journal -- exactly what
+    ``--evidence-key`` is for, each independently optional. The liveness report
+    and the transfer journal were not asked for at all while they had no route
+    home."""
 
     answers = iter(
         (
@@ -3159,7 +3163,10 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
             "EU-CZ-1:vol123",
             "runs/brought-home/bootstrap-report.json",
             "runs/brought-home/pod-run-report.json",
+            "runs/brought-home/pod-run-report-hold.json",
+            "pod-runtime-report.json",
             "",  # bootstrap journal left blank
+            "pod-transfer-journal.json",
         )
     )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
@@ -3176,15 +3183,23 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
         "runs/brought-home/bootstrap-report.json",
         "--evidence-key",
         "runs/brought-home/pod-run-report.json",
+        "--evidence-key",
+        "runs/brought-home/pod-run-report-hold.json",
+        "--evidence-key",
+        "pod-runtime-report.json",
+        "--evidence-key",
+        "pod-transfer-journal.json",
     ]
 
 
 def test_interactive_fetch_run_needs_no_evidence_key_at_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Three blank answers mean none, not a refusal: every evidence key is optional."""
+    """Six blank answers mean none, not a refusal: every evidence key is optional."""
 
-    answers = iter(("fetch-run", "brought-home", "/local/into", "EU-CZ-1:vol123", "", "", ""))
+    answers = iter(
+        ("fetch-run", "brought-home", "/local/into", "EU-CZ-1:vol123", "", "", "", "", "", "")
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 
     assert cli._interactive_arguments() == [
@@ -4810,6 +4825,146 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     repeated = surface.receipts.read(again)["payload"]
     assert repeated["fetched"] == 0
     assert repeated["reused"] == payload["fetched"]
+
+
+def _served_stage_leavings(volume: Path, run_id: str = "brought-home") -> dict[str, bytes]:
+    """Exactly what a stage that served a chair leaves in the run tree, and nothing else.
+
+    `SubprocessLauncher.launch` writes one engine log per started chair under
+    `<stage>/serving-logs/`. That is the whole of it now: the single-resident
+    lease used to sit at the tree root as `pod-gpu.lock` as well, and it moved
+    to `operations.serving.residency.POD_RESIDENCY_LOCK_PATH` on container-local
+    disk, because the boundary is the pod's card and not one run tree.
+    """
+
+    written = {
+        f"runs/{run_id}/2_designator/serving-logs/vllm-designator-0123456789ab.log": (
+            b"INFO 09-14 00:00:00 api_server.py:1 vLLM API server version 0.27.1\n"
+        ),
+        f"runs/{run_id}/3_attestatores/serving-logs/vllm-attestator_1-abcdef012345.log": (
+            b"INFO 09-14 00:12:00 api_server.py:1 vLLM API server version 0.27.1\n"
+        ),
+    }
+    for key, payload in written.items():
+        target = volume / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    return written
+
+
+def test_fetch_run_brings_a_served_run_tree_home_and_names_its_logs_unverified(
+    tmp_path: Path,
+) -> None:
+    """The run the first live test exists to produce, fetched by the verb written for it.
+
+    A served stage leaves an engine log inside the run tree. While
+    `RunTree.inventory_scope()` did not name `<stage>/serving-logs/`, this verb
+    refused the whole tree at the first log it listed -- zero objects fetched
+    from a run that had already billed a card, with the receipt naming the log.
+    The log is still not evidence the tree can check: no manifest records it and
+    nothing digested it, so it comes home named as unverified side evidence
+    rather than counted among what was verified (GOVERNANCE 2 and 10).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert _files_under(into / "brought-home") == _files_under(volume / "runs" / "brought-home")
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    named = payload["unverified_serving_logs"]
+    assert [entry["relative_path"] for entry in named] == [
+        "2_designator/serving-logs/vllm-designator-0123456789ab.log",
+        "3_attestatores/serving-logs/vllm-attestator_1-abcdef012345.log",
+    ]
+    assert [entry["sha256"] for entry in named] == [_sha256(line) for line in logs.values()]
+    # Named, not folded into the verified count: the summary and the screen both
+    # say so, so no reader takes a digested-but-unchecked log for a checked one.
+    assert "digested but unverified" in payload["summary"]
+    assert any("came home as side evidence" in line for line in messages)
+    # And the tree itself is still whole: the log is not an artifact, a blob or
+    # a receipt, so nothing it did changed what the stages reconcile to.
+    assert payload["stages_verified"] == ["designator"]
+    assert payload["envelope_only_artifacts"] == []
+
+
+def test_fetch_run_still_refuses_an_unaccounted_object_beside_the_serving_logs(
+    tmp_path: Path,
+) -> None:
+    """Naming one prefix is not opening the tree: everything else still refuses.
+
+    The lease file that used to sit at the run-tree root is the concrete case --
+    a served run tree written by the old code would still be refused by name,
+    which is the correct answer now that no stage writes one there.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    _served_stage_leavings(volume)
+    (volume / "runs" / "brought-home" / "pod-gpu.lock").write_bytes(b"")
+
+    surface = _surface(tmp_path)
+    into = tmp_path / "local"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "pod-gpu.lock" in str(refusal.value.detail)
+    assert "no stage of a run tree accounts for" in str(refusal.value.detail)
+    assert not (into / "brought-home").exists()
+
+
+def test_a_serving_log_directory_marker_is_not_classified_as_a_log(tmp_path: Path) -> None:
+    """A key ending in `/` is not a log, so it is never fetched as one.
+
+    An S3 listing can carry a zero-byte directory marker, and this reader does
+    not filter one out. Classifying it as a serving log would fetch it onto the
+    directory's own path and count it among the objects that came home;
+    requiring a final name leaves it to the arms that refuse loudly instead.
+    """
+
+    assert surface_module._is_serving_log(
+        "3_attestatores/serving-logs/vllm-attestator_1-abcdef012345.log"
+    )
+    assert surface_module._is_serving_log("3_attestatores/serving-logs/nested/engine.log")
+    assert not surface_module._is_serving_log("3_attestatores/serving-logs/")
+    assert not surface_module._is_serving_log("3_attestatores/serving-logs")
+    assert not surface_module._is_serving_log("serving-logs/engine.log")
+    # The artifact arm keeps its own keys: the two prefixes never overlap.
+    assert not surface_module._is_serving_log("3_attestatores/artifacts/testimonium/x.json")
+
+
+def test_fetch_run_refuses_a_directory_marker_key_rather_than_writing_it(tmp_path: Path) -> None:
+    """And end to end: the marker takes the fetch down loudly, writing nothing.
+
+    Which arm refuses it is not the claim -- the claim is that no run tree comes
+    home with a file standing where a directory should be, and that the operator
+    is told (GOVERNANCE 2).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    _served_stage_leavings(volume)
+    marker = "runs/brought-home/3_attestatores/serving-logs/"
+    listed = reader.list_keys
+
+    def list_with_marker(prefix: str) -> tuple[str, ...]:
+        keys = listed(prefix)
+        return tuple(sorted({*keys, marker})) if marker.startswith(prefix) else keys
+
+    reader.list_keys = list_with_marker  # type: ignore[method-assign]
+    surface = _surface(tmp_path)
+    into = tmp_path / "local"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert not (into / "brought-home" / "3_attestatores" / "serving-logs").is_file()
 
 
 def _volume_evidence(volume: Path, stem: str = "boot-a-report") -> dict[str, bytes]:

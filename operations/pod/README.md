@@ -755,6 +755,49 @@ an in-process supervisor. A full real-chair preflight
 is not demonstrated: the committed roster is still fixture-only and has no real GPU or
 model-service measurement.
 
+## What a launch writes on the volume, and how each part comes home
+
+The volume outlives the pod and is destroyed under the retention decision, so a record
+that is still only on it when the volume is released is gone. `verbatus fetch-run` brings
+home two prefixes on its own and nothing else; everything under the second heading below
+has to be named with `--evidence-key`, and **this table is where that list is assembled
+from, rather than from memory**. The double-click route prompts for each of them by name.
+
+Below, `<volume>` is `--volume-mount-path`, `<token>` is the launch token every
+launch-bound name carries, and `<stem>` is the bootstrap report's filename stem.
+
+**Fetched by prefix, no key needed:**
+
+| Path on the volume | Written by | How it arrives |
+|---|---|---|
+| `<volume>/runs/<run-id>/` | the orchestrator's stages, through `RunTree` | `fetch-run`'s run prefix, every object checked against the tree's own digests |
+| `<volume>/runs/<run-id>/<stage>/serving-logs/` | `SubprocessLauncher`, per started chair | the same prefix, but **unverified**: no manifest records an engine log, so each is listed in the receipt's `unverified_serving_logs` with the digest of the bytes that arrived and is never counted among what was verified |
+| `<volume>/preflight/<stem>/` | `bootstrap_main`'s PREFLIGHT — golden page, serving logs, serving receipts, launch audits | `fetch-run`'s evidence prefix, into `<local root>/evidence/` |
+
+**Named with `--evidence-key`, or they stay on the volume:**
+
+| Path on the volume | Written by | How the key is derived |
+|---|---|---|
+| `<volume>/bootstrap-report-<token>.json` | `bootstrap_main --report-path`, rewritten on every hold tick | the `--report-path` the launch request carried |
+| the bootstrap journal, `<volume>/…-<token>.json` | `bootstrap_main --journal` | the `--journal` the launch request carried; it must be under the mount and carry the launch token |
+| `<volume>/pod-run-report-<token>.json` | `pod_run --report-path` | the nested `--report-path` the launch request carried |
+| `<volume>/pod-run-report-<token>-hold.json` | `pod_run`'s hold, after a `complete` or `held` run (`Plan.hold_path`) | **derivable from the line above**: the pod-run report key with `-hold` inserted before its suffix. It is the only record that the pod stayed alive to the hard deadline rather than dying at the end of the run |
+| `<volume>/pod-runtime-report-<token>.json` | `pod_timer --report-path` | the outermost `--report-path` the launch request carried |
+| `<volume>/pod-transfer-journal.json` | `ChecksummedTransfer` | **a fixed name at the volume root** — no token. It is the only durable record of which submission rows were verified against target-observed bytes |
+
+**Not records, and deliberately not fetched:** `<volume>/chair-cache/` (materialized
+weights), `<volume>/submission/` (the submission's own page images, which is why nothing
+here ever lists the whole volume to find a key), and `<volume>/pod-transfer/` (the
+transferred bytes themselves, which the journal accounts for).
+
+**The single-resident GPU lease is not on this list, and that is the point.**
+`operations.serving.residency.POD_RESIDENCY_LOCK_PATH` is `/tmp/verbatus-pod-gpu.lock` on
+container-local disk: the boundary is the one card the pod rents, not any one run tree.
+A lease resolved inside a run tree was scoped to the wrong thing — two stages resumed
+under different run ids each acquired their own and co-resided on one GPU, and the
+preflight's own lock was never met at all — and it asked an advisory lock of a network
+mount that is not known to honour one. It dies with the pod, as a lock should.
+
 ## The serving stack, re-planned and locked
 
 The stack the real roster asks for is now a `pod` dependency group in
@@ -956,7 +999,13 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 - [ ] After the run, bring the tree back with `verbatus fetch-run --run-id <id> --into
   <local root> --network-volume DATACENTER:VOLUME_ID` and record whether every object
   under `runs/<id>/` listed, fetched and reconciled with the tree's own manifests. The
-  listing and `GetObject` path has never run against a real endpoint.
+  listing and `GetObject` path has never run against a real endpoint. Pass an
+  `--evidence-key` for **every** row in "What a launch writes on the volume, and how each
+  part comes home" above — the bootstrap report, the pod-run report, its `-hold` sibling,
+  the bootstrap journal, the runtime report and `pod-transfer-journal.json` — before the
+  volume is released; nothing under those names is derivable by the verb. Record the
+  receipt's `unverified_serving_logs` too: a served stage's engine logs come home
+  digested but unchecked, and that is the one part of the tree no manifest covers.
 - [ ] At the first real response, require Spec 05's harness to publish an immutable
   run-tree artifact on the attached network volume before requesting the next response;
   interrupt the harness and read it back. Stage 04 does not own this response path. Repeat
