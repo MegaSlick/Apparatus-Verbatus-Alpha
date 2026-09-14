@@ -157,7 +157,9 @@ def audit_state(context, reading: dict, act_id: str) -> dict | None:
 
     `not-run` is the one Perlector outcome published without a reading attempt
     (`pipeline/4_perlector/run.py`: a Designator-held act, an explicitly absent
-    Perlector chair, or an atomic presentation over the sealed image ceiling).
+    Perlector chair, an atomic presentation over the sealed image ceiling, or a
+    live attempt interrupted inside its own audit round, whose frozen semi-final
+    no second reading can reproduce).
     It never reaches Pass C, so there is no chain to
     verify and no unresolved span to route on — the act is held on its own
     outcome further down. Demanding a chain here turned the absent-chair hold

@@ -132,6 +132,7 @@ from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
     load_serving_recipes,
 )
+from operations.serving.errors import ChairResponseRefusal  # noqa: E402
 from operations.serving.http import UrllibHttpTransport  # noqa: E402
 from operations.serving.manager import (  # noqa: E402
     ServingManager,
@@ -2078,6 +2079,31 @@ def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return list(distinct.values())
 
 
+# Every artifact one reading attempt publishes *before* its Perlectio is sealed,
+# named by kind and by the reading operation its attempt identity derives from.
+# The pass publishes them in this order, so an act interrupted mid-attempt
+# leaves some prefix of this list on disk with no Perlectio beside it, and a
+# resume has to answer for exactly that prefix instead of walking into an
+# `IncompatibleReuse` on the first one it republishes from a second live answer.
+_PRE_ESTABLISHING_ARTIFACTS: Final = (
+    ("lectio-prior", "lectio-prior"),
+    (nuda.LECTIO_NUDA_KIND, "lectio-nuda"),
+    ("primed-without-prior", "primed-without-prior"),
+    ("audit-draft", "perlegere"),
+    ("audit-finding", "perlegere"),
+)
+# The two of those the audit loop writes, after the establishing reading has
+# already happened and its text is frozen into their bytes. Nothing this pass
+# can do reproduces that text from a live chair, so an attempt interrupted after
+# one of them is the one prefix a resume can answer neither by reusing nor by
+# reading again.
+_AUDIT_ROUND_KINDS: Final = frozenset({"audit-draft", "audit-finding"})
+
+
+def _attempt_artifact_id(act_id: str, kind: str, operation: str, ordinal: int) -> str:
+    return artifact_id(PERLECTOR, kind, act_id, perlector_attempt_id(act_id, operation, ordinal))
+
+
 def _reading_already_sealed(context, act_id: str, ordinal: int) -> bool:
     """Whether this run tree already holds this act's Perlectio at this ordinal.
 
@@ -2090,6 +2116,50 @@ def _reading_already_sealed(context, act_id: str, ordinal: int) -> bool:
     return context.tree.resolve(
         context.tree.artifact_path(PERLECTOR, "perlectio", identifier)
     ).exists()
+
+
+def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
+    """Which pre-establishing artifacts of this attempt are already on disk.
+
+    An act reached by a *completed* attempt has a Perlectio, and
+    `_reading_already_sealed` answers for it before this is ever asked. What is
+    left is an attempt that stopped part-way — an abort, an HTTP failure, a
+    timeout, an OOM kill, a SIGKILL — after one of these publications and before
+    the Perlectio. Each is immutable, so a live resume that simply read the act
+    again would republish Pass A from a second live answer and be refused, with
+    no forward path at all: the artifact cannot be removed, so the refusal
+    repeats on every retry and the run is dead one act into a resume with every
+    other act still unread. That is the failure this answer exists to end.
+    """
+    return frozenset(
+        kind
+        for kind, operation in _PRE_ESTABLISHING_ARTIFACTS
+        if context.tree.has_artifact(
+            PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
+        )
+    )
+
+
+def _sealed_prior_draft(context, act_id: str, ordinal: int) -> dict[str, Any] | None:
+    """This attempt's already-published Pass A, in the shape the arms take it.
+
+    GOVERNANCE 4: the retained draft is this attempt's evidence and is never
+    overwritten. Reusing it is also the only honest answer available — the bytes
+    on disk are what the interrupted attempt actually produced, and a second
+    live Pass A would answer differently — so a resumed act pays for the arms it
+    has not yet run and no more. What is returned is exactly what
+    `_publish_lectio_prior` returns, so the establishing dossier cannot tell a
+    resumed prior from a freshly published one; what distinguishes them is the
+    provenance each record carries, and that stays on each record.
+    """
+    identifier = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
+    if not context.tree.has_artifact(PERLECTOR, "lectio-prior", identifier):
+        return None
+    record = context.tree.read_artifact(PERLECTOR, "lectio-prior", identifier)
+    return {
+        "reference": context.artifact_ref(PERLECTOR, "lectio-prior", identifier),
+        "text": record["payload"]["text"],
+    }
 
 
 def with_engine_call(payload: dict, result: dict, fields: frozenset) -> frozenset:
@@ -3413,9 +3483,10 @@ def _publish_lectio_prior(
         inputs=reading_inputs,
         payload=payload,
     )
-    prior_artifact_id = artifact_id(
-        PERLECTOR, "lectio-prior", act_id, perlector_attempt_id(act_id, "lectio-prior", ordinal)
-    )
+    # The same derivation `_sealed_prior_draft` reads this record back by, in
+    # one spelling: two that agreed only by inspection would let a resume reuse
+    # a different artifact than the one this pass published.
+    prior_artifact_id = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
     return {
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
         "text": text,
@@ -3578,10 +3649,24 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     stops the chair itself before it seals, so a failed shutdown is never
     reported over a sealed stage. This one catches the exceptional path, where
     the pass raised before it reached its own shutdown.
+
+    **A response refusal arrives in this stage's own exit vocabulary.**
+    `ChairResponseRefusal` is a `ServingError`, which is a `RuntimeError` and
+    not a `ContractError`, so `run_stage` could not see it: a non-200 from the
+    engine — vLLM's own account of a context overflow, the single most likely
+    first answer on a real card — left the stage with a Python traceback and
+    exit 1 rather than the named refusal and `EXIT_FATAL` every other refusal in
+    this stage produces. The refusal itself is unchanged and is not caught any
+    earlier than here: `live_reader` and `ChairClient` keep their posture, the
+    bytes stay retained, and the detail the client built (the retained
+    reference, and the head of the engine's own body) travels verbatim into the
+    message this stage exits on.
     """
     service = ResidentChair()
     try:
         return _read_the_acts(registry_factory, serving_factory, service)
+    except ChairResponseRefusal as refusal:
+        raise ContractError(f"{type(refusal).__name__}: {refusal}") from refusal
     finally:
         service.close()
 
@@ -3760,6 +3845,47 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "declared stand-in cannot override an engine that reported"
             )
 
+        # What an interrupted earlier attempt at this identity already left on
+        # disk. Fixture readers reproduce their own bytes, so a fixture resume
+        # republishes identically and the store reuses; only a live pass has to
+        # answer for a partial attempt at all.
+        sealed_arms = (
+            _sealed_pass_kinds(context, act_id, ordinal) if serving_mode == "live" else frozenset()
+        )
+        audit_round_sealed = sorted(sealed_arms & _AUDIT_ROUND_KINDS)
+        if audit_round_sealed:
+            # The establishing reading happened, and its text is frozen inside
+            # an immutable audit record — but the Perlectio that would have
+            # carried it never sealed. Reading the act again would produce a
+            # different semi-final and refuse against that record forever, and
+            # there is no second source for the text it froze. So the act is
+            # held here, explicitly, naming the retained evidence: the run
+            # resumes and reads every other act, and the Recensor routes this
+            # one to review rather than the whole run dying on a reuse nobody
+            # can clear. GOVERNANCE 2 — visibly partial, never silently absent.
+            payload = {
+                "act_key": act["act_key"],
+                "attempt_ordinal": ordinal,
+                "reason": (
+                    "a previous live attempt at this ordinal was interrupted after it "
+                    f"published {', '.join(audit_round_sealed)} and before its Perlectio; "
+                    "the reading that record froze cannot be produced again and the record "
+                    "is immutable, so this act is held with that evidence retained rather "
+                    "than read a second time"
+                ),
+                "provenance": provenance_for(context, chair, attempted=False),
+            }
+            validate_not_run_payload(payload, fields=_NOT_RUN_HELD_FIELDS)
+            context.publish(
+                kind="perlectio",
+                subject_id=act_id,
+                outcome="not-run",
+                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
+                payload=payload,
+            )
+            acknowledged += 1
+            continue
+
         # Every region of the act is verified and read, including a continuation
         # on the next page: an act that ran over the page break and was read only
         # up to the fold would be truncated, which is a failure and not an output.
@@ -3875,6 +4001,16 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # once per capture, exactly as the control sample below is.
         nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
 
+        # An arm an interrupted attempt already published is not asked for a
+        # second time. The sampling decision above is unchanged -- it is the
+        # run's own predeclared design and is derived, not stored -- so an arm
+        # already on disk stays sampled and stays counted; what is dropped is
+        # only the reader call that would have produced bytes the immutable
+        # record refuses. An arm that was never reached is still run.
+        nuda_due = nuda_sampled and nuda.LECTIO_NUDA_KIND not in sealed_arms
+        control_due = control_sampled and "primed-without-prior" not in sealed_arms
+        sealed_prior = _sealed_prior_draft(context, act_id, ordinal) if sealed_arms else None
+
         # Bind loop-local publication facts now; the callback runs before the
         # establishing arm and returns the immutable prior reference it embeds.
         publish_prior = partial(
@@ -3900,13 +4036,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             dossier=base_dossier,
             read_bytes=context.tree.read_bytes,
             protocol_config=protocol_config,
-            nuda_sampled=nuda_sampled,
-            control_sampled=control_sampled,
+            nuda_sampled=nuda_due,
+            control_sampled=control_due,
             draft_fed=context.draft_fed,
             publish_prior=publish_prior,
+            sealed_prior=sealed_prior,
         )
 
-        if nuda_sampled:
+        if nuda_due:
             _publish_lectio_nuda(
                 context,
                 act_key=act["act_key"],
@@ -3925,7 +4062,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 receipt_ref=receipt_ref,
             )
 
-        if control_sampled:
+        if control_due:
             _publish_primed_without_prior(
                 context,
                 act_key=act["act_key"],
@@ -4513,10 +4650,14 @@ def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
     reading routes through a Recensor recovery request, which mints a region and
     moves this number.
 
-    So a resume recomputes the same ordinal and republishes. Every chair that
-    exists today is deterministic, so that republication is byte-identical and
-    the RunTree reuses it. `ARCHITECTURE.md`'s vLLM caveat says a future real
-    chair need not be bit-identical, and there the republication is refused
+    So a resume recomputes the same ordinal and republishes. A fixture chair
+    reproduces its own bytes, so that republication is byte-identical and the
+    RunTree reuses it. **A live chair does not**, and that case is no longer
+    hypothetical: `_read_the_acts` handles it before this number is used again,
+    by leaving a sealed Perlectio alone (`_reading_already_sealed`), by reusing
+    the arms an interrupted attempt already published (`_sealed_pass_kinds`,
+    `_sealed_prior_draft`), and by holding an act whose audit round sealed
+    without its Perlectio. Where a republication still collides it is refused
     (`IncompatibleReuse`) rather than allowed to overwrite immutable evidence:
     loud, nothing written, nothing lost. The forward path from that refusal is
     the one the design already has — a Recensor recovery request — and it is

@@ -696,12 +696,15 @@ serving_factory=…)` are dependency seams only; neither makes a run live or fix
 `truncation.classify` as the reader protocol's own two words; an absent `finish_reason`
 arrives as `None` and classifies `unknown`, which holds. Any other engine string —
 `"abort"`, a vendor's own vocabulary — raises `EngineSignalRefusal` from `live_reader`
-and stops the pass with nothing published for that act. Nothing is lost: `ChairClient`
+and stops the pass with no Perlectio published for that act. Nothing is lost: `ChairClient`
 retains the raw response before it parses, so the bytes that stopped the pass are on
 disk under their own digest and the refusal names them. The same refusal covers a body
 that is not a reading at all (`parse_problem`): a Perlectio has no `failed` shape —
 `outcome="failed"` is produced nowhere in `run.py` — and minting one here would invent a
-record kind this section does not own.
+record kind this section does not own. Whichever arm the refusal lands on, the arms that
+already published stay on disk and the *next* invocation resumes over them rather than
+republishing them — see the live-resume section below; a refusal that stopped the pass is
+no longer a refusal that also strands the run.
 
 **A declared reading failure never reaches a live chair's answer.** `declared_failure`
 stands in for a real engine's own report exactly once, before there is one — the
@@ -852,16 +855,55 @@ reuses them (`_next_attempt`'s docstring); a live chair cannot promise that, and
 store refuses the collision. Skipped acts are counted apart from `read`, because this
 invocation did not read them.
 
-**Two live-resume limits, named rather than hidden.** First, an act interrupted *between*
-its `lectio-prior` publication and its Perlectio cannot resume: the resume rule looks at
-the Perlectio, so the act is read again and Pass A is republished from a fresh live
-reading, which the store refuses as an incompatible reuse. Extending the rule to skip on
-a lone Pass A would leave the act permanently unread, which is worse; the forward path
-from that refusal is the one the design already has, a Recensor recovery request.
-Second, every re-invocation of a live pass starts and stops the service, so an `--act`
-recovery loop pays a full model load per act
-(`pipeline/orchestrator/run.py`'s per-act dispatch). Ruling 16 permits a server that
+**An attempt interrupted part-way through resumes too, arm by arm.** A reading attempt
+publishes up to five artifacts before its Perlectio — `lectio-prior`, `lectio-nuda`,
+`primed-without-prior`, then the audit round's `audit-draft` and `audit-finding` — so an
+abort, an HTTP failure, a timeout, an OOM kill or a SIGKILL anywhere in that window left
+immutable bytes on disk with no Perlectio beside them. The resume rule looked only at the
+Perlectio, so the next invocation read the act again and republished Pass A from a second
+live answer; the store refused it (`IncompatibleReuse`), and because the artifact cannot
+be removed the refusal repeated on every retry. The documented `verbatus run` resume was
+dead for that run, one act in, with every other act still unread — the single most likely
+first-live-run failure in this stage. Now `_sealed_pass_kinds` reads exactly which of
+those artifacts the interrupted attempt got to, and the pass answers for that prefix:
+
+- **A sealed arm is reused, never re-asked.** `_sealed_prior_draft` reads the retained
+  Pass A back into the closed `{reference, text}` the establishing call takes, and a
+  sampled `lectio-nuda` or `primed-without-prior` already on disk is not run a second
+  time. The sampling decisions themselves do not move — they are derived from the run's
+  predeclared design, not stored — so a reused arm stays sampled and stays counted; what
+  is dropped is only the reader call whose bytes the immutable record would refuse. The
+  resumed act therefore pays for the arms it has not run and no more, and the record pair
+  that proves it is a Perlectio carrying the *second* engine answer beside a `prior_draft`
+  still holding the *first*. GOVERNANCE 4: evidence is layered, never overwritten.
+- **An attempt interrupted inside its audit round is held, not read again.** `audit-draft`
+  freezes the establishing reading's own text into immutable bytes. A live chair cannot
+  reproduce that text, and the draft cannot be reused either, because the Perlectio it
+  belongs to was never written. That act publishes an explicit `not-run` Perlectio naming
+  the retained record (the same closed `_NOT_RUN_HELD_FIELDS` shape a Designator-held act
+  uses), the rest of the run is read, the stage seals, and the Recensor routes the held
+  act to review. Whether a Perlectio should instead gain a retained `failed` shape is not
+  this section's decision to make.
+
+Both are live-only: a fixture reader reproduces its own bytes, so a fixture resume
+republishes identically and the store reuses. Pinned by
+`test_live_perlector.py::test_a_live_pass_interrupted_after_its_pass_a_resumes_and_reuses_the_sealed_draft`
+and `::test_an_act_whose_audit_round_sealed_without_its_perlectio_is_held_not_read_again`,
+both of which fail with the exact `IncompatibleReuse` above when the handling is removed.
+
+**One live-resume limit remains, named rather than hidden.** Every re-invocation of a live
+pass starts and stops the service, so an `--act` recovery loop pays a full model load per
+act (`pipeline/orchestrator/run.py`'s per-act dispatch). Ruling 16 permits a server that
 outlives one stage, but no cross-process handle exists; that is the next serving item.
+
+**A non-200 exits in this stage's own vocabulary.** `ChairResponseRefusal` is a
+`ServingError`, which is a `RuntimeError` and not a `ContractError`, so `run_stage` never
+saw it: vLLM's 400 explaining a context overflow — the likeliest first answer from a real
+card — produced a Python traceback and exit 1 rather than a named refusal and `EXIT_FATAL`.
+`main` now translates it at the stage boundary and nowhere earlier: `ChairClient` still
+retains before it refuses, `live_reader` keeps its posture, and the refusal's code and the
+engine's own sentence travel verbatim into the message the stage exits on. Pinned by
+`::test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary`.
 
 **`max_tokens` is not sent, and that is a decision.** No output bound is sealed
 anywhere, and this section does not invent one. vLLM bounds generation by
