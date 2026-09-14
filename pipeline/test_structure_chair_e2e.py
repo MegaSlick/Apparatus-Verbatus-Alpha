@@ -1064,3 +1064,138 @@ def test_a_structural_label_is_published_as_a_digest_and_its_absence_is_null(des
         for record in artifacts(run_root, DESIGNATOR, "region")
     }
     assert regions["proposal:1:0"] == dict(PAGE_ONE_ACTS[0][0])
+
+
+# ------------------------------- resuming the pass ------------------------------
+
+
+def designator_state(root: Path) -> dict[str, str]:
+    """Every file the Designator wrote, by relative path and digest.
+
+    Artifacts and blobs together: a resume that re-cut one crop or re-retained
+    one response would move a blob without moving an artifact, and a
+    comparison over artifacts alone would call that unchanged.
+    """
+    stage = root / RUN_ID / "2_designator"
+    return {
+        str(path.relative_to(stage)): digest_bytes(path.read_bytes())
+        for path in sorted(stage.rglob("*"))
+        if path.is_file()
+    }
+
+
+def answer_receipts(root: Path) -> dict[int, str]:
+    """The serving receipt each page's answer was bound to, by page ordinal."""
+    return {
+        ordinal: record["payload"]["receipt_ref"]["sha256"]
+        for ordinal, record in by_page_ordinal(
+            artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+        ).items()
+    }
+
+
+def status_receipts(root: Path) -> dict[int, str]:
+    """The serving receipt each page's status names in its provenance."""
+    return {
+        ordinal: record["payload"]["provenance"]["receipt_ref"]["sha256"]
+        for ordinal, record in by_page_ordinal(
+            artifacts(root, DESIGNATOR, "structure-status")
+        ).items()
+    }
+
+
+def test_a_resumed_live_pass_reuses_every_sealed_answer_and_starts_no_chair(designated, tmp_path):
+    """GOVERNANCE 4, on the stage that had no guard for it.
+
+    A live chair cannot reproduce its own bytes: every answer embeds the
+    serving session's receipt, call record and custody references, and those
+    move on every chair start. So a second pass over a marked-out tree that
+    asked the chair again would build different bytes under the artifact
+    identity the first pass already fixed, and the store would refuse — which
+    is what made the orchestrator's documented resume ("every stage
+    republishes what it already published") dead for the Designator the moment
+    it had published anything.
+
+    The second pass here is given a chair scripted with *different* rectangles.
+    It never reaches the script: with every page already answered no chair is
+    started at all, so the world's endpoint is never built, and the tree is
+    byte-for-byte what the first pass left. That is the Perlector's resume
+    claim and the Attestatores' one, made for the Designator.
+    """
+    run_root = fresh_tree(designated, tmp_path)
+    _world, exit_code = mark_out(designated, run_root, tmp_path / "world-first")
+    assert exit_code == EXIT_COMPLETE
+    before = designator_state(run_root)
+
+    world, exit_code = mark_out(
+        designated,
+        run_root,
+        tmp_path / "world-second",
+        [
+            scripted_structure_answer(PAGE_ONE_REDRAWN, PAGE_WIDTH, PAGE_HEIGHT),
+            scripted_structure_answer(PAGE_TWO_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
+        ],
+    )
+    assert exit_code == EXIT_COMPLETE
+    assert world.endpoint is None, "a resumed pass with nothing left to ask started a chair"
+    assert designator_state(run_root) == before
+    # The denominator the next stage reads is the one the first pass sealed.
+    acts = expected_acts(open_at(run_root, designated.catalogue, ATTESTATORES))
+    assert sorted(row["act_key"] for row in acts) == sorted(ACT_KEYS)
+
+
+def test_an_interrupted_live_pass_keeps_its_answers_and_asks_only_for_the_rest(
+    designated, tmp_path
+):
+    """The crash the resume rule exists for, and the publication that survives it.
+
+    The first pass is scripted with one answer and dies inside the page-2
+    request, exactly where an interrupted pod would land. Page 1's answer was
+    published as it arrived, so it is on disk: a pass that published only at
+    the end of its loop would have thrown away a model call it had already paid
+    for, and on a thousand-page shard it would throw away nine hundred of them
+    (GOVERNANCE 2).
+
+    The resume then asks for page 2 and for nothing else — one request, not
+    three — and finishes the run. Page 1 keeps the receipt of the session that
+    answered it while page 2 names the session that answered *it*: two serving
+    sessions really did mark this run out, and each page's own record says
+    which one, rather than the run being restamped with whichever session ran
+    last (GOVERNANCE 6).
+    """
+    run_root = fresh_tree(designated, tmp_path)
+    interrupted = StructureWorld(
+        designated.catalogue, tmp_path / "world-first", happy_structure_answers()[:1]
+    )
+    # The scripted endpoint runs out of answers inside the second page's
+    # request; nothing catches that, which is the point — the stage dies
+    # mid-loop with page 1 already published.
+    with pytest.raises(IndexError):
+        run_in_process(
+            designator,
+            run_root,
+            designated.catalogue,
+            placement_tier=TIER,
+            serving_factory=interrupted.factory,
+        )
+    first_receipts = answer_receipts(run_root)
+    assert sorted(first_receipts) == [1], "an interrupted pass published no answer it had"
+
+    world, exit_code = mark_out(
+        designated, run_root, tmp_path / "world-second", happy_structure_answers()[1:]
+    )
+    assert exit_code == EXIT_COMPLETE
+    assert len(world.endpoint.requests) == 1, "the resume re-asked a page it had already answered"
+
+    receipts = answer_receipts(run_root)
+    assert sorted(receipts) == [1, 2]
+    assert receipts[1] == first_receipts[1]
+    assert receipts[2] != receipts[1]
+    # The per-page fact reaches the status record too, which is where an
+    # operator reading one page's outcome finds the session that produced it.
+    assert status_receipts(run_root) == receipts
+
+    # And the run the two sessions marked out between them is one whole run:
+    # every act the happy single-session pass mints, sealed and reconcilable.
+    acts = expected_acts(open_at(run_root, designated.catalogue, ATTESTATORES))
+    assert sorted(row["act_key"] for row in acts) == sorted(ACT_KEYS)
