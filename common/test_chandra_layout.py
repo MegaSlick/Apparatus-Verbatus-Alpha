@@ -230,6 +230,11 @@ def test_a_well_formed_bbox_is_four_normalized_integers(raw, expected):
         ("30 2 30 4", "x1 <= x0 or y1 <= y0"),
         ("1 40 3 40", "x1 <= x0 or y1 <= y0"),
         ("1 40 3 20", "x1 <= x0 or y1 <= y0"),
+        # A 4,301-digit component is otherwise a plain decimal integer, but
+        # `int()` on it would cross CPython's own integer-string-conversion
+        # limit (4,300 digits by default) and raise a bare `ValueError` --
+        # this reader's refusal, not a crash reaching the Designator (G13).
+        ("9" * 4301 + " 2 3 4", "not plain decimal integers"),
     ],
 )
 def test_a_malformed_bbox_is_refused_by_name_and_never_defaulted(raw, expected_reason):

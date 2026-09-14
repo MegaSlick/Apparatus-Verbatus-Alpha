@@ -1861,6 +1861,35 @@ def test_a_manifest_refuses_an_artifact_too_large_to_read_safely(tmp_path):
         tree.build_manifest(DESIGNATOR)
 
 
+def test_read_bytes_refuses_a_file_grown_past_the_tree_read_limit(tmp_path, monkeypatch):
+    """G13: `RunTree.read_bytes` used to be `Path.read_bytes()`, with no ceiling
+    of its own -- a damaged or hostile run tree could be read whole into memory
+    before anything got a chance to refuse it. This is the same shape as the
+    manifest-artifact bound above, for the tree's general reader.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    relative = tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    artifact = tree.resolve(relative)
+    monkeypatch.setattr(runtree_store, "_MAX_TREE_READ_BYTES", 4)
+
+    with pytest.raises(SchemaRefusal, match="tree read limit"):
+        tree.read_bytes(relative)
+    assert artifact.stat().st_size > 4  # the file itself was never truncated
+
+
+def test_read_run_refuses_a_run_authority_grown_past_the_tree_read_limit(tmp_path, monkeypatch):
+    """The same bound reaches `read_run`, routed through `_read_json`, not only
+    `read_bytes` -- a hostile or corrupted `run.json` must not be read whole
+    either."""
+    tree = make_run(tmp_path)
+    monkeypatch.setattr(runtree_store, "_MAX_TREE_READ_BYTES", 4)
+
+    with pytest.raises(SchemaRefusal, match="tree read limit"):
+        tree.read_run()
+
+
 def test_a_manifest_refuses_an_unbounded_number_of_walk_entries(tmp_path, monkeypatch):
     tree = make_run(tmp_path)
     artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")

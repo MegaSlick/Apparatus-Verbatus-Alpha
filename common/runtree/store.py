@@ -107,6 +107,18 @@ _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 # attacker-created directory forest must not grow the walk without limit.
 _MAX_MANIFEST_ARTIFACT_BYTES: Final = 64 * 1024 * 1024
 _MAX_MANIFEST_WALK_ENTRIES: Final = 100_000
+# The same reasoning applies to every other file this store reads whole into
+# memory -- `run.json`, a retained response blob, a custody binding, an
+# arbitrary artifact fetched back off a volume -- not only the manifest walk:
+# `Path.read_bytes()` has no ceiling of its own, so a run tree that is damaged,
+# corrupted in transit, or genuinely hostile (a fetched run, a resumed one)
+# could otherwise be read whole before anything here gets a chance to refuse it
+# (G13, "read_bytes is unbounded"). Set well above any legitimate artifact --
+# the largest ordinary artifact is a sealed page image bounded by
+# `common.imaging.MAX_PIXELS`, not a manifest record -- so this never refuses
+# real data; it only turns an unbounded read into a named refusal instead of
+# `MemoryError`.
+_MAX_TREE_READ_BYTES: Final = 512 * 1024 * 1024
 _DIRECTORY_OPEN_FLAGS: Final = (
     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 )
@@ -789,7 +801,7 @@ class RunTree:
         return record
 
     def read_bytes(self, relative_path: str) -> bytes:
-        return self.resolve(relative_path).read_bytes()
+        return _read_bytes_bounded(self.resolve(relative_path))
 
     def has_artifact(self, stage: str, kind: str, artifact_id: str) -> bool:
         return self.resolve(self.artifact_path(stage, kind, artifact_id)).exists()
@@ -1668,6 +1680,44 @@ def _naming(relative_path: str) -> Iterator[None]:
         raise type(error)(f"{relative_path}: {message}") from error
 
 
+def _read_bytes_bounded(path: Path, *, max_bytes: int | None = None) -> bytes:
+    """Read one file with a hard byte ceiling instead of `Path.read_bytes()`'s none.
+
+    Checked twice -- once from `fstat` before the read, once against what was
+    actually read -- because a file on disk can grow between the two. Every
+    call in this module that used to read a run-tree file whole now routes
+    through here (`read_bytes`, `read_run` via `_read_json`/
+    `_read_json_with_bytes`), so a damaged, corrupted-in-transit, or hostile
+    run tree gets this module's own named refusal instead of `MemoryError`
+    (G13).
+
+    `max_bytes` reads `_MAX_TREE_READ_BYTES` at call time rather than as an
+    ordinary default parameter, so a test can still monkeypatch the module
+    constant -- a default bound at definition time would freeze the value
+    this function saw the moment the module was imported.
+
+    Deliberately *not* a general `except OSError` around the read: a missing
+    or unreadable file must keep raising the same `OSError` subclass
+    `Path.read_bytes()` always did (`FileNotFoundError`, `PermissionError`,
+    ...), because callers such as `_verify_register_snapshot_present` already
+    catch `OSError` specifically and convert it to their own named refusal.
+    Only the two size-ceiling cases below raise this module's own
+    `SchemaRefusal`.
+    """
+    if max_bytes is None:
+        max_bytes = _MAX_TREE_READ_BYTES
+    with open(path, "rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        if size > max_bytes:
+            raise SchemaRefusal(
+                f"{path} is {size} bytes, above the {max_bytes}-byte tree read limit"
+            )
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise SchemaRefusal(f"{path} grew above the {max_bytes}-byte tree read limit while read")
+    return data
+
+
 def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
     # `RecursionError` beside the two obvious ones because it is the same fact —
     # this file could not be read — arriving by a route the tuple did not name.
@@ -1689,8 +1739,12 @@ def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
     # differently; one tuple-returning body survives, under this name, and it
     # decodes and returns the exact same bytes a caller may later digest.
     try:
-        data = path.read_bytes()
+        data = _read_bytes_bounded(path)
         return json.loads(data.decode("utf-8")), data
+    except SchemaRefusal:
+        # Already this module's own named refusal (a size-ceiling case from
+        # `_read_bytes_bounded`) -- re-raised as is, not re-wrapped.
+        raise
     except (OSError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
 

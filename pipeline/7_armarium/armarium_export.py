@@ -489,7 +489,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
 
     try:
         manifest = json.loads((root / EXPORT_MANIFEST_NAME).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal("EXPORT_MANIFEST.json is not readable canonical JSON") from error
     if not isinstance(manifest, dict) or manifest.get("schema") not in {
         EXPORT_MANIFEST_SCHEMA,
@@ -3008,7 +3008,7 @@ def _text_bundle_records(
                     raise SchemaRefusal("a text-bundle section carries more than one literal")
                 try:
                     literal = json.loads(lines[index + 1])
-                except json.JSONDecodeError as error:
+                except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal("a text-bundle canonical text is not JSON") from error
                 if not isinstance(literal, str):
                     raise SchemaRefusal("a text-bundle canonical text is not a string")
@@ -3035,7 +3035,7 @@ def _text_bundle_records(
                     )
                 try:
                     uncertainty = json.loads(lines[index + 1])
-                except json.JSONDecodeError as error:
+                except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal("a text-bundle uncertainty layer is not JSON") from error
                 try:
                     # The round trip, not merely the shape: the text bundle is the
@@ -3073,7 +3073,7 @@ def _text_bundle_records(
                     )
                 try:
                     pending_annotations = json.loads(lines[index + 1])
-                except json.JSONDecodeError as error:
+                except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal(
                         "a text-bundle transcription annotation layer is not JSON"
                     ) from error
@@ -3115,7 +3115,7 @@ def _text_bundle_records(
                     raise SchemaRefusal("a text-bundle display names no known convention")
                 try:
                     rendered = json.loads(lines[index + 1])
-                except json.JSONDecodeError as error:
+                except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal("a text-bundle display is not JSON") from error
                 # `strip_display` raises `ValueError` on markup it cannot parse, and
                 # every such rendering is something a package can carry.
@@ -3364,7 +3364,7 @@ def _database_literals(path) -> dict[str, tuple]:
             raise SchemaRefusal("the acts database literal identity or hash is invalid")
         try:
             uncertainty = json.loads(uncertainty_json)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
         annotations = _database_json_layer(annotations_json, "transcription annotation")
         _require_damage_record(
@@ -3389,7 +3389,7 @@ def _jsonl_literals(path) -> dict[str, tuple]:
         # named package refusal regardless of validation order.
         try:
             record = json.loads(line)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("an acts JSONL row is not JSON") from error
         if not isinstance(record, dict):
             raise SchemaRefusal("an acts JSONL row is not an object")
@@ -3778,7 +3778,7 @@ def _load_sources(root) -> dict[str, Any]:
         raise SchemaRefusal(
             "the package sources citation nests too deeply for this parser to read"
         ) from error
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise SchemaRefusal("the package sources citation is unreadable") from error
     if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
         raise SchemaRefusal("the package sources citation has no recognized schema")
@@ -4415,7 +4415,7 @@ def _jsonl_act_records(
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("an acts JSONL row is not JSON") from error
         if not isinstance(record, dict) or record.get("schema") != ACT_RECORD_SCHEMA:
             raise SchemaRefusal("an acts JSONL row has no recognized schema")
@@ -4490,7 +4490,7 @@ def _database_uncertainty(encoded: Any) -> Any:
         raise SchemaRefusal("the acts database has an untyped uncertainty column")
     try:
         return json.loads(encoded)
-    except json.JSONDecodeError as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
 
 
@@ -4502,7 +4502,7 @@ def _database_json_layer(encoded: Any, subject: str) -> Any:
         raise SchemaRefusal(f"the acts database has an untyped {subject} column")
     try:
         return json.loads(encoded)
-    except json.JSONDecodeError as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"the acts database {subject} layer is not JSON") from error
 
 
@@ -4648,7 +4648,7 @@ def _database_act_records(
                 continue
             try:
                 parsed = json.loads(encoded)
-            except (TypeError, json.JSONDecodeError) as error:
+            except (TypeError, UnicodeDecodeError, ValueError, RecursionError) as error:
                 raise SchemaRefusal(
                     "the acts database has unreadable provenance evidence"
                 ) from error
@@ -4703,7 +4703,7 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("a review-items JSONL row is not JSON") from error
         if not isinstance(record, dict):
             raise SchemaRefusal("a review-items JSONL row is not an object")
@@ -4747,7 +4747,7 @@ def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("a salvage-tier JSONL row is not JSON") from error
         if not isinstance(record, dict) or record.get("schema") != SALVAGE_RECORD_SCHEMA:
             raise SchemaRefusal("a salvage-tier JSONL row has no recognized schema")

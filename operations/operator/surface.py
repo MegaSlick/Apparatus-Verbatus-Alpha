@@ -745,6 +745,17 @@ class OperatorSurface:
                     prefix=prefix,
                     journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
                 ).resume()
+        except ContractError as error:
+            # `ChecksummedTransfer.resume` reads the sealed manifest through
+            # `submission_door.load_manifest` before it transfers a single
+            # file, and a malformed or non-canonical manifest raises
+            # `SubmitRefusal` (a `ContractError`), not one of the transfer
+            # exceptions below. Nothing was sent, so this is a refused
+            # manifest -- the same shape as `UPLOAD_MANIFEST_MISSING` above --
+            # never `UPLOAD_PARTIAL`, which would tell an operator that some
+            # files were verified when none were touched (G13).
+            self._record_failure("upload", "manifest-refused", str(error))
+            raise OperatorError(ErrorCode.UPLOAD_MANIFEST_MISSING, detail=str(error)) from error
         except (TransferFailure, VolumeTransferRefusal, OSError, ValueError) as error:
             receipt = self._write_action(
                 "upload",
@@ -902,7 +913,20 @@ class OperatorSurface:
         prefix = f"{run_prefix.strip('/')}/{checked_id}/"
         try:
             outcome = _fetch_run_tree(reader, prefix, destination_root, checked_id)
-        except (FetchRunRefusal, VolumeTransferRefusal, ContractError, OSError) as error:
+        except (
+            FetchRunRefusal,
+            VolumeTransferRefusal,
+            ContractError,
+            OSError,
+            RecursionError,
+            MemoryError,
+        ) as error:
+            # `RecursionError` because nesting, not length, defeats the JSON
+            # parser (a hostile `manifest.json` a few thousand brackets deep),
+            # and `MemoryError` because `RunTree.read_bytes` is otherwise
+            # unbounded against a run tree that is itself untrusted input
+            # (G13): both must land as `FETCH_RUN_FAILED`, never as an
+            # unclassified crash.
             receipt = self._write_action(
                 "fetch-run",
                 {
@@ -3229,7 +3253,11 @@ def _fetch_run_tree(
                 # readers when a verb next opens it.
                 try:
                     json.loads(target.read_bytes().decode("utf-8"))
-                except (UnicodeDecodeError, ValueError) as error:
+                except (UnicodeDecodeError, ValueError, RecursionError) as error:
+                    # `RecursionError` because nesting, not length, is what breaks
+                    # the JSON parser -- a hostile volume can otherwise defeat this
+                    # named refusal with a few thousand brackets that fit easily
+                    # inside any size bound (G13).
                     raise FetchRunRefusal(f"{relative} is not readable JSON: {error}") from error
         # An artifact with no manifest entry is not necessarily orphaned: the
         # stage that wrote it last may never have reached `finish()` (a crash,
@@ -3448,7 +3476,10 @@ def _fetch_or_compare(reader: RunObjectReader, key: str, target: Path) -> tuple[
 def _fetched_manifest(tree: RunTree, relative: str) -> dict[str, Any]:
     try:
         manifest = json.loads(tree.read_bytes(relative).decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, OSError) as error:
+    except (UnicodeDecodeError, ValueError, RecursionError, OSError) as error:
+        # `RecursionError` because nesting, not length, is what breaks the JSON
+        # parser -- a hostile `manifest.json` (~10k nesting suffices) is otherwise
+        # a crash on the fetch-run path rather than this named refusal (G13).
         raise FetchRunRefusal(f"{relative} is not a readable manifest: {error}") from error
     if (
         not isinstance(manifest, dict)
