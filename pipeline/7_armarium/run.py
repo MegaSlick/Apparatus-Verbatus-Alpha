@@ -873,6 +873,14 @@ def ink_map_page_rows(
                 "outside_ink_pixels": measure["outside_ink_pixels"],
                 "edge_band_pixels": measure["edge_band_pixels"],
                 "substantial_ink_pixels": measure["substantial_ink_pixels"],
+                # The sealed noise floor and fraction gate the page was judged
+                # under, on the row since 2026-09-14 for the reason
+                # `substantial_ink_pixels` joined it: the export verifier
+                # recomputes the hold from the row alone on a clean machine.
+                "minimum_ink_pixels": finding["coverage_policy"]["minimum_ink_pixels"],
+                "minimum_fraction_outside_bp": finding["coverage_policy"][
+                    "minimum_fraction_outside_bp"
+                ],
             }
         rows.append(
             {

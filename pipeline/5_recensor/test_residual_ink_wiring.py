@@ -58,6 +58,7 @@ def _load_module(relative_path: str, name: str):
 RUN = _load_module("pipeline/5_recensor/run.py", "recensor_run_residual_ink_wiring")
 sys.path.insert(0, str((ROOT / "pipeline" / "5_recensor")))
 from residual_ink import (  # noqa: E402
+    MINIMUM_INK_PIXELS,
     load_coverage_audit_config,
     page_residual_ink,
     resolve_coverage_audit_policy,
@@ -513,9 +514,16 @@ def test_an_unmeasurable_page_confirms_no_witness_pointer_and_authorizes_no_reco
     """
     observation = {"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}
 
-    assert RUN.unclaimed_ink_observations({1: None}, [observation], 1, {}) == []
+    assert (
+        RUN.unclaimed_ink_observations(
+            {1: None}, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
     with pytest.raises(FatalAccounting, match="no ink-map page-space evidence"):
-        RUN.unclaimed_ink_observations({}, [observation], 1, {})
+        RUN.unclaimed_ink_observations(
+            {}, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
 
 
 def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monkeypatch):

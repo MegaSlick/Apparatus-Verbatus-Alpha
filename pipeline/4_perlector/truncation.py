@@ -35,6 +35,7 @@ than "a stop-reason".
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Final, TypedDict
 
 from common.contracts.errors import ContractError
@@ -59,15 +60,19 @@ CLASSIFICATIONS: Final = frozenset({COMPLETE, TRUNCATED, UNKNOWN})
 # module's business to adjudicate -- it only says the reading looks cut off.
 _STRUCTURE_PAIRS: Final = (("(", ")"), ("[", "]"), ("“", "”"))
 
-# Pixels-per-character floor: a region this large that produced a reading this
-# short is suspicious, not proof. A heuristic bound, not a calibrated constant --
-# alpha testing over real ink is what would tune it, and this module says so
-# rather than presenting the number as settled. Set high enough that this
-# repository's tiny synthetic fixture pages (tens of thousands of pixels, tens
-# of characters) never trip it by accident of scale; a real photographed page
-# is orders of magnitude larger per character and this is where alpha testing
-# would actually tune the number.
-MIN_PIXELS_PER_CHARACTER: Final = 2000
+# The length signal's floor is sealed, not a module constant, and it is
+# dimensionless. `config/perlector_protocol.toml`'s `[truncation]` names it:
+# a reading is length-suspicious when, scaled from its region to the whole
+# page's area, it would carry fewer than the floor's characters. Until
+# 2026-09-14 this was `MIN_PIXELS_PER_CHARACTER = 2000`, an absolute ratio set
+# to clear this repository's 200x260 fixture pages -- and an absolute ratio
+# scales the wrong way: a real 300-DPI act crop has far MORE pixels per
+# character than a fixture crop, so the value that cleared the fixture held
+# every ordinary act as truncated (pre-launch review, F082). The sealed value
+# reaches this module as `truncation_policy`, read once per pass by
+# `pipeline/4_perlector/run.py` and proven against the `perlector-protocol`
+# seal, so which floor judged a reading is in the run's config_digest (F088).
+LENGTH_FLOOR_FIELD: Final = "length_floor_characters_per_page"
 
 
 class TruncationSignals(TypedDict):
@@ -77,9 +82,24 @@ class TruncationSignals(TypedDict):
     ends_abruptly: bool
 
 
+class TruncationMeasure(TypedDict):
+    """What the length signal was judged from, recorded so it can be re-judged.
+
+    The three text signals were the producer's word until 2026-09-14 because
+    `region_pixels` was not on the record. It is now, with the page area it was
+    read against and the character count, so a consumer holding the sealed
+    floor can recompute `length_suspicious` rather than trust it.
+    """
+
+    region_pixels: int
+    page_pixels: int
+    characters: int
+
+
 class TruncationRecord(TypedDict):
     classification: str
     signals: TruncationSignals
+    measure: TruncationMeasure
 
 
 def _stop_reason_signal(stop_reason: str | None) -> str | None:
@@ -111,8 +131,17 @@ def has_unclosed_structure(text: str) -> bool:
     return any(text.count(opener) != text.count(closer) for opener, closer in _STRUCTURE_PAIRS)
 
 
-def is_length_suspicious(text: str, region_pixels: int) -> bool:
+def is_length_suspicious(
+    text: str, region_pixels: int, *, page_pixels: int, length_floor_characters_per_page: int
+) -> bool:
     """True when a region this large produced a reading this short.
+
+    Scale-invariant: the reading's characters are scaled from its region to
+    the whole page's area and compared with the sealed floor, in integers --
+    `characters * page_pixels < floor * region_pixels` -- so the same crop at
+    fixture scale and at 300 DPI gets the same verdict. A continuation act's
+    `region_pixels` and `page_pixels` are each summed over the pages it spans,
+    which keeps the ratio the same one.
 
     An empty reading is not this check's business -- `no-readable-text` is
     the honest outcome for that, decided elsewhere, never smuggled in here as
@@ -120,9 +149,13 @@ def is_length_suspicious(text: str, region_pixels: int) -> bool:
     """
     if region_pixels <= 0:
         raise ValueError("region_pixels must be positive to judge a reading against it")
+    if page_pixels <= 0:
+        raise ValueError("page_pixels must be positive to judge a reading against it")
+    if length_floor_characters_per_page <= 0:
+        raise ValueError("length_floor_characters_per_page must be positive; zero never fires")
     if not text:
         return False
-    return region_pixels / len(text) > MIN_PIXELS_PER_CHARACTER
+    return len(text) * page_pixels < length_floor_characters_per_page * region_pixels
 
 
 def ends_abruptly(text: str) -> bool:
@@ -140,8 +173,19 @@ def ends_abruptly(text: str) -> bool:
     return bool(stripped) and stripped.endswith("-")
 
 
-def classify(text: str, *, region_pixels: int, stop_reason: str | None = None) -> TruncationRecord:
+def classify(
+    text: str,
+    *,
+    region_pixels: int,
+    page_pixels: int,
+    truncation_policy: Mapping[str, object],
+    stop_reason: str | None = None,
+) -> TruncationRecord:
     """Classify one reading attempt `complete | truncated | unknown`.
+
+    `truncation_policy` is the sealed `[truncation]` table, keyword-only with
+    no default: a caller that forgets it fails loudly rather than judging under
+    a floor nobody sealed, the shape `coverage_flag`'s gates already take.
 
     The engine's declared stop-reason is authoritative when it says `length`:
     an engine that reports it ran out of budget is not something the other
@@ -158,11 +202,21 @@ def classify(text: str, *, region_pixels: int, stop_reason: str | None = None) -
     is silence from the engine: neither is resolved toward `complete`, because
     an ambiguous signal is exactly what "unknown holds" means.
     """
+    floor = truncation_policy[LENGTH_FLOOR_FIELD]
+    if not isinstance(floor, int) or isinstance(floor, bool):
+        raise ContractError(f"the truncation policy's {LENGTH_FLOOR_FIELD} is not an integer")
     signals: TruncationSignals = {
         "stop_reason_declared": stop_reason,
         "unclosed_structure": has_unclosed_structure(text),
-        "length_suspicious": is_length_suspicious(text, region_pixels),
+        "length_suspicious": is_length_suspicious(
+            text, region_pixels, page_pixels=page_pixels, length_floor_characters_per_page=floor
+        ),
         "ends_abruptly": ends_abruptly(text),
+    }
+    measure: TruncationMeasure = {
+        "region_pixels": region_pixels,
+        "page_pixels": page_pixels,
+        "characters": len(text),
     }
 
     # Refuses an unrecognised engine word by name before any decision is made;
@@ -170,7 +224,11 @@ def classify(text: str, *, region_pixels: int, stop_reason: str | None = None) -
     # sealed verdict with (`common/perlector_audit.py::truncation_classification`),
     # so producer and validators cannot drift into two spellings of it.
     _stop_reason_signal(stop_reason)  # for its refusal alone; the decision is shared
-    return {"classification": truncation_classification(signals), "signals": signals}
+    return {
+        "classification": truncation_classification(signals),
+        "signals": signals,
+        "measure": measure,
+    }
 
 
 def holds_as_failure(classification: str) -> bool:

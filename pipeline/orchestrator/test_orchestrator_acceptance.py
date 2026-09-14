@@ -1600,10 +1600,43 @@ def _perlector_dissent():
 # Evidence: workbench/raw/audit-fixes-2026-09-11/f2-pin-attribution/round3/ and
 # f2-fix/pins-round3.log (retained outside Git, like every other evidence
 # directory this file cites).
+# The pre-launch review's G1 correction (2026-09-14, F082/F088/F089): the
+# truncation instrument's length signal made scale-invariant under a floor
+# sealed in `config/perlector_protocol.toml`, and the coverage audit's noise
+# floor and fraction gate sealed in `config/designator_grouping.toml`. Measured
+# once, as two fresh runs of the base commit 540c005b's own tree (exported with
+# `git archive`, run under its own `common/`) against this candidate, with a
+# leaf-by-leaf attribution over every changed file. Happy 100 files/exit 0 and
+# review 111 files/exit 3, file counts unchanged on both sides. Happy: 23 leaves
+# byte-identical, 75 JSON leaves changed, 2 content-addressed blobs
+# re-addressed, 18 non-digest value changes; review: 22 / 87 / 2 / 27. Every
+# non-digest change is one of two kinds and there are no others:
+#
+# 1. The new `measure` block -- `{region_pixels, page_pixels, characters}`, what
+#    the length signal was judged from -- on every truncation record and every
+#    re-proof termination record: in happy, the 2 Perlectiones, the 2 Pass-A
+#    `lectio-prior` drafts and the 2 audit findings' `reproof_truncation`; in
+#    review, 3 / 3 / 3. Every signal and every classification on those records
+#    is byte-identical to the baseline's: no fixture act's verdict moved, and
+#    the review scenario's recovered act measures its region as the union of
+#    its crop and its recrop (22,800 px), which is what keeps it so.
+# 2. The content addresses of the one Perlector partition blob and the Armarium
+#    bundle zip that carry those records, and every `relative_path` naming
+#    them; these are the two only-on-one-side blobs per scenario.
+#
+# And the digests that follow (`config_digest` -- both sealed files changed
+# bytes, which is the whole point of F088 -- `self_hash`, `sha256`,
+# `inputs[].sha256`), classified as digest changes and not counted above. No
+# text, outcome, category, crop geometry, count, terminal status, file count or
+# exit code changes. The pins below are read from these two tests' own
+# computation over the candidate; the attribution attributes the change and
+# does not mint the pin.
+# Evidence: workbench/raw/prelaunch-g1-2026-09-14/pin-attribution/ (retained
+# outside Git, like every other evidence directory this file cites).
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "6c487d80af1eeea771abae11d3152e34a7ff070964c0baac83a425075239b4f3"
-REVIEW_RUN_TREE_DIGEST = "905bb7731d3557a2bb53345785c505317456ae3c03836df63899678dada8de6d"
+HAPPY_RUN_TREE_DIGEST = "b77ad5c7f3f3a27de53619e276e8f5ff1d3947f3e9875a1696e529daf8a385ec"
+REVIEW_RUN_TREE_DIGEST = "eca658a8819038ed028c86fdee8c8f826bed41c93d8173ac8d57af8913e8e5b4"
 
 
 def orchestrate(

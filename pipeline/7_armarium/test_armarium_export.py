@@ -49,8 +49,6 @@ from common.contracts.stages import ARMARIUM, DESIGNATOR, EXEMPLAR, INK_MAP
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import crop_png, decode_grayscale_png, encode_grayscale_png
 from common.residual_ink import (
-    MINIMUM_FRACTION_OUTSIDE_COVERAGE,
-    MINIMUM_INK_PIXELS,
     edge_ink,
     ink_runs_from_rows,
     load_coverage_audit_config,
@@ -66,6 +64,14 @@ ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 ORCHESTRATOR_CLI = ROOT / "pipeline" / "orchestrator" / "run.py"
+
+
+# The sealed noise floor and fraction gate (`[coverage_audit.noise_floor]`), read
+# the way the stages read them: since 2026-09-14 neither is a module constant.
+_NOISE_FLOOR = load_coverage_audit_config()["coverage_audit"]
+MINIMUM_INK_PIXELS = _NOISE_FLOOR["minimum_ink_pixels"]
+MINIMUM_FRACTION_OUTSIDE_BP = _NOISE_FLOOR["minimum_fraction_outside_bp"]
+MINIMUM_FRACTION_OUTSIDE_COVERAGE = MINIMUM_FRACTION_OUTSIDE_BP / 10_000
 
 
 def _pixels(value: int) -> bytes:
@@ -97,6 +103,10 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
             # as this helper's value because these rows are hand-built shapes
             # rather than a measurement of any page.
             "substantial_ink_pixels": 2_000,
+            # The noise floor and fraction gate, on the row since 2026-09-14 for
+            # the same reason, at the values the sealed file ships.
+            "minimum_ink_pixels": MINIMUM_INK_PIXELS,
+            "minimum_fraction_outside_bp": MINIMUM_FRACTION_OUTSIDE_BP,
         },
     }
 
@@ -891,9 +901,12 @@ def test_the_recorded_absolute_gate_decides_below_the_fraction_gate(tmp_path):
         assert manifest["claims"]["status"] == ("partial" if held else "complete"), outside
 
 
-def test_a_zero_substantial_gate_is_refused_before_it_can_hold_every_page():
+@pytest.mark.parametrize(
+    "gate", ["substantial_ink_pixels", "minimum_ink_pixels", "minimum_fraction_outside_bp"]
+)
+def test_a_zero_recorded_gate_is_refused_before_it_can_hold_every_page(gate):
     row = _edge_page(outside=0)
-    row["remeasured"]["substantial_ink_pixels"] = 0
+    row["remeasured"][gate] = 0
     with pytest.raises(SchemaRefusal, match="invalid ink-map re-measurement"):
         build_armarium_bundle(
             _otherwise_complete(ink_map_pages=(row,)),
@@ -983,6 +996,8 @@ def test_a_page_the_map_never_flagged_may_not_carry_a_re_measurement():
                             "outside_ink_pixels": 0,
                             "edge_band_pixels": 64,
                             "substantial_ink_pixels": 2_000,
+                            "minimum_ink_pixels": MINIMUM_INK_PIXELS,
+                            "minimum_fraction_outside_bp": MINIMUM_FRACTION_OUTSIDE_BP,
                         },
                     },
                 )

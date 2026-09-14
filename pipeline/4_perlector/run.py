@@ -2147,8 +2147,61 @@ def _whole_act_gap(testimonia: list[dict], references: dict[str, dict]) -> list[
 
 
 def _region_pixels(bases: list[dict]) -> int:
+    """The page-space area an act's regions cover: their union per page, summed.
+
+    The union and not the sum, since 2026-09-14. A fallback recrop re-cuts the
+    ink its original crop already covers, and summing the two counted the
+    shared ink twice: fixture act a1's recovered attempt measured 41,412 px for
+    an 18,612 px crop and its 22,800 px recrop. Invisible under the retired
+    absolute floor, and under a scale-honest one it held every recovered act as
+    length-suspicious -- the very failure F082 names, on the recovery path. A
+    single region is unchanged; regions on different pages (a continuation
+    act, or captures of one page) never overlap and still add.
+    """
+    by_page: dict[str, list[tuple[int, int, int, int]]] = {}
+    for basis in bases:
+        bounds = basis["transform"]["bounds"]
+        by_page.setdefault(basis["source_page_id"], []).append(
+            (bounds["x"], bounds["y"], bounds["x"] + bounds["w"], bounds["y"] + bounds["h"])
+        )
+    return sum(_union_area(rectangles) for rectangles in by_page.values())
+
+
+def _union_area(rectangles: list[tuple[int, int, int, int]]) -> int:
+    """The area covered by at least one of a few axis-aligned rectangles.
+
+    Coordinate compression: every cell of the grid the rectangles' edges draw
+    is either inside some rectangle or inside none, so the union is the sum of
+    the covered cells. Exact in integers; quadratic in the handful of regions
+    one act carries.
+    """
+    xs = sorted({x for rectangle in rectangles for x in (rectangle[0], rectangle[2])})
+    ys = sorted({y for rectangle in rectangles for y in (rectangle[1], rectangle[3])})
+    area = 0
+    for x0, x1 in zip(xs, xs[1:], strict=False):
+        for y0, y1 in zip(ys, ys[1:], strict=False):
+            if any(
+                left <= x0 and x1 <= right and top <= y0 and y1 <= bottom
+                for left, top, right, bottom in rectangles
+            ):
+                area += (x1 - x0) * (y1 - y0)
+    return area
+
+
+def _page_pixels(page_renders: list[dict]) -> int:
+    """The sealed area of every distinct page an act's regions were cut from.
+
+    The denominator the truncation instrument's length signal scales a region
+    against (`truncation.is_length_suspicious`). Read from the page renders'
+    own recorded transform -- the source dimensions of the sealed Exemplar
+    page -- and summed over the pages a continuation act spans, exactly as
+    `_region_pixels` sums its regions, so the two are the same ratio on every
+    act.
+    """
     return sum(
-        basis["transform"]["bounds"]["w"] * basis["transform"]["bounds"]["h"] for basis in bases
+        render["transform"]["source_dimensions"]["w"]
+        * render["transform"]["source_dimensions"]["h"]
+        for render in page_renders
     )
 
 
@@ -2838,6 +2891,8 @@ def _audited_truncation(
     declared_failure: str | None,
     text: str,
     region_pixels: int,
+    page_pixels: int,
+    truncation_policy: dict,
     stop_reason: str | None,
     measured: dict | None = None,
 ) -> dict:
@@ -2866,7 +2921,13 @@ def _audited_truncation(
         declared_failure=declared_failure,
         truncation_record=measured
         if measured is not None
-        else truncation.classify(text, region_pixels=region_pixels, stop_reason=stop_reason),
+        else truncation.classify(
+            text,
+            region_pixels=region_pixels,
+            page_pixels=page_pixels,
+            truncation_policy=truncation_policy,
+            stop_reason=stop_reason,
+        ),
     )
     if (
         pass_b["classification"] != truncation.COMPLETE
@@ -3176,13 +3237,18 @@ def _publication_pass_data(
     result: dict[str, Any],
     *,
     region_pixels: int,
-    protocol_config: dict[str, str | int],
+    page_pixels: int,
+    protocol_config: dict[str, Any],
     protocol_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], str]:
     sealed_dossier = _reseal_dossier(dossier)
     prompt = prompts.prompt_evidence(chair, sealed_dossier, protocol_config, protocol_sha256)
     truncation_record = truncation.classify(
-        result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
+        result["text"],
+        region_pixels=region_pixels,
+        page_pixels=page_pixels,
+        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+        stop_reason=result["stop_reason"],
     )
     outcome = _resolve_outcome(
         declared_failure=None, truncation_record=truncation_record, text=result["text"]
@@ -3203,7 +3269,8 @@ def _publish_lectio_nuda(
     bases: list[dict],
     page_renders: list[dict],
     region_pixels: int,
-    protocol_config: dict[str, str | int],
+    page_pixels: int,
+    protocol_config: dict[str, Any],
     protocol_sha256: str,
     approval_ref: ApprovalRecordBinding,
     receipt_ref: dict[str, str] | None = None,
@@ -3214,6 +3281,7 @@ def _publish_lectio_nuda(
         dossier,
         result,
         region_pixels=region_pixels,
+        page_pixels=page_pixels,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
@@ -3277,6 +3345,7 @@ def _publish_lectio_prior(
     bases,
     page_renders,
     region_pixels,
+    page_pixels,
     protocol_config,
     protocol_sha256,
     receipt_ref: dict[str, str] | None = None,
@@ -3287,6 +3356,7 @@ def _publish_lectio_prior(
         dossier,
         result,
         region_pixels=region_pixels,
+        page_pixels=page_pixels,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
@@ -3358,6 +3428,7 @@ def _publish_primed_without_prior(
     bases,
     page_renders,
     region_pixels,
+    page_pixels,
     testimonia,
     attachment_view,
     protocol_config,
@@ -3371,6 +3442,7 @@ def _publish_primed_without_prior(
         dossier,
         result,
         region_pixels=region_pixels,
+        page_pixels=page_pixels,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
@@ -3723,6 +3795,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
 
         region_pixels = _region_pixels(bases)
         page_renders = _page_renders_for(context, bases)
+        page_pixels = _page_pixels(page_renders)
 
         # Resolve the required capture set before any reader call so an absent
         # member cannot become a partial presentation.
@@ -3808,6 +3881,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             bases=bases,
             page_renders=page_renders,
             region_pixels=region_pixels,
+            page_pixels=page_pixels,
             protocol_config=protocol_config,
             protocol_sha256=protocol_sha256,
             receipt_ref=receipt_ref,
@@ -3838,6 +3912,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 bases=bases,
                 page_renders=page_renders,
                 region_pixels=region_pixels,
+                page_pixels=page_pixels,
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
                 approval_ref=nuda_approval,
@@ -3856,6 +3931,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 bases=bases,
                 page_renders=page_renders,
                 region_pixels=region_pixels,
+                page_pixels=page_pixels,
                 testimonia=testimonia,
                 attachment_view=attachment_view,
                 protocol_config=protocol_config,
@@ -3883,7 +3959,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         truncation_record = _reconciled_truncation(
             declared_failure=declared_failure,
             truncation_record=truncation.classify(
-                reading, region_pixels=region_pixels, stop_reason=result["stop_reason"]
+                reading,
+                region_pixels=region_pixels,
+                page_pixels=page_pixels,
+                truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+                stop_reason=result["stop_reason"],
             ),
         )
         outcome = _resolve_outcome(
@@ -3965,6 +4045,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 # Perlectio is published. The rare re-proof rebuilds its
                 # pixels from the same sealed artifacts instead.
                 "region_pixels": region_pixels,
+                "page_pixels": page_pixels,
                 "declared_failure": declared_failure,
                 "testimonia": testimonia,
                 "attachment_view": attachment_view,
@@ -4121,7 +4202,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             pre_audit_text = payload["text"]
             reproof_inputs = engine_call_inputs(context, reproof.get("engine_call"))
             reproof_truncation = truncation.classify(
-                final_text, region_pixels=row["region_pixels"], stop_reason=reproof["stop_reason"]
+                final_text,
+                region_pixels=row["region_pixels"],
+                page_pixels=row["page_pixels"],
+                truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+                stop_reason=reproof["stop_reason"],
             )
             # Everything from here to the end of this block is provenance and
             # projection for a re-proof whose text is the one published. It is
@@ -4187,6 +4272,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     declared_failure=row["declared_failure"],
                     text=final_text,
                     region_pixels=row["region_pixels"],
+                    page_pixels=row["page_pixels"],
+                    truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
                     stop_reason=reproof["stop_reason"],
                     measured=reproof_truncation,
                 )

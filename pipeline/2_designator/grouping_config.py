@@ -255,6 +255,14 @@ def load_grouping_config(
             else None,
             "[coverage_audit.provenance]",
         ),
+        # The unmeasured pair carries a provenance block of its own, held to
+        # the same schema, so the calibration claim above cannot be read as
+        # covering two values nobody measured. Validated after the table, which
+        # is what proves the sub-table exists to read a block out of.
+        "noise_floor_provenance": _load_provenance(
+            config["coverage_audit"]["noise_floor"].get("provenance"),
+            "[coverage_audit.noise_floor.provenance]",
+        ),
     }
     background = _load_background(grouping.get("background"))
     provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")

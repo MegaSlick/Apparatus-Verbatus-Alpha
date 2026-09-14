@@ -20,7 +20,8 @@ Unit 10C's own `unclaimed_observations` (a native/derived box with zero
 overlap with any proposal on that page) is a stronger fact but still only a
 *pointer*: it becomes a bounded fallback-recrop request only when all three
 facts hold: (1) the box reaches outside every region currently cut on its page;
-(2) Unit 9's ink map has at least `MINIMUM_INK_PIXELS` **in that outside part**;
+(2) Unit 9's ink map has at least the sealed `minimum_ink_pixels`
+(`[coverage_audit.noise_floor]`) **in that outside part**;
 and (3) the existing act pool, kind allowance, and `RULED_ABSOLUTE_CAP` of 3
 allow it.
 
@@ -76,7 +77,7 @@ page: a continuation-only page, carried by an act whose primary page is earlier
 in the run, is never the page any act's own pointer check names. That ink does
 not disappear -- the page's own residual-ink flag and the Armarium's
 `unclaimed-edge-ink` hold still speak for it -- but a pointer that clears
-`MINIMUM_INK_PIXELS` on a continuation-only page funds no recrop and holds no
+the sealed `minimum_ink_pixels` on a continuation-only page funds no recrop and holds no
 act, because no act calls that page its own.
 
 n-of-m agreement, IoU/similarity, delta magnitude, per-chair weight, and any two-chair

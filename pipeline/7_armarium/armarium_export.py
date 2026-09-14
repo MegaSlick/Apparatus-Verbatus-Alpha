@@ -1323,8 +1323,22 @@ _INK_MAP_ROW_FIELDS: Final = frozenset({"ordinal", "initial_outcome", "remeasure
 # because this verifier's whole point is to recompute the hold from the counts
 # alone, on a clean machine, with no config to read: a gate it had to fetch from
 # somewhere else would make it a different instrument from the one that measured.
+# `minimum_ink_pixels` and `minimum_fraction_outside_bp` joined on 2026-09-14
+# for the same reason, when the noise floor and the fraction gate stopped being
+# module constants and became `[coverage_audit.noise_floor]`.
 _INK_MAP_REMEASURE_FIELDS: Final = frozenset(
-    {"total_ink_pixels", "outside_ink_pixels", "edge_band_pixels", "substantial_ink_pixels"}
+    {
+        "total_ink_pixels",
+        "outside_ink_pixels",
+        "edge_band_pixels",
+        "substantial_ink_pixels",
+        "minimum_ink_pixels",
+        "minimum_fraction_outside_bp",
+    }
+)
+# The recorded gates that are refused at zero: a zero gate holds every page.
+_INK_MAP_REMEASURE_GATES: Final = frozenset(
+    {"substantial_ink_pixels", "minimum_ink_pixels", "minimum_fraction_outside_bp"}
 )
 _UNCLAIMED_EDGE_INK: Final = "unclaimed-edge-ink"
 # `ink-not-measurable` joined this set on 2026-09-06, when the Ink Map began
@@ -1398,7 +1412,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
             if any(
                 not isinstance(remeasured[field], int)
                 or isinstance(remeasured[field], bool)
-                or remeasured[field] < (1 if field == "substantial_ink_pixels" else 0)
+                or remeasured[field] < (1 if field in _INK_MAP_REMEASURE_GATES else 0)
                 for field in sorted(_INK_MAP_REMEASURE_FIELDS)
             ):
                 raise SchemaRefusal(
@@ -1432,6 +1446,8 @@ def _edge_hold_pages_from_validated_rows(rows: list[dict[str, Any]]) -> tuple[in
                 row["remeasured"]["total_ink_pixels"],
                 row["remeasured"]["outside_ink_pixels"],
                 substantial_ink_pixels=row["remeasured"]["substantial_ink_pixels"],
+                minimum_ink_pixels=row["remeasured"]["minimum_ink_pixels"],
+                minimum_fraction_outside_bp=row["remeasured"]["minimum_fraction_outside_bp"],
             )[1]
         )
     )

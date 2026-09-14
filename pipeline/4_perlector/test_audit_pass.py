@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import audit
+import protocol
 import pytest
 import reader as reader_module
 
@@ -305,6 +306,16 @@ def _export(tree: RunTree) -> dict:
     return exports[0]["payload"]
 
 
+# The fixture's own page area, and the sealed `[truncation]` table the
+# instrument judges under, read the way the stage reads it. The hand-built
+# records below are judged against a page ten times their region so the length
+# signal stays clean: these tests are about the audit's reconciliation of a
+# record, and were written when 18,612 / 16 = 1,163 px/char cleared the retired
+# 2,000 px/char floor -- a clean length signal is what they assume.
+_TRUNCATION_POLICY = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]["truncation"]
+_TEST_REGION_PIXELS = 18612
+_TEST_PAGE_PIXELS = _TEST_REGION_PIXELS * 10
+
 # The truncation instrument's record of a call that ran to completion over a
 # clean text; what a well-formed v2 finding carries for a completed re-proof.
 _COMPLETE_TRUNCATION = {
@@ -315,12 +326,28 @@ _COMPLETE_TRUNCATION = {
         "length_suspicious": False,
         "ends_abruptly": False,
     },
+    "measure": {
+        "region_pixels": _TEST_REGION_PIXELS,
+        "page_pixels": _TEST_PAGE_PIXELS,
+        "characters": len("alpha beta gamma"),
+    },
 }
 # The same instrument over a re-proof its engine cut off: the text signals are
 # clean (it returned the frozen text), and the engine's own word overrules them.
+# Measured over fixture act a1 as the Perlector measures it: its 34-character
+# reading over the padded 188x99 crop (18,612 px) of the 200x260 page.
+_FIXTURE_A1_MEASURE = {"region_pixels": 18612, "page_pixels": 52_000, "characters": 34}
+# Fixture act a2 in the continuation scenario: 40 characters over its two padded
+# crops on two 200x260 pages, region and page area each summed over both.
+_FIXTURE_A2_CONTINUATION_MEASURE = {
+    "region_pixels": 37412,
+    "page_pixels": 104_000,
+    "characters": 40,
+}
 _CUT_OFF_TRUNCATION = {
     "classification": "truncated",
     "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": "length"},
+    "measure": _FIXTURE_A1_MEASURE,
 }
 
 
@@ -1171,6 +1198,7 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
             "length_suspicious": False,
             "ends_abruptly": False,
         },
+        "measure": dict(_COMPLETE_TRUNCATION["measure"]),
     }
 
     # The re-proof's own generation ran out of budget: its text is what gets
@@ -1179,7 +1207,9 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
         pass_b=complete,
         declared_failure=None,
         text="alpha beta gamma",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="length",
     )
     assert cut_off["classification"] == "truncated"
@@ -1197,7 +1227,9 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
         pass_b=complete,
         declared_failure=None,
         text="alpha beta gamma-",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="stop",
     )
     assert abrupt["signals"]["ends_abruptly"] is True
@@ -1210,7 +1242,9 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
         pass_b=was_truncated,
         declared_failure=None,
         text="alpha beta gamma",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="stop",
     )
     assert kept["classification"] == "truncated"
@@ -1669,7 +1703,10 @@ def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_
     assert control["outcome"] == "read"
     assert control["payload"]["audit"]["examination"] == "complete"
     assert control["payload"]["audit"]["unresolved"] is False
-    assert findings["a2"]["payload"]["reproof_truncation"] == _COMPLETE_TRUNCATION
+    assert findings["a2"]["payload"]["reproof_truncation"] == {
+        **_COMPLETE_TRUNCATION,
+        "measure": _FIXTURE_A2_CONTINUATION_MEASURE,
+    }
 
     # The real Recensor holds on that fact, and says which fact.
     reviews = {record["subject_id"]: record for record in _records(tree, "review", RECENSOR)}
@@ -1990,6 +2027,7 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
     silent = {
         "classification": "complete",
         "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": None},
+        "measure": dict(_COMPLETE_TRUNCATION["measure"]),
     }
     with pytest.raises(SchemaRefusal, match="own signals make it 'unknown'"):
         audit.validate_truncation_record(silent, label="a test record")
@@ -1998,6 +2036,7 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
             {
                 "classification": "complete",
                 "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": "banana"},
+                "measure": dict(_COMPLETE_TRUNCATION["measure"]),
             },
             label="a test record",
         )
@@ -2010,16 +2049,24 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
             "length_suspicious": True,
             "ends_abruptly": True,
         },
+        "measure": dict(_COMPLETE_TRUNCATION["measure"]),
     }
     assert audit.validate_truncation_record(three, label="x")["classification"] == "truncated"
     one = {
         "classification": "unknown",
         "signals": {**_COMPLETE_TRUNCATION["signals"], "ends_abruptly": True},
+        "measure": dict(_COMPLETE_TRUNCATION["measure"]),
     }
     assert audit.validate_truncation_record(one, label="x")["classification"] == "unknown"
     # The producer's instrument decides with the same shared rule.
     perlector = _perlector()
-    measured = perlector.truncation.classify("alpha beta-", region_pixels=18612, stop_reason="stop")
+    measured = perlector.truncation.classify(
+        "alpha beta-",
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
+        stop_reason="stop",
+    )
     assert measured["classification"] == audit.truncation_classification(measured["signals"])
 
 
@@ -2207,17 +2254,46 @@ def test_a_sealed_reproof_call_must_name_the_digest_of_the_response_it_retains()
         )
 
 
+def test_an_acts_region_is_the_union_of_its_crops_not_their_sum():
+    """A fallback recrop re-cuts ink its original crop already covers. Summing
+    the two counted that ink twice and, under a scale-honest length floor,
+    held every recovered act: fixture a1's recovered attempt measured 41,412
+    px for an 18,612 px crop inside a 22,800 px recrop. Regions on different
+    pages never overlap and still add."""
+    perlector = _perlector()
+
+    def basis(page, x, y, w, h):
+        return {"source_page_id": page, "transform": {"bounds": {"x": x, "y": y, "w": w, "h": h}}}
+
+    crop = basis("p1", 12, 15, 188, 99)
+    recrop = basis("p1", 0, 10, 200, 114)
+    assert perlector._region_pixels([crop]) == 18612
+    assert perlector._region_pixels([crop, recrop]) == 22800
+    # A partial overlap counts the shared cells once.
+    assert perlector._region_pixels([basis("p1", 0, 0, 10, 10), basis("p1", 5, 5, 10, 10)]) == 175
+    # Disjoint on one page, and the same rectangles on two pages, both add.
+    assert perlector._region_pixels([basis("p1", 0, 0, 10, 10), basis("p1", 20, 0, 10, 10)]) == 200
+    assert perlector._region_pixels([basis("p1", 0, 0, 10, 10), basis("p2", 0, 0, 10, 10)]) == 200
+    assert perlector._region_pixels([]) == 0
+
+
 def test_the_audited_truncation_takes_an_already_measured_record_without_remeasuring():
     """The branch production uses: the re-proof's own measurement is passed through."""
     perlector = _perlector()
     measured = perlector.truncation.classify(
-        "alpha beta gamma", region_pixels=18612, stop_reason="length"
+        "alpha beta gamma",
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
+        stop_reason="length",
     )
     via_measured = perlector._audited_truncation(
         pass_b=_COMPLETE_TRUNCATION,
         declared_failure=None,
         text="alpha beta gamma",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="length",
         measured=measured,
     )
@@ -2225,7 +2301,9 @@ def test_the_audited_truncation_takes_an_already_measured_record_without_remeasu
         pass_b=_COMPLETE_TRUNCATION,
         declared_failure=None,
         text="alpha beta gamma",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="length",
     )
     assert via_measured == remeasured == measured
