@@ -360,7 +360,13 @@ required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" 
 max_model_len = 8192
 max_num_seqs = 1
 max_num_batched_tokens = 2048
-gpu_memory_utilization = "0.58"
+# F005/F052: 0.58 was never DAI's own arithmetic -- config/pod_placement.toml's
+# generic-24gb comment derives 18.7 GiB of 24 needed, 0.78 minimum, 0.90
+# matching the old serve_dai.sh, and raised this tier's engine_memory_fraction
+# ceiling to 0.90 for exactly that reason. This row is what render_vllm_argv
+# actually passes to --gpu-memory-utilization; it now carries the value the
+# tier's own note derives.
+gpu_memory_utilization = "0.90"
 min_pixels = 3136
 max_pixels = 2359296
 patch_size = 14
