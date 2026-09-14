@@ -1040,6 +1040,11 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   to make before paying for the ~10 GB download, not after. Then record whether
   `uv sync --group pod` completed, how long the wheel download took, and whether each
   chair's weights loaded under `vllm 0.27.1`, since no offline check can answer that.
+  **Record the container disk's free space before and after the sync, and the size of
+  `<repository>/.venv` when it finishes.** Those three numbers are what replace the
+  bounds in `models.DEFAULT_CONTAINER_DISK_GB` and `bootstrap.UV_CACHE_REQUIRED_BYTES` /
+  `REPOSITORY_VENV_REQUIRED_BYTES`, which are stated as bounds precisely because nothing
+  has ever weighed them.
   Record, per chair, whether the pod-rendered golden page's witness was read back and
   what `nvidia-smi` reported around the read.
 - [ ] After the run, bring the tree back with `verbatus fetch-run --run-id <id> --into

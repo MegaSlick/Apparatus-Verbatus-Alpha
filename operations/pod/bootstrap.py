@@ -176,7 +176,18 @@ def verify_image_contract(
             "pinned commit inside a checkout the image already carries -- it has never "
             "cloned one, so there is nothing here for the pinned commit to land in"
         )
-    entries = _git_config_entries(config_path.read_text(encoding="utf-8", errors="replace"))
+    try:
+        config_text = config_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        # Named here rather than escaping as a bare OSError the step turns into
+        # an unexplained red: a config this process cannot read is an image
+        # fact like every other one on this list.
+        raise ImageContractRefusal(
+            f"the checkout at {repository} has a configuration this process cannot read "
+            f"({error.strerror}); the bootstrap reads it to prove there is an origin to "
+            "fetch from, and cannot proceed on the assumption that there is one"
+        ) from error
+    entries = _git_config_entries(config_text)
     origin = _config_value(entries, "remote", "origin", "url")
     if not origin:
         raise ImageContractRefusal(
@@ -187,7 +198,12 @@ def verify_image_contract(
 
     home_is_visible = bool(environment.get("HOME"))
     scheme = origin.split("://", 1)[0].lower() if "://" in origin else ""
-    embedded_credential = "@" in origin.split("://", 1)[-1].split("/", 1)[0]
+    # Only over http/https does userinfo carry a credential. `user@host` in an
+    # SSH remote is a login name, and recording that as an embedded credential
+    # would put a false statement in the receipt.
+    embedded_credential = (
+        scheme in {"http", "https"} and "@" in origin.split("://", 1)[-1].split("/", 1)[0]
+    )
     local_credential_route = bool(
         _config_value(entries, "credential", None, "helper")
         or _any_subsection_value(entries, "credential", "helper")
@@ -208,14 +224,18 @@ def verify_image_contract(
             "an http.<url>.extraheader, or credentials in the remote URL), or give the "
             "bootstrap environment a HOME whose configuration you have checked"
         )
+    # What the receipt may honestly say. The last value is not "no credential is
+    # needed" -- an SSH remote's key, or a public remote needing nothing, are
+    # both outside what reading one config file can establish -- so it says
+    # exactly that instead of a claim this check did not make (GOVERNANCE 10).
     verified["credential_route"] = (
         "embedded-in-url"
         if embedded_credential
         else "repository-local"
         if local_credential_route
-        else "home"
+        else "home-visible"
         if home_is_visible
-        else "not-needed-for-this-scheme"
+        else "not-in-the-repository-config"
     )
 
     interpreter = Path(interpreter)
