@@ -4,9 +4,18 @@
 the act's own state (`recovery_region_count`), and that derivation is not local
 to this stage: the Recensor, the Archetypus and the Armarium each re-derive it
 and require an act's reading count to equal its recovery crop count plus one.
-So a crashed pass resumes by recomputing the same ordinal and republishing --
-byte-identical under every chair that exists, and refused by the run tree
-(`IncompatibleReuse`) rather than overwritten if a future chair diverges.
+So a crashed pass resumes by recomputing the same ordinal and republishing. A
+fixture chair reproduces its own bytes, so that republication is byte-identical
+and the run tree reuses it -- which is what this file measures, end to end,
+through the consuming stages that re-derive the ordinal.
+
+A live chair does not reproduce its bytes, and that half of the contract is not
+this file's. `run.py::_read_the_acts` answers for it before the ordinal is used
+again: a sealed Perlectio is left alone, the arms an interrupted attempt already
+published are reused rather than re-asked, and an attempt interrupted inside its
+audit round is held. Where a republication still collides it is refused
+(`IncompatibleReuse`) rather than overwritten. `test_live_perlector.py` is where
+that is measured; `_next_attempt`'s own docstring carries the full account.
 
 Probing for the first free identity and appending there was tried, and this
 test is what forbids it: the resumed stage sealed its boundary and reported
