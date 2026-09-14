@@ -260,3 +260,28 @@ def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old
             dense_page_answer_budget(chair),
         )
         assert record["fits"] is False, (chair, tier)
+
+
+def test_every_startup_timeout_row_records_how_its_value_should_be_derived() -> None:
+    """F057: 300s is a placeholder on every row, including a 51.7 GiB Perlector.
+
+    The value is deliberately not changed here -- replacing one unmeasured
+    number with another is not a fix, and the row's bytes are sealed into the
+    run's configuration digest, so a guessed change would be indistinguishable
+    in the record from a measured one. What the file must carry instead is the
+    derivation, so that whoever reads the first red watchdog can set each row
+    from a measurement rather than from a feeling. This test is what keeps a
+    later edit from quietly dropping that back to a bare number.
+    """
+
+    text = REAL_RECIPES.read_text(encoding="utf-8")
+    rows = [line for line in text.splitlines() if line.startswith("startup_timeout_seconds")]
+
+    assert len(rows) == 15
+    for row in rows:
+        assert "UNMEASURED placeholder" in row, row
+        assert "volume read rate" in row, row
+        assert "see the header" in row, row
+    # The one row whose weights this tree has actually measured says so.
+    assert sum("51.7 GiB" in row for row in rows) == 3
+    assert "HOW THE VALUE SHOULD BE DERIVED" in text
