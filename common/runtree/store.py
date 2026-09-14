@@ -404,6 +404,21 @@ class RunTree:
         """
         return f"{writing_directory(stage)}/{INDEX_FILE}"
 
+    def serving_log_path(self, stage: str) -> str:
+        """Where the serving launcher writes this stage's engine logs, inside the tree.
+
+        The store neither writes nor reads here (see `SERVING_LOGS_DIR`), but it
+        owns the path, for the same reason it owns `manifest_path`: the stage
+        that serves a chair and `inventory_scope()` have to mean the same
+        directory, and every stage that spelled the directory for itself was a
+        chance for them to differ. One did -- the Attestatores passed the stage
+        name `attestatores` where the writing directory is `3_attestatores`, so
+        every engine log landed outside the scope and `fetch-run` refused the
+        whole served run tree by name, bringing home nothing from a run that had
+        already billed a card. Derived from `writing_directory` here, once.
+        """
+        return f"{writing_directory(stage)}/{SERVING_LOGS_DIR}"
+
     def receipt_path(self, digest: str) -> str:
         """The one content-addressed location for a validated receipt-backed record."""
         if not is_sha256(digest):
@@ -1482,7 +1497,9 @@ class RunTree:
             # no digest anybody recorded: in scope so a reader of the tree can
             # account for it, never inventoried as evidence. `build_manifest`
             # walks `<stage>/artifacts` alone and the blob inventory
-            # `<stage>/blobs`, so naming it here adds nothing to either.
+            # `<stage>/blobs`, so naming it here adds nothing to either. Same
+            # spelling as `serving_log_path`, which is what the stages call, so
+            # the writer and the scope cannot name different directories.
             prefixes.append(f"{directory}/{SERVING_LOGS_DIR}/")
         prefixes.append(f"{writing_directory(DOOR)}/{DOOR_MANIFEST_FILE}")
         return tuple(prefixes)

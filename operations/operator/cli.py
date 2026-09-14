@@ -311,8 +311,9 @@ def build_parser() -> PlainParser:
         "report, that report's '-hold' liveness sibling and the bootstrap journal are named "
         "with the launch token at paths this verb cannot derive, and "
         "'pod-transfer-journal.json' sits at the volume root outside both prefixes, so name "
-        "each here. operations/pod/README.md lists the complete set and how each key is "
-        "derived. The receipt says which were fetched and which were not",
+        "each here. A key is volume-root-relative -- the volume path with the mount prefix "
+        "removed, never a leading '/'. operations/pod/README.md lists the complete set and "
+        "how each key is derived. The receipt says which were fetched and which were not",
     )
 
     export = verbs.add_parser(

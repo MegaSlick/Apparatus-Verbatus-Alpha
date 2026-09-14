@@ -254,6 +254,17 @@ scope names for it. While the scope did not name it, a real served run tree was 
 whole at the first log listed, and a run that had already billed a card brought home
 nothing at all.
 
+It is also the one file in the tree that is still being written, so it is the one object
+whose failure to arrive is **refused by itself** rather than fatally. A chair serving right
+now appends to its log: an operator who fetches a held run mid-flight and again at the end
+meets bytes that have grown, and the never-replace rule below would otherwise take the
+whole verified tree down for it — as would a debug-level log grown past the 256 MiB
+per-object bound. Each such log is named in the receipt's `refused_serving_logs` and on the
+screen, with the run tree still brought home and verified: if the local copy is an earlier,
+shorter fetch of the same log, fetch into a fresh `--into`; a log past the bound is read on
+the volume. Every other object in the tree is immutable evidence,
+and a changed one still refuses the fetch as a whole.
+
 A file that already exists locally is compared, never replaced: identical bytes are reused
 and counted, different bytes refuse by name and leave the local run untouched. Nothing an
 attempt fetched is kept when it refuses; only files an earlier fetch already verified
@@ -281,8 +292,9 @@ deadline), the pod-timer **runtime report**, and the bootstrap **journal** — a
 them would mean listing the whole volume, which holds the submission's own page images.
 The sixth, **`pod-transfer-journal.json`**, sits at the volume root under a fixed name and
 is the only durable record of which submission rows were verified against target-observed
-bytes. `--evidence-key <key>` (repeatable) brings each one home by its exact key, and the
-double-click route prompts for all six by name. The receipt states that limit and how
+bytes. `--evidence-key <key>` (repeatable) brings each one home by its exact key — a
+volume-root-relative key, the volume path with the mount prefix removed, never a leading
+`/` — and the double-click route prompts for all six by name. The receipt states that limit and how
 many keys the call named — it does not claim they went unfetched when the operator named
 them — and `objects` and `refusals` say which of the named keys arrived. Nothing is left
 to be inferred from an empty folder.

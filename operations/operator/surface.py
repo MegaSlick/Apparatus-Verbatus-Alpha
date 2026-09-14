@@ -855,6 +855,15 @@ class OperatorSurface:
         is what happened while the inventory scope did not name the path --
         brought home nothing at all from a run that had already billed a card.
 
+        It is also the one file here that is still being written. A chair
+        serving right now appends to its log, so an operator who fetches a held
+        run mid-flight and again at the end meets bytes that have grown, and a
+        debug-level log can outgrow ``MAX_FETCH_OBJECT_BYTES``. Neither is a
+        reason to lose the run: a log that will not come home is refused **by
+        itself**, named in ``refused_serving_logs`` and on the screen, and the
+        verified tree still arrives. Every other object in the tree is immutable
+        evidence, and a changed one still refuses the fetch as a whole.
+
         **The run tree is not the whole record, so the evidence comes too.** A
         launch's PREFLIGHT tree (``preflight/``) is written outside
         ``runs/<run_id>/`` and says which chairs were preflighted, against which
@@ -942,15 +951,32 @@ class OperatorSurface:
             destination_root / EVIDENCE_DIRECTORY,
         )
         partial = bool(outcome.unmanifested_stages)
+        # What was actually checked, which is not what arrived: a serving log is
+        # counted in `fetched`/`reused` like any other object, and nothing
+        # checked it against anything (GOVERNANCE 10 -- claims are made only
+        # about what was measured). Every count of "verified" below is this one,
+        # and the arrival counts stay beside it rather than standing in for it.
+        verified_objects = outcome.fetched + outcome.reused - len(outcome.unverified_serving_logs)
+        checked_clause = (
+            "every one checked"
+            if not outcome.unverified_serving_logs
+            else f"{verified_objects} of them checked"
+        )
         summary = (
-            f"Run {checked_id} was brought back and verified: "
-            f"{outcome.fetched} object(s) fetched, {outcome.reused} reused."
+            f"Run {checked_id} was brought back: "
+            f"{outcome.fetched} object(s) fetched, {outcome.reused} reused, "
+            f"{verified_objects} verified against the run tree's own digests."
         )
         if outcome.unverified_serving_logs:
             summary += (
                 f" {len(outcome.unverified_serving_logs)} object(s) in the tree are serving "
                 "logs, which no manifest records: they came home as side evidence, digested "
-                "but unverified."
+                "but unverified, and are not in that count."
+            )
+        if outcome.refused_serving_logs:
+            summary += (
+                f" {len(outcome.refused_serving_logs)} serving log(s) did not come home and "
+                "are named in refused_serving_logs; the verified run tree did."
             )
         if partial:
             summary += (
@@ -968,6 +994,9 @@ class OperatorSurface:
                 "into": str(destination_root),
                 "fetched": outcome.fetched,
                 "reused": outcome.reused,
+                # `fetched + reused` minus the serving logs: the objects this
+                # call actually checked against a digest the run tree recorded.
+                "verified_objects": verified_objects,
                 "bytes": outcome.bytes,
                 "stages_verified": list(outcome.stages),
                 "unmanifested_stages": list(outcome.unmanifested_stages),
@@ -976,6 +1005,7 @@ class OperatorSurface:
                     {"relative_path": relative, "sha256": digest}
                     for relative, digest in outcome.unverified_serving_logs
                 ],
+                "refused_serving_logs": list(outcome.refused_serving_logs),
                 "excluded_publication_temporaries": list(outcome.excluded),
                 "evidence": {
                     "into": str(destination_root / EVIDENCE_DIRECTORY),
@@ -1013,7 +1043,7 @@ class OperatorSurface:
             self.present(
                 f"Run {checked_id} is at {destination_root / checked_id}: "
                 f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
-                "identical, every one checked -- but "
+                f"identical, {checked_clause} -- but "
                 f"{', '.join(outcome.unmanifested_stages)} never reached a manifest.json, so "
                 "this run is verified-partial: its artifacts are trusted by envelope alone."
             )
@@ -1021,7 +1051,7 @@ class OperatorSurface:
             self.present(
                 f"Run {checked_id} is at {destination_root / checked_id}: "
                 f"{outcome.fetched} object(s) fetched, {outcome.reused} already present and "
-                f"identical, every one checked against the run tree's own digests."
+                f"identical, {checked_clause} against the run tree's own digests."
             )
         if outcome.unverified_serving_logs:
             self.present(
@@ -1029,6 +1059,14 @@ class OperatorSurface:
                 "evidence, not as verified run-tree objects: no manifest records an engine "
                 "log, so each is recorded in the receipt with the digest of the bytes that "
                 "arrived and checked against nothing else."
+            )
+        for refusal in outcome.refused_serving_logs:
+            self.present(
+                f"A serving log did not come home: {refusal}. A log is the one object here "
+                "refused by itself rather than fatally -- no manifest records it and a "
+                "serving chair is still appending to it -- so the run tree was brought back "
+                "and verified without it. If the local copy is an earlier, shorter fetch of "
+                "the same log, fetch into a fresh --into; otherwise read it on the volume."
             )
         if outcome.excluded:
             self.present(
@@ -3174,6 +3212,14 @@ class FetchRunOutcome:
     # here and digested in the receipt so the local copy can be told apart from
     # a later one, and never counted among what was verified (GOVERNANCE 10).
     unverified_serving_logs: tuple[tuple[str, str], ...] = ()
+    # A serving log that did not come home, and why. Named per object rather
+    # than raised: the log is the one append-only file in the tree -- a live
+    # engine is still writing it -- so local bytes that differ from the
+    # volume's, or a debug-level log past `MAX_FETCH_OBJECT_BYTES`, are ordinary
+    # states of a file nobody digested, and taking the whole verified run tree
+    # down for one of them is the failure this verb was fixed to stop. Nothing
+    # is lost silently (GOVERNANCE 2): each is in the receipt and on the screen.
+    refused_serving_logs: tuple[str, ...] = ()
 
 
 def _fetch_run_tree(
@@ -3230,6 +3276,7 @@ def _fetch_run_tree(
     expected: dict[str, str] = {}
     manifests: dict[str, dict[str, Any]] = {}
     serving_logs: list[tuple[str, str]] = []
+    refused_logs: list[str] = []
     unresolved: dict[str, str] = {}  # every fetched artifact -> its digest, resolved below
     # Every target this call itself wrote fresh (never one already on disk that
     # was only compared). A refusal anywhere below -- including one raised well
@@ -3242,6 +3289,48 @@ def _fetch_run_tree(
     try:
         for relative in ordered:
             target = root / relative
+            if _is_serving_log(relative):
+                # Side evidence, and refused per object rather than fatally.
+                # An engine log is in no manifest, is not content-addressed and
+                # is not JSON, so there is nothing to check it against; it is
+                # also the one file in the tree that is still being appended to
+                # while the fetch runs. A second fetch of a held run therefore
+                # meets different bytes than the first brought home, and
+                # `_fetch_or_compare` refuses that -- correctly, for immutable
+                # evidence, and fatally for the whole tree if it were raised
+                # here. The same goes for a log that has grown past
+                # `MAX_FETCH_OBJECT_BYTES`. Both are named and the verified run
+                # tree still comes home.
+                #
+                # Classified before anything is fetched: the arms below verify,
+                # and a log is the one object none of them can speak for.
+                # `_fetch_or_compare`'s own guards still run and still refuse
+                # -- a symlink standing where a log belongs is refused before a
+                # byte is written, exactly as anywhere else in the tree. What
+                # narrows is the blast radius, not the check.
+                existed = target.exists()
+                parent_existed = target.parent.exists()
+                try:
+                    log_size, log_reused = _fetch_or_compare(reader, prefix + relative, target)
+                except Exception as error:  # noqa: BLE001 -- recorded per log, never fatal
+                    if not existed:
+                        target.unlink(missing_ok=True)
+                    if not parent_existed:
+                        try:
+                            target.parent.rmdir()
+                        except OSError:
+                            pass
+                    refused_logs.append(f"{relative}: {error}")
+                    continue
+                if not log_reused:
+                    staged.append(target)
+                total += log_size
+                fetched += not log_reused
+                reused += log_reused
+                # Digest what arrived so the receipt can name it, and check it
+                # against nothing, because there is nothing to check it against.
+                serving_logs.append((relative, _sha256_of(target)))
+                continue
             data_size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
             if not was_reused:
                 staged.append(target)
@@ -3256,15 +3345,6 @@ def _fetch_run_tree(
                 manifests[relative] = manifest
                 for entry in manifest["artifacts"]:
                     expected[entry["relative_path"]] = entry["sha256"]
-            elif _is_serving_log(relative):
-                # Side evidence, not run-tree evidence: an engine log is in no
-                # manifest, is not content-addressed, and is not JSON. Digest
-                # what arrived so the receipt can name it, and check it against
-                # nothing, because there is nothing to check it against. Asked
-                # before the artifact arm: the two prefixes are disjoint, but a
-                # log whose own name contained "/artifacts/" would otherwise be
-                # taken for an artifact and refuse the tree as orphaned.
-                serving_logs.append((relative, _sha256_of(target)))
             elif "/artifacts/" in relative:
                 # Manifests sort before artifacts (see `ordered` above), so every
                 # manifest that exists on the volume is already in `expected`.
@@ -3380,6 +3460,7 @@ def _fetch_run_tree(
         tuple(sorted(unmanifested_stages)),
         tuple(sorted(name for name in unresolved if name not in manifest_recorded)),
         tuple(sorted(serving_logs)),
+        tuple(sorted(refused_logs)),
     )
 
 

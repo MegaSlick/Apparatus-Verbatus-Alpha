@@ -11,6 +11,7 @@ memory would recreate co-residency under a different object name.
 from __future__ import annotations
 
 import fcntl
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, TextIO
@@ -119,7 +120,24 @@ class FileResidencyLease:
         handle: TextIO | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            handle = self.path.open("a+", encoding="utf-8")
+            # `O_NOFOLLOW`, and mode 0600 on creation. The one pod-wide lease is
+            # a fixed name in a world-writable directory, so on a shared
+            # developer machine -- not in the single-tenant pod container this
+            # was written for -- somebody else's symlink at that name would
+            # otherwise be followed and locked wherever it pointed. Refused here
+            # instead, loudly, through the `OSError` arm below, which is the
+            # same answer the lease already gives when another user's file
+            # denies it. A symlink at the lease path is never a lease.
+            descriptor = os.open(
+                self.path,
+                os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                0o600,
+            )
+            try:
+                handle = os.fdopen(descriptor, "a+", encoding="utf-8")
+            except BaseException:
+                os.close(descriptor)
+                raise
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             close_failure = _close_quietly(handle)
