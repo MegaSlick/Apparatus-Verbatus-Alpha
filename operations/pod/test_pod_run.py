@@ -31,6 +31,7 @@ import pytest
 
 from operations.operator import cli as operator_cli
 from operations.operator.errors import ErrorCode, OperatorError
+from operations.operator.volume_s3 import VolumeSpec
 
 from . import launch as launch_module
 from . import pod_run
@@ -1213,13 +1214,12 @@ def test_a_report_path_outside_the_volume_is_dropped_not_returned() -> None:
     assert launch_module.launch_evidence_keys(command, volume_mount_path="/workspace") == ()
 
 
-def test_the_console_derives_those_keys_from_a_saved_launch_receipt(tmp_path: Path) -> None:
-    token = "c" * 32
-    receipt = tmp_path / "launch.json"
-    receipt.write_text(
+def _launch_receipt(path: Path, token: str, *, volume_id: str = "vol-1") -> Path:
+    path.write_text(
         json.dumps(
             {
                 "request": {
+                    "volume_id": volume_id,
                     "volume_mount_path": "/workspace",
                     "docker_start_cmd": [
                         "python",
@@ -1231,12 +1231,48 @@ def test_the_console_derives_those_keys_from_a_saved_launch_receipt(tmp_path: Pa
         ),
         encoding="utf-8",
     )
+    return path
+
+
+def test_the_console_derives_those_keys_from_a_saved_launch_receipt(tmp_path: Path) -> None:
+    token = "c" * 32
+    receipt = _launch_receipt(tmp_path / "launch.json", token)
 
     assert operator_cli._derived_evidence_keys(receipt) == (
         f"pod-runtime-report-{token}.json",
         f"pod-runtime-report-{token}-terminating.json",
     )
     assert operator_cli._derived_evidence_keys(None) == ()
+
+
+def test_a_launch_receipt_for_another_volume_is_refused_rather_than_used(
+    tmp_path: Path,
+) -> None:
+    """The quiet failure: real names of another launch's records, asked for
+    against a volume that never held them."""
+
+    receipt = _launch_receipt(tmp_path / "launch.json", "d" * 32, volume_id="vol-other")
+
+    with pytest.raises(OperatorError) as refusal:
+        operator_cli._derived_evidence_keys(
+            receipt, VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol-1")
+        )
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "vol-other" in refusal.value.detail
+
+
+def test_a_launch_receipt_read_through_a_link_is_refused(tmp_path: Path) -> None:
+    """A record this verb did not write is not read whole on trust."""
+
+    real = _launch_receipt(tmp_path / "launch.json", "e" * 32)
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+
+    with pytest.raises(OperatorError) as refusal:
+        operator_cli._derived_evidence_keys(link)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
 
 
 def test_an_unreadable_launch_receipt_refuses_rather_than_deriving_nothing(
