@@ -3384,15 +3384,21 @@ def _fetch_run_tree(
 
 
 def _is_serving_log(relative: str) -> bool:
-    """True for `<writing directory>/serving-logs/...`, the served engine's own log.
+    """True for `<writing directory>/serving-logs/<name>`, the served engine's own log.
 
     A classification, not a boundary: `inventory_scope()` has already refused
     anything that is not under a writing directory's serving-log prefix by the
     time this is asked.
+
+    The last component must be a name. An S3 listing can carry a zero-byte
+    directory marker whose key ends in `/`, and calling that a log would fetch
+    it to the directory's own path; left unclassified it falls through to the
+    JSON arm and refuses by name, which is the right answer for a key that is
+    not an object anyone wrote.
     """
 
     parts = relative.split("/")
-    return len(parts) > 2 and parts[1] == SERVING_LOGS_DIR
+    return len(parts) > 2 and parts[1] == SERVING_LOGS_DIR and bool(parts[-1])
 
 
 @dataclass(frozen=True, slots=True)

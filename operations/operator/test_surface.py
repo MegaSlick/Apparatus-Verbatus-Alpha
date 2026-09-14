@@ -4919,6 +4919,54 @@ def test_fetch_run_still_refuses_an_unaccounted_object_beside_the_serving_logs(
     assert not (into / "brought-home").exists()
 
 
+def test_a_serving_log_directory_marker_is_not_classified_as_a_log(tmp_path: Path) -> None:
+    """A key ending in `/` is not a log, so it is never fetched as one.
+
+    An S3 listing can carry a zero-byte directory marker, and this reader does
+    not filter one out. Classifying it as a serving log would fetch it onto the
+    directory's own path and count it among the objects that came home;
+    requiring a final name leaves it to the arms that refuse loudly instead.
+    """
+
+    assert surface_module._is_serving_log(
+        "3_attestatores/serving-logs/vllm-attestator_1-abcdef012345.log"
+    )
+    assert surface_module._is_serving_log("3_attestatores/serving-logs/nested/engine.log")
+    assert not surface_module._is_serving_log("3_attestatores/serving-logs/")
+    assert not surface_module._is_serving_log("3_attestatores/serving-logs")
+    assert not surface_module._is_serving_log("serving-logs/engine.log")
+    # The artifact arm keeps its own keys: the two prefixes never overlap.
+    assert not surface_module._is_serving_log("3_attestatores/artifacts/testimonium/x.json")
+
+
+def test_fetch_run_refuses_a_directory_marker_key_rather_than_writing_it(tmp_path: Path) -> None:
+    """And end to end: the marker takes the fetch down loudly, writing nothing.
+
+    Which arm refuses it is not the claim -- the claim is that no run tree comes
+    home with a file standing where a directory should be, and that the operator
+    is told (GOVERNANCE 2).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    _served_stage_leavings(volume)
+    marker = "runs/brought-home/3_attestatores/serving-logs/"
+    listed = reader.list_keys
+
+    def list_with_marker(prefix: str) -> tuple[str, ...]:
+        keys = listed(prefix)
+        return tuple(sorted({*keys, marker})) if marker.startswith(prefix) else keys
+
+    reader.list_keys = list_with_marker  # type: ignore[method-assign]
+    surface = _surface(tmp_path)
+    into = tmp_path / "local"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert not (into / "brought-home" / "3_attestatores" / "serving-logs").is_file()
+
+
 def _volume_evidence(volume: Path, stem: str = "boot-a-report") -> dict[str, bytes]:
     """A launch's PREFLIGHT tree beside the run tree, as `bootstrap_main` writes it.
 

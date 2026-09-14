@@ -59,12 +59,19 @@ def test_every_serving_caller_takes_the_one_pod_wide_lease_path() -> None:
         assert "POD_RESIDENCY_LOCK_PATH" in source, (
             f"{relative} serves a chair but does not name the one pod-wide lease path"
         )
-        assert not re.search(r"FileResidencyLease\((?!POD_RESIDENCY_LOCK_PATH|chosen\.)", source), (
+        # `chosen.residency_lock` is `bootstrap_main`'s injection seam, whose
+        # own default is the constant; every other spelling is a second
+        # boundary, and a second boundary is no boundary.
+        assert not re.search(
+            r"FileResidencyLease\((?!POD_RESIDENCY_LOCK_PATH\)|chosen\.residency_lock\))",
+            source,
+        ), (
             f"{relative} builds a residency lease from something other than the one "
-            "pod-wide lease path; a second boundary is no boundary"
+            "pod-wide lease path"
         )
-        assert "pod-gpu.lock" not in source, (
-            f"{relative} still names a run-tree lock file; the lease is pod-wide"
+        assert "RESIDENCY_LOCK_FILE" not in source, (
+            f"{relative} still resolves a lock file name against its run tree; the lease "
+            "is pod-wide and container-local"
         )
 
 
