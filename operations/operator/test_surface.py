@@ -1757,6 +1757,38 @@ def test_upload_refuses_an_oversized_manifest_before_constructing_a_transfer(
     assert not (surface.state_root / "fixture-volume").exists()
 
 
+def test_upload_refuses_a_bad_sealed_manifest_as_refused_not_partial(tmp_path: Path) -> None:
+    """G13: `ChecksummedTransfer.resume` reads the sealed manifest itself,
+    through `submission_door.load_manifest`, before a single file is sent.
+
+    A malformed or non-canonical manifest raises `SubmitRefusal` (a
+    `ContractError`) from inside that call, which the surrounding
+    `(TransferFailure, VolumeTransferRefusal, OSError, ValueError)` tuple does
+    not catch -- previously an unclassified crash. It must land as a refused
+    manifest (`UPLOAD_MANIFEST_MISSING`), never `UPLOAD_PARTIAL`: nothing was
+    transferred, so reporting a partial transfer would be a false statement
+    about what happened.
+    """
+
+    surface = _surface(tmp_path)
+    source = tmp_path / "submitted-pages"
+    source.mkdir()
+    (source / "page-one.bin").write_bytes(b"first\n")
+    manifest = tmp_path / "sealed-submission.json"
+    manifest.write_bytes(b'{"not": "a canonical submission manifest"}')
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(source, sealed_manifest=manifest)
+
+    assert refusal.value.code is ErrorCode.UPLOAD_MANIFEST_MISSING
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["state"] == "manifest-refused"
+    # Nothing was transferred: the fixture volume directory may already exist
+    # (it is prepared before the manifest is parsed), but no object may be in it.
+    fixture_volume = surface.state_root / "fixture-volume"
+    assert list(fixture_volume.rglob("*")) == []
+
+
 def test_red_boot_is_named_and_can_be_retried(tmp_path: Path) -> None:
     surface = _surface(tmp_path, faults=Faults(cache_failure=True))
 
@@ -5281,6 +5313,29 @@ def test_fetch_run_refuses_a_manifest_the_fetched_artifacts_do_not_rebuild(
         surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
 
     assert "does not match the manifest the fetched artifacts rebuild" in str(refusal.value.detail)
+
+
+def test_fetch_run_refuses_a_hostilely_nested_manifest_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    """G13: a `manifest.json` nested ~10k deep is otherwise well-formed JSON.
+
+    `json`'s scanner recurses per nesting level, so `_fetched_manifest` must
+    catch `RecursionError` beside `ValueError` or this escapes as an
+    unclassified crash instead of `FETCH_RUN_FAILED` -- and the fetch-run
+    handler itself must not let a `RecursionError` from anywhere in the walk
+    past it either.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    nested = b'{"extra":' + b"[" * 10_000 + b"]" * 10_000 + b"}"
+    reader.overrides["runs/brought-home/2_designator/manifest.json"] = nested
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
 
 
 def test_fetch_run_never_overwrites_a_local_file_that_differs(tmp_path: Path) -> None:

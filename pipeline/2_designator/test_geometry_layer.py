@@ -375,6 +375,42 @@ def test_chandra_custody_refuses_a_reference_whose_blob_is_gone(removed):
         )
 
 
+def test_chandra_custody_refuses_a_pathologically_nested_binding():
+    """G13: a well-formed but ~10k-deep custody binding blob is this boundary's
+    named refusal, never an escaping `RecursionError`.
+
+    `json.loads` recurses per nesting level, so a binding blob nested deep
+    enough defeats the parser separately from `json.JSONDecodeError` -- the
+    same failure `common/chandra_layout.py` and `structure_answer.py` guard
+    the same way. The custody read path parses the binding blob's bytes
+    before it ever inspects their shape, so this exercises the boundary that
+    would otherwise crash the Designator's live structure pass
+    (`structure_pass.py::ask_page`) on a corrupted or hostile binding blob.
+    """
+    tree = _FixtureTree()
+    stored = retain_chandra_response(
+        tree,
+        b"a response paired with a hostile binding",
+        RECEIPT,
+        page_id=PAGE_ID,
+        page_ordinal=PAGE_ORDINAL,
+    )
+    nested = (b"[" * 10_000) + (b"]" * 10_000)
+    digest = digest_bytes(nested)
+    hostile_path = f"{RESPONSE_BLOB_PREFIX}{digest}"
+    tree.blobs[hostile_path] = nested
+    hostile_custody_ref = {"relative_path": hostile_path, "sha256": digest}
+    with pytest.raises(SchemaRefusal, match="not valid JSON"):
+        read_retained_chandra_response(
+            tree,
+            stored["response_ref"],
+            RECEIPT,
+            hostile_custody_ref,
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
+
+
 def test_chandra_custody_refuses_to_retain_under_a_non_designator_receipt():
     """The write half refuses exactly what the read half refuses, before writing."""
     tree = _FixtureTree(receipt_chair="attestator_1")

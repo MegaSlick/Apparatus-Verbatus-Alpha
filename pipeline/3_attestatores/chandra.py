@@ -538,6 +538,14 @@ def _decode(raw_response: Any) -> tuple[Any | None, str | None]:
         return None, "excessive-json-nesting"
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None, "invalid-json"
+    except ValueError:
+        # A huge decimal integer literal (thousands of digits) is otherwise
+        # well-formed JSON, so the scanner's `int()` call raises a bare
+        # `ValueError` -- not `json.JSONDecodeError` -- once the literal
+        # exceeds CPython's integer-string-conversion limit (G13, "huge
+        # integer"). Uncaught it would escape this closed parse-outcome
+        # boundary instead of producing a named refusal.
+        return None, "invalid-json"
 
 
 def _quantize_box(value: Any) -> dict[str, int] | None:

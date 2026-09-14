@@ -64,6 +64,25 @@ def test_invalid_utf8_is_invalid_json():
     assert result == {"parse_outcome": "invalid-json"}
 
 
+def test_a_huge_json_integer_literal_is_invalid_json_not_an_escaping_value_error():
+    """A 4,301-digit integer literal is otherwise well-formed JSON.
+
+    CPython's own integer-string-conversion limit (4,300 digits by default)
+    turns the scanner's `int()` call into a bare `ValueError` -- not
+    `json.JSONDecodeError` -- once a literal crosses it, and this declared
+    refusal boundary must still catch it (G13, "huge integer").
+    """
+    body = (
+        b'{"schema":"'
+        + STRUCTURE_ANSWER_SCHEMA.encode()
+        + b'","acts":[],"extra":'
+        + b"9" * 4301
+        + b"}"
+    )
+    result = parse(body, page_w=100, page_h=100)
+    assert result == {"parse_outcome": "invalid-json"}
+
+
 def test_excessive_json_nesting_is_refused_by_name_not_a_recursion_error():
     """Pinned at the same depth `common/corpus_register.py` pins its own version
     of this refusal at, and for the same reason: 10,000 exhausted CPython's C

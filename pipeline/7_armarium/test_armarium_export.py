@@ -23,6 +23,7 @@ from armarium_export import (
     NOT_MEASURED_INSTRUMENTS,
     NOT_MEASURED_SCHEMA,
     ArmariumProjection,
+    _jsonl_act_records,
     _not_measured_status,
     _page_ledger_category,
     _terminal_ledger,
@@ -1299,6 +1300,31 @@ def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal
 
     with pytest.raises(SchemaRefusal, match="does not anchor to its own act's literal"):
         verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_a_deeply_nested_acts_jsonl_row_is_refused_by_name_not_a_recursion_error(tmp_path):
+    """G13: every Armarium JSONL reader widened its `except json.JSONDecodeError`
+    to `(UnicodeDecodeError, ValueError, RecursionError)`; this pins the
+    representative one (`_jsonl_act_records`) against a ~10k-deep row, the
+    same failure `common/chandra_layout.py` and `structure_answer.py` guard.
+    """
+    path = tmp_path / "acts.jsonl"
+    path.write_bytes(b"[" * 10_000 + b"]" * 10_000)
+    with pytest.raises(SchemaRefusal, match="an acts JSONL row is not JSON"):
+        _jsonl_act_records(path, [])
+
+
+def test_a_huge_integer_in_an_acts_jsonl_row_is_refused_by_name(tmp_path):
+    """A 4,301-digit integer literal is otherwise well-formed JSON.
+
+    CPython's own integer-string-conversion limit (4,300 digits by default)
+    turns the scanner's `int()` call into a bare `ValueError` -- not
+    `json.JSONDecodeError` -- once a literal crosses it (G13, "huge integer").
+    """
+    path = tmp_path / "acts.jsonl"
+    path.write_bytes(b'{"extra":' + b"9" * 4301 + b"}")
+    with pytest.raises(SchemaRefusal, match="an acts JSONL row is not JSON"):
+        _jsonl_act_records(path, [])
 
 
 def test_jsonl_uncertainty_status_may_not_contradict_the_layer_beside_it(tmp_path):
