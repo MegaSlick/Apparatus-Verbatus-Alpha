@@ -2080,9 +2080,9 @@ def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
 # resume has to answer for exactly that prefix instead of walking into an
 # `IncompatibleReuse` on the first one it republishes from a second live answer.
 # Named for the Perlectio and not for the establishing reading: the last two are
-# published *after* that reading, and only the Perlectio is behind all five. A
-# name that is wrong about two of its own entries is worse than no name, because
-# a later reader takes it at its word.
+# published *after* that reading, and the Perlectio is the one thing all five
+# come before. A name that is wrong about two of its own entries is worse than no
+# name, because a later reader takes it at its word.
 _PRE_PERLECTIO_ARTIFACTS: Final = (
     ("lectio-prior", "lectio-prior"),
     (nuda.LECTIO_NUDA_KIND, "lectio-nuda"),
@@ -3813,17 +3813,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # one to review rather than the whole run dying on a reuse nobody
             # can clear. GOVERNANCE 2 — visibly partial, never silently absent.
             #
-            # The retained evidence, addressable and not merely described. A
-            # hold that names the kind of record it rests on and nothing else
-            # sends the person the Recensor routes to review off to rebuild an
-            # attempt identity by hand; every other Perlector record carries
-            # digest-checked references to what it rests on, and this one has no
-            # reason to be the exception. `inputs` is outside the closed
+            # Named by digest-checked reference and not only in prose, so the
+            # reader routed here reaches the bytes instead of rebuilding an
+            # attempt identity by hand. `inputs` is outside the closed
             # `_NOT_RUN_HELD_FIELDS` payload shape, so this costs that schema
-            # nothing. Every arm the interrupted attempt sealed is named, not
-            # only the audit pair that forced the hold: they are all evidence of
-            # the same interrupted attempt, and a reader asking what survives of
-            # it should read one record rather than guess at the rest.
+            # nothing. Every arm the attempt sealed is named, not only the audit
+            # pair that forced the hold: they are all evidence of the same
+            # interrupted attempt, and what survives of it should be legible
+            # from one record.
             held_inputs = [
                 context.artifact_ref(
                     PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
@@ -3839,8 +3836,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     f"published {', '.join(audit_round_sealed)} and before its Perlectio; "
                     "the reading that record froze cannot be produced again and the record "
                     "is immutable, so this act is held with that evidence retained rather "
-                    "than read a second time. Every artifact that attempt did publish is "
-                    "named in this record's inputs"
+                    "than read a second time. Every artifact that attempt published for "
+                    "this act is named in this record's inputs"
                 ),
                 "provenance": provenance_for(context, chair, attempted=False),
             }
