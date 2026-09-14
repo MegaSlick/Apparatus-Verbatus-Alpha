@@ -118,7 +118,9 @@ DEFAULT_DATA_GATE_POLICY_PATH = ROOT / "config" / "data_handling_policy.json"
 # boundary too, and
 # `test_orchestrator_upload_credentials_are_the_transfers_own` reconciles this
 # copy with it. A credential added to one list alone would otherwise leave this
-# route carrying it into a stage that decodes caller-supplied material.
+# route carrying it into a stage that decodes caller-supplied material. Kept
+# even though `stage_environment` no longer loops over it directly (below): the
+# reconciliation test still pins this exact set against the transfer's own.
 _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
 # The wall clock a timing receipt is stamped with, and the monotonic one its
 # duration is measured against. Kept separate deliberately: a duration taken
@@ -126,6 +128,28 @@ _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_
 # monotonic reading names no instant a reader could compare across records.
 _clock = time.monotonic
 STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v1"
+# Duplicated from `operations.operator.custody.PROVIDER_ENV_PREFIXES` and
+# `operations.pod.models.looks_like_credential_field`'s marker scan, for the
+# identical reason and closed the identical way (reconciled by the same test
+# named above, widened to cover this). `stage_environment` used to pop only
+# the two names above -- the transfer verb's own upload-only S3 keys -- and
+# pass every *other* provider credential (RUNPOD_API_KEY: pod creation, i.e.
+# money; HF_TOKEN; AWS_*; ...) straight into a subprocess that decodes
+# attacker-supplied PDFs, TIFFs, HEICs and PNGs and talks to the serving
+# endpoint. That subprocess is at least as hostile a boundary as the operator's
+# confined console/backup/advance/ScanTailor children, which already run under
+# `operations.operator.custody.credential_free_environment` -- this is that
+# same predicate, held to it by the widened test rather than imported, because
+# this module imports only `common/`.
+_PROVIDER_ENV_PREFIXES = ("RUNPOD_", "AWS_", "HF_", "HUGGINGFACE_")
+_CREDENTIAL_NAME_MARKERS = ("key", "secret", "password", "credential", "bearer", "token")
+
+
+def _looks_like_provider_credential(name: str) -> bool:
+    normalized = name.lower().replace("-", "_")
+    return any(name.startswith(prefix) for prefix in _PROVIDER_ENV_PREFIXES) or any(
+        marker in normalized for marker in _CREDENTIAL_NAME_MARKERS
+    )
 
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
@@ -161,11 +185,12 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def stage_environment() -> dict[str, str]:
-    """Keep stage runtime settings, but drop credentials for the upload-only verb."""
-    environment = dict(os.environ)
-    for name in _TRANSFER_CREDENTIAL_ENV:
-        environment.pop(name, None)
-    return environment
+    """Keep stage runtime settings, but drop every provider credential (F016)."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not _looks_like_provider_credential(name)
+    }
 
 
 def invoke(program: str, args: argparse.Namespace, **extra) -> int:

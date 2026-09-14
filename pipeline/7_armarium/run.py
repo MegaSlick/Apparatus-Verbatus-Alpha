@@ -36,6 +36,7 @@ from armarium_export import (  # noqa: E402
     NOT_MEASURED_BASIS_SCHEMA,
     NOT_MEASURED_INSTRUMENTS,
     ArmariumProjection,
+    act_key_sort_key,
     build_armarium_bundle,
     edge_hold_pages_from_rows,
 )
@@ -362,7 +363,7 @@ def logical_act_projection_entry(
     # validating them again.
     membership = {
         "member_local_act_ids": sorted(member["act_id"] for member in members),
-        "member_act_keys": sorted(member["act_key"] for member in members),
+        "member_act_keys": sorted((member["act_key"] for member in members), key=act_key_sort_key),
         "member_source_page_ordinals": sorted({member["page_ordinal"] for member in members}),
         "physical_page_components": record["physical_page_components"],
     }
@@ -527,7 +528,7 @@ def logical_cross_capture_review_entry(
     # requirement visible where the list is built.
     membership = {
         "member_local_act_ids": sorted(member["act_id"] for member in members),
-        "member_act_keys": sorted(member["act_key"] for member in members),
+        "member_act_keys": sorted((member["act_key"] for member in members), key=act_key_sort_key),
         "member_source_page_ordinals": sorted({member["page_ordinal"] for member in members}),
         "physical_page_components": logical_act["physical_page_components"],
     }
@@ -2045,13 +2046,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "scenario": context.scenario,
             "aggregate": aggregate,
             "expected_acts": expected_count,
-            "delivered": sorted(delivered, key=lambda item: item["act_key"]),
+            "delivered": sorted(delivered, key=lambda item: act_key_sort_key(item["act_key"])),
             # Every non-delivered act, not only held/refused review items: a
             # confirmed-blank or excluded-with-approval act (COMPLETED-class) lands
             # here too. The bundle's own review-items.jsonl filters correctly to
             # held/refused (armarium_export.py::_review_records); this internal
             # accounting field is named for what it actually holds.
-            "non_delivered": sorted(review_items, key=lambda item: item["act_key"]),
+            "non_delivered": sorted(
+                review_items, key=lambda item: act_key_sort_key(item["act_key"])
+            ),
             # The page-level record beside the act-level one: every source the
             # run declared, with the Exemplar's outcome for it. A page that was
             # refused is named here and in the aggregate's reasons, never only

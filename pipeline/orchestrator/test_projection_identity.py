@@ -6,23 +6,35 @@ that field's hash equals the record's text hash per act, mechanically." The old
 pipeline could never have passed this — the audit found the established text was
 decided *twice*, so there was no single record for an export format to agree
 with in the first place. This drives the real orchestrator end to end and checks
-the one export format the Armarium actually
-produces today: its `delivered[i]["text"]` field must be byte-identical to, and
-therefore hash-identical to, the Archetypus record's own `text` and `text_hash`.
+the internal `export` artifact the Armarium publishes: its `delivered[i]["text"]`
+field must be byte-identical to, and therefore hash-identical to, the Archetypus
+record's own `text` and `text_hash`.
 
 Rendered displays (brackets, sigla) are not built by any stage yet — spec 10
 names that as the Armarium's future business at export time — so the
 render -> strip -> hash round-trip half of test 4 is proven separately, as a
 schema-sufficiency demonstration, in `pipeline/6_archetypus/test_annotations.py`.
 
-What this therefore does **not** prove: that *every* export format agrees, because
-one is all the pipeline builds today. When the Armarium lane adds a second, this
-test is where it must be added, and its failure mode should be a missing format
-rather than a silent pass over the one that exists.
+What this does **not** itself prove: that every *packaged* literal-text format
+(text-bundle, acts-database, jsonl) carries the same characters. All three ship
+today as members inside the single `export` artifact kind, so a guard keyed on
+artifact *kind* would never see a new one land (F090) — this module's own guard
+used to be keyed that way and could not fire. The guard below instead reads the
+packaged manifest's own `formats.formats` list, which does grow the moment a
+format is added or removed, and the cross-format identity claim itself is proven
+by `pipeline/7_armarium/armarium_export.py::_compare_literal_projections`, built
+at export time and verified again at read time, with unit coverage in
+`pipeline/7_armarium/test_armarium_export.py`. When a sixth format joins
+`common.armarium_formats.KNOWN_FORMATS`, the assertion below is where it must be
+named, and its failure mode is a missing format, never a silent pass over the
+ones that already exist.
 """
 
+import io
+import json
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -85,20 +97,35 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
     # review run is a wrong result this test must not read past.
     assert result.returncode == exit_code, result.stderr
     tree = RunTree(root, "r")
-    # The closed set of Armarium artifact kinds this test knows how to check.
-    # A second export format arrives as a new kind; this assertion makes it
-    # fail here — a missing format, never a silent pass over the one that
-    # exists — which is the failure mode the module docstring promises.
+    # A sanity check on the artifact *kinds* the Armarium publishes -- stable by
+    # design, since every literal-text format ships as a member inside the one
+    # `export` kind rather than as a kind of its own (F090: this shape is
+    # exactly why a kind-keyed guard can never see a new format arrive).
     all_kinds = {entry["kind"] for entry in tree.build_manifest(ARMARIUM)["artifacts"]}
     boundary_kinds = {"decode-environment", "stage-seal"}
     assert all_kinds & boundary_kinds == boundary_kinds
     produced_kinds = all_kinds - boundary_kinds
-    assert produced_kinds == {"export", "manifest-entry"}, (
-        f"the Armarium produced kinds {sorted(produced_kinds)}; a new export format "
-        "must be added to this projection-identity test before it ships"
-    )
+    assert produced_kinds == {"export", "manifest-entry"}
+
     export = export_of(tree)
     assert export["delivered"], f"the {scenario!r} scenario must deliver at least one act"
+
+    # The guard that actually fires on a new format: the packaged manifest's own
+    # `formats.formats` selection, read out of the sealed bundle rather than
+    # inferred from artifact kinds. A format landing in `config/formats.toml`'s
+    # default selection that this test does not yet name here fails loudly,
+    # instead of shipping under the umbrella of the one `export` kind.
+    bundle_bytes = tree.read_bytes(export["bundle"]["reference"]["relative_path"])
+    with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as archive:
+        packaged_manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
+    expected_formats = {"text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"}
+    produced_formats = set(packaged_manifest["formats"]["formats"])
+    assert produced_formats == expected_formats, (
+        f"the exported bundle selects formats {sorted(produced_formats)}; a new format "
+        "must be added to this projection-identity test's expectations (and, if it is a "
+        "literal-text format, proven identical by _compare_literal_projections) before "
+        "it ships"
+    )
 
     for delivered in export["delivered"]:
         established = tree.read_artifact(

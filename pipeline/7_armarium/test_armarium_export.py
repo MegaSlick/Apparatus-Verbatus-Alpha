@@ -23,12 +23,14 @@ from armarium_export import (
     NOT_MEASURED_INSTRUMENTS,
     NOT_MEASURED_SCHEMA,
     ArmariumProjection,
+    _act_json_records,
     _jsonl_act_records,
     _not_measured_status,
     _page_ledger_category,
     _terminal_ledger,
     _verify_acts_schema,
     _zip_bytes,
+    act_key_sort_key,
     build_armarium_bundle,
     canonical_text_sha256,
     edge_hold_pages_from_rows,
@@ -403,6 +405,56 @@ def _salvage_item(content: str) -> dict:
         "source_regions": [region],
         "provenance": {"collection": "separate tier"},
     }
+
+
+def test_act_key_sort_key_is_reading_order_past_ten_pages_and_ten_blocks():
+    """F079: `proposal:<page>:<block>` sorts as a string by default, so once a
+    page passes ten blocks -- or a run passes ten pages -- lexicographic order
+    reads block 10 before block 2 and page 10 before page 2. `act_key_sort_key`
+    must restore (page, block) order for every key this pattern describes, and
+    leave a key it does not describe (a minted `logical:<id>` row) exactly the
+    order its own string already gave it.
+    """
+    ten_pages = [f"proposal:{page}:0" for page in range(1, 11)]
+    twelve_blocks = [f"proposal:1:{block}" for block in range(0, 12)]
+    keys = ten_pages + twelve_blocks[1:]
+    reading_order = sorted(keys, key=lambda key: tuple(int(part) for part in key.split(":")[1:]))
+    assert sorted(keys, key=act_key_sort_key) == reading_order
+    # The fixture this test pins is exactly the shape a plain string sort gets
+    # wrong -- if it agreed with the lexicographic sort the fixture would prove
+    # nothing about the fix.
+    assert sorted(keys) != reading_order
+
+    mixed = ["logical:z", "proposal:2:0", "proposal:10:0", "logical:a"]
+    assert sorted(mixed, key=act_key_sort_key) == [
+        "proposal:2:0",
+        "proposal:10:0",
+        "logical:a",
+        "logical:z",
+    ]
+
+
+def test_act_json_records_are_emitted_in_reading_order_past_ten_blocks():
+    """The production call site (`_act_json_records`, used for the JSONL and
+    review-item projections) must order by the parsed key, not the raw string.
+    """
+    acts = tuple(
+        {
+            "act_id": f"act-{block}",
+            "act_key": f"proposal:1:{block}",
+            "category": "delivered",
+            CANONICAL_TEXT_FIELD: "x",
+        }
+        for block in (0, 2, 10, 11, 1)
+    )
+    records = _act_json_records(acts)
+    assert [record["act_key"] for record in records] == [
+        "proposal:1:0",
+        "proposal:1:1",
+        "proposal:1:2",
+        "proposal:1:10",
+        "proposal:1:11",
+    ]
 
 
 def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
@@ -1118,6 +1170,27 @@ def test_a_unicode_line_separator_in_a_reading_does_not_stop_the_whole_export(
     )
 
     assert verify_projection_identity(bundle.data, tmp_path / name) == {"act-1": literal}
+
+
+def test_compare_literal_projections_refuses_an_unhandled_literal_format(tmp_path, monkeypatch):
+    """A fourth literal format with no comparison branch built for it here must
+    refuse by name, not fall silently out of `projections` and out of the
+    identity check the branch above it exists to run (companion to F090).
+    """
+    import armarium_export
+
+    clean_root = tmp_path / "clean"
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    verify_export_bundle(bundle.data, clean_root)
+
+    monkeypatch.setattr(
+        armarium_export,
+        "_LITERAL_TEXT_FORMATS",
+        (*armarium_export._LITERAL_TEXT_FORMATS, "csv"),
+    )
+    unhandled_formats = SimpleNamespace(formats=("text-bundle", "acts-database", "jsonl", "csv"))
+    with pytest.raises(SchemaRefusal, match="no comparison built for literal format 'csv'"):
+        armarium_export._compare_literal_projections(clean_root, unhandled_formats)
 
 
 def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_format(tmp_path):
