@@ -13,7 +13,11 @@ rather than repeated as fact.
 body it already fetches; `FakeProvider.status` returns `record.state` plus a
 `set_pod_state` test control. No eighth verb. This is the fact 04-4's real fix
 depends on: an `EXITED` pod is *present*, and presence alone cannot tell a supervisor
-that.
+that. (Later, for hostile review F056, the same value object gained
+`started_at: datetime | None` from `lastStartedAt`. `desiredStatus` turned out to answer
+a different question again — it is what the pod was *asked* to be, RUNNING from the
+moment `create` returns — so it can say a pod died but never that one has started, and
+the arming wait needed the second fact to stop spending the S3 bound on the image pull.)
 
 **U2 — the timer's acknowledgement becomes a record.** Every durable report
 `pod_timer.py` writes now carries `schema: "pod-report.v1"` and an identity block
@@ -119,9 +123,13 @@ In order, because each depends on the one before it existing to observe against:
 
 1. **Boot A (the drill) must observe**: whether the S3 `GetObject` read in
    `volume_s3.py` actually returns bytes for an object the pod wrote through its
-   mount; under what key; after how long (this sets `CONTROLLER_ARMING_TIMEOUT_SECONDS`
-   / `CONTROLLER_ARMING_POLL_SECONDS`'s real-world basis, currently a code-owned bound
-   with no measurement behind it); whether the pod-scoped API key actually holds
+   mount; under what key; after how long — and, separately, how long the pod took to
+   start at all (these set `CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS` and
+   `CONTROLLER_ARMING_TIMEOUT_SECONDS` / `CONTROLLER_ARMING_POLL_SECONDS`'s real-world
+   basis, currently code-owned bounds with no measurement behind them; the drill's
+   evidence file reports the two waits as two numbers because one number covering the
+   image pull and the S3 propagation describes neither); whether the pod-scoped API key
+   actually holds
    delete and billing rights; and that `ObservingControllerArmer`'s evidence file is
    written and its contents match what actually happened. Boot A cannot leave a pod
    running by construction.

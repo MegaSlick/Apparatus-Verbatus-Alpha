@@ -669,6 +669,14 @@ class PodRuntime:
             # EXITED or TERMINATED is the same dead-but-billing shape and must
             # end in a close, not a green launch.  Case-insensitive because
             # `PodRecord.state` carries the provider's spelling verbatim.
+            #
+            # This gate catches a pod that arrived dead; it is not evidence
+            # that one arrived *started*.  RunPod's `desiredStatus` is what the
+            # pod was asked to be and reads RUNNING from the instant create
+            # returns, with the image still to pull -- so nothing here says the
+            # container exists.  That wait belongs to the armer, which bounds
+            # and records it separately from the channel bound
+            # (`controller_armer._await_container`).
             close, detail = self._close_and_record(
                 record=record,
                 reason=f"created pod arrived in state {record.state!r}, not RUNNING",

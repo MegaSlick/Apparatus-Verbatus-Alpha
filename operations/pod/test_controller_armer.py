@@ -30,6 +30,7 @@ from .controller_armer import (
     ACKNOWLEDGEMENT_FUTURE_SKEW_SECONDS,
     ARMING_DRILL_SCHEMA,
     CONTROLLER_ARMING_TIMEOUT_SECONDS,
+    CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS,
     ChannelControllerArmer,
     ObservingControllerArmer,
     report_key,
@@ -139,6 +140,39 @@ class InMemoryChannel:
             self.objects[name] = payload
             self.deferred = None
         return self.objects.get(key)
+
+
+class FakeLiveness:
+    """The provider's container-start signal, in a fake: late, absent, or broken.
+
+    ``starts_after`` is the number of probes that answer ``None`` before the
+    start moment appears, which is what an image pull looks like from the
+    launcher: the pod exists and nothing has run in it yet.
+    """
+
+    def __init__(
+        self,
+        clock: "Clock",
+        *,
+        starts_after: int = 0,
+        never: bool = False,
+        error: Exception | None = None,
+    ) -> None:
+        self.clock = clock
+        self.starts_after = starts_after
+        self.never = never
+        self.error = error
+        self.probes = 0
+        self.probed_at: list[float] = []
+
+    def started_at(self) -> datetime | None:
+        self.probes += 1
+        self.probed_at.append(self.clock.seconds)
+        if self.error is not None:
+            raise self.error
+        if self.never or self.probes <= self.starts_after:
+            return None
+        return self.clock.now()
 
 
 class FakeProcess:
@@ -985,6 +1019,8 @@ def test_the_observing_armer_is_still_ready_at_preflight() -> None:
         {"supervisor_argv": ("python", "  ")},
         {"timeout_seconds": 0},
         {"poll_seconds": -1},
+        {"container_timeout_seconds": 0},
+        {"container_poll_seconds": -1},
         {"max_report_bytes": 0},
     ],
 )
@@ -1000,3 +1036,267 @@ def test_an_armer_that_could_not_do_its_job_refuses_to_exist(kwargs: dict) -> No
 def test_an_object_that_is_not_a_channel_is_refused_at_construction() -> None:
     with pytest.raises(ValueError, match="read"):
         ChannelControllerArmer(channel=object(), supervisor_argv=("python",))
+
+
+# -- the container-start wait, separate from the channel bound (F056) -------
+
+
+def test_without_a_liveness_probe_the_channel_bound_is_the_whole_wait(tmp_path: Path) -> None:
+    """The unchanged shape: no probe configured, no container wait, same bound.
+
+    An operator whose factory supplies no `ContainerLivenessProbe` gets exactly
+    the behaviour that existed before the split, and the evidence says so
+    rather than reporting a zero that could be read as a measured instant
+    start.
+    """
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock)
+    channel = InMemoryChannel()
+
+    result = arm(armer(clock, channel, FakeStarter(channel)), ask, record, store, lease)
+
+    assert not result.armed
+    assert result.receipt["container_waited_seconds"] == "0.0"
+    assert result.receipt["container_bound_seconds"] == "0.0"
+    assert clock.seconds >= CONTROLLER_ARMING_TIMEOUT_SECONDS
+
+
+def test_the_image_pull_is_waited_out_before_the_channel_bound_starts(tmp_path: Path) -> None:
+    """The finding itself: a slow pull must not spend the propagation budget.
+
+    The container takes 60s to start and the report appears only after the
+    full channel bound has run from *that* moment. Before the split the pod
+    would have been terminated at t=300s with its report unread; here the
+    attempt arms, and the two waits are reported as two numbers.
+    """
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock, lifetime=3600)
+    channel = InMemoryChannel(appears_after=55, deferred=(REPORT_OBJECT, report(lease, record)))
+    starter = FakeStarter(channel)
+    liveness = FakeLiveness(clock, starts_after=4)
+
+    result = arm(
+        armer(clock, channel, starter, liveness=liveness),
+        ask,
+        record,
+        store,
+        lease,
+    )
+
+    assert result.armed
+    # The pull is over at t=60s (four probes answering None at 15s apart), and
+    # the report appears 275s after that: inside the 300s bound measured from
+    # container start, and well past it had the clock started at create.
+    assert clock.seconds == 60 + 275
+    assert clock.seconds > CONTROLLER_ARMING_TIMEOUT_SECONDS
+    assert "container-start wait took 60.0s" in result.detail
+    assert "after 275.0s of a 300s bound" in result.detail
+
+
+def test_a_container_that_never_reports_a_start_still_gets_its_channel_bound(
+    tmp_path: Path,
+) -> None:
+    """An unobserved start is not a failed start, and never closes a pod by itself.
+
+    The probe answers ``None`` forever -- a provider that reports no start
+    moment at all looks exactly like this -- so the wait ends at its own bound
+    and the channel bound runs in full afterwards. The refusal that follows is
+    the channel's, and the evidence keeps both numbers apart.
+    """
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock, lifetime=3600)
+    channel = InMemoryChannel()
+    liveness = FakeLiveness(clock, never=True)
+
+    result = arm(
+        armer(
+            clock, channel, FakeStarter(channel), liveness=liveness, container_timeout_seconds=90
+        ),
+        ask,
+        record,
+        store,
+        lease,
+    )
+
+    assert not result.armed
+    assert result.receipt["state"] == "report-absent-within-bound"
+    assert result.receipt["container_waited_seconds"] == "90.0"
+    assert result.receipt["waited_seconds"] == f"{CONTROLLER_ARMING_TIMEOUT_SECONDS:.1f}"
+    assert clock.seconds >= 90 + CONTROLLER_ARMING_TIMEOUT_SECONDS
+
+
+def test_a_liveness_probe_that_cannot_answer_is_recorded_and_never_closes_the_pod(
+    tmp_path: Path,
+) -> None:
+    """A read-only status call failing says nothing about the pod, and costs it nothing."""
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock, lifetime=3600)
+    channel = InMemoryChannel({REPORT_OBJECT: report(lease, record)})
+    liveness = FakeLiveness(clock, error=RuntimeError("the provider returned HTTP 500"))
+
+    result = arm(
+        armer(
+            clock, channel, FakeStarter(channel), liveness=liveness, container_timeout_seconds=60
+        ),
+        ask,
+        record,
+        store,
+        lease,
+    )
+
+    assert result.armed
+    assert "the provider returned HTTP 500" in result.detail
+    assert "no container start was reported" in result.detail
+
+
+def test_the_lease_is_heartbeated_throughout_the_container_wait(tmp_path: Path) -> None:
+    """The supervisor closes an unarmed lease whose owner goes quiet.
+
+    It does not know or care that the launcher is waiting on an image pull
+    rather than on an object, so the container wait heartbeats on the channel
+    poll's cadence, not the probe's coarser one.
+    """
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock, lifetime=3600)
+    channel = InMemoryChannel({REPORT_OBJECT: report(lease, record)})
+    liveness = FakeLiveness(clock, starts_after=4)
+
+    result = arm(
+        armer(clock, channel, FakeStarter(channel), liveness=liveness),
+        ask,
+        record,
+        store,
+        lease,
+    )
+
+    assert result.armed
+    # Sixty seconds of container wait at the 5s poll interval, and the probe
+    # itself only ran every 15s.
+    # The last heartbeat lands one poll interval before the wait ends, at t=55s:
+    # the pass at t=60s sees the start and leaves. What matters is that none of
+    # the twelve gaps in between is longer than the 5s poll interval, which is
+    # what keeps the supervisor from closing this lease mid-pull.
+    refreshed = store.load()
+    assert refreshed is not None and refreshed.heartbeat_at == START + timedelta(seconds=55)
+    assert liveness.probed_at == [0.0, 15.0, 30.0, 45.0, 60.0]
+
+
+def test_a_supervisor_that_dies_during_the_container_wait_refuses_before_any_read(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock, lifetime=3600)
+    channel = InMemoryChannel({REPORT_OBJECT: report(lease, record)})
+    starter = FakeStarter(channel, exit_status=3, dies_after_polls=2)
+    liveness = FakeLiveness(clock, never=True)
+
+    result = arm(
+        armer(clock, channel, starter, liveness=liveness, container_timeout_seconds=600),
+        ask,
+        record,
+        store,
+        lease,
+    )
+
+    assert not result.armed
+    assert "container was still being waited for" in result.detail
+    assert channel.reads == []
+
+
+def test_a_lease_lost_during_the_container_wait_stops_before_the_channel_bound(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock, lifetime=3600)
+    channel = InMemoryChannel({REPORT_OBJECT: report(lease, record)})
+    liveness = FakeLiveness(clock, never=True)
+
+    class HijackedStore(LeaseStore):
+        def heartbeat(self, *, owner_token: str, now=None):  # type: ignore[no-untyped-def]
+            raise LeaseOwnershipError("lease belongs to a different controller")
+
+    result = arm(
+        armer(
+            clock, channel, FakeStarter(channel), liveness=liveness, container_timeout_seconds=600
+        ),
+        ask,
+        record,
+        HijackedStore(store.path),
+        lease,
+    )
+
+    assert not result.armed
+    assert "waiting for the pod's container to start" in result.detail
+    assert channel.reads == []
+
+
+def test_the_drill_evidence_reports_the_two_waits_separately(tmp_path: Path) -> None:
+    """The measurement Boot A exists to take is a pair, not a sum."""
+
+    clock = Clock()
+    ask, record, store, lease = scene(tmp_path, clock, lifetime=3600)
+    channel = InMemoryChannel({REPORT_OBJECT: report(lease, record)})
+    drill = ObservingControllerArmer(
+        evidence_root=tmp_path / "drill",
+        channel=channel,
+        supervisor_argv=("python", "-m", "operations.pod.supervise"),
+        now=clock.now,
+        sleeper=clock.sleep,
+        start_supervisor=FakeStarter(channel),
+        liveness=FakeLiveness(clock, starts_after=2),
+    )
+
+    result = arm(drill, ask, record, store, lease)
+
+    assert not result.armed
+    filed = json.loads(drill.evidence_path(LEASE_ID).read_text(encoding="utf-8"))
+    assert filed["schema"] == ARMING_DRILL_SCHEMA == "pod-arming-drill.v2"
+    assert filed["container_start"]["waited_seconds"] == 30.0
+    assert filed["container_start"]["bound_seconds"] == CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS
+    assert filed["container_start"]["started_at"] == stamp(START + timedelta(seconds=30))
+    # The channel read happened after the container wait, and cost nothing.
+    assert filed["waited_seconds"] == 0.0
+
+
+def test_preflight_names_both_bounds_before_anything_is_paid_for() -> None:
+    clock = Clock()
+    ask = request(clock)
+    channel = InMemoryChannel()
+
+    readiness = armer(clock, channel, FakeStarter(channel), liveness=FakeLiveness(clock)).preflight(
+        action="create", request=ask, policy=policy()
+    )
+
+    assert readiness.ready
+    assert readiness.receipt["container_start_probe"] == "configured"
+    assert "image pull and container start have their own" in readiness.detail
+    # The probe is not called before the pod exists.
+    assert readiness.receipt["container_bound_seconds"] == (
+        f"{CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS:.1f}"
+    )
+
+
+def test_preflight_says_plainly_when_no_container_probe_is_configured() -> None:
+    clock = Clock()
+    ask = request(clock)
+    channel = InMemoryChannel()
+
+    readiness = armer(clock, channel, FakeStarter(channel)).preflight(
+        action="create", request=ask, policy=policy()
+    )
+
+    assert readiness.ready
+    assert readiness.receipt["container_start_probe"] == "none"
+    assert "the image pull is spent out of that same arming bound" in readiness.detail
+
+
+def test_an_object_that_is_not_a_liveness_probe_is_refused_at_construction() -> None:
+    with pytest.raises(ValueError, match="started_at"):
+        ChannelControllerArmer(
+            channel=InMemoryChannel(), supervisor_argv=("python",), liveness=object()
+        )

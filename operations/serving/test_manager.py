@@ -89,12 +89,15 @@ from .http import (
     require_exact_model_id,
 )
 from .manager import (
+    _WATCHDOG_TAIL_BYTES,
     PROCESSOR_CONFIG_FILENAMES,
     AdapterCalibration,
     ReceiptPublication,
     ServiceHandle,
     ServingManager,
     StageContextReceiptPublisher,
+    _progress_log_line,
+    _watchdog_timeout,
     assert_no_discoverable_local_env,
     assert_processor_geometry,
 )
@@ -1171,6 +1174,201 @@ def test_named_fatal_log_signatures_refuse_and_clean_up(
     assert launcher.processes[0].terminate_calls == 1
     assert publisher.calls == []
     assert expected_code in registry.refusals[0][1]
+
+
+def _never_answering(manager, launcher, http):  # type: ignore[no-untyped-def]
+    """Make every readiness request look like a port that is not open yet.
+
+    The watchdog's whole budget then runs out with `last` naming an
+    `EndpointUnavailable`, which is the shape a still-loading engine and a dead
+    one both present -- the case F057 is about.
+    """
+
+    class NeverUp:
+        def request(
+            self, method: str, url: str, *, body: bytes | None, timeout_seconds: float
+        ) -> HttpResponse:
+            if launcher.processes:
+                raise EndpointUnavailable("connection refused", definitively_absent=True)
+            return http.request(method, url, body=body, timeout_seconds=timeout_seconds)
+
+    manager.http = NeverUp()
+
+
+def test_a_watchdog_timeout_while_the_engine_is_loading_says_so_and_carries_the_tail(
+    tmp_path: Path,
+) -> None:
+    """F057: "connection refused" and "still reading 51.7 GiB of weights" were one sentence.
+
+    They call for opposite responses -- raise this row's
+    `startup_timeout_seconds`, or go and find out what is broken -- and the
+    launch log already distinguishes them. It was read every poll for fatal
+    signatures and never reached the refusal.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        log_tail=(
+            "INFO 09-14 11:02:01 [gpu_model_runner.py:2213] Starting to load model reader\n"
+            "Loading safetensors checkpoint shards:  43% Completed | 12/28 [02:41<03:35]\n"
+        ),
+    )
+    _never_answering(manager, launcher, http)
+
+    with pytest.raises(ServingRecipeRefusal) as excinfo:
+        manager.start(chair, TIER)
+
+    message = str(excinfo.value)
+    assert "VLLM_WATCHDOG_TIMEOUT" in message
+    assert "still loading, not refused" in message
+    assert "Loading safetensors checkpoint shards: 43% Completed | 12/28" in message
+    assert "budget, not a measurement of this row's load time" in message
+    assert "Launch log tail:" in message
+    assert launcher.processes[0].terminate_calls == 1
+    assert publisher.calls == []
+    assert "still loading" in registry.refusals[0][1]
+
+
+def test_a_watchdog_timeout_with_no_sign_of_loading_says_connection_refused(
+    tmp_path: Path,
+) -> None:
+    """The other half of the same distinction: nothing in the log says it was loading."""
+
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        log_tail="INFO 09-14 11:02:01 [api_server.py:1] vLLM API server version 0.27.1\n",
+    )
+    _never_answering(manager, launcher, http)
+
+    with pytest.raises(ServingRecipeRefusal) as excinfo:
+        manager.start(chair, TIER)
+
+    message = str(excinfo.value)
+    assert "connection refused, not still loading" in message
+    assert "raising startup_timeout_seconds is unlikely to help" in message
+    assert "vLLM API server version 0.27.1" in message
+    assert publisher.calls == []
+
+
+def test_a_watchdog_timeout_on_an_answering_endpoint_claims_neither(tmp_path: Path) -> None:
+    """A 503 from `/health` is the engine answering; it is not a refused connection.
+
+    The last readiness answer still leads the message, on its first line, which
+    is what the older pinned refusals in this file read.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        health_status=503,
+        log_tail="INFO: nothing interesting here\n",
+    )
+
+    with pytest.raises(
+        ServingRecipeRefusal, match="VLLM_WATCHDOG_TIMEOUT.*VLLM_HEALTH_UNAVAILABLE.*503"
+    ) as excinfo:
+        manager.start(chair, TIER)
+
+    assert "answered but never ready" in str(excinfo.value)
+    assert "connection refused" not in str(excinfo.value)
+    assert launcher.processes[0].terminate_calls == 1
+    assert publisher.calls == []
+
+
+def test_a_watchdog_timeout_over_an_unreadable_log_refuses_to_guess() -> None:
+    """The log stopped being readable between the poll's read and the refusal's.
+
+    Rare, and the honest answer is that this message cannot tell which failure
+    it is looking at -- not a silent fallback to either.
+    """
+
+    process = FakeProcess(
+        4242,
+        log_tail="VLLM_LOG_UNREADABLE: could not read launch log /private/child.log: denied",
+    )
+
+    error = _watchdog_timeout(
+        process,
+        last="loopback endpoint unavailable: connection refused",
+        unavailable=True,
+        budget_seconds=300.0,
+    )
+
+    assert error.code == "VLLM_WATCHDOG_TIMEOUT"
+    assert "could not be read" in error.detail
+    assert "whether the engine was still loading or never started" in error.detail
+    assert "still loading, not refused" not in error.detail
+
+
+def test_an_empty_launch_log_says_it_is_empty_rather_than_appending_nothing() -> None:
+    error = _watchdog_timeout(
+        FakeProcess(4242, log_tail="   \n"),
+        last="loopback endpoint unavailable: connection refused",
+        unavailable=True,
+        budget_seconds=300.0,
+    )
+
+    assert error.detail.endswith("The launch log is empty")
+
+
+def test_the_progress_line_is_the_most_recent_one_and_arrives_as_one_line() -> None:
+    """The refusal quotes evidence, so it quotes the newest line and keeps it on one line.
+
+    One line matters mechanically: the diagnosis sits ahead of the log tail
+    precisely so that a reader (and the `.*` regexes pinned above, which cannot
+    cross a newline) finds it and the last readiness answer together.
+    """
+
+    tail = (
+        "Loading safetensors checkpoint shards:  10% Completed | 3/28\n"
+        "Loading safetensors checkpoint shards:  99% Completed | 27/28\n"
+        "INFO   Capturing CUDA graph shapes:\t 40%|####      | 26/66\n"
+        "INFO: an ordinary line that names nothing\n"
+    )
+
+    assert _progress_log_line(tail) == "INFO Capturing CUDA graph shapes: 40%|#### | 26/66"
+    assert _progress_log_line("INFO: nothing in here at all\n") is None
+
+
+def test_a_long_launch_log_is_carried_as_a_bounded_and_labelled_tail() -> None:
+    """A refusal travels through journals and notifications; a 16 KiB log does not."""
+
+    error = _watchdog_timeout(
+        FakeProcess(
+            4242,
+            log_tail="x" * 9_000 + "\nLoading weights took 412.10 seconds\n",
+        ),
+        last="loopback endpoint unavailable: connection refused",
+        unavailable=True,
+        budget_seconds=300.0,
+    )
+
+    assert "still loading, not refused" in error.detail
+    assert f"[last {_WATCHDOG_TAIL_BYTES} bytes]" in error.detail
+    assert len(error.detail) < 2_500
 
 
 def test_an_unreadable_launch_log_is_a_named_readiness_refusal(tmp_path: Path) -> None:

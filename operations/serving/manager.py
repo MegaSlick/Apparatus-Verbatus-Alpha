@@ -988,6 +988,11 @@ class ServingManager:
     ) -> ReadinessEvidence:
         deadline = self.monotonic() + profile.startup_timeout_seconds
         last = "service did not become ready"
+        # Which kind of not-ready the last round saw, tracked rather than
+        # sniffed back out of `last`: "the port never answered" and "the engine
+        # answered and refused" are different facts and only one of them is
+        # what a still-loading server looks like from here.
+        unavailable = False
         while True:
             # Each probe below is bounded by whichever is smaller, its own
             # per-request budget or what is left of the watchdog's. Without the
@@ -1020,7 +1025,12 @@ class ServingManager:
             # the same refusal the check at the bottom of this loop produces --
             # after the tail this round already read has had its say above.
             if deadline - self.monotonic() <= 0:
-                raise ReadinessError("VLLM_WATCHDOG_TIMEOUT", last)
+                raise _watchdog_timeout(
+                    process,
+                    last=last,
+                    unavailable=unavailable,
+                    budget_seconds=float(profile.startup_timeout_seconds),
+                )
             try:
                 health = self.http.request(
                     "GET",
@@ -1058,6 +1068,7 @@ class ServingManager:
                 )
             except EndpointUnavailable as error:
                 last = f"loopback endpoint unavailable: {error}"
+                unavailable = True
             except ReadinessError as error:
                 if _is_deterministic_probe_rejection(error):
                     # A 4xx here is the engine refusing the *shape* of the
@@ -1069,8 +1080,14 @@ class ServingManager:
                     # path) to learn nothing new (hostile review item L).
                     raise
                 last = str(error)
+                unavailable = False
             if self.monotonic() >= deadline:
-                raise ReadinessError("VLLM_WATCHDOG_TIMEOUT", last)
+                raise _watchdog_timeout(
+                    process,
+                    last=last,
+                    unavailable=unavailable,
+                    budget_seconds=float(profile.startup_timeout_seconds),
+                )
             self.sleep(
                 min(float(profile.poll_interval_seconds), max(0.0, deadline - self.monotonic()))
             )
@@ -1855,6 +1872,111 @@ def _fatal_log_signature(tail: str) -> str | None:
     if "vllm_error" in normalized:
         return "VLLM_ERROR"
     return None
+
+
+_LOADING_LOG_MARKERS: Final = (
+    "loading safetensors checkpoint shards",
+    "loading weights took",
+    "starting to load model",
+    "model loading took",
+    "capturing cuda graph",
+    "graph capturing finished",
+    "torch.compile",
+    "compiling a graph",
+    "memory profiling takes",
+    "gpu kv cache size",
+    "initializing a v1 llm engine",
+    "init engine",
+)
+"""Launch-log strings that mean the engine is doing startup work, not hanging.
+
+The mirror image of `_fatal_log_signature`, and its tolerances are reversed
+because its consequences are.  A missed *fatal* signature costs a bounded wait,
+so that list stays narrow; a missed *loading* marker costs only a vaguer
+refusal message, and a false one costs a message that says "still loading"
+when the engine was idle -- neither aborts a start, neither relaunches
+anything, and no code branches on either.  So this list is generous where that
+one is strict.  The refusal quotes the line it matched rather than asserting a
+verdict, so a reader sees the evidence and can disagree with it.
+"""
+
+_WATCHDOG_TAIL_BYTES: Final = 1_200
+"""How much launch log a watchdog refusal carries.
+
+Enough to hold the progress lines and whatever preceded them, short enough that
+a refusal stays readable in a journal entry and a notification.  The whole log
+is on the pod at the path the launch audit names; this is the part that
+travels with the refusal.
+"""
+
+
+def _progress_log_line(tail: str) -> str | None:
+    """The most recent launch-log line showing engine startup progress, if any."""
+
+    for line in reversed(tail.splitlines()):
+        lowered = line.lower()
+        if any(marker in lowered for marker in _LOADING_LOG_MARKERS):
+            # Collapsed to one line: this goes in front of `last` in a refusal
+            # whose readers -- including two pinned test regexes that cannot
+            # cross a newline -- treat the first line as the diagnosis.
+            return " ".join(line.split())[:240]
+    return None
+
+
+def _watchdog_timeout(
+    process: ServerProcess, *, last: str, unavailable: bool, budget_seconds: float
+) -> ReadinessError:
+    """Say which kind of not-ready this was, and carry the evidence for it.
+
+    ``VLLM_WATCHDOG_TIMEOUT: loopback endpoint unavailable: ...`` is the same
+    sentence whether the engine was three minutes into reading fifty gigabytes
+    of weights off a network volume or had died without ever opening its port,
+    and those need opposite responses: raise this row's
+    ``startup_timeout_seconds``, or go and find out what is wrong.  The launch
+    log can tell them apart, and it was already read every poll for fatal
+    signatures -- it just never reached the refusal.
+
+    The diagnosis and the last readiness answer stay on the first line, ahead
+    of the log tail, because that is where every reader of this message looks.
+    """
+
+    tail = process.read_tail()
+    if tail.startswith("VLLM_LOG_UNREADABLE:"):
+        return ReadinessError(
+            "VLLM_WATCHDOG_TIMEOUT",
+            f"{last} -- and after {budget_seconds:.0f}s this launch log could not be read "
+            f"({tail.removeprefix('VLLM_LOG_UNREADABLE:').strip()}), so nothing here can say "
+            "whether the engine was still loading or never started",
+        )
+    progress = _progress_log_line(tail)
+    if progress is not None:
+        diagnosis = (
+            f"still loading, not refused: {last} -- but this launch log's most recent "
+            f"progress line is {progress!r}, so the engine was still starting when the "
+            f"{budget_seconds:.0f}s startup_timeout_seconds bound expired. That bound is a "
+            "budget, not a measurement of this row's load time; size it from the chair's "
+            "weight bytes over the volume's measured read rate plus graph capture "
+            "(config/serving_recipes_real.toml records the derivation per row) rather than "
+            "reading this as a failure to start"
+        )
+    elif unavailable:
+        diagnosis = (
+            f"connection refused, not still loading: {last} -- and after "
+            f"{budget_seconds:.0f}s nothing in this launch log shows the engine loading "
+            "weights, capturing graphs or initializing, so raising "
+            "startup_timeout_seconds is unlikely to help"
+        )
+    else:
+        diagnosis = (
+            f"answered but never ready: {last} -- after {budget_seconds:.0f}s the endpoint "
+            "was reachable and nothing in this launch log shows the engine still loading"
+        )
+    excerpt = tail[-_WATCHDOG_TAIL_BYTES:].strip()
+    if not excerpt:
+        return ReadinessError("VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. The launch log is empty")
+    if len(tail) > _WATCHDOG_TAIL_BYTES:
+        excerpt = f"[last {_WATCHDOG_TAIL_BYTES} bytes] {excerpt}"
+    return ReadinessError("VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. Launch log tail:\n{excerpt}")
 
 
 def _is_deterministic_probe_rejection(error: ReadinessError) -> bool:

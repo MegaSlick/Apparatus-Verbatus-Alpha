@@ -873,6 +873,16 @@ class ProviderStatus:
     because the pod is absent — leaves this ``None``, and ``None`` must never
     be read as RUNNING by anything that consumes it; the absence of an
     observation is not evidence the pod is healthy.
+
+    ``started_at`` is the moment the provider says this pod's *container* first
+    ran, or ``None`` when it has not run yet or the provider reports no such
+    moment.  It is a different fact from ``provider_state`` and it is the only
+    one of the two that can separate "still pulling the image" from "started
+    and silent": a lifecycle word like RunPod's ``desiredStatus`` says what the
+    pod was asked to be, not what it has become, and reads RUNNING from the
+    instant create returns.  ``None`` here is therefore never evidence that the
+    container failed to start — only that no start has been *observed* — and a
+    consumer that waits on it must bound its wait and say what it saw.
     """
 
     pod_id: str
@@ -881,6 +891,7 @@ class ProviderStatus:
     detail: str = ""
     http_status: int | None = None
     provider_state: str | None = None
+    started_at: datetime | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.observed_at, "provider status observed_at")
@@ -890,6 +901,8 @@ class ProviderStatus:
             raise ValueError(
                 "provider status provider_state must be a non-blank lifecycle word or None"
             )
+        if self.started_at is not None:
+            require_utc(self.started_at, "provider status started_at")
 
 
 @dataclass(frozen=True, slots=True)

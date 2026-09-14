@@ -1030,9 +1030,39 @@ does the pod-written object appear in the S3 view, under which key, after how lo
 does the pod-scoped key actually hold delete and billing rights. Cost is minutes of a
 cheap card.
 
+**The drill returns two durations, and it has to, because the arming wait is two waits.**
+`ChannelControllerArmer` waits first for the provider to report the container started —
+`CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS`, 600 s by default, which refuses nothing on
+its own — and only then runs the `CONTROLLER_ARMING_TIMEOUT_SECONDS` channel bound, 300 s,
+against the S3 view. Until those were separated the clock on the 300 s started when
+`create` returned, so the image pull was spent out of the propagation budget and a pod
+that pulled for six minutes was terminated for a report it was about to write. Both
+durations go into the drill's evidence file (`pod-arming-drill.v2`), which is what turns
+"after how long" above into two numbers rather than one that describes neither.
+
+The container signal is `ProviderStatus.started_at`, which `RunPodProvider.status` now
+surfaces from `lastStartedAt` — null until the pod first runs, which is exactly the fact
+`desiredStatus` cannot report, since it reads RUNNING from the instant `create` returns.
+`controller_armer` names no provider, so the untracked armer factory supplies the probe,
+and it is one object: something with `started_at()` returning
+`provider.status(pod_id).started_at`. Passing no probe is legitimate and leaves the old
+single-bound behaviour, which the preflight receipt then says in as many words
+(`container_start_probe: none`) rather than letting a reader assume the pull was
+budgeted for.
+
+Boot A's arithmetic follows from that and needs deciding before the card is rented: the
+two defaults sum to 900 s, which is the whole drill lifetime, leaving the close nothing.
+Either the untracked armer factory passes smaller `container_timeout_seconds` and
+`timeout_seconds` for the drill — the pull on a cheap card with `--hold-only` is a small
+image, so a 300/300 split is the obvious first try — or a longer lifetime is authorized.
+Both bounds are clamped down to whatever the lease has left and never up, so an oversized
+pair does not overrun the deadline; it quietly starves the second wait, which is the one
+the drill exists to measure. `boot_a_request.py` states the sum against the requested
+lifetime in the rendered request so the choice is made on paper.
+
 **Boot B, the real thing.** Roadmap item 7 as written: `ChannelControllerArmer` with its
-poll bound set from Boot A's measured delay, materialize, preflight, the full checklist,
-no reading yet.
+container and poll bounds set from Boot A's two measured durations, materialize,
+preflight, the full checklist, no reading yet.
 
 The argument for the split costs nothing in the failure case: Boot B alone would have
 ended in the same immediate close, having also wasted the image pull and the session.

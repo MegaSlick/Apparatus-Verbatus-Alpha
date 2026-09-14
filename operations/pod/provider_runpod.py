@@ -756,6 +756,32 @@ class RunPodProvider:
         detail = "RunPod exact-pod GET returned 200"
         if raw_state is not None and not usable_state:
             detail = f"{detail}; unusable desiredStatus {raw_state!r}"
+        # `desiredStatus` reads RUNNING from the instant create returns: it is
+        # what the pod was asked to be, not what it has become, so it cannot
+        # separate "still pulling a fifteen-gigabyte image" from "started and
+        # silent". `lastStartedAt` is the only field in this body that can --
+        # it is null until the pod first runs (the same documented behaviour
+        # `_record` relies on when it falls back to the observation instant) --
+        # and it was previously read only there, where it becomes
+        # `PodRecord.created_at` and is therefore invisible to anything
+        # watching a pod come up. Surfaced here so a waiter can bound and
+        # record the container-start wait separately from whatever it is
+        # really waiting for (`controller_armer.ChannelControllerArmer`).
+        #
+        # A malformed value is reported as absent rather than raised: this is a
+        # read-only observation, not a gate, and the same reasoning that keeps
+        # an unfamiliar `desiredStatus` from becoming a `ProviderFailure`
+        # applies here. Every consumer must already treat `None` as "no start
+        # observed" rather than "the container failed", so a value this adapter
+        # cannot parse degrades to the honest answer instead of failing a
+        # status read the shutdown path also depends on.
+        raw_started = row.get("lastStartedAt")
+        started_at: datetime | None = None
+        if isinstance(raw_started, str) and raw_started.strip():
+            try:
+                started_at = _timestamp(raw_started, f"RunPod pod {pod_id} lastStartedAt")
+            except ProviderFailure as error:
+                detail = f"{detail}; unusable lastStartedAt ({error})"
         return ProviderStatus(
             pod_id,
             Presence.PRESENT,
@@ -763,6 +789,7 @@ class RunPodProvider:
             detail,
             200,
             provider_state=provider_state,
+            started_at=started_at,
         )
 
     def terminate(self, pod_id: str) -> None:
