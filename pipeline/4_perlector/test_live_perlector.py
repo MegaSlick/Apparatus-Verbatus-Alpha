@@ -39,6 +39,7 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
 from common.runtree.store import RunTree
+from common.stage import EXIT_FATAL, EXIT_HELD, StageContext, run_stage
 from operations.serving.client import ChairClient, ServingModeRefusal
 from operations.serving.config import (
     ServingConfigInputs,
@@ -54,6 +55,7 @@ from operations.serving.fakes import (
     FakePackages,
     FakeRegistry,
     ScriptedAnswer,
+    scripted_prompt_too_long,
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import FileResidencyLease
@@ -611,6 +613,222 @@ def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
     assert exit_code == 0
     assert second.requests == [], "a resumed live pass re-read an act it had already sealed"
     assert len(_published_readings(root)) == sealed
+
+
+class _Interrupted(Exception):
+    """A process death injected between two publications of one act's attempt."""
+
+
+def _interrupt_after(monkeypatch, kind: str) -> None:
+    """Let the real publication of `kind` land, then kill the pass.
+
+    The artifact is on disk exactly as a SIGKILL, an OOM or a dropped
+    connection would have left it: immutable, at an identity the next
+    invocation recomputes, and with no Perlectio beside it.
+    """
+    real_publish = StageContext.publish
+    struck = False
+
+    def publish_then_die(self, **kwargs):
+        nonlocal struck
+        result = real_publish(self, **kwargs)
+        if kwargs["kind"] == kind and not struck:
+            struck = True
+            raise _Interrupted(f"simulated process death after publishing {kind}")
+        return result
+
+    monkeypatch.setattr(StageContext, "publish", publish_then_die)
+
+
+def _artifacts(root: Path, kind: str) -> list[Path]:
+    directory = root / "r" / "4_perlector" / "artifacts" / kind
+    return sorted(directory.glob("*.json")) if directory.exists() else []
+
+
+def _perlectiones(root: Path) -> dict[str, dict[str, Any]]:
+    """Every Perlectio on disk by act, read from the files rather than a manifest."""
+    records = [
+        json.loads(path.read_text(encoding="utf-8")) for path in _artifacts(root, "perlectio")
+    ]
+    by_act: dict[str, dict[str, Any]] = {}
+    for record in records:
+        assert record["subject_id"] not in by_act, "an act gained a second Perlectio"
+        by_act[record["subject_id"]] = record
+    return by_act
+
+
+def test_a_live_pass_interrupted_after_its_pass_a_resumes_and_reuses_the_sealed_draft(
+    live_run, tmp_path, monkeypatch
+):
+    """The resume that used to die on `IncompatibleReuse`, one act in.
+
+    `lectio-prior` is published *before* the establishing call, and the resume
+    rule looked only at the Perlectio — so any interruption in that window left
+    an immutable Pass A that the next invocation re-read from a live chair and
+    republished with different bytes. The store refused, the stage exited, and
+    because the artifact cannot be removed the refusal repeated on every retry:
+    the documented `verbatus run` resume was dead for that run forever, with
+    every other act still unread.
+
+    The sealed Pass A is this attempt's own evidence (GOVERNANCE 4), so it is
+    reused rather than re-asked: the resumed act pays for the arms it has not
+    run and no more. The proof is that the published reading is the *second*
+    engine answer while the prior draft it was primed with is still the
+    *first* — a re-asked Pass A could not produce that pair.
+    """
+    root, _catalogue = live_run
+    resumed_reading = READING.replace("SYNTHETIC LIVE READING", "A SECOND LIVE ANSWER")
+    assert resumed_reading != READING
+
+    _interrupt_after(monkeypatch, "lectio-prior")
+    with pytest.raises(_Interrupted):
+        _run_perlector(
+            live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+        )
+    priors = _artifacts(root, "lectio-prior")
+    assert len(priors) == 1, "the interruption did not land between Pass A and the Perlectio"
+    interrupted_act = json.loads(priors[0].read_text(encoding="utf-8"))["subject_id"]
+    sealed_pass_a = priors[0].read_bytes()
+    assert _perlectiones(root) == {}
+    monkeypatch.undo()
+
+    _endpoint, exit_code = _run_perlector(
+        live_run,
+        tmp_path / "resume",
+        monkeypatch,
+        ScriptedAnswer(content=resumed_reading, finish_reason="stop"),
+    )
+    assert exit_code == 0
+
+    # The interrupted Pass A was never rewritten and never doubled.
+    assert priors[0].read_bytes() == sealed_pass_a
+    assert len(_artifacts(root, "lectio-prior")) == len(_perlectiones(root))
+
+    readings = _perlectiones(root)
+    assert interrupted_act in readings
+    for record in readings.values():
+        assert record["outcome"] != "not-run"
+        assert record["payload"]["text"] == resumed_reading
+    # The establishing call ran again; the draft it was primed with is the
+    # retained one, not a second Pass A nobody could have published.
+    prior_draft = readings[interrupted_act]["payload"]["dossier"]["prior_draft"]
+    assert prior_draft["text"] == READING
+    assert prior_draft["reference"]["relative_path"] == priors[0].relative_to(root / "r").as_posix()
+    assert prior_draft["reference"] in readings[interrupted_act]["inputs"]
+
+
+def test_an_act_whose_audit_round_sealed_without_its_perlectio_is_held_not_read_again(
+    live_run, tmp_path, monkeypatch
+):
+    """The one interruption window a resume can answer neither way.
+
+    `audit-draft` freezes the establishing reading's own text into immutable
+    bytes. A resume cannot reproduce that text from a live chair, and it cannot
+    reuse the draft either, because the Perlectio it belongs to was never
+    written. So the act is held with an explicit `not-run` naming the retained
+    record, the rest of the run is read, and the stage seals — instead of every
+    invocation dying on a reuse nobody can clear (GOVERNANCE 2: a partial result
+    is visibly partial, and the run does not disappear behind it).
+    """
+    root, catalogue = live_run
+
+    _interrupt_after(monkeypatch, "audit-draft")
+    with pytest.raises(_Interrupted):
+        _run_perlector(
+            live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+        )
+    drafts = _artifacts(root, "audit-draft")
+    assert len(drafts) == 1
+    held_act = json.loads(drafts[0].read_text(encoding="utf-8"))["subject_id"]
+    sealed_draft = drafts[0].read_bytes()
+    assert _perlectiones(root) == {}
+    monkeypatch.undo()
+
+    _endpoint, exit_code = _run_perlector(
+        live_run,
+        tmp_path / "resume",
+        monkeypatch,
+        ScriptedAnswer(
+            content="A SECOND LIVE ANSWER FOR THE ACTS THIS PASS MAY STILL READ",
+            finish_reason="stop",
+        ),
+    )
+    assert exit_code == 0
+    assert drafts[0].read_bytes() == sealed_draft
+
+    readings = _perlectiones(root)
+    assert readings[held_act]["outcome"] == "not-run"
+    reason = readings[held_act]["payload"]["reason"]
+    assert "audit-draft" in reason and "interrupted" in reason
+    others = [act for act in readings if act != held_act]
+    assert others, "the held act took the rest of the run down with it"
+    for act in others:
+        assert readings[act]["outcome"] != "not-run"
+    # The pass completed rather than dying on the reuse it could not clear.
+    assert _artifacts(root, "stage-seal"), "the resumed pass did not seal"
+    # And the consuming stage reads the hold instead of tripping over it: this
+    # is the same closed `not-run` shape an absent chair publishes, so the
+    # Recensor routes the act to review and reports a graceful hold — the exit
+    # code the orchestrator accepts, not the `EXIT_FATAL` that ends a run.
+    recensor = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline" / "5_recensor" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--serving-recipes-config",
+            str(catalogue),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert recensor.returncode == EXIT_HELD, (recensor.returncode, recensor.stderr)
+    reviews = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((root / "r" / "5_recensor" / "artifacts" / "review").glob("*.json"))
+    ]
+    held_reviews = [review for review in reviews if review["subject_id"] == held_act]
+    assert held_reviews, "the held act reached no review record"
+    assert held_reviews[0]["outcome"] == "held-for-review", held_reviews[0]["outcome"]
+
+
+def test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary(
+    live_run, tmp_path, monkeypatch, capsys
+):
+    """An HTTP refusal is a named stage refusal, not a traceback and exit 1.
+
+    `ChairResponseRefusal` is a `ServingError`, which is a `RuntimeError`:
+    `run_stage` catches `ContractError` and would never have seen it, so the
+    most likely first answer a real card gives — vLLM's 400 explaining a context
+    overflow — left this stage with a stack trace and an exit code that means
+    nothing in its own vocabulary. The refusal itself is unchanged: the bytes
+    are retained before it is raised (`ChairClient.read`), its code and the
+    engine's own sentence travel verbatim into what the stage exits on, and
+    nothing here reads a 400 as a stop reason of any kind.
+    """
+    root, _catalogue = live_run
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048, requested_tokens=4125, prompt_tokens=3909, completion_tokens=216
+    )
+
+    exit_code = run_stage(lambda: _run_perlector(live_run, tmp_path, monkeypatch, refusal)[1])
+
+    assert exit_code == EXIT_FATAL
+    stderr = capsys.readouterr().err
+    assert "ChairResponseRefusal: CHAIR_RESPONSE_HTTP_ERROR" in stderr
+    assert "maximum context length is 2048" in stderr
+    assert "EngineSignalRefusal" not in stderr
+    assert _published_readings(root) == []
+    blobs = root / "r" / "4_perlector" / "blobs" / "sha256"
+    retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
+    assert any(b"maximum context length" in body for body in retained), (
+        "the refusing body was not retained"
+    )
 
 
 def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
