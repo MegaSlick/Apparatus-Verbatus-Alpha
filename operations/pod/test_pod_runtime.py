@@ -82,7 +82,14 @@ from .notify_bridge import (
     shell_notifier,
     silent,
 )
-from .pod_timer import TimerContext, _persist_or_close, run_with_bootstrap
+from .pod_timer import (
+    _CLOSE_ATTEMPTS,
+    TimerContext,
+    _close_with_retries,
+    _persist_or_close,
+    run_with_bootstrap,
+    terminating_path,
+)
 from .preflight import (
     CacheMismatch,
     GpuProfile,
@@ -4363,6 +4370,79 @@ def test_pod_timer_requires_bootstrap_and_persists_a_red_bootstrap_close_report(
     assert report["bootstrap"]["state"] == "failed"
     assert report["close"]["state"] == CloseState.VERIFIED
     assert report["green"] is False
+
+
+def test_a_pre_delete_breadcrumb_says_a_close_was_attempted_from_inside_the_pod(
+    tmp_path: Path,
+) -> None:
+    """F061: a truncated pod-side report reads like a timer that never tried.
+
+    Every step of the close runs inside the container the DELETE destroys, so
+    the durable artefact is usually the *pre*-close report -- bootstrap
+    running, close null, green false. The breadcrumb written immediately before
+    the DELETE is what tells that apart from a close that was never issued.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-breadcrumb.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+
+    class FailedChild:
+        def poll(self) -> int:
+            return 17
+
+    report_path = tmp_path / "pod-report.json"
+    run_with_bootstrap(
+        TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        interval_seconds=1,
+        popen=lambda argv: FailedChild(),  # type: ignore[arg-type]
+    )
+
+    breadcrumb_path = terminating_path(report_path)
+    assert breadcrumb_path == tmp_path / "pod-report-terminating.json"
+    breadcrumb = json.loads(breadcrumb_path.read_text(encoding="utf-8"))
+    assert breadcrumb["state"] == "terminating"
+    assert breadcrumb["reason"] == "mandatory bootstrap child failed"
+    assert breadcrumb["requested_cutoff"].endswith("Z")
+    assert breadcrumb["close_attempts_allowed"] == _CLOSE_ATTEMPTS
+    assert breadcrumb["identity"]["pod_id"] == record.pod_id
+    assert "destroyed before it could verify" in breadcrumb["note"]
+    # Beside the report, never over it: the report is the record the DELETE
+    # destroys this container in the middle of writing.
+    assert json.loads(report_path.read_text(encoding="utf-8"))["bootstrap"]["state"] == "failed"
+
+
+def test_a_breadcrumb_that_cannot_be_written_never_blocks_the_close(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pod's shutdown is never traded for its own paperwork (GOVERNANCE 8)."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-unwritable.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    # A directory where the breadcrumb file wants to be: the write refuses and
+    # the close must still happen.
+    report_path = tmp_path / "pod-report.json"
+    terminating_path(report_path).mkdir()
+
+    result, attempts = _close_with_retries(
+        context, "pod dead-man hard lifetime expired", clock.sleep, 1, report=report_path
+    )
+
+    assert attempts >= 1
+    assert result.close_report is not None and result.close_report.verified
+    assert "termination breadcrumb could not be written" in capsys.readouterr().err
 
 
 def test_bare_timer_command_is_rejected_before_a_paid_create() -> None:

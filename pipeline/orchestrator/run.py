@@ -33,9 +33,13 @@ sequence and to checkpoint. Its four jobs:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -45,6 +49,7 @@ from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
+from common.durability import sync_directory  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -100,6 +105,7 @@ SEQUENCE = (
 )
 
 STAGE_PROGRAMS = {name: program for name, program in SEQUENCE if program is not None}
+_PROGRAM_NAMES = {program: name for name, program in STAGE_PROGRAMS.items()}
 SEQUENCE_NAMES = tuple(name for name, _program in SEQUENCE)
 # Named here rather than imported from `operations.submit.gate`, because this
 # module imports only `common/` (see the module docstring) and the Door is the
@@ -114,6 +120,12 @@ DEFAULT_DATA_GATE_POLICY_PATH = ROOT / "config" / "data_handling_policy.json"
 # copy with it. A credential added to one list alone would otherwise leave this
 # route carrying it into a stage that decodes caller-supplied material.
 _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
+# The wall clock a timing receipt is stamped with, and the monotonic one its
+# duration is measured against. Kept separate deliberately: a duration taken
+# from wall-clock differences is wrong across a clock adjustment, and a
+# monotonic reading names no instant a reader could compare across records.
+_clock = time.monotonic
+STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v1"
 
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
@@ -215,6 +227,13 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     ]
     # Later stages may read only the run tree the Door sealed, never source paths.
     if program == STAGE_PROGRAMS["door"]:
+        # The Door is the one stage that creates the run authority, so it is the
+        # only one that can seal the commit into it. Forwarded only when it was
+        # actually read: a tree with no version control records no commit rather
+        # than a placeholder that looks like one (GOVERNANCE 10).
+        commit, _detail = repository_commit(args)
+        if commit is not None:
+            command += ["--repository-commit", commit]
         if args.submission_folder is not None:
             command += ["--submission-folder", str(args.submission_folder)]
         if args.submission_manifest is not None:
@@ -265,10 +284,175 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # `stage_environment()` is not optional and is the reason this call is not a
     # bare subprocess.run: it drops the transfer credentials from every stage's
     # environment, so only the upload-only verb can ever see them.
-    completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
+    started = _clock()
+    started_at = _stamp()
+    try:
+        completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
+        exit_code: int | None = completed.returncode
+    except OSError:
+        exit_code = None
+        raise
+    finally:
+        # In `finally` so a stage that could not start, and one about to be
+        # turned into a ContractError below, are both timed: the invocations a
+        # later reader most wants a clock on are the ones that went wrong.
+        _record_stage_timing(
+            args,
+            program=program,
+            extra=extra,
+            started_at=started_at,
+            finished_at=_stamp(),
+            duration_ms=max(0, round((_clock() - started) * 1000)),
+            exit_code=exit_code,
+        )
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
         raise ContractError(f"{program} exited {completed.returncode}")
     return completed.returncode
+
+
+def _stamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def repository_commit(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    """The commit this run's code is at, as its caller named it -- or why it has none.
+
+    Read from argv rather than measured here, deliberately. On a pod the
+    bootstrap has already checked out the pinned commit and *verified* the
+    checkout against it (`operations/pod/bootstrap.py`, REPOSITORY), so the
+    plan's value is a proven fact about the running code; re-deriving it here
+    would be a second, weaker measurement of something already established, and
+    it would make the orchestrator spend a subprocess per process on an answer
+    its caller was already holding.
+
+    Returned as a pair, never raising for absence: a run must not be refused
+    because the tree it runs from is a source export with no version control,
+    and it must equally not record a commit nobody measured (GOVERNANCE 10). An
+    absent commit is `None` *with* a reason, so a reader can tell "not
+    measured" from "not looked for". A malformed one is a refusal, because a
+    short or decorated revision names a commit only against the repository that
+    resolved it -- which a fetched run tree no longer has.
+    """
+
+    commit = getattr(args, "repository_commit", None)
+    if commit is None:
+        return None, (
+            "no --repository-commit was named for this run; on a pod `pod_run` passes the "
+            "commit the bootstrap checked out and verified, and a run driven by hand records "
+            "one only when its caller names it"
+        )
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        raise ContractError(f"--repository-commit {commit!r} is not a full lowercase Git SHA-1")
+    return commit, None
+
+
+def _record_stage_timing(
+    args: argparse.Namespace,
+    *,
+    program: str,
+    extra: dict,
+    started_at: str,
+    finished_at: str,
+    duration_ms: int,
+    exit_code: int | None,
+) -> None:
+    """Append one stage's clock to the timing journal, best effort.
+
+    **Outside the run tree, deliberately.** A run tree is pinned byte-identical
+    across a rerun, a resume, a restored backup and every driver mode by a dozen
+    acceptance tests, and a clock is by definition not that: putting timings
+    under `receipts/` would have made "the same run" mean something weaker for
+    every one of those checks. So the journal is a sibling of the pod-run report
+    on the volume, where the transcript and the liveness tick already live, and
+    `pod_run` is what names it (`--stage-timing-journal`). A local run that names
+    no journal writes none, and the run tree is bit-for-bit what it was before.
+
+    Best effort because a stopwatch is a diagnostic, not evidence the run
+    depends on: refusing a completed stage because its timing could not be
+    written would destroy work to protect a record of it. A failure says so on
+    stderr -- which on a pod reaches the durable transcript -- rather than
+    passing in silence (hard rule 7).
+
+    Rewritten whole on each append rather than appended to: the file is bounded
+    by the number of stage invocations in a run, and a torn append is a journal
+    a later reader cannot parse at all. `_atomic_json` replaces it in one step.
+    """
+
+    journal = getattr(args, "stage_timing_journal", None)
+    if journal is None:
+        return
+    path = Path(journal)
+    subject = extra.get("act")
+    entry: dict[str, object] = {
+        # The sequence member's own name, not the program's directory: the Door
+        # and the Exemplar are two members that share `1_exemplar/`, and an
+        # entry calling both of them "1_exemplar" would make a resumed Door
+        # unreadable as one.
+        "stage": _PROGRAM_NAMES.get(program, program),
+        "program": program,
+        "operation": str(extra.get("operation", "run")),
+        "subject": None if subject is None else str(subject),
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_ms": duration_ms,
+        "exit_code": exit_code,
+    }
+    try:
+        # Inside the try with the write, not above it: this runs from a
+        # `finally`, and a refusal raised here would replace the stage failure
+        # the caller is already propagating.
+        commit, commit_detail = repository_commit(args)
+        # Recorded per entry, not once at the top: a run resumed at another
+        # commit is exactly the case the run authority cannot record (run.json
+        # is created once and never rewritten), and two entries naming two
+        # commits is what makes that resume visible instead of silent.
+        entry["repository_commit"] = commit
+        entry["repository_commit_detail"] = commit_detail
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        entries = existing["entries"] if isinstance(existing, dict) else []
+        if not isinstance(entries, list):
+            entries = []
+        entries.append(entry)
+        _atomic_json(
+            path,
+            {
+                "schema": STAGE_TIMING_JOURNAL_SCHEMA,
+                "run_id": args.run_id,
+                "run_root": str(args.run_root),
+                "entries": entries,
+            },
+        )
+    except Exception as error:  # noqa: BLE001 -- a stopwatch never fails a stage
+        print(
+            f"run {args.run_id}: the {program} timing entry could not be journaled "
+            f"to {path}: {error}",
+            file=sys.stderr,
+        )
+
+
+def _atomic_json(path: Path, record: dict) -> None:
+    """Replace `path` with `record` or leave what was there, then sync the name.
+
+    The same shape `operations/pod/durable.py` uses, spelled here because this
+    module imports only `common/` (see the module docstring) and a half-written
+    journal on a volume is exactly the record a later session cannot use.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(json.dumps(record, sort_keys=True, indent=2).encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, str, str]]:
@@ -313,6 +497,20 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--fixture-root", default="proof")
+    parser.add_argument(
+        "--repository-commit",
+        default=None,
+        help="the commit this run's code is at, as a full lowercase revision. `pod_run` "
+        "passes the one its bootstrap checked out and verified; the Door seals it into the "
+        "run authority and every timing entry names it. Absent records no commit",
+    )
+    parser.add_argument(
+        "--stage-timing-journal",
+        default=None,
+        help="a file outside the run tree to journal each stage invocation's clock and "
+        "repository commit into; `pod_run` names one beside the run report on the volume. "
+        "Absent means no journal is written, and the run tree is unchanged either way",
+    )
     parser.add_argument(
         "--corpus-register",
         default=None,

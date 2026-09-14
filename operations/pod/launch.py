@@ -36,6 +36,7 @@ from .models import (
     PodEstimate,
     PodRecord,
     SpendRefusal,
+    _nested_flag_values,
     rebind_nested_flag,
     utc_now,
 )
@@ -167,6 +168,140 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
             command = command[:nested_index] + (bound_nested,) + command[nested_index + 1 :]
 
     return command
+
+
+TIMER_REPORT_SIBLINGS: Final = ("-terminating.json",)
+"""What ``pod_timer`` writes beside its own bound report: the pre-DELETE breadcrumb."""
+
+HOLD_REPORT_SIBLINGS: Final = ("-hold.json",)
+"""What any bootstrap child writes beside its report while holding to the deadline."""
+
+RUN_REPORT_SIBLINGS: Final = (
+    "-hold.json",
+    "-liveness.json",
+    "-timings.json",
+    "-transcript.log",
+)
+"""What ``pod_run`` writes beside its report: the hold line, the liveness tick,
+the per-stage timing journal, and the teed orchestrator transcript."""
+
+_POD_RUN_MODULE: Final = "operations.pod.pod_run"
+
+
+def _runs_the_orchestrator(nested: list[str]) -> bool:
+    """Whether this bootstrap child is ``pod_run`` rather than a hold-only boot.
+
+    Both spellings, because a request is a plain argv and nothing forces one:
+    ``-m operations.pod.pod_run`` is what the boot templates render, and a
+    path-spelled ``.../pod_run.py`` is the same program by another name. Getting
+    this wrong costs only accuracy in the derived key list -- a hold-only launch
+    would be asked for records it never wrote -- so it errs toward recognising
+    the program rather than toward a tidy single spelling.
+    """
+
+    return any(part == _POD_RUN_MODULE or part.endswith("pod_run.py") for part in nested)
+
+
+# Spelled here rather than imported from the two producing modules because
+# importing `pod_run` pulls the whole serving stack in for four strings.
+# `test_pod_run.py` reconciles these tuples against what those modules actually
+# write, so the copies cannot drift in silence.
+
+
+def _nested_bootstrap_argv(command: list[str]) -> list[str] | None:
+    """The decoded ``--bootstrap-command-json`` argv, or ``None`` when there is none."""
+
+    for index, item in enumerate(command):
+        raw = None
+        if item == "--bootstrap-command-json" and index + 1 < len(command):
+            raw = command[index + 1]
+        elif item.startswith("--bootstrap-command-json="):
+            raw = item.split("=", 1)[1]
+        if raw is None:
+            continue
+        try:
+            nested = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(nested, list) and all(isinstance(part, str) for part in nested):
+            return nested
+    return None
+
+
+def _outer_flag_values(command: list[str], flag: str) -> list[str]:
+    values: list[str] = []
+    for index, item in enumerate(command):
+        if item == flag and index + 1 < len(command):
+            values.append(command[index + 1])
+        elif item.startswith(f"{flag}="):
+            values.append(item.split("=", 1)[1])
+    return values
+
+
+def bound_report_paths(
+    docker_start_cmd: tuple[str, ...] | list[str],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Each launch-bound report path a sealed ``docker_start_cmd`` names, with its siblings.
+
+    The outer ``--report-path`` is the pod timer's; the nested one inside
+    ``--bootstrap-command-json`` is the bootstrap child's -- ``pod_run``'s for a
+    run launch, ``bootstrap_main --hold-only``'s for Boot A.  Both were bound to
+    this launch's token by ``_bind_report_path_to_launch`` at sealing time, and
+    ``models._required_timer_arguments`` has already refused a request carrying
+    anything but exactly one outer path and at most one nested one, so this
+    reads a shape that is already proven rather than re-validating it.
+
+    Which siblings go with which path is decided by *which program writes it*,
+    not by listing every sibling any program could write: a key that cannot
+    exist would come back as a per-object refusal in the fetch-run receipt, and
+    a receipt full of refusals for records nothing ever wrote is a worse record
+    than none.
+    """
+
+    command = list(docker_start_cmd)
+    found: dict[str, tuple[str, ...]] = {}
+    for value in _outer_flag_values(command, "--report-path"):
+        found.setdefault(value, TIMER_REPORT_SIBLINGS)
+    nested = _nested_bootstrap_argv(command)
+    if nested is not None:
+        siblings = RUN_REPORT_SIBLINGS if _runs_the_orchestrator(nested) else HOLD_REPORT_SIBLINGS
+        for value in _nested_flag_values(nested, "--report-path"):
+            if value is not None:
+                found.setdefault(value, siblings)
+    return tuple(found.items())
+
+
+def launch_evidence_keys(
+    docker_start_cmd: tuple[str, ...] | list[str], *, volume_mount_path: str
+) -> tuple[str, ...]:
+    """Volume-relative object keys of every launch-scoped record, derived not guessed.
+
+    ``fetch-run`` brings ``runs/<id>/`` and ``preflight/`` home on its own and
+    refuses to *guess* at the launch-token-named reports, because guessing
+    would mean listing a whole volume that also holds the submission's page
+    images.  It does not have to guess: the launch receipt this operator's own
+    machine wrote already carries the sealed ``docker_start_cmd``, and the
+    bound paths are in it.  This is that derivation, in one place, so nobody is
+    asked to retype a 32-hex token out of a JSON receipt -- the step that gets
+    skipped on a phone.
+
+    A path outside the volume mount is dropped rather than returned: ``fetch-run``
+    could not fetch it anyway, and returning it would put a misleading name in
+    the receipt.
+    """
+
+    mount = PurePosixPath(volume_mount_path)
+    keys: list[str] = []
+    for raw, siblings in bound_report_paths(docker_start_cmd):
+        path = PurePosixPath(raw)
+        if ".." in raw.split("/") or not path.is_absolute() or not path.is_relative_to(mount):
+            continue
+        relative = path.relative_to(mount)
+        keys.append(relative.as_posix())
+        keys.extend(
+            relative.with_name(f"{relative.stem}{suffix}").as_posix() for suffix in siblings
+        )
+    return tuple(dict.fromkeys(keys))
 
 
 def _bound_report_path(raw_path: str, launch_token: str) -> str:

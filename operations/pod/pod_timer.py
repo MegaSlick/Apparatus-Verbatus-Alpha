@@ -80,12 +80,69 @@ operator-supplied command-line value with no upper bound, and a pod at this
 point bills the full running rate for every second the timer sleeps."""
 
 
+def terminating_path(report: Path) -> Path:
+    """Where the pre-DELETE breadcrumb goes: beside the report, never over it.
+
+    The report is the record the DELETE below destroys this container in the
+    middle of writing; putting the breadcrumb in the same file would mean the
+    breadcrumb and the record it distinguishes share a fate.
+    """
+
+    return report.with_name(f"{report.stem}-terminating{report.suffix}")
+
+
+def _note_termination(
+    context: TimerContext, report: Path | None, reason: str, attempts: int
+) -> None:
+    """Say on the volume that a DELETE is about to be issued, and why.
+
+    Every step of a close -- the DELETE, the status polls, the absence
+    verification, the close record -- runs inside the container the DELETE is
+    destroying, so in practice this process is killed somewhere in the middle
+    and the durable artefact left behind is the *pre*-close report: bootstrap
+    running, close null, green false.  That reads exactly like a timer that
+    never tried to close anything, which is the opposite of what happened.
+
+    This breadcrumb is the difference between those two readings.  Best effort
+    and never raising: a breadcrumb that refused a close would trade the pod's
+    shutdown for its own paperwork, which is the wrong way round (GOVERNANCE 8).
+    """
+
+    if report is None:
+        return
+    try:
+        _write_report(
+            terminating_path(report),
+            _acknowledged_report(
+                context,
+                {
+                    "state": "terminating",
+                    "reason": reason,
+                    "requested_at": _stamp(context.timer.now()),
+                    "requested_cutoff": _stamp(context.timer.lease.hard_deadline),
+                    "close_attempts_allowed": attempts,
+                    "note": (
+                        "A DELETE was issued from inside the pod this record is on the volume "
+                        "of. If the report beside this one still says close: null, the close "
+                        "was attempted and this container was destroyed before it could "
+                        "verify -- not never tried. The laptop-side close record is the "
+                        "authoritative verified close."
+                    ),
+                },
+            ),
+        )
+    except Exception as error:  # noqa: BLE001 -- a breadcrumb never blocks a close
+        print(f"pod timer termination breadcrumb could not be written: {error}", file=sys.stderr)
+
+
 def _close_with_retries(
     context: TimerContext,
     reason: str,
     sleeper: Callable[[float], None],
     wait_seconds: float,
     attempts: int = _CLOSE_ATTEMPTS,
+    *,
+    report: Path | None = None,
 ) -> tuple[ControllerResult, int]:
     """Re-attempt a non-green close a fixed, recorded number of times.
 
@@ -94,8 +151,14 @@ def _close_with_retries(
     at the exact deadline is not the last word before the timer exits.  A
     result no retry can improve -- a lease that never bound a pod id -- exits
     the loop at once instead of sleeping on it.
+
+    ``report`` is the durable report path; when it is given, a terminating
+    breadcrumb is written beside it before the first DELETE goes out, so the
+    volume distinguishes "never tried" from "tried and was destroyed
+    mid-verification".
     """
 
+    _note_termination(context, report, reason, attempts)
     unimprovable = {
         ControllerState.PENDING_CREATE_REVIEW,
         ControllerState.LEASE_RECORD_FAILURE,
@@ -167,7 +230,11 @@ def run_with_bootstrap(
                     "remediation": "Inspect the bootstrap report and repair it before another authorized run.",
                 }
                 result, attempts = _close_with_retries(
-                    context, "mandatory bootstrap child failed", sleeper, interval_seconds
+                    context,
+                    "mandatory bootstrap child failed",
+                    sleeper,
+                    interval_seconds,
+                    report=report,
                 )
                 _persist_or_close(
                     context,
@@ -194,6 +261,7 @@ def run_with_bootstrap(
                     "mandatory bootstrap child exited before hard deadline",
                     sleeper,
                     interval_seconds,
+                    report=report,
                 )
                 _persist_or_close(
                     context,
@@ -212,7 +280,7 @@ def run_with_bootstrap(
     # destruction: the timer is the container's primary process and the pod is
     # being terminated either way.
     result, attempts = _close_with_retries(
-        context, "pod dead-man hard lifetime expired", sleeper, interval_seconds
+        context, "pod dead-man hard lifetime expired", sleeper, interval_seconds, report=report
     )
     _persist_or_close(
         context,
@@ -418,8 +486,13 @@ def _durable_failure_close(
     raised error too.  It used to be swallowed, so an operator finding no
     receipt could not tell a write that failed twice from one that never ran --
     GOVERNANCE 2, on the only durable evidence this pod leaves behind.
+
+    The breadcrumb goes out first here too: this path also issues a DELETE from
+    inside the container it destroys, so the same "never tried versus destroyed
+    mid-verification" ambiguity applies to it.
     """
 
+    _note_termination(context, path, label, 1)
     result = context.timer.close_now(label)
     fallback = {
         "bootstrap": {**bootstrap, "failure_detail": str(error)},
