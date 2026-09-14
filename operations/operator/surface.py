@@ -3308,8 +3308,13 @@ def _fetch_run_tree(
                 # -- a symlink standing where a log belongs is refused before a
                 # byte is written, exactly as anywhere else in the tree. What
                 # narrows is the blast radius, not the check.
-                existed = target.exists()
-                parent_existed = target.parent.exists()
+                # `is_symlink` as well as `exists`: a dangling symlink standing
+                # where a log belongs is refused by `_fetch_or_compare` and is
+                # still something this call did not create, so the cleanup below
+                # must not delete it. Nothing local is removed that this call
+                # did not write.
+                existed = target.exists() or target.is_symlink()
+                parent_existed = target.parent.exists() or target.parent.is_symlink()
                 try:
                     log_size, log_reused = _fetch_or_compare(reader, prefix + relative, target)
                 except Exception as error:  # noqa: BLE001 -- recorded per log, never fatal

@@ -5065,6 +5065,39 @@ def test_a_serving_log_past_the_object_bound_refuses_by_itself(
     assert any("A serving log did not come home" in line for line in messages)
 
 
+def test_a_symlink_where_a_serving_log_belongs_is_refused_and_left_alone(
+    tmp_path: Path,
+) -> None:
+    """Narrowing the blast radius does not narrow the check, or license a deletion.
+
+    `_fetch_or_compare` refuses a symlink before a byte is written -- a run tree
+    holds no aliases -- and that still happens for a log. What changed is that
+    the refusal is recorded against the log instead of taking the verified tree
+    with it. The link itself is something this call did not create, so the
+    cleanup after a refused log must leave it exactly where it was.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    into = tmp_path / "local-runs"
+    aliased = sorted(logs)[0][len("runs/brought-home/") :]
+    planted = into / "brought-home" / aliased
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.symlink_to(tmp_path / "somewhere-else.log")
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    assert [item.split(":", 1)[0] for item in payload["refused_serving_logs"]] == [aliased]
+    assert "symbolic link" in payload["refused_serving_logs"][0]
+    assert planted.is_symlink()
+    assert not planted.exists()  # still dangling: nothing was written through it
+    assert payload["stages_verified"] == ["designator"]
+
+
 def test_a_refused_serving_log_is_not_counted_among_what_was_verified(
     tmp_path: Path,
 ) -> None:
