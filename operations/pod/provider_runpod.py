@@ -1043,6 +1043,15 @@ def _create_payload(request: PodCreateRequest) -> dict[str, object]:
     Spec 04: on-demand only — "a spot reclaim mid-run is a silent-loss machine".
     `networkVolumeId` rides here because v1 attaches a volume only at creation
     and never afterwards.
+
+    `containerDiskInGb` is sent because the bootstrap downloads its serving
+    stack onto the container-local disk twice over (cache, then venv) and the
+    body used to name no size at all, leaving it to the image or account
+    default — a default under which the sync fails with ENOSPC after the whole
+    download has been paid for. The field name is v1's, documented and not yet
+    observed like every other field here; the first live create is what
+    confirms the provider accepts it. `PodCreateRequest.container_disk_gb`
+    carries the number and the derivation.
     """
 
     payload: dict[str, object] = {
@@ -1052,6 +1061,7 @@ def _create_payload(request: PodCreateRequest) -> dict[str, object]:
         "imageName": request.image,
         "gpuTypeIds": [request.gpu_type],
         "gpuCount": 1,
+        "containerDiskInGb": request.container_disk_gb,
         "interruptible": False,
         "networkVolumeId": request.volume_id,
         "volumeMountPath": request.volume_mount_path,

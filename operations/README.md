@@ -27,9 +27,16 @@ organising principle.
 ## Verbatus runs from a checkout, and only from a checkout
 
 There is no wheel installation and no packaged distribution of this system. The pod
-bootstrap clones the repository at a pinned commit and runs `uv sync --locked`
-(`operations/pod/bootstrap.py`); nothing anywhere builds or installs a wheel, and the CI
-workflow test asserts the workflow does not `pip install .`.
+bootstrap **fetches and checks out** a pinned commit in a checkout the pod image already
+carries, then runs `uv sync --locked` (`operations/pod/bootstrap.py`); nothing anywhere
+builds or installs a wheel, and the CI workflow test asserts the workflow does not
+`pip install .`.
+
+It has never cloned, and the difference is load-bearing rather than pedantic: a clone
+would only need a URL, while a fetch needs a checkout, an `origin` remote and credentials
+that are reachable from the bootstrap's own explicit environment. What the image has to
+carry is written down in `operations/pod/README.md` under "The pod image contract", and
+`bootstrap.verify_image_contract` refuses by name, before the fetch, when it does not.
 
 That is a contract, not an omission. `pyproject.toml` discovers `common` and `operations`
 only, so a built wheel carries no `pipeline/`, `config/`, `proof/` or `gold/` — while

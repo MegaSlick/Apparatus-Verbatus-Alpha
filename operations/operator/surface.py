@@ -61,6 +61,7 @@ from operations.pod.launch import (
 )
 from operations.pod.lease import LeaseStore, PodLease
 from operations.pod.models import (
+    DEFAULT_CONTAINER_DISK_GB,
     PodCreateRequest,
     PodEstimate,
     PodRecord,
@@ -2514,6 +2515,7 @@ def _request_record(request: PodCreateRequest) -> dict[str, Any]:
         "docker_start_cmd": list(request.docker_start_cmd),
         "hard_deadline": utc_stamp(request.hard_deadline),
         "repository_commit": request.repository_commit,
+        "container_disk_gb": request.container_disk_gb,
         "template": request.template,
         "metadata": dict(request.metadata),
         "interruptible": request.interruptible,
@@ -2557,7 +2559,13 @@ def _request_from_record(value: dict[str, Any]) -> PodCreateRequest:
             "interruptible",
             "recovery_only",
         }
-        if set(value) != required:
+        # Written by every record this surface writes, and read back as the
+        # default when it is absent: a record saved before the field existed
+        # must still load, because the verb that reads it is `close`, and a
+        # close that cannot read its own saved request cannot stop a pod that
+        # is billing.
+        optional = {"container_disk_gb"}
+        if set(value) - optional != required:
             raise ValueError("request has missing or unknown fields")
         deadline_text = value["hard_deadline"]
         if not isinstance(deadline_text, str):
@@ -2584,6 +2592,7 @@ def _request_from_record(value: dict[str, Any]) -> PodCreateRequest:
             docker_start_cmd=tuple(command),
             hard_deadline=require_utc(deadline, "recorded hard deadline"),
             repository_commit=value["repository_commit"],
+            container_disk_gb=value.get("container_disk_gb", DEFAULT_CONTAINER_DISK_GB),
             template=value["template"],
             metadata=metadata,
             interruptible=interruptible,

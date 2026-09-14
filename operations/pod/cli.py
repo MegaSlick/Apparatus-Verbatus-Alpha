@@ -22,7 +22,7 @@ from .arming import ControllerArmer
 from .fixture import FixtureRecorder
 from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
 from .lease import LeaseStore
-from .models import PodCreateRequest, require_utc, utc_now
+from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest, require_utc, utc_now
 from .notify_bridge import Notifier, shell_notifier, silent
 from .preflight import PlacementRefusal, load_placement_table
 from .provider import PodProvider
@@ -702,6 +702,7 @@ def _request(path: Path) -> PodCreateRequest:
         "docker_start_cmd",
         "hard_deadline",
         "repository_commit",
+        "container_disk_gb",
         "template",
         "metadata",
     }
@@ -710,6 +711,11 @@ def _request(path: Path) -> PodCreateRequest:
         raise ValueError(f"pod request has unknown field(s) {unknown}")
     command = raw.get("docker_start_cmd")
     metadata = raw.get("metadata", {})
+    # Absent means the reviewed default, not zero: an older request file that
+    # names no container disk still asks for a stated size rather than falling
+    # back to the provider's. A present-but-wrong value is refused by
+    # `PodCreateRequest` rather than coerced here.
+    container_disk_gb = raw.get("container_disk_gb", DEFAULT_CONTAINER_DISK_GB)
     if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
         raise ValueError("docker_start_cmd must be an array of strings")
     if not isinstance(metadata, dict) or not all(
@@ -725,6 +731,7 @@ def _request(path: Path) -> PodCreateRequest:
         docker_start_cmd=tuple(command),
         hard_deadline=_timestamp(raw.get("hard_deadline")),
         repository_commit=raw.get("repository_commit"),
+        container_disk_gb=container_disk_gb,
         template=raw.get("template"),
         metadata=metadata,
     )

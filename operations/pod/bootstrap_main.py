@@ -48,10 +48,22 @@ longer the obstacle it was: the recipe's pins were re-planned onto
 ``--group pod``.  That the wheels install and the weights load on real silicon
 is still unproven; only a boot proves it.
 
-**The transfer target stays optional.**  With no submission manifest on the
-volume, transfer is a vacuous success and this process needs no object-store
-client at all (``transfer.py:103-104``).  A manifest present with no configured
-target is a refusal, never a silently skipped upload.
+**TRANSFER's direction is named, not defaulted.**  A pod that is *consuming* a
+submission already on its volume passes neither ``--submission-manifest`` nor
+``--transfer-target-factory``, and TRANSFER is a vacuous success requiring no
+object-store client at all (``transfer.py:103-104``).  A pod that is producing
+one passes both.  Half of that pair -- either half -- is refused at plan time,
+before the ten-gigabyte environment sync, rather than as a red TRANSFER step
+after it.  A manifest present with no configured target is still a refusal,
+never a silently skipped upload.
+
+**The image this process assumes is written down.**  ``operations/pod/README.md``
+carries the pod image contract -- a checkout with an ``origin`` whose
+credentials a HOME-less git can see, a pre-built ``<repository>/.venv`` this
+process is started from, and git/uv at the pinned absolute paths -- and
+``bootstrap.verify_image_contract``, wired into REPOSITORY by ``build_actions``,
+refuses by name when the image does not meet it.  It runs before ``git fetch``,
+so an image mistake costs the boot and nothing downloaded.
 
 **The hard deadline governs the hold, not a flag.**  Both the ordinary
 bootstrap-and-hold path and the ``--hold-only`` drill hold until
@@ -133,6 +145,7 @@ from .bootstrap import (
     ChairCacheBootstrapAction,
     ModelStoreBootstrapAction,
     SubprocessBootstrapActions,
+    verify_image_contract,
 )
 from .durable import atomic_write, canonical_json, exclusive_write
 from .models import (
@@ -458,7 +471,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--submission-manifest",
         type=Path,
-        help="defaults to <volume-mount-path>/submission/manifest.json",
+        help="the sealed submission ledger TRANSFER sends to --transfer-target-factory; "
+        "no default, because a pod that is consuming a submission already on the volume "
+        "has nothing to send. Naming one without a target, or a target without one, is "
+        "refused at plan time",
     )
     parser.add_argument(
         "--transfer-source-root",
@@ -635,9 +651,39 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         base_label="the checked-out repository",
         report_path=report_path,
     )
-    submission_manifest = args.submission_manifest or (
-        volume_mount_path / "submission" / "manifest.json"
-    )
+    # TRANSFER's direction, stated rather than assumed. This flag used to
+    # default to `<volume>/submission/manifest.json` -- exactly where `verbatus
+    # upload` puts a real submission and exactly what `pod_run` then requires to
+    # exist on the volume -- so the default configuration of a real run made
+    # TRANSFER a refusal ("present but no transfer target was configured") that
+    # landed *after* UV_ENVIRONMENT had paid for the ten-gigabyte download. The
+    # step's purpose is also inverted on a pod: it would re-upload the
+    # submission the pod already has. A consuming pod names no manifest and
+    # TRANSFER is a vacuous success; a producing pod names both halves. Half a
+    # pair is a plan-time refusal, before anything is spent, whichever half is
+    # missing.
+    submission_manifest = args.submission_manifest
+    if submission_manifest is not None:
+        submission_manifest = _require_contained(
+            submission_manifest,
+            volume_mount_path,
+            "--submission-manifest",
+            report_path=report_path,
+        )
+    if submission_manifest is not None and args.transfer_target_factory is None:
+        raise PlanRefusal(
+            "--submission-manifest names a submission to send but --transfer-target-factory "
+            "names nowhere to send it; a pod that is only consuming a submission already on "
+            "the volume should name neither",
+            report_path=report_path,
+        )
+    if submission_manifest is None and args.transfer_target_factory is not None:
+        raise PlanRefusal(
+            "--transfer-target-factory configures somewhere to send a submission but "
+            "--submission-manifest names none; TRANSFER would send nothing and report "
+            "success",
+            report_path=report_path,
+        )
     transfer_source_root = args.transfer_source_root or volume_mount_path
 
     return Plan(
@@ -875,21 +921,24 @@ def write_probe(volume_mount_path: Path) -> None:
 
 def _build_transfer(plan: Plan) -> Callable[[], dict[str, object]]:
     manifest = plan.submission_manifest
-    # Not an assert: `assert` disappears under `python -O`, and the TRANSFER
-    # step would then journal a bare AttributeError instead of the missing
-    # manifest. The invariant is held by resolve_plan's default assignment
-    # (bootstrap_main.py, `submission_manifest = args.submission_manifest or
-    # ...`), not by any raise, so it needs one here.
     if manifest is None:
-        raise PlanRefusal(
-            "bootstrap plan reached TRANSFER with no submission manifest; "
-            "--submission-manifest resolves for every non-hold-only plan"
-        )
+        # A consuming pod: the submission it reads is already on the volume and
+        # there is nothing to send anywhere. `resolve_plan` has already refused
+        # the half-configured shapes (a manifest with no target, a target with
+        # no manifest), so "no manifest" here means exactly "no transfer", and
+        # TRANSFER records that rather than inventing a manifest path or
+        # refusing a run that needs no upload.
+        return lambda: TransferReport((), (), submission_manifest_present=False).to_record()
 
     def _transfer() -> dict[str, object]:
         if not manifest.is_file():
             return TransferReport((), (), submission_manifest_present=False).to_record()
         if plan.transfer_target_factory is None:
+            # Not reachable through `resolve_plan`, which refuses this pair at
+            # plan time before anything is spent. Kept as the named contract
+            # for a `Plan` built directly, the same way this module keeps its
+            # other unreachable-through-main refusals rather than assuming the
+            # only caller.
             raise BootstrapStepFailure(
                 BootstrapStep.TRANSFER,
                 f"submission manifest {manifest} is present but no transfer target was configured",
@@ -1273,7 +1322,16 @@ def _configuration_binding(path: Path, source: bytes) -> dict[str, str]:
 
 
 def build_actions(plan: Plan) -> BootstrapActions:
-    """The real, tracked composition. Tests inject a fake instead of calling this."""
+    """The real, tracked composition. Tests inject a fake instead of calling this.
+
+    The image contract rides on REPOSITORY, the first step: what it checks --
+    git and uv at their absolute paths, a checkout with an origin remote whose
+    credentials a HOME-less git can see, and this interpreter inside
+    ``<repository>/.venv`` -- are facts about the image, and every one of them
+    is cheaper to refuse here than to discover after the wheel download. The
+    check is wired only in this tracked composition, because it is the only
+    caller that has a real pod image under it.
+    """
 
     return SubprocessBootstrapActions(
         repository=plan.repository,  # type: ignore[arg-type]
@@ -1282,6 +1340,10 @@ def build_actions(plan: Plan) -> BootstrapActions:
         materialize_model_store=lambda: _build_model_store(plan).materialize(),
         cache=_LazyChairCache(plan),  # type: ignore[arg-type]
         preflight=_build_preflight(plan),
+        image_contract=lambda: verify_image_contract(
+            plan.repository,  # type: ignore[arg-type]
+            interpreter=Path(sys.executable),
+        ),
     )
 
 

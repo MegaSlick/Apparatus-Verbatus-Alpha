@@ -381,6 +381,20 @@ def test_create_correlates_the_launch_token_before_it_posts() -> None:
     assert body["volumeMountPath"] == "/workspace/private"
     assert body["gpuTypeIds"] == ["NVIDIA RTX 6000 Ada Generation"]
     assert body["env"] == {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"}
+    # The create body used to name no container disk at all, so the pod took
+    # whatever the image or the account defaulted to while the bootstrap
+    # downloaded the serving stack onto it twice over.
+    assert body["containerDiskInGb"] == request().container_disk_gb
+
+
+def test_create_sends_the_container_disk_the_request_asked_for() -> None:
+    transport = ScriptedTransport([json_response([]), json_response(pod_payload(), 201)])
+
+    provider(transport).create(request(container_disk_gb=120))
+
+    body = transport.calls[1][2]
+    assert body is not None
+    assert body["containerDiskInGb"] == 120
 
 
 def test_create_returns_the_existing_token_pod_without_posting_again() -> None:
