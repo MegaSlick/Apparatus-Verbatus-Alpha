@@ -68,6 +68,8 @@ from common.stage import (
 )
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 from operations.operator import surface, volume_s3
+from operations.operator.custody import PROVIDER_ENV_PREFIXES, credential_free_environment
+from operations.pod.models import looks_like_credential_field
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -2108,6 +2110,61 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
     ):
         leaked = volume_s3.TRANSFER_CREDENTIAL_ENV.intersection(built)
         assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
+
+
+def test_orchestrator_and_surface_strip_every_provider_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F016: a stage subprocess decodes attacker-supplied material and used to
+    keep every provider credential except the transfer's own two S3 keys --
+    RUNPOD_API_KEY (pod creation, i.e. money), HF_TOKEN, AWS_*, and anything
+    else shaped like a secret all survived. Both `stage_environment` builders
+    must now refuse the same broad shape `credential_free_environment` already
+    holds the operator's confined children to; the orchestrator duplicates that
+    predicate rather than importing it (module docstring: "imports only
+    common/"), so this is also where the copy is checked against the original,
+    the way the transfer-credential duplicate above already is.
+    """
+
+    orchestrator = _orchestrator_module("orchestrator_provider_credentials")
+    representative_names = (
+        "RUNPOD_API_KEY",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "GITHUB_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "SOME_VENDOR_BEARER",
+        *volume_s3.TRANSFER_CREDENTIAL_ENV,
+    )
+    for name in representative_names:
+        assert looks_like_credential_field(name) or name.startswith(PROVIDER_ENV_PREFIXES), (
+            f"{name} is not actually credential-shaped by the real predicate; fix the fixture"
+        )
+        assert orchestrator._looks_like_provider_credential(name), (
+            f"the orchestrator's duplicated predicate does not refuse {name}"
+        )
+        monkeypatch.setenv(name, f"secret-for-{name}")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    reference = credential_free_environment()
+    for label, built in (
+        ("orchestrator", orchestrator.stage_environment()),
+        ("operator surface", surface._stage_environment()),
+    ):
+        leaked = set(representative_names) & set(built)
+        assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
+        assert built.get("VERBATUS_STAGE_TEST_SENTINEL") == "preserved", (
+            f"{label} dropped an ordinary, non-credential variable"
+        )
+        # Not just the hand-picked names above: the whole process environment,
+        # compared key-for-key against the real `credential_free_environment`,
+        # so the duplicated predicate cannot drift narrower *or* wider than the
+        # original in silence.
+        assert set(built) == set(reference), (
+            f"{label} disagrees with credential_free_environment on {set(built) ^ set(reference)}"
+        )
         # The stripper must remove those names and nothing else: an
         # implementation that returned an empty environment, or one that dropped
         # everything it did not recognise, would satisfy the assertion above

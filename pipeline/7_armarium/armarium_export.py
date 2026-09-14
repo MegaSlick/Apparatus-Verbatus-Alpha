@@ -27,6 +27,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -172,6 +173,26 @@ _SEMANTIC_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
 _TRANSCRIPTION_ANNOTATIONS_CARRIED: Final = "archetypus-sealed-uncertain-and-illegible-marks"
 _TRANSCRIPTION_ANNOTATIONS_NOT_APPLICABLE: Final = "not-applicable"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
+# Real-ingress act keys are `proposal:<page ordinal>:<block ordinal>`
+# (structure_pass.proposal_act_key); both ordinals are plain decimal integers,
+# not zero-padded. Sorting the key as a string therefore reads block 10 before
+# block 2 once a page passes ten blocks (F079) -- every list this module
+# orders "by act_key" for a human or a diff to read must instead read in page
+# and block order. `act_key_sort_key` gives every such site the same order:
+# reading order for a parsed proposal key, else the key's own string, so a key
+# this pattern was never meant to describe (a minted `logical:<id>` row, a
+# fixture key) keeps exactly the ordering it had before.
+_PROPOSAL_ACT_KEY_PATTERN: Final = re.compile(r"^proposal:(\d+):(\d+)$")
+
+
+def act_key_sort_key(act_key: str) -> tuple[int, int, int] | tuple[int, str, int]:
+    """Reading order for an act key: (page ordinal, block ordinal) when parseable."""
+    match = _PROPOSAL_ACT_KEY_PATTERN.match(act_key)
+    if match is None:
+        return (1, act_key, 0)
+    return (0, int(match.group(1)), int(match.group(2)))
+
+
 _PIXEL_REFERENCE_CLAIM: Final = "reference validity only; pixel resolution requires source access"
 _PIXEL_EMBEDDED_CLAIM: Final = (
     "embedded pixels are packaged and opened by clean-machine verification"
@@ -1304,6 +1325,15 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
             projections[name] = _database_literals(root / "acts.sqlite")
         elif name == "jsonl":
             projections[name] = _jsonl_literals(root / "acts.jsonl")
+        else:
+            # `_LITERAL_TEXT_FORMATS` gaining a fourth member with no branch here
+            # is exactly the failure the projection-identity guard exists to
+            # catch (F090): without this arm the format is silently dropped from
+            # `projections` and the comparison below passes over it rather than
+            # comparing it, reporting "identical" about a format nobody checked.
+            raise SchemaRefusal(
+                f"projection identity has no comparison built for literal format {name!r}"
+            )
 
     baseline_name, baseline = next(iter(projections.items()))
     for name, records in projections.items():
@@ -2396,7 +2426,7 @@ def _text_bundle_members(
     for folder in sorted(folders):
         records = grouped[folder]
         lines = [f"# Armarium text bundle — source folder: {folder or '.'}", ""]
-        for act in sorted(records, key=lambda item: item["act_key"]):
+        for act in sorted(records, key=lambda item: act_key_sort_key(item["act_key"])):
             regions = act["source_regions"]
             lines.extend([f"## {act['act_key']} ({act['act_id']})", f"act-id: {act['act_id']}"])
             for region in regions:
@@ -2717,7 +2747,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                 "INSERT INTO export_metadata(key, value) VALUES (?, ?)",
                 sorted(metadata.items()),
             )
-            for act in sorted(acts, key=lambda item: item["act_key"]):
+            for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
                 literal = act[CANONICAL_TEXT_FIELD]
                 text_hash = canonical_text_sha256(literal) if literal is not None else None
                 connection.execute(
@@ -2793,7 +2823,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
 
 def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for act in sorted(acts, key=lambda item: item["act_key"]):
+    for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
         literal = act[CANONICAL_TEXT_FIELD]
         records.append(
             {
@@ -2873,7 +2903,7 @@ def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
             "reason": _export_reason(act),
             "evidence_refs": act.get("evidence_refs", []),
         }
-        for act in sorted(acts, key=lambda item: item["act_key"])
+        for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"]))
         if act["category"] in review_categories
     ]
 

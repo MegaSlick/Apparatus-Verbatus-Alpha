@@ -2298,6 +2298,52 @@ def test_pipeline_children_do_not_receive_upload_only_credentials(
     assert observed_environment["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved"
 
 
+def test_pipeline_children_do_not_receive_any_provider_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F016: not only the transfer's own two S3 keys -- every provider
+    credential a decoder RCE in a stage reached by a submitted page could spend
+    (pod creation money included) must stay off this environment, the same as
+    the confined console/backup/advance/ScanTailor children already get from
+    `credential_free_environment`.
+    """
+
+    observed_environment: dict[str, str] = {}
+    credential_names = (
+        "RUNPOD_API_KEY",
+        "RUNPOD_S3_ACCESS_KEY",
+        "RUNPOD_S3_SECRET_KEY",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "GITHUB_TOKEN",
+        "ANTHROPIC_API_KEY",
+    )
+    for name in credential_names:
+        monkeypatch.setenv(name, f"secret-for-{name}")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    def record_environment(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed_environment.update(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=lambda _line="": None,
+        faults=Faults(laptop_crash=True),
+        runner=record_environment,
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(run_id="credential-boundary-2")
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    for name in credential_names:
+        assert name not in observed_environment, f"{name} reached a stage subprocess"
+    assert observed_environment["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved"
+
+
 def test_a_failed_real_run_receipt_names_real_ingress(tmp_path: Path) -> None:
     """A receipt may retain fixture configuration without calling it the input."""
 

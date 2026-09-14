@@ -99,6 +99,7 @@ from operations.submit import submit as submission_door
 
 from . import notify_bridge
 from ._run_tree_paths import is_publication_temporary
+from .custody import credential_free_environment
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .notify_bridge import Notifier
@@ -2720,17 +2721,20 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
 
 
 def _stage_environment() -> dict[str, str]:
-    """Pass the ordinary runtime environment, but never upload-only credentials.
+    """Pass the ordinary runtime environment, but never a provider credential.
 
-    The S3 keys authorize the operator's separate transfer verb. Pipeline stages
-    neither upload nor inspect a network volume, so inheriting those keys only
-    widens their reach while they decode caller-supplied material.
+    Used to strip only the two upload-only S3 keys, reasoning that "pipeline
+    stages neither upload nor inspect a network volume" -- true, but no reason
+    to keep RUNPOD_API_KEY (pod creation = money), HF_TOKEN, AWS_*, or any other
+    provider credential either (F016): these processes decode attacker-supplied
+    PDFs, TIFFs, HEICs and PNGs, and talk to the serving endpoint, which is
+    already *more* hostile material than the console/backup/advance/ScanTailor
+    children `credential_free_environment` was built to protect. Built on the
+    same predicate rather than its own list, so a credential shape added there
+    protects a stage subprocess too.
     """
 
-    environment = dict(os.environ)
-    for name in _TRANSFER_CREDENTIAL_ENV:
-        environment.pop(name, None)
-    return environment
+    return credential_free_environment()
 
 
 def _sha256_regular_file_nofollow(path: Path) -> str:

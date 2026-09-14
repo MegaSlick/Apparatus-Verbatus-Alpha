@@ -83,7 +83,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Final, Mapping, Protocol
 
 from ..http_deadline import DeadlineExceeded, call_within_deadline, recording_opener
 from . import notify_hooks
@@ -1037,6 +1037,14 @@ def _runtime_contract(
     )
 
 
+REQUESTED_GPU_COUNT: Final = 1
+"""The one GPU count this build ever requests. Named rather than left as the bare
+literal it was (F064): `operations.pod.preflight.SystemGpuProbe.profile` reads it
+back as `expected_gpu_count` so the on-pod measurement and the request that
+provisioned the pod are checked against each other rather than left independent.
+"""
+
+
 def _create_payload(request: PodCreateRequest) -> dict[str, object]:
     """The v1 `PodCreateInput` body. `interruptible` is always explicitly false.
 
@@ -1051,7 +1059,7 @@ def _create_payload(request: PodCreateRequest) -> dict[str, object]:
         "computeType": "GPU",
         "imageName": request.image,
         "gpuTypeIds": [request.gpu_type],
-        "gpuCount": 1,
+        "gpuCount": REQUESTED_GPU_COUNT,
         "interruptible": False,
         "networkVolumeId": request.volume_id,
         "volumeMountPath": request.volume_mount_path,

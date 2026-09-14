@@ -149,6 +149,7 @@ from .preflight import (
     UtilizationSample,
     load_placement_table,
 )
+from .provider_runpod import REQUESTED_GPU_COUNT
 from .transfer import ChecksummedTransfer, TransferReport
 
 HARD_DEADLINE_ENV = "VERBATUS_HARD_DEADLINE"
@@ -1086,7 +1087,7 @@ def _build_preflight(
         preflight_root = plan.preflight_root
         publisher = PodPreflightReceiptPublisher(preflight_root, context)
         probe = chosen.gpu_probe or SystemGpuProbe(disk_path=plan.volume_mount_path)
-        profile = probe.profile(PREFLIGHT_DTYPE)
+        profile = probe.profile(PREFLIGHT_DTYPE, expected_gpu_count=REQUESTED_GPU_COUNT)
         fixture, witness, page_bytes_at_render = _golden_page(plan, chosen)
         smoke_call = VisionSmokeCall(
             witness, utilization=chosen.utilization or NvidiaSmiUtilization()

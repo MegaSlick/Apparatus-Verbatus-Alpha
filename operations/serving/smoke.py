@@ -181,7 +181,21 @@ class NvidiaSmiUtilization:
             )
             if query.returncode != 0:
                 return ()
-            gpu_percent = Decimal(query.stdout.strip().splitlines()[0].strip())
+            lines = [line.strip() for line in query.stdout.splitlines() if line.strip()]
+            if not lines:
+                # Refused by name (F064's sibling gap): the old
+                # `splitlines()[0]` read this same case as an IndexError caught
+                # by the blanket handler below, so an instrument that measured
+                # nothing and one that crashed on empty output were
+                # indistinguishable from here. Both still report the same
+                # `()` -- `VisionSmokeCall` has no channel for a reason on this
+                # path -- but the branch is now a decision, not an accident.
+                return ()
+            # Every visible card, not only the first (F064): with more than
+            # one card the process-wide figure this reports is the mean of
+            # what each is doing around this read, not whichever card
+            # nvidia-smi happened to list first.
+            gpu_percent = sum(Decimal(line) for line in lines) / Decimal(len(lines))
             cpus = self.cpu_count() or 0
             if cpus <= 0:
                 return ()

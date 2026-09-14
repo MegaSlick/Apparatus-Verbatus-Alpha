@@ -1468,7 +1468,8 @@ def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS
     launcher = FakeLauncher(http)
 
     class Probe:
-        def profile(self, dtype: str) -> GpuProfile:
+        def profile(self, dtype: str, *, expected_gpu_count: int | None = None) -> GpuProfile:
+            del expected_gpu_count
             return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
 
     seams = PreflightSeams(
@@ -1562,7 +1563,8 @@ def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
     launcher = FakeLauncher(http)
 
     class Probe:
-        def profile(self, dtype: str) -> GpuProfile:
+        def profile(self, dtype: str, *, expected_gpu_count: int | None = None) -> GpuProfile:
+            del expected_gpu_count
             return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
 
     calls = {"count": 0}
