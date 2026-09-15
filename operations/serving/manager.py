@@ -39,7 +39,7 @@ from common.chairs.models import (
     VerifiedSnapshot,
     is_sha256,
 )
-from operations.pod.models import looks_like_credential_value
+from operations.pod.models import looks_like_credential_field, looks_like_credential_value
 
 from .config import (
     FixtureProfile,
@@ -995,7 +995,22 @@ class ServingManager:
         # what a still-loading server looks like from here. `None` until a
         # probe has come back either way, so a budget that expires before the
         # first round cannot be reported as an observation of the endpoint.
-        unavailable: bool | None = None
+        #
+        # Four states, not two. `EndpointUnavailable` also carries a timeout, a
+        # reset and a malformed local route, and its own `definitively_absent`
+        # is what tells those from a refused connection -- recording every one
+        # of them as refused had a timed-out start reported as "connection
+        # refused ... raising startup_timeout_seconds is unlikely to help",
+        # which is the opposite of the advice a timeout deserves (CodeRabbit on
+        # PR #117).
+        endpoint_state: str | None = None
+        # Whether the log's loading marker moved while this start was waited
+        # on. A marker anywhere in the retained tail says loading was observed
+        # once; only a marker that changed says the engine was still making
+        # progress when the bound expired, and the stronger sentence is the one
+        # an operator extends a timeout and keeps billing on.
+        progress_line: str | None = None
+        progress_advanced = False
         while True:
             # Each probe below is bounded by whichever is smaller, its own
             # per-request budget or what is left of the watchdog's. Without the
@@ -1023,6 +1038,11 @@ class ServingManager:
             signature = _fatal_log_signature(launch_tail)
             if signature is not None:
                 raise ReadinessError(signature, "fatal vLLM signature appeared in this launch log")
+            current_progress = _progress_log_line(launch_tail)
+            if current_progress is not None:
+                if progress_line is not None and current_progress != progress_line:
+                    progress_advanced = True
+                progress_line = current_progress
             # A budget of zero would mean issuing a request that cannot succeed.
             # The watchdog timeout is the right answer at that point, and it is
             # the same refusal the check at the bottom of this loop produces --
@@ -1031,7 +1051,8 @@ class ServingManager:
                 raise _watchdog_timeout(
                     process,
                     last=last,
-                    unavailable=unavailable,
+                    endpoint_state=endpoint_state,
+                    progress_advanced=progress_advanced,
                     budget_seconds=float(profile.startup_timeout_seconds),
                 )
             try:
@@ -1071,7 +1092,9 @@ class ServingManager:
                 )
             except EndpointUnavailable as error:
                 last = f"loopback endpoint unavailable: {error}"
-                unavailable = True
+                endpoint_state = (
+                    _ENDPOINT_REFUSED if error.definitively_absent else _ENDPOINT_UNREACHABLE
+                )
             except ReadinessError as error:
                 if _is_deterministic_probe_rejection(error):
                     # A 4xx here is the engine refusing the *shape* of the
@@ -1083,12 +1106,13 @@ class ServingManager:
                     # path) to learn nothing new (hostile review item L).
                     raise
                 last = str(error)
-                unavailable = False
+                endpoint_state = _ENDPOINT_ANSWERED_UNREADY
             if self.monotonic() >= deadline:
                 raise _watchdog_timeout(
                     process,
                     last=last,
-                    unavailable=unavailable,
+                    endpoint_state=endpoint_state,
+                    progress_advanced=progress_advanced,
                     budget_seconds=float(profile.startup_timeout_seconds),
                 )
             self.sleep(
@@ -1913,6 +1937,32 @@ travels with the refusal.
 """
 
 
+_REDACTED: Final = "[redacted]"
+#: `name=value`, `name: value`, `"name":"value"` -- the structured forms a log
+#: line carries a secret in. The name is captured so
+#: `models.looks_like_credential_field` can answer for it; the value is
+#: captured separately so only the value is replaced.
+_LOG_ASSIGNMENT: Final = re.compile(
+    r"""(?P<lead>["']?)(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)(?P=lead)\s*[:=]\s*"""
+    r"""(?P<quote>["']?)(?P<value>[^\s"',;}\]]+)(?P=quote)"""
+)
+#: `Authorization: Bearer <value>` and a bare `Bearer <value>`: the scheme
+#: names the secret, so what follows it is one whatever shape it has.
+_LOG_BEARER: Final = re.compile(r"""(?i)\bbearer\s+(?P<value>[^\s"',;]+)""")
+#: Where a value ends inside one whitespace-delimited token, so the shape test
+#: reaches the parts of `key=value` and `{"key":"value"}` as well as the token.
+_TOKEN_PARTS: Final = re.compile(r"""[^\s"'{}\[\],;:=]+""")
+
+
+def _redact_value(match: re.Match[str]) -> str:
+    """Replace only the `value` group inside what this match covered."""
+
+    whole = match.group(0)
+    start = match.start("value") - match.start(0)
+    end = match.end("value") - match.start(0)
+    return f"{whole[:start]}{_REDACTED}{whole[end:]}"
+
+
 def _redacted(text: str) -> str:
     """Blank out credential-shaped tokens before a launch log leaves the machine.
 
@@ -1924,15 +1974,46 @@ def _redacted(text: str) -> str:
     new boundaries to reuse it rather than re-express it; a tail that travels is
     one. Whitespace is preserved line by line so the progress line a reader is
     meant to recognise still reads as one.
+
+    **A log line is not an argv.** That shape test answers for a whole token
+    and rejects anything carrying `.`, `:`, `/`, `\\` or `@` as ordinary path
+    and URL punctuation -- so `token=hf_...`, `{"token":"eyJ..."}` and a
+    tab-separated field went through unchanged although the bare value would
+    have been caught (CodeRabbit on PR #117). Three passes now: the name-bound
+    forms first, because `models.looks_like_credential_field` answers for a
+    *name* that names itself a secret and no shape test can catch a JWT that
+    looks like a dotted path; then `Bearer`, whose scheme names the secret
+    after it; then the shape test, over each whitespace-delimited token and
+    over the parts inside it. Only the value is replaced -- the surrounding log
+    text stays readable, which is the whole reason a tail travels at all.
     """
 
-    return "\n".join(
-        " ".join(
-            "[redacted]" if looks_like_credential_value(token) else token
-            for token in line.split(" ")
+    def redact_named(match: re.Match[str]) -> str:
+        if not looks_like_credential_field(match.group("name")):
+            return match.group(0)
+        return _redact_value(match)
+
+    def redact_by_shape(token: str) -> str:
+        if looks_like_credential_value(token):
+            return _REDACTED
+        return _TOKEN_PARTS.sub(
+            lambda part: _REDACTED if looks_like_credential_value(part.group(0)) else part.group(0),
+            token,
         )
-        for line in text.splitlines()
-    )
+
+    lines = []
+    for raw in text.splitlines():
+        line = _LOG_ASSIGNMENT.sub(redact_named, raw)
+        line = _LOG_BEARER.sub(_redact_value, line)
+        # Split on all whitespace, keeping it: a tab-separated field is a field
+        # like any other, and the line must still read as the line it was.
+        lines.append(
+            "".join(
+                part if index % 2 else redact_by_shape(part)
+                for index, part in enumerate(re.split(r"(\s+)", line))
+            )
+        )
+    return "\n".join(lines)
 
 
 def _progress_log_line(tail: str) -> str | None:
@@ -1948,8 +2029,23 @@ def _progress_log_line(tail: str) -> str | None:
     return None
 
 
+_ENDPOINT_REFUSED: Final = "refused"
+"""No listener owned that loopback port at that instant -- the one definite absence."""
+_ENDPOINT_UNREACHABLE: Final = "unreachable"
+"""The request produced no response and nothing proved the port empty: a
+timeout, a reset, or a malformed local route. Retryable like a refusal, and not
+evidence that nothing is listening."""
+_ENDPOINT_ANSWERED_UNREADY: Final = "answered-unready"
+"""The engine answered and was not ready."""
+
+
 def _watchdog_timeout(
-    process: ServerProcess, *, last: str, unavailable: bool | None, budget_seconds: float
+    process: ServerProcess,
+    *,
+    last: str,
+    endpoint_state: str | None,
+    budget_seconds: float,
+    progress_advanced: bool = False,
 ) -> ReadinessError:
     """Say which kind of not-ready this was, and carry the evidence for it.
 
@@ -1961,12 +2057,18 @@ def _watchdog_timeout(
     log can tell them apart, and it was already read every poll for fatal
     signatures -- it just never reached the refusal.
 
-    ``unavailable`` is three-valued on purpose: ``True`` for a port that never
-    answered, ``False`` for an engine that answered and was not ready, and
-    ``None`` for a budget that ran out before any probe came back at all --
-    which a one-second ``startup_timeout_seconds`` can reach. Collapsing the
-    third into either of the others would put a claim about an endpoint nobody
-    reached into a durable record.
+    ``endpoint_state`` is four-valued on purpose: ``refused`` for a port proven
+    empty, ``unreachable`` for a request that produced no response and proved
+    nothing (a timeout, a reset, a malformed local route), ``answered-unready``
+    for an engine that answered and was not ready, and ``None`` for a budget
+    that ran out before any probe came back at all -- which a one-second
+    ``startup_timeout_seconds`` can reach. Collapsing any of them into another
+    would put a claim about an endpoint nobody reached into a durable record.
+
+    ``progress_advanced`` is the same discipline over the log: a loading marker
+    anywhere in the retained tail says loading was *observed*, and only a
+    marker that changed while this start was waited on says the engine was
+    still making progress when the bound expired.
 
     The diagnosis and the last readiness answer stay on the first line, ahead
     of the log tail, because that is where every reader of this message looks.
@@ -1981,24 +2083,41 @@ def _watchdog_timeout(
             "whether the engine was still loading or never started",
         )
     progress = _progress_log_line(tail)
-    if progress is not None:
+    if progress is not None and progress_advanced:
         diagnosis = (
             f"still loading, not refused: {last} -- but this launch log's most recent "
-            f"progress line is {progress!r}, so the engine was still starting when the "
-            f"{budget_seconds:.0f}s startup_timeout_seconds bound expired. That bound is a "
+            f"progress line is {progress!r} and it advanced while this start was waited "
+            f"on, so the engine was still starting when the {budget_seconds:.0f}s "
+            "startup_timeout_seconds bound expired. That bound is a "
             "budget, not a measurement of this row's load time; size it from the chair's "
             "weight bytes over the volume's measured read rate plus graph capture "
             "(config/serving_recipes_real.toml records the derivation per row) rather than "
             "reading this as a failure to start"
         )
-    elif unavailable is True:
+    elif progress is not None:
+        diagnosis = (
+            f"loading was observed, and nothing since: {last} -- this launch log's most "
+            f"recent progress line is {progress!r}, and it did not change while the "
+            f"{budget_seconds:.0f}s startup_timeout_seconds bound ran out, so nothing here "
+            "establishes the engine was still starting rather than stuck at that point. "
+            "Read the whole log on the pod before raising the bound and paying for another "
+            "wait"
+        )
+    elif endpoint_state == _ENDPOINT_REFUSED:
         diagnosis = (
             f"connection refused, not still loading: {last} -- and after "
             f"{budget_seconds:.0f}s nothing in this launch log shows the engine loading "
             "weights, capturing graphs or initializing, so raising "
             "startup_timeout_seconds is unlikely to help"
         )
-    elif unavailable is False:
+    elif endpoint_state == _ENDPOINT_UNREACHABLE:
+        diagnosis = (
+            f"the endpoint did not answer, and nothing proved it empty: {last} -- after "
+            f"{budget_seconds:.0f}s no probe produced a response and no connection was "
+            "refused, so this says nothing about whether the engine is listening, and the "
+            "log shows no loading either"
+        )
+    elif endpoint_state == _ENDPOINT_ANSWERED_UNREADY:
         diagnosis = (
             f"answered but never ready: {last} -- after {budget_seconds:.0f}s the endpoint "
             "was reachable and nothing in this launch log shows the engine still loading"
@@ -2009,10 +2128,16 @@ def _watchdog_timeout(
             f"{budget_seconds:.0f}s startup_timeout_seconds bound was gone before the "
             "first round completed, so nothing here observed the endpoint at all"
         )
-    excerpt = tail[-_WATCHDOG_TAIL_BYTES:].strip()
+    # In bytes, because that is what the limit says and what a journal entry, a
+    # pod report and a phone notification actually carry. Slicing the string
+    # counted characters, so a non-ASCII tail could be several times the
+    # documented size (CodeRabbit on PR #117). A cut landing mid-character
+    # decodes to a replacement character rather than raising.
+    encoded = tail.encode("utf-8")
+    excerpt = encoded[-_WATCHDOG_TAIL_BYTES:].decode("utf-8", errors="replace").strip()
     if not excerpt:
         return ReadinessError("VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. The launch log is empty")
-    if len(tail) > _WATCHDOG_TAIL_BYTES:
+    if len(encoded) > _WATCHDOG_TAIL_BYTES:
         excerpt = f"[last {_WATCHDOG_TAIL_BYTES} bytes] {excerpt}"
     return ReadinessError("VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. Launch log tail:\n{excerpt}")
 
