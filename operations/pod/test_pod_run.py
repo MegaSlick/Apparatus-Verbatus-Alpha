@@ -31,6 +31,7 @@ import pytest
 
 from operations.operator import cli as operator_cli
 from operations.operator.errors import ErrorCode, OperatorError
+from operations.operator.records import SCHEMA as RECEIPT_SCHEMA
 from operations.operator.volume_s3 import VolumeSpec
 
 from . import launch as launch_module
@@ -1259,7 +1260,7 @@ def _launch_receipt(path: Path, token: str, *, volume_id: str = "vol-1") -> Path
     path.write_text(
         json.dumps(
             {
-                "schema": "operator-receipt.v1",
+                "schema": RECEIPT_SCHEMA,
                 "kind": "launch",
                 "recorded_at": "2026-09-15T00:00:00Z",
                 "payload": {"request": _launch_request(token, volume_id)},
