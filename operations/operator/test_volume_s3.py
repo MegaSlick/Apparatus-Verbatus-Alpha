@@ -22,6 +22,7 @@ from operations.pod.transfer import ChecksummedTransfer
 from .errors import ERRORS, ErrorCode, OperatorError
 from .test_surface import _manifest, _spend_policy, _surface
 from .volume_s3 import (
+    FETCH_CHUNK_BYTES,
     MAX_LISTED_KEYS,
     MAX_LISTED_PAGES,
     SHA256_METADATA_KEY,
@@ -285,6 +286,78 @@ def test_missing_metadata_is_verified_by_a_bounded_target_byte_stream() -> None:
     assert observed.sha256 == hashlib.sha256(payload).hexdigest()
 
 
+class _ObservedBody:
+    def __init__(self, payload: bytes, *, fail_after_reads: int | None = None) -> None:
+        self.payload = payload
+        self.fail_after_reads = fail_after_reads
+        self.offset = 0
+        self.requests: list[int] = []
+        self.closed = False
+
+    def read(self, amount: int) -> bytes:
+        self.requests.append(amount)
+        if self.fail_after_reads is not None and len(self.requests) > self.fail_after_reads:
+            raise OSError("injected target-body failure")
+        chunk = self.payload[self.offset : self.offset + amount]
+        self.offset += len(chunk)
+        return chunk
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_missing_metadata_hashes_in_constant_chunks_and_closes_the_body() -> None:
+    payload = b"x" * (FETCH_CHUNK_BYTES * 2 + 17)
+    body = _ObservedBody(payload)
+    client = FakeS3Client()
+    client.objects["volume/page.bin"] = (payload, {})
+    client.drop_metadata = True
+    client.get_object = lambda **_kwargs: {"Body": body}  # type: ignore[method-assign]
+
+    observed = S3VolumeTarget(_spec(), client=client).inspect(
+        "volume/page.bin", expected_size=len(payload)
+    )
+
+    assert observed is not None
+    assert observed.sha256 == hashlib.sha256(payload).hexdigest()
+    assert body.requests == [FETCH_CHUNK_BYTES, FETCH_CHUNK_BYTES, 18, 1]
+    assert body.closed
+
+
+def test_target_hash_read_failure_is_named_and_still_closes_the_body() -> None:
+    payload = b"x" * (FETCH_CHUNK_BYTES + 1)
+    body = _ObservedBody(payload, fail_after_reads=1)
+    client = FakeS3Client()
+    client.objects["volume/page.bin"] = (payload, {})
+    client.drop_metadata = True
+    client.get_object = lambda **_kwargs: {"Body": body}  # type: ignore[method-assign]
+
+    with pytest.raises(VolumeTransferRefusal, match="could not stream-verify"):
+        S3VolumeTarget(_spec(), client=client).inspect(
+            "volume/page.bin", expected_size=len(payload)
+        )
+
+    assert body.requests == [FETCH_CHUNK_BYTES, 2]
+    assert body.closed
+
+
+def test_target_hash_refuses_more_bytes_than_head_declared_and_closes_the_body() -> None:
+    declared = b"declared"
+    body = _ObservedBody(declared + b"foreign suffix")
+    client = FakeS3Client()
+    client.objects["volume/page.bin"] = (declared, {})
+    client.drop_metadata = True
+    client.get_object = lambda **_kwargs: {"Body": body}  # type: ignore[method-assign]
+
+    with pytest.raises(VolumeTransferRefusal, match="streamed 9 bytes, not declared 8"):
+        S3VolumeTarget(_spec(), client=client).inspect(
+            "volume/page.bin", expected_size=len(declared)
+        )
+
+    assert body.requests == [len(declared) + 1]
+    assert body.closed
+
+
 def test_a_target_that_drops_metadata_is_completed_from_target_bytes(
     tmp_path: Path,
 ) -> None:
@@ -388,7 +461,9 @@ def test_upload_through_the_surface_sends_only_files_named_by_the_sealed_record(
 
     assert receipt.is_file()
     assert sorted(client.uploads) == [
-        "submission-manifest.json", "submission/page-one.bin", "submission/page-two.bin"
+        "submission-manifest.json",
+        "submission/page-one.bin",
+        "submission/page-two.bin",
     ]
     assert client.objects["submission/page-one.bin"][0] == (source / "page-one.bin").read_bytes()
     assert client.objects["submission/page-two.bin"][0] == (source / "page-two.bin").read_bytes()

@@ -62,6 +62,7 @@ from common.stage import (
     run_sealed_config_digests,
     run_stage,
 )
+from operations.operator.surface import OperatorSurface
 from operations.submit import gate, submit
 from operations.triage import instrument, producer
 from operations.triage.instrument import load_config as instrument_config
@@ -1919,6 +1920,49 @@ def _run_real_door(
         ],
     )
     return door.main()
+
+
+def test_operator_upload_layout_is_admitted_by_the_real_door(tmp_path, monkeypatch):
+    """The default volume layout is the exact folder/ledger pair Boot B opens."""
+
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": png(4, 3), "nested/FS-1235.png": png(3, 2)}
+    )
+    state_root = approved / "operator-state"
+    surface = OperatorSurface(ROOT, state_root, present=lambda _line: None)
+
+    surface.upload(source, sealed_manifest=ledger_path)
+
+    volume = state_root / "fixture-volume"
+    uploaded_source = volume / "submission"
+    uploaded_ledger = volume / "submission-manifest.json"
+    assert uploaded_ledger.read_bytes() == ledger_path.read_bytes()
+    assert {
+        path.relative_to(uploaded_source): path.read_bytes()
+        for path in uploaded_source.rglob("*")
+        if path.is_file()
+    } == {
+        path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()
+    }
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=uploaded_source,
+            policy_path=policy_path,
+            ledger_path=uploaded_ledger,
+            run_id="uploaded-layout",
+        )
+        == 0
+    )
+
+    run = RunTree(approved / "runs", "uploaded-layout").read_run()
+    assert run["ingress"] == {"mode": "real"}
+    assert {row["ledger_sha256"] for row in run["source_manifest"]} == {ledger["self_hash"]}
+    assert {row["relative_path"] for row in run["source_manifest"]} == {
+        "FS-1234.png",
+        "nested/FS-1235.png",
+    }
 
 
 def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, monkeypatch):

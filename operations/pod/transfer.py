@@ -88,7 +88,7 @@ class ChecksummedTransfer:
         self.source_root = Path(source_root).resolve()
         self.submission_manifest = Path(submission_manifest)
         self.target = target
-        self.prefix = _prefix(prefix)
+        self.prefix = normalize_transfer_prefix(prefix)
         self.journal_path = Path(journal_path)
 
     def resume(self) -> TransferReport:
@@ -181,10 +181,20 @@ class ChecksummedTransfer:
         atomic_write(self.journal_path, canonical_json(record))
 
 
-def _prefix(value: str) -> str:
-    if not isinstance(value, str) or not value or value.startswith("/") or ".." in value.split("/"):
+def normalize_transfer_prefix(value: str) -> str:
+    """Return one portable relative object prefix, without a trailing slash."""
+
+    if not isinstance(value, str):
         raise ValueError("transfer prefix must be a safe relative key prefix")
-    return value.rstrip("/")
+    normalized = value.rstrip("/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or "\x00" in normalized
+        or any(component in {"", ".", ".."} for component in normalized.split("/"))
+    ):
+        raise ValueError("transfer prefix must be a safe relative key prefix")
+    return normalized
 
 
 def _under(root: Path, relative: object) -> Path:

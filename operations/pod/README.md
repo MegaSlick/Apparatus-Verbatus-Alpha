@@ -869,11 +869,12 @@ but six of six refused is not the run's records coming home.
 | `<volume>/pod-transfer-journal.json` | `ChecksummedTransfer` | **a fixed name at the volume root** — no token. It is the only durable record of which submission rows were verified against target-observed bytes |
 
 **Not records, and deliberately not fetched:** `<volume>/chair-cache/` (materialized
-weights), `<volume>/submission/` (the submission's own page images) and
-`<volume>/submission-manifest.json` (the sealed ledger, deliberately beside rather than
+weights), `<volume>/submission/` (the default submission's page images),
+`<volume>/submission-manifest.json` (its sealed ledger, deliberately beside rather than
 inside the submitted folder because the Door refuses pipeline records among source images),
-here ever lists the whole volume to find a key), and `<volume>/pod-transfer/` (the
-transferred bytes themselves, which the journal accounts for).
+and `<volume>/pod-transfer/` (the transferred bytes themselves, which the journal accounts
+for). The uploader may place another immutable pair at `<prefix>/` and
+`<prefix>-manifest.json`; no fetch path lists the whole volume to discover one.
 
 **The single-resident GPU lease is not on this list, and that is the point.**
 `operations.serving.residency.POD_RESIDENCY_LOCK_PATH` is `/tmp/verbatus-pod-gpu.lock` on
@@ -1093,9 +1094,11 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 - [ ] Confirm whether `GET /pods` paginates on an account holding many pods. Both the
   list-absence proof and launch-token recovery read it as one unpaginated array; a
   truncated list would mean a false absence or a second POST for one authorised launch.
-- [ ] Exercise the checksummed transfer end to end on the attached volume: upload the
-  sealed submission-manifest rows, read at least one object back, and record that the
-  post-upload digest verification actually ran against target-observed bytes.
+- [ ] Rerun the corrected checksummed transfer end to end on the attached volume. The first
+  test uploaded and independently GET-hashed an image successfully, while both HeadObject
+  and GetObject omitted the supplied custom metadata. The corrected adapter now streams and
+  hashes target bytes under the manifest's size bound when metadata is absent; its injected
+  client tests prove that path, but the corrected path still needs a live endpoint run.
 - [ ] Verify that the network volume is mounted at the sealed path, receives the
   token-bound pod report, survives a process restart, and supports the run tree's
   immutable hard-link publication. Write a control report and one pipeline artifact

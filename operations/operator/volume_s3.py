@@ -35,7 +35,7 @@ quoted rather than paraphrased where the detail is load-bearing:
   a time, and bounds the walk at `MAX_LISTED_KEYS` rather than trusting the
   documented figure.
 
-**Stated as unconfirmed rather than asserted:**
+**Observed endpoint behaviour and the checks built around it:**
 
 1. *User metadata does not round-trip on the observed RunPod endpoint.* `put_file`
    still writes the SHA-256 metadata, but `inspect` treats its absence as a request
@@ -44,11 +44,14 @@ quoted rather than paraphrased where the detail is load-bearing:
    whole-file MD5 even on AWS, the sealed manifest carries SHA-256 rather than
    MD5, and an integrity check built on a value whose definition is unclear is not
    an integrity check.
-3. **Nothing in this file has ever run against a real endpoint**, authenticated or
-   otherwise, from this chamber or any other. Its logic is tested against an
-   injected fake client; its network behaviour is untested. boto3 is imported
-   lazily, so `upload` without `--network-volume` does not construct a client or
-   read storage credentials.
+3. The original upload path ran against the authenticated RunPod endpoint on
+   2026-09-15: the image bytes arrived, both `HeadObject` and `GetObject` omitted
+   the supplied custom metadata, and an independent hash of the returned bytes
+   matched the source. The target-byte fallback added from that observation is
+   covered by injected-client tests and has not yet been rerun against RunPod.
+   `S3VolumeObjectReader` listing/fetch remains untested against the real endpoint.
+   boto3 is imported lazily, so `upload` without `--network-volume` does not
+   construct a client or read storage credentials.
 """
 
 from __future__ import annotations
@@ -606,13 +609,18 @@ def _stream_sha256(body: Any, limit: int) -> tuple[int, str]:
     digest = hashlib.sha256()
     observed = 0
     while observed < limit:
-        chunk = body.read(min(FETCH_CHUNK_BYTES, limit - observed))
+        remaining = limit - observed
+        chunk = body.read(min(FETCH_CHUNK_BYTES, remaining))
         if not chunk:
             break
         if not isinstance(chunk, (bytes, bytearray)):
             raise TypeError("the network volume answered with a non-bytes body chunk")
-        digest.update(chunk)
-        observed += len(chunk)
+        # A non-conforming stream can ignore the requested amount. It may make
+        # that one read expensive, but it cannot make this verifier retain or
+        # hash beyond the caller's declared bound.
+        bounded = bytes(chunk)[:remaining]
+        digest.update(bounded)
+        observed += len(bounded)
     return observed, digest.hexdigest()
 
 

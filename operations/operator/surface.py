@@ -100,7 +100,12 @@ from operations.pod.supervise import (
 from operations.pod.supervise import (
     read_identity as _read_supervisor_identity,
 )
-from operations.pod.transfer import ChecksummedTransfer, TransferFailure, TransferTarget
+from operations.pod.transfer import (
+    ChecksummedTransfer,
+    TransferFailure,
+    TransferTarget,
+    normalize_transfer_prefix,
+)
 from operations.submit import submit as submission_door
 
 from . import notify_bridge
@@ -177,6 +182,10 @@ gigabyte is past any page this project has rendered."""
 # margin is the safe direction. It is the opposite, and acting on that reversed
 # belief is exactly the defect below at `_shutdown`.
 FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS = 3600
+
+
+class _UploadManifestConflict(TransferFailure):
+    """An occupied prefix seals another submission; no target write has occurred."""
 
 
 class Presenter(Protocol):
@@ -672,10 +681,15 @@ class OperatorSurface:
         *,
         manifest_out: str | Path,
         policy_path: str | Path | None = None,
+        prefix: str = "submission",
         volume: VolumeSpec | None = None,
     ) -> Path:
         """Run Spec 03's local door before transferring only a sealed manifest."""
 
+        try:
+            prefix = normalize_transfer_prefix(prefix)
+        except ValueError as error:
+            raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
         try:
             submission_door.submit(
                 Path(source),
@@ -689,7 +703,7 @@ class OperatorSurface:
         except Exception as error:
             self._record_failure("upload", "submission-refused", str(error))
             raise OperatorError(ErrorCode.UPLOAD_REFUSED, detail=str(error)) from error
-        return self.upload(source, sealed_manifest=manifest_out, volume=volume)
+        return self.upload(source, sealed_manifest=manifest_out, prefix=prefix, volume=volume)
 
     def upload(
         self,
@@ -722,6 +736,10 @@ class OperatorSurface:
                 ErrorCode.UPLOAD_MANIFEST_MISSING,
                 detail="the sealed submission record could not be read",
             ) from error
+        try:
+            prefix = normalize_transfer_prefix(prefix)
+        except ValueError as error:
+            raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
         fixture_only = volume is None and target is None
         if fixture_only:
             self.present("Upload uses the sealed submission record and the fixture volume.")
@@ -752,6 +770,20 @@ class OperatorSurface:
             with tempfile.TemporaryDirectory(prefix="manifest-", dir=snapshot_root) as temporary:
                 manifest_snapshot = Path(temporary) / "sealed-manifest.json"
                 manifest_snapshot.write_bytes(manifest_bytes)
+                # Parse the immutable snapshot before consulting or changing the
+                # target. A malformed ledger is a local refusal, not a partial
+                # transfer, and must never cause a remote read or write.
+                submission_door.load_manifest(manifest_snapshot)
+                manifest_key = f"{prefix}-manifest.json"
+                remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
+                if remote_manifest is not None and (
+                    remote_manifest.sha256 != manifest_sha256
+                    or remote_manifest.size != len(manifest_bytes)
+                ):
+                    raise _UploadManifestConflict(
+                        f"target {manifest_key!r} exists but differs from the sealed submission "
+                        "manifest; it was not overwritten"
+                    )
                 report = ChecksummedTransfer(
                     source_root=source_path,
                     submission_manifest=manifest_snapshot,
@@ -759,7 +791,9 @@ class OperatorSurface:
                     prefix=prefix,
                     journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
                 ).resume()
-                manifest_key = f"{prefix.rstrip('/')}-manifest.json"
+                # Recheck after the image transfer. A manifest that appeared
+                # concurrently owns this prefix and must be compared before a
+                # new one is published.
                 remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
                 if remote_manifest is not None and (
                     remote_manifest.sha256 != manifest_sha256
@@ -781,12 +815,13 @@ class OperatorSurface:
                     raise TransferFailure(
                         f"target {manifest_key!r} did not verify after publication"
                     )
-        except ContractError as error:
-            # `ChecksummedTransfer.resume` reads the sealed manifest through
-            # `submission_door.load_manifest` before it transfers a single
-            # file, and a malformed or non-canonical manifest raises
+        except (_UploadManifestConflict, ContractError) as error:
+            # The snapshot is read through `submission_door.load_manifest`
+            # before the target is inspected or a transfer is constructed, and
+            # a malformed or non-canonical manifest raises
             # `SubmitRefusal` (a `ContractError`), not one of the transfer
-            # exceptions below. Nothing was sent, so this is never
+            # exceptions below. A conflicting target manifest is found by that
+            # same preflight boundary. Nothing was sent, so this is never
             # `UPLOAD_PARTIAL`, which would tell an operator that some files
             # were verified when none were touched (G13).
             #
@@ -800,7 +835,11 @@ class OperatorSurface:
             # a door refusal of the same record.
             self._record_failure(
                 "upload",
-                "manifest-refused",
+                (
+                    "manifest-conflict"
+                    if isinstance(error, _UploadManifestConflict)
+                    else "manifest-refused"
+                ),
                 str(error),
                 facts={
                     "submission_manifest_sha256": manifest_sha256,

@@ -1709,6 +1709,116 @@ def test_partial_upload_is_recorded_and_retries_from_verified_work(tmp_path: Pat
     assert any("Upload is complete" in line for line in status)
 
 
+def test_upload_publishes_the_manifest_only_after_every_image_verifies(tmp_path: Path) -> None:
+    class FailSecondImage(LocalFixtureObjectStore):
+        def put_file(self, key, source_handle, *, expected_sha):  # type: ignore[no-untyped-def]
+            if key == "submission/page-two.bin":
+                raise RuntimeError("injected second-image failure")
+            super().put_file(key, source_handle, expected_sha=expected_sha)
+
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    volume = tmp_path / "volume"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=FailSecondImage(volume),
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_PARTIAL
+    assert (volume / "submission" / "page-one.bin").is_file()
+    assert not (volume / "submission-manifest.json").exists()
+
+    surface.upload(
+        source,
+        sealed_manifest=manifest,
+        target=LocalFixtureObjectStore(volume),
+    )
+    assert (volume / "submission-manifest.json").read_bytes() == manifest.read_bytes()
+
+
+def test_upload_reuses_an_identical_published_submission_without_new_writes(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    surface.upload(source, sealed_manifest=manifest, target=store)
+    first_writes = tuple(store.puts)
+    surface.upload(source, sealed_manifest=manifest, target=store)
+
+    assert first_writes == (
+        "submission/page-one.bin",
+        "submission/page-two.bin",
+        "submission-manifest.json",
+    )
+    assert tuple(store.puts) == first_writes
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["transfer"]["completed_keys"] == []
+    assert payload["transfer"]["skipped_keys"] == [
+        "submission/page-one.bin",
+        "submission/page-two.bin",
+    ]
+
+
+def test_upload_refuses_a_different_manifest_before_writing_its_foreign_image(
+    tmp_path: Path,
+) -> None:
+    """One immutable manifest owns a prefix; a changed batch must touch no object there."""
+
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+    surface.upload(source, sealed_manifest=manifest, target=store)
+
+    changed_source = tmp_path / "changed-pages"
+    shutil.copytree(source, changed_source)
+    (changed_source / "foreign-page.bin").write_bytes(b"must never enter the sealed prefix\n")
+    changed_manifest = tmp_path / "changed-submission.json"
+    changed_manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(changed_source))))
+    before = _all_files(store.root)
+    store.puts.clear()
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(changed_source, sealed_manifest=changed_manifest, target=store)
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "submission-manifest.json" in str(refusal.value.detail)
+    assert store.puts == []
+    assert _all_files(store.root) == before
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["state"] == "manifest-conflict"
+
+
+def test_a_named_prefix_adds_an_independent_immutable_batch_on_one_volume(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    first_source, first_manifest = _manifest(tmp_path)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+    surface.upload(first_source, sealed_manifest=first_manifest, target=store)
+
+    second_source = tmp_path / "second-batch"
+    second_source.mkdir()
+    (second_source / "page-three.bin").write_bytes(b"synthetic page three\n")
+    second_manifest = tmp_path / "second-submission.json"
+    second_manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(second_source))))
+
+    surface.upload(
+        second_source,
+        sealed_manifest=second_manifest,
+        prefix="batch-02",
+        target=store,
+    )
+
+    assert (store.root / "submission-manifest.json").read_bytes() == first_manifest.read_bytes()
+    assert (store.root / "batch-02-manifest.json").read_bytes() == second_manifest.read_bytes()
+    assert (store.root / "batch-02" / "page-three.bin").read_bytes() == b"synthetic page three\n"
+
+
 def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1763,13 +1873,11 @@ def test_upload_refuses_an_oversized_manifest_before_constructing_a_transfer(
 
 
 def test_upload_refuses_a_bad_sealed_manifest_as_refused_not_partial(tmp_path: Path) -> None:
-    """G13: `ChecksummedTransfer.resume` reads the sealed manifest itself,
-    through `submission_door.load_manifest`, before a single file is sent.
+    """G13: upload validates the immutable snapshot through
+    `submission_door.load_manifest` before a target is inspected or a file sent.
 
-    A malformed or non-canonical manifest raises `SubmitRefusal` (a
-    `ContractError`) from inside that call, which the surrounding
-    `(TransferFailure, VolumeTransferRefusal, OSError, ValueError)` tuple does
-    not catch -- previously an unclassified crash. It must land as
+    A malformed or non-canonical manifest raises `SubmitRefusal` (a `ContractError`).
+    It must land as
     `UPLOAD_REFUSED`: never `UPLOAD_PARTIAL`, because nothing was transferred
     and reporting a partial transfer would be a false statement about what
     happened, and not `UPLOAD_MANIFEST_MISSING` either, whose copy sends the
@@ -2128,8 +2236,8 @@ def test_sealed_manifest_upload_refuses_a_new_policy_instead_of_ignoring_it(
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
-        def upload(self, source: Path, *, sealed_manifest: Path, volume=None) -> None:
-            del volume
+        def upload(self, source: Path, *, sealed_manifest: Path, prefix: str, volume=None) -> None:
+            del prefix, volume
             uploads.append((source, sealed_manifest))
 
     monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
@@ -2151,6 +2259,79 @@ def test_sealed_manifest_upload_refuses_a_new_policy_instead_of_ignoring_it(
     assert result == 2
     assert uploads == []
     assert "existing sealed record already carries the policy" in capsys.readouterr().out
+
+
+def test_cli_upload_forwards_a_named_prefix_for_both_manifest_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[tuple[str, str]] = []
+
+    class ObservedSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def upload(self, _source: Path, *, sealed_manifest: Path, prefix: str, volume=None) -> None:
+            del sealed_manifest, volume
+            observed.append(("sealed", prefix))
+
+        def submit_and_upload(
+            self,
+            _source: Path,
+            *,
+            manifest_out: Path,
+            policy_path=None,
+            prefix: str,
+            volume=None,
+        ) -> None:
+            del manifest_out, policy_path, volume
+            observed.append(("new", prefix))
+
+    monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
+    common = ["--workspace", str(tmp_path), "upload", "--source", str(tmp_path / "source")]
+
+    assert (
+        cli.main(
+            [
+                *common,
+                "--sealed-manifest",
+                str(tmp_path / "sealed.json"),
+                "--prefix",
+                "batch/two",
+            ]
+        )
+        == 0
+    )
+    assert (
+        cli.main(
+            [
+                *common,
+                "--manifest-out",
+                str(tmp_path / "new.json"),
+                "--prefix",
+                "batch/three/",
+            ]
+        )
+        == 0
+    )
+    assert observed == [("sealed", "batch/two"), ("new", "batch/three")]
+
+
+@pytest.mark.parametrize("prefix", ("/absolute", "../escape", "a//b", "a/./b", "bad\x00key"))
+def test_cli_upload_refuses_an_unsafe_object_prefix(prefix: str) -> None:
+    with pytest.raises(OperatorError) as refusal:
+        cli.build_parser().parse_args(
+            [
+                "upload",
+                "--source",
+                "source",
+                "--sealed-manifest",
+                "sealed.json",
+                "--prefix",
+                prefix,
+            ]
+        )
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert "safe relative key prefix" in str(refusal.value.detail)
 
 
 def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
