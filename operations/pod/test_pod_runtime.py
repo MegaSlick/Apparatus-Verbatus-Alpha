@@ -5614,6 +5614,25 @@ def test_the_image_contract_checks_the_running_interpreters_venv_prefix(
     assert verified["interpreter"] == str(interpreter)
 
 
+def test_the_image_contract_refuses_an_inferred_system_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The inferred prefix must refuse, not only accept."""
+
+    repository = _image(tmp_path)
+    interpreter = _interpreter(repository)
+    monkeypatch.setattr(bootstrap_module.sys, "executable", str(interpreter))
+    monkeypatch.setattr(bootstrap_module.sys, "prefix", "/usr")
+
+    with pytest.raises(ImageContractRefusal, match="reports sys.prefix"):
+        verify_image_contract(
+            repository,
+            interpreter=interpreter,
+            executables=_tools(tmp_path),
+            environment={},
+        )
+
+
 def test_the_image_contract_accepts_a_standard_versioned_venv_launcher(tmp_path: Path) -> None:
     repository = _image(tmp_path)
     interpreter = repository / REPOSITORY_VENV_DIRECTORY / "bin" / "python3"
