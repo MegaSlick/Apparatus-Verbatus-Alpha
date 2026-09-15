@@ -1270,3 +1270,12 @@ Raw findings: 112; after dedup: 112. Panel verdicts recorded at checkpoint: 237.
 
 **Proposed fix.** Have status (or a doctor-style line at the start of every verb) report the confinement backend and whether its probe passes.
 
+
+## Rulings made on the findings (Tyrel, 2026-09-15)
+
+- **Stage 1 is witnesses only** (G6). The Perlector chair is absent for Stage 1 and its
+  real-roster catalogue rows are removed so an affordable pod can pass preflight.
+- **One failure is a glitch, two is a pattern** (G7). A single bad engine response holds
+  that act and the run continues to export; more than one failure per 1000 pages stops
+  the run at the stage boundary for investigation before the next stage. The threshold
+  is sealed configuration. Queued as its own change after this pull request.
