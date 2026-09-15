@@ -281,10 +281,11 @@ caveat = "gap_tolerance_px is the loudest number in this file and must never be 
 #                            the page's OWN AREA, flags a page on its own
 #                            whatever fraction of that page's ink it is. Resolved
 #                            with common.background.round_half_up_bp and floored
-#                            at residual_ink.MINIMUM_INK_PIXELS (24), because
-#                            coverage_flag reads this gate before the fraction
-#                            gate's own noise floor and a resolved value under
-#                            that floor would flag a page on a speck.
+#                            at [coverage_audit.noise_floor] minimum_ink_pixels
+#                            (24) below, because coverage_flag reads this gate
+#                            before the fraction gate's own noise floor and a
+#                            resolved value under that floor would flag a page
+#                            on a speck.
 #   edge_band_bp             the perimeter strip the unclaimed-edge-ink finding
 #                            is measured in, as basis points of the page's
 #                            SHORTER SIDE. The shorter side and not each

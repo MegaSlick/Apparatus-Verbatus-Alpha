@@ -147,8 +147,8 @@ prompt           -- {serving_recipe, chair_identity_sha256, dossier_digest,
                     source, so editing the builder changes the record even when
                     its name and every other field stay identical
 dissent          -- derived-comparison-view rows (see below)
-truncation       -- {classification, signals}, present on every attempted
-                    reading regardless of outcome (see below)
+truncation       -- {classification, signals, measure}, present on every
+                    attempted reading regardless of outcome (see below)
 uncertain_spans  -- [{start, end, alternatives, confidence}, ...]: the exhausted-cap
                     projection first (cap 0 only), then the reader's own assessed
                     doubts over the published text. NOTHING is dropped, including
@@ -379,8 +379,26 @@ the rendered bytes.
 
 ```text
 {classification: "complete" | "truncated" | "unknown",
- signals: {stop_reason_declared, unclosed_structure, length_suspicious, ends_abruptly}}
+ signals: {stop_reason_declared, unclosed_structure, length_suspicious, ends_abruptly},
+ measure: {region_pixels, page_pixels, characters, length_floor_characters_per_page}}
 ```
+
+`measure` is what the length signal was judged from, and it is closed:
+`common/perlector_audit.py::validate_truncation_record` refuses a record
+without it. The region's page-space area (the union of an act's crops per page,
+summed over the pages it spans), the sealed area of those pages, the reading's
+character count, and the floor from the run's own sealed
+`config/perlector_protocol.toml` `[truncation]` table — every term of
+`characters * page_pixels < floor * region_pixels`, so a reader holding the
+record and nothing else re-derives `length_suspicious` instead of trusting it
+(GOVERNANCE 6: configuration protects reproducibility going forward, the record
+protects the past). The shared validator does re-derive it, and refuses a record
+whose signal disagrees with its own geometry; where the caller also holds the
+reading the record was measured over it binds `characters` to that text as well.
+The floor is dimensionless on purpose — an absolute pixels-per-character ratio
+held every ordinary 300-DPI act as truncated while clearing this repository's
+fixture pages (pre-launch review, F082) — and it is sealed rather than a module
+constant so a change between two runs moves their `config_digest` (F088).
 
 Computed by `truncation.py` for every attempted reading, primed or nuda,
 regardless of what outcome it ends up producing — so the record is never
@@ -565,9 +583,12 @@ delivered and its call ran to completion) or `incomplete` (delivered and the tru
 instrument did not classify its call complete -- the engine reported `length`, gave no
 stop word, or the returned text carried all three of the instrument's own cut-off signals). `reproof_truncation`
 is the truncation instrument run over the re-proof's own text and stop word, or
-`None` where none was delivered; its classification is re-derived from its four sealed
+`None` where none was delivered; it carries the same closed `measure` block every
+truncation record does, its classification is re-derived from its four sealed
 signals by every validator (`common/perlector_audit.py::truncation_classification`, the
-one rule `truncation.classify` also decides with). `reproof_call` names the retained
+one rule `truncation.classify` also decides with), its `length_suspicious` is re-derived
+from that block by the same surface (`length_signal`), and its character count is bound
+to the re-proof text the finding is validated against. `reproof_call` names the retained
 call record and raw response that termination was measured over (`None` for the fixture
 chamber, which has no engine), so the verdict can be checked against the response
 itself. `unresolved` is derived from `examination` alone:

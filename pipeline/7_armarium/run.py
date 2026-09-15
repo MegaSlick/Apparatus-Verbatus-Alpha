@@ -897,10 +897,19 @@ def ink_map_page_rows(
 # numbers in them were ever measured against this project's corpus. Named by
 # the CLI attribute the run seals, so a file renamed in `config/` moves here
 # rather than leaving the export quietly reporting one fewer caveat.
+#
+# `perlector-protocol` joined the three Designator files on 2026-09-14, when the
+# truncation instrument's length floor moved out of source into
+# `[truncation]` with a `calibrated_for_this_corpus = false` block of its own
+# (pre-launch review, F082/F088). It decides whether an act is held as
+# truncated, and an uncalibrated instrument that decides a hold is exactly what
+# this survey exists to disclose; a caveat that stayed in `config/` and never
+# reached the bundle would be one the product does not carry.
 _CALIBRATED_CONFIG_ATTRIBUTES: Final = (
     ("designator-padding", "designator_padding_config", "padding"),
     ("designator-geometry", "designator_geometry_config", "geometry"),
     ("designator-grouping", "designator_grouping_config", "grouping"),
+    ("perlector-protocol", "perlector_protocol_config", "truncation"),
 )
 # The Recensor's named absence codes for the act-visibility survey. Spelled
 # here rather than imported: `common/` owns nothing of them and a stage may not
@@ -916,7 +925,13 @@ _VISIBILITY_ABSENCE_CODES: Final = frozenset(
 
 
 def _config_provenance(context, name: str, path, table: str) -> dict:
-    """One sealed configuration's `provenance` block, refused if it has none."""
+    """One sealed configuration's `provenance` block, refused if it has none.
+
+    `table` is the block's own table, because a configuration may declare more
+    than one and the survey reports the table whose numbers the run used --
+    `[truncation]` in the Perlector protocol, the file's own in each Designator
+    file.
+    """
     try:
         data = Path(path).read_bytes()
         context.require_sealed_config(name, digest_bytes(data))
@@ -929,8 +944,9 @@ def _config_provenance(context, name: str, path, table: str) -> dict:
     provenance = record.get(table, {}).get("provenance")
     if not isinstance(provenance, dict) or "calibrated_for_this_corpus" not in provenance:
         raise FatalAccounting(
-            f"the sealed configuration at {path} declares no calibration provenance; the "
-            "export cannot say whether the geometry its act boundaries rest on was measured"
+            f"the sealed configuration at {path} declares no calibration provenance in "
+            f"[{table}]; the export cannot say whether the instrument it reads from that "
+            "table was ever measured"
         )
     return provenance
 
@@ -956,13 +972,15 @@ def _typed_sample_count(provenance: dict, name: str) -> int | None:
 
 
 def geometry_calibration_rows(context) -> list[dict]:
-    """What each sealed geometry configuration says about its own calibration.
+    """What each surveyed sealed configuration says about its own calibration.
 
     Read from the same bytes the run sealed (`sealed_config_digests`), so a row
     here is the caveat the run actually ran under rather than whatever is in
     `config/` now. `sample_count` is `None` where the file declares none, which
     is not a zero: `designator_geometry.toml` carries no sample field at all,
-    and reporting 0 for it would be a measurement nobody took.
+    and reporting 0 for it would be a measurement nobody took. The function
+    keeps the name the export instrument has; since 2026-09-14 the list it walks
+    is wider than Designator geometry (see `_CALIBRATED_CONFIG_ATTRIBUTES`).
     """
     rows = []
     for name, attribute, table in _CALIBRATED_CONFIG_ATTRIBUTES:

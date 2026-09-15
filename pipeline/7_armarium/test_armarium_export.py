@@ -183,6 +183,14 @@ def _test_not_measured_basis(**overrides):
                     "calibrated_for_this_corpus": False,
                     "sample_count": 0,
                 },
+                # The truncation instrument's length floor: the survey's fourth
+                # sealed configuration since 2026-09-14, and the only one that
+                # is not Designator geometry (pre-launch review, F082/F088).
+                {
+                    "configuration": "perlector-protocol",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": 0,
+                },
             ]
         },
     }
@@ -4604,9 +4612,7 @@ def test_a_resealed_geometry_detail_must_name_the_canonical_configurations(mutat
         else:
             configurations[0], configurations[1] = configurations[1], configurations[0]
 
-    with pytest.raises(
-        SchemaRefusal, match="three configurations.*canonical order|canonical order"
-    ):
+    with pytest.raises(SchemaRefusal, match="configurations.*canonical order|canonical order"):
         verify_delivered_bundle(_resealed_manifest(break_geometry), tmp_path / "delivered")
 
 
@@ -4966,6 +4972,11 @@ def test_an_uncalibrated_geometry_configuration_is_a_caveat_on_the_act_boundarie
                             "calibrated_for_this_corpus": True,
                             "sample_count": 10,
                         },
+                        {
+                            "configuration": "perlector-protocol",
+                            "calibrated_for_this_corpus": True,
+                            "sample_count": 7,
+                        },
                     ]
                 }
             }
@@ -4999,7 +5010,7 @@ def test_a_basis_missing_one_instrument_is_refused_before_a_product_byte_is_writ
 def test_a_geometry_basis_cannot_turn_a_string_or_empty_row_set_into_measurement():
     broken = _test_not_measured_basis()
     broken["designator-geometry-calibration"]["configurations"] = []
-    with pytest.raises(SchemaRefusal, match="must name three configurations"):
+    with pytest.raises(SchemaRefusal, match="must name 4 configurations"):
         _manifest_of(replace(_projection(), not_measured_basis=broken))
 
     broken = _test_not_measured_basis()

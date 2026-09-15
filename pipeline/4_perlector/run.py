@@ -2500,7 +2500,7 @@ def validate_reading_payload(
     fields: frozenset,
     run_id: str | None = None,
     config_digest: str | None = None,
-    protocol_config: dict[str, str | int] | None = None,
+    protocol_config: dict[str, Any] | None = None,
     protocol_sha256: str | None = None,
     inputs: list[dict[str, str]] | None = None,
 ) -> None:
