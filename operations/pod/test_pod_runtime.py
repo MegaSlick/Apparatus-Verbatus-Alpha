@@ -5791,7 +5791,9 @@ def test_the_image_contract_refuses_an_interpreter_outside_the_repositorys_venv(
 
     repository = _image(tmp_path)
 
-    with pytest.raises(ImageContractRefusal, match="not a repository virtual environment interpreter"):
+    with pytest.raises(
+        ImageContractRefusal, match="not a repository virtual environment interpreter"
+    ):
         verify_image_contract(
             repository,
             interpreter=Path("/usr/bin/python3"),

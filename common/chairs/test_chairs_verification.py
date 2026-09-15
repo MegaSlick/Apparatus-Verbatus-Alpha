@@ -443,9 +443,10 @@ def test_the_measured_real_roster_pins_each_shipped_manifest():
         "attestator_3",
         "perlector",
     }
-    assert configured["designator_structure"].digest_manifest == configured[
-        "attestator_1"
-    ].digest_manifest
+    assert (
+        configured["designator_structure"].digest_manifest
+        == configured["attestator_1"].digest_manifest
+    )
     for role, identity in configured.items():
         assert identity.digest_manifest != PRE_MATERIALIZATION_SENTINEL, role
         assert read_manifest(
@@ -476,6 +477,7 @@ def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(
         registry.ensure(identity)
     with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
         registry.receipt(identity, serving_details())
+
 
 def test_the_materialization_fetcher_separates_client_state_without_deleting_repo_bytes(tmp_path):
     """The Hugging Face client's bookkeeping must not become part of a pin.

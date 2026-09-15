@@ -73,6 +73,11 @@ three referenced serving artifacts with matching content digests. It emits
 candidate `preflight_identity_digest` and `preflight_digest` values only for
 the measured tier. A reviewer writes the identity digest first, then the
 profile digest, and keeps every other tier unproven until separately measured.
+This verifier currently supports full checkpoints only. It refuses adapter
+candidates because the existing adapter identity names a base role without
+binding that base's resolved checkpoint; independently proving a replacement
+base cannot prove the adapter/base combination. The current real roster uses
+full checkpoints and is unaffected by this restriction.
 The recipe and `config/pod_placement.toml` byte digests are both part of the
 run configuration digest. Production assembly requires the `StageContext` that
 `open_context()` revalidated and the `StageContextReceiptPublisher` for that

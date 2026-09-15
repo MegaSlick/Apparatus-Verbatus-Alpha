@@ -40,12 +40,18 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
         "pod_placement_sha256": digest_bytes(placement_bytes),
     }
     models = load_models_toml(ws.models_config)
+    profile_rows = tomllib.loads(recipes_bytes.decode("utf-8"))["profiles"]
     smoke_receipts = []
     cache_receipts = []
     placements = []
     for role, identity in sorted(models.chairs.items()):
         if not isinstance(identity, ChairIdentity):
             continue
+        served_model_id = next(
+            row["served_model_id"]
+            for row in profile_rows
+            if row["chair"] == role and row["tier"] == PROVEN_TIER
+        )
         cache_receipts.append(
             {
                 "chair": role,
@@ -92,6 +98,7 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
                 "recipe": identity.serving_recipe,
                 "tier": PROVEN_TIER,
                 "preflight_state": "unproven",
+                "served_model_id": served_model_id,
             },
         }
         audit_ref = _write_artifact(evidence_root, "launch-audits", audit)
@@ -109,6 +116,13 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
                 "supplied_fixture_sha256": HASH,
                 "smoke_fixture_response_sha256": "b" * 64,
                 "smoke_fixture_output_sha256": "c" * 64,
+                "fixture_response_sha256": "b" * 64,
+                "resolved_identity": identity.to_record(),
+                "resolved_revision": identity.receipt_revision,
+                "resolved_revision_kind": identity.receipt_revision_kind,
+                "served_model_id": served_model_id,
+                "page_witness_sha256": "d" * 64,
+                "page_witness_matches": True,
                 "smoke_service_request_count": 1,
                 "smoke_fixture_request_count": 1,
                 "service_receipt": service_receipt,
@@ -191,6 +205,71 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
             row["preflight_digest"] = by_key[key]["preflight_digest"]
     parsed = parse_serving_recipes(raw)
     assert sum(profile.preflight_state == "proven" for profile in parsed.profiles) == 5  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("schema", "state"),
+    [
+        ("pod-bootstrap-result.v1", "bootstrap-red"),
+        ("pod-bootstrap-result.v1", None),
+        ("pod-bootstrap-hold.v1", "terminated"),
+        ("pod-bootstrap-hold.v1", None),
+    ],
+)
+def test_qualification_refuses_contradictory_wrapper_state(
+    tmp_path: Path, schema: str, state: str | None
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    wrapper.update(schema=schema, state=state)
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="wrapper state"):
+        _qualify(paths)
+
+
+def test_qualification_accepts_green_hold_report(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    wrapper.update(schema="pod-bootstrap-hold.v1", state="holding")
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    assert len(_qualify(paths)["candidates"]) == 5
+
+
+def test_qualification_cannot_stamp_an_adapter_without_binding_its_base(tmp_path: Path) -> None:
+    paths, _ = _qualification_fixture(tmp_path)
+    models = paths["models"].read_text(encoding="utf-8")
+    models = models.replace(
+        "[chairs.attestator_1]\n",
+        '[chairs.attestator_1]\nadapter_of = "designator_structure"\n',
+        1,
+    )
+    paths["models"].write_text(models, encoding="utf-8")
+    assert load_models_toml(paths["models"]).chairs["attestator_1"].adapter_of is not None
+
+    with pytest.raises(QualificationRefusal, match="adapter qualification is unsupported"):
+        _qualify(paths)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("page_witness_matches", False),
+        ("page_witness_matches", None),
+        ("resolved_identity", {"role": "another-chair"}),
+        ("resolved_revision", "e" * 40),
+        ("resolved_revision_kind", "local-tree"),
+        ("served_model_id", "another-model"),
+        ("fixture_response_sha256", "e" * 64),
+    ],
+)
+def test_qualification_refuses_inconsistent_page_read_evidence(
+    tmp_path: Path, field: str, bad_value: object
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
+    smoke[field] = bad_value  # type: ignore[index]
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="golden-page witness|page-read evidence"):
+        _qualify(paths)
 
 
 def test_qualification_refuses_a_normal_launch_audit(tmp_path: Path) -> None:

@@ -105,6 +105,15 @@ def qualification_candidates(
         for role, identity in models.chairs.items()
         if isinstance(identity, ChairIdentity)
     }
+    adapters = sorted(
+        role for role, identity in identities.items() if identity.adapter_of is not None
+    )
+    if adapters:
+        raise QualificationRefusal(
+            "adapter qualification is unsupported: an adapter proof must bind its resolved "
+            "base checkpoint as well as the adapter; no candidates were emitted for "
+            + ", ".join(adapters)
+        )
     smoke_rows = preflight.get("smoke_receipts")
     if not isinstance(smoke_rows, list):
         raise QualificationRefusal("preflight smoke receipts are not a list")
@@ -130,14 +139,6 @@ def qualification_candidates(
         if len(matches) != 1:
             raise QualificationRefusal(f"chair {role!r} has {len(matches)} smoke receipts")
         smoke = matches[0]
-        _verify_smoke(
-            smoke,
-            identity=identity,
-            tier=tier,
-            golden_page_sha256=golden_page_sha256,
-            config_inputs=config_inputs,
-            evidence_root=root,
-        )
         profile_rows = [
             row
             for row in rows
@@ -155,6 +156,15 @@ def qualification_candidates(
             raise QualificationRefusal(
                 f"chair {role!r} tier {tier!r} is not one unproven vLLM profile"
             )
+        _verify_smoke(
+            smoke,
+            identity=identity,
+            tier=tier,
+            served_model_id=row["served_model_id"],
+            golden_page_sha256=golden_page_sha256,
+            config_inputs=config_inputs,
+            evidence_root=root,
+        )
         identity_digest = chair_preflight_identity_digest(identity)
         row["preflight_identity_digest"] = identity_digest
         row["preflight_state"] = "proven"
@@ -208,6 +218,11 @@ def qualification_candidates(
 
 def _bootstrap_record(report: Mapping[str, object]) -> Mapping[str, object]:
     if report.get("schema") in {"pod-bootstrap-hold.v1", "pod-bootstrap-result.v1"}:
+        expected_state = (
+            "holding" if report["schema"] == "pod-bootstrap-hold.v1" else "bootstrap-green"
+        )
+        if report.get("state") != expected_state:
+            raise QualificationRefusal("bootstrap wrapper state does not record success")
         return _object(report.get("bootstrap"), "bootstrap result")
     if {"color", "completed", "receipts"}.issubset(report):
         return report
@@ -219,6 +234,7 @@ def _verify_smoke(
     *,
     identity: ChairIdentity,
     tier: str,
+    served_model_id: str,
     golden_page_sha256: str,
     config_inputs: Mapping[str, object],
     evidence_root: Path,
@@ -239,11 +255,26 @@ def _verify_smoke(
         "supplied_fixture_sha256",
         "smoke_fixture_response_sha256",
         "smoke_fixture_output_sha256",
+        "page_witness_sha256",
     ):
         if not is_sha256(smoke.get(field)):
             raise QualificationRefusal(f"chair {identity.role!r} has no valid {field}")
     if smoke["supplied_fixture_sha256"] != golden_page_sha256:
         raise QualificationRefusal(f"chair {identity.role!r} smoked a different golden page")
+    page_read = {
+        "resolved_identity": identity.to_record(),
+        "resolved_revision": identity.receipt_revision,
+        "resolved_revision_kind": identity.receipt_revision_kind,
+        "served_model_id": served_model_id,
+        "fixture_response_sha256": smoke["smoke_fixture_response_sha256"],
+    }
+    if smoke.get("page_witness_matches") is not True:
+        raise QualificationRefusal(f"chair {identity.role!r} did not match the golden-page witness")
+    for field, expected in page_read.items():
+        if smoke.get(field) != expected:
+            raise QualificationRefusal(
+                f"chair {identity.role!r} page-read evidence disagrees at {field}"
+            )
     for field in ("smoke_service_request_count", "smoke_fixture_request_count"):
         value = smoke.get(field)
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
@@ -300,6 +331,7 @@ def _verify_smoke(
     if (
         profile.get("recipe") != identity.serving_recipe
         or profile.get("tier") != tier
+        or profile.get("served_model_id") != served_model_id
         or profile.get("preflight_state") != "unproven"
     ):
         raise QualificationRefusal(f"chair {identity.role!r} launch audit names another profile")
