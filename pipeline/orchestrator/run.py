@@ -155,12 +155,9 @@ def _looks_like_provider_credential(name: str) -> bool:
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
     if args.submission_folder is not None:
         if (
-            (
-                getattr(args, "triage_clusters", None) is not None
-                or getattr(args, "triage_producer_recipe", None) is not None
-            )
-            and getattr(args, "triage_decision_manifest", None) is None
-        ):
+            getattr(args, "triage_clusters", None) is not None
+            or getattr(args, "triage_producer_recipe", None) is not None
+        ) and getattr(args, "triage_decision_manifest", None) is None:
             raise ContractError(
                 "--triage-clusters and --triage-producer-recipe require --triage-decision-manifest"
             )

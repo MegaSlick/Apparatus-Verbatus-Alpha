@@ -516,10 +516,9 @@ def resolve_run_plan(
             raise RunRefusal(f"{flag} {path} is not a file on the volume", report_path=report_path)
         triage_paths[flag] = path
     if (
-        (triage_paths["--triage-clusters"] is not None
-        or triage_paths["--triage-producer-recipe"] is not None)
-        and triage_paths["--triage-decision-manifest"] is None
-    ):
+        triage_paths["--triage-clusters"] is not None
+        or triage_paths["--triage-producer-recipe"] is not None
+    ) and triage_paths["--triage-decision-manifest"] is None:
         raise RunRefusal(
             "--triage-clusters and --triage-producer-recipe require --triage-decision-manifest",
             report_path=report_path,

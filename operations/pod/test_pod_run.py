@@ -283,7 +283,9 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
     assert hold["tick"] == 4
 
 
-def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(tmp_path: Path) -> None:
+def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
+    tmp_path: Path,
+) -> None:
     """The normal run uses the cache bootstrap verified and preserves Door triage inputs."""
 
     ws = _prepared(tmp_path)
@@ -297,24 +299,27 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(tm
     runner = RecordedRunner()
     clock = Clock()
 
-    assert main(
-        _run_argv(
-            ws,
-            extra=(
-                "--triage-decision-manifest",
-                str(decision),
-                "--triage-clusters",
-                str(clusters),
-                "--triage-producer-recipe",
-                str(recipe),
+    assert (
+        main(
+            _run_argv(
+                ws,
+                extra=(
+                    "--triage-decision-manifest",
+                    str(decision),
+                    "--triage-clusters",
+                    str(clusters),
+                    "--triage-producer-recipe",
+                    str(recipe),
+                ),
             ),
-        ),
-        environ=_environ(clock, lifetime=1.0),
-        now=clock.now,
-        sleeper=clock.sleep,
-        actions_factory=lambda plan: PreflightedActions(),
-        runner=runner,
-    ) == EXIT_COMPLETE
+            environ=_environ(clock, lifetime=1.0),
+            now=clock.now,
+            sleeper=clock.sleep,
+            actions_factory=lambda plan: PreflightedActions(),
+            runner=runner,
+        )
+        == EXIT_COMPLETE
+    )
     command = runner.calls[0][0]
     assert command[command.index("--cache-root") + 1] == str(ws.volume / "chair-cache")
     for flag, path in (
