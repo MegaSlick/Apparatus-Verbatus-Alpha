@@ -1647,9 +1647,12 @@ def test_configured_cache_plan_reuses_the_verified_huggingface_sources(tmp_path)
         if entry["state"] == "present"
     }
     identities = [
-        replace(identity, digest_manifest=digests[next(
-            item.artifact for item in REQUIRED_ARTIFACTS if item.chair == role
-        )])
+        replace(
+            identity,
+            digest_manifest=digests[
+                next(item.artifact for item in REQUIRED_ARTIFACTS if item.chair == role)
+            ],
+        )
         for role, identity in real.chairs.items()
         if isinstance(identity, ChairIdentity) and identity.source == "huggingface"
     ]
@@ -1686,7 +1689,9 @@ def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(t
 
     record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
     real = load_models_toml(ROOT / "config" / "models-real.toml")
-    entries = {entry["artifact"]: entry for entry in record["artifacts"] if entry["state"] == "present"}
+    entries = {
+        entry["artifact"]: entry for entry in record["artifacts"] if entry["state"] == "present"
+    }
     source_identities = []
     chairs = {}
     config_root = tmp_path / "configured-roster"

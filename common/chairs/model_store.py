@@ -205,7 +205,9 @@ class VerifiedStoreFetcher:
             )
         snapshot = entry.get("snapshot")
         if not isinstance(snapshot, str):
-            raise DigestMismatchRefusal(identity.role, "model-store source plan has no snapshot path")
+            raise DigestMismatchRefusal(
+                identity.role, "model-store source plan has no snapshot path"
+            )
         source_root = Path(snapshot)
         try:
             source_root = source_root.resolve(strict=True)
@@ -215,7 +217,8 @@ class VerifiedStoreFetcher:
             ) from error
         if source_root.is_symlink() or not source_root.is_dir():
             raise DigestMismatchRefusal(
-                identity.role, "verified model-store snapshot is not a regular directory",
+                identity.role,
+                "verified model-store snapshot is not a regular directory",
             )
         for relative in paths:
             source = source_root / relative
@@ -225,7 +228,11 @@ class VerifiedStoreFetcher:
                 raise DigestMismatchRefusal(
                     identity.role, f"model-store source file {relative!r} is unavailable: {error}"
                 ) from error
-            if not resolved.is_relative_to(source_root) or source.is_symlink() or not source.is_file():
+            if (
+                not resolved.is_relative_to(source_root)
+                or source.is_symlink()
+                or not source.is_file()
+            ):
                 raise DigestMismatchRefusal(
                     identity.role,
                     f"model-store source file {relative!r} is not a regular in-snapshot file",

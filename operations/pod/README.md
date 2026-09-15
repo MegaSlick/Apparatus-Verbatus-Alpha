@@ -281,12 +281,13 @@ check.
   green this process holds until the pod is destroyed, re-journaling a
   liveness line at the monitoring interval; a red step exits non-zero at once,
   the correct immediate close. `ChairCacheBootstrapAction` is constructed here
-  for the first time in the tracked tree, using the real Hugging Face fetchers
-  already in `common/chairs/registry.py` for both chair-cache verification and
-  model-store materialization — **deferral 04-8 is only partly closed**: the
+  from a verified retained-store source plan: the registry copies each configured
+  role's pinned bytes into its own cache and verifies them before publication.
+  Only model-store materialization fetches from Hugging Face; cache preparation
+  and preflight have no network fallback. **Deferral 04-8 is only partly closed**: the
   class is constructed, but `refetch_same_pin=None` (the registry has no
   cache-clear verb), so the at-most-one same-pin re-fetch still does not ship,
-  and no test exercises the action. See the 04-8 row below. The transfer
+  while offline tests cover cache population and reuse. See the 04-8 row below. The transfer
   target stays optional: no submission manifest on the volume is a vacuous
   success and this process needs no object-store client at all; a manifest
   present with no configured target is a refusal, never a silently skipped

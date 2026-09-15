@@ -1244,7 +1244,7 @@ class _LazyChairCache:
     ``build_actions`` runs before ``Bootstrapper.run`` -- before REPOSITORY has
     checked out ``--repository-commit`` and before UV_ENVIRONMENT has synced
     the lockfile.  ``_build_cache`` eagerly reads ``--models-config`` off disk
-    and constructs the production Hugging Face fetcher; built eagerly, a
+    and verifies the retained-store source plan; built eagerly, a
     CHAIR_CACHE receipt would attest to whatever ``models.toml`` happened to be
     on disk at container start, not to the commit the journal names
     (GOVERNANCE 6).  The transfer and model-store actions are already lazy this
