@@ -300,10 +300,11 @@ arrived and the content-addressed ones checked against their own names. An evide
 object that cannot be fetched is named in the receipt and never takes the verified run
 tree down with it.
 
-**Six records lie under neither prefix**, and `operations/pod/README.md` §"What a launch
+**Ten records lie under neither prefix**, and `operations/pod/README.md` §"What a launch
 writes on the volume, and how each part comes home" lists them with the derivation of each
 key, so the `--evidence-key` list is assembled from a document rather than from memory.
-Five carry the launch token at paths an operator chose — the bootstrap **report**, the
+Six of them are records an operator or a program named directly. Five of those carry the
+launch token at paths an operator chose — the bootstrap **report**, the
 pod-run **report**, that report's **`-hold` liveness sibling** (the pod-run key with
 `-hold` before its suffix, and the only record that the pod stayed alive to the hard
 deadline), the pod-timer **runtime report**, and the bootstrap **journal** — and finding
@@ -312,8 +313,13 @@ The sixth, **`pod-transfer-journal.json`**, sits at the volume root under a fixe
 is the only durable record of which submission rows were verified against target-observed
 bytes. `--evidence-key <key>` (repeatable) brings each one home by its exact key — a
 volume-root-relative key, the volume path with the mount prefix removed, never a leading
-`/` — and the double-click route prompts for all six by name. The receipt states that limit and how
-many keys the call named — it does not claim they went unfetched when the operator named
+`/` — and the double-click route prompts for all ten by name. The other four are the
+token-named siblings the derivation below adds to those paths: the pod timer's
+`-terminating.json` breadcrumb, and `pod_run`'s `-liveness.json`, `-timings.json` and
+`-transcript.log`. They are keys in their own right, so the prompt route asks for each of
+them too rather than leaving them reachable only through a saved receipt.
+
+The receipt states that limit and how many keys the call named — it does not claim they went unfetched when the operator named
 them — and `objects` and `refusals` say which of the named keys arrived. Nothing is left
 to be inferred from an empty folder.
 

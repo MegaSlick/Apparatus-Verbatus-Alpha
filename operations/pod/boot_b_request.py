@@ -48,7 +48,13 @@ from pathlib import Path
 from typing import Sequence
 
 from .boot_a_request import BOOT_A_VOLUME_MOUNT_PATH, _validate_hard_deadline, cheapest_card
-from .models import PodCreateRequest, SpendRefusal, require_utc
+from .launch import _bind_report_path_to_launch
+from .models import (
+    DEFAULT_CONTAINER_DISK_GB,
+    PodCreateRequest,
+    SpendRefusal,
+    require_utc,
+)
 from .preflight import CardProfile, PlacementTable, load_placement_table
 from .spend import SpendPolicy, load_spend_policy
 
@@ -80,6 +86,8 @@ _SPECIMEN_IMAGE = "registry.example/verbatus@sha256:" + "0" * 64
 _SPECIMEN_VOLUME_ID = "specimen-volume-id"
 _SPECIMEN_COMMIT = "0" * 40
 _SPECIMEN_RUN_ID = "boot-b-specimen"
+_SPECIMEN_LAUNCH_TOKEN = "0" * 32
+_SPECIMEN_CUTOFF_MARGIN_SECONDS = "3600"
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,8 +262,13 @@ def pod_request(
         "repository_commit": repository_commit or _UNSUPPLIED,
         # Stated rather than left to the provider's default: the bootstrap
         # installs the serving stack onto container-local disk twice over.
-        # `models.DEFAULT_CONTAINER_DISK_GB` carries the arithmetic.
-        "container_disk_gb": 60,
+        # `models.DEFAULT_CONTAINER_DISK_GB` carries the arithmetic, and is
+        # read from there rather than restated: the first boot replaces that
+        # number with a measurement (`operations/pod/README.md`), and a literal
+        # here would keep printing 60 while the constant moved, with
+        # `sync_uv_environment`'s free-space refusal discovering it on a rented
+        # card (CodeRabbit on PR #117).
+        "container_disk_gb": DEFAULT_CONTAINER_DISK_GB,
         "metadata": {"VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "<the sealed policy value>"},
     }
 
@@ -267,11 +280,26 @@ def validated_pod_request(request: dict[str, object]) -> PodCreateRequest:
     shape is made here, offline, at render time -- so the Boot B request cannot
     be published in a shape the money path would reject. Only the fields Tyrel
     supplies are substituted, and only when they are still placeholders; the
-    argv, the mount path, the container disk and the timer wiring are exactly
-    what is printed.
+    mount path, the container disk and the timer wiring are exactly what is
+    printed. The argv is the printed one with this launch's specimen token
+    folded in through `launch._bind_report_path_to_launch`, because that
+    binding is what `create` seals and what the token rules are written
+    against -- validating the unbound argv would prove a shape no launch ever
+    sends.
     """
 
     fields = dict(request)
+    metadata = dict(request.get("metadata") or {})  # type: ignore[arg-type]
+    if not _is_supplied(metadata.get("VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS")):
+        metadata["VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"] = _SPECIMEN_CUTOFF_MARGIN_SECONDS
+    # The sealed shape is the one a launch mints a token into, so the specimen
+    # carries one. Validating with `metadata={}` left `launch_token` unset, and
+    # every nested `--report-path` and `--journal` token rule in
+    # `models._required_timer_arguments` is written `if launch_token and ...` --
+    # so this renderer proved the one shape it exists to prove (a nested argv
+    # the create gate accepts) against a request with those rules switched off
+    # (CodeRabbit on PR #117).
+    metadata.setdefault("VERBATUS_LAUNCH_TOKEN", _SPECIMEN_LAUNCH_TOKEN)
     if not _is_supplied(fields.get("image")):
         fields["image"] = _SPECIMEN_IMAGE
     if not _is_supplied(fields.get("volume_id")):
@@ -284,6 +312,12 @@ def validated_pod_request(request: dict[str, object]) -> PodCreateRequest:
         (BOOT_B_COMMIT, _SPECIMEN_COMMIT),
     ):
         command = [part.replace(placeholder, specimen) for part in command]
+    # Bound through the launch's own binder, not by hand: what `create` seals
+    # is this argv with the token folded into every flag
+    # `models.NESTED_LAUNCH_BOUND_FLAGS` names, and validating an unbound argv
+    # against a token-carrying metadata would refuse a request the real launch
+    # would have accepted.
+    command = list(_bind_report_path_to_launch(tuple(command), _SPECIMEN_LAUNCH_TOKEN))
     deadline = fields.get("hard_deadline")
     if not isinstance(deadline, str) or deadline.startswith("<"):
         parsed = datetime.now(UTC).replace(microsecond=0)
@@ -301,7 +335,7 @@ def validated_pod_request(request: dict[str, object]) -> PodCreateRequest:
         hard_deadline=parsed,
         repository_commit=str(fields["repository_commit"]),
         container_disk_gb=int(fields["container_disk_gb"]),  # type: ignore[call-overload]
-        metadata={},
+        metadata=metadata,
     )
 
 

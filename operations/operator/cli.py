@@ -100,6 +100,24 @@ def _require_workspace_checkout(workspace: Path, args: argparse.Namespace) -> No
         )
 
 
+def _current_directory() -> str:
+    """Where this ran, or a stated unavailability -- never a second failure.
+
+    `os.getcwd()` raises when the directory this process started in has been
+    deleted or is no longer readable, and it was being called while the
+    original exception was already being handled: the receipt was abandoned,
+    the entry boundary called this same function again on the new failure, and
+    Verbatus printed a raw traceback and saved nothing (CodeRabbit on PR #117).
+    A receipt that cannot say where it ran is still the record of what
+    happened.
+    """
+
+    try:
+        return os.getcwd()
+    except OSError as error:
+        return f"unavailable: {error.strerror or error}"
+
+
 def record_unexpected(
     error: BaseException, arguments: Sequence[str], state: Path | None
 ) -> OperatorError:
@@ -141,7 +159,7 @@ def record_unexpected(
             "".join(traceback.format_exception(type(error), error, error.__traceback__))
         ),
         "argv": [str(word) for word in arguments],
-        "cwd": os.getcwd(),
+        "cwd": _current_directory(),
     }
     try:
         receipt = ReceiptStore(state).write("unexpected", payload)
@@ -289,7 +307,20 @@ def _derived_evidence_keys(
             data = handle.read(MAX_REQUEST_BYTES + 1)
         if len(data) > MAX_REQUEST_BYTES:
             raise ValueError(f"the launch receipt exceeds {MAX_REQUEST_BYTES} bytes")
-        request = json.loads(data.decode("utf-8"))["request"]
+        # Through the receipt's own shape, not past it. `ReceiptStore.write`
+        # stores every action under `payload`, and the launch receipt's request
+        # with it, so reading a top-level `request` raised `KeyError` for every
+        # genuine launch receipt and refused the derivation this flag exists
+        # for -- while the suite's hand-built fixture, which had no `payload`
+        # wrapper, passed (CodeRabbit on PR #117). Read here rather than
+        # through `ReceiptStore.read` because this path takes a receipt an
+        # operator names, which may sit outside the state root that store
+        # resolves against; the bounded no-follow open above is the reviewed
+        # read for a record this verb did not write.
+        record = json.loads(data.decode("utf-8"))
+        if not isinstance(record, dict) or not isinstance(record.get("payload"), dict):
+            raise ValueError("the receipt does not carry an operator receipt payload")
+        request = record["payload"]["request"]
         command = request["docker_start_cmd"]
         mount = request["volume_mount_path"]
         recorded_volume = request["volume_id"]
@@ -1506,12 +1537,30 @@ def _interactive_arguments() -> list[str]:
         if receipt:
             arguments.extend(("--launch-receipt", receipt))
         else:
+            # Ten prompts, not six: `launch_evidence_keys` derives four
+            # token-named siblings as exact keys of their own -- the timer's
+            # `-terminating.json` breadcrumb and `pod_run`'s `-liveness.json`,
+            # `-timings.json` and `-transcript.log` -- and this route asked for
+            # none of them, so a run whose receipt was not to hand could bring
+            # home only six of the ten records the receipt route fetches
+            # (CodeRabbit on PR #117). Each stays "leave blank to skip",
+            # because a key that names a record this launch never wrote comes
+            # back as a per-object refusal in the receipt.
             for label in (
                 "Volume key for the bootstrap report (leave blank to skip)",
                 "Volume key for the pod-run report (leave blank to skip)",
                 "Volume key for the pod-run '-hold' liveness report, the pod-run key with "
                 "'-hold' before its suffix (leave blank to skip)",
+                "Volume key for the pod-run '-liveness' tick, the pod-run key with "
+                "'-liveness' before its suffix (leave blank to skip)",
+                "Volume key for the pod-run '-timings' stage journal, the pod-run key with "
+                "'-timings' before its suffix (leave blank to skip)",
+                "Volume key for the pod-run '-transcript.log' orchestrator transcript, the "
+                "pod-run key with '-transcript' before its suffix and a .log suffix "
+                "(leave blank to skip)",
                 "Volume key for the pod-timer runtime report (leave blank to skip)",
+                "Volume key for the pod-timer '-terminating' breadcrumb, the pod-timer key "
+                "with '-terminating' before its suffix (leave blank to skip)",
                 "Volume key for the bootstrap journal (leave blank to skip)",
                 "Volume key for the transfer journal, normally pod-transfer-journal.json at "
                 "the volume root (leave blank to skip)",
