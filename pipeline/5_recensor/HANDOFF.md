@@ -18,11 +18,19 @@ A chair box that overlaps a cut region but lies wholly inside it is a finding
 only, whatever its inward delta or spread, and however many chairs report it.
 Unit 10C's own `unclaimed_observations` (a native/derived box with zero
 overlap with any proposal on that page) is a stronger fact but still only a
-*pointer*: it becomes a bounded fallback-recrop request only when all three
+*pointer*: it becomes a bounded fallback-recrop request only when all four
 facts hold: (1) the box reaches outside every region currently cut on its page;
-(2) Unit 9's ink map has at least `MINIMUM_INK_PIXELS` **in that outside part**;
-and (3) the existing act pool, kind allowance, and `RULED_ABSOLUTE_CAP` of 3
-allow it.
+(2) Unit 9's ink map has at least the sealed `minimum_ink_pixels`
+(`[coverage_audit.noise_floor]`) **in that outside part**;
+(3) the existing act pool, kind allowance, and `RULED_ABSOLUTE_CAP` of 3
+allow it; and (4) the run is on an ingress route where a recrop can actually be
+cut — `recrop_dispatchable`, which is `not real_ingress(context)`. Fact (4) is
+not a budget and not evidence: it asks whether anything downstream could answer
+what this stage is about to publish. On a real submission nothing can (the
+Designator refuses `--operation recover` by name), and the pointer becomes
+`unresolved_observation_hold`'s loud held-for-review instead, so the act ends as
+a review item and the Armarium still exports partial rather than the run ending
+fatally with no export at all (findings F068/F083).
 
 Conditions (1) and (2) are one subtraction, not two tests. Unit 10C retains an
 observation as unclaimed against the *proposal* set alone, so a pointer may sit
@@ -76,7 +84,7 @@ page: a continuation-only page, carried by an act whose primary page is earlier
 in the run, is never the page any act's own pointer check names. That ink does
 not disappear -- the page's own residual-ink flag and the Armarium's
 `unclaimed-edge-ink` hold still speak for it -- but a pointer that clears
-`MINIMUM_INK_PIXELS` on a continuation-only page funds no recrop and holds no
+the sealed `minimum_ink_pixels` on a continuation-only page funds no recrop and holds no
 act, because no act calls that page its own.
 
 n-of-m agreement, IoU/similarity, delta magnitude, per-chair weight, and any two-chair
@@ -206,10 +214,40 @@ returns `None` on a real submission, and `declared_recovery(None, act_key)` answ
 `False` for every act, the same "nothing fed it" reading `declared_unreconciled` gives
 `hold_acts`. **On a real submission the declared-crop origin has no producer at all.**
 `recovery_request_origin` and `recovery_request_reason` still receive `declared=False`
-on every call, so the sole real-mode funder of a recovery request is measured ink
-outside the live crop union (`COVERAGE_OBSERVATION_ORIGIN`, via
-`unclaimed_ink_observations`) -- exactly the account the "Cross-page ink" section above
-already describes.
+on every call, so the only route by which a real submission could ever have funded a
+recovery request was measured ink outside the live crop union
+(`COVERAGE_OBSERVATION_ORIGIN`, via `unclaimed_ink_observations`).
+
+**That route is now closed on a real submission, and both halves of the reason are
+kept separate.** The measurement is unchanged and still taken: `unclaimed_ink_observations`
+runs on every route, and the confirmed pointer is still carried onto the review. What
+changed is what the stage does with it. `recrop_dispatchable` (`not real_ingress(context)`)
+is a fourth conjunct on the publication gate, so **on a real submission no
+recovery request is published at all, of either origin**; the act takes
+`unresolved_observation_hold`'s real-route branch and is held for review with the
+unbuilt recrop named as the cause. `wants_recovery` is deliberately untouched by this:
+the act genuinely wants the coverage back, and saying otherwise would hide a real
+finding inside a dispatch fact. See findings F068/F083 — a published request nothing
+downstream can answer made the Designator exit 2, the orchestrator abort, and the
+Armarium refuse, leaving a run with no export by any sequence of stage invocations.
+
+**What that claim rests on, and the seam of it that is not yet measured.** The gate
+itself is measured: `test_unit14b_trigger_contract.py` compiles the live publication
+conditional out of `run.py` and evaluates it with every coverage and budget conjunct
+satisfied, so the route alone decides, and the real-route branch of
+`unresolved_observation_hold` is exercised directly. That a held act forces a partial
+export naming it is measured too, on the fixture route
+(`pipeline/orchestrator/test_orchestrator_acceptance.py`). **No single run measures the
+whole chain — gate, hold, partial export — on real ingress.** Doing that needs a run
+that is simultaneously a real submission and marked out by a served structure chair,
+with a scripted answer whose cuts deliberately leave ink outside them and a witness box
+pointing at it; no module in the tree drives that shape today
+(`pipeline/test_real_ingress_contexts_e2e.py` is real ingress with a hand-built
+Designator layer and stops at the conservation denominator;
+`pipeline/test_structure_chair_e2e.py` is the live structure chair on the fixture
+route). This is ledger finding F008, and the chain above is stated here as two proven
+halves rather than as one measured run, so nobody reads it as more than it is
+(GOVERNANCE 10).
 
 The nine `expected_acts` readers in this file are unchanged: on a real run the shared
 reader skips the fixture floor by name and recomputes every row from the Designator's
@@ -391,7 +429,11 @@ treating it as a recrop. So the Recensor requests only `fallback-recrop`, even
 where ARCHITECTURE's "full-page or continuation-aware pass" would suggest
 `page-level-reread` (a continuation shortfall) — asking for an operation
 nothing downstream can honor would trade a graceful hold for a hard crash, and
-that is a regression, not a fix. `recovery_state` also tracks each kind's own
+that is a regression, not a fix. **The same rule now covers `fallback-recrop` on
+a real submission**, where the Designator's recovery pass is equally unbuilt:
+the gate's `recrop_dispatchable` conjunct withholds the request and the act is
+held, which is what the rule above always meant and had not been applied to its
+own kind (F068/F083). `recovery_state` also tracks each kind's own
 sub-budget (`requests_by_kind`) rather than pooling every request into one
 shared count.
 

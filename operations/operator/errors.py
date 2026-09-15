@@ -47,6 +47,7 @@ class ErrorCode(StrEnum):
     RUN_HELD = "run-held"
     EXPORT_MISSING = "export-missing"
     EXPORT_FAILED = "export-failed"
+    EXPORT_PARTIAL = "export-partial"
     CLOSE_NOTHING = "close-nothing"
     CLOSE_LEASE_UNREADABLE = "close-lease-unreadable"
     CLOSE_LEASE_RECORD_FAILED = "close-lease-record-failed"
@@ -218,14 +219,26 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.RUN_FAILED: ErrorCopy(
         "The run could not reach its recorded end state.",
-        "The run remains visible as a named incomplete result, not a success.",
-        "Run `verbatus status` to read the saved run record, then repair the named problem before resuming.",
+        "The run remains visible as a named incomplete result, not a success. The reason is "
+        "on the detail line below and in the saved run record, with the run's output.",
+        "Read the reason below, run `verbatus status` to see the saved run record and the "
+        "review command for its run tree, then repair the named problem before resuming.",
     ),
     ErrorCode.RUN_HELD: ErrorCopy(
         "The run is held for review. This is a decision to make, not a failure.",
-        "Every named act and hold reason was recorded; if notifications were enabled, a "
-        "decision alert was also attempted.",
-        "Run `verbatus status` to read the hold reasons, resolve them, then run `verbatus run` again with the same run name; this is safe.",
+        "Every named act and hold reason was recorded, on this screen and in the saved run "
+        "record; the run tree keeps every sealed stage and nothing in it was called "
+        "complete. If notifications were enabled, a decision alert was also attempted.",
+        # review.py's own next-action rule, not a loop: re-running the same run
+        # name republishes the same sealed hold and reports it again.
+        "Read the hold reasons above or with `verbatus status`, and open the run tree "
+        "read-only with the `verbatus review` command printed with the run. A hold is "
+        "resolved only by a new authorized run over the same sealed source -- running "
+        "`verbatus run` again with the same run name republishes the same hold; `advance` "
+        "records permission to pass one sealed stage boundary and neither certifies a "
+        "reading nor clears a hold; any correction of the text happens outside the "
+        "pipeline. `verbatus export --run-id <run name>` copies what was delivered and "
+        "says it is partial.",
     ),
     ErrorCode.EXPORT_MISSING: ErrorCopy(
         "There is no completed Armarium export record for that run.",
@@ -236,6 +249,15 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Verbatus could not make the local export copy.",
         "The sealed Armarium record remains where it was; no changed export was claimed.",
         "Check the local export folder, then run `verbatus export` again; this is safe.",
+    ),
+    ErrorCode.EXPORT_PARTIAL: ErrorCopy(
+        "The export copied a run that is not complete.",
+        "The bundle and its receipt were kept and hold only what the run delivered; every "
+        "held, refused or unresolved act is listed above with its recorded reason, and "
+        "nothing here calls the run complete.",
+        "Read the recorded reasons, open the run tree read-only with `verbatus review`, and "
+        "decide with Tyrel what happens next; a hold is resolved only by a new authorized "
+        "run over the same sealed source. Nothing was started or charged; this is safe.",
     ),
     ErrorCode.CLOSE_NOTHING: ErrorCopy(
         "There is no recorded pod waiting to be closed.",
@@ -347,10 +369,12 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.UNEXPECTED: ErrorCopy(
         "Verbatus met a problem it could not classify.",
-        "It did not report the problem as success; this terminal message is the only record "
-        "of what happened, so keep it.",
-        "Copy or photograph this message, run `verbatus status` to check for saved records "
-        "from earlier steps, and ask for help before retrying; this is safe.",
+        "It did not report the problem as success. Where it could, it saved an `unexpected` "
+        "receipt naming the failure, the command and the technical trace, and the detail "
+        "line below names that receipt; if no receipt could be saved, the line says so and "
+        "this message is the only record, so keep it.",
+        "Copy or photograph this message, run `verbatus status` to read the saved records, "
+        "and ask for help before retrying; this is safe.",
     ),
 }
 

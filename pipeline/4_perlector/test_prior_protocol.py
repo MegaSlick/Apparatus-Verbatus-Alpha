@@ -756,12 +756,17 @@ def _write_protocol(tmp_path, **overrides):
     }
     fields.update(overrides)
     path = tmp_path / "perlector_protocol.toml"
-    path.write_text(
-        "\n".join(
-            f'{key} = "{value}"' if isinstance(value, str) else f"{key} = {str(value).lower()}"
-            for key, value in fields.items()
-        )
+    scalar_lines = "\n".join(
+        f'{key} = "{value}"' if isinstance(value, str) else f"{key} = {str(value).lower()}"
+        for key, value in fields.items()
     )
+    # The sealed `[truncation]` table is part of the closed schema since the
+    # pre-launch review moved the length floor out of source; these tests are
+    # about the prior-protocol fields, so the table is carried verbatim from the
+    # shipped declaration rather than restated here.
+    shipped = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
+    truncation_table = shipped[shipped.index("[truncation]") :]
+    path.write_text(scalar_lines + "\n\n" + truncation_table)
     return path
 
 

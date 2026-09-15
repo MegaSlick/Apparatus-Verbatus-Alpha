@@ -28,6 +28,10 @@ from decimal import ROUND_UP, Decimal
 from pathlib import Path
 from typing import Sequence
 
+from .controller_armer import (
+    CONTROLLER_ARMING_TIMEOUT_SECONDS,
+    CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS,
+)
 from .models import SpendRefusal, require_utc
 from .preflight import CardProfile, PlacementTable, load_placement_table
 from .spend import SpendPolicy, load_spend_policy
@@ -36,7 +40,24 @@ UTC = timezone.utc
 
 BOOT_A_HARD_LIFETIME_SECONDS = 900
 """The README's "roughly 900": long enough to pull an image and watch one poll
-bound, short enough that a stuck close costs minutes, not hours."""
+bound, short enough that a stuck close costs minutes, not hours.
+
+"Pull *and* bound" is what this number was always meant to buy, and until the
+armer separated its two waits the code did not deliver it: the arming bound's
+clock started when ``create`` returned, so the pull was spent out of the poll
+bound rather than beside it, and a pod that pulled for six minutes was
+terminated for a report it was about to write (hostile review F056).
+
+The armer now waits for the container first
+(`controller_armer.CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS`) and only then
+runs the channel bound (`CONTROLLER_ARMING_TIMEOUT_SECONDS`), recording both.
+That makes this number's arithmetic real and also makes it tight: the two code
+defaults are 600 + 300, which fill 900 exactly and leave the close nothing.
+`_render` states the sum against the requested lifetime in the drill text
+rather than leaving a reader to do it, so the choice -- lower both bounds in
+the untracked armer factory, or authorize a longer drill -- is made before the
+card is rented and not discovered on it.
+"""
 
 BOOT_A_VOLUME_MOUNT_PATH = "/workspace/private"
 
@@ -237,6 +258,39 @@ def _refusal() -> str:
     )
 
 
+def _arming_window_lines(lifetime: int) -> list[str]:
+    """State the armer's two waits, and their sum against the drill's own lifetime.
+
+    Derived from the armer's own constants rather than retyped beside them, for
+    the same reason every other number in this document is: a request Tyrel
+    reads has to say what the launch will actually do.  The two bounds are
+    separately clamped down to whatever the lease has left, so a sum larger
+    than the lifetime does not overrun it -- it silently eats the second wait,
+    which is the one that decides whether anything arms.  That is worth a
+    sentence before the card is rented.
+    """
+
+    container = CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS
+    channel = CONTROLLER_ARMING_TIMEOUT_SECONDS
+    lines = [
+        f"   Its wait is two bounds, not one: up to **{container:.0f}s** for the provider to",
+        "   report this pod's container started (the image pull, which refuses nothing on",
+        f"   its own), then up to **{channel:.0f}s** for the written object to appear in the S3",
+        "   view. Both durations are recorded in the drill's evidence file -- that pair is",
+        "   the measurement this boot exists to take.",
+    ]
+    if container + channel >= lifetime:
+        lines += [
+            f"   **These two bounds sum to {container + channel:.0f}s against a {lifetime}s",
+            "   lifetime, which leaves the close nothing.** Either the untracked armer",
+            "   factory lowers `container_timeout_seconds` and `timeout_seconds` for this",
+            "   drill, or a longer lifetime is authorized; otherwise the lease's remaining",
+            "   time clamps the channel bound toward zero and the drill measures the pull",
+            "   instead of the channel.",
+        ]
+    return lines
+
+
 def _render(
     policy: SpendPolicy,
     card: CardProfile,
@@ -266,6 +320,7 @@ def _render(
         "   laptop supervisor, performs the real read of the pod's report through the",
         "   volume's S3 view, and reports the pod timer acknowledged as **False whatever",
         "   it observes**. `launch._arm_or_close` therefore closes the pod at once.",
+        *_arming_window_lines(lifetime),
         "4. The pod's primary process is the provider-neutral timer, whose mandatory",
         "   bootstrap is **`bootstrap_main --hold-only`**: no bootstrap steps, a",
         "   hold-only journal record, hold to the deadline. It pulls no model.",
@@ -318,6 +373,17 @@ def _render(
         "  file until it is filled in by hand.",
         "- The S3 access and secret keys in the launching shell, for the report channel.",
         "- The untracked provider and controller-armer factories the command names.",
+        "- **The pod-side timer's provider capability, inside the pod, and the route it",
+        "  arrives by.** `operations.pod.provider_runpod:timer_context_from_environment`",
+        "  -- the timer factory named in the request below -- refuses to construct",
+        "  without it, and a timer that cannot construct cannot close the pod: the",
+        "  container exits, the pod stays EXITED and billing, and only the laptop",
+        "  supervisor's next status tick closes it. This repository cannot deliver it:",
+        "  the only pod environment a tracked launch can set is `metadata`, and",
+        "  `PodCreateRequest` refuses every credential-shaped key there by name. So the",
+        "  route is an out-of-tree decision -- a provider template holding the value, or",
+        "  a confirmed provider-injected variable -- and the pre-Boot-A checklist row in",
+        "  `operations/pod/README.md` has to pass before this drill is worth running.",
         "",
         "`metadata`'s `VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS` needs no hand edit: the",
         "launch seals it from the spend policy before every create or adopt.",

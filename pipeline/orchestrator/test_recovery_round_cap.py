@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.contracts.approval import real_ingress_record
 from common.contracts.errors import ContractError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,12 +17,22 @@ ROOT = Path(__file__).resolve().parents[2]
 SEALED_RECOVERY_SHA = "1" * 64
 
 
-def _sealed_run_tree(sealed_recovery_sha: str = SEALED_RECOVERY_SHA):
-    """A minimal run tree whose authority names the sealed recovery policy."""
+def _sealed_run_tree(
+    sealed_recovery_sha: str = SEALED_RECOVERY_SHA, *, ingress: dict | None = None
+):
+    """A minimal run tree whose authority names the sealed recovery policy.
+
+    `ingress` is the run authority's own ingress record when a test needs the
+    real route; absent, `common.stage.is_real_ingress` reads the run as the
+    synthetic walking skeleton, which is what every other test here means.
+    """
 
     class _Tree:
         def read_run(self):
-            return {"sealed_config_digests": {"recovery": sealed_recovery_sha}}
+            run = {"sealed_config_digests": {"recovery": sealed_recovery_sha}}
+            if ingress is not None:
+                run["ingress"] = ingress
+            return run
 
     return lambda *_args: _Tree()
 
@@ -193,6 +204,77 @@ def test_a_breached_checkpoint_ends_the_recovery_round_where_it_was_found(monkey
         orchestrator.STAGE_PROGRAMS["designator"],
         orchestrator.STAGE_PROGRAMS["designator"],
     ]
+
+
+def test_a_real_ingress_recrop_is_refused_by_name_and_recorded_before_anything_is_invoked(
+    monkeypatch, capsys
+):
+    """F068/F083: the cause is named here, not discovered from a stage's exit code.
+
+    The Designator refuses `--operation recover` on a real submission, and
+    dispatching it anyway surfaced to an operator as
+    `ContractError: pipeline/2_designator/run.py exited 2` — a true statement
+    with the reason a stage away. The Recensor no longer publishes such a
+    request, so this is the backstop over a tree written before that gate landed:
+    it refuses before any subprocess starts, and it records every refused act so
+    the run says what it could not answer rather than only that something failed
+    (GOVERNANCE 2).
+    """
+    orchestrator = _load_orchestrator()
+    calls = []
+    monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree(ingress=real_ingress_record()))
+    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
+    monkeypatch.setattr(
+        orchestrator,
+        "pending_recoveries",
+        lambda _tree, _policy: [
+            ("act_1", "request_1", "fallback-recrop"),
+            ("act_2", "request_2", "fallback-recrop"),
+        ],
+    )
+    monkeypatch.setattr(
+        orchestrator, "invoke", lambda program, _args, **extra: calls.append((program, extra))
+    )
+    monkeypatch.setattr(orchestrator, "checkpoint", lambda *_args: None)
+
+    args = SimpleNamespace(run_root="unused", run_id="real-ingress-recovery", recovery_config="x")
+    with pytest.raises(ContractError, match="fallback recrop on a real submission"):
+        orchestrator.drive_recovery(args, hard_failure_policy={})
+
+    assert calls == []
+    streams = capsys.readouterr()
+    # On stderr, and asserted as stderr. The operator surface records a failed
+    # run's detail as `completed.stderr or completed.stdout`, and the
+    # `ContractError` this raises is itself printed to stderr, so a listing on
+    # stdout would be dropped from the receipt and this refusal would be
+    # recorded nowhere a human reads (GOVERNANCE 2).
+    assert streams.out == ""
+    printed = streams.err
+    # Both acts, not only the one the raised exception carries.
+    assert "recovery cannot be dispatched for 2 outstanding request(s)" in printed
+    assert "act act_1 (request request_1, kind fallback-recrop)" in printed
+    assert "act act_2 (request request_2, kind fallback-recrop)" in printed
+    assert "nothing in the run tree was changed" in printed
+
+
+def test_the_dispatch_screen_answers_each_cause_by_its_own_name():
+    """The screen must not have closed the route recovery actually works on.
+
+    A fixture-route recrop is dispatchable and the screen says nothing about it,
+    which is what keeps `test_a_recovery_checkpoint_waits_for_each_owner_stage_
+    batch` above — a whole round driven through `drive_recovery` with no ingress
+    record — dispatching all five sections. The kind is asked before the route,
+    so a kind nothing can dispatch is reported as that on either route rather
+    than blamed on the submission carrying it.
+    """
+    orchestrator = _load_orchestrator()
+    assert orchestrator.undispatchable_recovery_reason("fallback-recrop", real_route=False) is None
+    assert "no dispatch for" in orchestrator.undispatchable_recovery_reason(
+        "page-level-reread", real_route=False
+    )
+    assert "no dispatch for" in orchestrator.undispatchable_recovery_reason(
+        "page-level-reread", real_route=True
+    )
 
 
 if __name__ == "__main__":

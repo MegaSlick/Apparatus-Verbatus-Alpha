@@ -114,6 +114,7 @@ class _RecordingContext:
             designator_padding_config=config / "designator_padding.toml",
             designator_geometry_config=config / "designator_geometry.toml",
             designator_grouping_config=config / "designator_grouping.toml",
+            perlector_protocol_config=config / "perlector_protocol.toml",
         )
         self.perlector_audit_config_path = config / "perlector_audit.toml"
         # Mirror the real context's named point-of-use seals.  The terminal
@@ -125,6 +126,7 @@ class _RecordingContext:
             "designator-geometry": digest_bytes(self.args.designator_geometry_config.read_bytes()),
             "designator-grouping": digest_bytes(self.args.designator_grouping_config.read_bytes()),
             "perlector-audit": digest_bytes(self.perlector_audit_config_path.read_bytes()),
+            "perlector-protocol": digest_bytes(self.args.perlector_protocol_config.read_bytes()),
         }
 
         # Build the mapped page with the same policies, measures, and canonical

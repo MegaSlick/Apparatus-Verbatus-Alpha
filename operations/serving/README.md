@@ -283,6 +283,23 @@ deterministic and breaks the loop immediately, rather than retrying to
 new. A `5xx`/connection failure still retries as before — that is ordinary
 boot-time unavailability.
 
+When the loop does run out of budget, the refusal says which kind of not-ready
+it was. `VLLM_WATCHDOG_TIMEOUT: loopback endpoint unavailable` was the same
+sentence whether the engine was minutes into reading a 51.7 GiB checkpoint off
+a network volume or had never opened its port, and those call for opposite
+responses — raise this row's `startup_timeout_seconds`, or go and find out what
+is broken. The launch log was already being read every poll for fatal
+signatures and simply never reached the refusal, so the watchdog now names
+**still loading** (quoting the newest progress line it found), **connection
+refused** (nothing in the log shows loading) or **answered but never ready**
+(the endpoint was reachable), and carries a bounded, credential-scrubbed tail
+of that log. The diagnosis and the last readiness answer stay on the first
+line, ahead of the tail. `config/serving_recipes_real.toml`'s header records
+how each row's `startup_timeout_seconds` should be derived once the first boot
+has measured a volume read rate; the values themselves are still the
+unmeasured 300 every row shipped with, because replacing one guess with
+another is not a measurement.
+
 ## Env-override files and three static preflight assertions
 
 `manager.assert_no_discoverable_local_env` refuses a real launch the moment

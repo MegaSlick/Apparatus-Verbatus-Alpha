@@ -9,13 +9,20 @@ import os
 import pwd
 import stat
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Final, Sequence
 
+from common.checkout import missing_checkout_resources
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
-from operations.pod.models import PodCreateRequest, require_utc
+from operations.pod.launch import launch_evidence_keys
+from operations.pod.models import (
+    DEFAULT_CONTAINER_DISK_GB,
+    PodCreateRequest,
+    require_utc,
+)
 
 from . import console, notify_bridge, review_text
 from .advance import (
@@ -27,12 +34,154 @@ from .advance import (
 from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .ingest import ingest_in_custody
+from .records import DescriptorStore, ReceiptStore
 from .review import ReadOnlyRun
 from .spend import SpendSurface
-from .surface import DEFAULT_FIXTURE, OperatorSurface
+from .surface import DEFAULT_FIXTURE, OperatorSurface, bounded_tail
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
 MAX_REQUEST_BYTES = 1024 * 1024
+
+_CHECKOUT_RESOURCES_BY_VERB: Final[dict[str, tuple[str, ...]]] = {
+    # What each word reads from the workspace by checkout-relative path
+    # (`common/checkout.py` names the three). `status`, `export`, `close`,
+    # `fetch-run`, `review`, `advance`, `backup`, `upload` and `scantailor`
+    # are absent on purpose: their workspace is legitimately not the checkout
+    # -- a folder of run trees, a backup drive -- and refusing them there
+    # would refuse the operator's own data.
+    "run": ("pipeline", "config", "proof"),
+    "boot": ("config", "proof"),
+    "ingest": ("config",),
+    "triage": ("config",),
+    "launch": ("config",),
+    "spend": ("config",),
+}
+
+
+def _checkout_resources_read(args: argparse.Namespace) -> tuple[str, ...]:
+    """The checkout directories this exact invocation will read from its workspace."""
+
+    needed = _CHECKOUT_RESOURCES_BY_VERB.get(args.verb, ())
+    # A reviewed file named on the command line replaces the workspace default
+    # it would otherwise have been read from.
+    if args.verb == "launch" and args.spend is not None:
+        return ()
+    if args.verb == "spend" and args.policy is not None:
+        return ()
+    if args.verb == "ingest" and args.policy is not None:
+        return ()
+    return needed
+
+
+def _require_workspace_checkout(workspace: Path, args: argparse.Namespace) -> None:
+    """Refuse, before anything starts, a workspace missing what this word reads.
+
+    `entry.main` checks the directory the code was imported from, which is
+    right for an installed wheel and wrong for the case that actually happens:
+    the `verbatus` script started from a folder that is not the checkout. Every
+    run resolves its stage programs, configuration and proof material from
+    `--workspace`, and that is what is checked here -- for exactly the
+    directories the chosen word reads, so a word whose workspace is not the
+    checkout is never refused for lacking one.
+    """
+
+    needed = _checkout_resources_read(args)
+    if not needed:
+        return
+    missing = tuple(name for name in missing_checkout_resources(workspace) if name in needed)
+    if missing:
+        raise OperatorError(
+            ErrorCode.NOT_A_CHECKOUT,
+            detail=(
+                f"`verbatus {args.verb}` reads {', '.join(needed)} from its workspace, and "
+                f"{workspace} has no {', '.join(missing)} directory; start from the checkout "
+                "or name it with --workspace"
+            ),
+        )
+
+
+def _current_directory() -> str:
+    """Where this ran, or a stated unavailability -- never a second failure.
+
+    `os.getcwd()` raises when the directory this process started in has been
+    deleted or is no longer readable, and it was being called while the
+    original exception was already being handled: the receipt was abandoned,
+    the entry boundary called this same function again on the new failure, and
+    Verbatus printed a raw traceback and saved nothing (CodeRabbit on PR #117).
+    A receipt that cannot say where it ran is still the record of what
+    happened.
+    """
+
+    try:
+        return os.getcwd()
+    except OSError as error:
+        return f"unavailable: {error.strerror or error}"
+
+
+def record_unexpected(
+    error: BaseException, arguments: Sequence[str], state: Path | None
+) -> OperatorError:
+    """Turn an unclassified failure into the operator message, with a receipt behind it.
+
+    The catch-all used to keep only `str(error)` -- no receipt, no trace -- so
+    the one failure class with nothing to hand to a later session was the one
+    nobody had prepared for. The receipt carries the exception, a bounded
+    trace, the command and the working directory; the message names the
+    receipt first, because `sanitize_detail` cuts a rendered detail at a
+    traceback header and an exception message can contain one.
+    """
+
+    described = f"{type(error).__name__}: {error}"
+    if state is None:
+        # The failure came before `--state-dir` was resolved; the default
+        # location is where the operator's other records already are.
+        try:
+            state = _default_state_dir()
+        except Exception:  # noqa: BLE001 -- best effort; the message below says so
+            state = None
+    if state is None:
+        return OperatorError(
+            ErrorCode.UNEXPECTED,
+            detail=f"No receipt could be saved (no state directory could be resolved). {described}",
+        )
+    # Bounded like a child's output: a receipt past `MAX_RECORD_BYTES` cannot
+    # be read back, and an exception message can carry a whole document.
+    message = bounded_tail(str(error))
+    payload = {
+        "summary": (
+            "Verbatus met a problem it could not classify: "
+            f"{type(error).__name__}: {_first_line(message)}"
+        ),
+        "state": "unexpected",
+        "exception_type": type(error).__name__,
+        "message": message,
+        "traceback": bounded_tail(
+            "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        ),
+        "argv": [str(word) for word in arguments],
+        "cwd": _current_directory(),
+    }
+    try:
+        receipt = ReceiptStore(state).write("unexpected", payload)
+        DescriptorStore(state).record("unexpected", receipt)
+    except Exception as record_error:  # noqa: BLE001 -- said aloud, never over the failure
+        return OperatorError(
+            ErrorCode.UNEXPECTED,
+            detail=(
+                f"No receipt could be saved under {state} ({record_error}); this message is "
+                f"the only record. {described}"
+            ),
+        )
+    return OperatorError(
+        ErrorCode.UNEXPECTED, detail=f"Saved unexpected receipt: {receipt}. {described}"
+    )
+
+
+def _first_line(text: str) -> str:
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
 
 
 def _is_within(path: Path, directory: Path) -> bool:
@@ -113,6 +262,95 @@ def _warn_about_abandoned_state_dir(workspace: Path, *, using_default: bool) -> 
         "the default state location outside the checkout. They are not read here "
         f"automatically — point at them explicitly with: --state-dir {old_state}"
     )
+
+
+_UNREADABLE_RECEIPT = (
+    OSError,
+    UnicodeDecodeError,
+    json.JSONDecodeError,
+    # A receipt inside the byte bound can still nest deeply enough for the
+    # decoder to recurse out on 3.12; that is an unreadable receipt, not an
+    # internal failure for the catch-all (CodeRabbit on PR #117).
+    RecursionError,
+    KeyError,
+    TypeError,
+    ValueError,
+)
+
+
+def _derived_evidence_keys(
+    receipt: Path | None, volume: VolumeSpec | None = None
+) -> tuple[str, ...]:
+    """The launch-bound evidence keys a saved launch receipt already names.
+
+    ``fetch-run`` will not guess at the launch-token-named reports -- guessing
+    means listing a whole volume that also holds the submission's page images --
+    so it asks for them by key. Nobody should have to retype a 32-hex token out
+    of a JSON receipt to supply one; the receipt holds the sealed
+    ``docker_start_cmd`` those paths were bound into, and
+    ``launch.launch_evidence_keys`` is the derivation.
+
+    Refused loudly rather than skipped in all three failure shapes, because each
+    one would otherwise leave an operator believing the reports came home: a
+    receipt that cannot be read, a receipt that carries no launch request, and a
+    receipt for a *different* volume than the one this call is reading. The last
+    is the quiet one -- the keys would be real names of another launch's records,
+    fetched or refused against a volume that never held them.
+
+    Read through the same bounded, no-follow open the reviewed pod request uses:
+    a record this verb did not write is not read whole on trust.
+    """
+
+    if receipt is None:
+        return ()
+    try:
+        descriptor = os.open(receipt, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise OSError("the launch receipt is not a regular file")
+            data = handle.read(MAX_REQUEST_BYTES + 1)
+        if len(data) > MAX_REQUEST_BYTES:
+            raise ValueError(f"the launch receipt exceeds {MAX_REQUEST_BYTES} bytes")
+        # Through the receipt's own shape, not past it. `ReceiptStore.write`
+        # stores every action under `payload`, and the launch receipt's request
+        # with it, so reading a top-level `request` raised `KeyError` for every
+        # genuine launch receipt and refused the derivation this flag exists
+        # for -- while the suite's hand-built fixture, which had no `payload`
+        # wrapper, passed (CodeRabbit on PR #117). Read here rather than
+        # through `ReceiptStore.read` because this path takes a receipt an
+        # operator names, which may sit outside the state root that store
+        # resolves against; the bounded no-follow open above is the reviewed
+        # read for a record this verb did not write.
+        record = json.loads(data.decode("utf-8"))
+        if not isinstance(record, dict) or not isinstance(record.get("payload"), dict):
+            raise ValueError("the receipt does not carry an operator receipt payload")
+        request = record["payload"]["request"]
+        command = request["docker_start_cmd"]
+        mount = request["volume_mount_path"]
+        recorded_volume = request["volume_id"]
+        if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
+            raise ValueError("docker_start_cmd is not a list of words")
+        if not isinstance(mount, str) or not mount:
+            raise ValueError("volume_mount_path is missing")
+    except _UNREADABLE_RECEIPT as error:
+        raise OperatorError(
+            ErrorCode.FETCH_RUN_FAILED,
+            detail=(
+                f"the launch receipt {receipt} does not carry a readable launch request, so "
+                f"no evidence key could be derived from it: {error}"
+            ),
+        ) from error
+    if volume is not None and recorded_volume != volume.volume_id:
+        raise OperatorError(
+            ErrorCode.FETCH_RUN_FAILED,
+            detail=(
+                f"the launch receipt {receipt} is for network volume {recorded_volume!r}, and "
+                f"this call is reading {volume.volume_id!r}. Deriving keys from it would name "
+                "another launch's records on a volume that never held them; name the receipt "
+                "for this run, or pass the keys with --evidence-key"
+            ),
+        )
+    return launch_evidence_keys(command, volume_mount_path=mount)
 
 
 def _print(text: str = "") -> None:
@@ -307,9 +545,38 @@ def build_parser() -> PlainParser:
         action="append",
         metavar="KEY",
         help="one more volume key to bring home beside the run tree, repeatable. The "
-        "launch's preflight/ tree comes home on its own; the bootstrap and run reports and "
-        "the bootstrap journal are named with the launch token at paths this verb cannot "
-        "derive, so name them here. The receipt says which were fetched and which were not",
+        "launch's preflight/ tree comes home on its own; the bootstrap report, the pod-run "
+        "report, that report's '-hold' liveness sibling and the bootstrap journal are named "
+        "with the launch token at paths this verb cannot derive, and "
+        "'pod-transfer-journal.json' sits at the volume root outside both prefixes, so name "
+        "each here -- or let --launch-receipt derive the token-bound ones for you. A key is "
+        "volume-root-relative -- the volume path with the mount prefix removed, never a "
+        "leading '/'. "
+        "operations/pod/README.md lists the complete set and how each key is derived. "
+        "The receipt says which were fetched and which were not",
+    )
+    fetch_run.add_argument(
+        "--evidence-prefix",
+        action="append",
+        metavar="PREFIX",
+        help="a volume prefix to bring home into <into>/evidence/, repeatable; the default "
+        "is the whole preflight/ tree. A volume is reused across launches, so preflight/ "
+        "holds every launch's evidence and a later reader cannot say which measured the "
+        "chairs for THIS run. Name this run's own stem -- preflight/<bootstrap report stem>, "
+        "which carries the launch token -- to bring back exactly one launch's evidence",
+    )
+    fetch_run.add_argument(
+        "--launch-receipt",
+        type=Path,
+        metavar="PATH",
+        help="the saved launch receipt for this run. Its sealed docker_start_cmd already "
+        "names the launch-token-bound report paths, so the exact --evidence-key values are "
+        "derived from it and printed rather than retyped from a 32-hex token by hand. "
+        "Derivation rule: each --report-path in that command, made relative to "
+        "volume_mount_path, plus the siblings the program that writes it writes -- "
+        "-terminating.json for the pod timer's report, and -hold.json, -liveness.json, "
+        "-timings.json and -transcript.log for pod_run's. A receipt for another volume "
+        "is refused rather than used",
     )
 
     export = verbs.add_parser(
@@ -427,6 +694,7 @@ def build_parser() -> PlainParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    state: Path | None = None
     try:
         # Parser construction resolves the environment-derived state root and
         # belongs inside the same refusal boundary as parsing and execution.
@@ -444,6 +712,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
         else:
             state = _default_state_dir(workspace)
+        _require_workspace_checkout(workspace, args)
         _warn_about_abandoned_state_dir(workspace, using_default=not explicit_state)
         surface = OperatorSurface(
             workspace,
@@ -513,12 +782,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 witness_context_config=args.witness_context_config,
             )
         elif args.verb == "fetch-run":
-            surface.fetch_run(
-                run_id=args.run_id,
-                into=args.into,
-                volume=volume,
-                evidence_keys=tuple(args.evidence_key or ()),
-            )
+            derived = _derived_evidence_keys(args.launch_receipt, volume)
+            for key in derived:
+                _print(f"Derived from the launch receipt: --evidence-key {key}")
+            evidence_keys = tuple(dict.fromkeys((*(args.evidence_key or ()), *derived)))
+            fetch_arguments: dict[str, object] = {
+                "run_id": args.run_id,
+                "into": args.into,
+                "volume": volume,
+                "evidence_keys": evidence_keys,
+            }
+            # Passed only when named, so the surface's own default (the whole
+            # preflight/ tree) stays the default rather than being restated here.
+            if args.evidence_prefix:
+                fetch_arguments["evidence_prefixes"] = tuple(args.evidence_prefix)
+            surface.fetch_run(**fetch_arguments)  # type: ignore[arg-type]
         elif args.verb == "export":
             surface.export(run_id=args.run_id)
         elif args.verb == "close":
@@ -545,7 +823,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 to_stage=args.to_stage,
             )
         elif args.verb == "backup":
-            _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace)
+            _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace, surface)
         elif args.verb == "triage":
             _triage_queue(args, workspace)
         elif args.verb == "scantailor":
@@ -577,8 +855,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     # Raw implementation failures must reach the same three-part operator contract.
     except Exception as error:
-        wrapped = OperatorError(ErrorCode.UNEXPECTED, detail=str(error))
-        _print(wrapped.render())
+        _print(record_unexpected(error, arguments, state).render())
         return 2
     return 0
 
@@ -682,8 +959,20 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path, *, raw: boo
         _print(line)
 
 
-def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _workspace: Path) -> None:
-    """Copy evidence only in the no-network, credential-free custody child."""
+def _backup_in_custody(
+    run_root: Path,
+    run_id: str,
+    mac_directory: Path,
+    _workspace: Path,
+    surface: OperatorSurface,
+) -> None:
+    """Copy evidence only in the no-network, credential-free custody child.
+
+    ``surface`` is where the operator's own receipt of the attempt goes: which
+    run root was copied where, with what snapshot, or why it was refused. A
+    backup used to leave only its snapshot on the destination, so `status`
+    could not say a backup had ever happened.
+    """
 
     from .backup import (
         BackupRefusal,
@@ -695,6 +984,11 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
         verify_backup_snapshot,
     )
 
+    facts = {
+        "run_id": run_id,
+        "run_root": str(Path(run_root).absolute()),
+        "mac_directory": str(Path(mac_directory).absolute()),
+    }
     # The parent must reject overlap before creating the layout; otherwise its
     # setup can write `objects/` and `snapshots/` inside the sealed source.
     # Custody grants the child publication rights but deliberately withholds
@@ -705,6 +999,7 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
         source_identity = required_identity(source, what="source run tree")
         destination_identity = destination_identities(destination)
     except BackupRefusal as refusal:
+        surface.record_backup(state="refused", facts=facts, detail=str(refusal))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
     # `--workspace` selects project data for other verbs; it is not authority to
     # replace this custody worker's code: the surviving python_module_command
@@ -729,6 +1024,7 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
         detail = launcher or completed.stderr.strip() or completed.stdout.strip()
         if not detail:
             detail = f"backup worker exited {completed.returncode} without a diagnostic"
+        surface.record_backup(state="worker-failed", facts=facts, detail=detail)
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=detail)
     try:
         report = BackupReport.from_record(json.loads(completed.stdout))
@@ -739,11 +1035,14 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
             expected_destination_identities=destination_identity,
         )
     except (BackupRefusal, ValueError, RecursionError) as error:
+        surface.record_backup(state="unverified", facts=facts, detail=str(error))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
+    receipt = surface.record_backup(state="complete", facts=facts, report=report.to_record())
     _print(
         "Mac backup complete: "
         f"{report.copied} copied, {report.reused} reused; snapshot {report.snapshot_sha256}."
     )
+    _print(f"Saved backup receipt: {receipt}")
 
 
 def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
@@ -985,6 +1284,7 @@ def load_request(path: str | Path) -> PodCreateRequest:
         "docker_start_cmd",
         "hard_deadline",
         "repository_commit",
+        "container_disk_gb",
         "template",
         "metadata",
         "interruptible",
@@ -1019,6 +1319,9 @@ def load_request(path: str | Path) -> PodCreateRequest:
             docker_start_cmd=tuple(command),
             hard_deadline=require_utc(deadline, "hard deadline"),
             repository_commit=raw["repository_commit"],
+            # Absent means the reviewed default, not the provider's: a request
+            # file that names no container disk still asks for a stated size.
+            container_disk_gb=raw.get("container_disk_gb", DEFAULT_CONTAINER_DISK_GB),
             template=raw.get("template"),
             metadata=metadata,
             interruptible=interruptible,
@@ -1228,18 +1531,57 @@ def _interactive_arguments() -> list[str]:
         # The launch's preflight/ tree comes home on its own; the bootstrap
         # report, the pod-run report, and the bootstrap journal are named
         # with the launch token at paths this verb cannot derive on its own
-        # (`fetch_run.add_argument("--evidence-key", ...)` above), so this
-        # route asks for each by name -- optional, blank skips it -- rather
-        # than only being reachable through the command line's repeatable
-        # `--evidence-key`.
-        for label in (
-            "Volume key for the bootstrap report (leave blank to skip)",
-            "Volume key for the pod-run report (leave blank to skip)",
-            "Volume key for the bootstrap journal (leave blank to skip)",
-        ):
-            evidence_key = _ask(label)
-            if evidence_key:
-                arguments.extend(("--evidence-key", evidence_key))
+        # (`fetch_run.add_argument("--evidence-key", ...)` above). The launch
+        # receipt the operator's own machine wrote *does* name them, so this
+        # route asks for the receipt first and derives every key from it;
+        # typing a 32-hex token by hand is the step that gets skipped on a
+        # phone. The per-record prompts stay as the fallback for a run whose
+        # receipt is not to hand.
+        receipt = _ask("Saved launch receipt for this run (leave blank to name keys by hand)")
+        if receipt:
+            arguments.extend(("--launch-receipt", receipt))
+        else:
+            # Ten prompts, not six: `launch_evidence_keys` derives four
+            # token-named siblings as exact keys of their own -- the timer's
+            # `-terminating.json` breadcrumb and `pod_run`'s `-liveness.json`,
+            # `-timings.json` and `-transcript.log` -- and this route asked for
+            # none of them, so a run whose receipt was not to hand could bring
+            # home only six of the ten records the receipt route fetches
+            # (CodeRabbit on PR #117). Each stays "leave blank to skip",
+            # because a key that names a record this launch never wrote comes
+            # back as a per-object refusal in the receipt.
+            for label in (
+                "Volume key for the bootstrap report (leave blank to skip)",
+                "Volume key for the pod-run report (leave blank to skip)",
+                "Volume key for the pod-run '-hold' liveness report, the pod-run key with "
+                "'-hold' before its suffix (leave blank to skip)",
+                "Volume key for the pod-run '-liveness' tick, the pod-run key with "
+                "'-liveness' before its suffix (leave blank to skip)",
+                "Volume key for the pod-run '-timings' stage journal, the pod-run key with "
+                "'-timings' before its suffix (leave blank to skip)",
+                "Volume key for the pod-run '-transcript.log' orchestrator transcript, the "
+                "pod-run key with '-transcript' before its suffix and a .log suffix "
+                "(leave blank to skip)",
+                "Volume key for the pod-timer runtime report (leave blank to skip)",
+                "Volume key for the pod-timer '-terminating' breadcrumb, the pod-timer key "
+                "with '-terminating' before its suffix (leave blank to skip)",
+                "Volume key for the bootstrap journal (leave blank to skip)",
+                "Volume key for the transfer journal, normally pod-transfer-journal.json at "
+                "the volume root (leave blank to skip)",
+            ):
+                evidence_key = _ask(label)
+                if evidence_key:
+                    arguments.extend(("--evidence-key", evidence_key))
+        # A volume is reused across launches, so preflight/ holds every
+        # launch's tree and a later reader cannot say which measured the
+        # chairs for this run. Naming this run's own stem is how one launch's
+        # evidence comes home on its own.
+        prefix = _ask(
+            "This run's preflight stem, as preflight/<bootstrap report stem> "
+            "(leave blank for every launch's preflight tree)"
+        )
+        if prefix:
+            arguments.extend(("--evidence-prefix", prefix))
         return arguments
     if verb == "export":
         return ["export"]

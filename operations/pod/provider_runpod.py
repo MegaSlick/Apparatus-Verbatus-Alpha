@@ -83,7 +83,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Final, Mapping, Protocol
 
 from ..http_deadline import DeadlineExceeded, call_within_deadline, recording_opener
 from . import notify_hooks
@@ -756,6 +756,32 @@ class RunPodProvider:
         detail = "RunPod exact-pod GET returned 200"
         if raw_state is not None and not usable_state:
             detail = f"{detail}; unusable desiredStatus {raw_state!r}"
+        # `desiredStatus` reads RUNNING from the instant create returns: it is
+        # what the pod was asked to be, not what it has become, so it cannot
+        # separate "still pulling a fifteen-gigabyte image" from "started and
+        # silent". `lastStartedAt` is the only field in this body that can --
+        # it is null until the pod first runs (the same documented behaviour
+        # `_record` relies on when it falls back to the observation instant) --
+        # and it was previously read only there, where it becomes
+        # `PodRecord.created_at` and is therefore invisible to anything
+        # watching a pod come up. Surfaced here so a waiter can bound and
+        # record the container-start wait separately from whatever it is
+        # really waiting for (`controller_armer.ChannelControllerArmer`).
+        #
+        # A malformed value is reported as absent rather than raised: this is a
+        # read-only observation, not a gate, and the same reasoning that keeps
+        # an unfamiliar `desiredStatus` from becoming a `ProviderFailure`
+        # applies here. Every consumer must already treat `None` as "no start
+        # observed" rather than "the container failed", so a value this adapter
+        # cannot parse degrades to the honest answer instead of failing a
+        # status read the shutdown path also depends on.
+        raw_started = row.get("lastStartedAt")
+        started_at: datetime | None = None
+        if isinstance(raw_started, str) and raw_started.strip():
+            try:
+                started_at = _timestamp(raw_started, f"RunPod pod {pod_id} lastStartedAt")
+            except ProviderFailure as error:
+                detail = f"{detail}; unusable lastStartedAt ({error})"
         return ProviderStatus(
             pod_id,
             Presence.PRESENT,
@@ -763,6 +789,7 @@ class RunPodProvider:
             detail,
             200,
             provider_state=provider_state,
+            started_at=started_at,
         )
 
     def terminate(self, pod_id: str) -> None:
@@ -1037,12 +1064,29 @@ def _runtime_contract(
     )
 
 
+REQUESTED_GPU_COUNT: Final = 1
+"""The one GPU count this build ever requests. Named rather than left as the bare
+literal it was (F064): `operations.pod.preflight.SystemGpuProbe.profile` reads it
+back as `expected_gpu_count` so the on-pod measurement and the request that
+provisioned the pod are checked against each other rather than left independent.
+"""
+
+
 def _create_payload(request: PodCreateRequest) -> dict[str, object]:
     """The v1 `PodCreateInput` body. `interruptible` is always explicitly false.
 
     Spec 04: on-demand only — "a spot reclaim mid-run is a silent-loss machine".
     `networkVolumeId` rides here because v1 attaches a volume only at creation
     and never afterwards.
+
+    `containerDiskInGb` is sent because the bootstrap downloads its serving
+    stack onto the container-local disk twice over (cache, then venv) and the
+    body used to name no size at all, leaving it to the image or account
+    default — a default under which the sync fails with ENOSPC after the whole
+    download has been paid for. The field name is v1's, documented and not yet
+    observed like every other field here; the first live create is what
+    confirms the provider accepts it. `PodCreateRequest.container_disk_gb`
+    carries the number and the derivation.
     """
 
     payload: dict[str, object] = {
@@ -1051,7 +1095,8 @@ def _create_payload(request: PodCreateRequest) -> dict[str, object]:
         "computeType": "GPU",
         "imageName": request.image,
         "gpuTypeIds": [request.gpu_type],
-        "gpuCount": 1,
+        "gpuCount": REQUESTED_GPU_COUNT,
+        "containerDiskInGb": request.container_disk_gb,
         "interruptible": False,
         "networkVolumeId": request.volume_id,
         "volumeMountPath": request.volume_mount_path,

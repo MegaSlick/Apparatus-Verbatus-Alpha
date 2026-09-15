@@ -690,6 +690,7 @@ def test_the_export_block_matches_what_the_run_tree_itself_records(tmp_path):
             ("designator-padding", "designator_padding.toml", "padding"),
             ("designator-geometry", "designator_geometry.toml", "geometry"),
             ("designator-grouping", "designator_grouping.toml", "grouping"),
+            ("perlector-protocol", "perlector_protocol.toml", "truncation"),
         ),
         strict=True,
     ):

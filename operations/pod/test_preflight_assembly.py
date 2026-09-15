@@ -218,6 +218,88 @@ def synthetic_profile() -> GpuProfile:
     )
 
 
+def two_identical_cards(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    """Two visible, identical cards -- the case `splitlines()[0]` used to hide."""
+
+    if len(argv) == 1:
+        return subprocess.CompletedProcess(argv, 0, "CUDA Version: 13.0\n", "")
+    row = f"{MEASURED_CARD}, 580.65, 24564, 8.6\n"
+    return subprocess.CompletedProcess(argv, 0, row + row, "")
+
+
+def two_non_identical_cards(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    if len(argv) == 1:
+        return subprocess.CompletedProcess(argv, 0, "CUDA Version: 13.0\n", "")
+    return subprocess.CompletedProcess(
+        argv,
+        0,
+        f"{MEASURED_CARD}, 580.65, 24564, 8.6\nNVIDIA A40, 580.65, 46068, 8.6\n",
+        "",
+    )
+
+
+def blank_nvidia_smi(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    if len(argv) == 1:
+        return subprocess.CompletedProcess(argv, 0, "CUDA Version: 13.0\n", "")
+    return subprocess.CompletedProcess(argv, 0, "\n", "")
+
+
+def test_the_probe_measures_every_visible_card_not_only_the_first() -> None:
+    """F064: `nvidia-smi` prints one line per visible GPU; the old code took
+    `splitlines()[0]`, so a two-card machine silently reported a one-card
+    profile. `gpu_count` now carries how many the probe actually saw.
+    """
+
+    probe = SystemGpuProbe(disk_path="/", runner=two_identical_cards, disk_usage=lambda _p: Disk())
+    profile = probe.profile("bfloat16")
+
+    assert profile.measured is True
+    assert profile.gpu_count == 2
+    assert profile.vram_gib == Decimal(24564) / Decimal(1024)
+
+
+def test_the_probe_refuses_non_identical_visible_cards() -> None:
+    """A mixed machine is refused by name rather than quietly measuring one of
+    the two card classes and reporting it as the machine's profile.
+    """
+
+    probe = SystemGpuProbe(
+        disk_path="/", runner=two_non_identical_cards, disk_usage=lambda _p: Disk()
+    )
+    profile = probe.profile("bfloat16")
+
+    assert profile.measured is False
+    assert "non-identical" in profile.discovery_detail
+
+
+def test_the_probe_refuses_empty_nvidia_smi_output_by_name() -> None:
+    """Blank stdout used to reach `splitlines()[0]` and raise a bare
+    `IndexError`; it is now a named refusal in `discovery_detail`.
+    """
+
+    probe = SystemGpuProbe(disk_path="/", runner=blank_nvidia_smi, disk_usage=lambda _p: Disk())
+    profile = probe.profile("bfloat16")
+
+    assert profile.measured is False
+    assert "no GPU lines" in profile.discovery_detail
+
+
+def test_the_probe_checks_the_measured_count_against_the_requested_count() -> None:
+    """Tied to the create request's `gpuCount` (F064's own proposed fix), not
+    left as two numbers that can silently disagree.
+    """
+
+    probe = SystemGpuProbe(disk_path="/", runner=two_identical_cards, disk_usage=lambda _p: Disk())
+    profile = probe.profile("bfloat16", expected_gpu_count=1)
+
+    assert profile.measured is False
+    assert "gpuCount=1" in profile.discovery_detail
+
+    matching = probe.profile("bfloat16", expected_gpu_count=2)
+    assert matching.measured is True
+    assert matching.gpu_count == 2
+
+
 @pytest.fixture
 def fixture_page(tmp_path: Path) -> Path:
     page = tmp_path / "golden.png"

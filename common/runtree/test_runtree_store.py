@@ -128,6 +128,9 @@ def make_approval_record(**overrides):
     return record
 
 
+COMMIT = "a1b2c3d4" * 5
+
+
 def make_recensor_partition_receipt():
     return build_recensor_partition_receipt(
         run_id="r1",
@@ -1861,6 +1864,55 @@ def test_a_manifest_refuses_an_artifact_too_large_to_read_safely(tmp_path):
         tree.build_manifest(DESIGNATOR)
 
 
+def test_read_bytes_refuses_a_file_grown_past_the_tree_read_limit(tmp_path, monkeypatch):
+    """G13: `RunTree.read_bytes` used to be `Path.read_bytes()`, with no ceiling
+    of its own -- a damaged or hostile run tree could be read whole into memory
+    before anything got a chance to refuse it. This is the same shape as the
+    manifest-artifact bound above, for the tree's general reader.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    relative = tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    artifact = tree.resolve(relative)
+    monkeypatch.setattr(runtree_store, "_MAX_TREE_READ_BYTES", 4)
+
+    with pytest.raises(SchemaRefusal, match="tree read limit"):
+        tree.read_bytes(relative)
+    assert artifact.stat().st_size > 4  # the file itself was never truncated
+
+
+def test_read_run_refuses_a_run_authority_grown_past_the_record_read_limit(tmp_path, monkeypatch):
+    """A bound reaches `read_run`, routed through `_read_json`, not only
+    `read_bytes` -- a hostile or corrupted `run.json` must not be read whole
+    either. It is the record ceiling here, not the blob one: everything
+    `_read_json_with_bytes` opens is a JSON record, and the bytes are about to
+    be handed to `json.loads`, which costs several times their size again."""
+    tree = make_run(tmp_path)
+    monkeypatch.setattr(runtree_store, "MAX_RECORD_READ_BYTES", 4)
+
+    with pytest.raises(SchemaRefusal, match="tree read limit"):
+        tree.read_run()
+
+
+def test_read_bytes_takes_an_explicit_ceiling_when_a_caller_asks_for_one(tmp_path):
+    """G13: a caller reading a JSON record through `read_bytes` -- the fetch
+    verb's `_fetched_manifest` is the live one -- must be able to ask for the
+    record-sized ceiling rather than the blob-sized default, so the bytes it is
+    about to parse are bounded by what a record can legitimately be.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    relative = tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    size = tree.resolve(relative).stat().st_size
+    assert size > 4
+
+    assert len(tree.read_bytes(relative, max_bytes=size)) == size
+    with pytest.raises(SchemaRefusal, match="tree read limit"):
+        tree.read_bytes(relative, max_bytes=4)
+
+
 def test_a_manifest_refuses_an_unbounded_number_of_walk_entries(tmp_path, monkeypatch):
     tree = make_run(tmp_path)
     artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
@@ -1961,6 +2013,32 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
         assert any(path == prefix or path.startswith(prefix) for prefix in scope), (
             f"{path} is written by the store but falls outside the inventory scope"
         )
+
+
+# --- The commit and the clock a tree used to carry nowhere (F098) --------------
+
+
+def test_a_run_authority_seals_the_commit_the_code_that_created_it_ran_at(tmp_path):
+    """A fetched tree could prove its config bytes and not say which code made them."""
+
+    tree = make_run(tmp_path, repository_commit=COMMIT)
+
+    assert tree.read_run()["repository_commit"] == COMMIT
+
+
+def test_an_authority_without_a_commit_is_still_a_whole_authority(tmp_path):
+    """A source export with no version control records no commit, not a placeholder."""
+
+    assert "repository_commit" not in make_run(tmp_path).read_run()
+
+
+# `"g" * 40` is the case the others cannot make: a validator checking only
+# length and case would accept it, so without it nothing here establishes that
+# the revision must be hexadecimal (CodeRabbit on PR #117).
+@pytest.mark.parametrize("value", ["a1b2c3d", "A" * 40, "g" * 40, "", COMMIT + "-dirty"])
+def test_a_commit_that_is_not_a_full_lowercase_revision_is_refused(tmp_path, value):
+    with pytest.raises(SchemaRefusal, match="forty lowercase hexadecimal"):
+        make_run(tmp_path, repository_commit=value)
 
 
 def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
@@ -2075,6 +2153,59 @@ def test_the_inventory_scope_covers_every_producer(tmp_path):
     scope = make_run(tmp_path).inventory_scope()
     for directory in set(WRITING_DIRECTORIES.values()):
         assert any(prefix.startswith(f"{directory}/") for prefix in scope)
+
+
+def test_the_inventory_scope_names_the_serving_log_directory_the_launcher_writes(tmp_path):
+    """Harvest #13 is about every managed path *any* code writes, not only this store's.
+
+    A stage that serves a chair leaves the engine's launch log at
+    `<stage>/serving-logs/<name>.log`, written by the serving launcher. While
+    the scope did not name it, a consumer reading the scope as the whole of what
+    a run tree may hold -- `operator.surface._fetch_run_tree` does -- refused
+    the entire served run tree at the first log it listed, and brought home
+    nothing from a run that had already billed a card.
+    """
+    from common.contracts.stages import WRITING_DIRECTORIES
+
+    tree = make_run(tmp_path)
+    scope = tree.inventory_scope()
+    for directory in sorted(set(WRITING_DIRECTORIES.values())):
+        prefix = f"{directory}/{runtree_store.SERVING_LOGS_DIR}/"
+        assert prefix in scope, f"{prefix} is written in the tree but falls outside the scope"
+        log = f"{prefix}vllm-attestator_1-0123456789ab.log"
+        assert any(log.startswith(item) for item in scope)
+    # And by the expression the stages actually call, per stage, not only by
+    # directory: `serving_log_path` takes a *stage*, and the two differ. A stage
+    # name passed where the writing directory was wanted is the defect this
+    # binds against -- `attestatores` against `3_attestatores`, which put every
+    # witness chair's engine log outside the scope.
+    for stage in sorted(WRITING_DIRECTORIES):
+        assert f"{tree.serving_log_path(stage)}/" in scope, (
+            f"{stage} would write its engine log outside the inventory scope"
+        )
+
+
+def test_a_serving_log_is_not_inventoried_as_evidence(tmp_path):
+    """In scope so it can be accounted for; in no manifest, because nothing digested it.
+
+    `build_manifest` walks `<stage>/artifacts` and the blob inventory
+    `<stage>/blobs`, so an engine still writing its log while the stage seals
+    cannot make the witnessed inventory false -- which is the whole reason the
+    log may sit inside the tree at all.
+    """
+    tree = make_run(tmp_path)
+    tree.publish_artifact(make_envelope())
+    before = tree.build_manifest(DESIGNATOR)
+
+    logs = tree.resolve(f"{writing_directory(DESIGNATOR)}/{runtree_store.SERVING_LOGS_DIR}")
+    logs.mkdir(parents=True)
+    (logs / "vllm-designator-0123456789ab.log").write_bytes(b"INFO: engine started")
+
+    assert tree.build_manifest(DESIGNATOR) == before
+    assert not any(
+        runtree_store.SERVING_LOGS_DIR in entry["relative_path"]
+        for entry in before["artifacts"] + before["blobs"]
+    )
 
 
 # --- Atomic publication ---------------------------------------------------------
@@ -2332,6 +2463,11 @@ def test_the_shared_snapshot_fails_loudly_on_a_descendant_it_cannot_read(tmp_pat
     (locked / "inside").write_bytes(b"x")
     locked.chmod(0)
     try:
+        if os.access(locked, os.R_OK):  # pragma: no cover - running as root
+            pytest.skip(
+                f"this process (uid={os.getuid()}) can read a mode-000 directory; "
+                "the case cannot be built"
+            )
         with pytest.raises(OSError):
             tree_snapshot(root)
     finally:

@@ -574,6 +574,12 @@ def test_the_recovery_gate_consults_no_cross_capture_fact():
         {
             "continuation_shortfall": False,
             "wants_recovery": True,
+            # The gate's route conjunct (F068/F083): whether anything downstream
+            # can cut the recrop at all. `True` is the fixture route, which is
+            # the permitting value this assertion is about. Its own two-way
+            # behaviour is pinned in `test_unit14b_trigger_contract.py`; here it
+            # is one more conjunct that must be satisfied, not the subject.
+            "recrop_dispatchable": True,
             "used_fallback": 0,
             "allowed_fallback": 1,
             "used_total": 0,

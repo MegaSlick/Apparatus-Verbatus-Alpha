@@ -321,9 +321,23 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
     The character and pair bounds always apply before the matcher runs. The
     wall-clock deadline applies only where this call owns the process real-time
     timer (main thread, POSIX `SIGALRM`, no timer already armed); elsewhere the
-    comparison runs unbounded under the caller's own deadline, with the pair
-    bound still refusing the pathological case. No input is clipped: a limit or
-    a fired deadline produces a retained unaligned result with its reason.
+    comparison runs unbounded under the caller's own deadline. **The pair bound
+    does not refuse the pathological case** -- it refuses a comparison whose
+    character-pair product would be even larger, not a slow one at or under the
+    bound, and the two *different* low-entropy responses below measure 283.9 s
+    while sitting exactly at `max_character_pairs`, not over it. No input is
+    clipped: a limit or a fired deadline produces a retained unaligned result
+    with its reason.
+
+    Every returned record carries `deadline_in_force`: `True` only when this
+    call actually armed the SIGALRM backstop, `False` whenever the comparison
+    ran with no wall-clock bound at all (a worker thread, a timer already held
+    by something else) or never reached the matcher. Without this a caller
+    cannot tell a genuinely bounded alignment from one that ran unbounded and
+    happened to finish -- both return `{"status": "aligned", ...}` -- so a
+    pathological pair on an unbounded caller could stall for minutes with
+    nothing in the retained record to say the timeout this build's config
+    promises never actually applied.
 
     A fired deadline is `DEADLINE_REASON`, and it is a non-verdict: this module
     made no measurement of coverage, and nothing downstream may read it as one.
@@ -353,6 +367,8 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
             "reason": "character-limit",
             "witness": witness,
             "anchor": anchor,
+            # Refused before the matcher ever ran; no timer question arises.
+            "deadline_in_force": False,
         }
     if len(witness_text) * len(anchor_text) > limits.max_character_pairs:
         return {
@@ -360,6 +376,7 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
             "reason": "character-pair-limit",
             "witness": witness,
             "anchor": anchor,
+            "deadline_in_force": False,
         }
     previous = None
     alarm_armed = False
@@ -398,6 +415,10 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
             "reason": DEADLINE_REASON,
             "witness": witness,
             "anchor": anchor,
+            # A fired deadline is only reachable with the alarm armed; recorded
+            # explicitly rather than left implied by the reason code, so every
+            # record in this module answers the same question the same way.
+            "deadline_in_force": True,
         }
     finally:
         if alarm_armed:
@@ -416,5 +437,16 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
             "reason": "no-common-anchor-text",
             "witness": witness,
             "anchor": anchor,
+            "deadline_in_force": alarm_armed,
         }
-    return {"status": "aligned", "witness": witness, "anchor": anchor, "spans": spans}
+    return {
+        "status": "aligned",
+        "witness": witness,
+        "anchor": anchor,
+        "spans": spans,
+        # F087: without this, a bounded alignment and one that ran with no
+        # wall-clock backstop at all (a worker thread, a timer already held by
+        # something else) both read as plain `{"status": "aligned", ...}` --
+        # indistinguishable to any later reader or record.
+        "deadline_in_force": alarm_armed,
+    }

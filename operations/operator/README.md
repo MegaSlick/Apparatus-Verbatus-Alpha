@@ -100,6 +100,24 @@ the moment you are done. Use `review` to read one run tree without changing anyt
 it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any
 time you are unsure what is happening or costing money.
 
+Every `run` ends by printing the exact `verbatus review --run-root … --run-id …` line for
+its tree, whether it completed, was held, failed or was interrupted; `status` prints the
+same line under every run it lists. `export` names the run it is about to export before
+it does anything -- with no `--run-id` it takes the run recorded most recently and says
+so -- and it is only called a success when the run's own recorded state is `complete`:
+over a held or partial run it still copies what was delivered, prints every recorded
+reason, and then exits with `export-partial` rather than 0. A hold is not cleared by
+running the same run name again; that republishes the same sealed hold. It is resolved
+only by a new authorized run over the same sealed source, which is what the `run-held`
+message and `review` both say.
+
+`run`, `boot`, `ingest`, `triage`, `launch` and `spend` read configuration, stage code
+or proof material from the workspace, so each refuses in one sentence (`not-a-checkout`)
+when the folder it was started in -- or the one named with `--workspace` -- has no
+`pipeline/`, `config/` or `proof/` that word needs. `status`, `export`, `fetch-run`,
+`review`, `backup`, `advance` and `close` do not read those, and are never refused for
+running elsewhere.
+
 ## `review` on a run that has not finished
 
 A run stops before the Armarium for ordinary reasons — a manual boundary, a hold, an
@@ -244,6 +262,27 @@ against a stored manifest at all; its artifacts are checked by envelope alone, a
 receipt records `"state": "verified-partial"` instead of `"verified"` — a partial run
 never appears complete.
 
+**One class of object in the tree cannot be checked, and is named rather than counted.**
+A stage that served a chair leaves the engine's launch log under `<stage>/serving-logs/`.
+No manifest records an engine log and nothing ever digested one, so each comes home as
+side evidence: fetched, digested on arrival, listed in the receipt under
+`unverified_serving_logs`, and left out of every claim about what was verified. This is
+not a softening of the refusal above — it is the one path the run tree's own inventory
+scope names for it. While the scope did not name it, a real served run tree was refused
+whole at the first log listed, and a run that had already billed a card brought home
+nothing at all.
+
+It is also the one file in the tree that is still being written, so it is the one object
+whose failure to arrive is **refused by itself** rather than fatally. A chair serving right
+now appends to its log: an operator who fetches a held run mid-flight and again at the end
+meets bytes that have grown, and the never-replace rule below would otherwise take the
+whole verified tree down for it — as would a debug-level log grown past the 256 MiB
+per-object bound. Each such log is named in the receipt's `refused_serving_logs` and on the
+screen, with the run tree still brought home and verified: if the local copy is an earlier,
+shorter fetch of the same log, fetch into a fresh `--into`; a log past the bound is read on
+the volume. Every other object in the tree is immutable evidence,
+and a changed one still refuses the fetch as a whole.
+
 A file that already exists locally is compared, never replaced: identical bytes are reused
 and counted, different bytes refuse by name and leave the local run untouched. Nothing an
 attempt fetched is kept when it refuses; only files an earlier fetch already verified
@@ -261,13 +300,62 @@ arrived and the content-addressed ones checked against their own names. An evide
 object that cannot be fetched is named in the receipt and never takes the verified run
 tree down with it.
 
-Two records this verb cannot find on its own: the bootstrap and pod-run **reports** and
-the bootstrap **journal**. Their names carry the launch token at paths an operator chose,
-and finding them would mean listing the whole volume — which holds the submission's own
-page images. `--evidence-key <key>` (repeatable) brings each one home by its exact key.
+**Ten records lie under neither prefix**, and `operations/pod/README.md` §"What a launch
+writes on the volume, and how each part comes home" lists them with the derivation of each
+key, so the `--evidence-key` list is assembled from a document rather than from memory.
+Six of them are records an operator or a program named directly. Five of those carry the
+launch token at paths an operator chose — the bootstrap **report**, the
+pod-run **report**, that report's **`-hold` liveness sibling** (the pod-run key with
+`-hold` before its suffix, and the only record that the pod stayed alive to the hard
+deadline), the pod-timer **runtime report**, and the bootstrap **journal** — and finding
+them would mean listing the whole volume, which holds the submission's own page images.
+The sixth, **`pod-transfer-journal.json`**, sits at the volume root under a fixed name and
+is the only durable record of which submission rows were verified against target-observed
+bytes. `--evidence-key <key>` (repeatable) brings each one home by its exact key — a
+volume-root-relative key, the volume path with the mount prefix removed, never a leading
+`/` — and the double-click route prompts for all ten by name. The other four are the
+token-named siblings the derivation below adds to those paths: the pod timer's
+`-terminating.json` breadcrumb, and `pod_run`'s `-liveness.json`, `-timings.json` and
+`-transcript.log`. They are keys in their own right, so the prompt route asks for each of
+them too rather than leaving them reachable only through a saved receipt.
+
 The receipt states that limit and how many keys the call named — it does not claim they
 went unfetched when the operator named them — and `objects` and `refusals` say which of
 the named keys arrived. Nothing is left to be inferred from an empty folder.
+
+**You do not have to retype the token.** The launch receipt this computer saved carries
+the sealed `docker_start_cmd`, and that command already names the bound report paths, so
+`--launch-receipt <path>` derives every key from it and prints each one before the fetch.
+The derivation rule, if you want to check it by hand: take each `--report-path` in that
+command (the outer one is the pod timer's, the one nested inside
+`--bootstrap-command-json` is the bootstrap child's), make it relative to the request's
+`volume_mount_path`, and add its siblings — `-terminating.json` for the timer's report,
+and `-hold.json`, `-liveness.json`, `-timings.json` and `-transcript.log` for `pod_run`'s.
+A receipt that cannot be read refuses by name rather than quietly deriving nothing.
+
+**Name this run's own preflight tree.** A volume is reused across launches, so
+`preflight/` accumulates one subtree per launch and a later reader of `evidence/` cannot
+say which one measured the chairs for *this* run. `--evidence-prefix <prefix>`
+(repeatable) replaces the default `preflight` with exactly the prefixes you want;
+this run's is `preflight/<its bootstrap report stem>`, and that stem carries the launch
+token. The receipt records the prefixes the call used, so the choice is in the record.
+
+**What the fetched evidence looks like.** Beside the run tree you will find, per launch:
+the pod timer's report (`pod-runtime-report-<token>.json`, with `bootstrap`, `close` and
+`green`); its `-terminating.json` breadcrumb, written immediately before the DELETE —
+if it is present and the report still says `close: null`, the close *was* attempted and
+the container was destroyed mid-verification, which is the normal shape, not a fault;
+`pod_run`'s report (`state`, `exit_code`, `detail`, `orchestrator_argv`, the measured
+`placement_tier`, and the paths of the three records below); its `-liveness.json` tick
+(`pid`, `tick`, `last_seen`, `alive`) — a tick reading `alive: true` stamped long before
+the hard deadline means the supervisor stopped while its child was still running;
+its `-hold.json` line for the paid idle time after a finished run; its
+`-timings.json` journal, one entry per stage invocation with the duration, the exit code
+and the commit that ran it — two entries naming two commits is how a resume at a
+different commit shows itself, since `run.json` names only the commit that *created* the
+run; and its `-transcript.log`, the orchestrator's and every stage's merged output,
+head-first with a named truncation marker before the final window if it outgrew its
+bound.
 
 ## `spend show`: inspect the reviewed guard
 
@@ -318,11 +406,31 @@ Every failure message says three things, always in the same order:
 You will never see a raw error with no explanation. If you ever do, that is a defect in
 this tool and not something you did — save the text and pass it on.
 
+A failed `run` names its cause on the screen (the last line the pipeline wrote) beside the
+path of its saved run record, and that record keeps the run's output, exit status,
+arguments, start and end times, the repository commit, and the path and SHA-256 of every
+configuration file named on the command line -- for every end state, including a hold.
+A run that is interrupted (Ctrl+C or a termination signal) writes an
+`interrupted-recoverable` record and tells you to run it again with the same name; a run
+that is killed outright still leaves the `started` record written before the pipeline
+began, so `status` can name the run and its tree rather than report an empty machine.
+A failure the tool could not classify (`unexpected`) writes an `unexpected` record
+carrying the exception, its technical trace, the command and the working directory, and
+the message names that record; only when even that cannot be written is the screen the
+sole record, and the message says so.
+
 ## `status`: the one you can run any time
 
 `status` never starts, spends or changes anything. It reads records this tool already
 saved and repeats them **exactly as recorded** — it does not recalculate anything, so what
 it shows you and what is on file cannot drift apart. Run it whenever you are unsure.
+
+Every run it lists is named -- the run id, its run root, its recorded state, the reason it
+failed or every reason it is held, the last lines of its recorded output, the
+ready-to-paste `verbatus review` line, and the path of the record itself. Exports show
+the run and the bundle; `fetch-run` and `upload` records show the volume and datacenter
+they named; `backup` records show which run root was copied where and the verified
+snapshot; `unexpected` records show the failure and the command that met it.
 
 It also lists any **safety lease** with no verified close recorded against it, because that
 is the one place a machine can be billing without a machine record to show you. A lease it
@@ -345,6 +453,12 @@ checkout, is ignored), outside the project checkout; `--state-dir` moves it.
 Each record is written once and named after a
 checksum of its own contents, so a record cannot be quietly edited afterwards and still
 read back. You do not need to look in there — `status` shows you what matters.
+
+The whole directory is portable: the index names each record by that checksum name, and
+every reference a record makes to something under the directory -- a run root, a lease,
+an export bundle, another record -- is kept relative to it. Copy or move the directory, or
+restore it from a backup at a different path, and `status`, `export`, `run` and `close`
+read it there unchanged.
 
 ## Alpha shortcuts this surface ships
 

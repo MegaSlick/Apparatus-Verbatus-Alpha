@@ -27,6 +27,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -172,6 +173,26 @@ _SEMANTIC_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
 _TRANSCRIPTION_ANNOTATIONS_CARRIED: Final = "archetypus-sealed-uncertain-and-illegible-marks"
 _TRANSCRIPTION_ANNOTATIONS_NOT_APPLICABLE: Final = "not-applicable"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
+# Real-ingress act keys are `proposal:<page ordinal>:<block ordinal>`
+# (structure_pass.proposal_act_key); both ordinals are plain decimal integers,
+# not zero-padded. Sorting the key as a string therefore reads block 10 before
+# block 2 once a page passes ten blocks (F079) -- every list this module
+# orders "by act_key" for a human or a diff to read must instead read in page
+# and block order. `act_key_sort_key` gives every such site the same order:
+# reading order for a parsed proposal key, else the key's own string, so a key
+# this pattern was never meant to describe (a minted `logical:<id>` row, a
+# fixture key) keeps exactly the ordering it had before.
+_PROPOSAL_ACT_KEY_PATTERN: Final = re.compile(r"^proposal:(\d+):(\d+)$")
+
+
+def act_key_sort_key(act_key: str) -> tuple[int, int, int] | tuple[int, str, int]:
+    """Reading order for an act key: (page ordinal, block ordinal) when parseable."""
+    match = _PROPOSAL_ACT_KEY_PATTERN.match(act_key)
+    if match is None:
+        return (1, act_key, 0)
+    return (0, int(match.group(1)), int(match.group(2)))
+
+
 _PIXEL_REFERENCE_CLAIM: Final = "reference validity only; pixel resolution requires source access"
 _PIXEL_EMBEDDED_CLAIM: Final = (
     "embedded pixels are packaged and opened by clean-machine verification"
@@ -489,7 +510,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
 
     try:
         manifest = json.loads((root / EXPORT_MANIFEST_NAME).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal("EXPORT_MANIFEST.json is not readable canonical JSON") from error
     if not isinstance(manifest, dict) or manifest.get("schema") not in {
         EXPORT_MANIFEST_SCHEMA,
@@ -832,13 +853,21 @@ _NOT_MEASURED_RECORDED_IN: Final = {
     ),
     _GEOMETRY_CALIBRATION: (
         "the `provenance` blocks of the sealed Designator padding, geometry and grouping "
-        "configurations, whose digests this run's `config_digest` binds"
+        "configurations and of the Perlector protocol's `[truncation]` table, whose digests "
+        "this run's `config_digest` binds"
     ),
 }
+# Every sealed configuration this survey reports, in canonical order. The
+# instrument's name is older than the list: `perlector-protocol` carries the
+# truncation instrument's length floor, which is not Designator geometry, and it
+# is here because the survey is the one surface on which an export discloses a
+# threshold nobody calibrated (pre-launch review, F082/F088). Extend the list
+# rather than the name -- the name is on every bundle already.
 _GEOMETRY_CONFIGURATION_NAMES: Final = (
     "designator-padding",
     "designator-geometry",
     "designator-grouping",
+    "perlector-protocol",
 )
 
 
@@ -1053,7 +1082,10 @@ def _validate_not_measured_detail(
         if not isinstance(configurations, list) or len(configurations) != len(
             _GEOMETRY_CONFIGURATION_NAMES
         ):
-            raise SchemaRefusal(f"{subject} must name three configurations in canonical order")
+            raise SchemaRefusal(
+                f"{subject} must name {len(_GEOMETRY_CONFIGURATION_NAMES)} configurations "
+                "in canonical order"
+            )
         for expected_name, configuration in zip(
             _GEOMETRY_CONFIGURATION_NAMES, configurations, strict=True
         ):
@@ -1064,7 +1096,7 @@ def _validate_not_measured_detail(
             )
             if row["configuration"] != expected_name:
                 raise SchemaRefusal(
-                    f"{subject} does not name the three sealed configurations in canonical order"
+                    f"{subject} does not name the sealed configurations in canonical order"
                 )
             if not isinstance(row["calibrated_for_this_corpus"], bool):
                 raise SchemaRefusal(f"a row in {subject} has untyped values")
@@ -1304,6 +1336,15 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
             projections[name] = _database_literals(root / "acts.sqlite")
         elif name == "jsonl":
             projections[name] = _jsonl_literals(root / "acts.jsonl")
+        else:
+            # `_LITERAL_TEXT_FORMATS` gaining a fourth member with no branch here
+            # is exactly the failure the projection-identity guard exists to
+            # catch (F090): without this arm the format is silently dropped from
+            # `projections` and the comparison below passes over it rather than
+            # comparing it, reporting "identical" about a format nobody checked.
+            raise SchemaRefusal(
+                f"projection identity has no comparison built for literal format {name!r}"
+            )
 
     baseline_name, baseline = next(iter(projections.items()))
     for name, records in projections.items():
@@ -1323,8 +1364,22 @@ _INK_MAP_ROW_FIELDS: Final = frozenset({"ordinal", "initial_outcome", "remeasure
 # because this verifier's whole point is to recompute the hold from the counts
 # alone, on a clean machine, with no config to read: a gate it had to fetch from
 # somewhere else would make it a different instrument from the one that measured.
+# `minimum_ink_pixels` and `minimum_fraction_outside_bp` joined on 2026-09-14
+# for the same reason, when the noise floor and the fraction gate stopped being
+# module constants and became `[coverage_audit.noise_floor]`.
 _INK_MAP_REMEASURE_FIELDS: Final = frozenset(
-    {"total_ink_pixels", "outside_ink_pixels", "edge_band_pixels", "substantial_ink_pixels"}
+    {
+        "total_ink_pixels",
+        "outside_ink_pixels",
+        "edge_band_pixels",
+        "substantial_ink_pixels",
+        "minimum_ink_pixels",
+        "minimum_fraction_outside_bp",
+    }
+)
+# The recorded gates that are refused at zero: a zero gate holds every page.
+_INK_MAP_REMEASURE_GATES: Final = frozenset(
+    {"substantial_ink_pixels", "minimum_ink_pixels", "minimum_fraction_outside_bp"}
 )
 _UNCLAIMED_EDGE_INK: Final = "unclaimed-edge-ink"
 # `ink-not-measurable` joined this set on 2026-09-06, when the Ink Map began
@@ -1398,7 +1453,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
             if any(
                 not isinstance(remeasured[field], int)
                 or isinstance(remeasured[field], bool)
-                or remeasured[field] < (1 if field == "substantial_ink_pixels" else 0)
+                or remeasured[field] < (1 if field in _INK_MAP_REMEASURE_GATES else 0)
                 for field in sorted(_INK_MAP_REMEASURE_FIELDS)
             ):
                 raise SchemaRefusal(
@@ -1432,6 +1487,8 @@ def _edge_hold_pages_from_validated_rows(rows: list[dict[str, Any]]) -> tuple[in
                 row["remeasured"]["total_ink_pixels"],
                 row["remeasured"]["outside_ink_pixels"],
                 substantial_ink_pixels=row["remeasured"]["substantial_ink_pixels"],
+                minimum_ink_pixels=row["remeasured"]["minimum_ink_pixels"],
+                minimum_fraction_outside_bp=row["remeasured"]["minimum_fraction_outside_bp"],
             )[1]
         )
     )
@@ -2396,7 +2453,7 @@ def _text_bundle_members(
     for folder in sorted(folders):
         records = grouped[folder]
         lines = [f"# Armarium text bundle — source folder: {folder or '.'}", ""]
-        for act in sorted(records, key=lambda item: item["act_key"]):
+        for act in sorted(records, key=lambda item: act_key_sort_key(item["act_key"])):
             regions = act["source_regions"]
             lines.extend([f"## {act['act_key']} ({act['act_id']})", f"act-id: {act['act_id']}"])
             for region in regions:
@@ -2717,7 +2774,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                 "INSERT INTO export_metadata(key, value) VALUES (?, ?)",
                 sorted(metadata.items()),
             )
-            for act in sorted(acts, key=lambda item: item["act_key"]):
+            for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
                 literal = act[CANONICAL_TEXT_FIELD]
                 text_hash = canonical_text_sha256(literal) if literal is not None else None
                 connection.execute(
@@ -2793,7 +2850,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
 
 def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for act in sorted(acts, key=lambda item: item["act_key"]):
+    for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
         literal = act[CANONICAL_TEXT_FIELD]
         records.append(
             {
@@ -2873,7 +2930,7 @@ def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
             "reason": _export_reason(act),
             "evidence_refs": act.get("evidence_refs", []),
         }
-        for act in sorted(acts, key=lambda item: item["act_key"])
+        for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"]))
         if act["category"] in review_categories
     ]
 
@@ -3008,7 +3065,7 @@ def _text_bundle_records(
                     raise SchemaRefusal("a text-bundle section carries more than one literal")
                 try:
                     literal = json.loads(lines[index + 1])
-                except json.JSONDecodeError as error:
+                except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal("a text-bundle canonical text is not JSON") from error
                 if not isinstance(literal, str):
                     raise SchemaRefusal("a text-bundle canonical text is not a string")
@@ -3035,7 +3092,7 @@ def _text_bundle_records(
                     )
                 try:
                     uncertainty = json.loads(lines[index + 1])
-                except json.JSONDecodeError as error:
+                except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal("a text-bundle uncertainty layer is not JSON") from error
                 try:
                     # The round trip, not merely the shape: the text bundle is the
@@ -3073,7 +3130,7 @@ def _text_bundle_records(
                     )
                 try:
                     pending_annotations = json.loads(lines[index + 1])
-                except json.JSONDecodeError as error:
+                except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal(
                         "a text-bundle transcription annotation layer is not JSON"
                     ) from error
@@ -3115,7 +3172,7 @@ def _text_bundle_records(
                     raise SchemaRefusal("a text-bundle display names no known convention")
                 try:
                     rendered = json.loads(lines[index + 1])
-                except json.JSONDecodeError as error:
+                except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal("a text-bundle display is not JSON") from error
                 # `strip_display` raises `ValueError` on markup it cannot parse, and
                 # every such rendering is something a package can carry.
@@ -3364,7 +3421,7 @@ def _database_literals(path) -> dict[str, tuple]:
             raise SchemaRefusal("the acts database literal identity or hash is invalid")
         try:
             uncertainty = json.loads(uncertainty_json)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
         annotations = _database_json_layer(annotations_json, "transcription annotation")
         _require_damage_record(
@@ -3389,7 +3446,7 @@ def _jsonl_literals(path) -> dict[str, tuple]:
         # named package refusal regardless of validation order.
         try:
             record = json.loads(line)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("an acts JSONL row is not JSON") from error
         if not isinstance(record, dict):
             raise SchemaRefusal("an acts JSONL row is not an object")
@@ -3778,7 +3835,7 @@ def _load_sources(root) -> dict[str, Any]:
         raise SchemaRefusal(
             "the package sources citation nests too deeply for this parser to read"
         ) from error
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise SchemaRefusal("the package sources citation is unreadable") from error
     if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
         raise SchemaRefusal("the package sources citation has no recognized schema")
@@ -4415,7 +4472,7 @@ def _jsonl_act_records(
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("an acts JSONL row is not JSON") from error
         if not isinstance(record, dict) or record.get("schema") != ACT_RECORD_SCHEMA:
             raise SchemaRefusal("an acts JSONL row has no recognized schema")
@@ -4490,7 +4547,7 @@ def _database_uncertainty(encoded: Any) -> Any:
         raise SchemaRefusal("the acts database has an untyped uncertainty column")
     try:
         return json.loads(encoded)
-    except json.JSONDecodeError as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
 
 
@@ -4502,7 +4559,7 @@ def _database_json_layer(encoded: Any, subject: str) -> Any:
         raise SchemaRefusal(f"the acts database has an untyped {subject} column")
     try:
         return json.loads(encoded)
-    except json.JSONDecodeError as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"the acts database {subject} layer is not JSON") from error
 
 
@@ -4648,7 +4705,7 @@ def _database_act_records(
                 continue
             try:
                 parsed = json.loads(encoded)
-            except (TypeError, json.JSONDecodeError) as error:
+            except (TypeError, UnicodeDecodeError, ValueError, RecursionError) as error:
                 raise SchemaRefusal(
                     "the acts database has unreadable provenance evidence"
                 ) from error
@@ -4703,7 +4760,7 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("a review-items JSONL row is not JSON") from error
         if not isinstance(record, dict):
             raise SchemaRefusal("a review-items JSONL row is not an object")
@@ -4747,7 +4804,7 @@ def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal("a salvage-tier JSONL row is not JSON") from error
         if not isinstance(record, dict) or record.get("schema") != SALVAGE_RECORD_SCHEMA:
             raise SchemaRefusal("a salvage-tier JSONL row has no recognized schema")

@@ -1103,7 +1103,12 @@ def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refu
                 ScriptedAnswer(content="no layout block at all", finish_reason="abort"),
             ],
         )
-    assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+    # The refused page has no record at all: an unnameable stop word is the
+    # run's refusal, never that page's published outcome. Page 1 is a different
+    # page's fact and keeps the answer it got -- it is published as it arrives,
+    # so a call this run already paid for stays visible and a resume reuses it
+    # instead of asking again (GOVERNANCE 2, and the Designator's resume rule).
+    assert sorted(_by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))) == [1]
 
 
 def test_a_body_the_client_cannot_read_holds_the_page_as_unusable(live_run, tmp_path, monkeypatch):
@@ -1365,8 +1370,11 @@ def test_a_prompt_too_long_400_is_refused_by_name_and_never_read_as_a_cut_off(
     message = str(error.value)
     assert "HTTP 400" in message
     assert "maximum context length is 2048" in message
-    # Not a hold, and specifically not a cut-off hold: nothing was published.
-    assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+    # Not a hold, and specifically not a cut-off hold: the refused page has no
+    # record. Page 1's answer is a different page's fact and survives, because
+    # each answer is published as it arrives -- the 400 costs page 2's reading,
+    # never the reading this run already paid for on page 1 (GOVERNANCE 2).
+    assert sorted(_by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))) == [1]
     assert "cut-off" not in message
     # The bytes reached disk before the refusal was raised: the engine's own
     # account of why it refused is the artefact a rented card exists to

@@ -102,6 +102,17 @@ DECLARED_STOP_WORDS: Final = frozenset({"stop", "length"})
 _TRUNCATION_SIGNALS: Final = frozenset(
     {"stop_reason_declared", "unclosed_structure", "length_suspicious", "ends_abruptly"}
 )
+# What the length signal was judged from, on the record since 2026-09-14 so a
+# reader can re-derive that signal rather than take the producer's word for it
+# (pre-launch review, F082/F088). Every term of the predicate is here,
+# including the floor itself: the record protects the past on its own, without
+# the run's `config/perlector_protocol.toml` in hand (GOVERNANCE 6).
+_TRUNCATION_MEASURE: Final = frozenset(
+    {"region_pixels", "page_pixels", "characters", "length_floor_characters_per_page"}
+)
+# `characters` counts a reading that may legitimately be empty; the three areas
+# and the floor are all positive or the signal could not have been judged.
+_TRUNCATION_MEASURE_MAY_BE_ZERO: Final = frozenset({"characters"})
 FLAG_CLASSES: Final = frozenset(
     {"date-sequence", "numbering", "order", "testimony-diff", "repetition", "within-crop"}
 )
@@ -348,6 +359,27 @@ def unresolved_state(examination: str) -> bool:
     return examination in {EXAMINATION_CAP_EXHAUSTED, EXAMINATION_INCOMPLETE}
 
 
+def length_signal(*, characters: int, region_pixels: int, page_pixels: int, floor: int) -> bool:
+    """The truncation length signal, as a pure function of its four terms.
+
+    `characters * page_pixels < floor * region_pixels`, in integers: the
+    reading's characters scaled from its own region to the whole page's area,
+    against the sealed floor. An empty reading is never suspicious --
+    `no-readable-text` is the honest outcome for that and it is decided
+    elsewhere, never smuggled in here as a truncation.
+
+    Declared here, on the shared surface, for the reason
+    `truncation_classification` is: the producer
+    (`pipeline/4_perlector/truncation.py::is_length_suspicious`) computes the
+    signal with this function and `validate_truncation_record` re-derives it
+    with the same one, so a record cannot carry a signal that disagrees with
+    the geometry it was supposedly judged from. Bounds are each caller's own
+    business -- the producer raises, the validator refuses -- because the
+    arithmetic is what must not drift, not the refusal wording.
+    """
+    return characters > 0 and characters * page_pixels < floor * region_pixels
+
+
 def truncation_classification(signals: dict[str, Any]) -> str:
     """The truncation instrument's decision, as a pure function of its four signals.
 
@@ -376,15 +408,33 @@ def truncation_classification(signals: dict[str, Any]) -> str:
     return TRUNCATION_UNKNOWN
 
 
-def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
+def validate_truncation_record(
+    value: Any,
+    *,
+    label: str,
+    text: str | None = None,
+    length_floor_characters_per_page: int | None = None,
+) -> dict[str, Any]:
     """The sealed shape of one raw truncation measurement, its verdict re-derived.
 
-    The three computed signals cannot be recomputed here -- `region_pixels` is
-    not on the finding -- so they are the producer's word. The classification is
-    not: for the instrument's *raw* output it is a function of the four sealed
-    signals (`truncation_classification`), so a record whose verdict contradicts
-    its own signals is refused, and a declared stop word outside the recognised
-    vocabulary is refused with it. This holds for `reproof_truncation`, which is
+    Two of the three computed signals are the producer's word: they need the
+    text, which is not on the record. The third, `length_suspicious`, is not:
+    the `measure` block carries every term of its predicate -- region and page
+    area, the character count, and the floor those were judged under -- so this
+    validator re-derives it with the producer's own function (`length_signal`)
+    and refuses a record whose signal disagrees with its own geometry, rather
+    than checking the block for shape. `text`, where the caller holds the
+    reading the record was measured over, binds `characters` to it as well,
+    because a re-derivation from a character count nobody checked is still the
+    producer's word in another form. `length_floor_characters_per_page` binds
+    the other term of the predicate the same way, for a caller that holds the
+    sealed `[truncation]` table: without it the derivation proves only that the
+    record agrees with itself, and a record judged under a floor nobody sealed
+    agrees with itself perfectly. The classification is not the producer's
+    word either: for the instrument's *raw* output it is a function of the four
+    sealed signals (`truncation_classification`), so a record whose verdict
+    contradicts its own signals is refused, and a declared stop word outside the
+    recognised vocabulary is refused with it. This holds for `reproof_truncation`, which is
     always raw. It does NOT hold for the Perlectio's own `truncation` record:
     `pipeline/4_perlector/run.py::_reconciled_truncation` raises `complete` to
     `unknown` under a declared failure, and `_audited_truncation` floors an
@@ -392,7 +442,7 @@ def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
     the signals left as measured -- so that record is validated for shape and
     vocabulary only, and must not be handed to this function.
     """
-    if not isinstance(value, dict) or set(value) != {"classification", "signals"}:
+    if not isinstance(value, dict) or set(value) != {"classification", "signals", "measure"}:
         raise SchemaRefusal(f"{label} is not a closed truncation record")
     # Type before membership everywhere a frozenset is consulted: an unhashable
     # value (a list, an object) would otherwise leave as `TypeError`, which the
@@ -414,6 +464,53 @@ def validate_truncation_record(value: Any, *, label: str) -> dict[str, Any]:
     for name in ("unclosed_structure", "length_suspicious", "ends_abruptly"):
         if type(signals[name]) is not bool:
             raise SchemaRefusal(f"{label} has a non-boolean {name} signal")
+    measure = value["measure"]
+    if not isinstance(measure, dict) or set(measure) != _TRUNCATION_MEASURE:
+        raise SchemaRefusal(f"{label} does not carry the length signal's closed measure")
+    for name in sorted(_TRUNCATION_MEASURE):
+        floor = 0 if name in _TRUNCATION_MEASURE_MAY_BE_ZERO else 1
+        if type(measure[name]) is not int or measure[name] < floor:
+            raise SchemaRefusal(
+                f"{label} measure {name} is not a {'non-negative' if floor == 0 else 'positive'} "
+                "integer"
+            )
+    # The recomputation is only worth as much as `characters`, and `characters`
+    # was the producer's word until a caller that holds the measured text binds
+    # it here (independent audit of 2026-09-14). `text is None` is the caller
+    # that does not hold it and says so, never a silent skip.
+    if text is not None and measure["characters"] != len(text):
+        raise SchemaRefusal(
+            f"{label} measure counts {measure['characters']} characters but the text it was "
+            f"measured over has {len(text)}"
+        )
+    # The floor the record was judged under is the record's own word until a
+    # caller that holds the sealed policy binds it here, exactly as
+    # `characters` is bound by `text`. Re-deriving the signal from a floor the
+    # record chose for itself proves only internal consistency: a record naming
+    # floor 1 under a sealed floor of 50 derives `length_suspicious` false,
+    # classifies `complete`, and clears an audit hold the sealed policy would
+    # have held (CodeRabbit on PR #117). Refused before the derivation, so the
+    # refusal names the floor rather than the signal it produced.
+    if (
+        length_floor_characters_per_page is not None
+        and measure["length_floor_characters_per_page"] != length_floor_characters_per_page
+    ):
+        raise SchemaRefusal(
+            f"{label} was judged under length floor "
+            f"{measure['length_floor_characters_per_page']} but this run sealed "
+            f"{length_floor_characters_per_page}"
+        )
+    derived_length_signal = length_signal(
+        characters=measure["characters"],
+        region_pixels=measure["region_pixels"],
+        page_pixels=measure["page_pixels"],
+        floor=measure["length_floor_characters_per_page"],
+    )
+    if signals["length_suspicious"] != derived_length_signal:
+        raise SchemaRefusal(
+            f"{label} claims length_suspicious {signals['length_suspicious']!r} but the geometry "
+            f"and floor on its own measure make it {derived_length_signal!r}"
+        )
     derived = truncation_classification(signals)
     if value["classification"] != derived:
         raise SchemaRefusal(
@@ -680,7 +777,13 @@ def validate_draft(payload: Any) -> dict[str, Any]:
     return value
 
 
-def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -> dict[str, Any]:
+def validate_finding(
+    payload: Any,
+    *,
+    text: str,
+    flag_text: str | None = None,
+    length_floor_characters_per_page: int | None = None,
+) -> dict[str, Any]:
     value = _closed(payload, _FINDING_FIELDS, "audit finding")
     refuse_capture_preference(value, what="an audit finding")
     if not isinstance(text, str):
@@ -718,8 +821,17 @@ def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -
         if span["start"] == span["end"] or span["reason"] != AUDIT_CAP_EXHAUSTED:
             raise SchemaRefusal("an audit uncertainty span has no exhausted-cap reason or width")
     if value["reproof_truncation"] is not None:
+        # `text` is the re-proof's own returned text, which is what the
+        # termination record was measured over
+        # (`pipeline/4_perlector/run.py`: one `final_text` feeds
+        # `truncation.classify` and this validation), so the record's character
+        # count is bound to the reading rather than taken on the producer's
+        # word (independent audit of 2026-09-14).
         validate_truncation_record(
-            value["reproof_truncation"], label="an audit finding's re-proof termination"
+            value["reproof_truncation"],
+            label="an audit finding's re-proof termination",
+            text=text,
+            length_floor_characters_per_page=length_floor_characters_per_page,
         )
     validate_reproof_call(value["reproof_call"], label="an audit finding's re-proof call")
     examination = examination_state(value["flags"], value["round_cap"], value["reproof_truncation"])
@@ -897,8 +1009,28 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
     return [{"start": start, "end": end, "triggering_flag_class": triggering["class"]}]
 
 
-def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]:
+def validate_chain(
+    tree,
+    reading: dict[str, Any],
+    act_id: str,
+    *,
+    length_floor_characters_per_page: int | None = None,
+) -> dict[str, Any]:
     """Validate the exact draft/finding/Perlectio relationship once for every reader.
+
+    `length_floor_characters_per_page` is the sealed `[truncation]` floor this
+    run judges under, from a caller that holds the sealed protocol bytes. It is
+    what stops a re-proof termination re-deriving its own `length_suspicious`
+    under a floor nobody sealed: `validate_truncation_record` recomputes the
+    signal from the record's *own* measure, so a record naming floor 1 under a
+    sealed floor of 50 is internally consistent, classifies `complete`, and
+    clears an audit hold that the sealed policy would have held (CodeRabbit on
+    PR #117). Given the floor, a record judged under any other is refused
+    before the signal is re-derived. `None` is the caller that does not hold
+    the sealed table -- the Recensor, which reads this chain across stages and
+    has no Perlector protocol of its own, and the fixture chamber, which runs
+    without a sealed protocol at all -- and it is a declared absence rather
+    than a silent skip, exactly as `validate_truncation_record`'s `text` is.
 
     **A known limit, stated rather than implied.** Where the sealed assessment
     says `assessed`, this function proves the exhausted-cap projection leads the
@@ -927,6 +1059,7 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         finding.get("payload"),
         text=payload["text"],
         flag_text=draft_payload["semi_final_text"],
+        length_floor_characters_per_page=length_floor_characters_per_page,
     )
     shared_fields = (
         "act_key",

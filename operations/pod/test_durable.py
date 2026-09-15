@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import pytest
@@ -136,4 +137,63 @@ def test_exclusive_write_publishes_only_after_the_payload_is_fsynced(
     # and only the read-back below would be checked -- green while every grant
     # record became a file a power loss can take.
     assert fsync_calls >= 1, "the payload was published without ever being fsynced"
+    assert target.read_bytes() == b'{"grant":"one"}'
+
+
+def test_a_filesystem_that_refuses_hard_links_is_named_rather_than_an_errno(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal names where the directory was put, not the syscall that failed.
+
+    Every other link site in this repository (`common/runtree/store.py`,
+    `gold/core.py`, `operations/corpus/cache.py`,
+    `operations/operator/backup.py`) already names EPERM/EOPNOTSUPP/ENOSYS this
+    way; this one did not, and it is the site a pod's preflight evidence goes
+    through onto a network volume -- exactly the kind of mount that answers
+    them. Unnamed, it surfaced as a serving failure for what is a filesystem
+    capability problem.
+    """
+
+    def refuse_link(_source: str, _target: str) -> None:
+        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+
+    monkeypatch.setattr(durable.os, "link", refuse_link)
+
+    with pytest.raises(durable.HardLinkUnsupported) as refused:
+        durable.exclusive_write(tmp_path / "evidence" / "receipt.json", b"{}")
+
+    detail = str(refused.value)
+    assert "refuses hard links" in detail
+    assert str(tmp_path / "evidence") in detail
+    assert isinstance(refused.value, OSError), "existing callers catch OSError"
+    # The temporary is still cleaned up: a refusal must not leave debris beside
+    # the name it could not publish.
+    assert list((tmp_path / "evidence").iterdir()) == []
+
+
+def test_an_already_published_name_is_still_a_file_exists_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`FileExistsError` is an `OSError` too, and it keeps its own branch.
+
+    That branch syncs the directory entry before re-raising, which is what
+    makes the retry path honest; a wide `except OSError` placed ahead of it
+    would take the exception away from it silently.
+    """
+
+    synced: list[Path] = []
+    real_sync = durable.sync_directory
+
+    def observe(path: Path, *, strict: bool = False) -> None:
+        synced.append(Path(path))
+        real_sync(path, strict=strict)
+
+    target = tmp_path / "claims" / "grant.json"
+    durable.exclusive_write(target, b'{"grant":"one"}')
+    monkeypatch.setattr(durable, "sync_directory", observe)
+
+    with pytest.raises(FileExistsError):
+        durable.exclusive_write(target, b'{"grant":"two"}')
+
+    assert synced == [target.parent]
     assert target.read_bytes() == b'{"grant":"one"}'

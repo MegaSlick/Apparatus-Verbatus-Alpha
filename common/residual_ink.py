@@ -81,21 +81,28 @@ from common.background import (
     infer_background_evidence,
     round_half_up_bp,
 )
+from common.calibration import calibrated_claim_has_sample_evidence
 from common.components import label_component_runs
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.imaging import Bounds, grayscale_rows
 
 # PROPOSED, NOT YET MEASURED. There is no real corpus in this walking skeleton
-# to calibrate against, so these three numbers are reasoned defaults, not
+# to calibrate against, so the contrast below and the two noise-floor values
+# sealed in `[coverage_audit.noise_floor]` are reasoned defaults, not
 # alpha-tested ones. A blank-page density threshold cannot substitute for them:
 # "is this page blank" and "is any ink outside coverage" are different questions.
 # Change them only when real-corpus calibration supplies a measured value.
 
-#: Below this many outside-coverage ink pixels, a residual mark is treated as
-#: noise regardless of what fraction of the page's (possibly tiny) total ink
-#: count it represents.
-MINIMUM_INK_PIXELS = 24
+#: The noise floor: below this many outside-coverage ink pixels, a residual
+#: mark is treated as noise regardless of what fraction of the page's (possibly
+#: tiny) total ink count it represents. **Sealed, not a constant, since
+#: 2026-09-14.** It was `MINIMUM_INK_PIXELS = 24` here until then, outside every
+#: run's config_digest, so a change between two live runs left their provenance
+#: byte-identical (pre-launch review, F088). The value is the field named below
+#: in `[coverage_audit.noise_floor]`; a policy resolves it unchanged, because a
+#: speck is a speck at every resolution, and `coverage_flag` takes it by name.
+MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 
 #: A pixel this many levels darker than the page's own inferred background is
 #: "ink". Relative to the page's own background, never an absolute level: two
@@ -142,8 +149,13 @@ MINIMUM_INK_PIXELS = 24
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
 
 #: The fraction of a page's own ink pixels that must fall outside every region
-#: currently cut for it before the page is flagged.
-MINIMUM_FRACTION_OUTSIDE_COVERAGE = 0.02
+#: currently cut for it before the page is flagged, in basis points. **Sealed
+#: since 2026-09-14** beside the noise floor, for the same reason; it was the
+#: float `MINIMUM_FRACTION_OUTSIDE_COVERAGE = 0.02` here, and it is an integer
+#: now because canonical artifacts carry no floats. The gate is compared in
+#: integers -- `outside * BASIS_POINTS >= bp * total` -- which is the same
+#: predicate the float was, without a rounding rule of its own.
+MINIMUM_FRACTION_OUTSIDE_BP_FIELD: Final = "minimum_fraction_outside_bp"
 
 #: Enough outside-coverage ink to flag a page on its own, whatever fraction of
 #: that page's total ink it is. The fraction gate alone has a hole at the dense
@@ -211,6 +223,8 @@ class CoverageAuditPolicy(TypedDict):
     edge_band_px: int
     page_spanning_area_bp: int
     gap_tolerance_px: int
+    minimum_ink_pixels: int
+    minimum_fraction_outside_bp: int
 
 
 #: The file the two sealed values live in, and the two Designator fields this
@@ -237,6 +251,84 @@ DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = (
 #: The closed field set of `[coverage_audit]`, in the order the file writes it.
 COVERAGE_AUDIT_BP_FIELDS: Final = (SUBSTANTIAL_INK_AREA_BP_FIELD, EDGE_BAND_BP_FIELD)
 
+#: The sub-table the two unmeasured values live in, and its closed field set.
+#: A sub-table rather than two more fields beside the gates, because
+#: `[coverage_audit.provenance]` truthfully claims `calibrated_for_this_corpus`
+#: for the two gates and must not be over-read onto two values nobody measured;
+#: the sub-table carries a provenance block of its own that says so.
+COVERAGE_NOISE_FLOOR_TABLE: Final = "noise_floor"
+COVERAGE_NOISE_FLOOR_FIELDS: Final = (MINIMUM_INK_PIXELS_FIELD, MINIMUM_FRACTION_OUTSIDE_BP_FIELD)
+
+
+#: The closed provenance schema every sealed policy block in this file must
+#: carry, restated here rather than imported: the other two spellings live in
+#: `pipeline/2_designator/geometry.py` and are re-exported through that stage's
+#: `grouping_config`, and `common/` may not import a stage. A drift between
+#: them is caught by the one file both readers validate --
+#: `config/designator_grouping.toml` has to satisfy both.
+_PROVENANCE_FIELDS: Final = frozenset(
+    {
+        "source",
+        "corpus",
+        "sample_unit",
+        "sample_count",
+        "statistic",
+        "calibrated_for_this_corpus",
+        "caveat",
+    }
+)
+_TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_this_corpus"})
+
+
+def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
+    """One declared provenance block, held to the closed schema.
+
+    The Designator validates these blocks because it owns the file. It is not
+    the only stage that reads it: `pipeline/1_ink_map/run.py` resolves the
+    coverage-audit policy through `load_coverage_audit_config` alone and
+    publishes measurements under it *before* the Designator ever runs, so a
+    file whose numbers are well-formed and whose provenance block is missing
+    used to reach a published `ink-map` record with nothing having asked where
+    those numbers came from (CodeRabbit on PR #117). The loader below enforces
+    it now, on the same closed schema and with the same calibration rule.
+    """
+
+    if not isinstance(provenance, dict):
+        raise ContractError(
+            f"the grouping configuration has no {where} table; a policy value with no "
+            "declared source may not be shipped as a default"
+        )
+    unexpected = sorted(set(provenance) - _PROVENANCE_FIELDS)
+    if unexpected:
+        raise ContractError(
+            f"the grouping configuration's {where} carries unknown field(s) {unexpected}; "
+            "provenance is a closed schema so an unread field cannot be trusted"
+        )
+    missing = sorted(_PROVENANCE_FIELDS - set(provenance))
+    if missing:
+        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+    for field in sorted(_PROVENANCE_FIELDS - _TYPED_PROVENANCE_FIELDS):
+        if not isinstance(provenance[field], str) or not provenance[field].strip():
+            raise ContractError(
+                f"the grouping configuration's {where} field {field!r} is not a non-empty string"
+            )
+    if not _plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
+        raise ContractError(
+            f"the grouping configuration's {where} sample_count is not a non-negative integer"
+        )
+    if not isinstance(provenance["calibrated_for_this_corpus"], bool):
+        raise ContractError(
+            f"the grouping configuration's {where} calibrated_for_this_corpus is not a boolean"
+        )
+    if not calibrated_claim_has_sample_evidence(
+        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
+    ):
+        raise ContractError(
+            f"the grouping configuration's {where} says calibrated_for_this_corpus but "
+            "sample_count is zero"
+        )
+    return dict(provenance)
+
 
 def _plain_int(value: Any) -> bool:
     """An `int` that is not a `bool`.
@@ -261,16 +353,23 @@ def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]"
     """
     if not isinstance(table, dict):
         raise ContractError(f"the grouping configuration has no {where} table")
-    unexpected = sorted(set(table) - set(COVERAGE_AUDIT_BP_FIELDS) - {"provenance"})
+    unexpected = sorted(
+        set(table) - set(COVERAGE_AUDIT_BP_FIELDS) - {"provenance", COVERAGE_NOISE_FLOOR_TABLE}
+    )
     if unexpected:
         raise ContractError(
             f"the grouping configuration's {where} carries unknown field(s) "
             f"{unexpected}; an unread policy field cannot be applied"
         )
-    missing = sorted(set(COVERAGE_AUDIT_BP_FIELDS) - set(table))
+    missing = sorted((set(COVERAGE_AUDIT_BP_FIELDS) | {COVERAGE_NOISE_FLOOR_TABLE}) - set(table))
     if missing:
         raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
     values = {name: table[name] for name in COVERAGE_AUDIT_BP_FIELDS}
+    values.update(
+        validate_coverage_noise_floor_table(
+            table[COVERAGE_NOISE_FLOOR_TABLE], where=f"{where[:-1]}.{COVERAGE_NOISE_FLOOR_TABLE}]"
+        )
+    )
     # Zero is refused at both, and for the same reason the background policy
     # refuses a zero band: a gate of zero fires on every page and a band of zero
     # has no strip to measure, and either is the instrument switched off by a
@@ -294,6 +393,44 @@ def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]"
             f"integer strictly between 0 and {BASIS_POINTS // 2}; a band of zero has no strip "
             "to measure and a band of half the shorter side leaves the page no centre, so "
             "the perimeter measure would be a whole-page measure under another name"
+        )
+    return values
+
+
+def validate_coverage_noise_floor_table(
+    table: Any, *, where: str = "[coverage_audit.noise_floor]"
+) -> dict[str, int]:
+    """The two sealed noise-floor values, checked against their bounds and returned.
+
+    Zero is refused at both, for the reason the gates above refuse it: a floor
+    of zero fires on every stray pixel and a fraction of zero on every page
+    that clears the floor, and either is the instrument switched off by a value
+    rather than by a decision. The fraction is bounded at the whole page.
+    """
+    if not isinstance(table, dict):
+        raise ContractError(f"the grouping configuration has no {where} table")
+    unexpected = sorted(set(table) - set(COVERAGE_NOISE_FLOOR_FIELDS) - {"provenance"})
+    if unexpected:
+        raise ContractError(
+            f"the grouping configuration's {where} carries unknown field(s) "
+            f"{unexpected}; an unread policy field cannot be applied"
+        )
+    missing = sorted(set(COVERAGE_NOISE_FLOOR_FIELDS) - set(table))
+    if missing:
+        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+    values = {name: table[name] for name in COVERAGE_NOISE_FLOOR_FIELDS}
+    if not _plain_int(values[MINIMUM_INK_PIXELS_FIELD]) or values[MINIMUM_INK_PIXELS_FIELD] <= 0:
+        raise ContractError(
+            f"the grouping configuration's {where} {MINIMUM_INK_PIXELS_FIELD} is not a positive "
+            "integer; a floor of zero flags every page that carries a single stray pixel"
+        )
+    if not _plain_int(values[MINIMUM_FRACTION_OUTSIDE_BP_FIELD]) or not (
+        0 < values[MINIMUM_FRACTION_OUTSIDE_BP_FIELD] <= BASIS_POINTS
+    ):
+        raise ContractError(
+            f"the grouping configuration's {where} {MINIMUM_FRACTION_OUTSIDE_BP_FIELD} is not a "
+            f"basis-point integer in 1..{BASIS_POINTS}; a fraction of zero fires on every page "
+            "that clears the noise floor"
         )
     return values
 
@@ -341,9 +478,20 @@ def load_coverage_audit_config(
             "the coverage-audit configuration's [grouping.absolute] gap_tolerance_px is not a "
             "non-negative integer"
         )
+    audit = config.get("coverage_audit")
+    values = validate_coverage_audit_table(audit)
+    # The provenance blocks are validated by the loader rather than by the two
+    # table validators above, which take a bare table from callers that build
+    # one field at a time. This is the reader that opens a shipped file, and a
+    # shipped file may not carry a policy number with no declared source.
+    validate_provenance_block(audit.get("provenance"), where="[coverage_audit.provenance]")
+    validate_provenance_block(
+        audit[COVERAGE_NOISE_FLOOR_TABLE].get("provenance"),
+        where=f"[coverage_audit.{COVERAGE_NOISE_FLOOR_TABLE}.provenance]",
+    )
     return {
         "config_sha256": digest_bytes(data),
-        "coverage_audit": validate_coverage_audit_table(config.get("coverage_audit")),
+        "coverage_audit": values,
         "page_spanning_area_bp": spanning,
         "gap_tolerance_px": gap,
     }
@@ -354,17 +502,19 @@ def resolve_coverage_audit_policy(
 ) -> CoverageAuditPolicy:
     """One page's own resolved coverage-audit policy.
 
-    `substantial_ink_pixels` is floored at `MINIMUM_INK_PIXELS`, and the floor
-    is structural rather than a taste: `coverage_flag` reads the substantial
-    gate *before* the fraction gate's own noise floor, so a resolved value below
-    `MINIMUM_INK_PIXELS` would make the noise floor unreachable and flag a page
-    on a speck. On this repository's 200x260 fixture the sealed fraction
-    resolves to 21 pixels and the floor is what binds; on a 12.6-megapixel leaf
-    it resolves to 5,041 and the floor is nowhere near.
+    `substantial_ink_pixels` is floored at the sealed `minimum_ink_pixels`, and
+    the floor is structural rather than a taste: `coverage_flag` reads the
+    substantial gate *before* the fraction gate's own noise floor, so a resolved
+    value below the floor would make it unreachable and flag a page on a speck.
+    On this repository's 200x260 fixture the sealed fraction resolves to 21
+    pixels and the floor is what binds; on a 12.6-megapixel leaf it resolves to
+    5,041 and the floor is nowhere near. The two noise-floor values themselves
+    pass through unresolved, like the two Designator fields: neither is a
+    length.
 
     **Where the floor binds, the two gates coincide, and that is said rather
     than hidden.** At the sealed 4 basis points the fraction resolves to exactly
-    `MINIMUM_INK_PIXELS` at 60,000 pixels of page area, so on any page smaller
+    the 24-pixel floor at 60,000 pixels of page area, so on any page smaller
     than about 245x245 the substantial gate fires wherever the noise floor is
     cleared and the fraction gate can no longer decide anything. That is a
     property of pages two orders of magnitude smaller than any this pipeline
@@ -382,7 +532,7 @@ def resolve_coverage_audit_policy(
     audit = config["coverage_audit"]
     return {
         "substantial_ink_pixels": max(
-            MINIMUM_INK_PIXELS,
+            audit[MINIMUM_INK_PIXELS_FIELD],
             round_half_up_bp(width * height, audit[SUBSTANTIAL_INK_AREA_BP_FIELD]),
         ),
         # Floored at one pixel for the smallest legal image, which is the
@@ -394,11 +544,18 @@ def resolve_coverage_audit_policy(
         "edge_band_px": max(1, round_half_up_bp(min(width, height), audit[EDGE_BAND_BP_FIELD])),
         "page_spanning_area_bp": config["page_spanning_area_bp"],
         "gap_tolerance_px": config["gap_tolerance_px"],
+        "minimum_ink_pixels": audit[MINIMUM_INK_PIXELS_FIELD],
+        "minimum_fraction_outside_bp": audit[MINIMUM_FRACTION_OUTSIDE_BP_FIELD],
     }
 
 
 def coverage_flag(
-    total_ink_pixels: int, outside_ink_pixels: int, *, substantial_ink_pixels: int
+    total_ink_pixels: int,
+    outside_ink_pixels: int,
+    *,
+    substantial_ink_pixels: int,
+    minimum_ink_pixels: int,
+    minimum_fraction_outside_bp: int,
 ) -> tuple[float, bool]:
     """The one outside-coverage gate, and the ratio it is read against.
 
@@ -410,10 +567,11 @@ def coverage_flag(
     existed is still flagged by the first.
 
     `substantial_ink_pixels` is that second gate resolved for the page these
-    counts came from, and it is keyword-only with no default: a caller that
-    forgets it fails loudly rather than gating under a number nobody sealed,
-    which is the shape `background_policy` is already handled with here and
-    `gap_tolerance_px` in `structure.py`.
+    counts came from, and `minimum_ink_pixels` and `minimum_fraction_outside_bp`
+    are the sealed noise floor and fraction gate; all three are keyword-only
+    with no default: a caller that forgets one fails loudly rather than gating
+    under a number nobody sealed, which is the shape `background_policy` is
+    already handled with here and `gap_tolerance_px` in `structure.py`.
 
     One function rather than a copy per measure, because the Armarium's export
     verifier recomputes this predicate over recorded counts on a clean machine
@@ -422,9 +580,15 @@ def coverage_flag(
     than the one that measured, which is not a check.
     """
     fraction_outside = (outside_ink_pixels / total_ink_pixels) if total_ink_pixels else 0.0
+    # The fraction gate in integers: the same predicate as `fraction_outside >=
+    # bp / BASIS_POINTS`, without a float rounding of its own, and false on a
+    # page with no ink at all exactly as the float form was.
+    over_fraction = (
+        total_ink_pixels > 0
+        and outside_ink_pixels * BASIS_POINTS >= minimum_fraction_outside_bp * total_ink_pixels
+    )
     flagged = outside_ink_pixels >= substantial_ink_pixels or (
-        outside_ink_pixels >= MINIMUM_INK_PIXELS
-        and fraction_outside >= MINIMUM_FRACTION_OUTSIDE_COVERAGE
+        outside_ink_pixels >= minimum_ink_pixels and over_fraction
     )
     return fraction_outside, flagged
 
@@ -658,7 +822,11 @@ def residual_ink(
         outside_ink += (audited_bits & ~covered_bits).bit_count()
 
     fraction_outside, flagged = coverage_flag(
-        total_ink, outside_ink, substantial_ink_pixels=coverage_policy["substantial_ink_pixels"]
+        total_ink,
+        outside_ink,
+        substantial_ink_pixels=coverage_policy["substantial_ink_pixels"],
+        minimum_ink_pixels=coverage_policy["minimum_ink_pixels"],
+        minimum_fraction_outside_bp=coverage_policy["minimum_fraction_outside_bp"],
     )
     return {
         "background": background_evidence,
@@ -872,7 +1040,11 @@ def edge_ink_from_runs(
                 outside_ink += max(0, end - cursor)
 
     fraction_outside, flagged = coverage_flag(
-        total_ink, outside_ink, substantial_ink_pixels=coverage_policy["substantial_ink_pixels"]
+        total_ink,
+        outside_ink,
+        substantial_ink_pixels=coverage_policy["substantial_ink_pixels"],
+        minimum_ink_pixels=coverage_policy["minimum_ink_pixels"],
+        minimum_fraction_outside_bp=coverage_policy["minimum_fraction_outside_bp"],
     )
     return {
         "total_ink_pixels": total_ink,

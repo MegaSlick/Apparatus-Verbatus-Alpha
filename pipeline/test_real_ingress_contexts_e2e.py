@@ -504,11 +504,15 @@ def test_a_real_run_stops_at_the_recensor_and_names_the_denominator_it_has_no_pr
     (GOVERNANCE 10).
 
     So the run stops here, by name, with nothing written -- and that is the
-    honest boundary of real ingress today. The context is not what stops it:
-    the Recensor opened, recomputed the real denominator from the Designator's
-    own regions, and got as far as asking for evidence that does not exist.
-    Closing this gap is the real structural pass (roadmap item 4), and this
-    assertion is what will say when it lands.
+    honest boundary of *this module's* hand-built Designator layer, not of real
+    ingress as such. The context is not what stops it: the Recensor opened,
+    recomputed the real denominator from the Designator's own regions, and got
+    as far as asking for evidence that does not exist. What supplies that
+    evidence is the live structural pass, which has landed
+    (`pipeline/2_designator/run.py`'s `live_initial_pass`, driven end to end in
+    `pipeline/test_structure_chair_e2e.py`); this module keeps
+    `designator_structure` on its fixture row on purpose, so the assertion below
+    measures the hand-built layer's boundary and says so.
     """
     recensor = real_run.tail["5_recensor"]
 

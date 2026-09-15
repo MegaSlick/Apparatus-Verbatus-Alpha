@@ -165,7 +165,9 @@ def read_retained_chandra_response(
         raise SchemaRefusal("Chandra custody binding blob differs from its sealed reference")
     try:
         recorded = json.loads(binding_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        # `RecursionError` because nesting, not length, is what breaks the JSON
+        # parser (G13); uncaught it would escape this boundary's named refusal.
         raise SchemaRefusal(f"Chandra custody binding is not valid JSON: {error}") from error
     if not isinstance(recorded, dict) or set(recorded) != _BINDING_FIELDS:
         raise SchemaRefusal("Chandra custody binding is not its closed schema")
@@ -219,7 +221,7 @@ def _is_custody_binding(data: bytes) -> bool:
     """Are these bytes exactly what this module's binding writer would produce?"""
     try:
         recorded = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return False
     if not isinstance(recorded, dict) or set(recorded) != _BINDING_FIELDS:
         return False

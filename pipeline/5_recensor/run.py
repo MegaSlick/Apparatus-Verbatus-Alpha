@@ -91,7 +91,6 @@ from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
     INK_RUNS_SCHEMA,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
-    MINIMUM_INK_PIXELS,
     load_coverage_audit_config,
     reconcile_edge_finding_with_runs,
     residual_ink,
@@ -158,7 +157,9 @@ def audit_state(context, reading: dict, act_id: str) -> dict | None:
 
     `not-run` is the one Perlector outcome published without a reading attempt
     (`pipeline/4_perlector/run.py`: a Designator-held act, an explicitly absent
-    Perlector chair, or an atomic presentation over the sealed image ceiling).
+    Perlector chair, an atomic presentation over the sealed image ceiling, or a
+    live attempt interrupted inside its own audit round, whose frozen semi-final
+    no second reading can reproduce).
     It never reaches Pass C, so there is no chain to
     verify and no unresolved span to route on — the act is held on its own
     outcome further down. Demanding a chain here turned the absent-chair hold
@@ -2018,6 +2019,8 @@ def unclaimed_ink_observations(
     unclaimed_observations: list,
     page_ordinal: int,
     cut_regions: dict[int, list[dict]],
+    *,
+    minimum_ink_pixels: int,
 ) -> list[dict]:
     """Which of this page's retained unclaimed observations point at real ink.
 
@@ -2025,7 +2028,12 @@ def unclaimed_ink_observations(
     ink outside every current cut; agreement, overlap scores, chair identity,
     and other witness-derived quantities cannot authorize it. ``cut_regions``
     is required because an omitted mask would count already-covered ink as a
-    reason to cut it again.
+    reason to cut it again. ``minimum_ink_pixels`` is the sealed noise floor
+    the ink under a pointer must clear, keyword-only with no default: it was
+    the module constant `MINIMUM_INK_PIXELS` until 2026-09-14 and is read from
+    `[coverage_audit.noise_floor]` under the run's own seal now, so a caller
+    that forgets it fails loudly rather than funding recovery under a floor
+    nobody sealed.
 
     A retained observation with no map row is a fatal accounting gap, not an
     empty result: absence of the independent evidence cannot honestly be read
@@ -2081,7 +2089,7 @@ def unclaimed_ink_observations(
                 "Recensor."
             )
         ink_pixels = _ink_outside_cuts_in_box(evidence, bounds, covered)
-        if ink_pixels >= MINIMUM_INK_PIXELS:
+        if ink_pixels >= minimum_ink_pixels:
             requests.append({"page_ordinal": page_ordinal, "outside_ink_pixels": ink_pixels})
     return requests
 
@@ -2163,11 +2171,33 @@ def recovery_request_origin(*, declared: bool, outside_ink_requests: list) -> st
 
 
 def unresolved_observation_hold(
-    outside_ink_requests: list, page_ordinal: int, funded_pages: set[int]
+    outside_ink_requests: list,
+    page_ordinal: int,
+    funded_pages: set[int],
+    *,
+    real_route: bool,
 ) -> tuple[str, str] | None:
-    """Keep a still-confirmed pointer visible when no request can be published."""
+    """Keep a still-confirmed pointer visible when no request can be published.
+
+    Three reasons a request cannot be published, told apart because an operator
+    acts on them differently.  The route is asked first: on a real submission no
+    fallback recrop can be cut at all, whatever the page's grant or the act's
+    budget would otherwise have allowed, so naming a spent budget there would
+    report the wrong fault (GOVERNANCE 10).  `real_route` is required rather than
+    defaulted -- a caller that forgot it would publish the grant sentence over a
+    run whose recovery does not exist (F068/F083).
+    """
     if not outside_ink_requests:
         return None
+    if real_route:
+        return (
+            "held-for-review",
+            "Unit 9 still confirms ink in a witness-reported pointer outside every "
+            "current cut, but bounded recovery from a real submission is not built — the "
+            "Designator's recovery pass still reads a fixture's declared rectangle — so no "
+            "fallback recrop can be cut for it; the unresolved coverage evidence is held "
+            "visibly rather than published as a request nothing downstream could answer",
+        )
     grant_state = (
         "the page's one observation-funded recovery request is already recorded"
         if page_ordinal in funded_pages
@@ -3545,6 +3575,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # The declared scenario on the fixture route; nothing on a real submission.
     # `hold_acts` and `recover_acts` are the two things read from it, below.
     scenario = declared_scenario(context)
+    # The same route, read as its own fact rather than inferred from `scenario
+    # is None`. `declared_scenario` is defined in terms of this reader, so the
+    # two cannot disagree; what they mean differs, and only one of them belongs
+    # in the recovery gate. This one answers "can anything downstream cut a
+    # recrop for this run at all" (F068/F083), not "did a fixture declare one".
+    real_route = real_ingress(context)
     floor = context.witness_floor
 
     # This pass must precede publication.  `latest_attempt` refuses duplicate
@@ -3568,6 +3604,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     geometry_inputs = geometry_coverage_inputs(context)
     content_findings = testimony_content_findings(context)
     ink_maps = ink_map_by_page(context)
+    # The noise floor a witness pointer's ink must clear before it may fund
+    # recovery, read from the sealed `[coverage_audit.noise_floor]` and proven
+    # against this run's own seal at the point of use, the way every other
+    # reader of that file proves its bytes. Read once for the run: it is a flat
+    # count and does not resolve per page.
+    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
+    minimum_ink_pixels = coverage_config["coverage_audit"]["minimum_ink_pixels"]
     # The remaining page-level inputs read once per run for the same reason:
     # the sealed occlusion records by page, and a cache of the local-act
     # proposal geometry every cross-capture view asks for.
@@ -3754,14 +3798,30 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             content_coverage.get("unclaimed_observations", []),
             act["page_ordinal"],
             cut_regions,
+            minimum_ink_pixels=minimum_ink_pixels,
         )
         wants_recovery = (
             declared_recovery(scenario, act_key)
             or (bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)
         ) and used_total == 0
         observation_hold = unresolved_observation_hold(
-            outside_ink_requests, act["page_ordinal"], funded_pages
+            outside_ink_requests, act["page_ordinal"], funded_pages, real_route=real_route
         )
+        # Whether a published `fallback-recrop` could actually be answered. On a
+        # real submission it cannot: `pipeline/2_designator/run.py` refuses
+        # `--operation recover` by name because a recovery still reads the
+        # fixture's declared rectangle, the orchestrator turns that exit 2 into a
+        # run abort, and the Armarium then refuses the outstanding request -- so a
+        # request published here is a run with no export by any sequence of stage
+        # invocations (F068/F083). This is not a fact about the reading or its
+        # coverage, and it does not change what the act WANTS: it decides only
+        # whether the want becomes a request or the loud hold below. It is the
+        # same rule this stage already applies to `page-level-reread`, stated in
+        # the comment inside the branch below: "this stage does not request an
+        # operation nothing downstream can honor, because a request the
+        # orchestrator can only refuse turns a graceful hold into a hard failure
+        # for no gain."
+        recrop_dispatchable = not real_route
         ordinal = used_total + 1
 
         # The cap is enforced at the request boundary rather than by convention
@@ -3775,6 +3835,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # the Unit 14B ink observation and bounded grants do. The survey
             # covers the current proposal, not the unclaimed ink outside it.
             and wants_recovery
+            # Not a budget: the budget says how many recrops this act may spend,
+            # this says whether one can be cut at all on this run's ingress
+            # route. Refused here rather than downstream so the act ends as a
+            # visible review item and the Armarium can still export partial
+            # (ARCHITECTURE invariant 8, GOVERNANCE 2 and 11).
+            and recrop_dispatchable
             and used_fallback < allowed_fallback
             and used_total < budget["allowed"]
             and used_total < budget["absolute_cap"]
@@ -3981,7 +4047,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # confirming ink in a witness pointer outside every cut is
                     # exactly the shortfall the three conditions above exist to
                     # keep out of a terminal seal: with the page's one grant
-                    # already spent, or the budget exhausted, no request is
+                    # already spent, the budget exhausted, or the run on the
+                    # real route where no recrop can be cut, no request is
                     # published, so this cause appears only in the chain below
                     # and `confirmed-blank` would silently override it. An act
                     # sealed COMPLETED-class over measured, unclaimed ink is the

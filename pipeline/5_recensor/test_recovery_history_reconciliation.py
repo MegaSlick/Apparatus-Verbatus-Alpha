@@ -18,7 +18,9 @@ from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR
 from common.perlector_audit import (
     audit_digest,
     audit_request,
+    length_signal,
     neutral_prompt,
+    truncation_classification,
     validate_chain,
     validate_draft,
     validate_finding,
@@ -256,6 +258,21 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     finding["payload"]["change_record"] = []
     finding["payload"]["uncertain_spans"] = []
     finding["payload"]["unresolved"] = False
+    # The re-proof termination's length measure is bound to the text it was
+    # measured over, so a blank forgery has to carry a blank measure and the
+    # signal and classification that measure derives -- exactly what a
+    # genuinely-blank re-proof would have recorded.
+    termination = finding["payload"].get("reproof_truncation")
+    if termination is not None:
+        measure = termination["measure"]
+        measure["characters"] = 0
+        termination["signals"]["length_suspicious"] = length_signal(
+            characters=0,
+            region_pixels=measure["region_pixels"],
+            page_pixels=measure["page_pixels"],
+            floor=measure["length_floor_characters_per_page"],
+        )
+        termination["classification"] = truncation_classification(termination["signals"])
     validate_finding(finding["payload"], text="")
     finding["self_hash"] = self_hash(finding)
     validate_envelope(finding)

@@ -463,7 +463,15 @@ def _quoted(value: str | None) -> dict[str, Any]:
 # integer. `int("7\n")` is 7, so nothing was ever misread; the claim in the
 # record was simply false, and a check that does not enforce what it states is
 # the kind of thing GOVERNANCE 10 is about.
-_BBOX_COMPONENT: Final = re.compile(r"[+-]?[0-9]+")
+#
+# The digit count is bounded too. A valid component is at most four digits
+# (`BBOX_SCALE` is 1000), so a cap of 16 is already generous headroom; without
+# one, a model writing a component thousands of digits long reaches `int()`
+# below and CPython's own integer-string-conversion limit turns that into an
+# unhandled `ValueError` that crashes the Designator instead of producing this
+# function's named refusal (G13, "huge integer").
+_MAX_BBOX_COMPONENT_DIGITS: Final = 16
+_BBOX_COMPONENT: Final = re.compile(rf"[+-]?[0-9]{{1,{_MAX_BBOX_COMPONENT_DIGITS}}}")
 
 
 def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | None]:
@@ -498,6 +506,13 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
         return None, f"expected 4 space-separated components, found {len(parts)}"
     if not all(_BBOX_COMPONENT.fullmatch(part) for part in parts):
         return None, "components are not plain decimal integers"
+    # `int()` is total here and needs no guard of its own: every part has just
+    # been `fullmatch`ed against `_BBOX_COMPONENT`, so it is a sign and at most
+    # `_MAX_BBOX_COMPONENT_DIGITS` digits -- far under CPython's 4,300-digit
+    # integer-string limit, which is the only way this call can raise. A guard
+    # here would be code no test can reach, implying a failure mode the regex
+    # has already removed; the bound above is what keeps that true, and the
+    # regression test measures it (G13).
     box = [int(part) for part in parts]
     if not all(0 <= component <= BBOX_SCALE for component in box):
         return None, f"components outside [0, {BBOX_SCALE}]"

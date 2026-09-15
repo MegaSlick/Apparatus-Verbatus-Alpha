@@ -839,14 +839,20 @@ it.
 **What is proven offline.** `test_attestatores_real_ingress.py` carries a real submission
 of the synthetic fixture's own two pages through the Door, the Exemplar and the
 Ink Map as programs, hand-builds the Designator's regions and seal in the shape
-`cut_minted_region` publishes them (because no real Designator exists), and
-runs this stage's `main` with three served fake chairs: every act and page
+`cut_minted_region` publishes them (to keep the test on this stage's own side of
+that boundary, over records the module controls, rather than standing up a served
+structure chair to produce them), and runs this stage's `main` with three served
+fake chairs: every act and page
 record publishes, the page records name the Exemplar's own page subjects, no
 declaration is read or reported, and the fixture accessor is never touched. The
 same file holds the seal refusal over an unsealed Designator (context opened,
 nothing written, no "sealed no digest"), the fixture-catalogue refusal, and the
-shipped real catalogue's posture at every tier. A real Designator is still
-roadmap work; what this stage is ready for is its seal.
+shipped real catalogue's posture at every tier. The real structural pass is no
+longer roadmap work — `pipeline/2_designator/run.py`'s `live_initial_pass` asks a
+served chair for every sealed page, driven end to end in
+`pipeline/test_structure_chair_e2e.py` — so what is hand-built here is a fixture
+for this consumer, not a stand-in for a producer that does not exist. What this
+stage is ready for is the Designator's seal, whichever pass wrote it.
 
 ## Testimonium schema
 

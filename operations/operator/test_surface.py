@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import threading
 import tracemalloc
@@ -28,6 +30,7 @@ from operations.pod.launch import LaunchResult, LaunchState
 from operations.pod.lease import LeaseStore
 from operations.pod.models import (
     BILLING_CUTOFF_MARGIN_ENV,
+    DEFAULT_CONTAINER_DISK_GB,
     PodCreateRequest,
     PodRecord,
     ProviderFailure,
@@ -61,6 +64,7 @@ from .surface import (
     reconciliation_table,
 )
 from .volume_cost import ACCRUAL_FACT
+from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
 UTC = timezone.utc
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
@@ -783,6 +787,42 @@ def test_a_verified_close_releases_the_launch_the_open_lease_refused(
     ]
 
 
+def test_the_saved_request_keeps_the_container_disk_it_was_created_with() -> None:
+    """A field outside the saved record is a field a reconstruction silently changes.
+
+    The saved request is what `close` reconstructs from and what the adopt path
+    compares digests against, so a container disk that survived the create and
+    not the record would make the same launch hash two different ways.
+    """
+
+    from dataclasses import replace as _replace
+
+    request = _replace(_request(), container_disk_gb=123)
+
+    record = _request_record(request)
+
+    assert record["container_disk_gb"] == 123
+    restored = _request_from_record(record)
+    assert restored.container_disk_gb == 123
+    assert restored.reviewed_digest() == request.reviewed_digest()
+
+
+def test_a_saved_request_written_before_the_container_disk_existed_still_loads() -> None:
+    """`close` is the verb that reads this record, and it must never fail to.
+
+    A record that predates the field reads as the reviewed default rather than
+    as an unreadable record, because the alternative is a pod that keeps
+    billing while the reader refuses its own history.
+    """
+
+    record = _request_record(_request())
+    del record["container_disk_gb"]
+
+    restored = _request_from_record(record)
+
+    assert restored.container_disk_gb == DEFAULT_CONTAINER_DISK_GB
+
+
 def test_saved_request_and_pod_reconstruction_refuse_type_coercion(tmp_path: Path) -> None:
     """The receipt reader must construct the same identities as the live path."""
 
@@ -887,9 +927,11 @@ def test_a_repeated_receipt_never_corrupts_the_descriptors_own_history_invariant
 
     loaded = surface.descriptor.load()
     assert loaded is not None
-    assert loaded["actions"]["boot"] == str(first)
-    assert loaded["history"]["boot"][-1] == str(first)
-    assert loaded["history"]["boot"].count(str(first)) == 1
+    # Entries are basenames: the receipt is content-addressed and the index
+    # must survive the state directory being moved.
+    assert loaded["actions"]["boot"] == first.name
+    assert loaded["history"]["boot"][-1] == first.name
+    assert loaded["history"]["boot"].count(first.name) == 1
 
     # And the descriptor must still be readable and writable afterward.
     third = surface.receipts.write("boot", {"summary": "third"})
@@ -1380,7 +1422,7 @@ def test_six_words_end_to_end_and_status_is_strictly_read_only(tmp_path: Path) -
     assert bundle.is_file()
     assert close.verified
     launch_receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
-    lease = LeaseStore(Path(str(launch_receipt["lease"]))).load()
+    lease = LeaseStore(surface.state_root / str(launch_receipt["lease"])).load()
     assert lease is not None and lease.phase == "closed-verified"
     assert any("page 1" in line and "page 2" in line for line in messages)
     assert any("act a1" in line and "act a2" in line for line in messages)
@@ -1720,6 +1762,44 @@ def test_upload_refuses_an_oversized_manifest_before_constructing_a_transfer(
     assert not (surface.state_root / "fixture-volume").exists()
 
 
+def test_upload_refuses_a_bad_sealed_manifest_as_refused_not_partial(tmp_path: Path) -> None:
+    """G13: `ChecksummedTransfer.resume` reads the sealed manifest itself,
+    through `submission_door.load_manifest`, before a single file is sent.
+
+    A malformed or non-canonical manifest raises `SubmitRefusal` (a
+    `ContractError`) from inside that call, which the surrounding
+    `(TransferFailure, VolumeTransferRefusal, OSError, ValueError)` tuple does
+    not catch -- previously an unclassified crash. It must land as
+    `UPLOAD_REFUSED`: never `UPLOAD_PARTIAL`, because nothing was transferred
+    and reporting a partial transfer would be a false statement about what
+    happened, and not `UPLOAD_MANIFEST_MISSING` either, whose copy sends the
+    operator to find a record that is sitting readable at the path they named.
+    The receipt binds the digest of the record that was refused.
+    """
+
+    surface = _surface(tmp_path)
+    source = tmp_path / "submitted-pages"
+    source.mkdir()
+    (source / "page-one.bin").write_bytes(b"first\n")
+    manifest = tmp_path / "sealed-submission.json"
+    manifest.write_bytes(b'{"not": "a canonical submission manifest"}')
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(source, sealed_manifest=manifest)
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["state"] == "manifest-refused"
+    assert (
+        payload["submission_manifest_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    )
+    assert payload["zero_gpu_hours"] is True
+    # Nothing was transferred: the fixture volume directory may already exist
+    # (it is prepared before the manifest is parsed), but no object may be in it.
+    fixture_volume = surface.state_root / "fixture-volume"
+    assert list(fixture_volume.rglob("*")) == []
+
+
 def test_red_boot_is_named_and_can_be_retried(tmp_path: Path) -> None:
     surface = _surface(tmp_path, faults=Faults(cache_failure=True))
 
@@ -1790,12 +1870,12 @@ def test_failed_close_is_loud_then_can_be_rechecked(tmp_path: Path) -> None:
     assert any("UNVERIFIED CLOSE" in line for line in messages)
     assert any("both saved checks" in line for line in messages)
     launch_receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
-    lease = LeaseStore(Path(str(launch_receipt["lease"]))).load()
+    lease = LeaseStore(surface.state_root / str(launch_receipt["lease"])).load()
     assert lease is not None and lease.phase == "close-unverified"
     verified = surface.close(surface.prepare_close(), phrase)
 
     assert verified.verified
-    reconciled = LeaseStore(Path(str(launch_receipt["lease"]))).load()
+    reconciled = LeaseStore(surface.state_root / str(launch_receipt["lease"])).load()
     assert reconciled is not None and reconciled.phase == "closed-verified"
 
 
@@ -2089,6 +2169,11 @@ def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
     source = tmp_path / "approved" / "source"
     ledger = tmp_path / "approved" / "ledger.json"
     policy = tmp_path / "policy.json"
+    # `run` is refused before dispatch on a workspace that is not a checkout;
+    # this test is about the arguments reaching the surface, so the workspace
+    # carries the three directories a run reads.
+    for resource in ("pipeline", "config", "proof"):
+        (tmp_path / resource).mkdir()
 
     assert (
         cli.main(
@@ -2295,6 +2380,52 @@ def test_pipeline_children_do_not_receive_upload_only_credentials(
     assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
     assert "RUNPOD_S3_ACCESS_KEY" not in observed_environment
     assert "RUNPOD_S3_SECRET_KEY" not in observed_environment
+    assert observed_environment["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved"
+
+
+def test_pipeline_children_do_not_receive_any_provider_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F016: not only the transfer's own two S3 keys -- every provider
+    credential a decoder RCE in a stage reached by a submitted page could spend
+    (pod creation money included) must stay off this environment, the same as
+    the confined console/backup/advance/ScanTailor children already get from
+    `credential_free_environment`.
+    """
+
+    observed_environment: dict[str, str] = {}
+    credential_names = (
+        "RUNPOD_API_KEY",
+        "RUNPOD_S3_ACCESS_KEY",
+        "RUNPOD_S3_SECRET_KEY",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "GITHUB_TOKEN",
+        "ANTHROPIC_API_KEY",
+    )
+    for name in credential_names:
+        monkeypatch.setenv(name, f"secret-for-{name}")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    def record_environment(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed_environment.update(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=lambda _line="": None,
+        faults=Faults(laptop_crash=True),
+        runner=record_environment,
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(run_id="credential-boundary-2")
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    for name in credential_names:
+        assert name not in observed_environment, f"{name} reached a stage subprocess"
     assert observed_environment["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved"
 
 
@@ -2799,15 +2930,21 @@ def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
 def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> None:
     """A fixture that cannot be read must not silently become a placeholder.
 
-    Before this fix, `run` fell back to the generic "the declared pages"/"the
-    declared acts" labels with no comment at all — exactly the progress detail
-    Spec 12 asks for ("names pages and acts, not percentages") quietly
-    replaced by a placeholder with nothing to say it happened.
+    Before the first fix, `run` fell back to the generic "the declared
+    pages"/"the declared acts" labels with no comment at all — exactly the
+    progress detail Spec 12 asks for ("names pages and acts, not percentages")
+    quietly replaced by a placeholder with nothing to say it happened. Saying
+    so and then launching the orchestrator anyway was the second half of the
+    same defect: the orchestrator reads the same fixture from the same place,
+    so the run failed a moment later for a reason the operator never saw. An
+    unreadable fixture is the precondition failure `NOT_A_CHECKOUT` names, and
+    it is refused before anything starts.
     """
 
     workspace = tmp_path / "workspace-with-no-fixture"
     workspace.mkdir()
     messages: list[str] = []
+    launched: list[object] = []
     clock = FastElapsedClock()
     surface = OperatorSurface(
         workspace,
@@ -2818,18 +2955,23 @@ def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> 
         monotonic=clock.monotonic,
         sleeper=clock.sleep,
     )
-    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
-        args=[], returncode=0, stdout="", stderr=""
+
+    def never(*args, **kwargs):  # type: ignore[no-untyped-def]
+        launched.append(args)
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    surface.runner = never  # type: ignore[method-assign]
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.run(run_id="unreadable-fixture-run")
+
+    assert refusal.value.code is ErrorCode.NOT_A_CHECKOUT
+    assert "declared fixture could not be read" in str(refusal.value.detail)
+    assert str(workspace / "proof") in str(refusal.value.detail)
+    assert launched == [], "the orchestrator must not start on a workspace with no fixture"
+    assert not (tmp_path / "operator-state" / "receipts").exists(), (
+        "nothing started, nothing recorded"
     )
-    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
-        "aggregate": {"status": "complete"},
-        "pages": [],
-        "expected_acts": 0,
-    }
-
-    surface.run(run_id="unreadable-fixture-run")
-
-    assert any("declared fixture could not be read" in line for line in messages)
 
 
 def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_bundle(
@@ -3065,14 +3207,23 @@ def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_n
 
 
 def test_console_entry_renders_an_application_import_failure(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def broken_application():  # type: ignore[no-untyped-def]
         raise RuntimeError("Traceback (most recent call last): missing fixture application")
 
     monkeypatch.setattr(entry, "_load_application", broken_application)
+    # The boundary now records the failure in the default state directory;
+    # that must be this test's, not the developer's.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
     assert entry.main(["status"]) == 2
+    receipts = list((tmp_path / "xdg-state" / "verbatus" / "receipts").glob("unexpected-*.json"))
+    assert len(receipts) == 1
+    saved = json.loads(receipts[0].read_text(encoding="utf-8"))["payload"]
+    assert saved["exception_type"] == "RuntimeError"
+    assert saved["argv"] == ["status"]
+    assert "missing fixture application" in saved["traceback"]
     captured = capsys.readouterr().out
     assert "What happened:" in captured
     assert "What it means:" in captured
@@ -3147,9 +3298,18 @@ def test_interactive_upload_keeps_an_existing_sealed_manifest_primary(
 def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The double-click route asks by name for the bootstrap report, the
-    pod-run report, and the bootstrap journal -- exactly what
-    ``--evidence-key`` is for -- each independently optional."""
+    """The double-click route asks by name for all ten records that lie under
+    neither fetched prefix -- the bootstrap report, the pod-run report, that
+    report's ``-hold``, ``-liveness``, ``-timings`` and ``-transcript.log``
+    siblings, the pod-timer runtime report and its ``-terminating`` breadcrumb,
+    the bootstrap journal and the volume-root transfer journal -- exactly what
+    ``--evidence-key`` is for, each independently optional. The liveness report
+    and the transfer journal were not asked for at all while they had no route
+    home, and the four token-named siblings ``launch_evidence_keys`` derives
+    were reachable only through a saved receipt until 2026-09-15 (CodeRabbit on
+    PR #117). A saved launch receipt is asked for first and derives the
+    token-bound keys itself; this is the route for a run whose receipt is not
+    to hand."""
 
     answers = iter(
         (
@@ -3157,9 +3317,18 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
             "brought-home",
             "/local/into",
             "EU-CZ-1:vol123",
+            "",  # no saved launch receipt to hand: name the keys one by one
             "runs/brought-home/bootstrap-report.json",
             "runs/brought-home/pod-run-report.json",
+            "runs/brought-home/pod-run-report-hold.json",
+            "runs/brought-home/pod-run-report-liveness.json",
+            "runs/brought-home/pod-run-report-timings.json",
+            "runs/brought-home/pod-run-report-transcript.log",
+            "pod-runtime-report.json",
+            "pod-runtime-report-terminating.json",
             "",  # bootstrap journal left blank
+            "pod-transfer-journal.json",
+            "",  # every launch's preflight tree, not one stem
         )
     )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
@@ -3176,15 +3345,40 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
         "runs/brought-home/bootstrap-report.json",
         "--evidence-key",
         "runs/brought-home/pod-run-report.json",
+        "--evidence-key",
+        "runs/brought-home/pod-run-report-hold.json",
+        "--evidence-key",
+        "runs/brought-home/pod-run-report-liveness.json",
+        "--evidence-key",
+        "runs/brought-home/pod-run-report-timings.json",
+        "--evidence-key",
+        "runs/brought-home/pod-run-report-transcript.log",
+        "--evidence-key",
+        "pod-runtime-report.json",
+        "--evidence-key",
+        "pod-runtime-report-terminating.json",
+        "--evidence-key",
+        "pod-transfer-journal.json",
     ]
 
 
 def test_interactive_fetch_run_needs_no_evidence_key_at_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Three blank answers mean none, not a refusal: every evidence key is optional."""
+    """Blank answers mean none, not a refusal: the launch receipt, every evidence
+    key and the preflight stem are each optional."""
 
-    answers = iter(("fetch-run", "brought-home", "/local/into", "EU-CZ-1:vol123", "", "", ""))
+    answers = iter(
+        (
+            "fetch-run",
+            "brought-home",
+            "/local/into",
+            "EU-CZ-1:vol123",
+            "",  # launch receipt
+            *([""] * 10),  # the ten evidence keys
+            "",  # preflight stem
+        )
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 
     assert cli._interactive_arguments() == [
@@ -4638,6 +4832,10 @@ def test_cli_run_carries_the_roster_trio_to_the_operator_surface(
     roster = tmp_path / "models-real.toml"
     catalogue = tmp_path / "serving_recipes_real.toml"
     witness_context = tmp_path / "witness_context-real.toml"
+    # `run` is refused before dispatch on a workspace that is not a checkout;
+    # this test is about the arguments reaching the surface.
+    for resource in ("pipeline", "config", "proof"):
+        (tmp_path / resource).mkdir()
 
     assert (
         cli.main(
@@ -4684,7 +4882,16 @@ class DirectoryRunReader:
     def fetch_to(self, key: str, destination: Path, *, max_bytes: int) -> int:
         self.fetched.append(key)
         payload = self.overrides.get(key, (self.root / key).read_bytes())
-        assert len(payload) <= max_bytes
+        if len(payload) > max_bytes:
+            # The real reader's own answer (`volume_s3.fetch_to`): a refusal
+            # naming the key and the bound, not a bare AssertionError that says
+            # nothing to whoever catches it. The bound is reachable on one class
+            # of object -- an engine log, which nothing truncates -- so what
+            # this raises decides what the caller can do about it.
+            raise VolumeTransferRefusal(
+                f"the network volume's object {key!r} is larger than the {max_bytes}-byte "
+                "bound this fetch will write"
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(payload)
         return len(payload)
@@ -4810,6 +5017,370 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     repeated = surface.receipts.read(again)["payload"]
     assert repeated["fetched"] == 0
     assert repeated["reused"] == payload["fetched"]
+
+
+# The three stages that serve a chair, and the module each one's
+# `default_serving_factory` lives in. Read from source below rather than
+# imported: a stage module pulls the whole serving stack in behind it, and the
+# claim being made is about the expression at the call site, not about a value
+# some fixture context would produce.
+_SERVING_STAGE_SOURCES = {
+    "designator": "pipeline/2_designator/structure_pass.py",
+    "attestatores": "pipeline/3_attestatores/run.py",
+    "perlector": "pipeline/4_perlector/run.py",
+}
+
+
+def _served_stage_log_keys(run_id: str) -> dict[str, str]:
+    """`<stage> -> volume key` for the engine log each serving stage really writes.
+
+    Derived from `RunTree.serving_log_path`, which is the expression every
+    stage's `default_serving_factory` passes to `ServingManager(log_root=...)`
+    -- pinned by `test_no_serving_stage_spells_its_own_log_directory` below.
+    Restating the directory here instead is what let the fixture pass while the
+    Attestatores wrote to `attestatores/serving-logs/`, a path the stage name
+    rather than the writing directory named and no inventory scope accounted
+    for: the test held what the fixture author believed, not what the stage
+    leaves. Only the directory is load-bearing; the file name is
+    `ServingManager._next_log_path`'s shape, and the fetch classifies on the
+    prefix.
+    """
+
+    from common.runtree.store import RunTree
+
+    tree = RunTree(Path("/nonexistent"), run_id)
+    names = {
+        "designator": "vllm-designator-0123456789ab.log",
+        "attestatores": "vllm-attestator_1-abcdef012345.log",
+        "perlector": "vllm-perlector-fedcba987654.log",
+    }
+    return {
+        stage: f"runs/{run_id}/{tree.serving_log_path(stage)}/{names[stage]}"
+        for stage in _SERVING_STAGE_SOURCES
+    }
+
+
+def test_every_serving_stage_writes_its_engine_log_inside_the_inventory_scope() -> None:
+    """The per-stage binding the fixture below cannot make on its own.
+
+    `_fetch_run_tree` reads `RunTree.inventory_scope()` as the whole of what a
+    run tree may hold and refuses the tree at the first key outside it. So a
+    stage whose `log_root` lands outside the scope does not lose a log -- it
+    loses the run, and the receipt names the log while nothing comes home. That
+    is what the Attestatores did, and no fixture written by hand could catch it,
+    because a hand-written fixture states the path the author believed.
+    """
+
+    from common.runtree.store import RunTree
+
+    tree = RunTree(Path("/nonexistent"), "brought-home")
+    scope = tree.inventory_scope()
+    for stage in _SERVING_STAGE_SOURCES:
+        relative = tree.serving_log_path(stage)
+        log = f"{relative}/vllm-{stage}-0123456789ab.log"
+        assert any(log.startswith(item) for item in scope), (
+            f"{stage} writes its engine log to {relative}/, which no inventory-scope "
+            "prefix accounts for; fetch-run would refuse the whole served run tree"
+        )
+        assert surface_module._is_serving_log(log), (
+            f"{stage}'s engine log is in scope but is not classified as a serving log, "
+            "so the fetch would try to verify it against a manifest nothing wrote"
+        )
+
+
+def test_no_serving_stage_spells_its_own_log_directory() -> None:
+    """Read from source, so a fourth serving stage with its own spelling fails here.
+
+    The defect this closes was one token: `f"{ATTESTATORES}/serving-logs"`,
+    where the stage is named `attestatores` and writes in `3_attestatores`. One
+    shared expression is the only thing that makes the test above a statement
+    about the stages rather than about itself.
+    """
+
+    for relative in sorted(_SERVING_STAGE_SOURCES.values()):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert re.search(
+            r"log_root=context\.tree\.resolve\(\s*context\.tree\.serving_log_path\(",
+            source,
+        ), f"{relative} does not build its serving log root from RunTree.serving_log_path"
+        assert '"serving-logs"' not in source and "'serving-logs'" not in source, (
+            f"{relative} spells the serving-log directory for itself; the store owns it"
+        )
+
+
+def _served_stage_leavings(volume: Path, run_id: str = "brought-home") -> dict[str, bytes]:
+    """Exactly what a stage that served a chair leaves in the run tree, and nothing else.
+
+    `SubprocessLauncher.launch` writes one engine log per started chair under
+    the stage's own `serving_log_path`. That is the whole of it now: the
+    single-resident lease used to sit at the tree root as `pod-gpu.lock` as
+    well, and it moved to `operations.serving.residency.POD_RESIDENCY_LOCK_PATH`
+    on container-local disk, because the boundary is the pod's card and not one
+    run tree.
+    """
+
+    written = {
+        key: f"INFO 09-14 00:00:00 api_server.py:1 vLLM API server 0.27.1 ({stage})\n".encode()
+        for stage, key in _served_stage_log_keys(run_id).items()
+    }
+    for key, payload in written.items():
+        target = volume / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    return written
+
+
+def test_fetch_run_brings_a_served_run_tree_home_and_names_its_logs_unverified(
+    tmp_path: Path,
+) -> None:
+    """The run the first live test exists to produce, fetched by the verb written for it.
+
+    A served stage leaves an engine log inside the run tree. While
+    `RunTree.inventory_scope()` did not name `<stage>/serving-logs/`, this verb
+    refused the whole tree at the first log it listed -- zero objects fetched
+    from a run that had already billed a card, with the receipt naming the log.
+    The log is still not evidence the tree can check: no manifest records it and
+    nothing digested it, so it comes home named as unverified side evidence
+    rather than counted among what was verified (GOVERNANCE 2 and 10).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert _files_under(into / "brought-home") == _files_under(volume / "runs" / "brought-home")
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    named = payload["unverified_serving_logs"]
+    # Compared against what the stages' own `serving_log_path` produced, not
+    # against two paths restated here: a restatement is what let this test pass
+    # while the Attestatores wrote outside the inventory scope.
+    prefix = "runs/brought-home/"
+    assert [entry["relative_path"] for entry in named] == sorted(key[len(prefix) :] for key in logs)
+    assert [entry["sha256"] for entry in named] == [_sha256(logs[key]) for key in sorted(logs)]
+    # Named, not folded into the verified count: the summary and the screen both
+    # say so, so no reader takes a digested-but-unchecked log for a checked one.
+    assert "digested but unverified" in payload["summary"]
+    assert any("came home as side evidence" in line for line in messages)
+    # And the tree itself is still whole: the log is not an artifact, a blob or
+    # a receipt, so nothing it did changed what the stages reconcile to.
+    assert payload["stages_verified"] == ["designator"]
+    assert payload["envelope_only_artifacts"] == []
+
+
+def test_a_serving_log_that_grew_since_the_last_fetch_refuses_by_itself(
+    tmp_path: Path,
+) -> None:
+    """A held run fetched twice still comes home the second time.
+
+    An engine log is appended to while a chair serves, so the operator who
+    fetches a held run mid-flight and again at the end meets a log whose bytes
+    have grown. `_fetch_or_compare` never replaces a local file, which is right
+    for immutable evidence and fatal to the whole fetch if a log is held to it:
+    the second call brought home nothing at all, with no remedy named anywhere.
+    The log is refused by itself instead, named in the receipt and on the
+    screen, and the verified run tree still arrives (GOVERNANCE 2).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+    grew = sorted(logs)[0]
+    (volume / grew).write_bytes(logs[grew] + b"INFO 09-14 00:30:00 shutting down\n")
+
+    messages.clear()
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    relative = grew[len("runs/brought-home/") :]
+    assert [item.split(":", 1)[0] for item in payload["refused_serving_logs"]] == [relative]
+    # The one that did not grow still came home, and the tree did.
+    assert [entry["relative_path"] for entry in payload["unverified_serving_logs"]] == [
+        key[len("runs/brought-home/") :] for key in sorted(logs) if key != grew
+    ]
+    assert payload["stages_verified"] == ["designator"]
+    assert any("A serving log did not come home" in line for line in messages)
+    # And the local copy is the one the first fetch verified, untouched.
+    assert (into / "brought-home" / relative).read_bytes() == logs[grew]
+
+
+def test_a_serving_log_past_the_object_bound_refuses_by_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A debug-level log outgrowing `MAX_FETCH_OBJECT_BYTES` costs the log, not the run.
+
+    Nothing truncates an engine log, so this bound is reachable on exactly one
+    class of object in the tree -- and every other class is content-addressed or
+    manifest-recorded evidence a page blob cannot approach. Raising it here
+    would be the same whole-tree refusal by a different route.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    huge = sorted(logs)[1]
+    (volume / huge).write_bytes(b"D" * 4096)
+    monkeypatch.setattr(surface_module, "MAX_FETCH_OBJECT_BYTES", 1024)
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    relative = huge[len("runs/brought-home/") :]
+    assert [item.split(":", 1)[0] for item in payload["refused_serving_logs"]] == [relative]
+    assert "bound this fetch will write" in payload["refused_serving_logs"][0]
+    assert payload["stages_verified"] == ["designator"]
+    # Nothing half-written was left standing where the log belongs.
+    assert not (into / "brought-home" / relative).exists()
+    assert any("A serving log did not come home" in line for line in messages)
+
+
+def test_a_symlink_where_a_serving_log_belongs_is_refused_and_left_alone(
+    tmp_path: Path,
+) -> None:
+    """Narrowing the blast radius does not narrow the check, or license a deletion.
+
+    `_fetch_or_compare` refuses a symlink before a byte is written -- a run tree
+    holds no aliases -- and that still happens for a log. What changed is that
+    the refusal is recorded against the log instead of taking the verified tree
+    with it. The link itself is something this call did not create, so the
+    cleanup after a refused log must leave it exactly where it was.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    into = tmp_path / "local-runs"
+    aliased = sorted(logs)[0][len("runs/brought-home/") :]
+    planted = into / "brought-home" / aliased
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.symlink_to(tmp_path / "somewhere-else.log")
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    assert [item.split(":", 1)[0] for item in payload["refused_serving_logs"]] == [aliased]
+    assert "symbolic link" in payload["refused_serving_logs"][0]
+    assert planted.is_symlink()
+    assert not planted.exists()  # still dangling: nothing was written through it
+    assert payload["stages_verified"] == ["designator"]
+
+
+def test_a_refused_serving_log_is_not_counted_among_what_was_verified(
+    tmp_path: Path,
+) -> None:
+    """The counts stay honest across both serving-log states (GOVERNANCE 10).
+
+    `fetched` and `reused` count arrivals; `verified_objects` counts what was
+    checked against a digest the run tree recorded. A log that arrived was not,
+    and a log that never arrived is in neither.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["fetched"] == len(_files_under(volume / "runs" / "brought-home"))
+    assert payload["reused"] == 0
+    assert payload["verified_objects"] == payload["fetched"] - len(logs)
+    assert payload["refused_serving_logs"] == []
+    # The screen never says "every one checked" over a count holding the logs.
+    joined = "\n".join(messages)
+    assert "every one checked" not in joined
+    assert f"{payload['verified_objects']} of them checked against the run tree" in joined
+
+
+def test_fetch_run_still_refuses_an_unaccounted_object_beside_the_serving_logs(
+    tmp_path: Path,
+) -> None:
+    """Naming one prefix is not opening the tree: everything else still refuses.
+
+    The lease file that used to sit at the run-tree root is the concrete case --
+    a served run tree written by the old code would still be refused by name,
+    which is the correct answer now that no stage writes one there.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    _served_stage_leavings(volume)
+    (volume / "runs" / "brought-home" / "pod-gpu.lock").write_bytes(b"")
+
+    surface = _surface(tmp_path)
+    into = tmp_path / "local"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "pod-gpu.lock" in str(refusal.value.detail)
+    assert "no stage of a run tree accounts for" in str(refusal.value.detail)
+    assert not (into / "brought-home").exists()
+
+
+def test_a_serving_log_directory_marker_is_not_classified_as_a_log(tmp_path: Path) -> None:
+    """A key ending in `/` is not a log, so it is never fetched as one.
+
+    An S3 listing can carry a zero-byte directory marker, and this reader does
+    not filter one out. Classifying it as a serving log would fetch it onto the
+    directory's own path and count it among the objects that came home;
+    requiring a final name leaves it to the arms that refuse loudly instead.
+    """
+
+    assert surface_module._is_serving_log(
+        "3_attestatores/serving-logs/vllm-attestator_1-abcdef012345.log"
+    )
+    assert surface_module._is_serving_log("3_attestatores/serving-logs/nested/engine.log")
+    assert not surface_module._is_serving_log("3_attestatores/serving-logs/")
+    assert not surface_module._is_serving_log("3_attestatores/serving-logs")
+    assert not surface_module._is_serving_log("serving-logs/engine.log")
+    # The artifact arm keeps its own keys: the two prefixes never overlap.
+    assert not surface_module._is_serving_log("3_attestatores/artifacts/testimonium/x.json")
+
+
+def test_fetch_run_refuses_a_directory_marker_key_rather_than_writing_it(tmp_path: Path) -> None:
+    """And end to end: the marker takes the fetch down loudly, writing nothing.
+
+    Which arm refuses it is not the claim -- the claim is that no run tree comes
+    home with a file standing where a directory should be, and that the operator
+    is told (GOVERNANCE 2).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    _served_stage_leavings(volume)
+    marker = "runs/brought-home/3_attestatores/serving-logs/"
+    listed = reader.list_keys
+
+    def list_with_marker(prefix: str) -> tuple[str, ...]:
+        keys = listed(prefix)
+        return tuple(sorted({*keys, marker})) if marker.startswith(prefix) else keys
+
+    reader.list_keys = list_with_marker  # type: ignore[method-assign]
+    surface = _surface(tmp_path)
+    into = tmp_path / "local"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert not (into / "brought-home" / "3_attestatores" / "serving-logs").is_file()
 
 
 def _volume_evidence(volume: Path, stem: str = "boot-a-report") -> dict[str, bytes]:
@@ -5091,6 +5662,114 @@ def test_fetch_run_refuses_a_manifest_the_fetched_artifacts_do_not_rebuild(
     assert "does not match the manifest the fetched artifacts rebuild" in str(refusal.value.detail)
 
 
+def test_fetch_run_refuses_a_hostilely_nested_manifest_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    """G13: a `manifest.json` nested ~10k deep is otherwise well-formed JSON.
+
+    `json`'s scanner recurses per nesting level, so `_fetched_manifest` must
+    catch `RecursionError` beside `ValueError` or this escapes as an
+    unclassified crash instead of `FETCH_RUN_FAILED` -- and the fetch-run
+    handler itself must not let a `RecursionError` from anywhere in the walk
+    past it either.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    nested = b'{"extra":' + b"[" * 10_000 + b"]" * 10_000 + b"}"
+    reader.overrides["runs/brought-home/2_designator/manifest.json"] = nested
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+
+
+def test_fetch_run_records_a_memory_error_from_the_walk_instead_of_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G13: the handler's `MemoryError` arm is the one that catches what a size
+    ceiling did not. A run tree is untrusted input, the walk reads files whole,
+    and an allocation that fails anywhere inside it must still leave a receipt
+    and `FETCH_RUN_FAILED` rather than an unclassified crash.
+    """
+
+    _volume, reader = _volume_run(tmp_path)
+
+    def _starved(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise MemoryError("cannot allocate the manifest")
+
+    monkeypatch.setattr(surface_module, "_fetched_manifest", _starved)
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    payload = surface.receipts.read(surface._descriptor_receipt("fetch-run"))["payload"]
+    assert payload["state"] == "partial"
+    assert "cannot allocate the manifest" in payload["detail"]
+
+
+def test_fetch_run_refuses_a_rebuildable_index_that_is_not_a_readable_record(
+    tmp_path: Path,
+) -> None:
+    """G13: a stage index or derived receipt is read whole and parsed too.
+
+    Two ways it can defeat a named refusal, and the same arm must answer both:
+    nesting thousands deep, which breaks the parser rather than any size bound,
+    and sheer length, which `MAX_FETCH_OBJECT_BYTES` alone does not bound to
+    anything a *record* may be.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    index = volume / "runs" / "brought-home" / "2_designator" / "index.json"
+    # Nesting around a 4,301-digit integer: 3.12 refuses the nesting
+    # (RecursionError), 3.14 walks it and refuses the integer (ValueError).
+    index.write_bytes(b'{"extra":' + b"[" * 10_000 + b"9" * 4301 + b"]" * 10_000 + b"}")
+    surface = _surface(tmp_path)
+
+    with pytest.raises(OperatorError) as nested:
+        surface.fetch_run(run_id="brought-home", into=tmp_path / "local-nested", reader=reader)
+
+    assert nested.value.code is ErrorCode.FETCH_RUN_FAILED
+    payload = surface.receipts.read(surface._descriptor_receipt("fetch-run"))["payload"]
+    assert "index.json is not readable JSON" in payload["detail"]
+
+    # The size arm, measured rather than assumed: the ceiling is lowered to a
+    # number this index is over and every genuine record in the fixture tree is
+    # under, so what refuses is the index and not the manifest beside it.
+    ceiling = 4096
+    index.write_bytes(b"[" + b'"x",' * 1024 + b'"x"]')
+    manifest_path = volume / "runs" / "brought-home" / "2_designator" / "manifest.json"
+    assert index.stat().st_size > ceiling
+    assert manifest_path.stat().st_size < ceiling
+    surface = _surface(tmp_path)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(surface_module, "MAX_RECORD_READ_BYTES", ceiling)
+        with pytest.raises(OperatorError) as oversized:
+            surface.fetch_run(run_id="brought-home", into=tmp_path / "local-big", reader=reader)
+
+    assert oversized.value.code is ErrorCode.FETCH_RUN_FAILED
+    payload = surface.receipts.read(surface._descriptor_receipt("fetch-run"))["payload"]
+    assert "limit for a JSON record" in payload["detail"]
+
+
+def test_the_tree_read_ceiling_stays_below_what_fetch_run_will_pull() -> None:
+    """G13, and the reason this diff needed a second pass: a read ceiling set
+    above every other ceiling on the path it guards can never fire there.
+
+    `fetch_run` pulls objects bounded by `MAX_FETCH_OBJECT_BYTES`, so a tree
+    read bound above that number is decoration on this path, not a bound. The
+    record ceiling is the tighter of the two and must stay that way.
+    """
+
+    from common.runtree import store as runtree_store
+
+    assert runtree_store._MAX_TREE_READ_BYTES < surface_module.MAX_FETCH_OBJECT_BYTES
+    assert runtree_store.MAX_RECORD_READ_BYTES <= runtree_store._MAX_TREE_READ_BYTES
+
+
 def test_fetch_run_never_overwrites_a_local_file_that_differs(tmp_path: Path) -> None:
     _volume, reader = _volume_run(tmp_path)
     into = tmp_path / "local"
@@ -5278,3 +5957,530 @@ def test_cli_upload_still_names_itself_on_a_malformed_volume(
     printed = capsys.readouterr().out
     assert "verbatus upload" in printed
     assert "verbatus fetch-run" not in printed
+
+
+# -- operator records that can diagnose a run from the state directory alone ---
+
+
+def _complete_export(run_root, run_id):  # type: ignore[no-untyped-def]
+    del run_root, run_id
+    return {
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [{}],
+        "non_delivered": [],
+        "expected_acts": 1,
+    }
+
+
+def _run_receipts(surface: OperatorSurface, run_id: str) -> list[dict[str, object]]:
+    return [
+        payload for _path, payload in surface._run_receipts() if payload.get("run_id") == run_id
+    ]
+
+
+def test_every_run_receipt_carries_identity_configuration_commit_and_output(
+    tmp_path: Path,
+) -> None:
+    """A run's receipt is enough to say what ran, from what, under which commit and config.
+
+    A held run's receipt was the one that most needed these and had none: no
+    argv, no start time, no commit, no config digests, and the stderr that
+    named the hold discarded once the terminal closed.
+    """
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="run r: complete\n", stderr="1 door refusal(s); see report\n"
+    )
+    surface._armarium_export = _complete_export  # type: ignore[method-assign]
+    roster = ROOT / "config" / "models-real.toml"
+    catalogue = ROOT / "config" / "serving_recipes_real.toml"
+    witness_context = ROOT / "config" / "witness_context-real.toml"
+
+    surface.run(
+        run_id="documented-run",
+        models_config=roster,
+        serving_recipes_config=catalogue,
+        witness_context_config=witness_context,
+    )
+
+    started, finished = _run_receipts(surface, "documented-run")
+    assert started["state"] == "started"
+    assert finished["state"] == "complete"
+    for receipt in (started, finished):
+        assert receipt["run_root"] == "runs", "state-relative, so a moved state root still reads"
+        assert receipt["scenario"] == "happy"
+        assert receipt["started_at"] == "2026-08-09T12:00:00Z"
+        argv = receipt["argv"]
+        assert isinstance(argv, list) and "--run-id" in argv and "documented-run" in argv
+        assert "--models-config" in argv
+        configuration = receipt["configuration"]
+        assert configuration["models_config"] == {
+            "path": str(roster),
+            "sha256": sha256_file(roster),
+        }
+        assert configuration["serving_recipes_config"]["sha256"] == sha256_file(catalogue)
+        assert configuration["witness_context_config"]["sha256"] == sha256_file(witness_context)
+        assert configuration["submission_manifest"] is None
+        commit = receipt["repository_commit"]
+        assert (commit is None) != (receipt["repository_commit_unreadable"] is None)
+        if commit is not None:
+            assert commit == _repository_commit(ROOT)
+    assert finished["exit_code"] == 0
+    assert finished["stderr_tail"] == "1 door refusal(s); see report\n"
+    assert finished["stdout_tail"] == "run r: complete\n"
+    assert finished["ended_at"] == "2026-08-09T12:00:00Z"
+    assert str(finished["armarium_export"]).startswith("runs/documented-run/")
+    assert finished["reasons"] == []
+    # The stages' own stderr reaches the screen -- the Door's refusal count was
+    # swallowed on every exit but the crash drill's.
+    assert "1 door refusal(s); see report" in messages
+    assert any(
+        line == f"Review it read-only with: verbatus review --run-root "
+        f"{surface.state_root / 'runs'} --run-id documented-run"
+        for line in messages
+    )
+
+
+def test_a_failed_run_names_its_cause_on_screen_in_the_receipt_and_in_status(
+    tmp_path: Path,
+) -> None:
+    """Six different causes produced the same four opaque lines; each had a one-line
+    explanation sitting unread in the receipt, and `status` withheld it too."""
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "pipeline/orchestrator/run.py", line 1, in <module>\n'
+        "IncompatibleReuse: run failed-run is bound to different config_digest\n"
+    )
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=2, stdout="", stderr=stderr
+    )
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="failed-run")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    rendered = failure.value.render()
+    assert "IncompatibleReuse: run failed-run is bound to different config_digest" in rendered
+    assert "Saved run receipt:" in rendered
+    assert "Traceback" not in rendered
+    _started, failed = _run_receipts(surface, "failed-run")
+    assert failed["state"] == "failed"
+    assert failed["exit_code"] == 2
+    assert (
+        failed["reason"] == "IncompatibleReuse: run failed-run is bound to different config_digest"
+    )
+    assert failed["detail"] == stderr
+    assert failed["stderr_tail"] == stderr
+    assert any(line.startswith("Run failed-run failed: IncompatibleReuse") for line in messages)
+
+    lines = surface.status()
+
+    run_root = surface.state_root / "runs"
+    assert f"  Run: failed-run; run root: {run_root}." in lines
+    assert "  Saved run state: failed." in lines
+    assert (
+        "  Reason: IncompatibleReuse: run failed-run is bound to different config_digest" in lines
+    )
+    assert "  Recorded output:" in lines
+    assert "    IncompatibleReuse: run failed-run is bound to different config_digest" in lines
+    review = (
+        f"  Review it read-only with: verbatus review --run-root {run_root} --run-id failed-run"
+    )
+    assert review in lines
+    receipt = surface._descriptor_receipt("run")
+    assert f"  Saved receipt: {receipt}" in lines
+
+
+def test_a_run_held_before_the_armarium_is_a_held_run_that_keeps_its_reason(
+    tmp_path: Path,
+) -> None:
+    """An Attestatores hold exits 3 with no export record.
+
+    That was filed as `armarium-record-unreadable` under RUN_FAILED with no
+    run id and the hold reason -- on stderr -- discarded, so a legitimately
+    held run read as a broken tool and `status` could not say why.
+    """
+
+    messages: list[str] = []
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path, output=messages)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[],
+        returncode=3,
+        stdout="",
+        stderr="attestatores: held: 2 chair(s) reported no outcome for act a1\n",
+    )
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="held-early")
+
+    assert failure.value.code is ErrorCode.RUN_HELD
+    reason = "attestatores: held: 2 chair(s) reported no outcome for act a1"
+    assert reason in failure.value.render()
+    _started, held = _run_receipts(surface, "held-early")
+    assert held["state"] == "held"
+    assert held["run_id"] == "held-early"
+    assert held["reasons"] == [reason]
+    assert held["armarium_export"] is None
+    assert isinstance(held["armarium_export_unreadable"], str)
+    assert f"Hold reason: {reason}" in messages
+    assert notifications == [
+        ("decision", f"Verbatus run held-early is held and needs a decision: {reason}")
+    ]
+    assert f"  Hold reason: {reason}" in surface.status()
+
+
+def test_an_interrupt_or_a_sigterm_during_the_run_leaves_a_resumable_receipt(
+    tmp_path: Path,
+) -> None:
+    """A signal-killed run left no operator record and `status` reported the machine empty.
+
+    RUN_INTERRUPTED's copy -- "run again with the same run name to resume; this
+    is safe" -- was reachable only through the crash drill. SIGTERM ended the
+    process with no output at all.
+    """
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    before = signal.getsignal(signal.SIGTERM)
+
+    def terminated(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise AssertionError("SIGTERM must interrupt the run before the runner returns")
+
+    surface.runner = terminated  # type: ignore[method-assign]
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(run_id="killed-run")
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    assert signal.getsignal(signal.SIGTERM) == before, "the handler is scoped to the child"
+    _started, interrupted = _run_receipts(surface, "killed-run")
+    assert interrupted["state"] == "interrupted-recoverable"
+    assert interrupted["run_root"] == "runs"
+    assert "interrupted by a signal" in str(interrupted["last_observed_work"])
+    assert any("Review it read-only with:" in line for line in messages)
+
+    def keyboard(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt
+
+    surface.runner = keyboard  # type: ignore[method-assign]
+    messages.clear()
+    with pytest.raises(OperatorError) as second:
+        surface.run(run_id="killed-run")
+
+    assert second.value.code is ErrorCode.RUN_INTERRUPTED
+    assert messages[0].startswith("Resuming run killed-run.")
+    assert "  Saved run state: interrupted-recoverable." in surface.status()
+
+
+def test_a_run_killed_outright_is_still_on_record_because_its_start_was_written_first(
+    tmp_path: Path,
+) -> None:
+    """SIGKILL cannot be caught by anyone, so the receipt is written before the child starts."""
+
+    class Killed(BaseException):
+        """Stands in for a kill this process never sees."""
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+
+    def killed(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise Killed
+
+    surface.runner = killed  # type: ignore[method-assign]
+    with pytest.raises(Killed):
+        surface.run(run_id="vanished-run")
+
+    (started,) = _run_receipts(surface, "vanished-run")
+    assert started["state"] == "started"
+    lines = surface.status()
+    assert "  Saved run state: started." in lines
+    assert any(
+        "never reported an end state" in line and "`verbatus run --run-id vanished-run`" in line
+        for line in lines
+    )
+    # The next run of that name resumes rather than starting afresh.
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = _complete_export  # type: ignore[method-assign]
+    messages.clear()
+    surface.run(run_id="vanished-run")
+    assert messages[0].startswith("Resuming run vanished-run.")
+    # Once the run has ended, the start receipt no longer reads as a lost run.
+    assert not any("never reported an end state" in line for line in surface.status())
+
+
+def _fake_bundle(bundle_bytes: bytes):  # type: ignore[no-untyped-def]
+    def write(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]
+        del self
+        destination.write_bytes(bundle_bytes)
+
+    return write
+
+
+def test_export_names_its_run_first_and_exits_partial_over_a_held_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`export` exited 0 over a held run with a receipt hardcoded to `complete`.
+
+    The screen was honest; the exit status, the receipt and the milestone were
+    not -- and a script gating on the exit status called one act of two a
+    success. With no `--run-id` it also exported whichever run was recorded
+    last without saying so before doing the work.
+    """
+
+    messages: list[str] = []
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path, output=messages)
+    surface._write_action(
+        "run",
+        {"summary": "test run", "state": "partial", "run_root": "runs", "run_id": "held-run"},
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "partial", "reasons": ["act a2 is held-for-review"]},
+        "pages": [{}, {}],
+        "delivered": [{}],
+        "non_delivered": [{"category": "held-for-review"}],
+        "expected_acts": 2,
+    }
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"partial"))
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    with pytest.raises(OperatorError) as partial:
+        surface.export()
+
+    assert partial.value.code is ErrorCode.EXPORT_PARTIAL
+    assert "recorded run state partial" in partial.value.render()
+    assert messages[0] == (
+        "No run was named, so this exports run held-run, the run recorded most recently in "
+        "this operator state."
+    )
+    assert messages[1] == f"Exporting run held-run from run root {surface.state_root / 'runs'}."
+    receipt = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert receipt["state"] == "partial"
+    assert receipt["run_id"] == "held-run"
+    assert receipt["run_root"] == "runs"
+    assert receipt["reasons"] == ["act a2 is held-for-review"]
+    assert receipt["bundle"].startswith("exports/held-run-armarium-base-")
+    assert (surface.state_root / receipt["bundle"]).read_bytes() == b"partial"
+    assert notifications == [
+        (
+            "milestone",
+            "Verbatus export for run held-run landed as partial, not complete: "
+            f"{surface.state_root / receipt['bundle']}",
+        )
+    ]
+    lines = surface.status()
+    assert "  Saved export state: partial." in lines
+    assert any(line.startswith("  Run: held-run; bundle: ") for line in lines)
+
+
+def test_export_with_a_run_id_uses_that_run_even_after_another_was_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    for run_id, root in (("older", "older-runs"), ("newer", "runs")):
+        surface._write_action(
+            "run",
+            {"summary": "test run", "state": "complete", "run_root": root, "run_id": run_id},
+            descriptor_action="run",
+        )
+    seen: list[tuple[Path, str]] = []
+
+    def export_of(root, run_id):  # type: ignore[no-untyped-def]
+        seen.append((root, run_id))
+        return _complete_export(root, run_id)
+
+    surface._armarium_export = export_of  # type: ignore[method-assign]
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"older"))
+
+    bundle = surface.export(run_id="older")
+
+    assert seen == [(surface.state_root / "older-runs", "older")]
+    assert bundle.name.startswith("older-armarium-base-")
+    with pytest.raises(OperatorError) as missing:
+        surface.export(run_id="never-recorded")
+    assert missing.value.code is ErrorCode.EXPORT_MISSING
+    assert "never-recorded" in missing.value.render()
+
+
+def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    volume, reader = _volume_run(tmp_path)
+    spec = VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol123")
+    surface.fetch_run(run_id="brought-home", into=tmp_path / "local", reader=reader, volume=spec)
+    fetched = surface.receipts.read(surface._descriptor_receipt("fetch-run"))["payload"]
+    assert fetched["volume"] == {
+        "datacenter_id": "EU-CZ-1",
+        "volume_id": "vol123",
+        "endpoint_url": "https://s3api-eu-cz-1.runpod.io/",
+    }
+    source, manifest = _manifest(tmp_path)
+    surface.upload(
+        source,
+        sealed_manifest=manifest,
+        volume=spec,
+        target=LocalFixtureObjectStore(tmp_path / "stand-in-volume"),
+    )
+    uploaded = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert uploaded["volume"]["volume_id"] == "vol123"
+    unexpected = cli.record_unexpected(RuntimeError("boom"), ["status"], surface.state_root)
+    assert unexpected.code is ErrorCode.UNEXPECTED
+
+    lines = surface.status()
+
+    assert f"  Run: brought-home; fetched into: {(tmp_path / 'local').resolve()}." in lines
+    assert lines.count("  Volume: EU-CZ-1:vol123 at https://s3api-eu-cz-1.runpod.io/.") == 2
+    assert "  Saved fetch state: verified." in lines
+    assert "  RuntimeError: boom" in lines
+    assert "  Command: verbatus status" in lines
+    assert f"  Working directory: {os.getcwd()}" in lines
+    assert any(line.startswith("- unexpected record 1: ") for line in lines)
+
+
+def test_the_cli_catch_all_writes_an_unexpected_receipt_and_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one failure class with nothing to hand to a later session now leaves a record."""
+
+    class BrokenSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def status(self) -> None:
+            raise RuntimeError("boom: Traceback (most recent call last): looks like a trace")
+
+    monkeypatch.setattr(cli, "OperatorSurface", BrokenSurface)
+    state = tmp_path / "state"
+
+    assert cli.main(["--state-dir", str(state), "status"]) == 2
+
+    printed = capsys.readouterr().out
+    assert "Verbatus met a problem it could not classify." in printed
+    receipts = sorted((state / "receipts").glob("unexpected-*.json"))
+    assert len(receipts) == 1
+    assert f"Saved unexpected receipt: {receipts[0]}" in printed
+    saved = json.loads(receipts[0].read_text(encoding="utf-8"))["payload"]
+    assert saved["exception_type"] == "RuntimeError"
+    assert saved["message"].startswith("boom")
+    assert "RuntimeError: boom" in saved["traceback"]
+    assert saved["argv"] == ["--state-dir", str(state), "status"]
+    assert saved["cwd"] == os.getcwd()
+    loaded = DescriptorStore(state).load()
+    assert loaded is not None and loaded["actions"]["unexpected"] == receipts[0].name
+
+
+def test_a_workspace_that_is_not_a_checkout_refuses_run_and_boot_but_not_status(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`entry.main` checked the directory the code was imported from, not the workspace.
+
+    The `verbatus` script started from a folder that is not the checkout passed
+    that check, announced the run, and failed a moment later inside the
+    orchestrator with `can't open file .../pipeline/orchestrator/run.py`. The
+    check is against `--workspace`, for exactly the directories the word
+    reads, so a word whose workspace is not the checkout is never refused.
+    """
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    state = tmp_path / "state"
+    common = ["--workspace", str(elsewhere), "--state-dir", str(state)]
+
+    assert cli.main([*common, "run", "--run-id", "x"]) == 2
+    printed = capsys.readouterr().out
+    assert "not a source checkout" in printed
+    assert str(elsewhere) in printed
+    assert "`verbatus run` reads pipeline, config, proof" in printed
+    assert not state.exists(), "nothing was started and nothing was recorded"
+
+    assert cli.main([*common, "boot"]) == 2
+    assert "`verbatus boot` reads config, proof" in capsys.readouterr().out
+
+    # A word whose workspace is legitimately not the checkout is answered on
+    # its own terms: here, that there are no records yet.
+    assert cli.main([*common, "status"]) == 2
+    printed = capsys.readouterr().out
+    assert "There are no saved operator records to show." in printed
+    assert "not a source checkout" not in printed
+
+
+def test_a_copied_state_directory_reads_exports_closes_and_resumes_at_its_new_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every reference a receipt makes to a file under the state root survives a move.
+
+    The descriptor indexed receipts by absolute path, the run receipt named its
+    run root absolutely, and the launch receipt named its lease absolutely; a
+    state directory copied elsewhere read every intact receipt as damaged,
+    `export` reached the unclassified handler, and `close` could not find its
+    lease.
+    """
+
+    original = tmp_path / "original" / "state"
+    surface = OperatorSurface(
+        ROOT,
+        original,
+        provider=OperatorFakeProvider(now=lambda: START),
+        now=lambda: START,
+        present=lambda _line="": None,
+    )
+    launched = _launch(surface, _spend_policy(tmp_path))
+    assert launched.record is not None
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = _complete_export  # type: ignore[method-assign]
+    surface.run(run_id="portable-run")
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"bundle"))
+    surface.export(run_id="portable-run")
+    launch_receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
+    assert launch_receipt["lease"].startswith("leases/")
+    assert launch_receipt["confirmation_receipt"].startswith("receipts/launch-confirmation-")
+
+    moved = tmp_path / "restored" / "elsewhere" / "state"
+    shutil.copytree(original, moved)
+    lines: list[str] = []
+    relocated = OperatorSurface(
+        ROOT,
+        moved,
+        provider=OperatorFakeProvider(now=lambda: START),
+        now=lambda: START,
+        present=lines.append,
+    )
+    relocated._armarium_export = _complete_export  # type: ignore[method-assign]
+
+    status = relocated.status()
+
+    assert not any("UNREADABLE" in line for line in status)
+    assert f"  Run: portable-run; run root: {moved / 'runs'}." in status
+    assert relocated._prior_run_state("portable-run") == "complete"
+    bundle = relocated.export(run_id="portable-run")
+    assert bundle.parent == moved / "exports"
+    prepared = relocated.prepare_close()
+    assert prepared.lease.pod_id == launched.record.pod_id
+    assert prepared.lease_store.path.parent == moved / "leases"
+    relocated.runner = surface.runner
+    lines.clear()
+    relocated.run(run_id="portable-run")
+    assert lines[0].startswith("Run portable-run already has saved state complete")

@@ -19,11 +19,16 @@ from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.residual_ink import (
-    MINIMUM_INK_PIXELS,
+    MINIMUM_INK_PIXELS_FIELD,
     edge_ink_from_runs,
     load_coverage_audit_config,
     resolve_coverage_audit_policy,
 )
+
+# The sealed noise floor, read from `[coverage_audit.noise_floor]` the way the
+# stage reads it: since 2026-09-14 it is not a module constant, and a stimulus
+# anchored on this name moves with the sealed value.
+MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"]["minimum_ink_pixels"]
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
@@ -280,10 +285,17 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
     )
 
     empty_maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [])}))
-    assert recensor.unclaimed_ink_observations(empty_maps, [observation], 1, {}) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            empty_maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
 
     inked_maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
-    result = recensor.unclaimed_ink_observations(inked_maps, [observation], 1, {})
+    result = recensor.unclaimed_ink_observations(
+        inked_maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    )
     assert result == [{"page_ordinal": 1, "outside_ink_pixels": 25}]
 
 
@@ -301,7 +313,9 @@ def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
         {"kind": "unrouted-observation", "bounds": chair_2_box, "disagrees_with": 1},
     ]
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [])}))
-    outside_ink_requests = recensor.unclaimed_ink_observations(maps, observations, 1, {})
+    outside_ink_requests = recensor.unclaimed_ink_observations(
+        maps, observations, 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    )
     assert outside_ink_requests == []
     assert _wants_recovery(outside_ink_requests) is False
 
@@ -314,7 +328,12 @@ def test_ink_below_the_minimum_pixel_floor_still_refuses():
     box = {"x": 0, "y": 0, "w": MINIMUM_INK_PIXELS - 1, "h": 1}
     observation = {"kind": "unrouted-observation", "bounds": box}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(MINIMUM_INK_PIXELS, 20, [box])}))
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
 
 
 def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice():
@@ -331,7 +350,12 @@ def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice()
         "kind": "unrouted-observation",
         "bounds": {"x": 0, "y": -10, "w": 40, "h": 5},
     }
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
 
 
 def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
@@ -346,11 +370,16 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     observation = {"kind": "unrouted-observation", "bounds": box}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
 
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == [
-        {"page_ordinal": 1, "outside_ink_pixels": 100}
-    ]
+    assert recensor.unclaimed_ink_observations(
+        maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 100}]
     cut = {1: [{"x": 0, "y": 0, "w": 20, "h": 20}]}
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, cut) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, cut, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
     # These two straddle the floor: 20 px is under it and 30 px is over. The
     # geometry is written out because whole rows of a 10-wide box read more
     # plainly than an expression, so the straddle is asserted against the
@@ -361,11 +390,16 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
         "are built to sit either side of; rebuild the geometry around the new floor"
     )
     partial = {1: [{"x": 0, "y": 0, "w": 10, "h": 8}]}  # leaves 2 rows = 20 px
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, partial) == []
+    assert (
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, partial, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
+        == []
+    )
     smaller = {1: [{"x": 0, "y": 0, "w": 10, "h": 7}]}  # leaves 3 rows = 30 px
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, smaller) == [
-        {"page_ordinal": 1, "outside_ink_pixels": 30}
-    ]
+    assert recensor.unclaimed_ink_observations(
+        maps, [observation], 1, smaller, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30}]
 
 
 def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice():
@@ -376,9 +410,9 @@ def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice()
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
     overlapping = {1: [{"x": 0, "y": 0, "w": 6, "h": 10}, {"x": 3, "y": 0, "w": 4, "h": 10}]}
     # Union covers x 0..7 on every row: 3 columns x 10 rows remain outside.
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, overlapping) == [
-        {"page_ordinal": 1, "outside_ink_pixels": 30}
-    ]
+    assert recensor.unclaimed_ink_observations(
+        maps, [observation], 1, overlapping, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30}]
 
 
 def test_unordered_ink_runs_are_refused_rather_than_double_counted():
@@ -422,7 +456,9 @@ def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
             "Restore the page's sealed Ink Map artifact"
         ),
     ):
-        recensor.unclaimed_ink_observations(maps, [observation], 1, {})
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
 
 
 @pytest.mark.parametrize(
@@ -462,7 +498,9 @@ def test_a_retained_observation_with_no_readable_bounds_is_refused_not_skipped(o
         FatalAccounting,
         match="retained unclaimed witness observation with no .x, y, w, h. bounds",
     ):
-        recensor.unclaimed_ink_observations(maps, [observation], 1, {})
+        recensor.unclaimed_ink_observations(
+            maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+        )
 
 
 def test_one_observation_funds_one_request_on_its_page():
@@ -591,13 +629,15 @@ def test_a_second_request_is_replaced_by_a_loud_hold_not_an_acceptance():
     """The one-grant bound preserves the unresolved pointer as a live hold."""
     recensor = _recensor()
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
-    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, {1})
+    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, {1}, real_route=False)
     assert outcome == "held-for-review"
     assert "one observation-funded recovery request is already recorded" in reason
-    exhausted_outcome, exhausted_reason = recensor.unresolved_observation_hold(confirmed, 1, set())
+    exhausted_outcome, exhausted_reason = recensor.unresolved_observation_hold(
+        confirmed, 1, set(), real_route=False
+    )
     assert exhausted_outcome == "held-for-review"
     assert "bounded recovery policy cannot admit another request" in exhausted_reason
-    assert recensor.unresolved_observation_hold([], 1, {1}) is None
+    assert recensor.unresolved_observation_hold([], 1, {1}, real_route=False) is None
 
     source = RECENSOR.read_text(encoding="utf-8")
     assert source.count("observation_hold = unresolved_observation_hold(") == 1
@@ -607,6 +647,127 @@ def test_a_second_request_is_replaced_by_a_loud_hold_not_an_acceptance():
         )
         == 1
     ), "the live terminal route no longer turns the unresolved pointer into a loud hold"
+
+
+def _live_publication_gate(source: str | None = None):
+    """Compile the conditional that actually guards the recovery-request write.
+
+    The sibling helper above compiles `wants_recovery`, which says whether the
+    act *wants* a recrop. This compiles the `if` that decides whether the want
+    becomes a published request -- the two are deliberately different questions
+    since F068/F083, and only the second one knows whether anything downstream
+    could answer what it published.
+    """
+    tree = _tree(source)
+    publications = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and any(
+            keyword.arg == "kind"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "recovery-request"
+            for keyword in node.keywords
+        )
+    ]
+    assert len(publications) == 1, "Unit 14B must have exactly one recovery-request publication"
+    guards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "wants_recovery" in _names(node.test)
+        and any(
+            publications[0] is child for statement in node.body for child in ast.walk(statement)
+        )
+    ]
+    assert len(guards) == 1, "the recovery-request publication is no longer guarded by one gate"
+    return compile(ast.Expression(guards[0].test), str(RECENSOR), "eval")
+
+
+def _publishes(*, recrop_dispatchable: bool, source: str | None = None) -> bool:
+    """Evaluate the live gate with every coverage and budget conjunct satisfied."""
+    return bool(
+        eval(  # noqa: S307 -- compile input is this checked-in module's one conditional.
+            _live_publication_gate(source),
+            {},
+            {
+                "continuation_shortfall": False,
+                "wants_recovery": True,
+                "recrop_dispatchable": recrop_dispatchable,
+                "used_fallback": 0,
+                "allowed_fallback": 1,
+                "used_total": 0,
+                "budget": {"allowed": 1, "absolute_cap": 3},
+            },
+        )
+    )
+
+
+def test_no_recovery_request_is_published_on_a_route_that_cannot_answer_one():
+    """F068/F083: an unanswerable request is a run with no export, not a recovery.
+
+    The Designator refuses `--operation recover` on a real submission by name,
+    the orchestrator turns that exit 2 into a run abort, and the Armarium then
+    refuses the outstanding request -- so a request published on the real route
+    strands every act already read, with no sequence of stage invocations that
+    reaches an export. With every coverage and budget conjunct satisfied, the
+    route alone decides, and on the route that cannot cut a recrop nothing is
+    published (ARCHITECTURE invariant 8: the act ends as a review item instead).
+    """
+    assert _publishes(recrop_dispatchable=True) is True
+    assert _publishes(recrop_dispatchable=False) is False
+
+
+def test_the_dispatchability_conjunct_is_the_runs_own_ingress_route():
+    """The gate's new conjunct is a route fact, read through the shared reader.
+
+    A conjunct that could be satisfied by anything else -- a flag, a scenario
+    field, a stage-local default -- would pass the test above while leaving the
+    real route publishing requests. So the live source is required to derive it
+    from `real_ingress`, the same reader `declared_scenario` and every other
+    stage's `real_ingress(context)` go through.
+    """
+    source = RECENSOR.read_text(encoding="utf-8")
+    assert source.count("real_route = real_ingress(context)") == 1
+    assert source.count("recrop_dispatchable = not real_route") == 1
+
+
+def test_a_real_submission_holds_the_pointer_and_names_the_recovery_it_has_no_producer_for():
+    """The route is the reason, and it outranks whatever the grant would say.
+
+    Reporting a spent page grant or an exhausted budget on a run where no recrop
+    can be cut at all would name the wrong fault (GOVERNANCE 10), and would send
+    an operator looking for a budget to raise. The evidence itself stays visible
+    either way: a still-confirmed pointer never reaches an accepted review.
+    """
+    recensor = _recensor()
+    confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
+
+    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, set(), real_route=True)
+    assert outcome == "held-for-review"
+    assert "bounded recovery from a real submission is not built" in reason
+    assert "bounded recovery policy cannot admit another request" not in reason
+
+    funded_outcome, funded_reason = recensor.unresolved_observation_hold(
+        confirmed, 1, {1}, real_route=True
+    )
+    assert (funded_outcome, funded_reason) == (outcome, reason)
+
+    # No pointer, no hold: the real route does not invent a review item of its own.
+    assert recensor.unresolved_observation_hold([], 1, set(), real_route=True) is None
+
+
+def test_the_observation_hold_refuses_to_answer_without_being_told_the_route():
+    """`real_route` is keyword-only and required, so no caller can forget it.
+
+    A defaulted parameter would let a new call site publish the grant sentence
+    over a real submission -- the exact wrong-fault report the test above pins
+    against -- and would do it silently.
+    """
+    recensor = _recensor()
+    confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
+    with pytest.raises(TypeError, match="real_route"):
+        recensor.unresolved_observation_hold(confirmed, 1, set())
 
 
 def test_a_recovery_request_with_no_recorded_origin_is_refused():
@@ -636,6 +797,78 @@ def test_the_mask_argument_has_no_fail_open_default():
     # back in unnoticed.
     with pytest.raises(TypeError, match="unclaimed_ink_observations"):
         recensor.unclaimed_ink_observations(maps, [{"bounds": box}], 1)
+
+
+def test_the_noise_floor_argument_has_no_fail_open_default():
+    """The floor a pointer's ink must clear is the sealed one or nothing.
+
+    Since 2026-09-14 it is read from `[coverage_audit.noise_floor]` under the
+    run's seal rather than from a module constant; a default here would let a
+    caller fund recovery under a floor the run never sealed.
+    """
+    recensor = _recensor()
+    box = {"x": 0, "y": 0, "w": 10, "h": 10}
+    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    with pytest.raises(TypeError, match="minimum_ink_pixels"):
+        recensor.unclaimed_ink_observations(maps, [{"bounds": box}], 1, {})
+
+
+# The sealed table the floor lives under. `common/residual_ink.py` spells it as
+# a literal at its own read sites and exports no name for it, so this is the
+# reader's own copy rather than an import that does not exist.
+_COVERAGE_AUDIT_TABLE = "coverage_audit"
+
+
+def _sealed_floor_read(node: ast.expr) -> bool:
+    """True for a `<something>["coverage_audit"]["minimum_ink_pixels"]` read."""
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == MINIMUM_INK_PIXELS_FIELD
+        and isinstance(node.value, ast.Subscript)
+        and isinstance(node.value.slice, ast.Constant)
+        and node.value.slice.value == _COVERAGE_AUDIT_TABLE
+    )
+
+
+def test_the_live_caller_passes_the_floor_it_read_from_the_sealed_table():
+    """The wiring itself, read structurally rather than by substring.
+
+    Two substrings anywhere in the file would pass while proving nothing: they
+    could sit in unrelated lines, and a rename that changed nothing would break
+    them (independent audit of 2026-09-14). So this walks `main`'s own syntax
+    and proves the one thing worth proving -- the name `unclaimed_ink_observations`
+    is given comes from a read of the sealed `[coverage_audit]` table in the
+    same function, and from nothing else. It cannot prove the table was the
+    sealed bytes; `require_sealed_config` at the point of use does that, and the
+    Recensor's own seal suites cover it.
+    """
+    tree = ast.parse(RECENSOR.read_text(encoding="utf-8"))
+    main = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    bound = {
+        target.id
+        for node in ast.walk(main)
+        if isinstance(node, ast.Assign) and _sealed_floor_read(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert bound, "main binds no name from the sealed noise floor"
+    calls = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "unclaimed_ink_observations"
+    ]
+    assert calls, "main no longer calls unclaimed_ink_observations"
+    for call in calls:
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+        passed = keywords.get(MINIMUM_INK_PIXELS_FIELD)
+        assert isinstance(passed, ast.Name) and passed.id in bound, (
+            "the live caller funds recovery under a floor it did not read from the sealed table"
+        )
 
 
 # The capture identity the Unit 19C gate is asked about. `run.json`'s

@@ -777,6 +777,56 @@ any of it. A held page is not tiled, its ink reconciles as conservation
 residual, and the run exits `EXIT_HELD`; the retained bytes, `parse_outcome`
 and `prompt_sha256` are the evidence.
 
+**Resuming the pass.** A page whose `structure-answer` this tree already holds
+is **read back, never asked again** (`_sealed_structure_answer`,
+`structure_pass.sealed_page_answer`). A live chair cannot reproduce its own
+bytes — every answer embeds the serving session's `receipt_ref`,
+`call_record_ref` and `custody_ref`, and all three move on every chair start —
+so a second ask would build different bytes under an artifact identity the
+store has already fixed, and the run would die on `IncompatibleReuse` one page
+into the resume. This is the Perlector's `_reading_already_sealed` and the
+Attestatores' `sealed_pairs`, for this stage; GOVERNANCE 4 is why all three
+exist. With every page already answered, **no chair is started at all**.
+
+Each fresh answer is published **inside** the asking loop, as it arrives, not
+after the loop: an interruption at page 900 of 1000 otherwise leaves nothing on
+disk, hides 899 answers that did arrive, and repeats every model call already
+paid for (GOVERNANCE 2, and a rented card's hours). The resume then asks only
+for the pages nothing answered.
+
+Because a resumed run may take more than one serving session to answer its
+pages, **provenance is per page**: each page's status and each crop cut from it
+carry the session that answered *that* page, read off the page's own answer
+record, rather than the whole run being restamped with whichever session ran
+last (GOVERNANCE 6). The `proposal-seal` carries one run-level block and takes
+it from the first page's answer — the only value that is the same on every
+later resume, and therefore the only one under which the seal can republish
+byte for byte. The seal is not where a reader learns which session answered a
+given page; each page's own records are.
+
+What "republishes byte for byte" rests on differs by disposition, and only a
+`detected` page's artifacts are a function of the answer's own rectangles. A
+`fallback-tiles` page is cut from the grid its sealed dimensions and thresholds
+determine, and those tiles are clipped against the proposal regions the tree
+already holds — which include, on a resume, the page's own tiles from the first
+pass. `_publish_page_fallback` therefore excludes the page's own fallback act
+from that clip; without it the second pass subtracts the tiles from themselves,
+mints no act, and seals a denominator missing a page whose crops are on disk —
+`complete` over a lost act, which GOVERNANCE 2 and GOALS 1 both forbid, and
+which the immutable seal would then make permanent. A `held` page cut nothing
+and has nothing to reproduce. All three dispositions are resumed under test.
+
+What a resume does **not** check is that the build asking for the remaining
+pages is the build that answered the earlier ones. `_sealed_structure_answer`
+re-validates the reused serving provenance — the chair pin, the adapter recipe
+and the sealed decoding config all refuse if they moved — but not the answer's
+`prompt_sha256`, `prompt_version`, `text_view` or `vendor`. A resume across a
+prompt-version or vendor-pin bump therefore marks one run out under two
+prompts. Each answer record names the prompt it was given, so the mixture is
+visible per page and nothing is lost; nothing refuses it or reports it at run
+level. The Perlector's own resume guard has the same shape, so closing this is
+a cross-stage decision rather than a Designator one.
+
 **Minting.** For each rectangle in reading order: validated against the page,
 minted once per distinct rectangle (a repeat is a `duplicate-rectangle` finding
 on the answer record naming both ordinals — the class-and-bounds identity has
@@ -1129,7 +1179,18 @@ against a real submission by name, before touching `--act` or
 `--recovery-request`, rather than let the generic fixture-accessor refusal
 (`common/stage.py`) stand in for it. Bounded recovery from a real submission
 is not built; when it is, this stage will need a source for a recrop's
-geometry that a real page can supply. The request must be the exact current, digest-checked Recensor
+geometry that a real page can supply.
+
+**Nothing publishes a request this refusal would meet any more.** Since findings
+F068/F083, `pipeline/5_recensor/run.py` gates its fallback-recrop publication on
+the ingress route (`recrop_dispatchable`) and holds the act for review instead,
+and `pipeline/orchestrator/run.py` screens the same route before it dispatches
+anything. So this refusal is a backstop over a run tree written before that gate
+landed, and it says so: a request nothing can answer used to end the run fatally
+with no export at all, which is the failure the Recensor-side gate exists to
+prevent, not one this stage could fix by answering.
+
+The request must be the exact current, digest-checked Recensor
 request for that act, its next ordinal, its Perlectio evidence, and the
 run-bound `config/recovery.toml` policy, including its reconciled total and
 per-kind budget counters. This stage fulfils `fallback-recrop` only; it refuses a
@@ -1289,10 +1350,12 @@ and the number of review items is a property of how well the structure pass
 performed as much as of the page. Today's pass is one modal-background ink scan
 at a 20-level margin, so a run in which *every* page carries a `page-residual`
 hold is the legible first-run signal that the structure pass does not work on
-this corpus — a true finding delivered on run one. But if roadmap item 4 lands a
-real structural Designator and real pages still trip the bound, the bound is
-measuring the wrong thing and must be revisited rather than raised. The first
-real run's `page-residual` count is the measurement that settles it.
+this corpus — a true finding delivered on run one. The real structural
+Designator has since landed (`live_initial_pass` asks a served structure chair
+for every sealed page), so the condition is now live rather than prospective: if
+real pages under the live pass still trip the bound, the bound is measuring the
+wrong thing and must be revisited rather than raised. The first real run's
+`page-residual` count is the measurement that settles it.
 
 There is no ordinal arithmetic left to bound: residual identities are
 class-namespaced (`act_id(page_id, "residual", bounds)`), so disjointness from

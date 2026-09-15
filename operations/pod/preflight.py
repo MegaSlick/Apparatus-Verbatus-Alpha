@@ -130,6 +130,12 @@ class GpuProfile:
     public annotation naming it would put it in this module's exported surface
     and in every reader's autocomplete.  `__post_init__` refuses anything else.
     """
+    gpu_count: int = 1
+    """How many cards `nvidia-smi` reported (F064).  A single query prints one
+    line per visible GPU; reading only the first silently measured one card's
+    VRAM as the machine's whole placement-deciding number and never said how
+    many cards were actually seen.  Default 1 for a synthetic/unmeasured
+    profile, matching this build's one-GPU assumption everywhere else."""
 
     def __post_init__(self) -> None:
         # The two halves of one fact, so neither can be set alone: a caller that
@@ -148,6 +154,12 @@ class GpuProfile:
             raise ValueError("GPU profile name must be non-blank")
         if not isinstance(self.dtype, str) or not self.dtype.strip():
             raise ValueError("dtype must be non-blank")
+        if (
+            not isinstance(self.gpu_count, int)
+            or isinstance(self.gpu_count, bool)
+            or self.gpu_count < 1
+        ):
+            raise ValueError("GPU profile gpu_count must be a positive integer")
         if self.compute_capability is not None:
             major, minor = self.compute_capability
             if (
@@ -179,7 +191,13 @@ class SystemGpuProbe:
         self.runner = runner or self._run
         self.disk_usage = disk_usage or shutil.disk_usage
 
-    def profile(self, dtype: str) -> GpuProfile:
+    def profile(self, dtype: str, *, expected_gpu_count: int | None = None) -> GpuProfile:
+        """Measure the visible card(s).
+
+        `expected_gpu_count`, when the caller knows it (the create request's
+        own `gpuCount`), is checked against what `nvidia-smi` actually
+        measured rather than left as two independent numbers (F064).
+        """
         disk_detail = ""
         try:
             disk_gib = Decimal(self.disk_usage(self.disk_path).free) / Decimal(1024**3)
@@ -196,12 +214,32 @@ class SystemGpuProbe:
             )
             if query.returncode != 0:
                 raise RuntimeError(query.stderr.strip() or "nvidia-smi query failed")
-            fields = [field.strip() for field in query.stdout.splitlines()[0].split(",")]
-            if len(fields) != 4:
+            lines = [line for line in query.stdout.splitlines() if line.strip()]
+            if not lines:
+                raise RuntimeError("nvidia-smi returned no GPU lines")
+            rows = []
+            for line in lines:
+                fields = [field.strip() for field in line.split(",")]
+                if len(fields) != 4:
+                    raise RuntimeError(
+                        "nvidia-smi did not return name, driver, VRAM, compute capability "
+                        f"for every visible card (line {line!r})"
+                    )
+                rows.append(tuple(fields))
+            gpu_count = len(rows)
+            baseline = rows[0]
+            if any(row != baseline for row in rows[1:]):
                 raise RuntimeError(
-                    "nvidia-smi did not return name, driver, VRAM, compute capability"
+                    f"nvidia-smi reported {gpu_count} non-identical GPUs "
+                    f"({sorted(set(rows))}); this build measures and places a "
+                    "single, uniform card class"
                 )
-            name, driver, vram, capability = fields
+            if expected_gpu_count is not None and gpu_count != expected_gpu_count:
+                raise RuntimeError(
+                    f"nvidia-smi measured {gpu_count} GPU(s); the pod was requested "
+                    f"with gpuCount={expected_gpu_count}"
+                )
+            name, driver, vram, capability = baseline
             major_text, minor_text = capability.split(".", 1)
             basic = self.runner(["nvidia-smi"])
             cuda = _cuda_version(basic.stdout) if basic.returncode == 0 else None
@@ -216,6 +254,7 @@ class SystemGpuProbe:
                 disk_gib=disk_gib,
                 dtype=dtype,
                 discovery_detail=disk_detail,
+                gpu_count=gpu_count,
                 # The one place `measured` is ever set: `nvidia-smi` answered
                 # with four parseable fields for a card this process can see.
                 # The token beside it is what makes that unforgeable from

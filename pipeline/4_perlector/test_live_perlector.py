@@ -33,12 +33,14 @@ from live_reader import EngineSignalRefusal
 
 from common.chairs.models import ChairIdentity
 from common.chairs.registry import ChairRegistry
+from common.contracts.approval import build_approval_record
 from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
-from common.runtree.store import RunTree
+from common.runtree.store import SERVING_LOGS_DIR, RunTree
+from common.stage import EXIT_FATAL, EXIT_HELD, StageContext, run_stage
 from operations.serving.client import ChairClient, ServingModeRefusal
 from operations.serving.config import (
     ServingConfigInputs,
@@ -54,9 +56,10 @@ from operations.serving.fakes import (
     FakePackages,
     FakeRegistry,
     ScriptedAnswer,
+    scripted_prompt_too_long,
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
-from operations.serving.residency import FileResidencyLease
+from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
 ROOT = Path(__file__).resolve().parents[2]
 CHAIN_THROUGH_ATTESTATORES = (
@@ -69,10 +72,11 @@ CHAIN_THROUGH_ATTESTATORES = (
 TIER = "generic-48gb"
 SERVED_MODEL_ID = "perlector-under-test"
 # Long enough that `truncation.is_length_suspicious` never fires on this
-# fixture's small regions (12,800 and 16,000 pixels against a 2,000
-# pixels-per-character floor): the tests below are about the engine's own stop
-# word, and a reading the length heuristic independently called suspicious would
-# prove the wrong thing.
+# fixture's regions (80 characters over 12,800 or 16,000 pixels of a 52,000-pixel
+# page is 260-325 characters per page-equivalent, against the sealed floor of 50
+# in `config/perlector_protocol.toml`): the tests below are about the engine's
+# own stop word, and a reading the length heuristic independently called
+# suspicious would prove the wrong thing.
 READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
 
 
@@ -87,6 +91,23 @@ def _perlector():
 
 
 perlector = _perlector()
+
+
+# Both instrument arms on for every act. `nuda_per_mille` and
+# `perlector_instrument_per_mille` are sealed into `config_digest`, so the whole
+# chain is given them and not only the Door, and a nonzero rate may not draw
+# without Tyrel's predeclared approval record (`resolve_sampling_approval`) --
+# which is why `_write_sampling_approvals` runs between the Door and the rest.
+SAMPLING_ARGUMENTS = (
+    "--nuda-per-mille",
+    "1000",
+    "--nuda-approval-ref",
+    perlector.NUDA_APPROVAL_SUBJECT,
+    "--perlector-instrument-per-mille",
+    "1000",
+    "--perlector-instrument-approval-ref",
+    perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+)
 
 
 def _perlector_identity():
@@ -187,7 +208,36 @@ def _live_catalogue(destination: Path) -> Path:
     return path
 
 
-def _chain_through_attestatores(root: Path, catalogue: Path, *, scenario: str = "happy") -> None:
+def _write_sampling_approvals(root: Path) -> None:
+    """The two predeclared approval records a sampled run must already carry.
+
+    Written against the `config_digest` the Door actually sealed rather than one
+    recomputed here: `run_config_bindings` would have to be handed this suite's
+    own tmp-path serving catalogue and every other default to agree, and a
+    mismatch would surface as a refusal about approvals rather than about the
+    binding that really drifted. One record per subject, because the sampling
+    gate requires exactly one validated record naming its experiment.
+    """
+    tree = RunTree(root, "r")
+    config_digest = tree.read_run()["config_digest"]
+    for subject in (
+        perlector.NUDA_APPROVAL_SUBJECT,
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+    ):
+        tree.write_approval_record(
+            build_approval_record(
+                subject_ids=[subject],
+                action="other",
+                reason="test-only sampling design for the live resume suite",
+                target_version_hash=config_digest,
+                timestamp="2026-09-14T00:00:00Z",
+            )
+        )
+
+
+def _chain_through_attestatores(
+    root: Path, catalogue: Path, *, scenario: str = "happy", sampled: bool = False
+) -> None:
     for program in CHAIN_THROUGH_ATTESTATORES:
         result = subprocess.run(
             [
@@ -201,12 +251,18 @@ def _chain_through_attestatores(root: Path, catalogue: Path, *, scenario: str = 
                 scenario,
                 "--serving-recipes-config",
                 str(catalogue),
+                *(SAMPLING_ARGUMENTS if sampled else ()),
             ],
             cwd=ROOT,
             capture_output=True,
             text=True,
         )
         assert result.returncode == 0, f"{program}: {result.stderr}"
+        if sampled and program == CHAIN_THROUGH_ATTESTATORES[0]:
+            # After the Door, because the record names the digest the Door
+            # sealed; before anything else, because the run tree is the only
+            # place the Perlector will look for it.
+            _write_sampling_approvals(root)
 
 
 @pytest.fixture(scope="module")
@@ -227,6 +283,31 @@ def chained_run(tmp_path_factory) -> tuple[Path, Path]:
 @pytest.fixture()
 def live_run(chained_run, tmp_path: Path) -> tuple[Path, Path]:
     template, catalogue = chained_run
+    root = tmp_path / "runs"
+    shutil.copytree(template, root)
+    return root, catalogue
+
+
+@pytest.fixture(scope="module")
+def sampled_chained_run(tmp_path_factory) -> tuple[Path, Path]:
+    """The same chain, sealed with both instrument arms drawing on every act.
+
+    `live_run` draws neither, so on that tree a sampled arm never publishes and
+    the resume's "an arm already on disk is not asked for again" rule has
+    nothing to act on. Its own chain, rather than a flag on `chained_run`,
+    because the rates are inside `config_digest`: a tree built at 0/1000 cannot
+    be read at 1000/1000 by any later invocation.
+    """
+    base = tmp_path_factory.mktemp("live-perlector-sampled")
+    catalogue = _live_catalogue(base)
+    root = base / "runs"
+    _chain_through_attestatores(root, catalogue, sampled=True)
+    return root, catalogue
+
+
+@pytest.fixture()
+def sampled_run(sampled_chained_run, tmp_path: Path) -> tuple[Path, Path]:
+    template, catalogue = sampled_chained_run
     root = tmp_path / "runs"
     shutil.copytree(template, root)
     return root, catalogue
@@ -319,6 +400,7 @@ def _run_perlector(
     *answers: ScriptedAnswer,
     scenario: str = "happy",
     endpoint_out: list | None = None,
+    sampled: bool = False,
 ):
     """Run the real stage in this process against a scripted endpoint.
 
@@ -359,6 +441,7 @@ def _run_perlector(
             str(catalogue),
             "--placement-tier",
             TIER,
+            *(SAMPLING_ARGUMENTS if sampled else ()),
         ],
     )
     return endpoint, perlector.main(serving_factory=factory)
@@ -611,6 +694,351 @@ def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
     assert exit_code == 0
     assert second.requests == [], "a resumed live pass re-read an act it had already sealed"
     assert len(_published_readings(root)) == sealed
+
+
+class _Interrupted(Exception):
+    """A process death injected between two publications of one act's attempt."""
+
+
+def _interrupt_after(monkeypatch, kind: str) -> None:
+    """Let the real publication of `kind` land, then kill the pass.
+
+    The artifact is on disk exactly as a SIGKILL, an OOM or a dropped
+    connection would have left it: immutable, at an identity the next
+    invocation recomputes, and with no Perlectio beside it.
+    """
+    real_publish = StageContext.publish
+    struck = False
+
+    def publish_then_die(self, **kwargs):
+        nonlocal struck
+        result = real_publish(self, **kwargs)
+        if kwargs["kind"] == kind and not struck:
+            struck = True
+            raise _Interrupted(f"simulated process death after publishing {kind}")
+        return result
+
+    monkeypatch.setattr(StageContext, "publish", publish_then_die)
+
+
+def _artifacts(root: Path, kind: str) -> list[Path]:
+    directory = root / "r" / "4_perlector" / "artifacts" / kind
+    return sorted(directory.glob("*.json")) if directory.exists() else []
+
+
+def _perlectiones(root: Path) -> dict[str, dict[str, Any]]:
+    """Every Perlectio on disk by act, read from the files rather than a manifest."""
+    records = [
+        json.loads(path.read_text(encoding="utf-8")) for path in _artifacts(root, "perlectio")
+    ]
+    by_act: dict[str, dict[str, Any]] = {}
+    for record in records:
+        assert record["subject_id"] not in by_act, "an act gained a second Perlectio"
+        by_act[record["subject_id"]] = record
+    return by_act
+
+
+def test_a_live_pass_interrupted_after_its_pass_a_resumes_and_reuses_the_sealed_draft(
+    live_run, tmp_path, monkeypatch
+):
+    """The resume that used to die on `IncompatibleReuse`, one act in.
+
+    `lectio-prior` is published *before* the establishing call, and the resume
+    rule looked only at the Perlectio — so any interruption in that window left
+    an immutable Pass A that the next invocation re-read from a live chair and
+    republished with different bytes. The store refused, the stage exited, and
+    because the artifact cannot be removed the refusal repeated on every retry:
+    the documented `verbatus run` resume was dead for that run forever, with
+    every other act still unread.
+
+    The sealed Pass A is this attempt's own evidence (GOVERNANCE 4), so it is
+    reused rather than re-asked: the resumed act pays for the arms it has not
+    run and no more. The proof is that the published reading is the *second*
+    engine answer while the prior draft it was primed with is still the
+    *first* — a re-asked Pass A could not produce that pair.
+    """
+    root, _catalogue = live_run
+    resumed_reading = READING.replace("SYNTHETIC LIVE READING", "A SECOND LIVE ANSWER")
+    assert resumed_reading != READING
+
+    _interrupt_after(monkeypatch, "lectio-prior")
+    with pytest.raises(_Interrupted):
+        _run_perlector(
+            live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+        )
+    priors = _artifacts(root, "lectio-prior")
+    assert len(priors) == 1, "the interruption did not land between Pass A and the Perlectio"
+    interrupted_act = json.loads(priors[0].read_text(encoding="utf-8"))["subject_id"]
+    sealed_pass_a = priors[0].read_bytes()
+    assert _perlectiones(root) == {}
+    monkeypatch.undo()
+
+    _endpoint, exit_code = _run_perlector(
+        live_run,
+        tmp_path / "resume",
+        monkeypatch,
+        ScriptedAnswer(content=resumed_reading, finish_reason="stop"),
+    )
+    assert exit_code == 0
+
+    # The interrupted Pass A was never rewritten and never doubled.
+    assert priors[0].read_bytes() == sealed_pass_a
+    assert len(_artifacts(root, "lectio-prior")) == len(_perlectiones(root))
+
+    readings = _perlectiones(root)
+    assert interrupted_act in readings
+    for record in readings.values():
+        assert record["outcome"] != "not-run"
+        assert record["payload"]["text"] == resumed_reading
+    # The establishing call ran again; the draft it was primed with is the
+    # retained one, not a second Pass A nobody could have published.
+    prior_draft = readings[interrupted_act]["payload"]["dossier"]["prior_draft"]
+    assert prior_draft["text"] == READING
+    assert prior_draft["reference"]["relative_path"] == priors[0].relative_to(root / "r").as_posix()
+    assert prior_draft["reference"] in readings[interrupted_act]["inputs"]
+
+
+def test_an_act_whose_audit_round_sealed_without_its_perlectio_is_held_not_read_again(
+    live_run, tmp_path, monkeypatch
+):
+    """The one interruption window a resume can answer neither way.
+
+    `audit-draft` freezes the establishing reading's own text into immutable
+    bytes. A resume cannot reproduce that text from a live chair, and it cannot
+    reuse the draft either, because the Perlectio it belongs to was never
+    written. So the act is held with an explicit `not-run` naming the retained
+    record, the rest of the run is read, and the stage seals — instead of every
+    invocation dying on a reuse nobody can clear (GOVERNANCE 2: a partial result
+    is visibly partial, and the run does not disappear behind it).
+    """
+    root, catalogue = live_run
+
+    _interrupt_after(monkeypatch, "audit-draft")
+    with pytest.raises(_Interrupted):
+        _run_perlector(
+            live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+        )
+    drafts = _artifacts(root, "audit-draft")
+    assert len(drafts) == 1
+    held_act = json.loads(drafts[0].read_text(encoding="utf-8"))["subject_id"]
+    sealed_draft = drafts[0].read_bytes()
+    assert _perlectiones(root) == {}
+    monkeypatch.undo()
+
+    _endpoint, exit_code = _run_perlector(
+        live_run,
+        tmp_path / "resume",
+        monkeypatch,
+        ScriptedAnswer(
+            content="A SECOND LIVE ANSWER FOR THE ACTS THIS PASS MAY STILL READ",
+            finish_reason="stop",
+        ),
+    )
+    assert exit_code == 0
+    assert drafts[0].read_bytes() == sealed_draft
+
+    readings = _perlectiones(root)
+    assert readings[held_act]["outcome"] == "not-run"
+    reason = readings[held_act]["payload"]["reason"]
+    assert "audit-draft" in reason and "interrupted" in reason
+    # The hold is addressable, not only descriptive. Every artifact the
+    # interrupted attempt did publish is named on the record by digest-checked
+    # reference -- as every other Perlector record names what it rests on -- so
+    # the person the Recensor routes to review reaches the retained evidence
+    # from the hold itself instead of rebuilding an attempt identity by hand.
+    held_inputs = readings[held_act]["inputs"]
+    assert {Path(reference["relative_path"]).parent.name for reference in held_inputs} == {
+        "lectio-prior",
+        "audit-draft",
+    }
+    assert drafts[0].relative_to(root / "r").as_posix() in [
+        reference["relative_path"] for reference in held_inputs
+    ]
+    for reference in held_inputs:
+        named = root / "r" / reference["relative_path"]
+        assert digest_bytes(named.read_bytes()) == reference["sha256"]
+    others = [act for act in readings if act != held_act]
+    assert others, "the held act took the rest of the run down with it"
+    for act in others:
+        assert readings[act]["outcome"] != "not-run"
+    # The pass completed rather than dying on the reuse it could not clear.
+    assert _artifacts(root, "stage-seal"), "the resumed pass did not seal"
+    # And the consuming stage reads the hold instead of tripping over it: this
+    # is the same closed `not-run` shape an absent chair publishes, so the
+    # Recensor routes the act to review and reports a graceful hold — the exit
+    # code the orchestrator accepts, not the `EXIT_FATAL` that ends a run.
+    recensor = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline" / "5_recensor" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--serving-recipes-config",
+            str(catalogue),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert recensor.returncode == EXIT_HELD, (recensor.returncode, recensor.stderr)
+    reviews = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((root / "r" / "5_recensor" / "artifacts" / "review").glob("*.json"))
+    ]
+    held_reviews = [review for review in reviews if review["subject_id"] == held_act]
+    assert held_reviews, "the held act reached no review record"
+    assert held_reviews[0]["outcome"] == "held-for-review", held_reviews[0]["outcome"]
+
+
+# The three arms one attempt publishes before its Perlectio, in publication
+# order -- `run.py::_PRE_PERLECTIO_ARTIFACTS` minus the audit round, which is
+# the prefix a resume answers by reusing rather than by holding. Each arm's
+# reader pass kind and its artifact kind are the same string (`combined.py`
+# spells the pass, `run.py` publishes the kind), so one tuple serves both uses
+# below; a divergence between them would fail these assertions by name.
+LECTIO_PRIOR = "lectio-prior"
+LECTIO_NUDA = perlector.nuda.LECTIO_NUDA_KIND
+PRIMED_WITHOUT_PRIOR = "primed-without-prior"
+_PRE_PERLECTIO_ARMS = (LECTIO_PRIOR, LECTIO_NUDA, PRIMED_WITHOUT_PRIOR)
+
+
+def _record_asked_pass_kinds(monkeypatch) -> list[str]:
+    """Every pass kind this invocation actually asks a chair for, in order.
+
+    Patched at `combined`'s own seam rather than counted off the endpoint,
+    because that is where the resume decides *not* to ask: a reused arm is one
+    that never reaches this function, and a count of HTTP requests could not say
+    which arm a missing request belonged to.
+    """
+    asked: list[str] = []
+    real = perlector.combined.invoke_one_logical_read
+
+    def recording(*args, **kwargs):
+        asked.append(kwargs["pass_kind"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(perlector.combined, "invoke_one_logical_read", recording)
+    return asked
+
+
+def test_a_resumed_act_reuses_the_sampled_arms_it_already_published(
+    sampled_run, tmp_path, monkeypatch
+):
+    """A sealed `lectio-nuda` or `primed-without-prior` is reused, not re-asked.
+
+    The instrument arms publish before the Perlectio exactly as Pass A does, so
+    an interruption after them leaves immutable bytes a second live answer would
+    contradict. Asking again would republish them and be refused
+    (`IncompatibleReuse`) with no forward path, which is the same dead resume the
+    prior-draft case had.
+
+    What must *not* move is the sampling design itself: membership is derived
+    from the run's predeclared rate and the act's own facts, never stored, so a
+    reused arm stays sampled and stays counted (GOVERNANCE 10 -- the instrument
+    is not allowed to shrink because a run was interrupted). Only the reader call
+    is dropped. The act that was never reached is still read and still sampled,
+    which is what the second act proves here.
+    """
+    root, _catalogue = sampled_run
+    resumed_reading = READING.replace("SYNTHETIC LIVE READING", "A SECOND LIVE ANSWER")
+    assert resumed_reading != READING
+
+    asked = _record_asked_pass_kinds(monkeypatch)
+    _interrupt_after(monkeypatch, "primed-without-prior")
+    with pytest.raises(_Interrupted):
+        _run_perlector(
+            sampled_run,
+            tmp_path,
+            monkeypatch,
+            ScriptedAnswer(content=READING, finish_reason="stop"),
+            sampled=True,
+        )
+    # One act got all four arms and was struck publishing the last of the three
+    # that precede its Perlectio; the second act was never started.
+    assert asked == [*_PRE_PERLECTIO_ARMS, "perlectio"]
+    sealed = {kind: _artifacts(root, kind) for kind in _PRE_PERLECTIO_ARMS}
+    assert [len(paths) for paths in sealed.values()] == [1, 1, 1]
+    interrupted_act = json.loads(sealed[LECTIO_PRIOR][0].read_text(encoding="utf-8"))["subject_id"]
+    before = {kind: paths[0].read_bytes() for kind, paths in sealed.items()}
+    assert _perlectiones(root) == {}
+    monkeypatch.undo()
+
+    asked = _record_asked_pass_kinds(monkeypatch)
+    _endpoint, exit_code = _run_perlector(
+        sampled_run,
+        tmp_path / "resume",
+        monkeypatch,
+        ScriptedAnswer(content=resumed_reading, finish_reason="stop"),
+        sampled=True,
+    )
+    assert exit_code == 0
+    # The resumed act pays for the one arm it had not run; the untouched act
+    # pays for all four. Without the reuse the first three names reappear here,
+    # and the run dies republishing them.
+    assert asked == ["perlectio", *_PRE_PERLECTIO_ARMS, "perlectio"]
+
+    for kind, paths in sealed.items():
+        assert paths[0].read_bytes() == before[kind], f"{kind} was rewritten"
+        assert len(_artifacts(root, kind)) == 2, f"{kind} did not reach the second act"
+
+    readings = _perlectiones(root)
+    assert len(readings) == 2
+    for record in readings.values():
+        assert record["outcome"] != "not-run"
+        assert record["payload"]["text"] == resumed_reading
+    # The retained arms still hold the *first* engine answer while the reading
+    # they sit beside holds the second -- a re-asked arm could not produce that.
+    for kind, rate_field in (
+        (LECTIO_NUDA, "nuda_per_mille"),
+        (PRIMED_WITHOUT_PRIOR, "perlector_instrument_per_mille"),
+    ):
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in _artifacts(root, kind)]
+        retained = [record for record in records if record["subject_id"] == interrupted_act]
+        assert [record["payload"]["text"] for record in retained] == [READING]
+        # And it is still a record of a drawn sample, at the run's own rate: a
+        # resume that quietly dropped the arm would shrink the instrument.
+        assert retained[0]["payload"]["sampling"][rate_field] == 1000
+        # The act nothing interrupted is sampled and read in this session.
+        fresh = [record for record in records if record["subject_id"] != interrupted_act]
+        assert [record["payload"]["text"] for record in fresh] == [resumed_reading]
+
+
+def test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary(
+    live_run, tmp_path, monkeypatch, capsys
+):
+    """An HTTP refusal is a named stage refusal, not a traceback and exit 1.
+
+    `ChairResponseRefusal` is a `ServingError`, which is a `RuntimeError`:
+    `run_stage` catches `ContractError` and would never have seen it, so the
+    most likely first answer a real card gives — vLLM's 400 explaining a context
+    overflow — left this stage with a stack trace and an exit code that means
+    nothing in its own vocabulary. The refusal itself is unchanged: the bytes
+    are retained before it is raised (`ChairClient.read`), its code and the
+    engine's own sentence travel verbatim into what the stage exits on, and
+    nothing here reads a 400 as a stop reason of any kind.
+    """
+    root, _catalogue = live_run
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048, requested_tokens=4125, prompt_tokens=3909, completion_tokens=216
+    )
+
+    exit_code = run_stage(lambda: _run_perlector(live_run, tmp_path, monkeypatch, refusal)[1])
+
+    assert exit_code == EXIT_FATAL
+    stderr = capsys.readouterr().err
+    assert "ChairResponseRefusal: CHAIR_RESPONSE_HTTP_ERROR" in stderr
+    assert "maximum context length is 2048" in stderr
+    assert "EngineSignalRefusal" not in stderr
+    assert _published_readings(root) == []
+    blobs = root / "r" / "4_perlector" / "blobs" / "sha256"
+    retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
+    assert any(b"maximum context length" in body for body in retained), (
+        "the refusing body was not retained"
+    )
 
 
 def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
@@ -955,14 +1383,22 @@ def test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written(
     )
 
 
-def test_default_serving_factory_writes_its_log_and_lease_under_the_run_tree(live_run, monkeypatch):
+def test_default_serving_factory_logs_under_the_run_tree_and_leases_off_it(live_run, monkeypatch):
     """`default_serving_factory` is the only path a real run takes, and nothing
     else in this suite ever constructs it -- the injected `_serving_factory`
     above deliberately diverges on the two things production alone decides:
     where the serving log directory and the pod-GPU residency lease live.
     Constructing the client starts nothing (`ChairClient.__init__` only stores
     its manager), so this proves both locations, and the manager keyword set
-    that builds them, without starting a service or needing a card."""
+    that builds them, without starting a service or needing a card.
+
+    **The two locations are deliberately not the same, and this used to pin the
+    lease under the run tree.** The logs belong to the run and travel with it.
+    The lease belongs to the *card*, which belongs to the pod: a lease resolved
+    inside a run tree let two stages resumed under different run ids each
+    acquire their own and co-reside on one GPU, never met the pod preflight's
+    own lock at all, and put an advisory lock on a network mount that is not
+    known to honour one."""
     root, catalogue = live_run
     monkeypatch.chdir(ROOT)
     monkeypatch.setattr(
@@ -996,7 +1432,9 @@ def test_default_serving_factory_writes_its_log_and_lease_under_the_run_tree(liv
     client = factory(context, _perlector_identity(), TIER)
     tree_root = context.tree.root
     assert client._manager.log_root.is_relative_to(tree_root)
-    assert client._manager.residency_lease.path.is_relative_to(tree_root)
+    assert client._manager.log_root.name == SERVING_LOGS_DIR
+    assert client._manager.residency_lease.path == POD_RESIDENCY_LOCK_PATH
+    assert not client._manager.residency_lease.path.is_relative_to(tree_root)
     # Neither write disturbs the witnessed inventory (`build_manifest` walks
     # only `<stage>/artifacts`, the blob inventory only `<stage>/blobs`), so the
     # seal must still succeed with these paths named but nothing started.

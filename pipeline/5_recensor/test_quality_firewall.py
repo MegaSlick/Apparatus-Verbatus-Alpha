@@ -49,7 +49,9 @@ RECENSOR_SOURCES = sorted(
 )
 
 # Every name the recovery gate is allowed to consult. All of them are coverage
-# and budget facts. None of them can be derived from what a reading SAID.
+# and budget facts, or -- in the one case below -- a fact about the run's ingress
+# route. None of them can be derived from what a reading SAID, which is the
+# firewall this file exists to hold.
 _COVERAGE_AND_BUDGET_NAMES = {
     "continuation_shortfall",
     "wants_recovery",
@@ -57,6 +59,14 @@ _COVERAGE_AND_BUDGET_NAMES = {
     "allowed_fallback",
     "used_total",
     "budget",
+    # `recrop_dispatchable` is `not real_ingress(context)`, read off the run
+    # authority: whether anything downstream can cut a recrop at all on this
+    # route (F068/F083). It is neither coverage nor budget, and it is admitted
+    # here deliberately, because a gate that may not ask whether its request can
+    # be answered publishes requests that abort the run instead of holding the
+    # act. It carries nothing a reading said and nothing a witness reported, so
+    # the `_QUALITY_NAMES` half of this firewall is untouched by its presence.
+    "recrop_dispatchable",
 }
 
 # Names in this stage that carry a reading's quality rather than its coverage.
@@ -181,9 +191,11 @@ def test_the_recovery_gate_consults_coverage_and_budget_and_nothing_else():
     # `_enclosing_ifs` that found the wrong node(s) would pass silently. The gate
     # is known to consult these two, and saying so is what stops this passing
     # vacuously.
-    assert {"wants_recovery", "continuation_shortfall"} <= consulted, (
+    assert {"wants_recovery", "continuation_shortfall", "recrop_dispatchable"} <= consulted, (
         f"the conditional(s) found guarding the recovery request consult {sorted(consulted)}, "
-        "which is not the coverage gate; this test located the wrong node"
+        "which is not the coverage gate; this test located the wrong node, or the gate no "
+        "longer asks whether the request it is about to publish can be answered at all "
+        "(F068/F083: an unanswerable request aborts the run instead of holding the act)"
     )
     assert consulted <= _COVERAGE_AND_BUDGET_NAMES, (
         f"the recovery gate consults {sorted(consulted - _COVERAGE_AND_BUDGET_NAMES)}, which is "
@@ -240,6 +252,51 @@ def test_what_the_gate_is_computed_from_is_coverage_only():
     }, (
         f"wants_recovery is derived from {sorted(sources)}; recovery is requested on coverage "
         "evidence, never on what a reading said"
+    )
+
+
+def _sole_assignment(name: str) -> ast.Assign:
+    """The stage's one assignment to `name`, across every source file."""
+    assignments = [
+        node
+        for _, tree in _modules()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+    ]
+    assert len(assignments) == 1, (
+        f"{name} is assigned {len(assignments)} times in the stage; this guard reads one"
+    )
+    return assignments[0]
+
+
+def test_what_the_dispatchability_conjunct_is_computed_from_is_the_route_only():
+    """The one admitted non-coverage conjunct is pinned here, where it is admitted.
+
+    `recrop_dispatchable` is the single name `_COVERAGE_AND_BUDGET_NAMES` lets
+    into the gate that is not a coverage or budget fact, so this file owes a
+    reader the reason it is harmless: it is the run's own ingress route and
+    nothing else. Without this, the firewall admits a name whose derivation it
+    never reads, and an edit that quietly recomputed it from a reading fact
+    would pass every assertion in this file and fail somewhere else, by a
+    message about a source-line count rather than about the firewall.
+
+    Two hops, because the gate reads the name and the name reads the route:
+    `recrop_dispatchable = not real_route` and `real_route =
+    real_ingress(context)`, the same shared reader every other stage goes
+    through. `context` carries a reading's quality nowhere in this expression --
+    it is passed whole to `real_ingress`, which answers from the run authority.
+    """
+    dispatchable = _names(_sole_assignment("recrop_dispatchable").value)
+    assert dispatchable == {"real_route"}, (
+        f"recrop_dispatchable is derived from {sorted(dispatchable)}; the gate's one "
+        "non-coverage conjunct may name the run's ingress route and nothing else"
+    )
+    route = _names(_sole_assignment("real_route").value)
+    assert route == {"real_ingress", "context"}, (
+        f"real_route is derived from {sorted(route)}; it must come from the shared "
+        "`real_ingress` reader over the run authority, not from a flag, a scenario field "
+        "or anything a reading said"
     )
 
 

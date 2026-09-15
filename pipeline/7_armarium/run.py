@@ -36,6 +36,7 @@ from armarium_export import (  # noqa: E402
     NOT_MEASURED_BASIS_SCHEMA,
     NOT_MEASURED_INSTRUMENTS,
     ArmariumProjection,
+    act_key_sort_key,
     build_armarium_bundle,
     edge_hold_pages_from_rows,
 )
@@ -362,7 +363,7 @@ def logical_act_projection_entry(
     # validating them again.
     membership = {
         "member_local_act_ids": sorted(member["act_id"] for member in members),
-        "member_act_keys": sorted(member["act_key"] for member in members),
+        "member_act_keys": sorted((member["act_key"] for member in members), key=act_key_sort_key),
         "member_source_page_ordinals": sorted({member["page_ordinal"] for member in members}),
         "physical_page_components": record["physical_page_components"],
     }
@@ -527,7 +528,7 @@ def logical_cross_capture_review_entry(
     # requirement visible where the list is built.
     membership = {
         "member_local_act_ids": sorted(member["act_id"] for member in members),
-        "member_act_keys": sorted(member["act_key"] for member in members),
+        "member_act_keys": sorted((member["act_key"] for member in members), key=act_key_sort_key),
         "member_source_page_ordinals": sorted({member["page_ordinal"] for member in members}),
         "physical_page_components": logical_act["physical_page_components"],
     }
@@ -873,6 +874,14 @@ def ink_map_page_rows(
                 "outside_ink_pixels": measure["outside_ink_pixels"],
                 "edge_band_pixels": measure["edge_band_pixels"],
                 "substantial_ink_pixels": measure["substantial_ink_pixels"],
+                # The sealed noise floor and fraction gate the page was judged
+                # under, on the row since 2026-09-14 for the reason
+                # `substantial_ink_pixels` joined it: the export verifier
+                # recomputes the hold from the row alone on a clean machine.
+                "minimum_ink_pixels": finding["coverage_policy"]["minimum_ink_pixels"],
+                "minimum_fraction_outside_bp": finding["coverage_policy"][
+                    "minimum_fraction_outside_bp"
+                ],
             }
         rows.append(
             {
@@ -888,10 +897,19 @@ def ink_map_page_rows(
 # numbers in them were ever measured against this project's corpus. Named by
 # the CLI attribute the run seals, so a file renamed in `config/` moves here
 # rather than leaving the export quietly reporting one fewer caveat.
+#
+# `perlector-protocol` joined the three Designator files on 2026-09-14, when the
+# truncation instrument's length floor moved out of source into
+# `[truncation]` with a `calibrated_for_this_corpus = false` block of its own
+# (pre-launch review, F082/F088). It decides whether an act is held as
+# truncated, and an uncalibrated instrument that decides a hold is exactly what
+# this survey exists to disclose; a caveat that stayed in `config/` and never
+# reached the bundle would be one the product does not carry.
 _CALIBRATED_CONFIG_ATTRIBUTES: Final = (
     ("designator-padding", "designator_padding_config", "padding"),
     ("designator-geometry", "designator_geometry_config", "geometry"),
     ("designator-grouping", "designator_grouping_config", "grouping"),
+    ("perlector-protocol", "perlector_protocol_config", "truncation"),
 )
 # The Recensor's named absence codes for the act-visibility survey. Spelled
 # here rather than imported: `common/` owns nothing of them and a stage may not
@@ -907,7 +925,13 @@ _VISIBILITY_ABSENCE_CODES: Final = frozenset(
 
 
 def _config_provenance(context, name: str, path, table: str) -> dict:
-    """One sealed configuration's `provenance` block, refused if it has none."""
+    """One sealed configuration's `provenance` block, refused if it has none.
+
+    `table` is the block's own table, because a configuration may declare more
+    than one and the survey reports the table whose numbers the run used --
+    `[truncation]` in the Perlector protocol, the file's own in each Designator
+    file.
+    """
     try:
         data = Path(path).read_bytes()
         context.require_sealed_config(name, digest_bytes(data))
@@ -920,8 +944,9 @@ def _config_provenance(context, name: str, path, table: str) -> dict:
     provenance = record.get(table, {}).get("provenance")
     if not isinstance(provenance, dict) or "calibrated_for_this_corpus" not in provenance:
         raise FatalAccounting(
-            f"the sealed configuration at {path} declares no calibration provenance; the "
-            "export cannot say whether the geometry its act boundaries rest on was measured"
+            f"the sealed configuration at {path} declares no calibration provenance in "
+            f"[{table}]; the export cannot say whether the instrument it reads from that "
+            "table was ever measured"
         )
     return provenance
 
@@ -947,13 +972,15 @@ def _typed_sample_count(provenance: dict, name: str) -> int | None:
 
 
 def geometry_calibration_rows(context) -> list[dict]:
-    """What each sealed geometry configuration says about its own calibration.
+    """What each surveyed sealed configuration says about its own calibration.
 
     Read from the same bytes the run sealed (`sealed_config_digests`), so a row
     here is the caveat the run actually ran under rather than whatever is in
     `config/` now. `sample_count` is `None` where the file declares none, which
     is not a zero: `designator_geometry.toml` carries no sample field at all,
-    and reporting 0 for it would be a measurement nobody took.
+    and reporting 0 for it would be a measurement nobody took. The function
+    keeps the name the export instrument has; since 2026-09-14 the list it walks
+    is wider than Designator geometry (see `_CALIBRATED_CONFIG_ATTRIBUTES`).
     """
     rows = []
     for name, attribute, table in _CALIBRATED_CONFIG_ATTRIBUTES:
@@ -1454,9 +1481,25 @@ def categorize(
         return terminal, review, None
 
     if review["outcome"] == "recovery-requested":
+        # The refusal stands: an act mid-recovery has no established reading to
+        # export, and exporting it as anything would be a partial delivered as
+        # complete. What the operator was not told is which of two shapes this
+        # is: a fixture run whose recovery has simply not been driven yet, which
+        # ends here again once it is, or a real submission, where no stage can
+        # cut the recrop and the run has no export at all (F068/F083). Both are
+        # named here rather than left to be derived from a stage a run away, and
+        # neither names a remedy this tree does not implement.
         raise FatalAccounting(
             f"act {act_id} has an outstanding recovery request; its recrop must be reread "
-            "before an Archetypus can exist"
+            "before an Archetypus can exist. On the fixture route the Designator cuts that "
+            "recrop, dispatched by the orchestrator's recovery member, so the run reaches "
+            "here again once recovery has been driven. On a real submission it cannot: the "
+            "Designator refuses `--operation recover` by name, and re-running the Recensor "
+            "does not clear the request either, because it holds an act with an outstanding "
+            "request without republishing. A request found here on a real submission "
+            "predates the gate that now withholds it, and this run has no export; the "
+            "request artifact and its review keep the evidence, and a fresh run of the same "
+            "submission from the Door does not reach this state"
         )
 
     established = artifacts_for(context, ARCHETYPUS, "archetypus", act_id, manifest_cache)
@@ -2028,13 +2071,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "scenario": context.scenario,
             "aggregate": aggregate,
             "expected_acts": expected_count,
-            "delivered": sorted(delivered, key=lambda item: item["act_key"]),
+            "delivered": sorted(delivered, key=lambda item: act_key_sort_key(item["act_key"])),
             # Every non-delivered act, not only held/refused review items: a
             # confirmed-blank or excluded-with-approval act (COMPLETED-class) lands
             # here too. The bundle's own review-items.jsonl filters correctly to
             # held/refused (armarium_export.py::_review_records); this internal
             # accounting field is named for what it actually holds.
-            "non_delivered": sorted(review_items, key=lambda item: item["act_key"]),
+            "non_delivered": sorted(
+                review_items, key=lambda item: act_key_sort_key(item["act_key"])
+            ),
             # The page-level record beside the act-level one: every source the
             # run declared, with the Exemplar's outcome for it. A page that was
             # refused is named here and in the aggregate's reasons, never only

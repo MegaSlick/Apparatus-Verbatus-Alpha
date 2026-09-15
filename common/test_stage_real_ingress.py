@@ -3,11 +3,16 @@
 The run tree is real to the Ink Map's seal -- the Door, the Exemplar and the Ink
 Map run as programs over a genuine real submission, made of the synthetic
 fixture's own two pages copied into an approved storage root -- and the
-Designator's records are then **hand-built** on top. Hand-built precisely
-because no real Designator exists: the real structural pass is roadmap work,
-and these tests hold the *consumer* (`common/stage.py`) to the contract that
-pass will have to meet before it is written. Nothing here fabricates a
-Designator inside the stage program; the stage program is not invoked at all.
+Designator's records are then **hand-built** on top. Hand-built to keep these
+unit tests on the *consumer* side of the boundary: they hold `common/stage.py`
+to the real-ingress contract itself, over records this module controls, without
+standing up a served structure chair to produce them. The real structural pass
+is no longer roadmap work — `pipeline/2_designator/run.py`'s `live_initial_pass`
+asks a served chair for every sealed page, and
+`pipeline/test_structure_chair_e2e.py` drives it end to end — so what is
+hand-built here is a fixture for the consumer, not a stand-in for a producer
+that does not exist. Nothing here fabricates a Designator inside the stage
+program; the stage program is not invoked at all.
 
 What is proven, unit by unit:
 

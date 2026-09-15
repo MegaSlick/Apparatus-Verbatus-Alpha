@@ -1148,8 +1148,16 @@ def publish_structure_status(
     analyses,
     *,
     answers: dict[int, tuple[str | None, dict[str, str]]] | None = None,
+    provenance_by_page: dict[int, dict] | None = None,
 ) -> dict:
     """One visible per-page outcome for the structure pass: scanned or held.
+
+    `provenance_by_page` is the live path's second addition and is `None` on
+    the fixture path, where one `provenance` answers for the whole pass. A
+    resumed live pass may have taken more than one serving session to answer
+    its pages, and this record is a per-page fact, so each page's status names
+    the session that answered *it*. A page absent from the map falls back to
+    the run-level `provenance`.
 
     `answers` is the live path's addition and is `None` on the fixture path,
     where this payload is byte-for-byte what it was: per page ordinal, the
@@ -1280,7 +1288,11 @@ def publish_structure_status(
                 "resolved_thresholds": (
                     dataclasses.asdict(analysis["thresholds"]) if analysis else None
                 ),
-                "provenance": provenance,
+                "provenance": (
+                    provenance
+                    if provenance_by_page is None
+                    else provenance_by_page.get(ordinal, provenance)
+                ),
                 **live_fields,
             },
         )
@@ -2194,6 +2206,15 @@ def _publish_page_fallback(
     page_bounds = {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]}
     act_id = derive_minted_act_id(page_id, "page-fallback", page_bounds)
     act_key = fallback_page_act_key(ordinal)
+    # A page's own fallback act never claims against its own grid. The tiles are
+    # cut with `origin == "proposal"`, exactly like a declared crop, so a second
+    # pass over a tree that already holds them would subtract them from
+    # themselves, find no uncovered pixel, mint nothing, and seal a denominator
+    # one act shorter than the crops already on disk -- a `complete` run missing
+    # a page (GOVERNANCE 2, GOALS 1). Filtered by act identity rather than by
+    # origin, so the declared crops on this page are still subtracted and no
+    # pixel is read under two act identities.
+    claimed = [claim for claim in claimed if claim["act_id"] != act_id]
     tiles = _unclaimed_fallback_tiles(analysis["groups"], claimed)
     if not tiles:
         return None
@@ -2925,6 +2946,66 @@ def _publish_live_act_groups(
         )
 
 
+def _structure_answer_identity(page_id: str) -> str:
+    """The one artifact identity a page's structure answer is ever published under.
+
+    Derived in one place because two spellings of it is how a resume looks up
+    an identity the publisher does not write: `context.publish` derives it from
+    the kind and the subject with no attempt, and `_sealed_structure_answer`
+    has to ask for exactly that.
+    """
+    return artifact_id(DESIGNATOR, STRUCTURE_ANSWER_KIND, page_id, None)
+
+
+def _sealed_structure_answer(context, page_id: str) -> tuple[dict, dict[str, str]] | None:
+    """A page's already-published structure answer and its reference, or None.
+
+    Existence first, then the record: the question a resume asks is whether
+    this tree already holds an answer for this page, and a page that has one is
+    never asked again (`structure_pass.sealed_page_answer` gives the reason in
+    full). The payload is validated on the way back in, against the same
+    boundary that admitted it, so a record from a schema this build no longer
+    understands refuses here rather than being minted from.
+
+    Its serving provenance is validated too, and for a reason the fresh path
+    has no equivalent of: this block is about to be *written again*, onto the
+    status and the crops this pass publishes for the page. `live_chair_record`
+    holds a freshly built one to exactly this boundary before anything carries
+    it, and a block read back off disk gets the same treatment -- which is also
+    what proves the receipt it names is still in this tree rather than a
+    dangling reference the new artifacts would inherit.
+    """
+    identifier = _structure_answer_identity(page_id)
+    if not context.tree.has_artifact(DESIGNATOR, STRUCTURE_ANSWER_KIND, identifier):
+        return None
+    relative = context.tree.artifact_path(DESIGNATOR, STRUCTURE_ANSWER_KIND, identifier)
+    record = context.tree.read_artifact(DESIGNATOR, STRUCTURE_ANSWER_KIND, identifier)
+    payload = record["payload"]
+    _validate_structure_answer_payload(payload)
+    validate_serving_provenance(
+        context,
+        payload["provenance"],
+        producer_stage=DESIGNATOR,
+        require_receipt=True,
+    )
+    return payload, context.input_ref(relative)
+
+
+def _publish_structure_answer(
+    context, page_record: dict, answer: structure_pass.PageAnswer
+) -> dict[str, str]:
+    """Publish one page's answer the moment it arrives, and return its reference."""
+    _validate_structure_answer_payload(answer.record)
+    published = context.publish(
+        kind=STRUCTURE_ANSWER_KIND,
+        subject_id=answer.page_id,
+        outcome="held" if answer.disposition == structure_pass.DISPOSITION_HELD else "proposed",
+        inputs=[context.input_ref(page_record["payload"]["image_path"])],
+        payload=answer.record,
+    )
+    return context.input_ref(published.relative_path)
+
+
 def live_initial_pass(context, serving_factory, tier: str) -> bool:
     """Mark out every sealed page through the served structure chair. True when held.
 
@@ -2947,6 +3028,23 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     where a fixture-declared failure would be, so everything downstream of the
     hold -- no crop cut, ink reconciled as residual, `EXIT_HELD` -- is the
     code path the fixture path already proves.
+
+    **The pass resumes, and each answer lands as it arrives.** A page whose
+    answer this tree already holds is read back instead of asked again
+    (`_sealed_structure_answer`), because a live chair's second answer carries
+    a different receipt, call record and custody reference under an artifact
+    identity the store has already fixed -- the Attestatores and the Perlector
+    guard the same way, and without it a resumed run died on the first page it
+    had already answered. Each fresh answer is published inside the asking loop
+    rather than after it, so an interruption partway through leaves what was
+    already paid for on disk and visible (GOVERNANCE 2), and the resume asks
+    only for the pages nothing answered. With every page already answered no
+    chair is started at all.
+
+    **Each page's own artifacts carry the session that answered that page.**
+    `provenance_by_page` comes off the answers themselves, so a run that took
+    two sessions to answer its pages says so on each page's status and crops
+    instead of restamping the whole run with whichever session ran last.
     """
     records = page_records(context)
     pages = sealed_pages(records)
@@ -2980,49 +3078,100 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     for ordinal, page_record in pages.items():
         _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
 
-    answers: dict[int, structure_pass.PageAnswer] = {}
-    client = serving_factory(context, identity, tier)
-    with client:
-        engine_call = structure_pass.structure_engine_call(decoding_sha256)
-        provenance = structure_pass.live_chair_record(
-            context, identity, client.handle.receipt_reference, engine_call
-        )
-        for ordinal, page_record in pages.items():
-            answers[ordinal] = structure_pass.ask_page(
-                context,
-                client,
-                page_record,
-                ordinal,
-                _read_checked_page_bytes(context, page_record),
-                page_cache[ordinal],
-                temperature=temperature,
-                decoding_config_sha256=decoding_sha256,
-                provenance=provenance,
+    reused: dict[int, structure_pass.PageAnswer] = {}
+    answer_refs: dict[int, dict[str, str]] = {}
+    for ordinal, page_record in sorted(pages.items()):
+        sealed = _sealed_structure_answer(context, page_record["subject_id"])
+        if sealed is None:
+            continue
+        record, reference = sealed
+        if record["page_ordinal"] != ordinal:
+            raise ContractError(
+                f"the sealed structure answer for page {page_record['subject_id']} says it is "
+                f"page {record['page_ordinal']}, and the Exemplar sealed that page as "
+                f"{ordinal}; a page answered under one ordinal and resumed under another would "
+                "mint act keys for a page it is not"
             )
+        reused[ordinal] = structure_pass.sealed_page_answer(record)
+        answer_refs[ordinal] = reference
+    unanswered = [ordinal for ordinal in sorted(pages) if ordinal not in reused]
+    answers: dict[int, structure_pass.PageAnswer] = dict(reused)
+
+    # No page left to ask means no chair to start. A resume that loaded the
+    # chair to ask it nothing would bill for a pod to re-read its own records,
+    # which is the cost the Perlector's resume rule already refuses to pay.
+    if unanswered:
+        client = serving_factory(context, identity, tier)
+        with client:
+            engine_call = structure_pass.structure_engine_call(decoding_sha256)
+            provenance = structure_pass.live_chair_record(
+                context, identity, client.handle.receipt_reference, engine_call
+            )
+            for ordinal in unanswered:
+                page_record = pages[ordinal]
+                answer = structure_pass.ask_page(
+                    context,
+                    client,
+                    page_record,
+                    ordinal,
+                    _read_checked_page_bytes(context, page_record),
+                    page_cache[ordinal],
+                    temperature=temperature,
+                    decoding_config_sha256=decoding_sha256,
+                    provenance=provenance,
+                )
+                # Published here, inside the loop, rather than after it: an
+                # interruption at page 900 of 1000 otherwise leaves nothing on
+                # disk and repeats every model call already paid for, and the
+                # 899 answers that did arrive are invisible until the pass ends
+                # (GOVERNANCE 2). Each page's answer is complete on its own, so
+                # there is nothing to wait for.
+                answers[ordinal] = answer
+                answer_refs[ordinal] = _publish_structure_answer(context, page_record, answer)
+
+    # Back into page order after the two sources are merged. Everything below
+    # walks this mapping, and the seal's `expected_acts` is a *list*: a resume
+    # that found page 2 sealed and page 1 not would otherwise mint page 2's
+    # acts first and seal a differently ordered list than the same evidence
+    # produced the first time, which the store would then refuse to republish.
+    answers = {ordinal: answers[ordinal] for ordinal in sorted(answers)}
 
     failures: dict[int, str] = {}
     status_answers: dict[int, tuple[str | None, dict[str, str]]] = {}
+    # The serving session that answered each page, from the page's own record:
+    # a resumed pass has one per session it took to answer the run, and every
+    # artifact derived from a page has to name the session that page's answer
+    # came from rather than whichever one happens to be running now.
+    provenance_by_page = {
+        ordinal: answer.record["provenance"] for ordinal, answer in answers.items()
+    }
     for ordinal, answer in answers.items():
-        _validate_structure_answer_payload(answer.record)
-        published = context.publish(
-            kind=STRUCTURE_ANSWER_KIND,
-            subject_id=answer.page_id,
-            outcome="held" if answer.disposition == structure_pass.DISPOSITION_HELD else "proposed",
-            inputs=[context.input_ref(pages[ordinal]["payload"]["image_path"])],
-            payload=answer.record,
-        )
-        answer_ref = context.input_ref(published.relative_path)
         if answer.disposition == structure_pass.DISPOSITION_HELD:
             # A held page's status carries its reason code and null evidence
             # (`structure_evidence` names what corroborates a scanned page's
             # crops, and a held page has none), but still names the answer:
             # the retained bytes and the parse outcome are the hold's evidence.
             failures[ordinal] = answer.reason_code
-            status_answers[ordinal] = (None, answer_ref)
+            status_answers[ordinal] = (None, answer_refs[ordinal])
         else:
-            status_answers[ordinal] = (answer.disposition, answer_ref)
+            status_answers[ordinal] = (answer.disposition, answer_refs[ordinal])
+    # The run-level provenance is the first page's, on a fresh pass and on a
+    # resume alike. On a fresh pass that is the one session that answered every
+    # page and nothing changes; on a resume it is the only choice that is the
+    # same on every later resume, and a value that moved would refuse the
+    # proposal seal's own republication under `IncompatibleReuse`. The seal is
+    # not where a reader learns which session answered a given page: each
+    # page's answer, status and crops carry that themselves.
+    seal_provenance = provenance_by_page[min(provenance_by_page)]
     status_refs = publish_structure_status(
-        context, records, pages, provenance, failures, page_cache, answers=status_answers
+        context,
+        records,
+        pages,
+        seal_provenance,
+        failures,
+        page_cache,
+        answers=status_answers,
+        provenance_by_page=provenance_by_page,
     )
 
     expected = []
@@ -3047,7 +3196,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
                 ordinal,
                 "proposal",
                 padding=padding,
-                provenance=provenance,
+                provenance=provenance_by_page[ordinal],
             )
             evidence = [context.input_ref(region.relative_path)]
             expected.append(
@@ -3096,7 +3245,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
             tiled,
             status_refs[ordinal],
             claimed_by_page.get(ordinal, []),
-            provenance,
+            provenance_by_page[ordinal],
             reason=_FALLBACK_REASON_LIVE,
         )
         if row is not None:
@@ -3119,7 +3268,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     payload = {
         "expected_acts": expected,
         "count": len(expected),
-        "provenance": provenance,
+        "provenance": seal_provenance,
     }
     payload["self_hash"] = self_hash(payload)
     context.publish(
@@ -3361,9 +3510,22 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
         # no fixture and this stage has no other source for a recrop's bounds.
         # Refuse by name here rather than let the generic fixture accessor's
         # message stand in for it.
+        #
+        # The Recensor no longer publishes a request this refusal would meet:
+        # `pipeline/5_recensor/run.py` gates the coverage-observation
+        # fallback-recrop on the ingress route and holds the act for review
+        # instead (F068/F083). This stays the backstop, and the message says so
+        # rather than leaving an operator to discover it from an exit code.
+        # Conditioned, because this branch is taken before `--act` and
+        # `--recovery-request` are read: a caller invoking `--operation recover`
+        # on a real run with no request at all must not be told a fact about a
+        # run tree this stage never looked at (GOVERNANCE 10).
         raise ContractError(
             "bounded recovery from a real submission is not built; a recovery still reads "
-            "the fixture's declared rectangle, which a real submission does not carry"
+            "the fixture's declared rectangle, which a real submission does not carry. The "
+            "Recensor holds such an act for review instead of requesting a recrop, so if "
+            "this run tree carries an outstanding real-ingress recovery request, it was "
+            "published before that gate landed and nothing here can answer it"
         )
     if args.operation == "recover":
         if not args.act:

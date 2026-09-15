@@ -313,6 +313,11 @@ def _not_measured_basis(
                     "calibrated_for_this_corpus": False,
                     "sample_count": 0,
                 },
+                {
+                    "configuration": "perlector-protocol",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": 0,
+                },
             ]
         },
     }

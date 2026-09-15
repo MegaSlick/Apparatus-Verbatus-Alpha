@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,45 @@ def test_invalid_json_is_refused_by_name():
 
 def test_invalid_utf8_is_invalid_json():
     result = parse(b"\xff\xfe", page_w=100, page_h=100)
+    assert result == {"parse_outcome": "invalid-json"}
+
+
+def test_a_huge_json_integer_literal_is_invalid_json_not_an_escaping_value_error():
+    """An over-long integer literal is otherwise well-formed JSON.
+
+    CPython's own integer-string-conversion limit turns the scanner's `int()`
+    call into a bare `ValueError` -- not `json.JSONDecodeError` -- once a
+    literal crosses it, and this declared refusal boundary must still catch it
+    (G13, "huge integer").
+
+    The limit is set here rather than assumed: it is an interpreter setting a
+    caller can raise or disable (`-X int_max_str_digits`, `PYTHONINTMAXSTRDIGITS`),
+    and under a raised one the 4,301-digit body this used to hard-code decodes
+    cleanly and the parser answers `unverified-response-schema` -- a failure
+    with no production defect behind it (CodeRabbit on PR #117). The positive
+    control below proves the limit this test relies on is the one in force.
+    """
+    original = sys.get_int_max_str_digits()
+    limit = 640  # `sys.set_int_max_str_digits`'s own floor, and well under any default
+    digits = limit + 1
+    try:
+        sys.set_int_max_str_digits(limit)
+        # The control: the literal this body carries really does cross the
+        # limit, so the refusal below is about the scanner's `int()` call and
+        # not about some other malformation.
+        with pytest.raises(ValueError):
+            int("9" * digits)
+
+        body = (
+            b'{"schema":"'
+            + STRUCTURE_ANSWER_SCHEMA.encode()
+            + b'","acts":[],"extra":'
+            + b"9" * digits
+            + b"}"
+        )
+        result = parse(body, page_w=100, page_h=100)
+    finally:
+        sys.set_int_max_str_digits(original)
     assert result == {"parse_outcome": "invalid-json"}
 
 

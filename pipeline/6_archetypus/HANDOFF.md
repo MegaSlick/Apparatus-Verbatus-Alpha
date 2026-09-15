@@ -302,5 +302,11 @@ Consequences worth stating plainly:
 - `evidence_ref`, `text_hash` and `index.json` are still not read at export. They
   remain fields this stage carries for their own sake; and
 - the projection-identity test (`pipeline/orchestrator/test_projection_identity.py`)
-  checks the one export format that exists. A second format must be added to it, or it
-  will pass over the new one in silence.
+  guards the packaged bundle's own `formats.formats` selection (currently five:
+  text-bundle, acts-database, jsonl, review-items, salvage-tier), not the Armarium's
+  artifact *kind* — every literal-text format ships as a member inside the single
+  `export` kind, so a kind-keyed guard could never see one arrive (found and fixed as
+  F090). Cross-format text identity across the three literal formats is proven by
+  `pipeline/7_armarium/armarium_export.py::_compare_literal_projections` at build and
+  verify time. A sixth format must be named in both places, or the new one passes over
+  in silence.

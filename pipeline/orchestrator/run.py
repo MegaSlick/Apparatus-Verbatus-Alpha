@@ -33,9 +33,13 @@ sequence and to checkpoint. Its four jobs:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -45,6 +49,7 @@ from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
+from common.durability import sync_directory  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -72,6 +77,7 @@ from common.stage import (  # noqa: E402
     RUN_MODES,
     WITNESS_CONTEXT_REGIMES,
     current_recovery_request,
+    is_real_ingress,
     latest_attempt,
     load_fixture,
     require_sealed_config,
@@ -99,6 +105,7 @@ SEQUENCE = (
 )
 
 STAGE_PROGRAMS = {name: program for name, program in SEQUENCE if program is not None}
+_PROGRAM_NAMES = {program: name for name, program in STAGE_PROGRAMS.items()}
 SEQUENCE_NAMES = tuple(name for name, _program in SEQUENCE)
 # Named here rather than imported from `operations.submit.gate`, because this
 # module imports only `common/` (see the module docstring) and the Door is the
@@ -111,8 +118,38 @@ DEFAULT_DATA_GATE_POLICY_PATH = ROOT / "config" / "data_handling_policy.json"
 # boundary too, and
 # `test_orchestrator_upload_credentials_are_the_transfers_own` reconciles this
 # copy with it. A credential added to one list alone would otherwise leave this
-# route carrying it into a stage that decodes caller-supplied material.
+# route carrying it into a stage that decodes caller-supplied material. Kept
+# even though `stage_environment` no longer loops over it directly (below): the
+# reconciliation test still pins this exact set against the transfer's own.
 _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
+# The wall clock a timing receipt is stamped with, and the monotonic one its
+# duration is measured against. Kept separate deliberately: a duration taken
+# from wall-clock differences is wrong across a clock adjustment, and a
+# monotonic reading names no instant a reader could compare across records.
+_clock = time.monotonic
+STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v1"
+# Duplicated from `operations.operator.custody.PROVIDER_ENV_PREFIXES` and
+# `operations.pod.models.looks_like_credential_field`'s marker scan, for the
+# identical reason and closed the identical way (reconciled by the same test
+# named above, widened to cover this). `stage_environment` used to pop only
+# the two names above -- the transfer verb's own upload-only S3 keys -- and
+# pass every *other* provider credential (RUNPOD_API_KEY: pod creation, i.e.
+# money; HF_TOKEN; AWS_*; ...) straight into a subprocess that decodes
+# attacker-supplied PDFs, TIFFs, HEICs and PNGs and talks to the serving
+# endpoint. That subprocess is at least as hostile a boundary as the operator's
+# confined console/backup/advance/ScanTailor children, which already run under
+# `operations.operator.custody.credential_free_environment` -- this is that
+# same predicate, held to it by the widened test rather than imported, because
+# this module imports only `common/`.
+_PROVIDER_ENV_PREFIXES = ("RUNPOD_", "AWS_", "HF_", "HUGGINGFACE_")
+_CREDENTIAL_NAME_MARKERS = ("key", "secret", "password", "credential", "bearer", "token")
+
+
+def _looks_like_provider_credential(name: str) -> bool:
+    normalized = name.lower().replace("-", "_")
+    return any(name.startswith(prefix) for prefix in _PROVIDER_ENV_PREFIXES) or any(
+        marker in normalized for marker in _CREDENTIAL_NAME_MARKERS
+    )
 
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
@@ -148,11 +185,12 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def stage_environment() -> dict[str, str]:
-    """Keep stage runtime settings, but drop credentials for the upload-only verb."""
-    environment = dict(os.environ)
-    for name in _TRANSFER_CREDENTIAL_ENV:
-        environment.pop(name, None)
-    return environment
+    """Keep stage runtime settings, but drop every provider credential (F016)."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not _looks_like_provider_credential(name)
+    }
 
 
 def invoke(program: str, args: argparse.Namespace, **extra) -> int:
@@ -214,6 +252,13 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     ]
     # Later stages may read only the run tree the Door sealed, never source paths.
     if program == STAGE_PROGRAMS["door"]:
+        # The Door is the one stage that creates the run authority, so it is the
+        # only one that can seal the commit into it. Forwarded only when it was
+        # actually read: a tree with no version control records no commit rather
+        # than a placeholder that looks like one (GOVERNANCE 10).
+        commit, _detail = repository_commit(args)
+        if commit is not None:
+            command += ["--repository-commit", commit]
         if args.submission_folder is not None:
             command += ["--submission-folder", str(args.submission_folder)]
         if args.submission_manifest is not None:
@@ -264,10 +309,198 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # `stage_environment()` is not optional and is the reason this call is not a
     # bare subprocess.run: it drops the transfer credentials from every stage's
     # environment, so only the upload-only verb can ever see them.
-    completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
+    started = _clock()
+    started_at = _stamp()
+    # Bound before the call, not inside it: the `finally` below reads this, and
+    # an interruption that is not an `OSError` -- a `KeyboardInterrupt` while a
+    # stage runs is the ordinary one -- used to leave the name unbound and
+    # replace the interruption with an `UnboundLocalError` from the stopwatch
+    # (CodeRabbit on PR #117). A stage that could not start is timed with no
+    # exit code, which is the same record the OSError path produced.
+    exit_code: int | None = None
+    try:
+        completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
+        exit_code = completed.returncode
+    finally:
+        # In `finally` so a stage that could not start, and one about to be
+        # turned into a ContractError below, are both timed: the invocations a
+        # later reader most wants a clock on are the ones that went wrong.
+        _record_stage_timing(
+            args,
+            program=program,
+            extra=extra,
+            started_at=started_at,
+            finished_at=_stamp(),
+            duration_ms=max(0, round((_clock() - started) * 1000)),
+            exit_code=exit_code,
+        )
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
         raise ContractError(f"{program} exited {completed.returncode}")
     return completed.returncode
+
+
+def _stamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def repository_commit(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    """The commit this run's code is at, as its caller named it -- or why it has none.
+
+    Read from argv rather than measured here, deliberately. On a pod the
+    bootstrap has already checked out the pinned commit and *verified* the
+    checkout against it (`operations/pod/bootstrap.py`, REPOSITORY), so the
+    plan's value is a proven fact about the running code; re-deriving it here
+    would be a second, weaker measurement of something already established, and
+    it would make the orchestrator spend a subprocess per process on an answer
+    its caller was already holding.
+
+    Returned as a pair, never raising for absence: a run must not be refused
+    because the tree it runs from is a source export with no version control,
+    and it must equally not record a commit nobody measured (GOVERNANCE 10). An
+    absent commit is `None` *with* a reason, so a reader can tell "not
+    measured" from "not looked for". A malformed one is a refusal, because a
+    short or decorated revision names a commit only against the repository that
+    resolved it -- which a fetched run tree no longer has.
+    """
+
+    commit = getattr(args, "repository_commit", None)
+    if commit is None:
+        return None, (
+            "no --repository-commit was named for this run; on a pod `pod_run` passes the "
+            "commit the bootstrap checked out and verified, and a run driven by hand records "
+            "one only when its caller names it"
+        )
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        raise ContractError(f"--repository-commit {commit!r} is not a full lowercase Git SHA-1")
+    return commit, None
+
+
+def _record_stage_timing(
+    args: argparse.Namespace,
+    *,
+    program: str,
+    extra: dict,
+    started_at: str,
+    finished_at: str,
+    duration_ms: int,
+    exit_code: int | None,
+) -> None:
+    """Append one stage's clock to the timing journal, best effort.
+
+    **Outside the run tree, deliberately.** A run tree is pinned byte-identical
+    across a rerun, a resume, a restored backup and every driver mode by a dozen
+    acceptance tests, and a clock is by definition not that: putting timings
+    under `receipts/` would have made "the same run" mean something weaker for
+    every one of those checks. So the journal is a sibling of the pod-run report
+    on the volume, where the transcript and the liveness tick already live, and
+    `pod_run` is what names it (`--stage-timing-journal`). A local run that names
+    no journal writes none, and the run tree is bit-for-bit what it was before.
+
+    Best effort because a stopwatch is a diagnostic, not evidence the run
+    depends on: refusing a completed stage because its timing could not be
+    written would destroy work to protect a record of it. A failure says so on
+    stderr -- which on a pod reaches the durable transcript -- rather than
+    passing in silence (hard rule 7).
+
+    Rewritten whole on each append rather than appended to: the file is bounded
+    by the number of stage invocations in a run, and a torn append is a journal
+    a later reader cannot parse at all. `_atomic_json` replaces it in one step.
+    """
+
+    journal = getattr(args, "stage_timing_journal", None)
+    if journal is None:
+        return
+    path = Path(journal)
+    subject = extra.get("act")
+    entry: dict[str, object] = {
+        # The sequence member's own name, not the program's directory: the Door
+        # and the Exemplar are two members that share `1_exemplar/`, and an
+        # entry calling both of them "1_exemplar" would make a resumed Door
+        # unreadable as one.
+        "stage": _PROGRAM_NAMES.get(program, program),
+        "program": program,
+        "operation": str(extra.get("operation", "run")),
+        "subject": None if subject is None else str(subject),
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_ms": duration_ms,
+        "exit_code": exit_code,
+    }
+    try:
+        # Inside the try with the write, not above it: this runs from a
+        # `finally`, and a refusal raised here would replace the stage failure
+        # the caller is already propagating.
+        commit, commit_detail = repository_commit(args)
+        # Recorded per entry, not once at the top: a run resumed at another
+        # commit is exactly the case the run authority cannot record (run.json
+        # is created once and never rewritten), and two entries naming two
+        # commits is what makes that resume visible instead of silent.
+        entry["repository_commit"] = commit
+        entry["repository_commit_detail"] = commit_detail
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        entries: list = []
+        if isinstance(existing, dict):
+            # Whose journal this is, before its entries are carried forward. Two
+            # runs pointed at one path used to keep the first run's entries and
+            # replace the identity above them, so the file then attributed one
+            # run's stage timings to another (CodeRabbit on PR #117). A journal
+            # that names a different run, root or schema is left exactly as it
+            # is and the conflict is reported; the stopwatch never edits a
+            # record it cannot account for.
+            identity = (
+                existing.get("schema"),
+                existing.get("run_id"),
+                existing.get("run_root"),
+            )
+            expected = (STAGE_TIMING_JOURNAL_SCHEMA, args.run_id, str(args.run_root))
+            if identity != expected:
+                raise ContractError(
+                    f"the timing journal at {path} already belongs to {identity!r}, and this "
+                    f"run is {expected!r}; it was left unchanged rather than merged"
+                )
+            if isinstance(existing.get("entries"), list):
+                entries = list(existing["entries"])
+        entries.append(entry)
+        _atomic_json(
+            path,
+            {
+                "schema": STAGE_TIMING_JOURNAL_SCHEMA,
+                "run_id": args.run_id,
+                "run_root": str(args.run_root),
+                "entries": entries,
+            },
+        )
+    except Exception as error:  # noqa: BLE001 -- a stopwatch never fails a stage
+        print(
+            f"run {args.run_id}: the {program} timing entry could not be journaled "
+            f"to {path}: {error}",
+            file=sys.stderr,
+        )
+
+
+def _atomic_json(path: Path, record: dict) -> None:
+    """Replace `path` with `record` or leave what was there, then sync the name.
+
+    The same shape `operations/pod/durable.py` uses, spelled here because this
+    module imports only `common/` (see the module docstring) and a half-written
+    journal on a volume is exactly the record a later session cannot use.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(json.dumps(record, sort_keys=True, indent=2).encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, str, str]]:
@@ -312,6 +545,20 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--fixture-root", default="proof")
+    parser.add_argument(
+        "--repository-commit",
+        default=None,
+        help="the commit this run's code is at, as a full lowercase revision. `pod_run` "
+        "passes the one its bootstrap checked out and verified; the Door seals it into the "
+        "run authority and every timing entry names it. Absent records no commit",
+    )
+    parser.add_argument(
+        "--stage-timing-journal",
+        default=None,
+        help="a file outside the run tree to journal each stage invocation's clock and "
+        "repository commit into; `pod_run` names one beside the run report on the volume. "
+        "Absent means no journal is written, and the run tree is unchanged either way",
+    )
     parser.add_argument(
         "--corpus-register",
         default=None,
@@ -483,6 +730,29 @@ def main() -> int:
 
     require_coherent_ingress_options(args)
     resolve_caller_paths(args)
+    # Both argv facts the journal rests on, proved here rather than at the
+    # first entry that happens to need them (CodeRabbit on PR #117).
+    #
+    # `repository_commit` refuses a short or decorated revision, and it used to
+    # be reached only from `_record_stage_timing` -- so a manual or semi run
+    # that started past the Door, or any run with no journal configured, could
+    # carry a malformed value through every stage it selected and record it
+    # nowhere.
+    repository_commit(args)
+    # And the journal is outside the run tree, as its own help text says. A
+    # journal at `<run-root>/<run-id>/timings.json` would add mutable,
+    # untracked bytes to an immutable tree once per stage invocation and change
+    # its byte identity; nothing refused it before.
+    journal = getattr(args, "stage_timing_journal", None)
+    if journal is not None:
+        journal_path = Path(journal).resolve()
+        run_directory = (Path(args.run_root) / args.run_id).resolve()
+        if journal_path == run_directory or journal_path.is_relative_to(run_directory):
+            raise ContractError(
+                f"--stage-timing-journal {journal_path} is inside this run's own tree at "
+                f"{run_directory}; the journal is mutable and the tree is not, so it is "
+                "written outside the tree or not at all"
+            )
 
     # Prove the algebra total before anything runs. A stage added later without a
     # class or a terminal decision should fail at the first run, not at the first
@@ -706,6 +976,76 @@ def report_halt(args, tally: dict) -> None:
             print(f"  - {kind}: {subjects}")
 
 
+def undispatchable_recovery_reason(recovery_kind: str, *, real_route: bool) -> str | None:
+    """Why this orchestrator cannot answer one outstanding request, or `None`.
+
+    Only the recrop operation has a real implementation today, and on a real
+    submission not even that: `pipeline/2_designator/run.py` refuses
+    `--operation recover` by name, because a recovery still reads the fixture's
+    declared rectangle. Refusing any other kind loudly is what naming the kind
+    exists to stop — a silent conflation with a substitute crop — and naming the
+    real route here is what stops the same refusal reaching an operator as a bare
+    `pipeline/2_designator/run.py exited 2` with the cause a stage away
+    (findings F068/F083).
+
+    The Recensor no longer publishes a real-ingress request, so this branch is a
+    backstop over trees written before that gate landed. It is still checked,
+    because a bound nobody checks is not a bound.
+    """
+    if recovery_kind != FALLBACK_RECROP:
+        return (
+            f"names recovery_kind {recovery_kind!r}, which this orchestrator has no dispatch "
+            f"for; only {FALLBACK_RECROP!r} (a Designator recrop) is implemented today, and "
+            "the page-level reread belongs to the Perlector, which has not built it"
+        )
+    if real_route:
+        return (
+            "is a fallback recrop on a real submission, which the Designator refuses by name: "
+            "a recovery still reads the fixture's declared rectangle, which a real submission "
+            "does not carry. This request predates the gate that now withholds it. Nothing "
+            "supersedes it in this run tree: the Designator will not cut the recrop, and the "
+            "Recensor holds the act without republishing while the request is outstanding, so "
+            "no sequence of stage invocations reaches an export here and this run ends with "
+            "none. Its coverage evidence stays readable in the request artifact and the "
+            "Recensor review beside it; a fresh run of the same submission from the Door does "
+            "not reach this state, because the Recensor now holds such an act for review "
+            "instead of publishing a request"
+        )
+    return None
+
+
+def report_undispatchable_recoveries(args, refused: list[tuple[str, str, str, str]]) -> None:
+    """Say every refused dispatch out loud, by act, before the run stops.
+
+    GOVERNANCE 2, and the one place this refusal is recorded. The orchestrator
+    keeps no file of its own (the module docstring says why: resume is a property
+    of the artifacts, never of a checkpoint that could disagree with them), so its
+    record of a dispatch it would not make is the run's own output — and it names
+    every affected act, not only the one the raised exception happens to carry.
+    The durable evidence stays where it was published: each request artifact and
+    its `recovery-requested` Recensor review are immutable in the run tree, and
+    nothing here writes to or changes them.
+
+    Written to stderr, which is the half of this program's output the operator
+    surface keeps: it records a failed run's detail as
+    `completed.stderr or completed.stdout` (`operations/operator/surface.py`),
+    and the `ContractError` raised immediately after this is printed to stderr
+    by the entry point below — so stderr is never empty on this path and a
+    per-act listing on stdout would be dropped from the receipt and never seen.
+    A record the one consumer discards is GOVERNANCE 2 claimed, not met.
+    """
+    print(
+        f"run {args.run_id}: recovery cannot be dispatched for {len(refused)} outstanding "
+        "request(s); no stage was invoked and nothing in the run tree was changed",
+        file=sys.stderr,
+    )
+    for act_id, request_id, recovery_kind, reason in refused:
+        print(
+            f"  - act {act_id} (request {request_id}, kind {recovery_kind}): {reason}",
+            file=sys.stderr,
+        )
+
+
 def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     """Dispatch every outstanding recovery request, then re-read and re-review.
 
@@ -713,6 +1053,11 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     stage that cuts one. Keeping that ownership is why recovery lives here and not
     inside the Recensor, where it would be one short step from a stage recropping
     its own evidence until it liked it.
+
+    Every round screens the whole outstanding batch before dispatching any of
+    it (`undispatchable_recovery_reason`), so a request nothing here can answer
+    refuses by its own cause and leaves no half-finished round behind it, and
+    every refused act is recorded before the refusal is raised.
 
     Returns the hard-failure tally if the run-level cap trips partway through.
     A recovery round is one completed Designator section followed by one
@@ -725,6 +1070,11 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     recovery_policy = load_recovery_policy(args.recovery_config)
+    # One read of the run authority, used for both the sealed-policy proof below
+    # and the ingress route the dispatch screen consults. Read here rather than
+    # before the policy load, so the order in which those two can refuse is the
+    # order it always was.
+    run = tree.read_run()
     # The orchestrator is not a stage and holds no `StageContext`, so it proves the
     # policy it dispatches under against the digests the run authority recorded for
     # itself. Without this, the dispatcher bounded the whole recovery loop — the
@@ -733,8 +1083,15 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     # this the third point of use). Checked before the first round, so a swapped
     # policy stops the loop rather than being discovered by the stage it dispatched.
     require_sealed_config(
-        run_sealed_config_digests(tree.read_run()), "recovery", recovery_policy["config_sha256"]
+        run_sealed_config_digests(run), "recovery", recovery_policy["config_sha256"]
     )
+    # Read after the sealed-policy proof, not before it. `is_real_ingress` parses
+    # the run's ingress record and can refuse on a malformed one, so reading it
+    # first would let a run carrying both a bad ingress record and a swapped
+    # recovery policy report the former while the policy this loop is bounded by
+    # is still unproven. The proof that bounds the dispatch comes first; the
+    # route the dispatch screen consults comes after it.
+    real_route = is_real_ingress(run)
     maximum_rounds = recovery_policy["absolute_cap"]
 
     for round_number in range(maximum_rounds + 1):
@@ -746,20 +1103,31 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
                 f"recovery is still outstanding for {outstanding} after "
                 f"{maximum_rounds} rounds. The run-bound policy stops the loop"
             )
-        for act_id, _request_id, recovery_kind in outstanding:
-            # Only the recrop operation has a real implementation today. Refuse
-            # loudly rather than silently dispatching any other kind as though
-            # it were one — that silent conflation is what naming the kind
-            # exists to stop, not a gap to paper over with a substitute crop.
-            # Checked for the whole batch before any of it is dispatched, so an
-            # unanswerable request does not leave half a round behind it.
-            if recovery_kind != FALLBACK_RECROP:
-                raise ContractError(
-                    f"act {act_id}'s outstanding recovery request names recovery_kind "
-                    f"{recovery_kind!r}, which this orchestrator has no dispatch for; only "
-                    f"{FALLBACK_RECROP!r} (a Designator recrop) is implemented today, and "
-                    "the page-level reread belongs to the Perlector, which has not built it"
-                )
+        # Checked for the whole batch before any of it is dispatched, so an
+        # unanswerable request does not leave half a round behind it, and
+        # recorded act by act before the refusal is raised so the run says which
+        # requests it could not answer rather than only that one existed.
+        refused = []
+        for act_id, request_id, recovery_kind in outstanding:
+            reason = undispatchable_recovery_reason(recovery_kind, real_route=real_route)
+            if reason is not None:
+                refused.append((act_id, request_id, recovery_kind, reason))
+        if refused:
+            # A refusal, not a per-act hold, and that is a decision rather than
+            # an omission. Holding the refused acts and dispatching the rest
+            # would not give this run an export: `recovery-requested` maps to no
+            # terminal Armarium category (`common/contracts/outcomes.py`), so the
+            # Armarium refuses the act fatally whatever this function does, and
+            # skipping here would only move the same dead end a stage later while
+            # losing the named cause at the boundary that knows it. Turning it
+            # into an export instead would mean making `recovery-requested`
+            # terminal, which would also let a fixture run whose recovery was
+            # simply never driven deliver as a partial — a genuinely half-driven
+            # run reported as a finished one. So this run stops here and says so;
+            # what the tree keeps is the immutable request and its review.
+            report_undispatchable_recoveries(args, refused)
+            first_act, _first_request, _first_kind, first_reason = refused[0]
+            raise ContractError(f"act {first_act}'s outstanding recovery request {first_reason}")
         for act_id, request_id, _recovery_kind in outstanding:
             result = invoke(
                 STAGE_PROGRAMS[DESIGNATOR],

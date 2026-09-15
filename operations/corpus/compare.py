@@ -513,6 +513,9 @@ class ReadOnlyRunTree:
     def recensor_partition_receipt_path(self) -> str:
         return self._tree.recensor_partition_receipt_path()
 
+    def serving_log_path(self, stage: str) -> str:
+        return self._tree.serving_log_path(stage)
+
     def resolve(self, relative_path: str) -> Path:
         return self._tree.resolve(relative_path)
 

@@ -1045,13 +1045,17 @@ def test_build_actions_does_not_read_models_config_before_configuration_runs(
     assert str(ws.models_config) in refusal.value.detail
 
 
-def test_build_actions_refuses_a_plan_with_no_submission_manifest() -> None:
-    """A non-hold-only ``Plan`` with ``submission_manifest=None`` must be a named
-    refusal at build time, not a bare ``AttributeError`` inside the TRANSFER
-    step (or, under ``python -O``, a stripped ``assert`` that lets it through
-    silently). ``resolve_plan`` always fills this in for a real launch; this
-    drives the invariant guard directly the way a future caller of
-    ``build_actions`` might trip it.
+def test_a_plan_with_no_submission_manifest_makes_transfer_a_vacuous_success() -> None:
+    """A consuming pod names no manifest, and TRANSFER says so rather than refusing.
+
+    ``--submission-manifest`` used to default to
+    ``<volume>/submission/manifest.json`` -- where ``verbatus upload`` puts a
+    real submission and what ``pod_run`` then requires to exist -- so the
+    default configuration of a real run made TRANSFER a red step *after*
+    UV_ENVIRONMENT had paid for the whole wheel download. ``None`` is now the
+    ordinary shape for a pod that is reading a submission already on its
+    volume, and the step records "nothing to transfer" instead of a refusal or
+    an ``AttributeError``.
     """
 
     from .bootstrap_main import Plan, build_actions
@@ -1076,8 +1080,107 @@ def test_build_actions_refuses_a_plan_with_no_submission_manifest() -> None:
         transfer_source_root=Path("/volume"),
     )
 
-    with pytest.raises(PlanRefusal, match="no submission manifest"):
-        build_actions(plan)
+    record = build_actions(plan).resume_transfer()
+
+    assert record["state"] == "nothing-to-transfer"
+    assert record["submission_manifest"] == "absent"
+
+
+def test_a_configured_manifest_that_is_missing_fails_the_step_rather_than_no_opping() -> None:
+    """A producing pod that cannot find its declared submission has failed.
+
+    "Nothing to transfer" belongs to the consuming pod that configured neither
+    a manifest nor a target. Returning it for a *configured* manifest whose
+    file is absent recorded the TRANSFER step complete, so the pod went on
+    without uploading the submission it declared, and the only sign was a
+    report saying there had been nothing to send (CodeRabbit on PR #117).
+    """
+
+    from .bootstrap_main import BootstrapStep, BootstrapStepFailure, Plan, build_actions
+
+    plan = Plan(
+        volume_mount_path=Path("/volume"),
+        report_path=Path("/volume/report.json"),
+        interval_seconds=1.0,
+        keep_env=(),
+        dry_run=False,
+        hold_only=False,
+        repository=Path("/repo"),
+        repository_commit="a" * 40,
+        lockfile=Path("/repo/uv.lock"),
+        journal=Path("/volume/journal.json"),
+        store_root=Path("/volume/store"),
+        models_config=Path("/repo/models.toml"),
+        placement_config=Path("/repo/placement.toml"),
+        cache_root=Path("/volume/chair-cache"),
+        fixture=Path("/repo/proof/fixtures/synthetic-two-page-v0/page-1.png"),
+        submission_manifest=Path("/volume/submission/manifest.json"),
+        transfer_source_root=Path("/volume"),
+        transfer_target_factory="untracked.target:factory",
+    )
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        build_actions(plan).resume_transfer()
+
+    assert failure.value.step is BootstrapStep.TRANSFER
+    assert "manifest.json is missing" in str(failure.value)
+
+
+def test_a_submission_manifest_with_no_transfer_target_is_refused_at_plan_time(
+    tmp_path: Path,
+) -> None:
+    """Half the transfer pair is refused before UV_ENVIRONMENT, not after it.
+
+    The in-step refusal this replaces ran after the ~10 GB sync, so the pod had
+    already paid for the download before being told its transfer was
+    misconfigured.
+    """
+
+    ws = _workspace(tmp_path)
+    manifest = ws.volume / "submission" / "manifest.json"
+
+    with pytest.raises(PlanRefusal, match="names nowhere to send it"):
+        resolve_plan(
+            build_parser().parse_args(_argv(ws, extra=("--submission-manifest", str(manifest))))
+        )
+
+
+def test_a_transfer_target_with_no_submission_manifest_is_refused_at_plan_time(
+    tmp_path: Path,
+) -> None:
+    """The other half: a configured target with nothing to send would report a
+    success that moved nothing (GOVERNANCE 2)."""
+
+    ws = _workspace(tmp_path)
+
+    with pytest.raises(PlanRefusal, match="--submission-manifest names none"):
+        resolve_plan(
+            build_parser().parse_args(
+                _argv(ws, extra=("--transfer-target-factory", "some.module:target"))
+            )
+        )
+
+
+def test_a_submission_manifest_outside_the_volume_is_refused(tmp_path: Path) -> None:
+    """The manifest is read on the volume; a path outside it is not the pod's to send."""
+
+    ws = _workspace(tmp_path)
+    outside = tmp_path / "elsewhere" / "manifest.json"
+
+    with pytest.raises(PlanRefusal, match="--submission-manifest"):
+        resolve_plan(
+            build_parser().parse_args(
+                _argv(
+                    ws,
+                    extra=(
+                        "--submission-manifest",
+                        str(outside),
+                        "--transfer-target-factory",
+                        "some.module:target",
+                    ),
+                )
+            )
+        )
 
 
 # --- a refusal leaves a durable, readable reason on the volume --------------
@@ -1468,7 +1571,8 @@ def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS
     launcher = FakeLauncher(http)
 
     class Probe:
-        def profile(self, dtype: str) -> GpuProfile:
+        def profile(self, dtype: str, *, expected_gpu_count: int | None = None) -> GpuProfile:
+            del expected_gpu_count
             return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
 
     seams = PreflightSeams(
@@ -1562,7 +1666,8 @@ def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
     launcher = FakeLauncher(http)
 
     class Probe:
-        def profile(self, dtype: str) -> GpuProfile:
+        def profile(self, dtype: str, *, expected_gpu_count: int | None = None) -> GpuProfile:
+            del expected_gpu_count
             return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
 
     calls = {"count": 0}

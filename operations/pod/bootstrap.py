@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -55,6 +58,299 @@ BOOTSTRAP_ENVIRONMENT = {
     # check it on the first live boot.
     "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
 }
+
+
+REPOSITORY_VENV_DIRECTORY = ".venv"
+"""Where ``uv sync`` puts the environment every later step runs against.
+
+``ServingManager`` launches vLLM as ``sys.executable -m vllm.entrypoints.cli.main``
+and verifies the pinned versions with ``importlib.metadata`` on this same
+interpreter, so a pod whose primary process is the system python reaches
+PREFLIGHT and fails on a missing pin *after* the ten-gigabyte download.
+"""
+
+# Roughly what the two container-local copies of the serving stack need before
+# `uv sync --locked --group pod` starts: the wheel cache under UV_CACHE_DIR,
+# which this module's own comment sizes at "on the order of ten gigabytes", and
+# the unpacked install in `<repository>/.venv`, which is larger again. Both are
+# bounds rather than measurements -- no pod has been booted from this tree -- and
+# the first live boot replaces them with what it actually observes. They are
+# deliberately checked against *free* space, which is the one fact the pod can
+# measure for itself, rather than against the requested container disk, which is
+# only what was asked for.
+UV_CACHE_REQUIRED_BYTES = 12 * 1024**3
+REPOSITORY_VENV_REQUIRED_BYTES = 20 * 1024**3
+
+
+def _existing_ancestor(path: Path) -> Path:
+    """The nearest existing directory at or above ``path``.
+
+    ``UV_CACHE_DIR`` and ``<repository>/.venv`` usually do not exist yet when
+    the sync is about to create them; the filesystem that will hold them is the
+    one their nearest existing parent is on.
+    """
+
+    candidate = Path(path)
+    while not candidate.exists():
+        parent = candidate.parent
+        if parent == candidate:
+            return candidate
+        candidate = parent
+    return candidate
+
+
+def _free_bytes(path: Path) -> int:
+    return shutil.disk_usage(_existing_ancestor(path)).free
+
+
+def _filesystem_key(path: Path) -> int:
+    """Which filesystem a path will land on, so two paths on one disk share it."""
+
+    return os.stat(_existing_ancestor(path)).st_dev
+
+
+def _gib(value: int) -> str:
+    return f"{value / 1024**3:.1f}"
+
+
+class ImageContractRefusal(RuntimeError):
+    """The pod image does not meet what the bootstrap assumes of it.
+
+    Named separately from :class:`BootstrapStepFailure` because it is a fact
+    about the *machine the bootstrap was started on*, not about a step's work:
+    the image contract in ``operations/pod/README.md`` is what a request author
+    has to satisfy before create, and this is that contract enforced where it
+    can still be enforced cheaply -- on the pod, before ``git fetch``, and long
+    before anything is downloaded.
+    """
+
+
+def verify_image_contract(
+    repository: Path,
+    *,
+    interpreter: Path,
+    executables: Mapping[str, str] = BOOTSTRAP_EXECUTABLES,
+    environment: Mapping[str, str] = BOOTSTRAP_ENVIRONMENT,
+) -> dict[str, object]:
+    """Refuse, by name, an image that cannot run this bootstrap.
+
+    Four assumptions rode unwritten in this module until a pre-launch review
+    read them out of the code (see ``operations/pod/README.md``, "The pod image
+    contract"):
+
+    * ``git`` and ``uv`` at exactly the configured absolute paths. Nothing here
+      uses PATH lookup, and the default uv installer puts ``uv`` in
+      ``~/.local/bin`` rather than ``/usr/local/bin``.
+    * ``--repository`` already a checkout with an ``origin`` remote. This module
+      *fetches and checks out*; it has never cloned, so an image with no
+      checkout in it fails at the first git call with the volume already
+      attached and the card already billing.
+    * That remote reachable with **no HOME**: ``BOOTSTRAP_ENVIRONMENT`` supplies
+      none, so git reads no ``~/.gitconfig``, no global credential helper and no
+      ``~/.git-credentials``. Only the repository's own config is visible.
+    * The running interpreter inside ``<repository>/.venv``, because that is the
+      environment ``uv sync`` fills and the one ServingManager later inspects.
+
+    Returns what it verified, for the REPOSITORY receipt. Never returns the
+    origin URL or any part of it: a URL is one of the three places a credential
+    may legitimately sit, and this record is written to the volume.
+    """
+
+    verified: dict[str, object] = {}
+    for name in sorted(executables):
+        candidate = Path(executables[name])
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise ImageContractRefusal(
+                f"the pod image does not carry an executable {name} at {candidate}; the "
+                "bootstrap runs its tools by absolute path and never searches PATH, so "
+                "the image must place them exactly there (see the image contract in "
+                "operations/pod/README.md)"
+            )
+    verified["executables"] = {name: executables[name] for name in sorted(executables)}
+
+    repository = Path(repository)
+    config_path = _git_config_path(repository)
+    if config_path is None or not config_path.is_file():
+        raise ImageContractRefusal(
+            f"{repository} is not a git checkout; the bootstrap fetches and checks out a "
+            "pinned commit inside a checkout the image already carries -- it has never "
+            "cloned one, so there is nothing here for the pinned commit to land in"
+        )
+    try:
+        config_text = config_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        # Named here rather than escaping as a bare OSError the step turns into
+        # an unexplained red: a config this process cannot read is an image
+        # fact like every other one on this list.
+        raise ImageContractRefusal(
+            f"the checkout at {repository} has a configuration this process cannot read "
+            f"({error.strerror}); the bootstrap reads it to prove there is an origin to "
+            "fetch from, and cannot proceed on the assumption that there is one"
+        ) from error
+    entries = _git_config_entries(config_text)
+    origin = _config_value(entries, "remote", "origin", "url")
+    if not origin:
+        raise ImageContractRefusal(
+            f"the checkout at {repository} names no origin remote; the pinned commit is "
+            "fetched from origin, and a checkout with no remote cannot be advanced to it"
+        )
+    verified["origin_remote"] = "present"
+
+    home_is_visible = bool(environment.get("HOME"))
+    scheme = origin.split("://", 1)[0].lower() if "://" in origin else ""
+    # Only over http/https does userinfo carry a credential. `user@host` in an
+    # SSH remote is a login name, and recording that as an embedded credential
+    # would put a false statement in the receipt.
+    embedded_credential = (
+        scheme in {"http", "https"} and "@" in origin.split("://", 1)[-1].split("/", 1)[0]
+    )
+    local_credential_route = bool(
+        _config_value(entries, "credential", None, "helper")
+        or _any_subsection_value(entries, "credential", "helper")
+        or _any_subsection_value(entries, "http", "extraheader")
+    )
+    if (
+        scheme in {"http", "https"}
+        and not home_is_visible
+        and not embedded_credential
+        and not local_credential_route
+    ):
+        raise ImageContractRefusal(
+            f"the checkout at {repository} fetches origin over {scheme} and carries no "
+            "credential route of its own, while the bootstrap environment supplies no "
+            "HOME -- so git will read no ~/.gitconfig, no global credential helper and "
+            "no ~/.git-credentials, and a private fetch has nothing to authenticate "
+            "with. Put the route in the repository's own config (a credential.helper, "
+            "an http.<url>.extraheader, or credentials in the remote URL), or give the "
+            "bootstrap environment a HOME whose configuration you have checked"
+        )
+    # What the receipt may honestly say. The last value is not "no credential is
+    # needed" -- an SSH remote's key, or a public remote needing nothing, are
+    # both outside what reading one config file can establish -- so it says
+    # exactly that instead of a claim this check did not make (GOVERNANCE 10).
+    verified["credential_route"] = (
+        "embedded-in-url"
+        if embedded_credential
+        else "repository-local"
+        if local_credential_route
+        else "home-visible"
+        if home_is_visible
+        else "not-in-the-repository-config"
+    )
+
+    interpreter = Path(interpreter)
+    expected_venv = (repository / REPOSITORY_VENV_DIRECTORY).resolve()
+    try:
+        inside = interpreter.resolve().is_relative_to(expected_venv)
+    except OSError:  # pragma: no cover - resolve() on a vanished path
+        inside = False
+    if not inside:
+        raise ImageContractRefusal(
+            f"this bootstrap is running under {interpreter}, which is not inside "
+            f"{expected_venv}; `uv sync` fills that environment and every later step -- "
+            "the chair cache, the vLLM launch, the installed-version check -- reads the "
+            "interpreter it is running under, so a system python gets as far as "
+            "PREFLIGHT and then fails on a missing pin, after the download has been paid "
+            "for. The image must start this process from the repository's own .venv"
+        )
+    verified["interpreter"] = str(interpreter)
+    return verified
+
+
+def _read_pointer_or_refuse(path: Path, repository: Path) -> str:
+    """One git pointer file, read as an image fact or refused as one.
+
+    The config read in `verify_image_contract` is already wrapped for this
+    reason; these two were not, so a pod image whose checkout is a linked
+    worktree with a `.git` file this process cannot read raised a bare
+    `OSError`. `checkout_commit` catches only `ImageContractRefusal`, so the
+    refusal lost its name and its remedy and the operator saw a traceback
+    while the card billed (CodeRabbit on PR #117).
+    """
+
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise ImageContractRefusal(
+            f"the checkout at {repository} carries a git pointer file this process cannot "
+            f"read ({path}: {error.strerror or error}); the bootstrap reads it to find the "
+            "configuration that proves there is an origin to fetch from"
+        ) from error
+
+
+def _git_config_path(repository: Path) -> Path | None:
+    """The config file that governs ``repository``, following a worktree pointer.
+
+    A linked worktree's ``.git`` is a file naming its git directory, and the
+    shared config lives in the common directory that git directory points at.
+    Read directly rather than through ``git config``, so this costs no
+    subprocess and stays honest about reading only what a HOME-less git would.
+    """
+
+    marker = repository / ".git"
+    if marker.is_dir():
+        return marker / "config"
+    if not marker.is_file():
+        return None
+    text = _read_pointer_or_refuse(marker, repository).strip()
+    if not text.startswith("gitdir:"):
+        return None
+    git_dir = Path(text.split(":", 1)[1].strip())
+    if not git_dir.is_absolute():
+        git_dir = (repository / git_dir).resolve()
+    common = git_dir / "commondir"
+    if common.is_file():
+        relative = _read_pointer_or_refuse(common, repository).strip()
+        if relative:
+            candidate = Path(relative)
+            git_dir = candidate if candidate.is_absolute() else (git_dir / candidate).resolve()
+    return git_dir / "config"
+
+
+_SECTION = re.compile(r'^\s*\[\s*([A-Za-z0-9.\-]+)\s*(?:"(.*)")?\s*\]\s*$')
+_ENTRY = re.compile(r"^\s*([A-Za-z][A-Za-z0-9\-]*)\s*=\s*(.*?)\s*$")
+
+
+def _git_config_entries(text: str) -> list[tuple[str, str | None, str, str]]:
+    """``(section, subsection, key, value)`` for every plain entry in a config."""
+
+    entries: list[tuple[str, str | None, str, str]] = []
+    section: str | None = None
+    subsection: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        header = _SECTION.match(line)
+        if header is not None:
+            section = header.group(1).lower()
+            subsection = header.group(2)
+            continue
+        entry = _ENTRY.match(line)
+        if entry is not None and section is not None:
+            entries.append((section, subsection, entry.group(1).lower(), entry.group(2)))
+    return entries
+
+
+def _config_value(
+    entries: list[tuple[str, str | None, str, str]],
+    section: str,
+    subsection: str | None,
+    key: str,
+) -> str | None:
+    for entry_section, entry_subsection, entry_key, value in entries:
+        if entry_section == section and entry_subsection == subsection and entry_key == key:
+            return value
+    return None
+
+
+def _any_subsection_value(
+    entries: list[tuple[str, str | None, str, str]], section: str, key: str
+) -> str | None:
+    for entry_section, _subsection, entry_key, value in entries:
+        if entry_section == section and entry_key == key and value:
+            return value
+    return None
 
 
 class BootstrapStep(StrEnum):
@@ -553,6 +849,8 @@ class SubprocessBootstrapActions:
         runner: Callable[[list[str], Path], subprocess.CompletedProcess[str]] | None = None,
         executables: Mapping[str, str] = BOOTSTRAP_EXECUTABLES,
         environment: Mapping[str, str] = BOOTSTRAP_ENVIRONMENT,
+        image_contract: Callable[[], dict[str, object]] | None = None,
+        free_bytes: Callable[[Path], int] | None = None,
     ) -> None:
         self.repository = Path(repository)
         self.transfer = transfer
@@ -578,8 +876,28 @@ class SubprocessBootstrapActions:
         self.executables = dict(executables)
         self.environment = dict(environment)
         self.runner = runner or self._run
+        # The tracked composition (`bootstrap_main.build_actions`) always
+        # supplies the image-contract check; it is optional here because this
+        # constructor is also driven directly, with a synthetic repository and
+        # an injected runner, to prove the command shape and the explicit
+        # environment. Those callers are asserting something else and have no
+        # image to hold to a contract.
+        self.image_contract = image_contract
+        self.free_bytes = free_bytes or _free_bytes
 
     def checkout_commit(self, commit: str) -> dict[str, object]:
+        contract: dict[str, object] | None = None
+        if self.image_contract is not None:
+            try:
+                contract = self.image_contract()
+            except ImageContractRefusal as refusal:
+                raise BootstrapStepFailure(
+                    BootstrapStep.REPOSITORY,
+                    f"pod image contract: {refusal}",
+                    "Repair the image (or the request's --repository) to meet the image "
+                    "contract in operations/pod/README.md, then boot again; nothing here "
+                    "can be fetched or installed around it.",
+                ) from refusal
         self._command(["git", "fetch", "--no-tags", "origin", commit], BootstrapStep.REPOSITORY)
         self._command(["git", "checkout", "--detach", "--force", commit], BootstrapStep.REPOSITORY)
         result = self._command(["git", "rev-parse", "HEAD"], BootstrapStep.REPOSITORY)
@@ -590,7 +908,10 @@ class SubprocessBootstrapActions:
                 f"checked out {observed!r}, not pinned commit {commit!r}",
                 "Repair repository access or commit pin; do not continue on a branch tip.",
             )
-        return {"commit": observed}
+        receipt: dict[str, object] = {"commit": observed}
+        if contract is not None:
+            receipt["image_contract"] = contract
+        return receipt
 
     def validate_configuration(self) -> dict[str, object]:
         return self.configuration()
@@ -610,6 +931,7 @@ class SubprocessBootstrapActions:
                 f"lockfile {supplied_lockfile} is missing",
                 "Restore the pinned uv.lock before creating an environment.",
             )
+        self._require_container_disk()
         # `--group pod` is the serving stack: vLLM, transformers, qwen-vl-utils and
         # everything they drag in, including torch and the CUDA libraries. It is
         # named here and nowhere else, because the pod is the only machine that may
@@ -636,6 +958,60 @@ class SubprocessBootstrapActions:
             "mode": "locked",
             "groups": ["pod"],
         }
+
+    def _require_container_disk(self) -> None:
+        """Refuse a sync the container-local disk cannot hold, before it starts.
+
+        The create request states a container disk size, but nothing proves the
+        pod got one: it is a documented field, and this is the first boot from
+        this tree. What the pod *can* do is read the free space actually under
+        the two directories the sync fills -- the wheel cache and the venv --
+        and say so in one sentence naming both figures. Without this the
+        failure is uv's own ENOSPC part way through a ten-gigabyte download
+        that was already paid for, which is the shape GOVERNANCE 2 forbids: a
+        cost with nothing to show and no named reason.
+
+        Measured on the container-local disk deliberately. The preflight's GPU
+        probe measures ``disk_path=volume_mount_path`` -- the network volume --
+        which is a different filesystem and says nothing about this one.
+        """
+
+        cache_directory = self.environment.get("UV_CACHE_DIR")
+        venv_path = self.repository / REPOSITORY_VENV_DIRECTORY
+        wanted: dict[Path, int] = {}
+        if cache_directory:
+            wanted[Path(cache_directory)] = UV_CACHE_REQUIRED_BYTES
+        # No UV_CACHE_DIR means uv infers its cache from HOME or XDG_CACHE_HOME;
+        # this environment supplies neither, so wherever it lands is somewhere
+        # this check cannot name. The venv is still checked, and it is the
+        # larger of the two.
+        wanted[venv_path] = wanted.get(venv_path, 0) + REPOSITORY_VENV_REQUIRED_BYTES
+        shared: dict[int, int] = {}
+        for path, required in wanted.items():
+            try:
+                free = self.free_bytes(path)
+                key = _filesystem_key(path)
+            except OSError as error:
+                raise BootstrapStepFailure(
+                    BootstrapStep.UV_ENVIRONMENT,
+                    f"free space under {path} could not be read: {error}",
+                    "Give the pod a container disk this bootstrap can measure; the "
+                    "serving stack is installed onto container-local disk twice over.",
+                ) from error
+            # Two directories on one filesystem share its free space, so their
+            # requirements add rather than each passing on the same bytes.
+            shared[key] = shared.get(key, 0) + required
+            if free < shared[key]:
+                raise BootstrapStepFailure(
+                    BootstrapStep.UV_ENVIRONMENT,
+                    f"container-local disk is too small for the serving stack: "
+                    f"{_gib(free)} GiB free under {path}, and this sync needs about "
+                    f"{_gib(shared[key])} GiB there (the wheel cache and the installed "
+                    f"{REPOSITORY_VENV_DIRECTORY} are two copies of it)",
+                    "Create the pod with a larger container disk (container_disk_gb in "
+                    "the pod request) and boot again; uv would otherwise fill this disk "
+                    "part way through the download and fail with no space left.",
+                )
 
     def resume_transfer(self) -> dict[str, object]:
         return self.transfer()

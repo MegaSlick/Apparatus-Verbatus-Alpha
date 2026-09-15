@@ -18,6 +18,7 @@ be: these are local operational records, not pipeline artifacts.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
@@ -31,7 +32,37 @@ from typing import Mapping
 # is one implementation rather than the two this package used to carry.
 from common.durability import sync_directory
 
-__all__ = ["atomic_write", "canonical_json", "exclusive_write", "sync_directory"]
+__all__ = [
+    "HardLinkUnsupported",
+    "atomic_write",
+    "canonical_json",
+    "exclusive_write",
+    "sync_directory",
+]
+
+# What a filesystem that will not hard-link answers with. The same three codes
+# `common/runtree/store.py`, `gold/core.py`, `operations/corpus/cache.py` and
+# `operations/operator/backup.py` each name at their own link sites.
+_NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
+
+
+class HardLinkUnsupported(OSError):
+    """The target filesystem refuses ``os.link`` outright.
+
+    An ``OSError`` subclass, so every existing caller that catches ``OSError``
+    around a durable write keeps catching this; what changes is that the
+    message names the setup fact -- where the directory was put -- instead of
+    arriving as a bare errno about ``link``.
+
+    This matters most on a pod. ``PodPreflightReceiptPublisher`` publishes
+    every serving receipt, launch audit and evidence manifest through
+    ``exclusive_write(..., strict=True)`` onto the attached network volume, and
+    distributed or object-backed mounts are exactly the filesystems that answer
+    ``EPERM``/``EOPNOTSUPP``. Unnamed, that surfaced through
+    ``ReceiptPublicationError`` as a *serving* failure -- so a preflight
+    reported a chair problem for what is a filesystem capability problem, and
+    the pod closed without the operator learning which.
+    """
 
 
 def canonical_json(value: Mapping[str, object]) -> bytes:
@@ -103,6 +134,21 @@ def exclusive_write(path: Path, payload: bytes, *, strict: bool = False) -> None
             # claim nothing established, and the record it covers is the one
             # that tells a human a pod may still be billing.
             sync_directory(path.parent, strict=strict)
+            raise
+        except OSError as error:
+            # After `FileExistsError`, never before it: that is an `OSError`
+            # too, and catching the wide class first would take the
+            # already-published path's exception away from the clause that
+            # syncs its directory entry. EEXIST is not in `_NO_HARD_LINKS`, so
+            # the two clauses never contend for the same errno.
+            if error.errno in _NO_HARD_LINKS:
+                raise HardLinkUnsupported(
+                    error.errno,
+                    f"the directory at {path.parent} is on a filesystem that refuses hard "
+                    f"links ({error.strerror}); this record is published by atomic link so "
+                    "that a partly written file can never take its final name, and the "
+                    "directory holding it has to be on a filesystem that supports it",
+                ) from error
             raise
     finally:
         try:

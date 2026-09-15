@@ -44,6 +44,14 @@ liveness line beside the run report.  That hold is paid idle time between a
 finished run and the deadline; closing early on a complete run would be a
 ``pod_timer`` contract change and is not made here.
 
+**Nothing the run printed dies with the pod.**  The orchestrator's stdout and
+stderr -- and, through inheritance, every stage's -- are teed into a bounded,
+launch-token-named transcript beside the run report, and the report names it by
+path.  A liveness line beside them carries the child's pid and the moment it
+was last seen, re-journaled on the same interval the hold loop uses, so a
+supervisor killed mid-run leaves a stale tick rather than a record that still
+says ``running`` (GOVERNANCE 2).
+
 **A run that did not finish returns instead, and the pod closes.**  ``halted``,
 ``failed``, and "the orchestrator could not start" get no hold: holding one of
 those bills a rented card at the sealed hourly rate, to the hard deadline, for
@@ -80,6 +88,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -113,7 +122,28 @@ from .models import utc_now
 
 RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
+RUN_LIVENESS_SCHEMA = "pod-run-liveness.v1"
 DEFAULT_RUNS_DIRECTORY = "runs"
+
+# The transcript's two bounds. The head is written to the volume as it arrives,
+# so a process killed mid-run still leaves the beginning of the run durable; the
+# tail is the last window kept in memory and appended at close, because the
+# traceback or refusal that explains a stopped run is at the *end* of a stream
+# whose middle nobody needs. Between them a transcript cannot grow without
+# limit on a volume whose space the run tree also needs -- which is the one
+# objection the inherited-streams comment this replaces actually had.
+TRANSCRIPT_HEAD_BYTES = 8 * 1024 * 1024
+TRANSCRIPT_TAIL_BYTES = 1 * 1024 * 1024
+# How long the reader thread is waited for after the orchestrator itself has
+# exited. The pipe reaches end of file only when every holder closes it, and a
+# stray descendant of the orchestrator can hold it long after the orchestrator
+# is gone; an unbounded join there would keep `_run` from returning and the
+# final run report from ever being written (CodeRabbit on PR #117). The child
+# is dead by then, so nothing this waits for is the run's own output.
+TRANSCRIPT_READER_JOIN_SECONDS = 30.0
+# The stage-timing journal is read back at close to audit it; a file past this
+# bound is not a journal the orchestrator wrote and is not read whole.
+TIMING_JOURNAL_READ_BYTES = 4 * 1024 * 1024
 
 EXIT_COMPLETE = 0
 EXIT_REFUSED = 2
@@ -154,6 +184,11 @@ _ORCHESTRATOR_EXITS = {
 # and is read by `verbatus fetch-run` over S3 with no pod running at all.
 _HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
 
+# `argv, *, cwd, env, transcript, liveness, interval_seconds`. The last three are
+# what makes the child's output durable and its aliveness visible; a runner that
+# ignored them would put both back inside the container. The returned
+# `CompletedProcess.stderr` is the runner's report about its own tee: `None`
+# when the transcript is whole, a string naming why it is not.
 Runner = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
@@ -210,6 +245,76 @@ class RunPlan:
 
         return self.report_path.with_name(f"{self.report_path.stem}-hold{self.report_path.suffix}")
 
+    @property
+    def liveness_path(self) -> Path:
+        """The liveness line *during* the run, beside the run report, never over it.
+
+        `hold_path` covers the paid idle time after a finished run; this covers
+        the run itself, which is the longer and more dangerous window. Without
+        it the only durable statement on the volume for the whole duration of a
+        run is a `running` record with no heartbeat, and a pod_run killed by the
+        OOM killer or by the container teardown leaves that record as its final
+        word -- a partial result that does not look partial (GOVERNANCE 2).
+        """
+
+        return self.report_path.with_name(
+            f"{self.report_path.stem}-liveness{self.report_path.suffix}"
+        )
+
+    @property
+    def transcript_path(self) -> Path:
+        """The orchestrator's merged stdout/stderr, beside the run report.
+
+        The run report used to tell a reader to "read its transcript" of a
+        stage that refused or held, and no transcript existed anywhere the
+        volume could be fetched from: the streams were inherited all the way
+        down, so every refusal, traceback and hold reason went to a container
+        log that RunPod destroys with the pod. Because the orchestrator
+        inherits *this* process's streams and each stage inherits the
+        orchestrator's, teeing here captures the whole tree with one pipe.
+
+        Launch-token-named like every other record beside it: `report_path`
+        has already been refused unless its own name carries the token
+        (`_require_launch_token_named`), and this is derived from that name.
+        """
+
+        return self.report_path.with_name(f"{self.report_path.stem}-transcript.log")
+
+    @property
+    def timing_journal_path(self) -> Path:
+        """Each stage's clock and commit, beside the run report, outside the run tree.
+
+        Outside deliberately: a run tree is pinned byte-identical across a
+        rerun, a resume, a restored backup and every driver mode by a dozen
+        acceptance tests, and a clock is by definition not that. So the one
+        record that says how long the Perlector took, and which commit ran each
+        stage, is a sibling of this report -- fetched by the same derived key
+        set as the transcript and the liveness tick, and destroyed with the
+        volume like the rest of them if nobody fetches it.
+        """
+
+        return self.report_path.with_name(
+            f"{self.report_path.stem}-timings{self.report_path.suffix}"
+        )
+
+    @property
+    def repository_commit(self) -> str:
+        """The commit the bootstrap checked out and *verified*, forwarded to the run.
+
+        Not re-derived by the orchestrator: `REPOSITORY` already read the
+        checkout back and refused a tip that was not the pinned commit
+        (`bootstrap.py`), so this is a proven fact about the code that is about
+        to run, and a second measurement of it could only be weaker.
+        """
+
+        commit = self.bootstrap.repository_commit
+        if commit is None:
+            raise RunRefusal(
+                "the bootstrap plan names no --repository-commit; a run cannot say which "
+                "code produced its tree without one"
+            )
+        return commit
+
     def orchestrator_argv(self) -> list[str]:
         return [
             sys.executable,
@@ -235,6 +340,10 @@ class RunPlan:
             str(self.serving_recipes_config),
             "--witness-context-config",
             str(self.witness_context_config),
+            "--stage-timing-journal",
+            str(self.timing_journal_path),
+            "--repository-commit",
+            self.repository_commit,
         ]
 
     def to_record(self) -> dict[str, object]:
@@ -519,6 +628,120 @@ def _write_refusal(
     return None
 
 
+def _liveness_journal(
+    plan: RunPlan, base: Mapping[str, object], *, now: Callable[[], datetime]
+) -> Callable[[int, bool], None]:
+    """A callback that re-journals one liveness line per tick beside the run report.
+
+    Carries the child's pid and the moment it was last seen, so a record found
+    on a fetched volume reads as *stale* rather than as current: a tick stamped
+    hours before the hard deadline, with `alive: true`, says the supervisor
+    stopped ticking while its child was still running -- which is what a
+    SIGKILLed pod_run looks like, and is a different fact from a run that
+    finished. The last write of a normal run is `alive: false`, so the absence
+    of that line is itself the signal.
+
+    Best effort on the write: the volume that would hold this may be the thing
+    that failed, and a liveness tick must never be the reason a running
+    orchestrator is abandoned. A failed tick says so on stderr (and therefore
+    in the transcript) instead of raising.
+    """
+
+    counter = {"tick": 0}
+
+    def journal(pid: int, alive: bool) -> None:
+        record = {
+            "schema": RUN_LIVENESS_SCHEMA,
+            "run_id": plan.run_id,
+            "state": "orchestrator-running" if alive else "orchestrator-exited",
+            "alive": alive,
+            "pid": pid,
+            "tick": counter["tick"],
+            "last_seen": _stamp(now()),
+            "started_at": base.get("started_at"),
+            "hard_deadline": base.get("hard_deadline"),
+            "report_path": str(plan.report_path),
+            "transcript_path": str(plan.transcript_path),
+        }
+        counter["tick"] += 1
+        try:
+            atomic_write(plan.liveness_path, canonical_json(record))
+        except OSError as error:
+            print(f"pod_run liveness tick could not be written: {error}", file=sys.stderr)
+
+    return journal
+
+
+def _records_at_close(
+    plan: RunPlan, *, transcript_failure: str | None = None
+) -> tuple[dict[str, dict[str, object]], list[str]]:
+    """What each record the report names actually left on the volume at close.
+
+    The orchestrator's stage-timing journal, the liveness record and the
+    transcript are all written best-effort by design: a stopwatch or a tick
+    must never be the reason a running orchestrator is abandoned, so each
+    writer says so on stderr and carries on. That stderr line lives in the
+    transcript, which is bounded, and nothing else said whether the file the
+    report *names* was actually there -- a fetched report could read
+    ``complete`` over an absent journal (CodeRabbit pre-merge check on PR
+    #117). This audits the three at close and names each missing, unreadable
+    or foreign one in the report itself, and a run whose named records did
+    not all come home is held rather than complete, so the absence is a
+    durable fact in the state rather than a line a reader has to grep for.
+
+    ``transcript_failure`` is what the runner reports about its own tee: a
+    transcript whose pump failed part-way, or whose reader was still attached
+    when the wait for it ran out, is a file that exists and is incomplete,
+    which ``is_file`` alone would call present.
+    """
+
+    audit: dict[str, dict[str, object]] = {}
+    missing: list[str] = []
+    for name, path in (
+        ("transcript", plan.transcript_path),
+        ("liveness", plan.liveness_path),
+        ("timing_journal", plan.timing_journal_path),
+    ):
+        entry: dict[str, object] = {"path": str(path), "present": path.is_file()}
+        if not entry["present"]:
+            missing.append(name)
+        elif name == "transcript" and transcript_failure is not None:
+            entry["failure"] = transcript_failure
+            missing.append(name)
+        elif name == "timing_journal":
+            try:
+                with path.open("rb") as handle:
+                    data = handle.read(TIMING_JOURNAL_READ_BYTES + 1)
+                if len(data) > TIMING_JOURNAL_READ_BYTES:
+                    raise ValueError(
+                        f"larger than {TIMING_JOURNAL_READ_BYTES} bytes, which no stage-timing "
+                        "journal the orchestrator writes is"
+                    )
+                journal = json.loads(data.decode("utf-8"))
+                entries = journal.get("entries") if isinstance(journal, dict) else None
+                owner = journal.get("run_id") if isinstance(journal, dict) else None
+                entry["entries"] = len(entries) if isinstance(entries, list) else None
+                entry["run_id_matches"] = owner == plan.run_id
+                if not entry["entries"] or not entry["run_id_matches"]:
+                    # No entries is as missing as no file: at least one stage
+                    # ran, so an empty journal is a journal every write failed.
+                    entry["failure"] = (
+                        f"the journal at {path} belongs to run {owner!r} or has no entries; "
+                        "the orchestrator refuses to merge into a foreign journal and says "
+                        "so in the transcript"
+                    )
+                    missing.append(name)
+            except (OSError, ValueError, RecursionError, MemoryError) as error:
+                # `ValueError` covers the decode and the JSON errors; the last
+                # two are what a hostile or corrupt journal can raise from the
+                # decoder, and an audit that escapes here would leave the run
+                # report in its `running` state with no final outcome at all.
+                entry["failure"] = f"unreadable: {type(error).__name__}: {error}"
+                missing.append(name)
+        audit[name] = entry
+    return audit, missing
+
+
 def _refuse(refusal: PlanRefusal, *, now: Callable[[], datetime]) -> int:
     print(f"pod_run refused: {refusal}", file=sys.stderr)
     failure = _write_refusal(refusal.report_path, str(refusal), now=now)
@@ -527,11 +750,194 @@ def _refuse(refusal: PlanRefusal, *, now: Callable[[], datetime]) -> int:
     return EXIT_REFUSED
 
 
-def _run(argv: list[str], cwd: Path, env: Mapping[str, str]) -> subprocess.CompletedProcess[bytes]:
-    # Streams are inherited, as the orchestrator inherits its stages': the
-    # run tree is the evidence, and buffering an unbounded stage transcript in
-    # this process would be a second, weaker copy of it.
-    return subprocess.run(argv, cwd=cwd, env=dict(env), check=False)
+class BoundedTranscript:
+    """The child's merged output, head written live and tail kept for the close.
+
+    Two bounds rather than one file that grows forever (the objection the
+    inherited-streams comment this replaces actually had) and rather than one
+    ring buffer (which would leave nothing durable until the process ended).
+    The head reaches the volume as it arrives, so a pod_run that is SIGKILLed
+    still leaves the start of the run readable; the tail is the last
+    ``tail_bytes`` seen, appended after a truncation marker when the file is
+    closed, because the traceback or refusal that says why a run stopped is at
+    the end of the stream.
+
+    What is *not* durable is the tail of a transcript that has already passed
+    the head bound, in the window before ``close``. That is stated here and in
+    the run report rather than hidden: it costs a rewrite of the whole file on
+    every tick to fix, and the case it would cover -- a multi-megabyte
+    transcript *and* a killed supervisor -- still leaves eight megabytes of
+    durable head to read.
+    """
+
+    __slots__ = ("_handle", "_head_room", "_tail", "_tail_bytes", "_overflow")
+
+    def __init__(self, path: Path, *, head_bytes: int, tail_bytes: int) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = path.open("wb")
+        self._head_room = head_bytes
+        self._tail_bytes = tail_bytes
+        self._tail = bytearray()
+        self._overflow = 0
+
+    def write(self, chunk: bytes) -> None:
+        if self._head_room > 0:
+            head, chunk = chunk[: self._head_room], chunk[self._head_room :]
+            self._handle.write(head)
+            # Flushed per chunk, not per close: an unflushed transcript is
+            # exactly the record that is missing when the process is killed.
+            self._handle.flush()
+            self._head_room -= len(head)
+        if not chunk:
+            return
+        self._overflow += len(chunk)
+        self._tail.extend(chunk)
+        if len(self._tail) > self._tail_bytes:
+            del self._tail[: len(self._tail) - self._tail_bytes]
+
+    def close(self) -> None:
+        try:
+            if self._overflow:
+                dropped = self._overflow - len(self._tail)
+                self._handle.write(
+                    f"\n[pod_run: {dropped} byte(s) of this transcript were dropped between "
+                    f"the head above and the final {len(self._tail)} byte(s) below]\n".encode()
+                )
+                self._handle.write(bytes(self._tail))
+            self._handle.flush()
+            os.fsync(self._handle.fileno())
+        finally:
+            self._handle.close()
+
+
+def _pump(stream, transcript: BoundedTranscript, mirror, failure: list[str]) -> None:
+    """Copy the child's merged output to the transcript and to our own stderr.
+
+    Mirrored, not diverted: the container log an operator watches live while a
+    pod runs is the same text as before this teeing existed. The transcript is
+    the copy that survives the pod.
+
+    A transcript write that fails (the volume is the usual suspect) is
+    recorded in ``failure`` and the pipe is still drained to the mirror: a
+    reader that stopped would block the child on a full pipe, and a failure
+    that stayed in this thread would leave a truncated file the close-time
+    audit could only call present (CodeRabbit on PR #117).
+    """
+
+    try:
+        while True:
+            # `read1`, not `read`: `read` on a pipe blocks until it has the
+            # whole 64 KiB or the child exits, which would hold every short
+            # run's output in memory until the end and defeat the live head
+            # this transcript exists to leave behind.
+            chunk = stream.read1(65536)
+            if not chunk:
+                return
+            if not failure:
+                try:
+                    transcript.write(chunk)
+                except Exception as error:  # noqa: BLE001 -- recorded, not raised, in a thread
+                    failure.append(
+                        f"the transcript write failed part-way ({type(error).__name__}: "
+                        f"{error}); the file is incomplete from that point"
+                    )
+            if mirror is None:
+                continue
+            try:
+                mirror.write(chunk)
+                mirror.flush()
+            except (OSError, ValueError):
+                # A closed or broken mirror must not cost the durable copy.
+                pass
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+def _run(
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    transcript: Path,
+    liveness: Callable[[int, bool], None],
+    interval_seconds: float,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run the orchestrator with its output teed to the volume, ticking while it lives.
+
+    Streams used to be inherited all the way down, so a stage's refusal text
+    reached only the container's log and died with the pod; and the run report
+    said `running` from before the orchestrator started until after it
+    returned, so a killed supervisor left a record claiming a run in progress.
+    Both are fixed by the same call: the child's stdout and stderr are merged
+    into one pipe that a reader thread tees into ``transcript``, and the poll
+    loop that waits for the child re-journals a liveness tick through
+    ``liveness`` every ``interval_seconds`` while it is alive.
+
+    ``stderr=STDOUT`` deliberately: two separately bounded files would let a
+    reader interleave them wrongly, and the one question the transcript exists
+    to answer -- what was printed just before this stopped -- needs the two
+    streams in the order they were actually written.
+    """
+
+    writer = BoundedTranscript(
+        transcript, head_bytes=TRANSCRIPT_HEAD_BYTES, tail_bytes=TRANSCRIPT_TAIL_BYTES
+    )
+    try:
+        child = subprocess.Popen(
+            argv, cwd=cwd, env=dict(env), stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
+    except BaseException:
+        # An orchestrator that could not start still opened this file; leaving
+        # the handle behind would leak it and leave a zero-length transcript
+        # with no explanation. `main` turns the OSError into a `failed` run
+        # report whose detail names the start failure.
+        writer.close()
+        raise
+    # `getattr`: a captured or replaced stderr need not expose a binary buffer,
+    # and the mirror is the disposable half of this tee -- the transcript is not.
+    mirror = getattr(sys.stderr, "buffer", None)
+    failure: list[str] = []
+    reader = threading.Thread(
+        target=_pump, args=(child.stdout, writer, mirror, failure), daemon=True
+    )
+    reader.start()
+    try:
+        while True:
+            liveness(child.pid, True)
+            try:
+                # Waited on with a timeout rather than polled and slept: a child
+                # that exits a moment after a tick must not cost the run a whole
+                # idle interval on a card that is billing.
+                child.wait(timeout=max(0.01, interval_seconds))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        liveness(child.pid, False)
+    finally:
+        # Joined before the transcript is closed: the pump owns the writer
+        # until the pipe is at end of file, and closing under it would lose
+        # the tail this whole mechanism exists to keep. Bounded, because the
+        # pipe reaches end of file only when every holder closes it and a
+        # descendant the orchestrator left behind can hold it indefinitely;
+        # the child itself is already gone, so what is waited for past this
+        # point is not the run's output, and the final report must be written.
+        reader.join(timeout=TRANSCRIPT_READER_JOIN_SECONDS)
+        if reader.is_alive():
+            failure.append(
+                f"the transcript reader was still attached {TRANSCRIPT_READER_JOIN_SECONDS:g}s "
+                "after the orchestrator exited: a descendant it left behind still holds its "
+                "output pipe, and the transcript was closed without that text"
+            )
+        writer.close()
+    # The runner's own report about its tee rides on `stderr`, which the tee
+    # leaves unused (the child's streams are merged into the transcript): a
+    # string names the failure, `None` says the transcript is whole.
+    return subprocess.CompletedProcess(
+        argv, child.returncode, stderr=failure[0] if failure else None
+    )
 
 
 def main(
@@ -634,15 +1040,32 @@ def main(
         "placement_tier": placement_tier,
         "serving_config_inputs": serving_config_inputs,
         "orchestrator_argv": command,
+        # Named in the report, not only written beside it: a fetched report is
+        # what a later session reads first, and a record it cannot name is a
+        # record nobody asks the volume for (GOVERNANCE 2).
+        "transcript_path": str(plan.transcript_path),
+        "liveness_path": str(plan.liveness_path),
+        "hold_path": str(plan.hold_path),
+        "timing_journal_path": str(plan.timing_journal_path),
     }
     _write_run_report(plan, {**running, "state": "running", "exit_code": None})
+    liveness = _liveness_journal(plan, base, now=now)
     try:
-        completed = runner(command, cwd=plan.repository, env=dict(environment))
+        completed = runner(
+            command,
+            cwd=plan.repository,
+            env=dict(environment),
+            transcript=plan.transcript_path,
+            liveness=liveness,
+            interval_seconds=plan.interval_seconds,
+        )
         orchestrator_exit: int | None = completed.returncode
         failure_detail: str | None = None
+        transcript_failure = completed.stderr if isinstance(completed.stderr, str) else None
     except OSError as error:
         orchestrator_exit = None
         failure_detail = f"the orchestrator could not start: {error}"
+        transcript_failure = None
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
     if exit_code == EXIT_FAILED and failure_detail is None:
         # `EXIT_FATAL` is a *named* orchestrator exit (`common/stage.py`:
@@ -652,21 +1075,56 @@ def main(
         # exit already named.
         failure_detail = (
             "the orchestrator exited EXIT_FATAL (2): it refused structurally rather than "
-            "completing, holding, or halting. Read its transcript and the run tree before "
-            "calling this run anything"
+            f"completing, holding, or halting. Read {plan.transcript_path} and the run tree "
+            "before calling this run anything"
             if orchestrator_exit == ORCHESTRATOR_FATAL
             else f"the orchestrator exited {orchestrator_exit}, outside its own "
-            "complete/held/halted/fatal vocabulary; read its transcript and the run tree "
-            "before calling this run anything"
+            f"complete/held/halted/fatal vocabulary; read {plan.transcript_path} and the "
+            "run tree before calling this run anything"
+        )
+    if failure_detail is None and exit_code in (EXIT_HELD, EXIT_HALTED):
+        # A held or halted report used to carry `detail: null`, which read as
+        # "there is nothing further to say" about the two outcomes that most
+        # need a reason. The reason itself is the stage's own stderr, and that
+        # now has a durable home; this names it rather than restating it badly.
+        failure_detail = (
+            f"the orchestrator exited {orchestrator_exit} ({_STATE_FOR_EXIT[exit_code]}); the "
+            f"stage's own reason is the last text in {plan.transcript_path}, and the run tree "
+            "holds the evidence it was decided on"
         )
     state = _STATE_FOR_EXIT[exit_code]
     holding = exit_code in _HOLD_AFTER_EXITS
+    records_at_close, records_missing = _records_at_close(
+        plan, transcript_failure=transcript_failure
+    )
+    if records_missing:
+        absence = (
+            "records this report names were not on the volume at close, or were not this "
+            f"run's: {', '.join(records_missing)}; the writer's own reason is in "
+            f"{plan.transcript_path} if that survived"
+        )
+        if exit_code == EXIT_COMPLETE:
+            # A run is not complete while a record its own report names is
+            # missing: the timings are what the first live run exists to
+            # measure, and a transcript or liveness record that never landed
+            # is the diagnosis a later session would go looking for. It is
+            # held for review rather than failed -- the run tree is intact and
+            # the orchestrator finished -- and `held` holds to the hard
+            # deadline exactly as `complete` does, so the meter is unchanged.
+            exit_code = EXIT_HELD
+            state = _STATE_FOR_EXIT[exit_code]
+            holding = True
+            failure_detail = f"the orchestrator completed, but {absence}"
+        else:
+            failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
     final: dict[str, object] = {
         **running,
         "state": state,
         "exit_code": exit_code,
         "orchestrator_exit": orchestrator_exit,
         "detail": failure_detail,
+        "records_at_close": records_at_close,
+        "records_missing": records_missing,
         "held_to_hard_deadline": holding,
         "hold_detail": (
             "the run finished; holding to the hard deadline so the pod timer does not read "

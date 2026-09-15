@@ -23,11 +23,14 @@ from armarium_export import (
     NOT_MEASURED_INSTRUMENTS,
     NOT_MEASURED_SCHEMA,
     ArmariumProjection,
+    _act_json_records,
+    _jsonl_act_records,
     _not_measured_status,
     _page_ledger_category,
     _terminal_ledger,
     _verify_acts_schema,
     _zip_bytes,
+    act_key_sort_key,
     build_armarium_bundle,
     canonical_text_sha256,
     edge_hold_pages_from_rows,
@@ -49,8 +52,6 @@ from common.contracts.stages import ARMARIUM, DESIGNATOR, EXEMPLAR, INK_MAP
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import crop_png, decode_grayscale_png, encode_grayscale_png
 from common.residual_ink import (
-    MINIMUM_FRACTION_OUTSIDE_COVERAGE,
-    MINIMUM_INK_PIXELS,
     edge_ink,
     ink_runs_from_rows,
     load_coverage_audit_config,
@@ -66,6 +67,14 @@ ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 ORCHESTRATOR_CLI = ROOT / "pipeline" / "orchestrator" / "run.py"
+
+
+# The sealed noise floor and fraction gate (`[coverage_audit.noise_floor]`), read
+# the way the stages read them: since 2026-09-14 neither is a module constant.
+_NOISE_FLOOR = load_coverage_audit_config()["coverage_audit"]
+MINIMUM_INK_PIXELS = _NOISE_FLOOR["minimum_ink_pixels"]
+MINIMUM_FRACTION_OUTSIDE_BP = _NOISE_FLOOR["minimum_fraction_outside_bp"]
+MINIMUM_FRACTION_OUTSIDE_COVERAGE = MINIMUM_FRACTION_OUTSIDE_BP / 10_000
 
 
 def _pixels(value: int) -> bytes:
@@ -97,6 +106,10 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
             # as this helper's value because these rows are hand-built shapes
             # rather than a measurement of any page.
             "substantial_ink_pixels": 2_000,
+            # The noise floor and fraction gate, on the row since 2026-09-14 for
+            # the same reason, at the values the sealed file ships.
+            "minimum_ink_pixels": MINIMUM_INK_PIXELS,
+            "minimum_fraction_outside_bp": MINIMUM_FRACTION_OUTSIDE_BP,
         },
     }
 
@@ -167,6 +180,14 @@ def _test_not_measured_basis(**overrides):
                 },
                 {
                     "configuration": "designator-grouping",
+                    "calibrated_for_this_corpus": False,
+                    "sample_count": 0,
+                },
+                # The truncation instrument's length floor: the survey's fourth
+                # sealed configuration since 2026-09-14, and the only one that
+                # is not Designator geometry (pre-launch review, F082/F088).
+                {
+                    "configuration": "perlector-protocol",
                     "calibrated_for_this_corpus": False,
                     "sample_count": 0,
                 },
@@ -392,6 +413,56 @@ def _salvage_item(content: str) -> dict:
         "source_regions": [region],
         "provenance": {"collection": "separate tier"},
     }
+
+
+def test_act_key_sort_key_is_reading_order_past_ten_pages_and_ten_blocks():
+    """F079: `proposal:<page>:<block>` sorts as a string by default, so once a
+    page passes ten blocks -- or a run passes ten pages -- lexicographic order
+    reads block 10 before block 2 and page 10 before page 2. `act_key_sort_key`
+    must restore (page, block) order for every key this pattern describes, and
+    leave a key it does not describe (a minted `logical:<id>` row) exactly the
+    order its own string already gave it.
+    """
+    ten_pages = [f"proposal:{page}:0" for page in range(1, 11)]
+    twelve_blocks = [f"proposal:1:{block}" for block in range(0, 12)]
+    keys = ten_pages + twelve_blocks[1:]
+    reading_order = sorted(keys, key=lambda key: tuple(int(part) for part in key.split(":")[1:]))
+    assert sorted(keys, key=act_key_sort_key) == reading_order
+    # The fixture this test pins is exactly the shape a plain string sort gets
+    # wrong -- if it agreed with the lexicographic sort the fixture would prove
+    # nothing about the fix.
+    assert sorted(keys) != reading_order
+
+    mixed = ["logical:z", "proposal:2:0", "proposal:10:0", "logical:a"]
+    assert sorted(mixed, key=act_key_sort_key) == [
+        "proposal:2:0",
+        "proposal:10:0",
+        "logical:a",
+        "logical:z",
+    ]
+
+
+def test_act_json_records_are_emitted_in_reading_order_past_ten_blocks():
+    """The production call site (`_act_json_records`, used for the JSONL and
+    review-item projections) must order by the parsed key, not the raw string.
+    """
+    acts = tuple(
+        {
+            "act_id": f"act-{block}",
+            "act_key": f"proposal:1:{block}",
+            "category": "delivered",
+            CANONICAL_TEXT_FIELD: "x",
+        }
+        for block in (0, 2, 10, 11, 1)
+    )
+    records = _act_json_records(acts)
+    assert [record["act_key"] for record in records] == [
+        "proposal:1:0",
+        "proposal:1:1",
+        "proposal:1:2",
+        "proposal:1:10",
+        "proposal:1:11",
+    ]
 
 
 def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
@@ -891,9 +962,12 @@ def test_the_recorded_absolute_gate_decides_below_the_fraction_gate(tmp_path):
         assert manifest["claims"]["status"] == ("partial" if held else "complete"), outside
 
 
-def test_a_zero_substantial_gate_is_refused_before_it_can_hold_every_page():
+@pytest.mark.parametrize(
+    "gate", ["substantial_ink_pixels", "minimum_ink_pixels", "minimum_fraction_outside_bp"]
+)
+def test_a_zero_recorded_gate_is_refused_before_it_can_hold_every_page(gate):
     row = _edge_page(outside=0)
-    row["remeasured"]["substantial_ink_pixels"] = 0
+    row["remeasured"][gate] = 0
     with pytest.raises(SchemaRefusal, match="invalid ink-map re-measurement"):
         build_armarium_bundle(
             _otherwise_complete(ink_map_pages=(row,)),
@@ -983,6 +1057,8 @@ def test_a_page_the_map_never_flagged_may_not_carry_a_re_measurement():
                             "outside_ink_pixels": 0,
                             "edge_band_pixels": 64,
                             "substantial_ink_pixels": 2_000,
+                            "minimum_ink_pixels": MINIMUM_INK_PIXELS,
+                            "minimum_fraction_outside_bp": MINIMUM_FRACTION_OUTSIDE_BP,
                         },
                     },
                 )
@@ -1102,6 +1178,27 @@ def test_a_unicode_line_separator_in_a_reading_does_not_stop_the_whole_export(
     )
 
     assert verify_projection_identity(bundle.data, tmp_path / name) == {"act-1": literal}
+
+
+def test_compare_literal_projections_refuses_an_unhandled_literal_format(tmp_path, monkeypatch):
+    """A fourth literal format with no comparison branch built for it here must
+    refuse by name, not fall silently out of `projections` and out of the
+    identity check the branch above it exists to run (companion to F090).
+    """
+    import armarium_export
+
+    clean_root = tmp_path / "clean"
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    verify_export_bundle(bundle.data, clean_root)
+
+    monkeypatch.setattr(
+        armarium_export,
+        "_LITERAL_TEXT_FORMATS",
+        (*armarium_export._LITERAL_TEXT_FORMATS, "csv"),
+    )
+    unhandled_formats = SimpleNamespace(formats=("text-bundle", "acts-database", "jsonl", "csv"))
+    with pytest.raises(SchemaRefusal, match="no comparison built for literal format 'csv'"):
+        armarium_export._compare_literal_projections(clean_root, unhandled_formats)
 
 
 def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_format(tmp_path):
@@ -1284,6 +1381,40 @@ def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal
 
     with pytest.raises(SchemaRefusal, match="does not anchor to its own act's literal"):
         verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+# Ten thousand levels of nesting around a 4,301-digit integer. CPython 3.12
+# refuses the nesting with `RecursionError` before it reaches the integer;
+# 3.14's decoder no longer recurses on the C stack and walks all ten thousand
+# levels, then refuses the integer with `ValueError` at the interpreter's
+# integer-string limit. Either way the reader's widened arm answers, which is
+# the invariant these tests pin; a bare nesting bomb pinned only the 3.12 path.
+_PATHOLOGICALLY_NESTED_JSON = b"[" * 10_000 + b"9" * 4301 + b"]" * 10_000
+
+
+def test_a_deeply_nested_acts_jsonl_row_is_refused_by_name_not_a_recursion_error(tmp_path):
+    """G13: every Armarium JSONL reader widened its `except json.JSONDecodeError`
+    to `(UnicodeDecodeError, ValueError, RecursionError)`; this pins the
+    representative one (`_jsonl_act_records`) against a ~10k-deep row, the
+    same failure `common/chandra_layout.py` and `structure_answer.py` guard.
+    """
+    path = tmp_path / "acts.jsonl"
+    path.write_bytes(_PATHOLOGICALLY_NESTED_JSON)
+    with pytest.raises(SchemaRefusal, match="an acts JSONL row is not JSON"):
+        _jsonl_act_records(path, [])
+
+
+def test_a_huge_integer_in_an_acts_jsonl_row_is_refused_by_name(tmp_path):
+    """A 4,301-digit integer literal is otherwise well-formed JSON.
+
+    CPython's own integer-string-conversion limit (4,300 digits by default)
+    turns the scanner's `int()` call into a bare `ValueError` -- not
+    `json.JSONDecodeError` -- once a literal crosses it (G13, "huge integer").
+    """
+    path = tmp_path / "acts.jsonl"
+    path.write_bytes(b'{"extra":' + b"9" * 4301 + b"}")
+    with pytest.raises(SchemaRefusal, match="an acts JSONL row is not JSON"):
+        _jsonl_act_records(path, [])
 
 
 def test_jsonl_uncertainty_status_may_not_contradict_the_layer_beside_it(tmp_path):
@@ -4490,9 +4621,7 @@ def test_a_resealed_geometry_detail_must_name_the_canonical_configurations(mutat
         else:
             configurations[0], configurations[1] = configurations[1], configurations[0]
 
-    with pytest.raises(
-        SchemaRefusal, match="three configurations.*canonical order|canonical order"
-    ):
+    with pytest.raises(SchemaRefusal, match="configurations.*canonical order|canonical order"):
         verify_delivered_bundle(_resealed_manifest(break_geometry), tmp_path / "delivered")
 
 
@@ -4852,6 +4981,11 @@ def test_an_uncalibrated_geometry_configuration_is_a_caveat_on_the_act_boundarie
                             "calibrated_for_this_corpus": True,
                             "sample_count": 10,
                         },
+                        {
+                            "configuration": "perlector-protocol",
+                            "calibrated_for_this_corpus": True,
+                            "sample_count": 7,
+                        },
                     ]
                 }
             }
@@ -4885,7 +5019,7 @@ def test_a_basis_missing_one_instrument_is_refused_before_a_product_byte_is_writ
 def test_a_geometry_basis_cannot_turn_a_string_or_empty_row_set_into_measurement():
     broken = _test_not_measured_basis()
     broken["designator-geometry-calibration"]["configurations"] = []
-    with pytest.raises(SchemaRefusal, match="must name three configurations"):
+    with pytest.raises(SchemaRefusal, match="must name 4 configurations"):
         _manifest_of(replace(_projection(), not_measured_basis=broken))
 
     broken = _test_not_measured_basis()

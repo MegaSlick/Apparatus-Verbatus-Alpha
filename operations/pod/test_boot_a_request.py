@@ -341,3 +341,25 @@ def test_main_exits_zero_on_a_configured_policy(
     assert status == 0
     assert '"volume_id": "vol-9"' in out
     assert "--record-fixture" in out
+
+
+def test_the_drill_request_names_the_timer_capability_as_tyrels_to_deliver() -> None:
+    """The one thing that stops the drill dead, said where the reader decides.
+
+    The pod-side timer refuses to construct without its provider capability,
+    and a timer that cannot construct cannot close the pod -- the container
+    exits and the pod stays EXITED and billing. Nothing in the tracked tree can
+    deliver that value (`metadata` refuses credential-shaped keys), so it
+    belongs in "what only Tyrel supplies" rather than being discovered on a
+    billing card. Named by its factory rather than by the vendor's variable,
+    because provider vocabulary stays inside the adapter.
+    """
+
+    rendered = render_boot_a_request(configured(), load_placement_table(PLACEMENT))
+
+    supplies = rendered.text.split("## What only Tyrel supplies", 1)[1].split("## The command", 1)[
+        0
+    ]
+    assert "timer_context_from_environment" in supplies
+    assert "EXITED" in supplies
+    assert "metadata" in supplies

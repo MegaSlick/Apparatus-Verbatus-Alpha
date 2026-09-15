@@ -2001,6 +2001,11 @@ def fixture_submission(args, registry) -> int:
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
         register_bytes=_read_corpus_register(args.corpus_register),
+        # The Door is the only stage that creates the run authority, so it is
+        # the only one that can seal the commit the code ran at into it. `None`
+        # when the orchestrator could not measure it; the store refuses
+        # anything that is not a full lowercase revision.
+        repository_commit=args.repository_commit,
     )
     context = _door_context(
         tree,
@@ -2215,6 +2220,11 @@ def real_submission(args, registry) -> int:
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
         register_bytes=_read_corpus_register(args.corpus_register),
+        # The Door is the only stage that creates the run authority, so it is
+        # the only one that can seal the commit the code ran at into it. `None`
+        # when the orchestrator could not measure it; the store refuses
+        # anything that is not a full lowercase revision.
+        repository_commit=args.repository_commit,
     )
 
     context = _door_context(

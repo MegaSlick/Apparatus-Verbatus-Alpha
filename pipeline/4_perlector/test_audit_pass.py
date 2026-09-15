@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import audit
+import protocol
 import pytest
 import reader as reader_module
 
@@ -305,6 +306,19 @@ def _export(tree: RunTree) -> dict:
     return exports[0]["payload"]
 
 
+# The fixture's own page area, and the sealed `[truncation]` table the
+# instrument judges under, read the way the stage reads it. The hand-built
+# records below are judged against a page ten times their region so the length
+# signal stays clean: these tests are about the audit's reconciliation of a
+# record, and were written when 18,612 / 16 = 1,163 px/char cleared the retired
+# 2,000 px/char floor -- a clean length signal is what they assume.
+_TRUNCATION_POLICY = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]["truncation"]
+_TEST_REGION_PIXELS = 18612
+_TEST_PAGE_PIXELS = _TEST_REGION_PIXELS * 10
+# The sealed floor every measure below was judged under. It travels on the
+# record since 2026-09-14, so a fixture that omits it is not a closed record.
+_FLOOR = _TRUNCATION_POLICY[protocol.LENGTH_FLOOR_FIELD]
+
 # The truncation instrument's record of a call that ran to completion over a
 # clean text; what a well-formed v2 finding carries for a completed re-proof.
 _COMPLETE_TRUNCATION = {
@@ -315,12 +329,35 @@ _COMPLETE_TRUNCATION = {
         "length_suspicious": False,
         "ends_abruptly": False,
     },
+    "measure": {
+        "region_pixels": _TEST_REGION_PIXELS,
+        "page_pixels": _TEST_PAGE_PIXELS,
+        "characters": len("alpha beta gamma"),
+        "length_floor_characters_per_page": _FLOOR,
+    },
 }
 # The same instrument over a re-proof its engine cut off: the text signals are
 # clean (it returned the frozen text), and the engine's own word overrules them.
+# Measured over fixture act a1 as the Perlector measures it: its 34-character
+# reading over the padded 188x99 crop (18,612 px) of the 200x260 page.
+_FIXTURE_A1_MEASURE = {
+    "region_pixels": 18612,
+    "page_pixels": 52_000,
+    "characters": 34,
+    "length_floor_characters_per_page": _FLOOR,
+}
+# Fixture act a2 in the continuation scenario: 40 characters over its two padded
+# crops on two 200x260 pages, region and page area each summed over both.
+_FIXTURE_A2_CONTINUATION_MEASURE = {
+    "region_pixels": 37412,
+    "page_pixels": 104_000,
+    "characters": 40,
+    "length_floor_characters_per_page": _FLOOR,
+}
 _CUT_OFF_TRUNCATION = {
     "classification": "truncated",
     "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": "length"},
+    "measure": _FIXTURE_A1_MEASURE,
 }
 
 
@@ -1171,6 +1208,7 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
             "length_suspicious": False,
             "ends_abruptly": False,
         },
+        "measure": dict(_COMPLETE_TRUNCATION["measure"]),
     }
 
     # The re-proof's own generation ran out of budget: its text is what gets
@@ -1179,7 +1217,9 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
         pass_b=complete,
         declared_failure=None,
         text="alpha beta gamma",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="length",
     )
     assert cut_off["classification"] == "truncated"
@@ -1197,7 +1237,9 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
         pass_b=complete,
         declared_failure=None,
         text="alpha beta gamma-",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="stop",
     )
     assert abrupt["signals"]["ends_abruptly"] is True
@@ -1210,7 +1252,9 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
         pass_b=was_truncated,
         declared_failure=None,
         text="alpha beta gamma",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="stop",
     )
     assert kept["classification"] == "truncated"
@@ -1664,12 +1708,38 @@ def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_
     assert findings["a1"]["payload"]["change_record"] == []
     assert findings["a1"]["payload"]["uncertain_spans"] == []
     audit.validate_chain(tree, cut, cut["subject_id"])
+    # And the floor that re-proof was judged under is this run's own sealed
+    # one, bound rather than taken on the record's word: `validate_truncation_
+    # record` re-derives `length_suspicious` from the record's own measure, so
+    # a record naming a floor nobody sealed agrees with itself perfectly and
+    # can clear a hold the sealed policy would have held (CodeRabbit on PR
+    # #117). The Perlector passes the sealed floor at both of its own call
+    # sites, which is why the run above published at all.
+    sealed_floor = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][
+        protocol.TRUNCATION_TABLE
+    ][protocol.LENGTH_FLOOR_FIELD]
+    assert (
+        findings["a1"]["payload"]["reproof_truncation"]["measure"][
+            "length_floor_characters_per_page"
+        ]
+        == sealed_floor
+    )
+    audit.validate_chain(
+        tree, cut, cut["subject_id"], length_floor_characters_per_page=sealed_floor
+    )
+    with pytest.raises(SchemaRefusal, match="judged under length floor"):
+        audit.validate_chain(
+            tree, cut, cut["subject_id"], length_floor_characters_per_page=sealed_floor + 1
+        )
 
     # The control act on the same run: an unchanged re-proof that completed.
     assert control["outcome"] == "read"
     assert control["payload"]["audit"]["examination"] == "complete"
     assert control["payload"]["audit"]["unresolved"] is False
-    assert findings["a2"]["payload"]["reproof_truncation"] == _COMPLETE_TRUNCATION
+    assert findings["a2"]["payload"]["reproof_truncation"] == {
+        **_COMPLETE_TRUNCATION,
+        "measure": _FIXTURE_A2_CONTINUATION_MEASURE,
+    }
 
     # The real Recensor holds on that fact, and says which fact.
     reviews = {record["subject_id"]: record for record in _records(tree, "review", RECENSOR)}
@@ -1867,6 +1937,30 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
     assert all(act["category"] == "held-for-review" for act in export["non_delivered"])
 
 
+# The three-character reading every `_finding` unit test validates against, and
+# the geometry its re-proof termination is measured over. Since 2026-09-14 the
+# shared validator binds `measure.characters` to the reading the record was
+# measured over and re-derives `length_suspicious` from the block, so a fixture
+# pairing a 34-character measurement with a three-character text would be
+# refused for exactly the reason the binding exists (independent audit of
+# 2026-09-14). A small region on a whole page keeps the length signal clean at
+# these lengths, so each test still exercises the property it is about.
+_FINDING_TEXT = "abc"
+_FINDING_MEASURE = {
+    "region_pixels": 1_000,
+    "page_pixels": 52_000,
+    "characters": len(_FINDING_TEXT),
+    "length_floor_characters_per_page": _FLOOR,
+}
+
+
+def _termination_over(record: dict | None, text: str) -> dict | None:
+    """The same termination record, re-measured over `text`."""
+    if record is None:
+        return None
+    return {**record, "measure": {**_FINDING_MEASURE, "characters": len(text)}}
+
+
 def _finding(**overrides) -> dict:
     base = {
         "act_key": "a1",
@@ -1882,7 +1976,9 @@ def _finding(**overrides) -> dict:
         "reproof_truncation": _CUT_OFF_TRUNCATION,
         "reproof_call": None,
     }
-    return {**base, **overrides}
+    finding = {**base, **overrides}
+    finding["reproof_truncation"] = _termination_over(finding["reproof_truncation"], _FINDING_TEXT)
+    return finding
 
 
 def test_an_audit_finding_cannot_call_a_cut_off_reproof_complete():
@@ -1990,6 +2086,7 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
     silent = {
         "classification": "complete",
         "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": None},
+        "measure": dict(_COMPLETE_TRUNCATION["measure"]),
     }
     with pytest.raises(SchemaRefusal, match="own signals make it 'unknown'"):
         audit.validate_truncation_record(silent, label="a test record")
@@ -1998,6 +2095,7 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
             {
                 "classification": "complete",
                 "signals": {**_COMPLETE_TRUNCATION["signals"], "stop_reason_declared": "banana"},
+                "measure": dict(_COMPLETE_TRUNCATION["measure"]),
             },
             label="a test record",
         )
@@ -2010,16 +2108,30 @@ def test_a_sealed_termination_whose_verdict_contradicts_its_signals_is_refused()
             "length_suspicious": True,
             "ends_abruptly": True,
         },
+        # A whole page returning sixteen characters really is length-suspicious
+        # under the sealed floor; the validator re-derives that signal from this
+        # block, so the record has to mean what its signals say.
+        "measure": {
+            **_COMPLETE_TRUNCATION["measure"],
+            "region_pixels": _TEST_PAGE_PIXELS,
+        },
     }
     assert audit.validate_truncation_record(three, label="x")["classification"] == "truncated"
     one = {
         "classification": "unknown",
         "signals": {**_COMPLETE_TRUNCATION["signals"], "ends_abruptly": True},
+        "measure": dict(_COMPLETE_TRUNCATION["measure"]),
     }
     assert audit.validate_truncation_record(one, label="x")["classification"] == "unknown"
     # The producer's instrument decides with the same shared rule.
     perlector = _perlector()
-    measured = perlector.truncation.classify("alpha beta-", region_pixels=18612, stop_reason="stop")
+    measured = perlector.truncation.classify(
+        "alpha beta-",
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
+        stop_reason="stop",
+    )
     assert measured["classification"] == audit.truncation_classification(measured["signals"])
 
 
@@ -2207,17 +2319,46 @@ def test_a_sealed_reproof_call_must_name_the_digest_of_the_response_it_retains()
         )
 
 
+def test_an_acts_region_is_the_union_of_its_crops_not_their_sum():
+    """A fallback recrop re-cuts ink its original crop already covers. Summing
+    the two counted that ink twice and, under a scale-honest length floor,
+    held every recovered act: fixture a1's recovered attempt measured 41,412
+    px for an 18,612 px crop inside a 22,800 px recrop. Regions on different
+    pages never overlap and still add."""
+    perlector = _perlector()
+
+    def basis(page, x, y, w, h):
+        return {"source_page_id": page, "transform": {"bounds": {"x": x, "y": y, "w": w, "h": h}}}
+
+    crop = basis("p1", 12, 15, 188, 99)
+    recrop = basis("p1", 0, 10, 200, 114)
+    assert perlector._region_pixels([crop]) == 18612
+    assert perlector._region_pixels([crop, recrop]) == 22800
+    # A partial overlap counts the shared cells once.
+    assert perlector._region_pixels([basis("p1", 0, 0, 10, 10), basis("p1", 5, 5, 10, 10)]) == 175
+    # Disjoint on one page, and the same rectangles on two pages, both add.
+    assert perlector._region_pixels([basis("p1", 0, 0, 10, 10), basis("p1", 20, 0, 10, 10)]) == 200
+    assert perlector._region_pixels([basis("p1", 0, 0, 10, 10), basis("p2", 0, 0, 10, 10)]) == 200
+    assert perlector._region_pixels([]) == 0
+
+
 def test_the_audited_truncation_takes_an_already_measured_record_without_remeasuring():
     """The branch production uses: the re-proof's own measurement is passed through."""
     perlector = _perlector()
     measured = perlector.truncation.classify(
-        "alpha beta gamma", region_pixels=18612, stop_reason="length"
+        "alpha beta gamma",
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
+        stop_reason="length",
     )
     via_measured = perlector._audited_truncation(
         pass_b=_COMPLETE_TRUNCATION,
         declared_failure=None,
         text="alpha beta gamma",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="length",
         measured=measured,
     )
@@ -2225,7 +2366,9 @@ def test_the_audited_truncation_takes_an_already_measured_record_without_remeasu
         pass_b=_COMPLETE_TRUNCATION,
         declared_failure=None,
         text="alpha beta gamma",
-        region_pixels=18612,
+        region_pixels=_TEST_REGION_PIXELS,
+        page_pixels=_TEST_PAGE_PIXELS,
+        truncation_policy=_TRUNCATION_POLICY,
         stop_reason="length",
     )
     assert via_measured == remeasured == measured
@@ -2261,3 +2404,103 @@ def test_an_unhashable_or_non_string_vocabulary_value_is_refused_by_name_not_typ
         )
     with pytest.raises(SchemaRefusal, match="is not an audit examination state"):
         audit.unresolved_state(bad)
+
+
+def test_an_emptied_reproof_is_re_measured_beside_the_text_it_publishes():
+    """The sealed termination must describe the reading the record publishes.
+
+    A re-proof that returns whitespace is projected to `no-readable-text`: the
+    published text becomes `""`. The termination measured over the whitespace
+    still counted those characters, and `validate_finding` binds `measure.
+    characters` to the published text -- so the producer's own `validate_chain`
+    raised `SchemaRefusal` on a correct record and the pass stopped before the
+    later acts were processed (CodeRabbit on PR #117).
+
+    Read from source for the reason `test_live_perlector.py::
+    _reading_inputs_composition` reads its own property from source: reaching
+    this branch behaviourally needs a declared fixture scenario whose Pass-C
+    re-proof returns whitespace, and the whole shared skeleton would have to
+    grow one to assert a two-line ordering inside one branch. The binding this
+    protects is asserted behaviourally beside it, over the validator that
+    refused.
+    """
+    import ast
+
+    source = Path(_perlector().__file__).read_text(encoding="utf-8")
+    module = ast.parse(source)
+    read_the_acts = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "_read_the_acts"
+    )
+    branches = [
+        node
+        for node in ast.walk(read_the_acts)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and any(
+            isinstance(comparator, ast.Constant) and comparator.value == "no-readable-text"
+            for comparator in node.test.comparators
+        )
+    ]
+    assert branches, "run.py no longer projects an emptied re-proof to no-readable-text"
+    emptying = [
+        branch
+        for branch in branches
+        if any(
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Subscript)
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == "text"
+                for target in node.targets
+            )
+            and isinstance(node.value, ast.Constant)
+            and node.value.value == ""
+            for node in ast.walk(branch)
+        )
+    ]
+    assert emptying, "no branch empties the published text; this pin has lost its subject"
+    for branch in emptying:
+        assert any(
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "reproof_truncation"
+                for target in node.targets
+            )
+            for node in ast.walk(branch)
+        ), (
+            "the branch that empties the published text must re-measure the sealed "
+            "termination beside it, or the finding describes a reading nobody published"
+        )
+
+
+def test_the_validator_that_refused_the_unmeasured_emptying_still_does():
+    """The behavioural half: the binding the branch above has to satisfy."""
+    import truncation
+
+    region, page = 160 * 80, 200 * 260
+    policy = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][
+        protocol.TRUNCATION_TABLE
+    ]
+    whitespace = truncation.classify(
+        "   ", region_pixels=region, page_pixels=page, truncation_policy=policy, stop_reason="stop"
+    )
+    emptied = truncation.classify(
+        "", region_pixels=region, page_pixels=page, truncation_policy=policy, stop_reason="stop"
+    )
+    assert whitespace["measure"]["characters"] == 3
+    assert emptied["measure"]["characters"] == 0
+
+    from common.perlector_audit import validate_truncation_record
+
+    with pytest.raises(SchemaRefusal, match="characters but the text"):
+        validate_truncation_record(
+            whitespace, label="an audit finding's re-proof termination", text=""
+        )
+    assert (
+        validate_truncation_record(
+            emptied, label="an audit finding's re-proof termination", text=""
+        )
+        == emptied
+    )

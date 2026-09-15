@@ -81,13 +81,7 @@ from common.contracts.errors import (  # noqa: E402
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  # noqa: E402
-from common.contracts.stages import (  # noqa: E402
-    ATTESTATORES,
-    DESIGNATOR,
-    EXEMPLAR,
-    PERLECTOR,
-    writing_directory,
-)
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.corpus_register import refuse_capture_preference  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
     atomic_delivered_pixels,
@@ -132,13 +126,17 @@ from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
     load_serving_recipes,
 )
+from operations.serving.errors import ChairResponseRefusal  # noqa: E402
 from operations.serving.http import UrllibHttpTransport  # noqa: E402
 from operations.serving.manager import (  # noqa: E402
     ServingManager,
     StageContextReceiptPublisher,
 )
 from operations.serving.process import SubprocessLauncher  # noqa: E402
-from operations.serving.residency import FileResidencyLease  # noqa: E402
+from operations.serving.residency import (  # noqa: E402
+    POD_RESIDENCY_LOCK_PATH,
+    FileResidencyLease,
+)
 
 # A sampling gate has to inspect the shared receipt directory because the sealed
 # experiment selector cannot contain the content address of the approval that
@@ -146,16 +144,6 @@ from operations.serving.residency import FileResidencyLease  # noqa: E402
 # into a named refusal instead of an unbounded preflight.  Real receipts are a
 # few kilobytes; these ceilings allow a large alpha run while keeping both one
 # object and the aggregate scan finite.
-# A live chair's engine logs and its residency lease, both inside the run tree so
-# they travel with the evidence they belong to. The logs sit beside this stage's
-# artifacts and blobs rather than among them: `_stage_blob_inventory` walks
-# `<stage>/blobs` alone, so an engine still writing its log while the stage seals
-# cannot make the witnessed inventory false. The lease is run-scoped, not
-# stage-scoped, because the card is: the Attestatores' witness chairs and this
-# reader must contend for one lock, or two stages co-reside on one GPU.
-SERVING_LOG_DIRECTORY: Final = "serving-logs"
-RESIDENCY_LOCK_FILE: Final = "pod-gpu.lock"
-
 MAX_SAMPLING_APPROVAL_RECEIPTS: Final = 100_000
 MAX_SAMPLING_APPROVAL_RECEIPT_BYTES: Final = 4 * 1024 * 1024
 MAX_SAMPLING_APPROVAL_SCAN_BYTES: Final = 1024 * 1024 * 1024
@@ -1911,14 +1899,26 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
             launcher=SubprocessLauncher(),
             http=UrllibHttpTransport(),
             receipt_publisher=StageContextReceiptPublisher(context),
-            log_root=context.tree.resolve(
-                f"{writing_directory(context.stage)}/{SERVING_LOG_DIRECTORY}"
-            ),
-            # One card, one resident chair, one lease file for the whole run
-            # tree: the Attestatores' witness chairs and this reader contend for
-            # the same GPU, and the lease is what makes a second start refuse
-            # instead of co-residing.
-            residency_lease=FileResidencyLease(context.tree.resolve(RESIDENCY_LOCK_FILE)),
+            # A live chair's engine logs, inside the run tree so they travel
+            # with the evidence they belong to. They sit beside this stage's
+            # artifacts and blobs rather than among them: `_stage_blob_inventory`
+            # walks `<stage>/blobs` alone, so an engine still writing its log
+            # while the stage seals cannot make the witnessed inventory false.
+            # `RunTree.serving_log_path` is the one place the directory is
+            # spelled, and `inventory_scope()` names the same one, which is what
+            # lets `fetch-run` bring the logs home as unverified side evidence
+            # instead of refusing the whole served tree at the first one it
+            # lists. The residency lease is not here: see
+            # `POD_RESIDENCY_LOCK_PATH`.
+            log_root=context.tree.resolve(context.tree.serving_log_path(context.stage)),
+            # One card, one resident chair, one lease -- and the card belongs
+            # to the pod, not to this run tree. `POD_RESIDENCY_LOCK_PATH` is
+            # the container-local path the pod preflight and the other serving
+            # stages take, so the Attestatores' witness chairs and this reader
+            # contend for one lease even when they run under different run ids,
+            # and the lock is not asked of a network mount that is not known to
+            # honour one.
+            residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
             producer="pipeline/4_perlector/run.py",
         )
         return ChairClient(
@@ -2072,6 +2072,35 @@ def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return list(distinct.values())
 
 
+# Every artifact one reading attempt publishes *before* its Perlectio is sealed,
+# named by kind and by the reading operation its attempt identity derives from.
+# The pass publishes them in this order, so an act interrupted mid-attempt
+# leaves some prefix of this list on disk with no Perlectio beside it, and a
+# resume has to answer for exactly that prefix instead of walking into an
+# `IncompatibleReuse` on the first one it republishes from a second live answer.
+# Named for the Perlectio and not for the establishing reading: the last two are
+# published *after* that reading, and the Perlectio is the one thing all five
+# come before. A name that is wrong about two of its own entries is worse than no
+# name, because a later reader takes it at its word.
+_PRE_PERLECTIO_ARTIFACTS: Final = (
+    ("lectio-prior", "lectio-prior"),
+    (nuda.LECTIO_NUDA_KIND, "lectio-nuda"),
+    ("primed-without-prior", "primed-without-prior"),
+    ("audit-draft", "perlegere"),
+    ("audit-finding", "perlegere"),
+)
+# The two of those the audit loop writes, after the establishing reading has
+# already happened and its text is frozen into their bytes. Nothing this pass
+# can do reproduces that text from a live chair, so an attempt interrupted after
+# one of them is the one prefix a resume can answer neither by reusing nor by
+# reading again.
+_AUDIT_ROUND_KINDS: Final = frozenset({"audit-draft", "audit-finding"})
+
+
+def _attempt_artifact_id(act_id: str, kind: str, operation: str, ordinal: int) -> str:
+    return artifact_id(PERLECTOR, kind, act_id, perlector_attempt_id(act_id, operation, ordinal))
+
+
 def _reading_already_sealed(context, act_id: str, ordinal: int) -> bool:
     """Whether this run tree already holds this act's Perlectio at this ordinal.
 
@@ -2084,6 +2113,63 @@ def _reading_already_sealed(context, act_id: str, ordinal: int) -> bool:
     return context.tree.resolve(
         context.tree.artifact_path(PERLECTOR, "perlectio", identifier)
     ).exists()
+
+
+def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
+    """Which pre-Perlectio artifacts of this attempt are already on disk.
+
+    An act reached by a *completed* attempt has a Perlectio, and
+    `_reading_already_sealed` answers for it before this is ever asked. What is
+    left is an attempt that stopped part-way — an abort, an HTTP failure, a
+    timeout, an OOM kill, a SIGKILL — after one of these publications and before
+    the Perlectio. Each is immutable, so a live resume that simply read the act
+    again would republish Pass A from a second live answer and be refused, with
+    no forward path at all: the artifact cannot be removed, so the refusal
+    repeats on every retry and the run is dead one act into a resume with every
+    other act still unread. That is the failure this answer exists to end.
+    """
+    return frozenset(
+        kind
+        for kind, operation in _PRE_PERLECTIO_ARTIFACTS
+        if context.tree.has_artifact(
+            PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
+        )
+    )
+
+
+def _sealed_prior_draft(context, act_id: str, ordinal: int) -> dict[str, Any] | None:
+    """This attempt's already-published Pass A, in the shape the arms take it.
+
+    GOVERNANCE 4: the retained draft is this attempt's evidence and is never
+    overwritten. Reusing it is also the only honest answer available — the bytes
+    on disk are what the interrupted attempt actually produced, and a second
+    live Pass A would answer differently — so a resumed act pays for the arms it
+    has not yet run and no more. What is returned is exactly what
+    `_publish_lectio_prior` returns, so the establishing dossier cannot tell a
+    resumed prior from a freshly published one; what distinguishes them is the
+    provenance each record carries, and that stays on each record.
+
+    **The pair a resumed act seals spans two serving sessions, deliberately.**
+    Its `self_revision` measures this invocation's establishing text against the
+    interrupted invocation's Pass A, and the Perlectio carries no flag saying so
+    — a reader follows `provenance.receipt_ref` on the referenced `lectio-prior`
+    to see it. That is traceable rather than marked, and it is as far as this
+    can drift: `RunTree._verify_artifact_run` refuses any artifact produced
+    under a different `config_digest` than the run authority, so a reused prior
+    can never come from another model, revision or sealed configuration. What is
+    left is a same-configuration, different-session pairing, and the alternative
+    — re-asking Pass A to keep the pair inside one session — is the overwrite
+    GOVERNANCE 4 forbids. Whether the record should also *say* it is such a pair
+    is a change to a closed payload shape, and is not decided here.
+    """
+    identifier = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
+    if not context.tree.has_artifact(PERLECTOR, "lectio-prior", identifier):
+        return None
+    record = context.tree.read_artifact(PERLECTOR, "lectio-prior", identifier)
+    return {
+        "reference": context.artifact_ref(PERLECTOR, "lectio-prior", identifier),
+        "text": record["payload"]["text"],
+    }
 
 
 def with_engine_call(payload: dict, result: dict, fields: frozenset) -> frozenset:
@@ -2147,8 +2233,61 @@ def _whole_act_gap(testimonia: list[dict], references: dict[str, dict]) -> list[
 
 
 def _region_pixels(bases: list[dict]) -> int:
+    """The page-space area an act's regions cover: their union per page, summed.
+
+    The union and not the sum, since 2026-09-14. A fallback recrop re-cuts the
+    ink its original crop already covers, and summing the two counted the
+    shared ink twice: fixture act a1's recovered attempt measured 41,412 px for
+    an 18,612 px crop and its 22,800 px recrop. Invisible under the retired
+    absolute floor, and under a scale-honest one it held every recovered act as
+    length-suspicious -- the very failure F082 names, on the recovery path. A
+    single region is unchanged; regions on different pages (a continuation
+    act, or captures of one page) never overlap and still add.
+    """
+    by_page: dict[str, list[tuple[int, int, int, int]]] = {}
+    for basis in bases:
+        bounds = basis["transform"]["bounds"]
+        by_page.setdefault(basis["source_page_id"], []).append(
+            (bounds["x"], bounds["y"], bounds["x"] + bounds["w"], bounds["y"] + bounds["h"])
+        )
+    return sum(_union_area(rectangles) for rectangles in by_page.values())
+
+
+def _union_area(rectangles: list[tuple[int, int, int, int]]) -> int:
+    """The area covered by at least one of a few axis-aligned rectangles.
+
+    Coordinate compression: every cell of the grid the rectangles' edges draw
+    is either inside some rectangle or inside none, so the union is the sum of
+    the covered cells. Exact in integers; quadratic in the handful of regions
+    one act carries.
+    """
+    xs = sorted({x for rectangle in rectangles for x in (rectangle[0], rectangle[2])})
+    ys = sorted({y for rectangle in rectangles for y in (rectangle[1], rectangle[3])})
+    area = 0
+    for x0, x1 in zip(xs, xs[1:], strict=False):
+        for y0, y1 in zip(ys, ys[1:], strict=False):
+            if any(
+                left <= x0 and x1 <= right and top <= y0 and y1 <= bottom
+                for left, top, right, bottom in rectangles
+            ):
+                area += (x1 - x0) * (y1 - y0)
+    return area
+
+
+def _page_pixels(page_renders: list[dict]) -> int:
+    """The sealed area of every distinct page an act's regions were cut from.
+
+    The denominator the truncation instrument's length signal scales a region
+    against (`truncation.is_length_suspicious`). Read from the page renders'
+    own recorded transform -- the source dimensions of the sealed Exemplar
+    page -- and summed over the pages a continuation act spans, exactly as
+    `_region_pixels` sums its regions, so the two are the same ratio on every
+    act.
+    """
     return sum(
-        basis["transform"]["bounds"]["w"] * basis["transform"]["bounds"]["h"] for basis in bases
+        render["transform"]["source_dimensions"]["w"]
+        * render["transform"]["source_dimensions"]["h"]
+        for render in page_renders
     )
 
 
@@ -2371,7 +2510,7 @@ def validate_reading_payload(
     fields: frozenset,
     run_id: str | None = None,
     config_digest: str | None = None,
-    protocol_config: dict[str, str | int] | None = None,
+    protocol_config: dict[str, Any] | None = None,
     protocol_sha256: str | None = None,
     inputs: list[dict[str, str]] | None = None,
 ) -> None:
@@ -2832,12 +2971,33 @@ def _reconciled_truncation(*, declared_failure: str | None, truncation_record: d
     return truncation_record
 
 
+def _sealed_length_floor(protocol_config: dict[str, Any] | None) -> int | None:
+    """This run's sealed truncation floor, for the validators that bind to it.
+
+    `None` where no sealed protocol reached this pass: `validate_reading_payload`
+    already refuses a reading that carries a protocol record without one, and
+    the unsealed test route substitutes a protocol dict with no `[truncation]`
+    table at all. A declared absence, never a guessed default -- the floor a
+    re-proof record is held to must be the one this run sealed or nothing.
+    """
+
+    if not isinstance(protocol_config, dict):
+        return None
+    table = protocol_config.get(protocol.TRUNCATION_TABLE)
+    if not isinstance(table, dict):
+        return None
+    floor = table.get(protocol.LENGTH_FLOOR_FIELD)
+    return floor if isinstance(floor, int) and not isinstance(floor, bool) else None
+
+
 def _audited_truncation(
     *,
     pass_b: dict,
     declared_failure: str | None,
     text: str,
     region_pixels: int,
+    page_pixels: int,
+    truncation_policy: dict,
     stop_reason: str | None,
     measured: dict | None = None,
 ) -> dict:
@@ -2866,7 +3026,13 @@ def _audited_truncation(
         declared_failure=declared_failure,
         truncation_record=measured
         if measured is not None
-        else truncation.classify(text, region_pixels=region_pixels, stop_reason=stop_reason),
+        else truncation.classify(
+            text,
+            region_pixels=region_pixels,
+            page_pixels=page_pixels,
+            truncation_policy=truncation_policy,
+            stop_reason=stop_reason,
+        ),
     )
     if (
         pass_b["classification"] != truncation.COMPLETE
@@ -3048,7 +3214,12 @@ def _sealed_sibling_semi_finals(
             protocol_sha256=protocol_sha256,
             inputs=reading["inputs"],
         )
-        chain = audit.validate_chain(context.tree, reading, act_id)
+        chain = audit.validate_chain(
+            context.tree,
+            reading,
+            act_id,
+            length_floor_characters_per_page=_sealed_length_floor(protocol_config),
+        )
         draft_payload = chain["draft"]["payload"]
         finding_payload = chain["finding"]["payload"]
         expected_page = expected[order_by_id[act_id]]["page_id"]
@@ -3176,13 +3347,18 @@ def _publication_pass_data(
     result: dict[str, Any],
     *,
     region_pixels: int,
-    protocol_config: dict[str, str | int],
+    page_pixels: int,
+    protocol_config: dict[str, Any],
     protocol_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], str]:
     sealed_dossier = _reseal_dossier(dossier)
     prompt = prompts.prompt_evidence(chair, sealed_dossier, protocol_config, protocol_sha256)
     truncation_record = truncation.classify(
-        result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
+        result["text"],
+        region_pixels=region_pixels,
+        page_pixels=page_pixels,
+        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+        stop_reason=result["stop_reason"],
     )
     outcome = _resolve_outcome(
         declared_failure=None, truncation_record=truncation_record, text=result["text"]
@@ -3203,7 +3379,8 @@ def _publish_lectio_nuda(
     bases: list[dict],
     page_renders: list[dict],
     region_pixels: int,
-    protocol_config: dict[str, str | int],
+    page_pixels: int,
+    protocol_config: dict[str, Any],
     protocol_sha256: str,
     approval_ref: ApprovalRecordBinding,
     receipt_ref: dict[str, str] | None = None,
@@ -3214,6 +3391,7 @@ def _publish_lectio_nuda(
         dossier,
         result,
         region_pixels=region_pixels,
+        page_pixels=page_pixels,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
@@ -3277,6 +3455,7 @@ def _publish_lectio_prior(
     bases,
     page_renders,
     region_pixels,
+    page_pixels,
     protocol_config,
     protocol_sha256,
     receipt_ref: dict[str, str] | None = None,
@@ -3287,6 +3466,7 @@ def _publish_lectio_prior(
         dossier,
         result,
         region_pixels=region_pixels,
+        page_pixels=page_pixels,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
@@ -3337,9 +3517,10 @@ def _publish_lectio_prior(
         inputs=reading_inputs,
         payload=payload,
     )
-    prior_artifact_id = artifact_id(
-        PERLECTOR, "lectio-prior", act_id, perlector_attempt_id(act_id, "lectio-prior", ordinal)
-    )
+    # The same derivation `_sealed_prior_draft` reads this record back by, in
+    # one spelling: two that agreed only by inspection would let a resume reuse
+    # a different artifact than the one this pass published.
+    prior_artifact_id = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
     return {
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
         "text": text,
@@ -3358,6 +3539,7 @@ def _publish_primed_without_prior(
     bases,
     page_renders,
     region_pixels,
+    page_pixels,
     testimonia,
     attachment_view,
     protocol_config,
@@ -3371,6 +3553,7 @@ def _publish_primed_without_prior(
         dossier,
         result,
         region_pixels=region_pixels,
+        page_pixels=page_pixels,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
@@ -3500,10 +3683,34 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     stops the chair itself before it seals, so a failed shutdown is never
     reported over a sealed stage. This one catches the exceptional path, where
     the pass raised before it reached its own shutdown.
+
+    **A response refusal arrives in this stage's own exit vocabulary.**
+    `ChairResponseRefusal` is a `ServingError`, which is a `RuntimeError` and
+    not a `ContractError`, so `run_stage` could not see it: a non-200 from the
+    engine — vLLM's own account of a context overflow, the single most likely
+    first answer on a real card — left the stage with a Python traceback and
+    exit 1 rather than the named refusal and `EXIT_FATAL` every other refusal in
+    this stage produces. The refusal itself is unchanged and is not caught any
+    earlier than here: `live_reader` and `ChairClient` keep their posture, the
+    bytes stay retained, and the detail the client built (the retained
+    reference, and the head of the engine's own body) travels verbatim into the
+    message this stage exits on.
+
+    The clause is the whole class, not the non-200 alone: every `CHAIR_RESPONSE_*`
+    code — the wrong-model refusal raised before any parse included — is one way
+    an engine's answer failed to be a reading, and all of them are the same kind
+    of fact about the run. `ChairRequestRefusal`, the sibling half of that pair,
+    is deliberately **not** caught. It says this stage built a request that may
+    not go on the wire — an unsupported kind, a manager-owned field, an image
+    digest that does not match the bytes — which is a defect in this code rather
+    than an account of the run, and a traceback naming the construction site is
+    worth more there than a named exit. The inconsistency is the intended one.
     """
     service = ResidentChair()
     try:
         return _read_the_acts(registry_factory, serving_factory, service)
+    except ChairResponseRefusal as refusal:
+        raise ContractError(f"{type(refusal).__name__}: {refusal}") from refusal
     finally:
         service.close()
 
@@ -3682,6 +3889,65 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "declared stand-in cannot override an engine that reported"
             )
 
+        # What an interrupted earlier attempt at this identity already left on
+        # disk. Fixture readers reproduce their own bytes, so a fixture resume
+        # republishes identically and the store reuses; only a live pass has to
+        # answer for a partial attempt at all.
+        sealed_arms = (
+            _sealed_pass_kinds(context, act_id, ordinal) if serving_mode == "live" else frozenset()
+        )
+        audit_round_sealed = sorted(sealed_arms & _AUDIT_ROUND_KINDS)
+        if audit_round_sealed:
+            # The establishing reading happened, and its text is frozen inside
+            # an immutable audit record — but the Perlectio that would have
+            # carried it never sealed. Reading the act again would produce a
+            # different semi-final and refuse against that record forever, and
+            # there is no second source for the text it froze. So the act is
+            # held here, explicitly, naming the retained evidence: the run
+            # resumes and reads every other act, and the Recensor routes this
+            # one to review rather than the whole run dying on a reuse nobody
+            # can clear. GOVERNANCE 2 — visibly partial, never silently absent.
+            #
+            # Named by digest-checked reference and not only in prose, so the
+            # reader routed here reaches the bytes instead of rebuilding an
+            # attempt identity by hand. `inputs` is outside the closed
+            # `_NOT_RUN_HELD_FIELDS` payload shape, so this costs that schema
+            # nothing. Every arm the attempt sealed is named, not only the audit
+            # pair that forced the hold: they are all evidence of the same
+            # interrupted attempt, and what survives of it should be legible
+            # from one record.
+            held_inputs = [
+                context.artifact_ref(
+                    PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
+                )
+                for kind, operation in _PRE_PERLECTIO_ARTIFACTS
+                if kind in sealed_arms
+            ]
+            payload = {
+                "act_key": act["act_key"],
+                "attempt_ordinal": ordinal,
+                "reason": (
+                    "a previous live attempt at this ordinal was interrupted after it "
+                    f"published {', '.join(audit_round_sealed)} and before its Perlectio; "
+                    "the reading that record froze cannot be produced again and the record "
+                    "is immutable, so this act is held with that evidence retained rather "
+                    "than read a second time. Every artifact that attempt published for "
+                    "this act is named in this record's inputs"
+                ),
+                "provenance": provenance_for(context, chair, attempted=False),
+            }
+            validate_not_run_payload(payload, fields=_NOT_RUN_HELD_FIELDS)
+            context.publish(
+                kind="perlectio",
+                subject_id=act_id,
+                outcome="not-run",
+                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
+                inputs=held_inputs,
+                payload=payload,
+            )
+            acknowledged += 1
+            continue
+
         # Every region of the act is verified and read, including a continuation
         # on the next page: an act that ran over the page break and was read only
         # up to the fold would be truncated, which is a failure and not an output.
@@ -3723,6 +3989,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
 
         region_pixels = _region_pixels(bases)
         page_renders = _page_renders_for(context, bases)
+        page_pixels = _page_pixels(page_renders)
 
         # Resolve the required capture set before any reader call so an absent
         # member cannot become a partial presentation.
@@ -3796,6 +4063,16 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # once per capture, exactly as the control sample below is.
         nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
 
+        # An arm an interrupted attempt already published is not asked for a
+        # second time. The sampling decision above is unchanged -- it is the
+        # run's own predeclared design and is derived, not stored -- so an arm
+        # already on disk stays sampled and stays counted; what is dropped is
+        # only the reader call that would have produced bytes the immutable
+        # record refuses. An arm that was never reached is still run.
+        nuda_due = nuda_sampled and nuda.LECTIO_NUDA_KIND not in sealed_arms
+        control_due = control_sampled and "primed-without-prior" not in sealed_arms
+        sealed_prior = _sealed_prior_draft(context, act_id, ordinal) if sealed_arms else None
+
         # Bind loop-local publication facts now; the callback runs before the
         # establishing arm and returns the immutable prior reference it embeds.
         publish_prior = partial(
@@ -3808,6 +4085,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             bases=bases,
             page_renders=page_renders,
             region_pixels=region_pixels,
+            page_pixels=page_pixels,
             protocol_config=protocol_config,
             protocol_sha256=protocol_sha256,
             receipt_ref=receipt_ref,
@@ -3820,13 +4098,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             dossier=base_dossier,
             read_bytes=context.tree.read_bytes,
             protocol_config=protocol_config,
-            nuda_sampled=nuda_sampled,
-            control_sampled=control_sampled,
+            nuda_sampled=nuda_due,
+            control_sampled=control_due,
             draft_fed=context.draft_fed,
             publish_prior=publish_prior,
+            sealed_prior=sealed_prior,
         )
 
-        if nuda_sampled:
+        if nuda_due:
             _publish_lectio_nuda(
                 context,
                 act_key=act["act_key"],
@@ -3838,13 +4117,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 bases=bases,
                 page_renders=page_renders,
                 region_pixels=region_pixels,
+                page_pixels=page_pixels,
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
                 approval_ref=nuda_approval,
                 receipt_ref=receipt_ref,
             )
 
-        if control_sampled:
+        if control_due:
             _publish_primed_without_prior(
                 context,
                 act_key=act["act_key"],
@@ -3856,6 +4136,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 bases=bases,
                 page_renders=page_renders,
                 region_pixels=region_pixels,
+                page_pixels=page_pixels,
                 testimonia=testimonia,
                 attachment_view=attachment_view,
                 protocol_config=protocol_config,
@@ -3883,7 +4164,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         truncation_record = _reconciled_truncation(
             declared_failure=declared_failure,
             truncation_record=truncation.classify(
-                reading, region_pixels=region_pixels, stop_reason=result["stop_reason"]
+                reading,
+                region_pixels=region_pixels,
+                page_pixels=page_pixels,
+                truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+                stop_reason=result["stop_reason"],
             ),
         )
         outcome = _resolve_outcome(
@@ -3965,6 +4250,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 # Perlectio is published. The rare re-proof rebuilds its
                 # pixels from the same sealed artifacts instead.
                 "region_pixels": region_pixels,
+                "page_pixels": page_pixels,
                 "declared_failure": declared_failure,
                 "testimonia": testimonia,
                 "attachment_view": attachment_view,
@@ -4121,7 +4407,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             pre_audit_text = payload["text"]
             reproof_inputs = engine_call_inputs(context, reproof.get("engine_call"))
             reproof_truncation = truncation.classify(
-                final_text, region_pixels=row["region_pixels"], stop_reason=reproof["stop_reason"]
+                final_text,
+                region_pixels=row["region_pixels"],
+                page_pixels=row["page_pixels"],
+                truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+                stop_reason=reproof["stop_reason"],
             )
             # Everything from here to the end of this block is provenance and
             # projection for a re-proof whose text is the one published. It is
@@ -4187,6 +4477,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     declared_failure=row["declared_failure"],
                     text=final_text,
                     region_pixels=row["region_pixels"],
+                    page_pixels=row["page_pixels"],
+                    truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
                     stop_reason=reproof["stop_reason"],
                     measured=reproof_truncation,
                 )
@@ -4206,6 +4498,25 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     # absence.
                     final_text = ""
                     payload["text"] = ""
+                    # Re-measured beside the emptied text, not left describing
+                    # the whitespace that was thrown away. The sealed
+                    # termination is bound to the text the finding publishes --
+                    # `validate_finding` refuses a record whose `characters`
+                    # disagrees with it -- so a re-proof that returned "   "
+                    # sealed a three-character measure over a published empty
+                    # reading and took the whole pass down inside the
+                    # producer's own `validate_chain` (CodeRabbit on PR #117).
+                    # The signals move with it: an empty reading is never
+                    # length-suspicious and never ends abruptly, which is the
+                    # same rubric the Pass-B `no-readable-text` path measures
+                    # under.
+                    reproof_truncation = truncation.classify(
+                        final_text,
+                        region_pixels=row["region_pixels"],
+                        page_pixels=row["page_pixels"],
+                        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+                        stop_reason=reproof["stop_reason"],
+                    )
                     # Through the one rubric the Pass-B path uses, so the
                     # re-proof's report is re-asked against the text this record
                     # now publishes rather than emptied under a state still
@@ -4346,6 +4657,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             context.tree,
             {"payload": payload, "inputs": reading_inputs},
             act_id,
+            length_floor_characters_per_page=_sealed_length_floor(protocol_config),
         )
         validate_reading_payload(
             payload,
@@ -4420,10 +4732,14 @@ def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
     reading routes through a Recensor recovery request, which mints a region and
     moves this number.
 
-    So a resume recomputes the same ordinal and republishes. Every chair that
-    exists today is deterministic, so that republication is byte-identical and
-    the RunTree reuses it. `ARCHITECTURE.md`'s vLLM caveat says a future real
-    chair need not be bit-identical, and there the republication is refused
+    So a resume recomputes the same ordinal and republishes. A fixture chair
+    reproduces its own bytes, so that republication is byte-identical and the
+    RunTree reuses it. **A live chair does not**, and that case is no longer
+    hypothetical: `_read_the_acts` handles it before this number is used again,
+    by leaving a sealed Perlectio alone (`_reading_already_sealed`), by reusing
+    the arms an interrupted attempt already published (`_sealed_pass_kinds`,
+    `_sealed_prior_draft`), and by holding an act whose audit round sealed
+    without its Perlectio. Where a republication still collides it is refused
     (`IncompatibleReuse`) rather than allowed to overwrite immutable evidence:
     loud, nothing written, nothing lost. The forward path from that refusal is
     the one the design already has — a Recensor recovery request — and it is

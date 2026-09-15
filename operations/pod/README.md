@@ -419,7 +419,65 @@ check.
   the run tree, both reports, the journal and the preflight evidence are on the
   volume, which outlives the pod, and `verbatus fetch-run` reads it over S3 with
   no pod running. Which way it went is in the run report's
-  `held_to_hard_deadline`. `test_pod_run.py` drives all of it
+  `held_to_hard_deadline`. **The report also says whether the records it names
+  came home.** The transcript, the liveness record and the stage-timing journal
+  are each written best-effort, because a lost stopwatch or tick must never be
+  the reason a running orchestrator is abandoned; at close the report audits
+  the three under `records_at_close` (present, and for the journal its entry
+  count and whether it is this run's) and lists any that are absent, unreadable,
+  another run's, or — for the transcript — reported incomplete by the runner
+  (a write that failed part-way, or a descendant of the orchestrator still
+  holding its output pipe when the bounded wait for it ran out) under
+  `records_missing`, naming them in `detail`. A run the
+  orchestrator completed is reported `held` (exit 3) when any of the three is
+  missing: the timings are what the first live run exists to measure, so a run
+  without them is one to review, not one to call done; it holds to the hard
+  deadline exactly as `complete` does, so the meter is unchanged. A held,
+  halted or failed run keeps its own reason and has the absence appended.
+  **Nothing the run printed dies with the pod.** The orchestrator's stdout and
+  stderr are merged into one pipe and teed into
+  `<run report stem>-transcript.log` beside the report; because the orchestrator
+  inherits `pod_run`'s streams and every stage inherits the orchestrator's, that
+  one pipe captures the whole tree — a stage's `ContractError`, the
+  Attestatores' hold reason, the traceback behind an `EXIT_FATAL`. The same text
+  still reaches the container log as it always did; the transcript is the copy
+  that survives the pod. It is bounded: eight megabytes of head written as it
+  arrives, then the final megabyte kept and appended after a named truncation
+  marker when the child exits. Only the head is durable while the run is live,
+  which is stated in `BoundedTranscript`'s own docstring rather than left to be
+  discovered. The report names the file, and a held or halted report's `detail`
+  now says where the stage's reason is instead of being `null`.
+  **A crashed supervisor leaves a stale tick, not a `running` report.** While
+  the orchestrator child lives, `pod_run` re-journals
+  `<run report stem>-liveness.json` on the same interval the hold loop uses,
+  carrying the child's pid, the tick number and the moment it was last seen. The
+  last write of a normal run says `alive: false`, so a tick reading `alive: true`
+  stamped hours before the hard deadline is a supervisor that stopped while its
+  child was still running — which is what an OOM kill or a container teardown
+  looks like, and is a different fact from a run that finished (GOVERNANCE 2).
+  **The run tree names the commit its code ran at.** `pod_run` forwards the
+  bootstrap plan's own `--repository-commit` to the orchestrator, which passes
+  it to the Door, which seals it into `run.json`. It is the commit `REPOSITORY`
+  checked out *and read back* — a proven fact about the running code, not a
+  re-derivation the orchestrator would have to pay a subprocess for. It is
+  deliberately not one of the run authority's bound fields: a run id names one
+  set of inputs and one configuration, not one build, and binding it would
+  refuse every resume made after a fix. `run.json` therefore names only the
+  commit that *created* the run; the commit that ran each later stage is in the
+  timing journal below.
+  **The clock lives beside the report, not in the run tree.** `pod_run` passes
+  the orchestrator `--stage-timing-journal <run report stem>-timings.json`, and
+  the orchestrator appends one entry per stage invocation: the member's own name
+  (the Door and the Exemplar named apart although they share `1_exemplar/`), the
+  operation, the act a recovery invocation named, start, finish, duration in
+  milliseconds, exit code, and the commit that ran it. Two entries naming two
+  commits is how a resume made at a different commit becomes visible — `run.json`
+  cannot show it, being created once by the Door and never rewritten. The journal
+  is outside the run tree because a run tree is pinned byte-identical across a
+  rerun, a resume, a restored backup and every driver mode, and a clock is by
+  definition not that; a local run that names no journal writes none and its tree
+  is unchanged. Writing it is best effort: a stopwatch never fails a stage.
+  `test_pod_run.py` drives all of it
   against a fakes-only bootstrap and a recorded orchestrator: no chair is
   served, no model is called, no provider is reached.
   **The roster, serving catalogue, and witness declaration are one selection.**
@@ -735,6 +793,20 @@ the durable report records the attempt count and the final close's evidence (not
 intermediate attempt). The deliberately still-running workload child is left to the
 pod's destruction, since the timer is the container's primary process.
 
+**A truncated pod-side report is the expected shape, not a fault.** Every step of a close
+— the DELETE, the status polls, the absence verification, the close record — runs inside
+the container the DELETE is destroying, so in practice the process is killed part-way
+through and the durable artefact left on the volume is the *pre*-close report:
+`bootstrap: running`, `close: null`, `green: false`. That reads exactly like a timer that
+never tried to close anything. Immediately before the first DELETE the timer therefore
+writes `<report stem>-terminating.json` beside its report — the reason, the moment, the
+requested cutoff, and how many attempts were allowed — so the durable trail distinguishes
+"never tried" from "tried and was destroyed mid-verification". The breadcrumb is best
+effort and never blocks a close: a pod's shutdown is not traded for its own paperwork
+(GOVERNANCE 8). **The laptop-side close record is the authoritative verified close**; the
+pod-side report is corroboration, and its being truncated says nothing about whether the
+pod is gone.
+
 Run the fake checks with:
 
 ```sh
@@ -754,6 +826,127 @@ never appears, an `EXITED` pod under a fresh heartbeat, both close-ordering dire
 an in-process supervisor. A full real-chair preflight
 is not demonstrated: the committed roster is still fixture-only and has no real GPU or
 model-service measurement.
+
+## What a launch writes on the volume, and how each part comes home
+
+The volume outlives the pod and is destroyed under the retention decision, so a record
+that is still only on it when the volume is released is gone. `verbatus fetch-run` brings
+home two prefixes on its own and nothing else; everything under the second heading below
+has to be named with `--evidence-key`, and **this table is where that list is assembled
+from, rather than from memory**. The double-click route prompts for each of them by name.
+
+Below, `<volume>` is `--volume-mount-path`, `<token>` is the launch token every
+launch-bound name carries, and `<stem>` is the bootstrap report's filename stem.
+
+**An `--evidence-key` is not the path in the first column.** Keys are volume-root-relative
+S3 keys — that is why the two fetched-by-prefix defaults are `runs/` and `preflight/`, with
+no leading slash — while a launch flag such as `--report-path` carries an absolute path
+under the mount. **The key is the path with the `<volume>/` mount prefix removed**, so
+`/runpod-volume/pod-run-report-<token>.json` is named as
+`--evidence-key pod-run-report-<token>.json`. A key passed with its mount prefix still on
+it begins with `/` and is refused per object, by name, in the receipt's `refusals` — loud,
+but six of six refused is not the run's records coming home.
+
+**Fetched by prefix, no key needed:**
+
+| Path on the volume | Written by | How it arrives |
+|---|---|---|
+| `<volume>/runs/<run-id>/` | the orchestrator's stages, through `RunTree` | `fetch-run`'s run prefix, every object checked against the tree's own digests |
+| `<volume>/runs/<run-id>/<stage>/serving-logs/` | `SubprocessLauncher`, per started chair | the same prefix, but **unverified**: no manifest records an engine log, so each is listed in the receipt's `unverified_serving_logs` with the digest of the bytes that arrived and is never counted among what was verified. It is also the one object refused *by itself* rather than fatally — a log still being appended to, or grown past the per-object bound, lands in `refused_serving_logs` and the verified tree still comes home |
+| `<volume>/preflight/<stem>/` | `bootstrap_main`'s PREFLIGHT — golden page, serving logs, serving receipts, launch audits | `fetch-run`'s evidence prefix, into `<local root>/evidence/` |
+
+**Named with `--evidence-key`, or they stay on the volume:**
+
+| Path on the volume | Written by | How the key is derived |
+|---|---|---|
+| `<volume>/bootstrap-report-<token>.json` | `bootstrap_main --report-path`, rewritten on every hold tick | the `--report-path` the launch request carried, mount prefix stripped |
+| the bootstrap journal, `<volume>/…-<token>.json` | `bootstrap_main --journal` | the `--journal` the launch request carried, mount prefix stripped; it must be under the mount and carry the launch token |
+| `<volume>/pod-run-report-<token>.json` | `pod_run --report-path` | the nested `--report-path` the launch request carried, mount prefix stripped |
+| `<volume>/pod-run-report-<token>-hold.json` | `pod_run`'s hold, after a `complete` or `held` run (`Plan.hold_path`) | **derivable from the line above**: the pod-run report key with `-hold` inserted before its suffix. It is the only record that the pod stayed alive to the hard deadline rather than dying at the end of the run |
+| `<volume>/pod-runtime-report-<token>.json` | `pod_timer --report-path` | the outermost `--report-path` the launch request carried, mount prefix stripped |
+| `<volume>/pod-transfer-journal.json` | `ChecksummedTransfer` | **a fixed name at the volume root** — no token. It is the only durable record of which submission rows were verified against target-observed bytes |
+
+**Not records, and deliberately not fetched:** `<volume>/chair-cache/` (materialized
+weights), `<volume>/submission/` (the submission's own page images, which is why nothing
+here ever lists the whole volume to find a key), and `<volume>/pod-transfer/` (the
+transferred bytes themselves, which the journal accounts for).
+
+**The single-resident GPU lease is not on this list, and that is the point.**
+`operations.serving.residency.POD_RESIDENCY_LOCK_PATH` is `/tmp/verbatus-pod-gpu.lock` on
+container-local disk: the boundary is the one card the pod rents, not any one run tree.
+A lease resolved inside a run tree was scoped to the wrong thing — two stages resumed
+under different run ids each acquired their own and co-resided on one GPU, and the
+preflight's own lock was never met at all — and it asked an advisory lock of a network
+mount that is not known to honour one. It dies with the pod, as a lock should. It is
+opened with `O_NOFOLLOW` and created 0600, so on a shared developer machine — where three
+pipeline stages now take that same fixed name — a symlink planted there is a named
+refusal rather than a lock quietly taken somewhere else.
+
+## The pod image contract
+
+Everything below is what the bootstrap assumes about the machine it starts on. None of it
+was written down until a pre-launch review read it out of the code, which meant every one
+of these facts was discoverable only on a pod that was already billing. The contract is
+now enforced as well as written: `bootstrap.verify_image_contract` runs as the first thing
+the `REPOSITORY` step does — before `git fetch`, and long before the ~10 GB environment
+sync — and a pod whose image does not meet it goes red with a named reason and a remedy
+instead of a `ModuleNotFoundError` or an authentication prompt nobody can see.
+
+**The image carries a checkout. The bootstrap does not clone.** `checkout_commit` runs
+`git fetch --no-tags origin <sha>` and `git checkout --detach --force <sha>` with its
+working directory set to `--repository`. So the path named there must already be a git
+checkout with an `origin` remote. `operations/pod/boot_b_request.py` renders
+`/opt/verbatus` for this, on container-local disk: the repository cannot live on the
+network volume, because the bootstrap requires the lockfile and every config file inside
+`--repository` while the volume's own paths are separately constrained, and because the
+volume holds evidence rather than code.
+
+**`origin` must be reachable with no HOME.** `BOOTSTRAP_ENVIRONMENT` is explicit and
+short — `PATH`, `LANG`, `LC_ALL`, `UV_CACHE_DIR` — and deliberately supplies no `HOME`.
+Git therefore reads no `~/.gitconfig`, no global credential helper and no
+`~/.git-credentials`: a credential configured the way a human would configure it on a
+laptop is invisible to this process. What *is* visible is the repository's own
+`.git/config`. So a private fetch needs one of: a credential helper set in the
+repository-local config, an `http.<url>.extraheader` carrying a token (what a tokenised
+clone leaves behind), credentials embedded in the remote URL, or an SSH remote whose key
+the pod user can reach. The check refuses an `http`/`https` origin that has none of them.
+
+**The tools are absolute paths, and PATH is never searched.** `git` at `/usr/bin/git` and
+`uv` at `/usr/local/bin/uv` (`BOOTSTRAP_EXECUTABLES`). The default `uv` installer puts the
+binary in `~/.local/bin`, which is not that path, so an image built by running the
+installer as an ordinary user does not satisfy this without a move or a link.
+
+**The primary process runs `<repository>/.venv`'s interpreter, and that venv is
+pre-built.** Two separate reasons, both expensive to discover late:
+
+- `bootstrap_main` imports `operations.serving.smoke` at module scope, which imports PIL.
+  Even the `--hold-only` drill therefore needs a synced environment before the first line
+  of the bootstrap runs — `uv sync` is a step *inside* the bootstrap, far too late to
+  provide it. The image must ship the environment.
+- `ServingManager` launches vLLM as `sys.executable -m vllm.entrypoints.cli.main` and
+  verifies the pinned versions with `importlib.metadata` on that same interpreter. If the
+  pod's `python` is the system interpreter rather than `<repository>/.venv/bin/python`,
+  `uv sync --group pod` fills a venv nothing then uses, and PREFLIGHT fails on a missing
+  pin **after** the whole download has been paid for.
+
+**The working directory must make `python -m operations.pod.pod_timer` resolve**, since
+the `dockerStartCmd` sets none. Starting the container inside `<repository>` with
+`<repository>/.venv/bin/python` as `python` satisfies this and the point above together.
+
+**The container disk is stated in the request, and measured on the pod.** The bootstrap
+spends container-local disk twice over — the wheel cache under `UV_CACHE_DIR`, then the
+unpacked install in `<repository>/.venv` — so `PodCreateRequest.container_disk_gb` names a
+size on every create (`containerDiskInGb` in the v1 body) rather than taking the image's
+or the account's default, and `sync_uv_environment` reads the free space actually present
+before it starts and refuses by name when it is short. Both numbers are bounds, not
+measurements: the first boot records the real footprint and they are replaced by what it
+observed.
+
+**A checkout the image carries is not the same as a checkout the image trusts.** Nothing
+here delivers a credential, and nothing here writes one down. The route by which the pod
+gets its git credentials — and, separately, the provider capability the pod-side timer
+needs in order to be able to close the pod at all — is an out-of-tree decision, and both
+have a row in the checklist below.
 
 ## The serving stack, re-planned and locked
 
@@ -903,6 +1096,29 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   token-bound pod report, survives a process restart, and supports the run tree's
   immutable hard-link publication. Write a control report and one pipeline artifact
   there, read both back, and record the filesystem result.
+- [ ] **Settle how the pod-side timer gets its provider capability, and prove it, before
+  Boot A is worth running.** `timer_context_from_environment` refuses to construct
+  without `RUNPOD_API_KEY` in the pod's environment, and `pod_timer.main` then prints
+  "nothing can close this pod" and exits 2 — the container dies, the pod stays `EXITED`
+  and billing, and only the laptop supervisor's next status tick closes it. The tracked
+  launch path cannot deliver the value: the one pod environment it can set is
+  `PodCreateRequest.metadata`, and that refuses every credential-shaped key by name
+  (which is the right refusal — a capability in a reviewed request file is a capability
+  in a file). So pick one route and record which: confirm that the provider injects
+  `RUNPOD_API_KEY` for this pod type and image, or create a provider template holding it
+  and require `template` on every real request. Record the same answer for `HF_TOKEN` /
+  `HUGGING_FACE_HUB_TOKEN`, because `--keep-env HF_TOKEN` keeps a variable that must
+  first have been set by something. Never record the value itself — only the route, and
+  whether it was observed to work.
+- [ ] **Read an `EXITED` pod's console log before closing it.** The create body requests
+  no ports and no SSH, so there is no route into a pod, and every fact about a failed
+  boot has to arrive through the volume — which is exactly what several of the predicted
+  failures (an unmounted mount, a refused write, an unsupported hard link, a container
+  that died before the timer constructed) prevent from being written. The provider
+  console's log for the container is then the only evidence that the boot ever produced,
+  and closing the pod destroys it. So: read it, copy it into `workbench/raw/` beside the
+  drill's fixture, and only then close. Closing still happens — an unread log is not a
+  reason to keep a pod billing — but it happens after the copy, not before.
 - [ ] Run **Boot A, the drill**, before Boot B: the cheapest available card, a short
   `hard_lifetime_seconds` (roughly 900), `ObservingControllerArmer`, and
   `bootstrap_main --hold-only`. It closes its pod immediately by construction — the
@@ -951,12 +1167,50 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   to make before paying for the ~10 GB download, not after. Then record whether
   `uv sync --group pod` completed, how long the wheel download took, and whether each
   chair's weights loaded under `vllm 0.27.1`, since no offline check can answer that.
+  **Record the container disk's free space before and after the sync, and the size of
+  `<repository>/.venv` when it finishes.** Those three numbers are what replace the
+  bounds in `models.DEFAULT_CONTAINER_DISK_GB` and `bootstrap.UV_CACHE_REQUIRED_BYTES` /
+  `REPOSITORY_VENV_REQUIRED_BYTES`, which are stated as bounds precisely because nothing
+  has ever weighed them.
   Record, per chair, whether the pod-rendered golden page's witness was read back and
   what `nvidia-smi` reported around the read.
 - [ ] After the run, bring the tree back with `verbatus fetch-run --run-id <id> --into
-  <local root> --network-volume DATACENTER:VOLUME_ID` and record whether every object
-  under `runs/<id>/` listed, fetched and reconciled with the tree's own manifests. The
-  listing and `GetObject` path has never run against a real endpoint.
+  <local root> --network-volume DATACENTER:VOLUME_ID --launch-receipt <saved launch
+  receipt> --evidence-prefix preflight/<this launch's bootstrap report stem>` and record
+  whether every object under `runs/<id>/` listed, fetched and reconciled with the tree's
+  own manifests. The listing and `GetObject` path has never run against a real endpoint.
+  **`--launch-receipt` is what keeps the reports from being left behind:** `runs/<id>/`
+  and `preflight/` come home on their own, and every other launch-scoped record is named
+  with the launch token at a path `fetch-run` will not guess at. The receipt already
+  carries the sealed `docker_start_cmd` those paths were bound into, so the keys are
+  derived from it and printed rather than retyped from a 32-hex token. **`--evidence-prefix`
+  is what makes the evidence attributable:** a volume is reused, so plain `preflight/`
+  brings home every launch's tree with nothing saying which measured this run's chairs.
+- [ ] Record which of the launch's volume paths actually arrived. One launch writes, and
+  only the first two come home without being named:
+
+  | Path on the volume | What it is |
+  |---|---|
+  | `runs/<run id>/` | the run tree: artifacts, blobs, manifests, receipts, `run.json` |
+  | `preflight/<bootstrap report stem>/` | this launch's golden page, serving logs, serving receipts, launch audits, evidence manifests |
+  | `pod-runtime-report-<token>.json` | the pod timer's report: `bootstrap`, `close`, `green`, `close_attempts` |
+  | `pod-runtime-report-<token>-terminating.json` | the pre-DELETE breadcrumb: reason, requested cutoff, attempts allowed |
+  | `<pod-run report stem>-<token>.json` | `pod_run`'s report: state, exit code, detail, orchestrator argv, placement tier, approved and skipped storage roots |
+  | `<pod-run report stem>-<token>-liveness.json` | the liveness tick while the orchestrator lived: pid, tick, last seen, alive |
+  | `<pod-run report stem>-<token>-hold.json` | the hold line after a finished run, to the hard deadline |
+  | `<pod-run report stem>-<token>-timings.json` | one entry per stage invocation: stage, operation, act, start, finish, duration, exit code, commit |
+  | `<pod-run report stem>-<token>-transcript.log` | the orchestrator's and every stage's merged output, bounded head-then-tail |
+  | `<bootstrap report stem>-<token>.json` and its journal | the bootstrap's own report and step journal |
+  | `pod-transfer-journal.json` | which submission rows were verified against target-observed bytes |
+
+  `pod-transfer-journal.json` has no derivation and is not in the `--launch-receipt` set;
+  name it with `--evidence-key` if the launch ran a transfer. Each key is the volume path
+  with the `<volume>/` mount prefix removed: a key still carrying the mount prefix starts
+  with `/` and is refused by name. Everything above is
+  destroyed with the volume under the retention decision, so anything not fetched is
+  gone (GOVERNANCE 2, 6). Record the receipt's `unverified_serving_logs` too: a served
+  stage's engine logs come home digested but unchecked, and that is the one part of the
+  tree no manifest covers.
 - [ ] At the first real response, require Spec 05's harness to publish an immutable
   run-tree artifact on the attached network volume before requesting the next response;
   interrupt the harness and read it back. Stage 04 does not own this response path. Repeat
@@ -1030,9 +1284,51 @@ does the pod-written object appear in the S3 view, under which key, after how lo
 does the pod-scoped key actually hold delete and billing rights. Cost is minutes of a
 cheap card.
 
+**The drill returns two durations, and it has to, because the arming wait is two waits.**
+`ChannelControllerArmer` waits first for the provider to report the container started —
+`CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS`, 600 s by default, which refuses nothing on
+its own — and only then runs the `CONTROLLER_ARMING_TIMEOUT_SECONDS` channel bound, 300 s,
+against the S3 view. Until those were separated the clock on the 300 s started when
+`create` returned, so the image pull was spent out of the propagation budget and a pod
+that pulled for six minutes was terminated for a report it was about to write. Both
+durations go into the drill's evidence file (`pod-arming-drill.v2`), which is what turns
+"after how long" above into two numbers rather than one that describes neither.
+
+The container signal is `ProviderStatus.started_at`, which `RunPodProvider.status` now
+surfaces from `lastStartedAt` — null until the pod first runs, which is exactly the fact
+`desiredStatus` cannot report, since it reads RUNNING from the instant `create` returns.
+`controller_armer` names no provider, so the untracked armer factory supplies the probe,
+and it is one object: something with `started_at()` returning
+`provider.status(pod_id).started_at`. Passing no probe is legitimate and leaves the old
+single-bound behaviour, which the preflight receipt then says in as many words
+(`container_start_probe: none`) rather than letting a reader assume the pull was
+budgeted for.
+
+Boot A's arithmetic follows from that and needs deciding before the card is rented: the
+two defaults sum to 900 s, which is the whole drill lifetime, leaving the close nothing.
+Either the untracked armer factory passes smaller `container_timeout_seconds` and
+`timeout_seconds` for the drill — the pull on a cheap card with `--hold-only` is a small
+image, so a 300/300 split is the obvious first try — or a longer lifetime is authorized.
+Both bounds are clamped down to whatever the lease has left and never up, so an oversized
+pair does not overrun the deadline; it quietly starves the second wait, which is the one
+the drill exists to measure. `boot_a_request.py` states the sum against the requested
+lifetime in the rendered request so the choice is made on paper.
+
 **Boot B, the real thing.** Roadmap item 7 as written: `ChannelControllerArmer` with its
-poll bound set from Boot A's measured delay, materialize, preflight, the full checklist,
-no reading yet.
+container and poll bounds set from Boot A's two measured durations, materialize,
+preflight, the full checklist, no reading yet.
+
+`operations/pod/boot_b_request.py` renders it, the way `boot_a_request.py` renders the
+drill, and **validates what it renders**: every rendered request is built into a real
+`PodCreateRequest` before it is printed, so a shape the create gate would refuse cannot
+be published here. That mattered more than it sounds. Boot B's `docker_start_cmd` is the
+only shape in this tree that nests two argv halves — `pod_run`'s own, then
+`bootstrap_main`'s after a literal `--` — and each half requires its own `--report-path`,
+which `pod_run` then requires to be two different files. The create gate counted both
+halves together, so **every** Boot B request that could exist was refused before any
+preview, lease or provider call, and the offline suite was green over it because nothing
+had ever composed one. The gate now counts one report path per half, binds the launch
+token into both and into the nested `--journal`, and refuses a pair that names one file.
 
 The argument for the split costs nothing in the failure case: Boot B alone would have
 ended in the same immediate close, having also wasted the image pull and the session.

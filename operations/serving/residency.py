@@ -11,13 +11,31 @@ memory would recreate co-residency under a different object name.
 from __future__ import annotations
 
 import fcntl
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import Final, Protocol, TextIO
 
 from common.chairs.models import ChairIdentity
 
 from .errors import ResidencyError, ServiceStopError
+
+# The one lease path every serving caller on one pod must share -- the pod
+# preflight and each pipeline stage that serves a chair.
+#
+# Container-local, not on the network volume, for two reasons that the run-tree
+# path this replaced satisfied neither of. First, an advisory lock on a network
+# mount is not something the mount is known to honour, and a lock that silently
+# grants itself to everyone is the co-residency the single-resident rule exists
+# to prevent. Second, the boundary is the *card*, which belongs to the pod and
+# not to any one run: two stages resumed under different run ids each resolved
+# their own lock inside their own run tree, so both acquired, and two vLLM
+# servers contended for one GPU with no named refusal.
+#
+# A path, not a run-tree resolution: a caller that wants a different boundary
+# (a developer machine serving two unrelated trees) passes its own path to
+# `FileResidencyLease`, which is what the stage tests do.
+POD_RESIDENCY_LOCK_PATH: Final = Path("/tmp/verbatus-pod-gpu.lock")
 
 
 class ResidencyHandle(Protocol):
@@ -102,7 +120,24 @@ class FileResidencyLease:
         handle: TextIO | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            handle = self.path.open("a+", encoding="utf-8")
+            # `O_NOFOLLOW`, and mode 0600 on creation. The one pod-wide lease is
+            # a fixed name in a world-writable directory, so on a shared
+            # developer machine -- not in the single-tenant pod container this
+            # was written for -- somebody else's symlink at that name would
+            # otherwise be followed and locked wherever it pointed. Refused here
+            # instead, loudly, through the `OSError` arm below, which is the
+            # same answer the lease already gives when another user's file
+            # denies it. A symlink at the lease path is never a lease.
+            descriptor = os.open(
+                self.path,
+                os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                0o600,
+            )
+            try:
+                handle = os.fdopen(descriptor, "a+", encoding="utf-8")
+            except BaseException:
+                os.close(descriptor)
+                raise
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             close_failure = _close_quietly(handle)

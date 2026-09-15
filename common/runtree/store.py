@@ -83,6 +83,14 @@ ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
 RECEIPTS_DIR: Final = "receipts/sha256"
 RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.json"
+# Not a store writer: the serving assembly's launcher writes an engine log per
+# started chair into `<stage>/serving-logs/` while a stage is running. The store
+# never publishes there and never reads it, but harvest invariant #13 is about
+# every managed path *any* code writes in the tree, not only this module's own
+# -- so it is named here, and `inventory_scope()` covers it. Leaving it unnamed
+# is what made `fetch-run` refuse a whole served run tree by the first log it
+# listed.
+SERVING_LOGS_DIR: Final = "serving-logs"
 
 # The facts a run id is bound to. Changing any of them means this is a different
 # run wearing an old name, and reuse is refused rather than resumed.
@@ -107,6 +115,45 @@ _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 # attacker-created directory forest must not grow the walk without limit.
 _MAX_MANIFEST_ARTIFACT_BYTES: Final = 64 * 1024 * 1024
 _MAX_MANIFEST_WALK_ENTRIES: Final = 100_000
+# The same reasoning applies to every other file this store reads whole into
+# memory -- `run.json`, an index, a receipt, a retained response blob, a custody
+# binding, an arbitrary artifact fetched back off a volume -- not only the
+# manifest walk: `Path.read_bytes()` has no ceiling of its own, so a run tree
+# that is damaged, corrupted in transit, or genuinely hostile (a fetched run, a
+# resumed one) could otherwise be read whole before anything here gets a chance
+# to refuse it (G13, "read_bytes is unbounded").
+#
+# Two ceilings, because a run tree holds two kinds of file and one number cannot
+# describe both honestly.
+#
+# `MAX_RECORD_READ_BYTES` bounds a JSON record -- a manifest, an index, a
+# receipt, an artifact envelope. It is the same 64 MiB the manifest walk already
+# applies to every artifact it reads, and it is generous at that size rather
+# than asserted to be: the largest legitimate record is a stage manifest, and
+# `_MAX_MANIFEST_WALK_ENTRIES` (100_000) entries of a few hundred bytes each is
+# tens of megabytes. Public, because a record can be read through `read_bytes`
+# by a caller outside this module -- `operations/operator/surface.py` reads a
+# `manifest.json` that just arrived from a volume -- and such a caller must be
+# able to ask for the record-sized ceiling by name instead of settling for the
+# blob-sized one.
+#
+# `_MAX_TREE_READ_BYTES` bounds everything else, and what else means here is a
+# page blob. Blobs are deliberately not read by the manifest walk (see
+# `_walk_blobs`: "they may be full page images"), so nothing else in this module
+# bounds them. The value is calibrated from the bounds the pipeline already puts
+# on an image rather than guessed: an admitted source is refused above
+# `MAX_SOURCE_BYTES` (64 MiB) and a rendered page is bounded to
+# `MAX_PNG_DECODED_BYTES` (128 MiB) of decoded pixels, both in
+# `pipeline/1_exemplar/image_formats.py`. 192 MiB is half again the larger of
+# those, and it is deliberately *below* `MAX_FETCH_OBJECT_BYTES` (256 MiB, in
+# `operations/operator/surface.py`), which is the ceiling on every object the
+# fetch verb pulls off a volume: a read ceiling set above every other ceiling on
+# the path where untrusted bytes actually arrive can never fire there, which is
+# what an audit found the first value (512 MiB) did. A test in
+# `operations/operator/test_surface.py` pins that ordering so neither number can
+# drift past the other unnoticed.
+MAX_RECORD_READ_BYTES: Final = _MAX_MANIFEST_ARTIFACT_BYTES
+_MAX_TREE_READ_BYTES: Final = 192 * 1024 * 1024
 _DIRECTORY_OPEN_FLAGS: Final = (
     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 )
@@ -118,6 +165,23 @@ _RENDER_SETTINGS_FIELD: Final = "render_settings"
 # alone can *name* the policy bytes that governed the run instead of only being
 # able to test a candidate file against a hash of everything at once.
 _SEALED_CONFIG_DIGESTS_FIELD: Final = "sealed_config_digests"
+# The commit the code that *created* this run was at. Sealed into the authority
+# because a tree handed to a fresh session could otherwise prove its configuration
+# bytes by digest and still not say which code produced them -- the commit lived
+# only in the pod-run report and the operator's launch receipt, and neither travels
+# with the tree.
+#
+# Deliberately *not* a bound field. A run id names one set of inputs and one
+# configuration; it does not name one build, and binding this would refuse every
+# resume made after a fix. What the project does want is for such a resume not to be
+# silent, and an immutable authority cannot record it: run.json is created once, by
+# the Door, and never rewritten, so this names the creating commit and nothing else.
+# The commit that ran each later stage is recorded per invocation in the stage
+# timing journal `pod_run` gives the orchestrator on the volume, which is where a
+# cross-commit resume actually becomes visible -- and which is outside this tree
+# precisely because a clock cannot live in a tree that is pinned byte-identical
+# on rerun and resume.
+_REPOSITORY_COMMIT_FIELD: Final = "repository_commit"
 
 
 class PublishResult:
@@ -200,6 +264,7 @@ class RunTree:
         ingress: dict[str, Any] | None = None,
         render_settings: dict[str, Any] | None = None,
         sealed_config_digests: dict[str, str] | None = None,
+        repository_commit: str | None = None,
     ) -> "RunTree":
         """Open a run, creating it if new and refusing an incompatible reuse.
 
@@ -295,6 +360,14 @@ class RunTree:
                     "point of use could ask for"
                 )
             authority[_SEALED_CONFIG_DIGESTS_FIELD] = dict(sorted(sealed_config_digests.items()))
+        if repository_commit is not None:
+            if not _is_full_commit(repository_commit):
+                raise SchemaRefusal(
+                    "a run's repository_commit must be forty lowercase hexadecimal "
+                    "characters; a short or decorated revision names a commit only against "
+                    "the repository that resolved it, which a fetched tree no longer has"
+                )
+            authority[_REPOSITORY_COMMIT_FIELD] = repository_commit
         authority["self_hash"] = self_hash(authority)
 
         run_file = tree.root / RUN_FILE
@@ -395,6 +468,21 @@ class RunTree:
         the first stage's rows.
         """
         return f"{writing_directory(stage)}/{INDEX_FILE}"
+
+    def serving_log_path(self, stage: str) -> str:
+        """Where the serving launcher writes this stage's engine logs, inside the tree.
+
+        The store neither writes nor reads here (see `SERVING_LOGS_DIR`), but it
+        owns the path, for the same reason it owns `manifest_path`: the stage
+        that serves a chair and `inventory_scope()` have to mean the same
+        directory, and every stage that spelled the directory for itself was a
+        chance for them to differ. One did -- the Attestatores passed the stage
+        name `attestatores` where the writing directory is `3_attestatores`, so
+        every engine log landed outside the scope and `fetch-run` refused the
+        whole served run tree by name, bringing home nothing from a run that had
+        already billed a card. Derived from `writing_directory` here, once.
+        """
+        return f"{writing_directory(stage)}/{SERVING_LOGS_DIR}"
 
     def receipt_path(self, digest: str) -> str:
         """The one content-addressed location for a validated receipt-backed record."""
@@ -586,8 +674,15 @@ class RunTree:
                     "cannot legitimately differ between two passes over the same run"
                 )
             try:
-                if target.read_bytes() == data:
+                # Bounded by the bytes being published: a file longer than
+                # `data` cannot be the same receipt, and reading it whole to
+                # discover that is exactly the unbounded read this store no
+                # longer performs. A refusal here means "longer, so different",
+                # which is what a mismatch means -- rewrite it (G13).
+                if _read_bytes_bounded(target, max_bytes=len(data)) == data:
                     return PublishResult(relative, reused=True)
+            except SchemaRefusal:
+                pass
             except FileNotFoundError:
                 # Gone between `exists()` above and here. Nothing to reuse and
                 # nothing to refuse: fall through and publish it, which is what
@@ -693,7 +788,14 @@ class RunTree:
             _atomic_create(target, data)
         except FileExistsError:
             try:
-                existing = target.read_bytes()
+                # Bounded by the bytes being published, for the reason given in
+                # `_publish_recensor_partition_receipt`: a file longer than
+                # `data` is already different, and this is the generic publish
+                # path, reached for every artifact -- including one written into
+                # a tree that was fetched or resumed (G13).
+                existing: bytes | None = _read_bytes_bounded(target, max_bytes=len(data))
+            except SchemaRefusal:
+                existing = None
             except OSError as error:
                 raise IncompatibleReuse(
                     f"{relative} appeared while it was being published and could not be read; "
@@ -788,8 +890,16 @@ class RunTree:
             )
         return record
 
-    def read_bytes(self, relative_path: str) -> bytes:
-        return self.resolve(relative_path).read_bytes()
+    def read_bytes(self, relative_path: str, *, max_bytes: int | None = None) -> bytes:
+        """One file's bytes, under the blob-sized tree ceiling unless told otherwise.
+
+        A caller that knows it is reading a JSON record rather than a page blob
+        passes `max_bytes=MAX_RECORD_READ_BYTES`, so the bytes it is about to
+        hand to `json.loads` -- which costs several times their size again in
+        parsed objects -- are bounded by what a record can legitimately be and
+        not by what an image can (G13).
+        """
+        return _read_bytes_bounded(self.resolve(relative_path), max_bytes=max_bytes)
 
     def has_artifact(self, stage: str, kind: str, artifact_id: str) -> bool:
         return self.resolve(self.artifact_path(stage, kind, artifact_id)).exists()
@@ -1458,6 +1568,11 @@ class RunTree:
         inside the inventory scope, and adding a managed path without extending
         the scope fails a static drift test, loudly, naming the path. The test
         beside this module reads the writers from source and compares.
+
+        "Any code", not only this store: `<stage>/serving-logs/` is written by
+        the serving launcher while a stage runs, and a consumer that reads this
+        scope as the whole of what a run tree may hold — `fetch-run` does —
+        refuses a real served run tree outright if the scope omits it.
         """
         prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/", RECENSOR_PARTITION_RECEIPT_FILE]
         for directory in sorted(set(_all_writing_directories())):
@@ -1465,6 +1580,14 @@ class RunTree:
             prefixes.append(f"{directory}/{BLOBS_DIR}/")
             prefixes.append(f"{directory}/{MANIFEST_FILE}")
             prefixes.append(f"{directory}/{INDEX_FILE}")
+            # Written by the serving launcher, not by this store, and carrying
+            # no digest anybody recorded: in scope so a reader of the tree can
+            # account for it, never inventoried as evidence. `build_manifest`
+            # walks `<stage>/artifacts` alone and the blob inventory
+            # `<stage>/blobs`, so naming it here adds nothing to either. Same
+            # spelling as `serving_log_path`, which is what the stages call, so
+            # the writer and the scope cannot name different directories.
+            prefixes.append(f"{directory}/{SERVING_LOGS_DIR}/")
         prefixes.append(f"{writing_directory(DOOR)}/{DOOR_MANIFEST_FILE}")
         return tuple(prefixes)
 
@@ -1500,6 +1623,14 @@ def _run_creation_lock(parent: Path) -> Iterator[None]:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)
+
+
+def _is_full_commit(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, Any]) -> None:
@@ -1668,6 +1799,51 @@ def _naming(relative_path: str) -> Iterator[None]:
         raise type(error)(f"{relative_path}: {message}") from error
 
 
+def _read_bytes_bounded(path: Path, *, max_bytes: int | None = None) -> bytes:
+    """Read one file with a hard byte ceiling instead of `Path.read_bytes()`'s none.
+
+    Checked twice -- once from `fstat` before the read, once against what was
+    actually read -- because a file on disk can grow between the two.
+
+    Four call sites, each asking for the ceiling its own bytes deserve, so that
+    a damaged, corrupted-in-transit, or hostile run tree gets this module's own
+    named refusal instead of `MemoryError` (G13): `read_bytes`, at the
+    blob-sized default or at whatever its caller names; `_read_json_with_bytes`
+    (and `read_run`, `read_artifact`, the index and receipt readers through it)
+    at `MAX_RECORD_READ_BYTES`; and the two publish-time reuse comparisons
+    (`_publish_bytes`, `_publish_recensor_partition_receipt`) at the length of
+    the bytes being published, since a longer file is already a different one.
+    `_read_manifest_artifact` is the one whole-file read that does not come
+    through here: it needs its own no-follow descriptor chain, and applies the
+    same record ceiling itself.
+
+    `max_bytes` reads `_MAX_TREE_READ_BYTES` at call time rather than as an
+    ordinary default parameter, so a test can still monkeypatch the module
+    constant -- a default bound at definition time would freeze the value
+    this function saw the moment the module was imported.
+
+    Deliberately *not* a general `except OSError` around the read: a missing
+    or unreadable file must keep raising the same `OSError` subclass
+    `Path.read_bytes()` always did (`FileNotFoundError`, `PermissionError`,
+    ...), because callers such as `_verify_register_snapshot_present` already
+    catch `OSError` specifically and convert it to their own named refusal.
+    Only the two size-ceiling cases below raise this module's own
+    `SchemaRefusal`.
+    """
+    if max_bytes is None:
+        max_bytes = _MAX_TREE_READ_BYTES
+    with open(path, "rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        if size > max_bytes:
+            raise SchemaRefusal(
+                f"{path} is {size} bytes, above the {max_bytes}-byte tree read limit"
+            )
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise SchemaRefusal(f"{path} grew above the {max_bytes}-byte tree read limit while read")
+    return data
+
+
 def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
     # `RecursionError` beside the two obvious ones because it is the same fact —
     # this file could not be read — arriving by a route the tuple did not name.
@@ -1689,7 +1865,12 @@ def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
     # differently; one tuple-returning body survives, under this name, and it
     # decodes and returns the exact same bytes a caller may later digest.
     try:
-        data = path.read_bytes()
+        # Every path through here is a JSON record, so the record ceiling, not
+        # the blob one. A `SchemaRefusal` from the ceiling is already this
+        # module's own named refusal and needs no arm of its own: it derives
+        # from `ContractError`, not from anything the tuple below names, so it
+        # propagates unwrapped.
+        data = _read_bytes_bounded(path, max_bytes=MAX_RECORD_READ_BYTES)
         return json.loads(data.decode("utf-8")), data
     except (OSError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error

@@ -127,8 +127,9 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     and the perimeter band -- were measured on 44 real pages and sealed in
     `[coverage_audit]`, with `calibrated_for_this_corpus = true` and their own
     provenance block. The three that are not lengths were not:
-    `MINIMUM_INK_PIXELS`, `MINIMUM_CONTRAST_BELOW_BACKGROUND` and
-    `MINIMUM_FRACTION_OUTSIDE_COVERAGE` are still reasoned defaults.
+    `MINIMUM_CONTRAST_BELOW_BACKGROUND` in source, and the noise floor and
+    fraction gate -- sealed in `[coverage_audit.noise_floor]` since 2026-09-14
+    under a provenance block of their own -- are still reasoned defaults.
 
     So the claim this test protects has changed shape rather than gone away: the
     module must still carry the unmeasured banner over the three it applies to,
@@ -152,6 +153,14 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     # The claim is bounded by its own caveat, which is what keeps "calibrated"
     # from being read as "calibrated for the corpus this pipeline will run on".
     assert "WHAT THE SAMPLE DOES NOT ESTABLISH" in provenance["caveat"]
+    # And the unmeasured block states its own status directly, rather than
+    # being established only by the banners above: a later edit that calibrated
+    # the noise floor without moving this line would otherwise leave the test
+    # passing while the claim it protects had changed (CodeRabbit on PR #117).
+    noise_floor = config["coverage_audit"]["noise_floor"]["provenance"]
+    assert noise_floor["calibrated_for_this_corpus"] is False
+    assert noise_floor["sample_count"] == 0
+    assert "PROPOSED, NOT YET MEASURED" in noise_floor["caveat"]
     # The handoff must keep saying which two moved and which three did not,
     # so a reader of the stage interface is not left to infer it from the file
     # the gates now live in.

@@ -355,6 +355,25 @@ def test_chandra_names_excessive_json_nesting_with_a_fixed_outcome(monkeypatch):
     assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "excessive-json-nesting"}
 
 
+def test_chandra_never_lets_a_huge_json_integer_literal_escape():
+    """A 4,301-digit integer literal is otherwise well-formed JSON.
+
+    CPython's own integer-string-conversion limit (4,300 digits by default)
+    turns the scanner's `int()` call into a bare `ValueError` -- not
+    `json.JSONDecodeError` -- once a literal crosses it, and `_decode` must
+    still land on its own named refusal rather than let that escape (G13).
+    """
+    chandra = _load_stage_module("chandra")
+    huge_integer = b"9" * 4301
+    raw = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"x","blocks":[],"extra":'
+        + huge_integer
+        + b"}"
+    )
+    assert chandra.parse_fixture_placeholder(raw) == {"parse_outcome": "invalid-json"}
+    assert chandra.observe(_presented(), raw) == []
+
+
 def test_chandra_never_lets_a_deep_document_or_a_non_byte_input_escape():
     """Whichever branch the real interpreter takes, neither is a crash."""
     chandra = _load_stage_module("chandra")

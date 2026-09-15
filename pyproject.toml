@@ -40,6 +40,13 @@ verbatus = "operations.operator.entry:main"
 requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
+# Kept identical to the pin in .githooks/check-all.sh and .github/workflows/ci.yml.
+# uv itself refuses to run against this project when the resolved binary does not
+# match, rather than letting a drifted uv silently resolve or sync something the
+# gate's own version check would have caught anyway.
+[tool.uv]
+required-version = "==0.12.1"
+
 [dependency-groups]
 # The full gate executes its tests and static tooling from uv's frozen
 # environment. Keep these direct values identical to requirements-dev.txt,
@@ -87,7 +94,8 @@ pod = [
 # resolves those as siblings of the checkout rather than as package data -- so a
 # non-editable install cannot run this system, and packaging the private material to
 # make it appear to would be the wrong repair. Verbatus runs from a source checkout:
-# the pod bootstrap clones at a pinned commit and runs `uv sync --locked`, and
+# the pod bootstrap fetches and checks out a pinned commit in the checkout the pod
+# image carries -- it never clones one -- and then runs `uv sync --locked`, and
 # `common/checkout.py` refuses before any verb starts anywhere else.
 # `operations/README.md` carries the contract in full.
 [tool.setuptools.packages.find]

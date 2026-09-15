@@ -68,6 +68,8 @@ from common.stage import (
 )
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 from operations.operator import surface, volume_s3
+from operations.operator.custody import PROVIDER_ENV_PREFIXES, credential_free_environment
+from operations.pod.models import looks_like_credential_field
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1600,10 +1602,71 @@ def _perlector_dissent():
 # Evidence: workbench/raw/audit-fixes-2026-09-11/f2-pin-attribution/round3/ and
 # f2-fix/pins-round3.log (retained outside Git, like every other evidence
 # directory this file cites).
+# The pre-launch review's G1 correction (2026-09-14, F082/F088/F089): the
+# truncation instrument's length signal made scale-invariant under a floor
+# sealed in `config/perlector_protocol.toml`, and the coverage audit's noise
+# floor and fraction gate sealed in `config/designator_grouping.toml`. Measured
+# once, as two fresh runs of the base commit 540c005b's own tree (exported with
+# `git archive`, run under its own `common/`) against this candidate, with a
+# leaf-by-leaf attribution over every changed file. Happy 100 files/exit 0 and
+# review 111 files/exit 3, file counts unchanged on both sides. Happy: 23 leaves
+# byte-identical, 75 JSON leaves changed, 2 content-addressed blobs
+# re-addressed, 18 non-digest value changes; review: 22 / 87 / 2 / 27. Every
+# non-digest change is one of two kinds and there are no others:
+#
+# 1. The new `measure` block -- `{region_pixels, page_pixels, characters}`, what
+#    the length signal was judged from -- on every truncation record and every
+#    re-proof termination record: in happy, the 2 Perlectiones, the 2 Pass-A
+#    `lectio-prior` drafts and the 2 audit findings' `reproof_truncation`; in
+#    review, 3 / 3 / 3. Every signal and every classification on those records
+#    is byte-identical to the baseline's: no fixture act's verdict moved, and
+#    the review scenario's recovered act measures its region as the union of
+#    its crop and its recrop (22,800 px), which is what keeps it so.
+# 2. The content addresses of the one Perlector partition blob and the Armarium
+#    bundle zip that carry those records, and every `relative_path` naming
+#    them; these are the two only-on-one-side blobs per scenario.
+#
+# And the digests that follow (`config_digest` -- both sealed files changed
+# bytes, which is the whole point of F088 -- `self_hash`, `sha256`,
+# `inputs[].sha256`), classified as digest changes and not counted above. No
+# text, outcome, category, crop geometry, count, terminal status, file count or
+# exit code changes. The pins below are read from these two tests' own
+# computation over the candidate; the attribution attributes the change and
+# does not mint the pin.
+# Evidence: workbench/raw/prelaunch-g1-2026-09-14/pin-attribution/ (retained
+# outside Git, like every other evidence directory this file cites).
+# The independent audit of that correction (2026-09-14) moved the pins once
+# more, and the attribution was taken the same way: two fresh runs of the
+# audited head 48cd47e7's own tree (exported with `git archive`, run under its
+# own `common/`) against this candidate, compared leaf by leaf. Happy 100
+# files/exit 0 and review 111 files/exit 3, file counts and exit codes unchanged
+# on both sides, two content-addressed blobs re-addressed per scenario (the
+# Perlector partition and the Armarium bundle) and no other file added or
+# removed. Across every JSON leaf of both run trees there are exactly two kinds
+# of non-digest change and no others:
+#
+# 1. `length_floor_characters_per_page` added to every truncation `measure`
+#    block -- the floor the signal was judged under, now on the record so a
+#    reader holding the record alone re-derives `length_suspicious` (GOVERNANCE
+#    6). Happy: 4 on `payload.truncation` and 2 on `payload.reproof_truncation`;
+#    review: 6 and 3. Nothing else was added and nothing removed.
+# 2. In the export manifest, the `designator-geometry-calibration` survey gains
+#    a fourth row, `perlector-protocol` / `calibrated_for_this_corpus = false` /
+#    `sample_count = 0`, and its `recorded_in` names that table: the truncation
+#    instrument's uncalibrated floor now travels with the product instead of
+#    stopping in `config/`.
+#
+# Everything else is a digest (`config_digest` -- `config/perlector_protocol.toml`
+# and `config/designator_grouping.toml` both changed bytes -- `self_hash`,
+# `sha256`, and the references that carry them). In the exported `acts.jsonl`
+# every difference is a reference digest: no established text, outcome,
+# category, crop geometry or count moved (GOVERNANCE 5).
+# Evidence: the comparison scripts and both run trees were built in this
+# session's scratch and are not retained in Git.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "6c487d80af1eeea771abae11d3152e34a7ff070964c0baac83a425075239b4f3"
-REVIEW_RUN_TREE_DIGEST = "905bb7731d3557a2bb53345785c505317456ae3c03836df63899678dada8de6d"
+HAPPY_RUN_TREE_DIGEST = "0176d071fa079af290683c6aa73de404f3e76900878f9124356cec1f77a6956c"
+REVIEW_RUN_TREE_DIGEST = "1f49ee36bdad741cb8bbcec965ff9c24a980b7eb36dcb073826320de377dd40c"
 
 
 def orchestrate(
@@ -1622,6 +1685,8 @@ def orchestrate(
     submission_manifest: Path | None = None,
     data_gate_policy: Path | None = None,
     placement_tier: str | None = None,
+    stage_timing_journal: Path | None = None,
+    repository_commit: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     if nuda_per_mille and nuda_approval_ref == NUDA_APPROVAL_SUBJECT:
@@ -1675,6 +1740,10 @@ def orchestrate(
         command.extend(("--data-gate-policy", str(data_gate_policy)))
     if placement_tier is not None:
         command.extend(("--placement-tier", placement_tier))
+    if stage_timing_journal is not None:
+        command.extend(("--stage-timing-journal", str(stage_timing_journal)))
+    if repository_commit is not None:
+        command.extend(("--repository-commit", repository_commit))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -2108,6 +2177,61 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
     ):
         leaked = volume_s3.TRANSFER_CREDENTIAL_ENV.intersection(built)
         assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
+
+
+def test_orchestrator_and_surface_strip_every_provider_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F016: a stage subprocess decodes attacker-supplied material and used to
+    keep every provider credential except the transfer's own two S3 keys --
+    RUNPOD_API_KEY (pod creation, i.e. money), HF_TOKEN, AWS_*, and anything
+    else shaped like a secret all survived. Both `stage_environment` builders
+    must now refuse the same broad shape `credential_free_environment` already
+    holds the operator's confined children to; the orchestrator duplicates that
+    predicate rather than importing it (module docstring: "imports only
+    common/"), so this is also where the copy is checked against the original,
+    the way the transfer-credential duplicate above already is.
+    """
+
+    orchestrator = _orchestrator_module("orchestrator_provider_credentials")
+    representative_names = (
+        "RUNPOD_API_KEY",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "GITHUB_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "SOME_VENDOR_BEARER",
+        *volume_s3.TRANSFER_CREDENTIAL_ENV,
+    )
+    for name in representative_names:
+        assert looks_like_credential_field(name) or name.startswith(PROVIDER_ENV_PREFIXES), (
+            f"{name} is not actually credential-shaped by the real predicate; fix the fixture"
+        )
+        assert orchestrator._looks_like_provider_credential(name), (
+            f"the orchestrator's duplicated predicate does not refuse {name}"
+        )
+        monkeypatch.setenv(name, f"secret-for-{name}")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    reference = credential_free_environment()
+    for label, built in (
+        ("orchestrator", orchestrator.stage_environment()),
+        ("operator surface", surface._stage_environment()),
+    ):
+        leaked = set(representative_names) & set(built)
+        assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
+        assert built.get("VERBATUS_STAGE_TEST_SENTINEL") == "preserved", (
+            f"{label} dropped an ordinary, non-credential variable"
+        )
+        # Not just the hand-picked names above: the whole process environment,
+        # compared key-for-key against the real `credential_free_environment`,
+        # so the duplicated predicate cannot drift narrower *or* wider than the
+        # original in silence.
+        assert set(built) == set(reference), (
+            f"{label} disagrees with credential_free_environment on {set(built) ^ set(reference)}"
+        )
         # The stripper must remove those names and nothing else: an
         # implementation that returned an empty environment, or one that dropped
         # everything it did not recognise, would satisfy the assertion above
@@ -5646,6 +5770,178 @@ def test_armarium_refuses_two_established_records_instead_of_selecting_one(tmp_p
     assert result.returncode == 2
     assert "carries 2 Archetypus records" in result.stderr
     assert snapshot(root) == before
+
+
+# --- the commit and the clock the tree could not carry (F098) ------------------
+
+
+COMMIT = "a1b2c3d4" * 5
+
+
+def test_the_run_authority_names_the_commit_the_code_ran_at(tmp_path):
+    """A tree handed to a fresh session could prove its configuration bytes by
+    digest and still not say which code produced them.
+
+    The commit comes from the caller, not from a lookup here: on a pod the
+    bootstrap has already read the running checkout back against the pin, so
+    `pod_run` forwards a proven fact rather than paying for a weaker one.
+    """
+
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy", repository_commit=COMMIT).returncode == 0
+
+    assert RunTree(root, "r").read_run()["repository_commit"] == COMMIT
+
+
+def test_a_run_whose_caller_names_no_commit_records_none_rather_than_a_placeholder(tmp_path):
+    """GOVERNANCE 10: not measured is recorded as not measured, never invented."""
+
+    root = tmp_path / "runs"
+    journal = tmp_path / "timings.json"
+    assert orchestrate(root, "r", "happy", stage_timing_journal=journal).returncode == 0
+
+    assert "repository_commit" not in RunTree(root, "r").read_run()
+    entry = json.loads(journal.read_text(encoding="utf-8"))["entries"][0]
+    assert entry["repository_commit"] is None
+    assert "no --repository-commit was named" in entry["repository_commit_detail"]
+
+
+def test_a_short_or_decorated_revision_is_refused_before_the_door_runs(tmp_path):
+    """A revision that names a commit only against the repository that resolved
+    it is worthless to a fetched tree."""
+
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "happy", repository_commit="a1b2c3d")
+
+    assert result.returncode == 2
+    assert "is not a full lowercase" in result.stderr
+    assert not (root / "r").exists()
+
+
+def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tmp_path):
+    """Outside the tree deliberately: a run tree is pinned byte-identical across a
+    rerun, a resume and a restored backup, and a clock is not that. `pod_run` names
+    this journal beside its report on the volume, where the transcript and the
+    liveness tick already live."""
+
+    root = tmp_path / "runs"
+    journal = tmp_path / "timings" / "pod-run-report-timings.json"
+
+    assert (
+        orchestrate(
+            root, "r", "happy", stage_timing_journal=journal, repository_commit=COMMIT
+        ).returncode
+        == 0
+    )
+
+    record = json.loads(journal.read_text(encoding="utf-8"))
+    assert record["schema"] == "stage-timing-journal.v1"
+    assert record["run_id"] == "r"
+    stages = [entry["stage"] for entry in record["entries"]]
+    # Every program the automatic sequence invokes, the Door and the Exemplar
+    # named apart although they share `1_exemplar/`.
+    assert stages[:2] == ["door", "exemplar"]
+    assert stages[-1] == "armarium"
+    for entry in record["entries"]:
+        assert entry["exit_code"] == 0
+        assert entry["duration_ms"] >= 0
+        assert entry["operation"] == "run"
+        assert entry["started_at"].endswith("Z") and entry["finished_at"].endswith("Z")
+        assert entry["repository_commit"] == COMMIT
+        assert entry["repository_commit_detail"] is None
+
+
+def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tmp_path):
+    """Every selected sequence validates it, not only the one that opens at the Door.
+
+    `repository_commit` used to be reached from the Door's own argv build and
+    from the timing journal, so a manual or semi run starting later -- with no
+    journal configured, nothing else reads it -- could accept a malformed
+    revision and go on to execute stages (CodeRabbit on PR #117).
+    """
+
+    root = tmp_path / "runs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR),
+            "--fixture",
+            FIXTURE,
+            "--scenario",
+            "happy",
+            "--run-id",
+            "r",
+            "--run-root",
+            str(root),
+            "--stage",
+            "recensor",
+            "--repository-commit",
+            "a1b2c3d",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "is not a full lowercase" in result.stderr
+    assert not (root / "r").exists()
+
+
+def test_a_timing_journal_inside_the_run_tree_is_refused_before_anything_runs(tmp_path):
+    """The option says "outside the run tree" and now nothing else has to.
+
+    A journal under the run directory would add mutable bytes to an immutable
+    tree once per stage invocation and change the byte identity the rerun,
+    resume and restore checks all rest on (CodeRabbit on PR #117).
+    """
+
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "happy", stage_timing_journal=root / "r" / "timings.json")
+
+    assert result.returncode == 2
+    assert "is inside this run's own tree" in result.stderr
+    assert not (root / "r" / "timings.json").exists()
+
+
+def test_a_timing_journal_belonging_to_another_run_is_left_unchanged(tmp_path):
+    """Two runs at one journal path: the second must not inherit the first's entries.
+
+    Nothing checked the identity of an existing journal before appending, so
+    the first run's entries were kept while the top-level `run_id` was replaced
+    with the second's -- a file attributing one run's stage timings to another
+    (CodeRabbit on PR #117). The conflict is reported on stderr like every other
+    journal fault, because a stopwatch never fails a stage.
+    """
+
+    root = tmp_path / "runs"
+    journal = tmp_path / "timings.json"
+    assert orchestrate(root, "first", "happy", stage_timing_journal=journal).returncode == 0
+    before = journal.read_text(encoding="utf-8")
+
+    second = orchestrate(root, "second", "happy", stage_timing_journal=journal)
+
+    assert second.returncode == 0
+    assert journal.read_text(encoding="utf-8") == before
+    assert "already belongs to" in second.stderr
+
+
+def test_naming_no_timing_journal_leaves_the_run_tree_exactly_as_it_was(tmp_path):
+    """The journal is opt-in precisely so the byte-identity checks below still
+    measure the same tree."""
+
+    with_journal = tmp_path / "with"
+    without = tmp_path / "without"
+    assert (
+        orchestrate(
+            with_journal, "r", "happy", stage_timing_journal=tmp_path / "timings.json"
+        ).returncode
+        == 0
+    )
+    assert orchestrate(without, "r", "happy").returncode == 0
+
+    assert snapshot(with_journal) == snapshot(without)
+    assert not (with_journal / "r" / "timings.json").exists()
 
 
 # --- 2. Repeating the identical command changes nothing ------------------------

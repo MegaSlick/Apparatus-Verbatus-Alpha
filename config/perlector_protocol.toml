@@ -7,3 +7,28 @@ pass_b_fragment = "This is a prior reading. It may be correct, incomplete, or wr
 # must fit in one request: callers hold with cluster-presentation-over-capacity
 # rather than split its captures into candidate readings.
 max_images = 32
+
+# The truncation instrument's length signal (`pipeline/4_perlector/truncation.py`).
+# A reading is length-suspicious when, scaled from its region to the whole page's
+# area, it would carry fewer than this many characters:
+#
+#     characters * page_pixels < length_floor_characters_per_page * region_pixels
+#
+# Dimensionless on purpose. Until 2026-09-14 this was an absolute 2,000
+# pixels-per-character ratio in source, set to clear this repository's 200x260
+# fixture pages -- and an absolute ratio scales the wrong way: a real 300-DPI act
+# crop (2,400x420 px, 380 characters) is 2,653 px/char, so every ordinary act
+# tripped the signal and held as truncated (pre-launch review, F082). A fraction
+# of the page's own area asks the same question at every scale, and the sealed
+# value is what the run's config_digest records (F088).
+[truncation]
+length_floor_characters_per_page = 50
+
+[truncation.provenance]
+source = "reasoned, 2026-09-14, from two anchors and no reading of real ink. Above: a 300-DPI letter leaf (2,550x3,300 px) at a 104 px line pitch -- doubled from the 52 px at 150 DPI config/pdf_render.toml records measuring on Hudson's Bay Company account books, not a figure that file states for 300 DPI -- holds about 32 lines of 60-90 characters, so a full written page is roughly 2,000-3,000 characters and a single 2,550x104 line band reads at about 2,200 characters per page-equivalent; a crop that returns under 50 is producing less than a fortieth of that density. Below: this repository's own fixture acts (proof/build_fixture.py, 34 and 40 characters over 160x80 and 160x100 Designator bounds on a 200x260 page) sit at 138 and 130 characters per page-equivalent over those bounds and at 95 and 89 over the padded crops the Perlector actually measures (188x99 and 188x124 px under config/designator_padding.toml); the review scenario's recovered act reads at 78 over the union of its crop and its fallback recrop (22,800 px), and the floor must clear all of them or every fixture run holds"
+corpus = "none. The fixture pages under proof/fixtures/synthetic-two-page-v0 and the pixel geometry of a letter-sized 300-DPI render; no act of any real register has been read through this instrument"
+sample_unit = "act crop"
+sample_count = 0
+statistic = "none -- a reasoned floor between the fixture's own density and a real page's, not a percentile of any measured distribution"
+calibrated_for_this_corpus = false
+caveat = "THE VALUE IS BOUNDED ABOVE BY THE FIXTURE, NOT BY REAL INK. Any floor above about 78 holds this repository's own fixture acts as the Perlector measures them -- 95 and 89 unrecovered, 78 on the recovered act, whose region is the union of its crop and its recrop -- so 50 is chosen to clear all three by a factor of at least 1.5 and it is deliberately far below a real page's density: at 300 DPI a tenth-of-a-page crop is length-suspicious only when it returns fewer than five characters. That makes this a weak signal on real material and an honest one -- it can no longer hold a complete act by an accident of scale, and it still catches a reading that stopped after a token. It is one of three computed signals and never decides alone: one suspicious signal under a clean engine stop is unknown and holds; the engine's own length stop is authoritative whatever this says. THE RESIDUAL RISK NOW RUNS THE OTHER WAY AND IS NOT CLOSED HERE. A reading cut off after its first line -- 40 characters on a 2,400x420 act crop that should carry about 380 -- is not length-suspicious under this floor, and under a clean engine stop with no unclosed mark and no trailing hyphen that act is established complete: the silent loss GOVERNANCE 2 refuses, left standing because the fixture bounds the floor from above. On real material the load-bearing signal is therefore the engine's own length stop, and a serving adapter that drops it holds every reading instead, which is the correct failure. Re-deriving against a real run's own Perlectiones (characters per page-equivalent over accepted acts, and over acts a reviewer confirmed truncated) is a prerequisite of relying on this signal, not an optional refinement; until it is done the instrument declares itself uncalibrated on every bundle through the Armarium's not-measured survey, which surveys this table beside the Designator geometry it was built for. pipeline/4_perlector/test_truncation.py pins both the fixture density and the cut-off reading this floor does not catch, so either moving fails there by name"

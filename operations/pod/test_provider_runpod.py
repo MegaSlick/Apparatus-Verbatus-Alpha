@@ -381,6 +381,20 @@ def test_create_correlates_the_launch_token_before_it_posts() -> None:
     assert body["volumeMountPath"] == "/workspace/private"
     assert body["gpuTypeIds"] == ["NVIDIA RTX 6000 Ada Generation"]
     assert body["env"] == {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"}
+    # The create body used to name no container disk at all, so the pod took
+    # whatever the image or the account defaulted to while the bootstrap
+    # downloaded the serving stack onto it twice over.
+    assert body["containerDiskInGb"] == request().container_disk_gb
+
+
+def test_create_sends_the_container_disk_the_request_asked_for() -> None:
+    transport = ScriptedTransport([json_response([]), json_response(pod_payload(), 201)])
+
+    provider(transport).create(request(container_disk_gb=120))
+
+    body = transport.calls[1][2]
+    assert body is not None
+    assert body["containerDiskInGb"] == 120
 
 
 def test_create_returns_the_existing_token_pod_without_posting_again() -> None:
@@ -653,6 +667,63 @@ def test_status_strips_a_padded_but_usable_desiredstatus_before_storing_it(
     assert status.presence is Presence.PRESENT
     assert status.provider_state == "RUNNING"
     assert "unusable desiredStatus" not in status.detail
+
+
+def test_status_surfaces_the_container_start_moment_beside_the_lifecycle_word() -> None:
+    """F056: `desiredStatus` cannot separate "still pulling" from "started and silent".
+
+    It is what the pod was *asked* to be and reads RUNNING from the instant
+    create returns. `lastStartedAt` is the only field in this body that reports
+    an actual start, and it was previously read only where it becomes
+    `PodRecord.created_at` -- invisible to anything watching a pod come up.
+    """
+
+    transport = ScriptedTransport(
+        [json_response(pod_payload(lastStartedAt="2026-08-08T12:03:04Z"))]
+    )
+
+    status = provider(transport).status("pod-1")
+
+    assert status.provider_state == "RUNNING"
+    assert status.started_at == datetime(2026, 8, 8, 12, 3, 4, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("missing", [None, "", "   "])
+def test_status_reports_no_container_start_before_the_pod_has_run(missing: object) -> None:
+    """Null until the pod first runs -- which is the state this bound exists for.
+
+    `None` here must never be read as "the container failed": it is the ordinary
+    answer while an image is still being pulled.
+    """
+
+    payload = pod_payload()
+    if missing is None:
+        del payload["lastStartedAt"]
+    else:
+        payload["lastStartedAt"] = missing
+    transport = ScriptedTransport([json_response(payload)])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.presence is Presence.PRESENT
+    assert status.started_at is None
+
+
+def test_status_names_an_unparseable_container_start_rather_than_raising_on_a_read() -> None:
+    """The same posture an unfamiliar `desiredStatus` already gets.
+
+    `status` is the read the shutdown path and the laptop supervisor both
+    depend on; a stamp this adapter cannot parse must not turn a read-only
+    observation into a `ProviderFailure`. It degrades to "no start observed"
+    and says so in `detail`.
+    """
+
+    transport = ScriptedTransport([json_response(pod_payload(lastStartedAt="not-a-timestamp"))])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.started_at is None
+    assert "unusable lastStartedAt" in status.detail
 
 
 def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:

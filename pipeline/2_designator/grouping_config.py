@@ -255,6 +255,14 @@ def load_grouping_config(
             else None,
             "[coverage_audit.provenance]",
         ),
+        # The unmeasured pair carries a provenance block of its own, held to
+        # the same schema, so the calibration claim above cannot be read as
+        # covering two values nobody measured. Validated after the table, which
+        # is what proves the sub-table exists to read a block out of.
+        "noise_floor_provenance": _load_provenance(
+            config["coverage_audit"]["noise_floor"].get("provenance"),
+            "[coverage_audit.noise_floor.provenance]",
+        ),
     }
     background = _load_background(grouping.get("background"))
     provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")
@@ -310,13 +318,20 @@ assert _TYPED_PROVENANCE_FIELDS | set(_STRING_PROVENANCE_FIELDS) == set(_PROVENA
 def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
     """Validate one declared provenance block against the closed schema.
 
-    `where` is the block's own table name, because this policy now carries two
-    of them:
-    the file's own, over values that are unmeasured walking-skeleton defaults,
-    and `[grouping.background]`'s, over four values measured on 127 real pages.
-    One shared block could not describe both honestly -- `sample_count` alone is
-    0 for one and 127 for the other -- so there are two, and this function holds
-    both to the same schema.
+    `where` is the block's own table name, because this policy carries a
+    provenance block per table rather than one for the file -- `[grouping]`,
+    `[grouping.continuation]`, `[grouping.page_area_bp]`,
+    `[grouping.background]`, `[coverage_audit]` and
+    `[coverage_audit.noise_floor]` each declare their own. One shared block
+    could not describe them honestly: `sample_count` alone is 0 for the
+    unmeasured walking-skeleton defaults, 127 for the four background values
+    and 44 for the two coverage gates, and a single calibration claim would be
+    over-read onto every value under it. So each table answers for its own
+    numbers, and this function holds them all to the same schema. `where` is
+    what a refusal names, so the operator is sent to the block that is actually
+    wrong; the count of blocks is deliberately not stated here, since it moves
+    whenever a table is added and a stale number in this docstring is the one
+    place a reader would trust it.
 
     Identical shape to `geometry._load_padding_provenance`, for the same
     reason: every field is required and checked for shape, so a provenance

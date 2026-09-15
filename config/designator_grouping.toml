@@ -281,10 +281,11 @@ caveat = "gap_tolerance_px is the loudest number in this file and must never be 
 #                            the page's OWN AREA, flags a page on its own
 #                            whatever fraction of that page's ink it is. Resolved
 #                            with common.background.round_half_up_bp and floored
-#                            at residual_ink.MINIMUM_INK_PIXELS (24), because
-#                            coverage_flag reads this gate before the fraction
-#                            gate's own noise floor and a resolved value under
-#                            that floor would flag a page on a speck.
+#                            at [coverage_audit.noise_floor] minimum_ink_pixels
+#                            (24) below, because coverage_flag reads this gate
+#                            before the fraction gate's own noise floor and a
+#                            resolved value under that floor would flag a page
+#                            on a speck.
 #   edge_band_bp             the perimeter strip the unclaimed-edge-ink finding
 #                            is measured in, as basis points of the page's
 #                            SHORTER SIDE. The shorter side and not each
@@ -310,3 +311,36 @@ sample_count = 44
 statistic = "for substantial_ink_area_bp: the outside-coverage ink of each page, less its page-spanning component, as floor-divided basis points of the page's own area, over the 44 -- reported as the whole ordered distribution beside the ink one grouped unit of writing holds on the same page, because the value is anchored on the second and not placed at a quantile of the first. For edge_band_bp: the same audited outside-coverage ink restricted to the perimeter strip, at four band widths, over the same 44, beside the count of pages on which any act group's bounds reach into the strip at all"
 calibrated_for_this_corpus = true
 caveat = "WHAT THE SAMPLE ESTABLISHES. SUBSTANTIAL_INK_AREA_BP = 4. The gate exists to catch a miss that is large full stop, which the 2 per cent fraction gate beside it lets through on a dense page, so it is anchored on the smallest real thing a page can be missing rather than placed at a quantile. On these pages the Designator groups LINES rather than acts (the session's GROUPING_REPORT.md section 4 says so on the overlays), and the ink one such grouped line holds, measured as the page's own audited ink over its group count, is 4 basis points of the page's area at the median (0 to 115 across the 44, 5 at the third quartile, 19 at the ninth decile). 4 basis points is therefore one line of writing on the page it is measured on. Measured firing: the substantial gate fires on 41 of the 44 and the fraction gate on 38, and the three the substantial gate adds are the three whose outside-coverage ink is real and under 2 per cent of a dense page's own ink -- which is precisely the hole this gate exists to close, measured for the first time rather than argued. Three pages are cleared by both gates and they are the three whose grouping leaves no audited ink outside coverage at all. THE CORPUS DOES NOT DISCRIMINATE THE VALUE FINELY: every value from 2 to 4 basis points fires on the same 41 pages and every value from 5 to 18 on the same 40, so what separates 4 from 12 is the line measurement and not a gap in this distribution. EDGE_BAND_BP = 100. The band is an instrument boundary and its job is to be a MARGIN -- a strip the writing does not reach -- so that ink found in it is genuinely outside everything the pass claimed. Measured: at 100 basis points an act group's bounds reach into the strip on 5 of the 44 pages, at 200 on 15, and at 300 on 25. A band inside the writing on more than half the corpus has stopped being a perimeter, so 100 is the only one of the three that keeps the property the band is for. At 100 basis points the strip is 10 to 36 pixels on these pages and 2 pixels on this repository's 200x260 fixture; the audited perimeter ink in it clears MINIMUM_INK_PIXELS on 9 of the 44 and not on 35. WHAT THE SAMPLE DOES NOT ESTABLISH. It contains no page without a page-spanning component, so it says nothing about either gate on a page where the audit's counts and the page's whole ink coincide -- on such a page both gates read exactly what they read before this block existed, and neither has been measured there. It says nothing about a page admitted through pipeline/1_exemplar, and nothing about what a real structure-pass model would propose: the coverage every number here is measured against is the walking skeleton's own grouping, which produces lines rather than acts, so the outside-coverage ink these gates fire on is largely the gap BETWEEN grouped lines. On a pass that grouped acts the same pages would measure differently and this block should be re-derived. Finally, neither gate removes a pixel from anything or holds anything on its own: they decide whether a page carries a coverage finding a reviewer sees, and the page's whole-ink figure travels beside the audited one on every record, so a gate set too loosely is visible on the record rather than silent"
+
+# The two gates above are lengths, measured and sealed with `calibrated_for_this_corpus
+# = true`. The two values below are NOT lengths and are NOT measured, so they sit in a
+# sub-table of their own with their own provenance rather than under a calibration
+# claim that would be over-read onto them. Until 2026-09-14 both were module constants
+# in `common/residual_ink.py` (MINIMUM_INK_PIXELS = 24, MINIMUM_FRACTION_OUTSIDE_COVERAGE
+# = 0.02), outside every run's config_digest: a change between two live runs left their
+# provenance byte-identical (pre-launch review, F088). They are sealed here, under the
+# same `designator-grouping` seal every reader of this file already proves its bytes
+# against, and travel on the Armarium's re-measurement rows so the export verifier can
+# recompute a page hold on a clean machine from the counts alone.
+#
+# `minimum_ink_pixels` is the noise floor: below this many outside-coverage ink pixels
+# a residual mark is dust or a fold shadow, whatever fraction of a (possibly tiny)
+# page's total ink it is. It is a flat count on purpose -- a speck is a speck at every
+# resolution -- and it is also the floor the substantial gate above resolves to on
+# pages smaller than about 245 pixels square. The Recensor applies the same floor to
+# the ink under a witness's unclaimed pointer before that pointer may fund recovery.
+# `minimum_fraction_outside_bp` is the fraction gate: the share of a page's own audited
+# ink that must fall outside every cut before the page is flagged, in basis points
+# (200 = 2 per cent), an integer because canonical artifacts carry no floats.
+[coverage_audit.noise_floor]
+minimum_ink_pixels = 24
+minimum_fraction_outside_bp = 200
+
+[coverage_audit.noise_floor.provenance]
+source = "the two reasoned defaults `common/residual_ink.py` shipped with, carried into this file unchanged on 2026-09-14 so a run seals them: 24 pixels was reasoned as a few stray dark pixels of scanner dust, and 2 per cent as a fraction a genuinely missed region on a written page clears while a trace does not"
+corpus = "none. Neither value has been measured against a real register page; the 44-page sample the two gates above were measured on records that the audited perimeter ink cleared 24 pixels on 9 of the 44 pages, which is an observation about the band and not a calibration of the floor"
+sample_unit = "page"
+sample_count = 0
+statistic = "none -- both are reasoned defaults, not a percentile of any measured distribution"
+calibrated_for_this_corpus = false
+caveat = "PROPOSED, NOT YET MEASURED. A blank-page density threshold cannot substitute for either: 'is this page blank' and 'is any ink outside coverage' are different questions. Change them only when real-corpus calibration supplies a measured value, and re-derive both beside the two gates above on the same pages, because the three decide one flag together: the fraction gate cannot fire under the floor, and the substantial gate is floored at it"

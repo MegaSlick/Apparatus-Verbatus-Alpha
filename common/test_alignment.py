@@ -38,6 +38,8 @@ def test_alignment_returns_an_explicit_unaligned_record_at_the_sealed_pair_limit
     assert result["status"] == "unaligned"
     assert result["reason"] == "character-pair-limit"
     assert result["witness"]["text"] == "alpha beta gamma"
+    # Refused before the matcher ever ran; no timer question arises (F087).
+    assert result["deadline_in_force"] is False
 
 
 def test_alignment_carries_matching_spans_through_markup_normalization():
@@ -51,6 +53,10 @@ def test_alignment_carries_matching_spans_through_markup_normalization():
     assert result["spans"] == [
         {"witness": {"start": 0, "end": 10}, "anchor": {"start": 0, "end": 10}}
     ]
+    # F087: an ordinary aligned run on this interpreter (main thread, SIGALRM
+    # available, no timer already held) actually armed the backstop.
+    posix_alarm_available = all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL"))
+    assert result["deadline_in_force"] is posix_alarm_available
 
 
 # --- F-X1 (R4 audit, Opus seat 3): the ampersand that ate the markup ---------
@@ -204,6 +210,9 @@ def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map(monke
     # was measured and found absent.
     assert result["reason"] == alignment_module.DEADLINE_REASON == "alignment-deadline-exceeded"
     assert "spans" not in result, "a timed-out alignment must never carry a partial spans list"
+    # The backstop that fired is the one thing this record can say for certain
+    # was in force (F087).
+    assert result["deadline_in_force"] is True
 
 
 @pytest.mark.skipif(
@@ -230,6 +239,10 @@ def test_alignment_does_not_cancel_an_unrelated_existing_alarm():
         assert result["status"] == "aligned"
         assert remaining > 0
         assert signal.getsignal(signal.SIGALRM) is unrelated_handler
+        # F087: this call could not arm its own backstop -- a timer was already
+        # running -- so the record must say the comparison ran unbounded, even
+        # though it still finished and reports `aligned`.
+        assert result["deadline_in_force"] is False
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_handler)

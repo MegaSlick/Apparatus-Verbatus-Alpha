@@ -95,7 +95,10 @@ from operations.serving.errors import ServingError  # noqa: E402
 from operations.serving.http import UrllibHttpTransport  # noqa: E402
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
 from operations.serving.process import SubprocessLauncher  # noqa: E402
-from operations.serving.residency import FileResidencyLease  # noqa: E402
+from operations.serving.residency import (  # noqa: E402
+    POD_RESIDENCY_LOCK_PATH,
+    FileResidencyLease,
+)
 
 # A witness may report one of these ordinal self-assessments. They are retained
 # as testimony about its own response, never promoted into a model ranking or
@@ -4554,8 +4557,22 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         launcher=SubprocessLauncher(),
         http=UrllibHttpTransport(),
         receipt_publisher=StageContextReceiptPublisher(context),
-        log_root=context.tree.resolve(f"{ATTESTATORES}/serving-logs"),
-        residency_lease=FileResidencyLease(context.tree.resolve("pod-gpu.lock")),
+        # The logs stay in this stage's own writing directory, where
+        # `RunTree.inventory_scope()` names them and `fetch-run` brings them
+        # home as unverified side evidence. `serving_log_path`, never a
+        # directory spelled here: this call site read `f"{ATTESTATORES}/..."`,
+        # and the stage is named "attestatores" while it writes in
+        # "3_attestatores", so every engine log landed at a path no scope
+        # accounted for and `fetch-run` refused the whole served tree by name,
+        # bringing home nothing from a run that had already billed a card. The
+        # lease does not stay here: one card is one pod's boundary, not one run
+        # tree's, so it takes the container-local path the pod preflight and
+        # every other serving stage take. A lease resolved inside a run tree let
+        # two stages resumed under different run ids both acquire and co-reside
+        # on one GPU, and put an advisory lock on a network mount that is not
+        # known to honour one.
+        log_root=context.tree.resolve(context.tree.serving_log_path(ATTESTATORES)),
+        residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/3_attestatores/run.py",
     )
     return ChairClient(

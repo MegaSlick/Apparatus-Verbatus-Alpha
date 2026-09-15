@@ -87,7 +87,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 from pathlib import Path
-from typing import Any, Final, Mapping, TypedDict
+from typing import Any, Final, Mapping, TypedDict, TypeVar, cast
 
 import geometry
 import structure_prompt
@@ -124,7 +124,7 @@ from operations.serving.errors import ServingError
 from operations.serving.http import EndpointUnavailable, UrllibHttpTransport
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.process import SubprocessLauncher
-from operations.serving.residency import FileResidencyLease
+from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
 # The per-page record's second parse state; the first is `common.stage`'s
 # `STRUCTURE_ANSWER_PARSED`, named there because the consumer reads it back.
@@ -254,12 +254,6 @@ def _reconcile_finding_kinds() -> None:
 
 
 _reconcile_finding_kinds()
-
-# One card, one resident chair, one lease file for the whole run tree: the
-# same names the Attestatores and the Perlector use, so a structure chair
-# still running when a witness starts refuses instead of co-residing.
-SERVING_LOG_DIRECTORY: Final = "serving-logs"
-RESIDENCY_LOCK_FILE: Final = "pod-gpu.lock"
 
 _SHARED_DETECTION_RATIONALE: Final = (
     "the ink scan found one region covering at least half of this rectangle, but the "
@@ -459,8 +453,18 @@ def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) ->
         launcher=SubprocessLauncher(),
         http=UrllibHttpTransport(),
         receipt_publisher=StageContextReceiptPublisher(context),
-        log_root=context.tree.resolve(f"2_designator/{SERVING_LOG_DIRECTORY}"),
-        residency_lease=FileResidencyLease(context.tree.resolve(RESIDENCY_LOCK_FILE)),
+        # One card, one resident chair, one lease: `POD_RESIDENCY_LOCK_PATH` is
+        # the container-local path the pod preflight and every other serving
+        # stage take, so a structure chair still running when a witness starts
+        # refuses instead of co-residing -- including across two run trees,
+        # which a lease resolved inside one of them could not see. The serving
+        # logs stay in this stage's own writing directory, spelled by
+        # `RunTree.serving_log_path` and by nothing else: a directory restated
+        # at the call site is how the Attestatores came to pass the stage name
+        # where the writing directory was wanted, and `fetch-run` then refused
+        # the whole served tree.
+        log_root=context.tree.resolve(context.tree.serving_log_path(DESIGNATOR)),
+        residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/2_designator/run.py",
     )
     return ChairClient(
@@ -590,7 +594,29 @@ def page_request(
 # --- the answer -----------------------------------------------------------------
 
 
-class StructureProposal(TypedDict):
+class MintedRectangle(TypedDict):
+    """What the minting geometry reads from a rectangle before it is cut.
+
+    Exactly two things: the block ordinal that names the rectangle
+    (`proposal_act_key`) and the page-pixel rectangle itself
+    (`validated_rectangle`). A pass that just parsed an answer supplies them on
+    a `StructureProposal`; a **resumed** pass supplies them on the act row the
+    earlier pass already published (`_act_record`), which carries both under
+    the same names and carries neither of the two strings the chair wrote --
+    the record publishes a transcription and a label only by digest and length.
+    Naming the shared part is what lets a sealed act row be minted from
+    directly, instead of a reconstruction inventing a `text` the tree does not
+    hold in order to satisfy a type.
+    """
+
+    ordinal: int
+    raw_bounds: Bounds
+
+
+_Rectangle = TypeVar("_Rectangle", bound=MintedRectangle)
+
+
+class StructureProposal(MintedRectangle):
     """One of the chair's layout blocks, resolved to a rectangle on the sealed page.
 
     `ordinal` is the **block's** ordinal in the answer, in document order, and
@@ -603,13 +629,11 @@ class StructureProposal(TypedDict):
     block.
     """
 
-    ordinal: int
     # The vendor's resolved label: the answer's `data-label`, or
     # `chandra_layout.UNLABELLED_BLOCK_LABEL` where it declared none.
     label: str
     label_declared: bool
     box_1000: list[int]
-    raw_bounds: Bounds
     text: str
     # How many `data-bbox` attributes this block carried below its own top
     # level. Evidence, never geometry (`chandra_layout`'s third departure).
@@ -625,13 +649,18 @@ class PageAnswer:
     `mint` is the list of rectangles the pass cuts, in reading order, one per
     distinct rectangle; `disposition` and `reason_code` are what the page's
     status will say.
+
+    On an answer this pass just received `mint` holds `StructureProposal`s; on
+    one read back from a sealed record (`sealed_page_answer`) it holds the act
+    rows that record published. Both are `MintedRectangle`s, which is every
+    field the cutting reads.
     """
 
     ordinal: int
     page_id: str
     disposition: str
     reason_code: str | None
-    mint: tuple[StructureProposal, ...]
+    mint: tuple[MintedRectangle, ...]
     record: dict[str, Any]
 
 
@@ -777,9 +806,15 @@ def _label_fields(label: str, declared: bool) -> dict[str, Any]:
 
 
 def dedupe_rectangles(
-    acts: list[StructureProposal],
-) -> tuple[list[StructureProposal], list[dict[str, Any]]]:
+    acts: list[_Rectangle],
+) -> tuple[list[_Rectangle], list[dict[str, Any]]]:
     """Mint each distinct rectangle once, recording the later ordinals as findings.
+
+    Written over `MintedRectangle` rather than over `StructureProposal` so the
+    resumed pass reduces the sealed act rows through *this* function and not a
+    second copy of the rule: two rectangles that were one crop on the first
+    pass have to be one crop on the resume, and a private re-implementation is
+    how that stops being true.
 
     The class-and-bounds identity has no ordinal namespace
     (`common/contracts/identities.py::act_bindings`), so two identical
@@ -788,7 +823,7 @@ def dedupe_rectangles(
     in the retained blob. Not a refusal: GOVERNANCE 7, and a refusal here would
     lose every other act on the page over one the chair drew twice.
     """
-    unique: list[StructureProposal] = []
+    unique: list[_Rectangle] = []
     first_by_rectangle: dict[tuple[int, int, int, int], int] = {}
     findings: list[dict[str, Any]] = []
     for act in acts:
@@ -1019,6 +1054,77 @@ def _refused_page_answer(
         reason_code=HELD_REQUEST_TOO_LARGE,
         mint=(),
         record=record,
+    )
+
+
+def sealed_page_answer(record: Mapping[str, Any]) -> PageAnswer:
+    """The answer a previous pass already published for this page, read back.
+
+    The live counterpart of the Perlector's `_reading_already_sealed` and the
+    Attestatores' `sealed_pairs`, and it exists for the same reason: a live
+    chair cannot reproduce its own bytes. Every answer embeds the serving
+    session's `receipt_ref`, `call_record_ref` and `custody_ref`, all of which
+    move when the chair is started again, so a resumed pass that asked the
+    chair a second time would build different bytes under an artifact identity
+    the store has already fixed, and the run would die on `IncompatibleReuse`
+    one page into the resume (GOVERNANCE 4: evidence is never overwritten).
+
+    Reading the record back instead is what makes the rest of the pass
+    idempotent: a page rebuilt from its sealed record republishes
+    byte-identical artifacts and the store reuses them. What that rests on
+    differs by disposition, and only the first of the three is a function of
+    the answer's rectangles alone:
+
+    * `detected` -- the page's status, crops, act groups and seal rows all come
+      from the rectangles this record carries and the provenance it names.
+    * `fallback-tiles` -- the answer decides only *that* the page is tiled. The
+      grid comes from the page's own sealed dimensions and thresholds, and the
+      tiles are then clipped against the proposal regions already in the tree,
+      so this row reproduces only because the Designator's
+      `_publish_page_fallback` excludes the page's own fallback act from that
+      clip. Without that exclusion a second pass subtracts the tiles from
+      themselves, mints nothing, and seals a denominator missing a page whose
+      crops are on disk.
+    * `held` -- no crop was cut, so there is none to reproduce. The page's
+      status names the reason code this record carries, and its ink reconciles
+      as the same conservation residual it did the first time.
+
+    The claim is idempotence per disposition, and each of the three is tested
+    as one in `pipeline/test_structure_chair_e2e.py`. It is not a claim that
+    the answer alone determines every downstream byte.
+
+    `mint` is rebuilt by putting the published act rows back through
+    `dedupe_rectangles`, the same reduction the first pass applied to the
+    parsed proposals: the record carries every proposal the answer made, and
+    the minted set is the distinct rectangles among them. Only a `detected`
+    page mints at all -- a held page cut nothing and a fallback-tiled page is
+    cut from the grid, not from the answer -- so the rest return an empty mint,
+    exactly as they did the first time.
+    """
+    disposition = record["disposition"]
+    minted: tuple[MintedRectangle, ...] = ()
+    if disposition == DISPOSITION_DETECTED:
+        rows = [cast(MintedRectangle, dict(act)) for act in record["acts"]]
+        minted = tuple(dedupe_rectangles(rows)[0])
+        if not minted:
+            # `detected` is exactly the disposition that means "at least one
+            # rectangle was proposed", so a stored record carrying that word
+            # over no act row describes a page that cannot be reproduced. The
+            # resume refuses it rather than marking the page out as though it
+            # had proposed nothing -- which would leave its already-published
+            # crops out of the seal's denominator and fail later, further away.
+            raise ContractError(
+                f"the sealed structure answer for page {record['page_id']} says "
+                f"{DISPOSITION_DETECTED!r} and carries no act to mint; a resumed pass cannot "
+                "reproduce the crops that record's own page already has"
+            )
+    return PageAnswer(
+        ordinal=record["page_ordinal"],
+        page_id=record["page_id"],
+        disposition=disposition,
+        reason_code=record["reason_code"],
+        mint=minted,
+        record=dict(record),
     )
 
 
@@ -1263,8 +1369,13 @@ def ask_page(
 # --- minting geometry ----------------------------------------------------------
 
 
-def validated_rectangle(act: StructureProposal, page_w: int, page_h: int) -> Bounds:
-    """The chair's rectangle in page pixels, checked against the page it was drawn on."""
+def validated_rectangle(act: MintedRectangle, page_w: int, page_h: int) -> Bounds:
+    """The chair's rectangle in page pixels, checked against the page it was drawn on.
+
+    Checked again on a resumed pass, over the rectangle read back from the
+    sealed record rather than the one just parsed: a stored bounds that no
+    longer fits its page is a tree to refuse, not a crop to cut.
+    """
     bounds = dict(act["raw_bounds"])
     geometry.validate_bounds(bounds, page_w, page_h, "structure-chair rectangle")
     return bounds  # type: ignore[return-value]

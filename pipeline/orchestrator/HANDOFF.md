@@ -17,6 +17,37 @@ Recovery is a genuine member with no stage program of its own, not hidden work p
 before the Archetypus. That is what makes `--stage archetypus` execute the same boundary
 code `--all` does at that point.
 
+**Every round screens the whole outstanding batch before it dispatches any of it.**
+`undispatchable_recovery_reason` answers, per request, why this orchestrator cannot
+dispatch it: a `recovery_kind` other than `fallback-recrop` (the page-level reread belongs
+to the Perlector, which has not built it), or a recrop on a real submission (the Designator
+refuses `--operation recover` there by name, because a recrop's geometry still comes from a
+fixture's declared rectangle). Screening the batch first is what keeps an unanswerable
+request from leaving half a round behind it, and screening the route here is what stops the
+Designator's refusal reaching an operator as a bare `pipeline/2_designator/run.py exited 2`.
+`report_undispatchable_recoveries` then names every refused act and request before the
+`ContractError` is raised — this module writes no file of its own, so the run's own output
+is where it records a dispatch it would not make (GOVERNANCE 2); the durable evidence is the
+immutable request artifact and its `recovery-requested` review, which nothing here touches.
+
+Since findings F068/F083 the Recensor no longer publishes a real-ingress request at all, so
+the route branch is a backstop over a tree written before that gate landed. It is still
+checked: a bound nobody checks is not a bound.
+
+**It aborts the run; it does not hold the refused acts and carry on, and that is decided
+rather than omitted.** A tree that already carries such a request has no export available
+to it by any route, and nothing here changes that: `recovery-requested` maps to no terminal
+Armarium category (`common/contracts/outcomes.py`), so the Armarium refuses the act fatally
+however this member behaves, and the Recensor holds an act with an outstanding request
+without republishing (`pipeline/5_recensor/run.py`), so re-running it supersedes nothing
+either. Skipping the refused acts here would move the same dead end one stage later and
+lose the named cause at the boundary that knows it. Making the run exportable instead would
+mean making `recovery-requested` terminal, which would also let a fixture run whose recovery
+was simply never driven deliver as a partial — a half-driven run reported as a finished one.
+So this stops, says why, and says plainly that the route out is a fresh run from the Door;
+the three refusals an operator can meet (here, the Designator's and the Armarium's) all say
+the same thing and none of them names a remedy the code does not provide.
+
 ## The three selections
 
 An invocation runs one **contiguous** subsequence, named one of three ways:

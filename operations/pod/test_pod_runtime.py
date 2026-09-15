@@ -31,15 +31,19 @@ from . import cli
 from . import launch as launch_module
 from .arming import ControllerArming, ControllerReadiness
 from .bootstrap import (
+    BOOTSTRAP_ENVIRONMENT,
     CONFIGURATION_RECEIPT_SCHEMA,
+    REPOSITORY_VENV_DIRECTORY,
     BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
     BootstrapPlan,
     BootstrapStep,
     BootstrapStepFailure,
+    ImageContractRefusal,
     ModelStoreBootstrapAction,
     SubprocessBootstrapActions,
+    verify_image_contract,
 )
 from .controllers import ControllerResult, ControllerState, LaptopSupervisor, PodDeadmanTimer
 from .fake_provider import FakeProvider
@@ -78,7 +82,15 @@ from .notify_bridge import (
     shell_notifier,
     silent,
 )
-from .pod_timer import TimerContext, _persist_or_close, run_with_bootstrap
+from .pod_timer import (
+    _CLOSE_ATTEMPTS,
+    TimerContext,
+    _close_with_retries,
+    _note_termination,
+    _persist_or_close,
+    run_with_bootstrap,
+    terminating_path,
+)
 from .preflight import (
     CacheMismatch,
     GpuProfile,
@@ -802,6 +814,7 @@ def test_every_field_of_a_pod_request_is_inside_its_reviewed_digest() -> None:
         "docker_start_cmd": reviewed.docker_start_cmd + ("--interval-seconds", "30"),
         "hard_deadline": reviewed.hard_deadline + timedelta(seconds=60),
         "repository_commit": "d" * 40,
+        "container_disk_gb": 200,
         "template": "another-template",
         "metadata": {**dict(reviewed.metadata), "VERBATUS_EXTRA": "1"},
         "interruptible": True,
@@ -4360,6 +4373,187 @@ def test_pod_timer_requires_bootstrap_and_persists_a_red_bootstrap_close_report(
     assert report["green"] is False
 
 
+def test_a_pre_delete_breadcrumb_says_a_close_was_attempted_from_inside_the_pod(
+    tmp_path: Path,
+) -> None:
+    """F061: a truncated pod-side report reads like a timer that never tried.
+
+    Every step of the close runs inside the container the DELETE destroys, so
+    the durable artefact is usually the *pre*-close report -- bootstrap
+    running, close null, green false. The breadcrumb written immediately before
+    the DELETE is what tells that apart from a close that was never issued.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-breadcrumb.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+
+    class FailedChild:
+        def poll(self) -> int:
+            return 17
+
+    report_path = tmp_path / "pod-report.json"
+    run_with_bootstrap(
+        TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        interval_seconds=1,
+        popen=lambda argv: FailedChild(),  # type: ignore[arg-type]
+    )
+
+    breadcrumb_path = terminating_path(report_path)
+    assert breadcrumb_path == tmp_path / "pod-report-terminating.json"
+    breadcrumb = json.loads(breadcrumb_path.read_text(encoding="utf-8"))
+    assert breadcrumb["state"] == "terminating"
+    assert breadcrumb["reason"] == "mandatory bootstrap child failed"
+    assert breadcrumb["requested_cutoff"].endswith("Z")
+    assert breadcrumb["close_attempts_allowed"] == _CLOSE_ATTEMPTS
+    assert breadcrumb["identity"]["pod_id"] == record.pod_id
+    assert "destroyed before it could verify" in breadcrumb["note"]
+    # Beside the report, never over it: the report is the record the DELETE
+    # destroys this container in the middle of writing.
+    assert json.loads(report_path.read_text(encoding="utf-8"))["bootstrap"]["state"] == "failed"
+
+
+def test_a_later_close_reason_never_renames_the_breadcrumb_already_on_the_volume(
+    tmp_path: Path,
+) -> None:
+    """The first breadcrumb names why the close was issued, and it stands.
+
+    `_write_report` is `atomic_write`: it replaces what is at the path. A
+    mandatory bootstrap child that fails writes the breadcrumb, and if the
+    report write then fails too, `_durable_failure_close` reaches the same path
+    again with "mandatory pod report write failed" and one allowed attempt. The
+    only record left on the volume then blamed the durable store for a close
+    the bootstrap caused (CodeRabbit on PR #117).
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-breadcrumb-order.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+    report_path = tmp_path / "pod-report.json"
+
+    _note_termination(context, report_path, "mandatory bootstrap child failed", _CLOSE_ATTEMPTS)
+    _note_termination(context, report_path, "mandatory pod report write failed", 1)
+
+    breadcrumb = json.loads(terminating_path(report_path).read_text(encoding="utf-8"))
+    assert breadcrumb["reason"] == "mandatory bootstrap child failed"
+    assert breadcrumb["close_attempts_allowed"] == _CLOSE_ATTEMPTS
+
+
+def test_a_breadcrumb_that_cannot_be_written_never_blocks_the_close(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pod's shutdown is never traded for its own paperwork (GOVERNANCE 8)."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-unwritable.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    # A directory where the breadcrumb file wants to be: the write refuses and
+    # the close must still happen.
+    report_path = tmp_path / "pod-report.json"
+    terminating_path(report_path).mkdir()
+
+    result, attempts, breadcrumb_failure = _close_with_retries(
+        context, "pod dead-man hard lifetime expired", clock.sleep, 1, report=report_path
+    )
+
+    assert attempts >= 1
+    assert result.close_report is not None and result.close_report.verified
+    assert "termination breadcrumb could not be written" in capsys.readouterr().err
+    # Reported, not only survived. The stderr line is transient -- nobody is
+    # attached to a pod's stderr -- so the failure is handed back for the
+    # durable report to carry, or the volume could keep a report saying
+    # `close: null` with nothing on it saying the DELETE was attempted at all
+    # (CodeRabbit, pre-merge review of PR #117).
+    assert breadcrumb_failure is not None
+    assert "termination breadcrumb could not be written" in breadcrumb_failure
+
+
+def test_a_failed_breadcrumb_is_named_in_the_durable_report_the_close_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The report is the only record left when the breadcrumb could not be written.
+
+    A close that fails to leave its pre-DELETE breadcrumb and then writes a
+    report saying `close: null` is indistinguishable, on the volume, from a
+    timer that never tried to close anything -- which is the exact ambiguity
+    the breadcrumb exists to remove (CodeRabbit, pre-merge review of PR #117).
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-breadcrumb-reported.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=1)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    report_path = tmp_path / "pod-report.json"
+    terminating_path(report_path).mkdir()
+
+    class FailedChild:
+        def poll(self) -> int:
+            return 17
+
+    run_with_bootstrap(
+        context,
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        interval_seconds=1,
+        popen=lambda argv: FailedChild(),  # type: ignore[arg-type]
+    )
+    capsys.readouterr()
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "termination breadcrumb could not be written" in report["termination_breadcrumb_failure"]
+    assert report["close_attempts"] >= 1
+
+
+def test_an_ordinary_close_leaves_no_breadcrumb_failure_field_at_all(tmp_path: Path) -> None:
+    """The field is a fault report, so its absence is what a clean run looks like."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-breadcrumb-clean.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=1)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+    report_path = tmp_path / "pod-report.json"
+
+    class FailedChild:
+        def poll(self) -> int:
+            return 17
+
+    run_with_bootstrap(
+        context,
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        interval_seconds=1,
+        popen=lambda argv: FailedChild(),  # type: ignore[arg-type]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "termination_breadcrumb_failure" not in report
+    assert terminating_path(report_path).is_file()
+
+
 def test_bare_timer_command_is_rejected_before_a_paid_create() -> None:
     clock = Clock()
     with pytest.raises(ValueError, match="--timer-factory|--bootstrap-command-json"):
@@ -4624,6 +4818,132 @@ def test_a_duplicated_nested_report_path_is_refused() -> None:
             docker_start_cmd=tuple(command),
             metadata={"VERBATUS_LAUNCH_TOKEN": token},
         )
+
+
+def test_a_pod_run_shaped_nested_argv_is_accepted() -> None:
+    """The Boot B shape: two nested halves, one ``--report-path`` each.
+
+    ``pod_run`` splits its argv at the first literal ``--`` and hands the second
+    half to ``bootstrap_main``; each parser requires its own ``--report-path``,
+    and ``pod_run.resolve_run_plan`` requires the two to be different files. The
+    nested check used to count both halves together, so *every* request that
+    could run the pipeline was refused here -- before any preview, lease or
+    provider call -- and no test composed one, which is why the suite was green
+    over it.
+    """
+
+    clock = Clock()
+    token = "a" * 32
+    command = list(request(clock).docker_start_cmd)
+    command[command.index("--report-path") + 1] = (
+        f"/workspace/private/pod-runtime-report-{token}.json"
+    )
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.pod_run",
+            "--report-path",
+            f"/workspace/private/pod-run-report-{token}.json",
+            "--run-id",
+            "boot-b-0001",
+            "--",
+            "--volume-mount-path",
+            "/workspace/private",
+            "--report-path",
+            f"/workspace/private/bootstrap-report-{token}.json",
+        ]
+    )
+
+    accepted = replace(
+        request(clock),
+        docker_start_cmd=tuple(command),
+        metadata={"VERBATUS_LAUNCH_TOKEN": token},
+    )
+
+    assert accepted.docker_start_cmd == tuple(command)
+
+
+def test_two_report_paths_in_one_nested_half_are_still_refused() -> None:
+    """Per half is the rule, not per argv: the duplicate refusal still bites."""
+
+    clock = Clock()
+    token = "a" * 32
+    command = list(request(clock).docker_start_cmd)
+    command[command.index("--report-path") + 1] = (
+        f"/workspace/private/pod-runtime-report-{token}.json"
+    )
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.pod_run",
+            "--report-path",
+            f"/workspace/private/pod-run-report-{token}.json",
+            "--",
+            "--volume-mount-path",
+            "/workspace/private",
+            "--report-path",
+            f"/workspace/private/bootstrap-report-{token}.json",
+            "--report-path",
+            f"/workspace/private/bootstrap-report-2-{token}.json",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="at most one nested --report-path value"):
+        replace(
+            request(clock),
+            docker_start_cmd=tuple(command),
+            metadata={"VERBATUS_LAUNCH_TOKEN": token},
+        )
+
+
+def test_a_nested_journal_is_held_to_the_report_paths_own_rules() -> None:
+    """``bootstrap_main`` refuses an unbound ``--journal`` on the pod, after billing.
+
+    ``--journal`` is required for every full bootstrap plan, so until the launch
+    bound the token into it and this gate re-checked the result, the only
+    launchable shape was the ``--hold-only`` drill.
+    """
+
+    clock = Clock()
+    token = "a" * 32
+    command = list(request(clock).docker_start_cmd)
+    command[command.index("--report-path") + 1] = (
+        f"/workspace/private/pod-runtime-report-{token}.json"
+    )
+    nested_index = command.index("--bootstrap-command-json") + 1
+    command[nested_index] = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.bootstrap_main",
+            "--volume-mount-path",
+            "/workspace/private",
+            "--report-path",
+            f"/workspace/private/bootstrap-report-{token}.json",
+            "--journal",
+            "/workspace/private/bootstrap-journal.json",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="nested --journal must include this"):
+        replace(
+            request(clock),
+            docker_start_cmd=tuple(command),
+            metadata={"VERBATUS_LAUNCH_TOKEN": token},
+        )
+
+
+def test_a_container_disk_that_is_not_a_positive_whole_number_is_refused() -> None:
+    """The pod request states its container disk; a nonsense value is not a default."""
+
+    clock = Clock()
+    for value in (0, -10, 1.5, True, "60"):
+        with pytest.raises(ValueError, match="container_disk_gb"):
+            replace(request(clock), container_disk_gb=value)
 
 
 def test_guarded_create_binds_the_report_path_to_this_launchs_token(tmp_path: Path) -> None:
@@ -5124,6 +5444,11 @@ def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> N
         cache=None,  # type: ignore[arg-type]
         preflight=lambda: {"color": "green"},
         runner=runner,
+        # This test is about the argv, not about the disk. The free-space
+        # refusal that now guards this step is proven on its own below; here it
+        # is given room so a small checkout disk cannot turn an argv assertion
+        # into a disk failure.
+        free_bytes=lambda _path: 512 * 1024**3,
     )
 
     result = actions.sync_uv_environment(lockfile)
@@ -5179,6 +5504,313 @@ def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
         for _, environment in observed
     )
     assert all("VERBATUS_PARENT_SECRET" not in environment for _, environment in observed)
+
+
+# -- the pod image contract, refused before anything is fetched or installed --
+
+_SSH_ORIGIN = "ssh://git@example.invalid/verbatus"
+_HTTPS_ORIGIN = "https://example.invalid/verbatus"
+
+
+def _image(
+    tmp_path: Path, *, origin: str | None = _SSH_ORIGIN, credential_helper: bool = False
+) -> Path:
+    """A synthetic pod image's checkout: a config with an origin, and a .venv."""
+
+    repository = tmp_path / "opt" / "verbatus"
+    (repository / ".git").mkdir(parents=True)
+    lines: list[str] = []
+    if origin is not None:
+        lines += ['[remote "origin"]', f"\turl = {origin}"]
+    if credential_helper:
+        lines += ["[credential]", "\thelper = store --file /etc/verbatus-credentials"]
+    (repository / ".git" / "config").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    interpreter = repository / REPOSITORY_VENV_DIRECTORY / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("", encoding="utf-8")
+    return repository
+
+
+def _tools(tmp_path: Path) -> dict[str, str]:
+    tools: dict[str, str] = {}
+    for name in ("git", "uv"):
+        path = tmp_path / "tools" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+        tools[name] = str(path)
+    return tools
+
+
+def _interpreter(repository: Path) -> Path:
+    return repository / REPOSITORY_VENV_DIRECTORY / "bin" / "python"
+
+
+def test_the_image_contract_passes_a_checkout_with_an_origin_and_a_prebuilt_venv(
+    tmp_path: Path,
+) -> None:
+    repository = _image(tmp_path)
+
+    verified = verify_image_contract(
+        repository,
+        interpreter=_interpreter(repository),
+        executables=_tools(tmp_path),
+        environment={"PATH": "/usr/bin"},
+    )
+
+    assert verified["origin_remote"] == "present"
+    # Never the URL itself: a remote URL is one of the places a credential may
+    # legitimately sit, and this record is written onto the volume.
+    assert "example.invalid" not in json.dumps(verified)
+
+
+def test_the_image_contract_names_an_unreadable_pointer_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A linked worktree whose pointer file this process cannot read is an image fact.
+
+    The config read was already wrapped for exactly this reason; the two
+    pointer reads that find it were not, so the refusal escaped as a bare
+    `OSError`, lost its name and its remedy in `checkout_commit` -- which
+    catches only `ImageContractRefusal` -- and reached the operator as a
+    traceback while the card billed (CodeRabbit on PR #117).
+
+    The unreadable condition is injected at the read rather than built with a
+    mode-000 file: this suite runs as root in CI, where a mode-000 file is
+    readable and the condition cannot be built at all.
+    """
+
+    repository = tmp_path / "opt" / "verbatus"
+    repository.mkdir(parents=True)
+    marker = repository / ".git"
+    marker.write_text("gitdir: /elsewhere/.git/worktrees/verbatus\n", encoding="utf-8")
+
+    real_read_text = Path.read_text
+
+    def refusing_read(self: Path, *args: object, **kwargs: object) -> str:
+        if self == marker:
+            raise PermissionError(13, "Permission denied")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", refusing_read)
+
+    with pytest.raises(ImageContractRefusal, match="pointer file this process cannot read"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            executables=_tools(tmp_path),
+            environment={},
+        )
+
+
+def test_the_image_contract_refuses_a_directory_that_is_not_a_checkout(tmp_path: Path) -> None:
+    """The bootstrap fetches into a checkout the image carries; it never clones one."""
+
+    repository = tmp_path / "opt" / "verbatus"
+    repository.mkdir(parents=True)
+
+    with pytest.raises(ImageContractRefusal, match="is not a git checkout"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            executables=_tools(tmp_path),
+            environment={},
+        )
+
+
+def test_the_image_contract_refuses_a_checkout_with_no_origin(tmp_path: Path) -> None:
+    repository = _image(tmp_path, origin=None)
+
+    with pytest.raises(ImageContractRefusal, match="names no origin remote"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            executables=_tools(tmp_path),
+            environment={},
+        )
+
+
+def test_the_image_contract_refuses_an_https_origin_no_homeless_client_can_authenticate(
+    tmp_path: Path,
+) -> None:
+    """The bootstrap environment supplies no HOME, so no global helper is visible."""
+
+    repository = _image(tmp_path, origin=_HTTPS_ORIGIN)
+
+    with pytest.raises(ImageContractRefusal, match="no HOME"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            executables=_tools(tmp_path),
+            environment={"PATH": "/usr/bin"},
+        )
+
+    # A route the repository's own config carries is visible without HOME.
+    with_helper = _image(tmp_path / "helper", origin=_HTTPS_ORIGIN, credential_helper=True)
+    verify_image_contract(
+        with_helper,
+        interpreter=_interpreter(with_helper),
+        executables=_tools(tmp_path),
+        environment={},
+    )
+
+
+def test_the_image_contract_refuses_a_missing_tool_at_its_absolute_path(tmp_path: Path) -> None:
+    repository = _image(tmp_path)
+    tools = _tools(tmp_path)
+    tools["uv"] = str(tmp_path / "tools" / "not-installed-uv")
+
+    with pytest.raises(ImageContractRefusal, match="executable uv"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            executables=tools,
+            environment={},
+        )
+
+
+def test_the_image_contract_refuses_an_interpreter_outside_the_repositorys_venv(
+    tmp_path: Path,
+) -> None:
+    """A system python reaches PREFLIGHT and then fails on a missing pin -- after
+    the ten-gigabyte download has been paid for."""
+
+    repository = _image(tmp_path)
+
+    with pytest.raises(ImageContractRefusal, match="not inside"):
+        verify_image_contract(
+            repository,
+            interpreter=Path("/usr/bin/python3"),
+            executables=_tools(tmp_path),
+            environment={},
+        )
+
+
+def test_a_failed_image_contract_is_a_named_red_repository_step(tmp_path: Path) -> None:
+    """It rides on REPOSITORY, the first step, and runs before anything is fetched."""
+
+    ran: list[list[str]] = []
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        ran.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def contract() -> dict[str, object]:
+        raise ImageContractRefusal("the image does not carry a checkout")
+
+    actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
+        repository=tmp_path,
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {"color": "green"},
+        runner=runner,
+        image_contract=contract,
+    )
+
+    with pytest.raises(BootstrapStepFailure) as refusal:
+        actions.checkout_commit("f" * 40)
+
+    assert refusal.value.step is BootstrapStep.REPOSITORY
+    assert "pod image contract" in refusal.value.detail
+    assert ran == [], "nothing may run once the image is known not to meet the contract"
+
+
+def test_a_passing_image_contract_is_recorded_in_the_repository_receipt(tmp_path: Path) -> None:
+    """What was verified is evidence, and evidence is written down (GOVERNANCE 2)."""
+
+    commit = "f" * 40
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        stdout = f"{commit}\n" if argv[1:] == ["rev-parse", "HEAD"] else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
+        repository=tmp_path,
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {"color": "green"},
+        runner=runner,
+        image_contract=lambda: {"origin_remote": "present"},
+    )
+
+    receipt = actions.checkout_commit(commit)
+
+    assert receipt == {"commit": commit, "image_contract": {"origin_remote": "present"}}
+
+
+# -- the container disk the wheels and the venv both land on ----------------
+
+
+def test_uv_sync_refuses_a_container_disk_too_small_for_the_serving_stack(
+    tmp_path: Path,
+) -> None:
+    """Named before the download, not ENOSPC part way through one already paid for."""
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    lockfile = repository / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+
+    actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
+        repository=repository,
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {"color": "green"},
+        runner=lambda argv, cwd: pytest.fail(f"nothing may run: {argv}"),
+        free_bytes=lambda _path: 8 * 1024**3,
+    )
+
+    with pytest.raises(BootstrapStepFailure) as refusal:
+        actions.sync_uv_environment(lockfile)
+
+    assert refusal.value.step is BootstrapStep.UV_ENVIRONMENT
+    assert "container-local disk is too small" in refusal.value.detail
+    assert "container_disk_gb" in refusal.value.remediation
+
+
+def test_uv_sync_adds_up_the_two_copies_that_share_one_filesystem(tmp_path: Path) -> None:
+    """The cache and the venv are two copies of the same stack.
+
+    Enough room for either one alone is not enough room for both, and checking
+    them independently would pass the same free bytes twice.
+    """
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    lockfile = repository / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    ran: list[list[str]] = []
+
+    def record(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        ran.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def actions_with(free: int) -> SubprocessBootstrapActions:
+        return SubprocessBootstrapActions(
+            configuration=lambda: {"profile": "fixture"},
+            repository=repository,
+            transfer=lambda: {},
+            materialize_model_store=lambda: {},
+            cache=None,  # type: ignore[arg-type]
+            preflight=lambda: {"color": "green"},
+            runner=record,
+            free_bytes=lambda _path: free,
+            # One filesystem for both, which is what a pod's container disk is.
+            environment={**BOOTSTRAP_ENVIRONMENT, "UV_CACHE_DIR": str(tmp_path / "uv-cache")},
+        )
+
+    with pytest.raises(BootstrapStepFailure, match="too small"):
+        actions_with(24 * 1024**3).sync_uv_environment(lockfile)
+    assert ran == []
+
+    actions_with(64 * 1024**3).sync_uv_environment(lockfile)
+    assert ran == [["/usr/local/bin/uv", "sync", "--locked", "--group", "pod"]]
 
 
 def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path: Path) -> None:

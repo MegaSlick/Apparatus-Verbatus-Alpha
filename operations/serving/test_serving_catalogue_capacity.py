@@ -260,3 +260,77 @@ def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old
             dense_page_answer_budget(chair),
         )
         assert record["fits"] is False, (chair, tier)
+
+
+def test_every_startup_timeout_row_records_how_its_value_should_be_derived() -> None:
+    """F057: 300s is a placeholder on every row, including a 51.7 GiB Perlector.
+
+    The value is deliberately not changed here -- replacing one unmeasured
+    number with another is not a fix, and the row's bytes are sealed into the
+    run's configuration digest, so a guessed change would be indistinguishable
+    in the record from a measured one. What the file must carry instead is the
+    derivation, so that whoever reads the first red watchdog can set each row
+    from a measurement rather than from a feeling. This test is what keeps a
+    later edit from quietly dropping that back to a bare number.
+    """
+
+    text = REAL_RECIPES.read_text(encoding="utf-8")
+    rows = [line for line in text.splitlines() if line.startswith("startup_timeout_seconds")]
+
+    assert len(rows) == 15
+    for row in rows:
+        assert "UNMEASURED placeholder" in row, row
+        assert "volume read rate" in row, row
+        assert "see the header" in row, row
+    # The one row whose weights this tree has actually measured says so.
+    assert sum("51.7 GiB" in row for row in rows) == 3
+    assert "HOW THE VALUE SHOULD BE DERIVED" in text
+
+
+# F005/F052: `operations/serving/preflight.py` only refuses a row's
+# `gpu_memory_utilization` above its tier's `engine_memory_fraction` ceiling
+# (config/pod_placement.toml) -- nothing checks a row against the VRAM floor
+# this project's own arithmetic already computed for it, so a too-low value
+# passes every existing gate silently and only fails once a pod is rented and
+# vLLM aborts during engine init.  Every figure below is copied from the
+# stated derivation, not recomputed: `config/pod_placement.toml`'s
+# `generic-24gb` tier comment states DAI (attestator_2) needs 18.7 GiB of 24
+# (0.78 minimum, 0.90 matching the old `serve_dai.sh`).  No other row has a
+# VRAM figure derived anywhere in this tree today, so no other row is checked
+# here -- adding one without a stated derivation would be inventing the
+# number this test exists to hold the catalogue to.
+_STATED_VRAM_NEED_GIB = {
+    ("attestator_2", "generic-24gb"): 18.7,
+}
+_TIER_VRAM_GIB = {
+    "generic-24gb": 24,
+    "generic-48gb": 48,
+    "generic-80gb-plus": 80,
+}
+
+
+def test_no_shipped_row_serves_below_its_tiers_stated_vram_floor():
+    """A row that starts below its own documented VRAM need is not unproven.
+
+    It is wrong the same way an over-context row is wrong (see the test
+    above): `render_vllm_argv` (`operations/serving/manager.py`) passes
+    `gpu_memory_utilization` straight to `--gpu-memory-utilization`, so a
+    value below the derived floor is a VRAM allocation failure waiting for a
+    rented card to discover, not a planning choice.
+    """
+
+    checked = 0
+    for row in _shipped_rows():
+        need_gib = _STATED_VRAM_NEED_GIB.get((row.chair, row.tier))
+        if need_gib is None:
+            continue
+        checked += 1
+        required_fraction = need_gib / _TIER_VRAM_GIB[row.tier]
+        actual_fraction = float(row.gpu_memory_utilization)
+        assert actual_fraction >= required_fraction, (
+            f"{row.chair}@{row.tier} carries gpu_memory_utilization="
+            f"{row.gpu_memory_utilization!r}, below the "
+            f"{required_fraction:.4f} this project's own arithmetic needs "
+            f"({need_gib} GiB of {_TIER_VRAM_GIB[row.tier]})"
+        )
+    assert checked == len(_STATED_VRAM_NEED_GIB), "a stated VRAM floor went unchecked"

@@ -205,6 +205,23 @@ def test_an_unmeasurable_card_yields_no_sample_rather_than_a_number(runner) -> N
     assert sampler() == ()
 
 
+def test_the_sampler_averages_every_visible_card_not_only_the_first() -> None:
+    """F064: `nvidia-smi` prints one line per visible GPU; taking `splitlines()[0]`
+    silently reported only the first card's load on a multi-GPU machine.
+    """
+
+    sampler = NvidiaSmiUtilization(
+        runner=lambda argv: _completed("60\n40\n"),
+        load_average=lambda: (2.0, 0.0, 0.0),
+        cpu_count=lambda: 8,
+    )
+
+    samples = sampler()
+
+    assert len(samples) == 1
+    assert samples[0].gpu_percent == Decimal("50")
+
+
 def test_a_host_with_no_countable_cpus_yields_no_sample() -> None:
     sampler = NvidiaSmiUtilization(
         runner=lambda argv: _completed("50\n"),

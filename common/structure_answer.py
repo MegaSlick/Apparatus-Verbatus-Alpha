@@ -3,8 +3,8 @@
 This lives in `common/` rather than in `pipeline/2_designator/` because two
 stages read Chandra on the same page and must land its geometry in one
 page-pixel mapping: the Designator publishes this answer, and the
-Attestatores' own Chandra witness contract
-(`pipeline/3_attestatores/chandra_response.py`) converts its normalized boxes
+Attestatores' own Chandra witness contract (`common/chandra_layout.py`, read
+by `pipeline/3_attestatores/chandra.py`) converts its normalized boxes
 through `to_page_bounds` below. The two calls are separate readings -- every
 witness runs its own full pass and nothing is captured from one call into
 another (Tyrel's ruling, 2026-09-02) -- so what they share is the conversion,
@@ -145,11 +145,16 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     loss. `pipeline/1_exemplar/door.py::_unique_json_object` closes the same
     defect for the triage recipe; this is that same guard for a wire answer.
 
-    Public, and imported by `pipeline/3_attestatores/chandra_response.py`
-    rather than copied there: the two closed wire contracts read the same
-    normalized answer shape from the same chair on the same page, and a
-    duplicate-member rule that drifted between them would mean one reading
-    refusing a body the other accepted (CodeRabbit round 1, T6).
+    Public, and was imported by `pipeline/3_attestatores/chandra_response.py`
+    rather than copied there while both stages asked Chandra for the same
+    JSON envelope (v2): the two closed wire contracts read the same normalized
+    answer shape from the same chair on the same page, and a duplicate-member
+    rule that drifted between them would mean one reading refusing a body the
+    other accepted (CodeRabbit round 1, T6). That module is retired -- both
+    Chandra chairs now read the vendor's own layout grammar instead
+    (`common/chandra_layout.py`, via `pipeline/3_attestatores/chandra.py`) --
+    so this guard has no current caller outside `decode_json_body` below and
+    its own tests.
     """
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -185,6 +190,15 @@ def decode_json_body(raw: Any, *, max_bytes: int) -> tuple[Any, str | None]:
         return None, "unverified-response-schema"
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None, "invalid-json"
+    except ValueError:
+        # A huge decimal integer literal (thousands of digits) is otherwise
+        # well-formed JSON, so the scanner's `int()` call raises a bare
+        # `ValueError` -- not `json.JSONDecodeError` -- once the literal
+        # exceeds CPython's integer-string-conversion limit (G13, "huge
+        # integer"). `DuplicateJsonMember` is also a `ValueError` but is
+        # caught above this clause, so nothing here shadows it. Uncaught, the
+        # huge-integer case would escape this declared refusal boundary.
+        return None, "invalid-json"
 
 
 def _quantize(x0: float, y0: float, x1: float, y1: float) -> list[int]:
@@ -200,11 +214,14 @@ def validate_box_1000(value: Any) -> list[int] | None:
     witness): this function names none itself so it stays a pure geometry
     check, the same split `chandra.py::_quantize_box` keeps.
 
-    Public and shared with `pipeline/3_attestatores/chandra_response.py`
-    (CodeRabbit round 1, T6). One normalized coordinate space, one bound, one
-    quantization rule: if the two contracts disagreed about what a legal
-    `box_1000` is, the Designator's and the page witness's readings of the same
-    page would land in different geometry.
+    Public, and shared with `pipeline/3_attestatores/chandra_response.py` while
+    that JSON-envelope contract (v2) was live (CodeRabbit round 1, T6). Both
+    Chandra chairs now read the vendor's own layout grammar instead
+    (`common/chandra_layout.py`, via `pipeline/3_attestatores/chandra.py`), so
+    this function has no current live caller outside its own tests -- kept, not
+    deleted, because it is the JSON-envelope contract's quantization rule and a
+    later JSON-answer reading would need this exact one, not a second
+    hand-written copy.
     """
     if not isinstance(value, list) or len(value) != 4:
         return None
@@ -294,11 +311,13 @@ def join_delivered_texts(texts: list[str]) -> tuple[str, list[dict[str, int]]]:
     """`PAGE_TEXT_RULE`: newline only between delivered (non-empty) texts.
 
     Takes plain strings rather than this module's own `ParsedAct` so the page
-    witness's blocks join by the same rule, from the same code
-    (`pipeline/3_attestatores/chandra_response.py`, CodeRabbit round 1, T6).
-    Both readings publish spans into their retained page text, and a join rule
-    that drifted would put one reading's spans at offsets the other's page text
-    does not have.
+    witness's blocks join by the same rule, from the same code -- imported by
+    `common/chandra_layout.py`, read by `pipeline/3_attestatores/chandra.py`
+    (CodeRabbit round 1, T6; the import moved here from the retired
+    `pipeline/3_attestatores/chandra_response.py` when both Chandra chairs
+    were switched to the vendor's own layout grammar). Both readings publish
+    spans into their retained page text, and a join rule that drifted would
+    put one reading's spans at offsets the other's page text does not have.
     """
     parts: list[str] = []
     spans: list[dict[str, int]] = []
