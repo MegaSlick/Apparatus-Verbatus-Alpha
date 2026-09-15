@@ -671,8 +671,9 @@ def _records_at_close(plan: RunPlan) -> tuple[dict[str, dict[str, object]], list
     report *names* was actually there -- a fetched report could read
     ``complete`` over an absent journal (CodeRabbit pre-merge check on PR
     #117). This audits the three at close and names each missing, unreadable
-    or foreign one in the report itself, so the absence is a durable fact
-    beside the state rather than a line a reader has to know to grep for.
+    or foreign one in the report itself, and a run whose named records did
+    not all come home is held rather than complete, so the absence is a
+    durable fact in the state rather than a line a reader has to grep for.
     """
 
     audit: dict[str, dict[str, object]] = {}
@@ -692,11 +693,13 @@ def _records_at_close(plan: RunPlan) -> tuple[dict[str, dict[str, object]], list
                 owner = journal.get("run_id") if isinstance(journal, dict) else None
                 entry["entries"] = len(entries) if isinstance(entries, list) else None
                 entry["run_id_matches"] = owner == plan.run_id
-                if entry["entries"] is None or not entry["run_id_matches"]:
+                if not entry["entries"] or not entry["run_id_matches"]:
+                    # No entries is as missing as no file: at least one stage
+                    # ran, so an empty journal is a journal every write failed.
                     entry["failure"] = (
-                        f"the journal at {path} belongs to run {owner!r} or has no entries "
-                        "list; the orchestrator refuses to merge into a foreign journal and "
-                        "says so in the transcript"
+                        f"the journal at {path} belongs to run {owner!r} or has no entries; "
+                        "the orchestrator refuses to merge into a foreign journal and says "
+                        "so in the transcript"
                     )
                     missing.append(name)
             except (OSError, ValueError) as error:
@@ -1027,16 +1030,25 @@ def main(
     holding = exit_code in _HOLD_AFTER_EXITS
     records_at_close, records_missing = _records_at_close(plan)
     if records_missing:
-        # Not a change of state: the orchestrator's exit is the run's outcome,
-        # and a lost stopwatch does not un-complete a run. It is a fact the
-        # report must carry beside that state, loudly, so a later reader does
-        # not infer from `complete` that every named record came home.
         absence = (
             "records this report names were not on the volume at close, or were not this "
             f"run's: {', '.join(records_missing)}; the writer's own reason is in "
             f"{plan.transcript_path} if that survived"
         )
-        failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
+        if exit_code == EXIT_COMPLETE:
+            # A run is not complete while a record its own report names is
+            # missing: the timings are what the first live run exists to
+            # measure, and a transcript or liveness record that never landed
+            # is the diagnosis a later session would go looking for. It is
+            # held for review rather than failed -- the run tree is intact and
+            # the orchestrator finished -- and `held` holds to the hard
+            # deadline exactly as `complete` does, so the meter is unchanged.
+            exit_code = EXIT_HELD
+            state = _STATE_FOR_EXIT[exit_code]
+            holding = True
+            failure_detail = f"the orchestrator completed, but {absence}"
+        else:
+            failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
     final: dict[str, object] = {
         **running,
         "state": state,

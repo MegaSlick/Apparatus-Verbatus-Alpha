@@ -425,9 +425,12 @@ check.
   the reason a running orchestrator is abandoned; at close the report audits
   the three under `records_at_close` (present, and for the journal its entry
   count and whether it is this run's) and lists any that are absent, unreadable
-  or another run's under `records_missing`, appending the same to `detail`. The
-  state stays the orchestrator's exit — a missing journal does not un-complete
-  a run — but a fetched report can no longer read `complete` over an absence.
+  or another run's under `records_missing`, naming them in `detail`. A run the
+  orchestrator completed is reported `held` (exit 3) when any of the three is
+  missing: the timings are what the first live run exists to measure, so a run
+  without them is one to review, not one to call done; it holds to the hard
+  deadline exactly as `complete` does, so the meter is unchanged. A held,
+  halted or failed run keeps its own reason and has the absence appended.
   **Nothing the run printed dies with the pod.** The orchestrator's stdout and
   stderr are merged into one pipe and teed into
   `<run report stem>-transcript.log` beside the report; because the orchestrator

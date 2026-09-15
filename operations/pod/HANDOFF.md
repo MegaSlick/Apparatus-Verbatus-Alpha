@@ -363,9 +363,10 @@ made every real smoke red before it launched. `main` is split into `prepare` /
 **`pod_run.py` runs the pipeline on the pod.** Bootstrap through `bootstrap_main`'s own
 steps, then the orchestrator as a subprocess of the pod's interpreter over the volume,
 a `pod-run-report.v1` before/during/after, exit codes that never read complete for a
-partial run, and the hold to the deadline unchanged. `test_pod_run.py` covers the green
-run, held/halted/failed, a red bootstrap, every refusal by name, and the data gate asked
-before any spend.
+partial run or for a run whose named records (transcript, liveness, timing journal) did
+not come home, and the hold to the deadline unchanged. `test_pod_run.py` covers the
+green run, held/halted/failed, the records audit at close, a red bootstrap, every
+refusal by name, and the data gate asked before any spend.
 
 **`fetch-run` brings the tree home.** `S3VolumeObjectReader` (list + streamed
 `GetObject`, fail-closed) beside the existing reads in `volume_s3.py`;
