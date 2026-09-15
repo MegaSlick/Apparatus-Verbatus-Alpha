@@ -10,8 +10,9 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Collection, Mapping, Sequence
+from typing import Any, Callable, Collection, Mapping, Sequence
 
 from common.contracts.canonical import (
     canonical_bytes,
@@ -20,8 +21,13 @@ from common.contracts.canonical import (
     verify_self_hash,
 )
 from common.contracts.errors import ContractError
-from common.contracts.stages import ATTESTATORES
-from common.native_witness import validate_page_testimonium_payload
+from common.contracts.stages import ATTESTATORES, EXEMPLAR
+from common.exemplar_boundary import verify_sealed_page_pixels
+from common.imaging import dimensions
+from common.native_witness import (
+    validate_page_testimonium_payload,
+    validate_presented_page_binding,
+)
 from common.runtree.store import RunTree
 from common.stage import latest_attempt
 from operations.spike_perlector.models import OutputStatus
@@ -31,7 +37,7 @@ from operations.spike_perlector.scoring import score_response
 from . import CorpusRefusal
 from .compare import (
     ReadOnlyRunTree,
-    compare_page,
+    compare_page_geometry,
     load_exemplar_page_shas,
     load_pipeline_proposal_acts,
 )
@@ -40,6 +46,14 @@ from .reference import validate_reference_page
 
 SCHEMA = "recordgold-witness-evaluation.v1"
 CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
+
+
+@dataclass(frozen=True, slots=True)
+class _SealedPageBinding:
+    ordinal: int
+    image_path: str
+    sha256: str
+    size: tuple[int, int]
 
 
 def witness_reading(
@@ -140,13 +154,7 @@ def evaluate_page(
 ) -> dict[str, Any]:
     """Score every reference act for every chair on one source page."""
     reference_page = validate_reference_page(reference_page)
-    # compare_page assigns only by its IoU matrix. These empty hypotheses merely
-    # satisfy its closed API; no provisional text score selects a chair or pair.
-    geometry = compare_page(
-        reference_page,
-        proposals,
-        {proposal["act_id"]: (OutputStatus.MISSING, None) for proposal in proposals},
-    )
+    geometry = compare_page_geometry(reference_page, proposals)
     references = {act["physical_act_id"]: act for act in reference_page["acts"]}
     rows: list[dict[str, Any]] = []
     for pair in geometry["matched_pairs"]:
@@ -231,9 +239,101 @@ def _reference_pages(path: Path) -> dict[str, dict[str, Any]]:
     return pages
 
 
+def _sealed_page_bindings(tree: ReadOnlyRunTree) -> dict[str, _SealedPageBinding]:
+    """Verify every sealed Exemplar page and retain its immutable binding facts."""
+    run = tree.read_run()
+    sources: dict[int, dict[str, Any]] = {}
+    for source in run.get("source_manifest", []):
+        ordinal = source.get("ordinal") if isinstance(source, dict) else None
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise CorpusRefusal("malformed-record: run source has no integer ordinal")
+        if ordinal in sources:
+            raise CorpusRefusal("malformed-record: run source ordinal is duplicated")
+        sources[ordinal] = source
+
+    pages: dict[str, _SealedPageBinding] = {}
+    page_ids_by_ordinal: dict[int, str] = {}
+    for entry in tree.build_manifest(EXEMPLAR)["artifacts"]:
+        if entry["kind"] != "page":
+            continue
+        record = tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        if record.get("outcome") != "sealed":
+            continue
+        payload = record.get("payload")
+        ordinal = payload.get("ordinal") if isinstance(payload, dict) else None
+        page_id = record.get("subject_id")
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or not isinstance(page_id, str)
+            or not page_id
+        ):
+            raise CorpusRefusal("malformed-record: sealed Exemplar page has no identity/ordinal")
+        source = sources.get(ordinal)
+        if source is None:
+            raise CorpusRefusal("malformed-record: sealed Exemplar page has no submitted source")
+        try:
+            pixels = verify_sealed_page_pixels(tree, run, source, record)
+            size = dimensions(pixels)
+        except (ContractError, ValueError) as error:
+            raise CorpusRefusal(
+                f"malformed-record: sealed Exemplar page is invalid: {error}"
+            ) from error
+        if page_id in pages:
+            raise CorpusRefusal("malformed-record: sealed Exemplar page identity is duplicated")
+        if ordinal in page_ids_by_ordinal:
+            raise CorpusRefusal("malformed-record: sealed Exemplar page ordinal is duplicated")
+        page_ids_by_ordinal[ordinal] = page_id
+        pages[page_id] = _SealedPageBinding(
+            ordinal=ordinal,
+            image_path=payload["image_path"],
+            sha256=payload["source_sha256"],
+            size=size,
+        )
+    return pages
+
+
+def _validate_page_binding(
+    payload: Mapping[str, Any],
+    *,
+    sealed_pages: Mapping[str, _SealedPageBinding],
+    read_bytes: Callable[[str], bytes],
+) -> None:
+    presented = payload.get("presented")
+    page_id = presented.get("source_page_id") if isinstance(presented, Mapping) else None
+    page = sealed_pages.get(page_id) if isinstance(page_id, str) else None
+    if page is None:
+        raise CorpusRefusal(
+            "malformed-record: page Testimonium presentation names no sealed Exemplar page"
+        )
+    try:
+        pixels = read_bytes(page.image_path)
+        if digest_bytes(pixels) != page.sha256 or dimensions(pixels) != page.size:
+            raise CorpusRefusal(
+                "malformed-record: sealed Exemplar page pixels changed before binding"
+            )
+        validate_presented_page_binding(
+            dict(presented),
+            page_ordinal=page.ordinal,
+            page_image_path=page.image_path,
+            page_sha256=page.sha256,
+            page_size=page.size,
+            page_bytes=pixels,
+        )
+    except (ContractError, OSError, ValueError) as error:
+        raise CorpusRefusal(
+            f"malformed-record: page Testimonium presentation is not bound to its sealed "
+            f"Exemplar page: {error}"
+        ) from error
+
+
 def _attachment_index(
     tree: ReadOnlyRunTree,
+    *,
+    sealed_pages: Mapping[str, _SealedPageBinding] | None = None,
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    if sealed_pages is None:
+        sealed_pages = _sealed_page_bindings(tree)
     histories: dict[str, list[dict[str, Any]]] = {}
     act_testimonia: dict[tuple[str, str], list[dict[str, Any]]] = {}
     page_testimonia: dict[tuple[int, str], list[dict[str, Any]]] = {}
@@ -347,6 +447,11 @@ def _attachment_index(
                     raise CorpusRefusal(
                         f"malformed-record: referenced page Testimonium is invalid: {error}"
                     ) from error
+                _validate_page_binding(
+                    payload,
+                    sealed_pages=sealed_pages,
+                    read_bytes=tree.read_bytes,
+                )
                 if payload["page_ordinal"] != page_ordinal:
                     raise CorpusRefusal("malformed-record: attachment points to another page")
                 current = current_pages.get((page_ordinal, attachment["chair"]))
@@ -364,6 +469,8 @@ def page_health_counts(
     records: list[Mapping[str, Any]],
     *,
     page_sha256_by_ordinal: Mapping[int, str],
+    sealed_pages: Mapping[str, _SealedPageBinding],
+    read_bytes: Callable[[str], bytes],
     chairs: tuple[str, ...],
 ) -> dict[str, dict[str, int]]:
     """Tally current sealed page responses, keyed through their source ordinal."""
@@ -383,10 +490,10 @@ def page_health_counts(
         if not isinstance(payload, Mapping):
             raise CorpusRefusal("malformed-record: page Testimonium has no payload")
         chair, ordinal = payload.get("chair"), payload.get("page_ordinal")
-        if chair not in result or ordinal not in page_sha256_by_ordinal:
-            continue
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise CorpusRefusal("malformed-record: page Testimonium has no source page ordinal")
+        if chair not in result or ordinal not in page_sha256_by_ordinal:
+            continue
         histories.setdefault((ordinal, chair), []).append(record)
 
     for (ordinal, chair), history in histories.items():
@@ -396,10 +503,22 @@ def page_health_counts(
             operation=f"read:{chair}",
         )
         payload = current["payload"]
-        presented = payload.get("presented")
-        if presented and (
-            not isinstance(presented, Mapping) or presented.get("source_page_ordinal") != ordinal
-        ):
+        try:
+            validate_page_testimonium_payload(
+                dict(payload),
+                testimonium_id=current.get("artifact_id"),
+                read_bytes=read_bytes,
+            )
+        except ContractError as error:
+            raise CorpusRefusal(
+                f"malformed-record: page Testimonium is invalid: {error}"
+            ) from error
+        _validate_page_binding(
+            payload,
+            sealed_pages=sealed_pages,
+            read_bytes=read_bytes,
+        )
+        if payload["presented"]["source_page_ordinal"] != ordinal:
             raise CorpusRefusal(
                 "malformed-record: page Testimonium presentation names another page"
             )
@@ -470,6 +589,7 @@ def evaluate_run(
         selected[page_id] = next(iter(identities))
 
     read_only = ReadOnlyRunTree(tree)
+    sealed_pages = _sealed_page_bindings(read_only)
     source_shas = load_exemplar_page_shas(read_only)
     ordinal_by_sha: dict[str, int] = {}
     for ordinal, digest in source_shas.items():
@@ -477,7 +597,7 @@ def evaluate_run(
             raise CorpusRefusal("malformed-record: two sealed source pages carry the same sha256")
         ordinal_by_sha[digest] = ordinal
     proposals = load_pipeline_proposal_acts(read_only)
-    attached = _attachment_index(read_only)
+    attached = _attachment_index(read_only, sealed_pages=sealed_pages)
     page_records = [
         read_only.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
         for entry in read_only.build_manifest(ATTESTATORES)["artifacts"]
@@ -518,6 +638,8 @@ def evaluate_run(
         "page_health": page_health_counts(
             page_records,
             page_sha256_by_ordinal=selected_ordinals,
+            sealed_pages=sealed_pages,
+            read_bytes=read_only.read_bytes,
             chairs=chairs,
         ),
         "pages": reports,

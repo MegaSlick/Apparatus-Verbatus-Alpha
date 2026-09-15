@@ -50,6 +50,14 @@ class TransferTarget(Protocol):
         against that handle, so adapters need not read the whole file again.
         """
 
+    def create_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
+        """Create a small control object only if its key is absent.
+
+        The target enforces absence in the same operation that publishes the
+        bytes. A concurrent owner may win; callers inspect the final object
+        afterward and decide whether its bytes agree.
+        """
+
 
 @dataclass(frozen=True, slots=True)
 class TransferReport:

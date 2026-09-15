@@ -47,6 +47,7 @@ class FakeS3Client:
         self.upload_error: Exception | None = None
         self.drop_metadata = False
         self.uploads: list[str] = []
+        self.conditional_creates: list[str] = []
 
     def head_object(self, *, Bucket: str, Key: str):  # noqa: N803 - boto3's own names
         del Bucket
@@ -66,6 +67,23 @@ class FakeS3Client:
             Fileobj.read(),
             dict((ExtraArgs or {}).get("Metadata", {})),
         )
+
+    def put_object(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        Body,
+        Metadata=None,
+        IfNoneMatch=None,  # noqa: N803
+    ):
+        del Bucket
+        assert IfNoneMatch == "*"
+        self.conditional_creates.append(Key)
+        if Key in self.objects:
+            raise _client_error("PreconditionFailed", 412)
+        self.objects[Key] = (Body.read(), dict(Metadata or {}))
+        return {}
 
     def get_object(self, *, Bucket: str, Key: str):  # noqa: N803
         del Bucket
@@ -461,9 +479,12 @@ def test_upload_through_the_surface_sends_only_files_named_by_the_sealed_record(
 
     assert receipt.is_file()
     assert sorted(client.uploads) == [
-        "submission-manifest.json",
         "submission/page-one.bin",
         "submission/page-two.bin",
+    ]
+    assert client.conditional_creates == [
+        "submission-manifest.sha256",
+        "submission-manifest.json",
     ]
     assert client.objects["submission/page-one.bin"][0] == (source / "page-one.bin").read_bytes()
     assert client.objects["submission/page-two.bin"][0] == (source / "page-two.bin").read_bytes()
@@ -471,6 +492,41 @@ def test_upload_through_the_surface_sends_only_files_named_by_the_sealed_record(
     payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
     assert payload["state"] == "complete"
     assert "fixture volume" not in payload["summary"]
+
+
+def test_conditional_claim_race_refuses_rival_before_any_image_upload(tmp_path: Path) -> None:
+    class RivalClaimClient(FakeS3Client):
+        def put_object(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            Body,
+            Metadata=None,
+            IfNoneMatch=None,  # noqa: N803
+        ):
+            del Bucket, Body, Metadata
+            assert IfNoneMatch == "*"
+            self.conditional_creates.append(Key)
+            rival = ("0" * 64 + "\n").encode("ascii")
+            self.objects[Key] = (rival, {SHA256_METADATA_KEY: hashlib.sha256(rival).hexdigest()})
+            raise _client_error("PreconditionFailed", 412)
+
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    client = RivalClaimClient()
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=S3VolumeTarget(_spec(), client=client),
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert client.conditional_creates == ["submission-manifest.sha256"]
+    assert client.uploads == []
+    assert "submission-manifest.json" not in client.objects
 
 
 def test_naming_a_volume_says_what_will_be_contacted_before_anything_moves(

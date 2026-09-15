@@ -775,6 +775,9 @@ class OperatorSurface:
                 # transfer, and must never cause a remote read or write.
                 submission_door.load_manifest(manifest_snapshot)
                 manifest_key = f"{prefix}-manifest.json"
+                claim_key = f"{prefix}-manifest.sha256"
+                claim_bytes = f"{manifest_sha256}\n".encode("ascii")
+                claim_sha256 = hashlib.sha256(claim_bytes).hexdigest()
                 remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
                 if remote_manifest is not None and (
                     remote_manifest.sha256 != manifest_sha256
@@ -783,6 +786,28 @@ class OperatorSurface:
                     raise _UploadManifestConflict(
                         f"target {manifest_key!r} exists but differs from the sealed submission "
                         "manifest; it was not overwritten"
+                    )
+                remote_claim = store.inspect(claim_key, expected_size=len(claim_bytes))
+                if remote_claim is not None and (
+                    remote_claim.sha256 != claim_sha256 or remote_claim.size != len(claim_bytes)
+                ):
+                    raise _UploadManifestConflict(
+                        f"target {claim_key!r} is permanently claimed by a different sealed "
+                        "submission manifest; no image was written"
+                    )
+                if remote_claim is None:
+                    store.create_file(
+                        claim_key,
+                        io.BytesIO(claim_bytes),
+                        expected_sha=claim_sha256,
+                    )
+                    remote_claim = store.inspect(claim_key, expected_size=len(claim_bytes))
+                if remote_claim is None or (
+                    remote_claim.sha256 != claim_sha256 or remote_claim.size != len(claim_bytes)
+                ):
+                    raise _UploadManifestConflict(
+                        f"target {claim_key!r} was concurrently claimed by a different sealed "
+                        "submission manifest; no image was written"
                     )
                 report = ChecksummedTransfer(
                     source_root=source_path,
@@ -804,7 +829,7 @@ class OperatorSurface:
                         "manifest; it was not overwritten"
                     )
                 if remote_manifest is None:
-                    store.put_file(
+                    store.create_file(
                         manifest_key, io.BytesIO(manifest_bytes), expected_sha=manifest_sha256
                     )
                     remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))

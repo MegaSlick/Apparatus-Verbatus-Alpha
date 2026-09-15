@@ -171,6 +171,31 @@ class LocalFixtureObjectStore(TransferTarget):
         finally:
             temporary.unlink(missing_ok=True)
 
+    def create_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
+        """Atomically claim an absent fixture key without replacing a winner."""
+        del expected_sha
+        target = self.root.resolve() / key
+        if target.is_symlink():
+            raise RuntimeError(f"fixture object key {key!r} is a symbolic link, not an object")
+        self._path(key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                shutil.copyfileobj(source, handle, BLOCK_BYTES)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                return
+            sync_directory(target.parent, strict=True)
+            self.puts.append(key)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def _path(self, key: str) -> Path:
         if not isinstance(key, str) or not key or key.startswith("/") or ".." in key.split("/"):
             raise ValueError("fixture object key is unsafe")

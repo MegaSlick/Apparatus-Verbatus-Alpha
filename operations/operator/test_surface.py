@@ -1751,6 +1751,7 @@ def test_upload_reuses_an_identical_published_submission_without_new_writes(
     surface.upload(source, sealed_manifest=manifest, target=store)
 
     assert first_writes == (
+        "submission-manifest.sha256",
         "submission/page-one.bin",
         "submission/page-two.bin",
         "submission-manifest.json",
@@ -1791,6 +1792,68 @@ def test_upload_refuses_a_different_manifest_before_writing_its_foreign_image(
     assert _all_files(store.root) == before
     payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
     assert payload["state"] == "manifest-conflict"
+
+
+def test_concurrent_conflicting_uploads_leave_one_permanent_prefix_owner(
+    tmp_path: Path,
+) -> None:
+    barrier = threading.Barrier(2)
+
+    class RacingStore(LocalFixtureObjectStore):
+        def create_file(self, key, source_handle, *, expected_sha):  # type: ignore[no-untyped-def]
+            if key == "submission-manifest.sha256":
+                barrier.wait(timeout=5)
+            super().create_file(key, source_handle, expected_sha=expected_sha)
+
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    first_source, first_manifest = _manifest(first_root)
+    second_source, second_manifest = _manifest(second_root)
+    (second_source / "foreign-page.bin").write_bytes(b"belongs only to the second batch\n")
+    second_manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(second_source))))
+    store = RacingStore(tmp_path / "volume")
+    outcomes: list[Path | OperatorError] = []
+
+    def upload(surface, source, manifest):  # type: ignore[no-untyped-def]
+        try:
+            outcomes.append(surface.upload(source, sealed_manifest=manifest, target=store))
+        except OperatorError as error:
+            outcomes.append(error)
+
+    threads = [
+        threading.Thread(
+            target=upload,
+            args=(_surface(tmp_path / "state-one"), first_source, first_manifest),
+        ),
+        threading.Thread(
+            target=upload,
+            args=(_surface(tmp_path / "state-two"), second_source, second_manifest),
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert sum(isinstance(outcome, Path) for outcome in outcomes) == 1
+    refusals = [outcome for outcome in outcomes if isinstance(outcome, OperatorError)]
+    assert len(refusals) == 1 and refusals[0].code is ErrorCode.UPLOAD_REFUSED
+    published_manifest = (store.root / "submission-manifest.json").read_bytes()
+    assert published_manifest in {first_manifest.read_bytes(), second_manifest.read_bytes()}
+    published_sha = hashlib.sha256(published_manifest).hexdigest()
+    assert (store.root / "submission-manifest.sha256").read_bytes() == (
+        f"{published_sha}\n".encode("ascii")
+    )
+    manifest_record = json.loads(published_manifest)
+    expected = {
+        Path("submission-manifest.json"),
+        Path("submission-manifest.sha256"),
+        *(Path("submission") / row["relative_path"] for row in manifest_record["files"]),
+    }
+    assert set(_all_files(store.root)) == expected
 
 
 def test_a_named_prefix_adds_an_independent_immutable_batch_on_one_volume(

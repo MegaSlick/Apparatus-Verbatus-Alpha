@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 import pytest
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
-from common.contracts.identities import attempt_id
+from common.contracts.stages import ATTESTATORES
 from common.runtree.store import RunTree
 from operations.corpus import CorpusRefusal
 from operations.corpus.compare import (
@@ -23,6 +24,7 @@ from operations.corpus.test_evaluate import (
 from operations.corpus.witness_evaluate import (
     CHAIRS,
     _attachment_index,
+    _sealed_page_bindings,
     evaluate_page,
     evaluate_run,
     main,
@@ -44,23 +46,6 @@ def _testimonium(text: str, *, truncated: bool | None = False, outcome: str = "r
     }
 
 
-def _page_record(chair: str, ordinal: int, *, truncated: bool | None, outcome="read") -> dict:
-    subject = f"page-{ordinal}"
-    return {
-        "artifact_id": f"artifact-{chair}-{ordinal}",
-        "subject_id": subject,
-        "attempt_id": attempt_id(subject, f"read:{chair}", 1),
-        "outcome": outcome,
-        "payload": {
-            "attempt_ordinal": 1,
-            "chair": chair,
-            "page_ordinal": ordinal,
-            "presented": {"source_page_ordinal": ordinal, "image_sha256": "f" * 64},
-            "content_health": _health(truncated=truncated),
-        },
-    }
-
-
 def _write_inputs(tmp_path: Path, tree: RunTree, reference: dict) -> tuple[Path, Path]:
     ledger_path = tmp_path / "ledger.json"
     pages_path = tmp_path / "reference-pages.jsonl"
@@ -75,6 +60,30 @@ def _inventory(tree: RunTree) -> dict[str, str]:
         for path in tree.root.rglob("*")
         if path.is_file()
     }
+
+
+def _page_records(tree: ReadOnlyRunTree) -> list[dict]:
+    return [
+        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    ]
+
+
+def _relabel_page_two_pixels_as_page_one(records: list[dict]) -> tuple[str, dict]:
+    by_chair: dict[str, dict[int, dict]] = {}
+    for record in records:
+        payload = record["payload"]
+        by_chair.setdefault(payload["chair"], {})[payload["page_ordinal"]] = record
+    chair_records = next(rows for rows in by_chair.values() if {1, 2} <= set(rows))
+    forged = copy.deepcopy(chair_records[1])
+    forged["payload"]["presented"] = copy.deepcopy(chair_records[2]["payload"]["presented"])
+    # The retained image path/digest, page id and transform all come from page
+    # two. Relabel both ordinal fields as page one, which is internally valid
+    # to the Testimonium schema but false against the Exemplar page id.
+    forged["payload"]["presented"]["source_page_ordinal"] = 1
+    forged["payload"]["presented"]["transform"]["source_page_ordinal"] = 1
+    return chair_records[1]["artifact_id"], forged
 
 
 def test_act_scoped_dai_uses_its_sealed_full_crop_span():
@@ -129,27 +138,72 @@ def test_unknown_completion_is_unavailable_instead_of_silently_complete():
     )
 
 
-def test_page_health_joins_transformed_presentations_through_source_page_ordinal():
+def test_page_health_joins_valid_transformed_presentations_to_exact_exemplar(
+    sealed_run: RunTree,
+):
+    read_only = ReadOnlyRunTree(sealed_run)
+    sealed_pages = _sealed_page_bindings(read_only)
+    page_sha256_by_ordinal = load_exemplar_page_shas(read_only)
     records = [
-        _page_record("attestator_1", 1, truncated=True),
-        _page_record("attestator_2", 1, truncated=None, outcome="failed"),
-        _page_record("attestator_3", 1, truncated=False),
+        read_only.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in read_only.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
     ]
+    assert any(
+        record["payload"]["presented"]["image_sha256"]
+        != sealed_pages[record["payload"]["presented"]["source_page_id"]].sha256
+        for record in records
+    )
     counts = page_health_counts(
         records,
-        page_sha256_by_ordinal={1: "a" * 64, 2: "b" * 64},
+        page_sha256_by_ordinal=page_sha256_by_ordinal,
+        sealed_pages=sealed_pages,
+        read_bytes=read_only.read_bytes,
         chairs=CHAIRS,
     )
-    assert counts["attestator_1"] == {
-        "missing": 1,
-        "truncated_true": 1,
-        "truncated_false": 0,
-        "truncated_null": 0,
-        "failed_model_response": 0,
-    }
-    assert counts["attestator_2"]["truncated_null"] == 1
-    assert counts["attestator_2"]["failed_model_response"] == 1
-    assert counts["attestator_3"]["truncated_false"] == 1
+    for chair in CHAIRS:
+        assert counts[chair]["missing"] + counts[chair]["truncated_true"] + counts[chair][
+            "truncated_false"
+        ] + counts[chair]["truncated_null"] == len(page_sha256_by_ordinal)
+
+
+def test_page_health_refuses_self_consistent_page_relabelled_to_another_ordinal(
+    sealed_run: RunTree,
+):
+    read_only = ReadOnlyRunTree(sealed_run)
+    sealed_pages = _sealed_page_bindings(read_only)
+    _artifact_id, forged = _relabel_page_two_pixels_as_page_one(_page_records(read_only))
+
+    with pytest.raises(CorpusRefusal, match="ordinal disagrees with the sealed page"):
+        page_health_counts(
+            [forged],
+            page_sha256_by_ordinal={1: load_exemplar_page_shas(read_only)[1]},
+            sealed_pages=sealed_pages,
+            read_bytes=read_only.read_bytes,
+            chairs=CHAIRS,
+        )
+
+
+def test_attachment_index_refuses_self_consistent_page_relabelled_to_another_ordinal(
+    sealed_run: RunTree,
+):
+    read_only = ReadOnlyRunTree(sealed_run)
+    artifact_id, forged = _relabel_page_two_pixels_as_page_one(_page_records(read_only))
+
+    class ForgedReadTree:
+        def read_artifact(self, stage, kind, candidate):  # type: ignore[no-untyped-def]
+            record = read_only.read_artifact(stage, kind, candidate)
+            return copy.deepcopy(forged) if candidate == artifact_id else record
+
+        def read_artifact_reference(self, reference, **kwargs):  # type: ignore[no-untyped-def]
+            record = read_only.read_artifact_reference(reference, **kwargs)
+            return copy.deepcopy(forged) if record.get("artifact_id") == artifact_id else record
+
+        def __getattr__(self, name):  # type: ignore[no-untyped-def]
+            return getattr(read_only, name)
+
+    with pytest.raises(CorpusRefusal, match="ordinal disagrees with the sealed page"):
+        _attachment_index(ForgedReadTree())  # type: ignore[arg-type]
 
 
 @pytest.fixture(scope="module")
@@ -380,6 +434,37 @@ def test_reference_text_cannot_change_the_geometry_assignment(sealed_run: RunTre
         ]
 
     assert pairing(original) == pairing(altered)
+
+
+def test_witness_report_retains_only_geometry_facts_from_placeholder_comparison(
+    sealed_run: RunTree,
+):
+    reference = _fixture_reference_for_page_one(sealed_run)
+    read_only = ReadOnlyRunTree(sealed_run)
+    proposals = [
+        proposal
+        for proposal in load_pipeline_proposal_acts(read_only)
+        if proposal["page_sha256"] == reference["page"]["sha256"]
+    ]
+    report = evaluate_page(
+        reference_page=reference,
+        source_page_ordinal=1,
+        proposals=proposals,
+        attachments=_attachment_index(read_only),
+        chairs=CHAIRS,
+    )
+
+    expected = {
+        "pipeline_act_id",
+        "reference_physical_act_id",
+        "record_id",
+        "intersection_area",
+        "union_area",
+    }
+    assert report["geometry"]["matched_pairs"]
+    assert all(set(pair) == expected for pair in report["geometry"]["matched_pairs"])
+    assert "normalization_profile_id" not in report["geometry"]
+    assert "self_hash" not in report["geometry"]
 
 
 def test_duplicate_attachment_for_the_matched_source_page_is_refused(sealed_run: RunTree):

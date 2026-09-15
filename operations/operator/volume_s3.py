@@ -95,6 +95,9 @@ FETCH_CHUNK_BYTES: Final = 1024 * 1024
 # is a failure and must never be read as "absent, so upload it". That reading
 # would turn one broken credential into a full silent re-upload on every run.
 _ABSENT_CODES: Final = frozenset({"404", "NoSuchKey", "NotFound"})
+_CONDITIONAL_CONFLICT_CODES: Final = frozenset(
+    {"409", "412", "ConditionalRequestConflict", "PreconditionFailed"}
+)
 
 _DATACENTER = re.compile(r"[A-Z]{2,4}-[A-Z]{2}-[0-9]{1,2}")
 
@@ -326,6 +329,35 @@ class S3VolumeTarget:
         except Exception as error:
             raise VolumeTransferRefusal(
                 f"the network volume refused or dropped the upload of {key!r}: {error}"
+            ) from error
+
+    def create_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
+        """Conditionally create one bounded control object without replacement.
+
+        This uses ``PutObject`` rather than the multipart transfer manager only
+        for the upload claim and manifest. Their size is tiny and bounded by
+        the caller; page images keep the multipart path above. ``IfNoneMatch``
+        makes the target decide which concurrent writer owns the key.
+        """
+        try:
+            source.seek(0)
+            self.client.put_object(
+                Bucket=self.spec.volume_id,
+                Key=key,
+                Body=source,
+                Metadata={SHA256_METADATA_KEY: expected_sha},
+                IfNoneMatch="*",
+            )
+        except OSError as error:
+            raise VolumeTransferRefusal(
+                f"creating {key!r} failed while reading the source or writing to the "
+                f"network volume: {error}"
+            ) from error
+        except Exception as error:
+            if _means_conditional_conflict(error):
+                return
+            raise VolumeTransferRefusal(
+                f"the network volume refused or dropped the conditional create of {key!r}: {error}"
             ) from error
 
 
@@ -697,6 +729,18 @@ def _means_absent(error: BaseException) -> bool:
     # a contradictory named error (for example AccessDenied with a 404 status),
     # preserve the failure instead of treating it as permission to overwrite.
     return code in _ABSENT_CODES or (not code and status == 404)
+
+
+def _means_conditional_conflict(error: BaseException) -> bool:
+    """Whether a create-only PutObject lost to an already-published key."""
+    response = getattr(error, "response", None)
+    if not isinstance(response, Mapping):
+        return False
+    error_detail = response.get("Error")
+    metadata = response.get("ResponseMetadata")
+    code = str((error_detail if isinstance(error_detail, Mapping) else {}).get("Code", ""))
+    status = (metadata if isinstance(metadata, Mapping) else {}).get("HTTPStatusCode")
+    return code in _CONDITIONAL_CONFLICT_CODES or (not code and status in {409, 412})
 
 
 __all__ = [
