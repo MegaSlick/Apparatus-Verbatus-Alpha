@@ -120,6 +120,36 @@ def _attachment_index(tree: RunTree) -> dict[str, dict[str, list[dict[str, Any]]
     return indexed
 
 
+def page_health_counts(records: list[Mapping[str, Any]], *, page_sha256s: set[str], chairs: tuple[str, ...]) -> dict[str, dict[str, int]]:
+    """Tally valid sealed page responses without treating unknown as complete."""
+    result = {chair: {"missing": len(page_sha256s), "truncated_true": 0, "truncated_false": 0, "truncated_null": 0, "failed_model_response": 0} for chair in chairs}
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping):
+            raise CorpusRefusal("malformed-record: page Testimonium has no payload")
+        chair = payload.get("chair")
+        presented = payload.get("presented")
+        if chair not in result or not isinstance(presented, Mapping):
+            continue
+        digest = presented.get("image_sha256")
+        if digest not in page_sha256s:
+            continue
+        key = (chair, digest)
+        if key in seen:
+            raise CorpusRefusal("malformed-record: duplicate page Testimonium for one chair/page")
+        seen.add(key)
+        result[chair]["missing"] -= 1
+        health = payload.get("content_health")
+        if not isinstance(health, Mapping) or health.get("truncated") not in {True, False, None}:
+            raise CorpusRefusal("malformed-record: page Testimonium has invalid content health")
+        truncation = health["truncated"]
+        result[chair]["truncated_true" if truncation is True else "truncated_false" if truncation is False else "truncated_null"] += 1
+        if record.get("outcome") == "failed":
+            result[chair]["failed_model_response"] += 1
+    return result
+
+
 def evaluate_run(*, tree: RunTree, ledger_path: Path, reference_pages_path: Path, page_ids: set[str], chairs: tuple[str, ...]) -> dict[str, Any]:
     """Build one read-only, self-hashed report for explicit admitted page ids."""
     ledger = load_local_admission_ledger(ledger_path)
@@ -129,13 +159,18 @@ def evaluate_run(*, tree: RunTree, ledger_path: Path, reference_pages_path: Path
         raise CorpusRefusal("missing-input-file: selected page id is absent from admitted reference ledger")
     proposals = load_pipeline_proposal_acts(tree)
     attached = _attachment_index(tree)
+    page_records = [
+        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    ]
     reports = []
     for digest in sorted(selected_hashes):
         page = pages.get(digest)
         if page is None:
             raise CorpusRefusal(f"reference-page-not-in-ledger: admitted page {digest} has no reference page")
         reports.append(evaluate_page(reference_page=page, proposals=[p for p in proposals if p["page_sha256"] == digest], attachments=attached, testimonia={}, chairs=chairs))
-    body = {"schema": SCHEMA, "run_id": tree.run_id, "ledger_sha256": digest_bytes(ledger_path.read_bytes()), "selected_page_ids": sorted(page_ids), "chairs": list(chairs), "pages": reports}
+    body = {"schema": SCHEMA, "run_id": tree.run_id, "ledger_sha256": digest_bytes(ledger_path.read_bytes()), "selected_page_ids": sorted(page_ids), "chairs": list(chairs), "page_health": page_health_counts(page_records, page_sha256s=selected_hashes, chairs=chairs), "pages": reports}
     body["self_hash"] = self_hash(body)
     return body
 
