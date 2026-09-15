@@ -57,6 +57,7 @@ from . import pod_timer, supervise
 from .controller_armer import (
     ChannelControllerArmer,
     ObservingControllerArmer,
+    close_reserve_seconds,
     default_supervisor_argv,
     report_key,
     report_path_of,
@@ -708,14 +709,19 @@ def test_c_a_report_that_never_appears_closes_the_pod_inside_the_create_that_mad
 ) -> None:
     """No report, no proof the pod can be closed -- so it is closed now.
 
-    The bound is clamped down to what is left of the lease, the refusal names
-    it, and `launch._arm_or_close` closes the pod before `create` returns.  The
-    close is checked against provider state, not against the armer's word for
-    it: terminated once, absent to a GET, absent from the list, and durably
-    recorded as ``closed-verified``.
+    The bound is clamped down to what is left of the lease *less the close
+    budget*, the refusal names it, and `launch._arm_or_close` closes the pod
+    before `create` returns. Reserving that budget is what keeps this close
+    inside the hard deadline instead of starting after it (CodeRabbit on PR
+    #117). The close is checked against provider state, not against the armer's
+    word for it: terminated once, absent to a GET, absent from the list, and
+    durably recorded as ``closed-verified``.
     """
 
-    drill = build_drill(lifetime=60)  # nothing ever writes to the volume
+    lifetime = 60
+    drill = build_drill(lifetime=lifetime)  # nothing ever writes to the volume
+    bound = lifetime - close_reserve_seconds(drill.runtime.spend_policy)
+    assert 0 < bound < lifetime
 
     result = drill.launch()
 
@@ -726,8 +732,8 @@ def test_c_a_report_that_never_appears_closes_the_pod_inside_the_create_that_mad
     # The supervisor was still started first, and honestly reported as started.
     assert result.controller_arming.laptop_supervisor_started
     assert not result.controller_arming.pod_timer_acknowledged
-    assert "60s arming bound" in result.controller_arming.detail
-    assert drill.clock.seconds >= 60
+    assert f"{bound:.0f}s arming bound" in result.controller_arming.detail
+    assert bound <= drill.clock.seconds < lifetime
 
     pod_id = drill.pod_id()
     assert result.close_report is not None and result.close_report.verified

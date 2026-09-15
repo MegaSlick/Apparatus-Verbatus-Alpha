@@ -43,13 +43,22 @@ read back through the channel.
 **Raising the bounds for a short-lived drill.**  Both bounds are constructor
 keywords (``timeout_seconds``, ``container_timeout_seconds``), so the untracked
 factory sets them per launch without touching this module.  Both are also
-clamped down to the lease's own remaining lifetime, which is what Boot A has to
-plan around: its hard lifetime is about 900 seconds *in total*, and the two
-bounds plus the close must fit inside it.  The defaults here (600 + 300) fill
-that window exactly and leave nothing for the close, so a Boot A factory lowers
-them -- or Tyrel raises the drill's lifetime -- rather than discovering the
-squeeze on a live pod.  `operations/pod/README.md`'s boot plan carries the
-arithmetic.
+clamped down to the lease's own remaining lifetime **less the close budget**
+(`close_reserve_seconds`), which is what Boot A has to plan around: its hard
+lifetime is about 900 seconds *in total*, and the two bounds plus the close
+must fit inside it.  The defaults here (600 + 300) fill that window exactly and
+leave nothing for the close, so a Boot A factory lowers them -- or Tyrel raises
+the drill's lifetime -- rather than discovering the squeeze on a live pod.
+`operations/pod/README.md`'s boot plan carries the arithmetic.
+
+That used to be prose and nothing else, and prose holds nobody: clamped to the
+hard deadline itself, a slow launch waited right up to it, `_attempt` returned
+``BOUND_EXPIRED``, and only then did `launch._arm_or_close` begin the verified
+close -- so the pod billed past its own hard deadline while the close it exists
+to guarantee was attempted.  The reserve is subtracted in code now, and
+`preflight` refuses a configuration whose two bounds plus that reserve cannot
+fit the policy's whole hard lifetime.  A refusal before the create costs
+nothing (CodeRabbit on PR #117).
 
 **Arming order, and why the supervisor goes first.**  The supervisor is
 started and recorded *before* the poll begins.  A launcher that dies during
@@ -99,13 +108,14 @@ performs the identical read and never arms, for the first authorized boot.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Final, Protocol, Sequence
 
@@ -119,7 +129,31 @@ from .models import (
     utc_now,
     validate_pod_report_identity,
 )
+from .shutdown import BILLING_RECONCILIATION_ATTEMPTS, BILLING_RECONCILIATION_RETRY_SECONDS
 from .spend import SpendPolicy
+
+
+def close_reserve_seconds(policy: SpendPolicy) -> float:
+    """What must be left of the lease for a verified close to happen inside it.
+
+    One laptop-side close runs to the policy's ``shutdown_deadline_seconds``
+    plus the fixed-in-code billing reconciliation tail, which is exactly the
+    budget ``SpendPolicy`` already refuses a policy for not leaving inside the
+    hard lifetime. The two bounds below are clamped to the hard deadline *minus*
+    this, rather than to the hard deadline itself: clamped to the deadline, a
+    slow launch waits right up to it, ``_attempt`` returns ``BOUND_EXPIRED``,
+    and only then does `launch._arm_or_close` begin the verified close -- so the
+    pod bills past its own hard deadline while the close it exists to guarantee
+    is attempted (CodeRabbit on PR #117). ``0.0`` for a policy that names no
+    shutdown deadline; `preflight` refuses such a policy before this matters.
+    """
+
+    if policy.shutdown_deadline_seconds is None:
+        return 0.0
+    return float(policy.shutdown_deadline_seconds) + math.ceil(
+        (BILLING_RECONCILIATION_ATTEMPTS - 1) * BILLING_RECONCILIATION_RETRY_SECONDS
+    )
+
 
 CONTROLLER_ARMING_TIMEOUT_SECONDS: Final = 300.0
 """How long a launch may wait for the pod's first durable report before refusing.
@@ -269,6 +303,20 @@ class ContainerLivenessProbe(Protocol):
 
     def started_at(self) -> datetime | None:
         """The provider's container-start moment, or ``None`` if none is reported."""
+
+    def worst_case_seconds(self) -> float:
+        """The longest one ``started_at`` call may hold the caller.
+
+        Required, and `preflight` refuses a probe that does not answer it. The
+        arming poll heartbeats this launch's lease between passes, and a probe
+        is a provider HTTP call made *inside* a pass: the gap between two
+        heartbeats is this duration plus the poll interval, so a 30-second
+        transport default under a 30-second `laptop_heartbeat_timeout_seconds`
+        let the supervisor close the pod it was started to guard while the
+        image was still pulling (CodeRabbit on PR #117). A probe that cannot
+        state a bound cannot be admitted on this path -- the arithmetic that
+        keeps the heartbeat inside the timeout has no other term to use.
+        """
 
 
 class SupervisorProcess(Protocol):
@@ -495,6 +543,12 @@ class ChannelControllerArmer:
             raise ValueError(
                 "controller armer liveness probe must offer started_at() -> datetime | None"
             )
+        if liveness is not None and not callable(getattr(liveness, "worst_case_seconds", None)):
+            raise ValueError(
+                "controller armer liveness probe must offer worst_case_seconds() -> float; a "
+                "probe that cannot state how long one call may take cannot be held inside "
+                "this launch's heartbeat budget"
+            )
         argv = tuple(str(part) for part in supervisor_argv)
         if not argv or not all(part.strip() for part in argv):
             raise ValueError("laptop supervisor argv must be a non-empty command")
@@ -554,6 +608,72 @@ class ChannelControllerArmer:
                 f"inside the policy's {policy.laptop_heartbeat_timeout_seconds}s laptop "
                 "heartbeat timeout; a supervisor started here would close every pod it "
                 "was meant to guard during arming",
+                receipt,
+            )
+        # The probe runs *inside* a pass, so the real gap between two
+        # heartbeats is the poll interval plus one probe. `poll_seconds` alone
+        # was the only term checked, and a provider status call is allowed 30
+        # seconds by the shipped transport: with the 5s poll and a 30s
+        # heartbeat timeout, one slow call produced a ~35s silence and the
+        # supervisor closed a pod that was still pulling its image (CodeRabbit
+        # on PR #117).
+        if self.liveness is not None:
+            try:
+                probe_seconds = float(self.liveness.worst_case_seconds())
+            except Exception as error:
+                return ControllerReadiness(
+                    False,
+                    observed,
+                    f"this launch's container-start probe could not state its own worst-case "
+                    f"duration ({error}); an unbounded probe inside the arming poll cannot be "
+                    "held inside the laptop heartbeat timeout",
+                    receipt,
+                )
+            if not probe_seconds > 0 or probe_seconds != probe_seconds:
+                return ControllerReadiness(
+                    False,
+                    observed,
+                    "this launch's container-start probe states a worst-case duration of "
+                    f"{probe_seconds!r}, which is not a positive number of seconds",
+                    receipt,
+                )
+            receipt["container_probe_worst_case_seconds"] = f"{probe_seconds:.1f}"
+            if self.poll_seconds + probe_seconds >= policy.laptop_heartbeat_timeout_seconds:
+                return ControllerReadiness(
+                    False,
+                    observed,
+                    f"this armer's {self.poll_seconds:.1f}s poll interval plus its "
+                    f"container-start probe's own {probe_seconds:.1f}s worst case does not "
+                    f"stay inside the policy's {policy.laptop_heartbeat_timeout_seconds}s "
+                    "laptop heartbeat timeout; one slow probe would let the supervisor close "
+                    "the pod it is waiting on",
+                    receipt,
+                )
+        # And the whole arming has to leave a verified close inside the lease.
+        # Refusing here costs nothing; discovering the squeeze on a live pod
+        # costs the pod, which is what the module docstring used to ask a
+        # factory author to avoid by hand.
+        #
+        # Against the policy's own `hard_lifetime_seconds` rather than against
+        # what is left of *this* request's deadline: this is a configuration
+        # fault -- bounds that cannot fit any lease this policy grants -- and a
+        # configuration fault must not be reported differently depending on
+        # when the request is presented. A deadline that is closer than the
+        # policy's full lifetime because time has passed is handled where it
+        # belongs, in the clamps `_attempt` applies.
+        reserve = close_reserve_seconds(policy)
+        lifetime = float(policy.hard_lifetime_seconds)
+        needed = self.container_timeout_seconds + self.timeout_seconds + reserve
+        receipt["close_reserve_seconds"] = f"{reserve:.1f}"
+        if needed > lifetime:
+            return ControllerReadiness(
+                False,
+                observed,
+                f"this armer's {self.container_timeout_seconds:.0f}s container-start bound and "
+                f"{self.timeout_seconds:.0f}s channel bound, plus the {reserve:.0f}s this "
+                f"policy's close needs, come to {needed:.0f}s and this policy's whole hard "
+                f"lifetime is {lifetime:.0f}s; lower the bounds or raise the lifetime before "
+                "a pod is created, not after",
                 receipt,
             )
         command = self.supervisor_argv[0]
@@ -720,7 +840,10 @@ class ChannelControllerArmer:
         owner_token: str,
         policy: SpendPolicy,
     ) -> _ArmingAttempt:
-        del policy  # the bound is code-owned; the policy's ceilings are the runtime's business
+        # The bounds are code-owned; what the policy contributes is the close
+        # budget they must leave behind, which is the one thing about this wait
+        # that is not this module's to choose.
+        arming_deadline = lease.hard_deadline - timedelta(seconds=close_reserve_seconds(policy))
         started_at = self.now()
         base = _ArmingAttempt(
             action=action,
@@ -778,6 +901,7 @@ class ChannelControllerArmer:
             store=store,
             owner_token=owner_token,
             lease=lease,
+            arming_deadline=arming_deadline,
             process=supervisor.process,
         )
         if refusal is not None:
@@ -791,14 +915,15 @@ class ChannelControllerArmer:
         #    instead.  Measured from here rather than from `started_at`, so the
         #    pull does not eat the propagation budget it has nothing to do with.
         channel_from = self.now()
-        bound = min(self.timeout_seconds, (lease.hard_deadline - channel_from).total_seconds())
+        bound = min(self.timeout_seconds, (arming_deadline - channel_from).total_seconds())
         base = replace(base, bound_seconds=max(bound, 0.0))
         if bound <= 0:
             return self._refuse(
                 base,
                 BOUND_EXPIRED,
-                "the lease's hard deadline has already passed, so there is no window in "
-                "which a pod report could be believed"
+                "this lease's hard deadline, less the close budget reserved inside it, has "
+                "already passed, so there is no window in which a pod report could be "
+                "believed and still leave time to close this pod"
                 + (
                     ""
                     if base.container_waited_seconds <= 0
@@ -930,6 +1055,7 @@ class ChannelControllerArmer:
         store: LeaseStore,
         owner_token: str,
         lease: PodLease,
+        arming_deadline: datetime,
         process: SupervisorProcess,
     ) -> tuple[_ArmingAttempt, _ArmingAttempt | None]:
         """Wait for the provider to say this pod's container has started.
@@ -952,15 +1078,15 @@ class ChannelControllerArmer:
         if self.liveness is None:
             return attempt, None
         started = attempt.started_at
-        bound = min(self.container_timeout_seconds, (lease.hard_deadline - started).total_seconds())
+        bound = min(self.container_timeout_seconds, (arming_deadline - started).total_seconds())
         attempt = replace(attempt, container_bound_seconds=max(bound, 0.0))
         if bound <= 0:
             return (
                 replace(
                     attempt,
                     container_detail=(
-                        "the lease's hard deadline had already passed; no container-start "
-                        "probe was attempted"
+                        "this lease's hard deadline, less the close budget reserved inside "
+                        "it, had already passed; no container-start probe was attempted"
                     ),
                 ),
                 None,
