@@ -154,6 +154,16 @@ def _looks_like_provider_credential(name: str) -> bool:
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
     if args.submission_folder is not None:
+        if (
+            (
+                getattr(args, "triage_clusters", None) is not None
+                or getattr(args, "triage_producer_recipe", None) is not None
+            )
+            and getattr(args, "triage_decision_manifest", None) is None
+        ):
+            raise ContractError(
+                "--triage-clusters and --triage-producer-recipe require --triage-decision-manifest"
+            )
         return
     if args.submission_manifest is not None:
         raise ContractError(
@@ -166,13 +176,25 @@ def require_coherent_ingress_options(args: argparse.Namespace) -> None:
             "--data-gate-policy is meaningful only with --submission-folder; the synthetic "
             "fixture route does not evaluate the real-input storage policy"
         )
+    if (
+        getattr(args, "triage_decision_manifest", None) is not None
+        or getattr(args, "triage_clusters", None) is not None
+        or getattr(args, "triage_producer_recipe", None) is not None
+    ):
+        raise ContractError("triage geometry is meaningful only with --submission-folder")
 
 
 def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
     """Bind paths to the caller's cwd without hiding symlinks from the Door."""
     args.run_root = Path(args.run_root).absolute()
-    for attribute in ("submission_folder", "submission_manifest"):
-        value = getattr(args, attribute)
+    for attribute in (
+        "submission_folder",
+        "submission_manifest",
+        "triage_decision_manifest",
+        "triage_clusters",
+        "triage_producer_recipe",
+    ):
+        value = getattr(args, attribute, None)
         if value is not None:
             setattr(args, attribute, Path(value).absolute())
     # A real run's absent policy means the repository default; fixture runs must
@@ -250,6 +272,9 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         "--hard-failure-config",
         str(args.hard_failure_config),
     ]
+    cache_root = getattr(args, "cache_root", None)
+    if cache_root is not None:
+        command += ["--cache-root", str(cache_root)]
     # Later stages may read only the run tree the Door sealed, never source paths.
     if program == STAGE_PROGRAMS["door"]:
         # The Door is the one stage that creates the run authority, so it is the
@@ -265,6 +290,14 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
             command += ["--submission-manifest", str(args.submission_manifest)]
         if args.data_gate_policy is not None:
             command += ["--data-gate-policy", str(args.data_gate_policy)]
+        for attribute, flag in (
+            ("triage_decision_manifest", "--triage-decision-manifest"),
+            ("triage_clusters", "--triage-clusters"),
+            ("triage_producer_recipe", "--triage-producer-recipe"),
+        ):
+            value = getattr(args, attribute, None)
+            if value is not None:
+                command += [flag, str(value)]
     if args.pdf_target_dpi is not None:
         command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
     # A measured runtime fact of the card, not run configuration (GOVERNANCE 6);
@@ -535,6 +568,9 @@ def main() -> int:
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--submission-folder")
     parser.add_argument("--submission-manifest")
+    parser.add_argument("--triage-decision-manifest", default=None)
+    parser.add_argument("--triage-clusters", default=None)
+    parser.add_argument("--triage-producer-recipe", default=None)
     # A relative default would bind beside the caller, not inside the repository.
     # `resolve_caller_paths` fills the repository default only for real ingress.
     parser.add_argument("--data-gate-policy", default=None)
@@ -569,6 +605,7 @@ def main() -> int:
         default="config/models.toml",
         help="the sealed model-chair roster and recipes for this run",
     )
+    parser.add_argument("--cache-root", default=None)
     parser.add_argument(
         "--decoding-config",
         default=str(DEFAULT_DECODING_CONFIG_PATH),

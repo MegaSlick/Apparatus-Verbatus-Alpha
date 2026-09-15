@@ -210,6 +210,9 @@ class RunPlan:
     fixture: str
     interval_seconds: float
     dry_run: bool
+    triage_decision_manifest: Path | None = None
+    triage_clusters: Path | None = None
+    triage_producer_recipe: Path | None = None
 
     # Not asserts: `assert` disappears under `python -O`, and `resolve_run_plan`
     # already refused a bootstrap plan missing any of these. Stated as raises so
@@ -316,7 +319,7 @@ class RunPlan:
         return commit
 
     def orchestrator_argv(self) -> list[str]:
-        return [
+        command = [
             sys.executable,
             # Ignore PYTHON* startup controls and the user site, as the
             # orchestrator does for its own stages: nothing unsealed runs first.
@@ -345,6 +348,16 @@ class RunPlan:
             "--repository-commit",
             self.repository_commit,
         ]
+        cache_root = _named(self.bootstrap.cache_root, "--cache-root")
+        command += ["--cache-root", str(cache_root)]
+        for value, flag in (
+            (self.triage_decision_manifest, "--triage-decision-manifest"),
+            (self.triage_clusters, "--triage-clusters"),
+            (self.triage_producer_recipe, "--triage-producer-recipe"),
+        ):
+            if value is not None:
+                command += [flag, str(value)]
+        return command
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -360,6 +373,13 @@ class RunPlan:
             "fixture": self.fixture,
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
+            "triage_decision_manifest": str(self.triage_decision_manifest)
+            if self.triage_decision_manifest
+            else None,
+            "triage_clusters": str(self.triage_clusters) if self.triage_clusters else None,
+            "triage_producer_recipe": str(self.triage_producer_recipe)
+            if self.triage_producer_recipe
+            else None,
             "bootstrap": self.bootstrap.to_record(),
         }
 
@@ -381,6 +401,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-root", type=Path, help="defaults to <volume-mount-path>/runs")
     parser.add_argument("--submission-folder", type=Path, required=True)
     parser.add_argument("--submission-manifest", type=Path, required=True)
+    parser.add_argument("--triage-decision-manifest", type=Path)
+    parser.add_argument("--triage-clusters", type=Path)
+    parser.add_argument("--triage-producer-recipe", type=Path)
     parser.add_argument(
         "--data-gate-policy",
         type=Path,
@@ -479,6 +502,28 @@ def resolve_run_plan(
             f"--submission-manifest {submission_manifest} is not a file on the volume",
             report_path=report_path,
         )
+    triage_paths: dict[str, Path | None] = {}
+    for value, flag in (
+        (args.triage_decision_manifest, "--triage-decision-manifest"),
+        (args.triage_clusters, "--triage-clusters"),
+        (args.triage_producer_recipe, "--triage-producer-recipe"),
+    ):
+        if value is None:
+            triage_paths[flag] = None
+            continue
+        path = _require_contained(value, volume, flag, report_path=report_path)
+        if not path.is_file():
+            raise RunRefusal(f"{flag} {path} is not a file on the volume", report_path=report_path)
+        triage_paths[flag] = path
+    if (
+        (triage_paths["--triage-clusters"] is not None
+        or triage_paths["--triage-producer-recipe"] is not None)
+        and triage_paths["--triage-decision-manifest"] is None
+    ):
+        raise RunRefusal(
+            "--triage-clusters and --triage-producer-recipe require --triage-decision-manifest",
+            report_path=report_path,
+        )
     repository = bootstrap.repository
     data_gate_policy = _require_contained(
         args.data_gate_policy or (repository / "config" / "data_handling_policy.json"),
@@ -506,6 +551,9 @@ def resolve_run_plan(
         fixture=args.fixture,
         interval_seconds=interval,
         dry_run=args.dry_run or bootstrap.dry_run,
+        triage_decision_manifest=triage_paths["--triage-decision-manifest"],
+        triage_clusters=triage_paths["--triage-clusters"],
+        triage_producer_recipe=triage_paths["--triage-producer-recipe"],
     )
 
 
@@ -1034,6 +1082,7 @@ def main(
         return EXIT_REFUSED
 
     command = plan.orchestrator_argv()
+    command += ["--placement-tier", placement_tier]
     running: dict[str, object] = {
         **base,
         "bootstrap": report.to_record(),

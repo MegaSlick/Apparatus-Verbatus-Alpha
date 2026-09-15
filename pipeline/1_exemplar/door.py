@@ -1860,7 +1860,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         help="sealed triage-producer-recipe.v1 for the pre-door producer run",
     )
     args = parser.parse_args()
-    registry = registry_factory(args.models_config)
+    registry = (
+        registry_factory(args.models_config, cache_root=args.cache_root)
+        if args.cache_root is not None
+        else registry_factory(args.models_config)
+    )
 
     if args.submission_folder is not None:
         # The run-level cap is applied inside `real_submission`, once the run root

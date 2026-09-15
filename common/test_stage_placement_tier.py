@@ -72,6 +72,10 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         submission_folder=None,
         submission_manifest=None,
         data_gate_policy=None,
+        triage_decision_manifest=None,
+        triage_clusters=None,
+        triage_producer_recipe=None,
+        cache_root=None,
     )
     fields.update(overrides)
     return fields
@@ -111,6 +115,27 @@ def test_orchestrator_forwards_placement_tier_only_when_set(tmp_path):
     command = observed[-1]
     assert "--placement-tier" in command
     assert command[command.index("--placement-tier") + 1] == "generic-48gb"
+
+
+def test_orchestrator_forwards_cache_root_to_every_stage(tmp_path):
+    orchestrator = _orchestrator_module("orchestrator_cache_root_argv")
+    observed: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        observed.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    import types
+
+    orchestrator.subprocess = types.SimpleNamespace(run=fake_run)
+    cache_root = tmp_path / "model-cache"
+    orchestrator.invoke(
+        orchestrator.STAGE_PROGRAMS["designator"],
+        Namespace(**_invoke_namespace_fields(tmp_path, cache_root=cache_root)),
+    )
+
+    command = observed[-1]
+    assert command[command.index("--cache-root") + 1] == str(cache_root)
 
 
 def test_invoke_namespace_fields_mirrors_the_argv_surface_invoke_reads():
