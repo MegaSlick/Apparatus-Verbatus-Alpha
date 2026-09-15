@@ -41,7 +41,7 @@ from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from common.chairs.models import ChairIdentity
 from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSample
 
-from .errors import ServingConfigurationError
+from .errors import ServingConfigurationError, ServingError
 from .http import HttpResponse
 from .manager import AdapterCalibration, ServiceHandle, _active_chat_image_bytes
 
@@ -71,6 +71,23 @@ _GOLDEN_PAGE_FONT_SIZE = 40
 _GOLDEN_PAGE_FONT_FLOOR = 24
 _GOLDEN_PAGE_FONT_STEP = 2
 _NVIDIA_SMI_TIMEOUT_SECONDS = 30.0
+
+
+class SmokeExchangeRetainedError(ServingError):
+    """A smoke parser refusal whose exact request and response are retained."""
+
+    def __init__(
+        self,
+        error: ServingError,
+        request_reference: Mapping[str, str],
+        response_reference: Mapping[str, str],
+    ) -> None:
+        self.code = error.code
+        self.detail = (
+            f"{error}; smoke_request={request_reference.get('relative_path')}; "
+            f"smoke_response={response_reference.get('relative_path')}"
+        )
+        super().__init__(self.detail)
 
 
 def fresh_page_witness() -> str:
@@ -323,12 +340,20 @@ class VisionSmokeCall:
                 # the same exact wire evidence behind.
                 exchange_references = self.raw_exchange_publisher(request, response.body)
 
-        answer = handle.request_fixture_image(
-            "chat-completions",
-            payload,
-            fixture=fixture,
-            exchange_observer=retain_exchange,
-        )
+        try:
+            answer = handle.request_fixture_image(
+                "chat-completions",
+                payload,
+                fixture=fixture,
+                exchange_observer=retain_exchange,
+            )
+        except ServingError as error:
+            if exchange_references is None:
+                raise
+            request_reference, response_reference = exchange_references
+            raise SmokeExchangeRetainedError(
+                error, request_reference, response_reference
+            ) from error
 
         shape_valid = len(answer.outputs) == 1
         # Keep this independent of shape: multiple parsed choices are still

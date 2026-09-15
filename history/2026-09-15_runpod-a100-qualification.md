@@ -85,3 +85,14 @@ the obsolete host shutdown watcher and suspended only the pod timer process, pre
 its child services. Shutdown requires completion, approaching the agreed 10% usage reserve,
 or a new user decision. The next operational deadline is a process-liveness parameter;
 it does not reinstate permission for automatic provider deletion.
+
+## 19:12 UTC follow-up validation
+
+The Linux HEIC fixture memory failure was reproduced without model processes. Limiting
+its x265 worker pools and frame threads then allowed the admission and imaging-bounds
+suites, plus the serving-manager suite, to complete under a 4 GiB address-space limit.
+The fixture remains lossless and its decoded admission assertions are unchanged.
+The same batch bounds installer downloads, clarifies existing setpriv reuse, compares
+retained smoke bytes directly with the HTTP boundary, and names retained request/response
+paths in parser-refusal errors while preserving the original error code and cause.
+The complete full gate has not yet been rerun on this correction.

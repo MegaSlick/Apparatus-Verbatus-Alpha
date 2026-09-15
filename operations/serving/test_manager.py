@@ -4261,6 +4261,7 @@ def test_vision_smoke_call_marks_text_outside_the_exact_witness_line_invalid(
 
 def test_vision_smoke_retains_exact_exchange_for_a_parsed_format_invalid_answer(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     chair = identity("reader", "reader-v1")
     invalid_answer = f"PAGE-WITNESS: {PAGE_WITNESS} "
@@ -4278,6 +4279,24 @@ def test_vision_smoke_retains_exact_exchange_for_a_parsed_format_invalid_answer(
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
     retained: dict[str, bytes] = {}
+    wire: dict[str, bytes] = {}
+    original_request = http.request
+
+    def capture_wire(
+        method: str,
+        url: str,
+        *,
+        body: bytes | None,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        response = original_request(method, url, body=body, timeout_seconds=timeout_seconds)
+        if method == "POST" and url.endswith("/chat/completions"):
+            assert body is not None
+            wire["request"] = body
+            wire["response"] = response.body
+        return response
+
+    monkeypatch.setattr(http, "request", capture_wire)
 
     def publish(request: bytes, response: bytes) -> tuple[dict[str, str], dict[str, str]]:
         retained.update(request=request, response=response)
@@ -4300,8 +4319,7 @@ def test_vision_smoke_retains_exact_exchange_for_a_parsed_format_invalid_answer(
     )(handle, chair, fixture, smoke_placement())
 
     assert result.format_valid is False
-    assert json.loads(retained["request"]) == http.calls[-1][2]
-    assert json.loads(retained["response"])["choices"][0]["message"]["content"] == invalid_answer
+    assert retained == wire
     assert (
         result.receipt["smoke_request_reference"]["sha256"]
         == hashlib.sha256(retained["request"]).hexdigest()
@@ -4310,6 +4328,67 @@ def test_vision_smoke_retains_exact_exchange_for_a_parsed_format_invalid_answer(
         result.receipt["smoke_response_reference"]["sha256"]
         == hashlib.sha256(retained["response"]).hexdigest()
     )
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_parser_failure_names_retained_exchange_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    retained: dict[str, bytes] = {}
+    original_request = http.request
+
+    def malformed_fixture_response(
+        method: str,
+        url: str,
+        *,
+        body: bytes | None,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        response = original_request(method, url, body=body, timeout_seconds=timeout_seconds)
+        if method == "POST" and url.endswith("/chat/completions"):
+            return HttpResponse(200, b'{"model":"reader-api","choices":[]}')
+        return response
+
+    def publish(request: bytes, response: bytes) -> tuple[dict[str, str], dict[str, str]]:
+        retained.update(request=request, response=response)
+        return (
+            {"relative_path": "smoke-requests/sha256/request.json", "sha256": "a" * 64},
+            {"relative_path": "smoke-responses/sha256/response.bin", "sha256": "b" * 64},
+        )
+
+    handle = manager.start(chair, TIER)
+    monkeypatch.setattr(http, "request", malformed_fixture_response)
+    call = VisionSmokeCall(
+        PAGE_WITNESS,
+        utilization=lambda: (UtilizationSample("71", "31"),),
+        raw_exchange_publisher=publish,
+    )
+    with pytest.raises(smoke_module.SmokeExchangeRetainedError) as caught:
+        call(handle, chair, fixture, smoke_placement())
+
+    error = caught.value
+    assert error.code == "VLLM_PROBE_RESPONSE_INVALID"
+    assert isinstance(error.__cause__, ReadinessError)
+    assert error.__cause__.code == "VLLM_PROBE_RESPONSE_INVALID"
+    assert "smoke-requests/sha256/request.json" in error.detail
+    assert "smoke-responses/sha256/response.bin" in error.detail
+    assert retained["response"] == b'{"model":"reader-api","choices":[]}'
+    assert retained["request"]
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
 

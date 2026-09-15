@@ -17,6 +17,9 @@ readonly UTIL_LINUX_SHA256="66ac7c0e725278eb2b039e3104f2c91119341d941b41bac7a285
 readonly SETPRIV="/usr/bin/setpriv"
 readonly UV="/usr/local/bin/uv"
 readonly BACKUP_DIR="/usr/local/lib/verbatus-runtime-prerequisites"
+readonly CURL_CONNECT_TIMEOUT_SECONDS=20
+readonly CURL_MAX_TIME_SECONDS=300
+readonly CURL_RETRIES=3
 
 require_root() {
     if [[ "$(id -u)" -ne 0 ]]; then
@@ -27,6 +30,17 @@ require_root() {
 
 landlock_probe() {
     "$1" --no-new-privs --landlock-access fs:write-file -- /bin/true
+}
+
+download() {
+    local destination url
+    destination="$1"
+    url="$2"
+    curl --fail --location --proto '=https' --tlsv1.2 \
+        --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" \
+        --max-time "$CURL_MAX_TIME_SECONDS" \
+        --retry "$CURL_RETRIES" --retry-delay 2 --retry-connrefused \
+        --output "$destination" "$url"
 }
 
 uv_is_pinned() {
@@ -44,7 +58,7 @@ install_uv() {
     workdir="$(mktemp -d)"
     trap 'rm -rf "$workdir"' RETURN
     archive="$workdir/$UV_ARCHIVE"
-    curl --fail --location --proto '=https' --tlsv1.2 --output "$archive" "$UV_URL"
+    download "$archive" "$UV_URL"
     echo "$UV_SHA256  $archive" | sha256sum --check --status
     tar -xzf "$archive" -C "$workdir"
     install -D -m 0755 "$workdir/uv-x86_64-unknown-linux-gnu/uv" "$UV"
@@ -62,7 +76,7 @@ install_setpriv() {
     workdir="$(mktemp -d)"
     trap 'rm -rf "$workdir"' RETURN
     archive="$workdir/$UTIL_LINUX_ARCHIVE"
-    curl --fail --location --proto '=https' --tlsv1.2 --output "$archive" "$UTIL_LINUX_URL"
+    download "$archive" "$UTIL_LINUX_URL"
     echo "$UTIL_LINUX_SHA256  $archive" | sha256sum --check --status
     tar -xJf "$archive" -C "$workdir"
     source="$workdir/util-linux-$UTIL_LINUX_VERSION"

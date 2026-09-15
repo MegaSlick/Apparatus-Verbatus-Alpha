@@ -907,14 +907,15 @@ bash operations/pod/prepare_runtime.sh
 ```
 
 It installs the repository-required official `uv 0.12.1` at `/usr/local/bin/uv`,
-`ninja-build` at `/usr/bin/ninja`, and a deliberately narrow `setpriv` build from
-util-linux 2.42.3 at `/usr/bin/setpriv`. The script verifies pinned upstream SHA-256
-digests before installing either downloaded artifact. It compiles only `setpriv` with
-`--disable-all-programs --enable-setpriv --disable-nls`; when replacing the stock Ubuntu
-24.04 binary, it keeps the old one at
+`ninja-build` at `/usr/bin/ninja`, and a Landlock-capable `setpriv` at
+`/usr/bin/setpriv`. The script retains an already-working `setpriv`; otherwise it verifies
+pinned upstream SHA-256 digests, builds only `setpriv` from util-linux 2.42.3 with
+`--disable-all-programs --enable-setpriv --disable-nls`, and replaces the stock Ubuntu
+24.04 binary while keeping the old one at
 `/usr/local/lib/verbatus-runtime-prerequisites/setpriv.before-util-linux-2.42.3`.
 
-The script is idempotent. Before accepting either the existing or newly built `setpriv`,
+The script is idempotent. Each download has a 20-second connect timeout, a five-minute
+transfer limit, and three retries. Before accepting either the existing or newly built `setpriv`,
 it requires this confinement probe to succeed:
 
 ```bash
