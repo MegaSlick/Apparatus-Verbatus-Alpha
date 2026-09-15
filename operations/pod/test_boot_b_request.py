@@ -150,7 +150,7 @@ def test_the_rendered_request_carries_no_transfer_half() -> None:
 
     assert "--transfer-target-factory" not in nested
     assert "--submission-manifest" not in bootstrap_half
-    assert f"{BOOT_B_VOLUME_MOUNT_PATH}/submission/manifest.json" in run_half
+    assert f"{BOOT_B_VOLUME_MOUNT_PATH}/submission-manifest.json" in run_half
 
 
 def test_the_rendered_request_states_a_container_disk() -> None:

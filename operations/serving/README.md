@@ -36,7 +36,14 @@ refused *by that name* before any lease, probe or process — it carries no
 vLLM flags to be refused by, and blocking it with an unsatisfiable version pin
 would report the wrong cause.
 A `vllm` row also carries `preflight_state`, and `unproven` refuses launch at
-that same door, by that same name. A real row is written from reviewed, locked
+that same door, by that same name. The one exception is the package's private
+smoke-preflight assembly: it may launch an `unproven` row for qualification,
+and its launch audit records `launch_purpose = "preflight-qualification"` plus
+the row's actual state. It still performs the ordinary snapshot, package,
+readiness, fixture-bound request, receipt publication, and verified-shutdown
+checks. Callers cannot select this purpose through `ServingManager`'s public
+arguments, and fixture or unsupported profiles remain unlaunchable.
+A real row is written from reviewed, locked
 vLLM and model-stack versions, a verified manifest, and a real-silicon
 preflight; the field records whether that preflight has happened for *this
 exact profile*. It is a declaration in a reviewed config file and not a
@@ -45,6 +52,34 @@ elsewhere — so `proven` means a reviewer asserted it, exactly as a profile's
 GPU figures are planning values rather than a measured fit (GOVERNANCE 10).
 There is deliberately no default: a row written before the field existed
 refuses at parse time rather than reading as proven.
+
+After that smoke preflight, render review candidates from the retained report
+and its content-addressed evidence without editing the catalogue:
+
+```console
+python -m operations.serving.qualify \
+  --report /runpod-volume/bootstrap-report-<token>.json \
+  --evidence-root /runpod-volume/preflight/bootstrap-report-<token> \
+  --models-config config/models-real.toml \
+  --serving-recipes-config config/serving_recipes_real.toml \
+  --placement-config config/pod_placement.toml \
+  --output /runpod-volume/serving-qualification-<token>.json
+```
+
+The verifier requires a green completed preflight, exact cache and placement
+coverage, one fixture-bound served read per configured chair, positive service
+and fixture request counts, the same recipe and placement file digests, all
+three referenced serving artifacts with matching content digests, and the
+content-addressed page-witness token. It recomputes that token's digest and the
+semantic output digest for the exact expected witness line before it emits
+candidate `preflight_identity_digest` and `preflight_digest` values only for
+the measured tier. A reviewer writes the identity digest first, then the
+profile digest, and keeps every other tier unproven until separately measured.
+This verifier currently supports full checkpoints only. It refuses adapter
+candidates because the existing adapter identity names a base role without
+binding that base's resolved checkpoint; independently proving a replacement
+base cannot prove the adapter/base combination. The current real roster uses
+full checkpoints and is unaffected by this restriction.
 The recipe and `config/pod_placement.toml` byte digests are both part of the
 run configuration digest. Production assembly requires the `StageContext` that
 `open_context()` revalidated and the `StageContextReceiptPublisher` for that
@@ -411,7 +446,11 @@ the resolved identity and revision, the
 a response whose `model` is not the exact served alias, so this is per-answer and
 not per-connection state), the response digest that binds the receipt to the one
 request just made, and `sha256(witness)` — never the witness, the prompt, or the
-answer text. The durable smoke record therefore carries only the witness digest.
+answer text. The durable smoke record carries the witness digest and a content
+address for the witness token. The token is retained separately under
+the preflight evidence root, so the offline qualifier can recompute both that
+digest and the exact expected semantic-output digest without retaining the raw
+response or putting the witness plaintext in the report.
 
 **Whose job the witness is.** The witness proves a page read only because the
 fixture author rendered it into the page's pixels, so that author owns its

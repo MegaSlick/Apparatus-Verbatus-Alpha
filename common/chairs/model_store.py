@@ -22,7 +22,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
@@ -178,6 +178,73 @@ class MaterializationFetcher(Protocol):
 
     def fetch(self, repo: str, revision: str, destination: Path) -> None:
         """Write the exact repository revision below ``destination``, or raise."""
+
+
+class VerifiedStoreFetcher:
+    """Copy cache files from a verified, role-bound model-store source plan.
+
+    ``ChairRegistry`` remains the cache authority: it stages these bytes,
+    verifies its configured manifest, and publishes its own descriptor.  This
+    fetcher deliberately has no network client and cannot fill a cache from a
+    source that the plan did not prove first.
+    """
+
+    def __init__(self, entries: Mapping[str, Mapping[str, Any]]) -> None:
+        self._entries = {role: dict(entry) for role, entry in entries.items()}
+
+    def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
+        entry = self._entries.get(identity.role)
+        if entry is None:
+            raise DigestMismatchRefusal(
+                identity.role, "no verified model-store source was planned for this chair"
+            )
+        if entry.get("identity") != identity.cache_descriptor():
+            raise DigestMismatchRefusal(
+                identity.role,
+                "verified model-store source differs from the configured identity",
+            )
+        snapshot = entry.get("snapshot")
+        if not isinstance(snapshot, str):
+            raise DigestMismatchRefusal(
+                identity.role, "model-store source plan has no snapshot path"
+            )
+        source_root = Path(snapshot)
+        try:
+            source_root = source_root.resolve(strict=True)
+        except OSError as error:
+            raise DigestMismatchRefusal(
+                identity.role, f"verified model-store snapshot cannot resolve: {error}"
+            ) from error
+        if source_root.is_symlink() or not source_root.is_dir():
+            raise DigestMismatchRefusal(
+                identity.role,
+                "verified model-store snapshot is not a regular directory",
+            )
+        for relative in paths:
+            source = source_root / relative
+            try:
+                resolved = source.resolve(strict=True)
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    identity.role, f"model-store source file {relative!r} is unavailable: {error}"
+                ) from error
+            if (
+                not resolved.is_relative_to(source_root)
+                or source.is_symlink()
+                or not source.is_file()
+            ):
+                raise DigestMismatchRefusal(
+                    identity.role,
+                    f"model-store source file {relative!r} is not a regular in-snapshot file",
+                )
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copyfile(source, target)
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    identity.role, f"cannot copy model-store source file {relative!r}: {error}"
+                ) from error
 
 
 def materialize_real_roster(
@@ -1018,6 +1085,62 @@ def pod_materialization_plan(store_root: str | Path) -> dict[str, Any]:
         "download_record_sha256": inventory["download_record_sha256"],
         "cache_root_entries": cache_root_entries,
         "model_root_entries": model_root_entries,
+    }
+
+
+def configured_cache_materialization_plan(
+    store_root: str | Path, identities: Iterable[ChairIdentity]
+) -> dict[str, Any]:
+    """Plan only the configured Hugging Face chairs from verified store bytes.
+
+    The durable store also records local-only materialization policy.  That is
+    not a cache requirement when the checked-out roster configures no matching
+    local chair: a pending local row must stay visible in the returned
+    inventory, but must not make the five configured Hugging Face chairs fetch
+    their weights again.  ``verify_store`` verifies every present source once;
+    this function then binds each requested cache role to its exact configured
+    identity and the verified snapshot that supplies it.
+    """
+
+    root = Path(store_root).resolve()
+    inventory = verify_store(root)
+    rows = {str(row["chair"]): row for row in inventory["artifacts"]}
+    entries: dict[str, dict[str, Any]] = {}
+    for identity in identities:
+        if identity.source != "huggingface":
+            continue
+        row = rows.get(identity.role)
+        if row is None:
+            raise DigestMismatchRefusal(
+                identity.role, "configured chair has no model-store inventory row"
+            )
+        if row.get("state") != "present":
+            raise DigestMismatchRefusal(
+                identity.role,
+                f"configured chair's model-store artifact is {row.get('state')!r}, not present",
+            )
+        for field, expected in (
+            ("source", identity.source),
+            ("repo", identity.repo),
+            ("revision", identity.revision),
+            ("digest_manifest", identity.digest_manifest),
+        ):
+            if row.get(field) != expected:
+                raise DigestMismatchRefusal(
+                    identity.role,
+                    f"model-store {field} differs from the configured pin: expected "
+                    f"{expected!r}, the store says {row.get(field)!r}",
+                )
+        snapshot = _under(root, str(row["snapshot"]))
+        entries[identity.role] = {
+            "snapshot": str(snapshot),
+            "identity": identity.cache_descriptor(),
+        }
+    return {
+        "provenance_scope": "verified-configured-cache-source-only",
+        "download_record_sha256": inventory["download_record_sha256"],
+        "cache_root_entries": entries,
+        "pending": inventory["pending"],
     }
 
 

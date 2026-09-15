@@ -1641,6 +1641,15 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         ),
     )
     parser.add_argument("--models-config", default="config/models.toml")
+    parser.add_argument("--cache-root", default=None)
+    parser.add_argument(
+        "--mechanics-qualification",
+        action="store_true",
+        help=(
+            "explicit mechanics-only run: permit optically unproven serving "
+            "profiles; every real launch and receipt remains required"
+        ),
+    )
     parser.add_argument(
         "--decoding-config",
         default=str(DEFAULT_DECODING_CONFIG_PATH),
@@ -4206,7 +4215,12 @@ def open_context(
         )
     fixture = load_fixture(args.fixture_root)
     scenario_for(fixture, args.scenario)
-    registry = registry_factory(args.models_config)
+    cache_root = getattr(args, "cache_root", None)
+    registry = (
+        registry_factory(args.models_config, cache_root=cache_root)
+        if cache_root is not None
+        else registry_factory(args.models_config)
+    )
     bindings = run_config_bindings(
         registry.config,
         fixture,
@@ -4361,7 +4375,12 @@ def _open_real_context(
     """
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
-    registry = registry_factory(args.models_config)
+    cache_root = getattr(args, "cache_root", None)
+    registry = (
+        registry_factory(args.models_config, cache_root=cache_root)
+        if cache_root is not None
+        else registry_factory(args.models_config)
+    )
     bindings = real_run_bindings(registry.config, args)
     # Before any write and before the seal check, so a moved policy is named as
     # a policy and not as a missing boundary.

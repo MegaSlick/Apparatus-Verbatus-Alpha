@@ -103,6 +103,14 @@ those weights; only a serving receipt can make that claim. `verify_store`
 refuses a store snapshot used as a cache entry directly, naming that cause
 rather than reporting an extra file.
 
+Bootstrap uses `configured_cache_materialization_plan` for the selected roster.
+It verifies the retained store and binds each configured Hugging Face role to
+its exact repository, revision and manifest; an unconfigured pending local
+artifact does not block those roles. `VerifiedStoreFetcher` copies these sources
+into separate role caches, and `ChairRegistry` verifies and publishes each cache
+with its own identity descriptor. Cache preparation and preflight do not fall
+back to network downloads when retained bytes are missing or invalid.
+
 A store is materialized one snapshot at a time, so a record entry is either
 `present` — snapshot, manifest, pin, licence and carried content — or
 `pending-fetch`, which names the artifact, its roster origin, and the reason its

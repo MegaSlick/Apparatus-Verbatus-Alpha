@@ -36,7 +36,7 @@ class RemoteObject:
 class TransferTarget(Protocol):
     """Minimal storage seam; provider S3/API knowledge belongs in its adapter."""
 
-    def inspect(self, key: str) -> RemoteObject | None:
+    def inspect(self, key: str, *, expected_size: int | None = None) -> RemoteObject | None:
         """Return the target's digest/size evidence, or None if the object is absent."""
 
     def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
@@ -48,6 +48,14 @@ class TransferTarget(Protocol):
         and reopens whatever happens to be there by the time it runs.
         ``expected_sha`` is the sealed digest the caller has just re-proved
         against that handle, so adapters need not read the whole file again.
+        """
+
+    def create_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
+        """Create a small control object only if its key is absent.
+
+        The target enforces absence in the same operation that publishes the
+        bytes. A concurrent owner may win; callers inspect the final object
+        afterward and decide whether its bytes agree.
         """
 
 
@@ -88,7 +96,7 @@ class ChecksummedTransfer:
         self.source_root = Path(source_root).resolve()
         self.submission_manifest = Path(submission_manifest)
         self.target = target
-        self.prefix = _prefix(prefix)
+        self.prefix = normalize_transfer_prefix(prefix)
         self.journal_path = Path(journal_path)
 
     def resume(self) -> TransferReport:
@@ -120,7 +128,7 @@ class ChecksummedTransfer:
                     raise TransferFailure(
                         f"source {relative!r} no longer matches the sealed submission manifest"
                     )
-                remote = self.target.inspect(key)
+                remote = self.target.inspect(key, expected_size=expected_size)
                 if remote is not None and (
                     remote.sha256 != expected_sha or remote.size != expected_size
                 ):
@@ -137,7 +145,7 @@ class ChecksummedTransfer:
                             f"transfer of {relative!r} failed: {error}"
                         ) from error
                     sent = True
-                    remote = self.target.inspect(key)
+                    remote = self.target.inspect(key, expected_size=expected_size)
             if remote is None or remote.sha256 != expected_sha or remote.size != expected_size:
                 raise TransferFailure(f"target {key!r} did not verify after transfer")
             if key not in completed:
@@ -181,10 +189,20 @@ class ChecksummedTransfer:
         atomic_write(self.journal_path, canonical_json(record))
 
 
-def _prefix(value: str) -> str:
-    if not isinstance(value, str) or not value or value.startswith("/") or ".." in value.split("/"):
+def normalize_transfer_prefix(value: str) -> str:
+    """Return one portable relative object prefix, without a trailing slash."""
+
+    if not isinstance(value, str):
         raise ValueError("transfer prefix must be a safe relative key prefix")
-    return value.rstrip("/")
+    normalized = value.rstrip("/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or "\x00" in normalized
+        or any(component in {"", ".", ".."} for component in normalized.split("/"))
+    ):
+        raise ValueError("transfer prefix must be a safe relative key prefix")
+    return normalized
 
 
 def _under(root: Path, relative: object) -> Path:

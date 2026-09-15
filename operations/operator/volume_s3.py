@@ -35,27 +35,28 @@ quoted rather than paraphrased where the detail is load-bearing:
   a time, and bounds the walk at `MAX_LISTED_KEYS` rather than trusting the
   documented figure.
 
-**Stated as unconfirmed rather than asserted:**
+**Observed endpoint behaviour and the checks built around it:**
 
-1. *Whether user metadata round-trips.* `put_file` writes each file's SHA-256 as S3
-   user metadata on upload and reads it back with `HeadObject`. Both operations
-   are documented as supported; the page says nothing either way about user
-   metadata surviving. If RunPod drops it, `HeadObject` returns no digest and this
-   class refuses the transfer. It must not report a present object as absent:
-   `ChecksummedTransfer` would then overwrite bytes it had no evidence it owned.
+1. *User metadata does not round-trip on the observed RunPod endpoint.* `put_file`
+   still writes the SHA-256 metadata, but `inspect` treats its absence as a request
+   to stream-hash the target bytes under the manifest's declared-size bound.
 2. *ETag is deliberately not used for that check.* A multipart ETag is not a
    whole-file MD5 even on AWS, the sealed manifest carries SHA-256 rather than
    MD5, and an integrity check built on a value whose definition is unclear is not
    an integrity check.
-3. **Nothing in this file has ever run against a real endpoint**, authenticated or
-   otherwise, from this chamber or any other. Its logic is tested against an
-   injected fake client; its network behaviour is untested. boto3 is imported
-   lazily, so `upload` without `--network-volume` does not construct a client or
-   read storage credentials.
+3. The original upload path ran against the authenticated RunPod endpoint on
+   2026-09-15: the image bytes arrived, both `HeadObject` and `GetObject` omitted
+   the supplied custom metadata, and an independent hash of the returned bytes
+   matched the source. The target-byte fallback added from that observation is
+   covered by injected-client tests and has not yet been rerun against RunPod.
+   `S3VolumeObjectReader` listing/fetch remains untested against the real endpoint.
+   boto3 is imported lazily, so `upload` without `--network-volume` does not
+   construct a client or read storage credentials.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import tempfile
@@ -94,6 +95,9 @@ FETCH_CHUNK_BYTES: Final = 1024 * 1024
 # is a failure and must never be read as "absent, so upload it". That reading
 # would turn one broken credential into a full silent re-upload on every run.
 _ABSENT_CODES: Final = frozenset({"404", "NoSuchKey", "NotFound"})
+_CONDITIONAL_CONFLICT_CODES: Final = frozenset(
+    {"409", "412", "ConditionalRequestConflict", "PreconditionFailed"}
+)
 
 _DATACENTER = re.compile(r"[A-Z]{2,4}-[A-Z]{2}-[0-9]{1,2}")
 
@@ -216,8 +220,8 @@ class S3VolumeTarget:
             default_transfer_config() if transfer_config is None else transfer_config
         )
 
-    def inspect(self, key: str) -> RemoteObject | None:
-        """Present *and* carrying the digest we recorded for it. See docstring note 1."""
+    def inspect(self, key: str, *, expected_size: int | None = None) -> RemoteObject | None:
+        """Return target bytes' digest/size; metadata is only a fast path."""
 
         try:
             head = self.client.head_object(Bucket=self.spec.volume_id, Key=key)
@@ -241,14 +245,45 @@ class S3VolumeTarget:
         }
         recorded = normalized_metadata.get(SHA256_METADATA_KEY)
         size = head.get("ContentLength")
-        if not isinstance(recorded, str) or not isinstance(size, int):
+        if not isinstance(size, int) or size < 0:
             # The object is present, so `None` would authorize the transfer layer
             # to overwrite it. Missing metadata is unknown ownership, not absence.
             raise VolumeTransferRefusal(
-                f"network-volume object {key!r} exists without the digest and size "
+                f"network-volume object {key!r} exists without size "
                 "evidence Verbatus needs; it was not overwritten"
             )
-        return RemoteObject(sha256=recorded, size=size)
+        if expected_size is not None and size != expected_size:
+            return RemoteObject(sha256=recorded if isinstance(recorded, str) else "", size=size)
+        if isinstance(recorded, str):
+            return RemoteObject(sha256=recorded, size=size)
+        if expected_size is None:
+            raise VolumeTransferRefusal(
+                f"network-volume object {key!r} exists without digest metadata and no declared "
+                "size bound; it was not overwritten"
+            )
+        try:
+            response = self.client.get_object(Bucket=self.spec.volume_id, Key=key)
+            body = response.get("Body") if isinstance(response, Mapping) else None
+            if body is None or not callable(getattr(body, "read", None)):
+                raise VolumeTransferRefusal(f"network-volume object {key!r} has no readable body")
+            try:
+                observed_size, observed_sha256 = _stream_sha256(body, expected_size + 1)
+            finally:
+                closer = getattr(body, "close", None)
+                if callable(closer):
+                    closer()
+        except VolumeTransferRefusal:
+            raise
+        except Exception as error:
+            raise VolumeTransferRefusal(
+                f"the network volume could not stream-verify {key!r}; it was not overwritten"
+            ) from error
+        if observed_size != expected_size:
+            raise VolumeTransferRefusal(
+                f"network-volume object {key!r} streamed {observed_size} bytes, not declared "
+                f"{expected_size}; it was not overwritten"
+            )
+        return RemoteObject(sha256=observed_sha256, size=size)
 
     def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
         """Send the exact bytes behind this already-opened handle, tagged with their digest.
@@ -294,6 +329,35 @@ class S3VolumeTarget:
         except Exception as error:
             raise VolumeTransferRefusal(
                 f"the network volume refused or dropped the upload of {key!r}: {error}"
+            ) from error
+
+    def create_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
+        """Conditionally create one bounded control object without replacement.
+
+        This uses ``PutObject`` rather than the multipart transfer manager only
+        for the upload claim and manifest. Their size is tiny and bounded by
+        the caller; page images keep the multipart path above. ``IfNoneMatch``
+        makes the target decide which concurrent writer owns the key.
+        """
+        try:
+            source.seek(0)
+            self.client.put_object(
+                Bucket=self.spec.volume_id,
+                Key=key,
+                Body=source,
+                Metadata={SHA256_METADATA_KEY: expected_sha},
+                IfNoneMatch="*",
+            )
+        except OSError as error:
+            raise VolumeTransferRefusal(
+                f"creating {key!r} failed while reading the source or writing to the "
+                f"network volume: {error}"
+            ) from error
+        except Exception as error:
+            if _means_conditional_conflict(error):
+                return
+            raise VolumeTransferRefusal(
+                f"the network volume refused or dropped the conditional create of {key!r}: {error}"
             ) from error
 
 
@@ -571,6 +635,27 @@ def _unlink_quietly(path: str) -> None:
         pass
 
 
+def _stream_sha256(body: Any, limit: int) -> tuple[int, str]:
+    """Hash a body incrementally, refusing to read more than ``limit`` bytes."""
+
+    digest = hashlib.sha256()
+    observed = 0
+    while observed < limit:
+        remaining = limit - observed
+        chunk = body.read(min(FETCH_CHUNK_BYTES, remaining))
+        if not chunk:
+            break
+        if not isinstance(chunk, (bytes, bytearray)):
+            raise TypeError("the network volume answered with a non-bytes body chunk")
+        # A non-conforming stream can ignore the requested amount. It may make
+        # that one read expensive, but it cannot make this verifier retain or
+        # hash beyond the caller's declared bound.
+        bounded = bytes(chunk)[:remaining]
+        digest.update(bounded)
+        observed += len(bounded)
+    return observed, digest.hexdigest()
+
+
 def _read_bounded(body: Any, limit: int) -> bytes:
     """Accumulate up to ``limit`` bytes, tolerating short reads.
 
@@ -644,6 +729,18 @@ def _means_absent(error: BaseException) -> bool:
     # a contradictory named error (for example AccessDenied with a 404 status),
     # preserve the failure instead of treating it as permission to overwrite.
     return code in _ABSENT_CODES or (not code and status == 404)
+
+
+def _means_conditional_conflict(error: BaseException) -> bool:
+    """Whether a create-only PutObject lost to an already-published key."""
+    response = getattr(error, "response", None)
+    if not isinstance(response, Mapping):
+        return False
+    error_detail = response.get("Error")
+    metadata = response.get("ResponseMetadata")
+    code = str((error_detail if isinstance(error_detail, Mapping) else {}).get("Code", ""))
+    status = (metadata if isinstance(metadata, Mapping) else {}).get("HTTPStatusCode")
+    return code in _CONDITIONAL_CONFLICT_CODES or (not code and status in {409, 412})
 
 
 __all__ = [

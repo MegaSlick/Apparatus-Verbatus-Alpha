@@ -316,7 +316,15 @@ def test_format_alarm_severity_is_typed_not_inferred_from_its_message():
 
 def test_an_iphone_native_heic_is_decoded_and_admitted():
     output = BytesIO()
-    Image.new("RGB", (3, 2), (17, 34, 51)).save(output, format="HEIF", lossless=True)
+    # This creates six fixture pixels, so host-wide encoder parallelism measures
+    # nothing.  x265 otherwise sizes pools from every visible NUMA node/core,
+    # which can exhaust a large high-core host before encoding this tiny image.
+    Image.new("RGB", (3, 2), (17, 34, 51)).save(
+        output,
+        format="HEIF",
+        lossless=True,
+        enc_params={"x265:pools": "none", "x265:frame-threads": "1"},
+    )
     data = output.getvalue()
 
     outcome = inspect_source(data, declared_sha256=None, policy=POLICY)

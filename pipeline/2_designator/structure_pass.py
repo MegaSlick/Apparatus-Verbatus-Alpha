@@ -122,7 +122,11 @@ from operations.serving.client import ChairClient, ChairRequest, ChairResponse, 
 from operations.serving.config import ServingConfigInputs, ServingRecipes, load_serving_recipes
 from operations.serving.errors import ServingError
 from operations.serving.http import EndpointUnavailable, UrllibHttpTransport
-from operations.serving.manager import ServingManager, StageContextReceiptPublisher
+from operations.serving.manager import (
+    MECHANICS_QUALIFICATION_PURPOSE,
+    ServingManager,
+    StageContextReceiptPublisher,
+)
 from operations.serving.process import SubprocessLauncher
 from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
@@ -466,6 +470,11 @@ def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) ->
         log_root=context.tree.resolve(context.tree.serving_log_path(DESIGNATOR)),
         residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/2_designator/run.py",
+        _launch_purpose=(
+            MECHANICS_QUALIFICATION_PURPOSE
+            if getattr(context.args, "mechanics_qualification", False)
+            else None
+        ),
     )
     return ChairClient(
         manager=manager,

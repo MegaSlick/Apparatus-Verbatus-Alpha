@@ -94,6 +94,7 @@ from .manager import (
     _ENDPOINT_REFUSED,
     _ENDPOINT_UNREACHABLE,
     _WATCHDOG_TAIL_BYTES,
+    MECHANICS_QUALIFICATION_PURPOSE,
     PROCESSOR_CONFIG_FILENAMES,
     AdapterCalibration,
     ReceiptPublication,
@@ -606,6 +607,30 @@ def test_start_refuses_a_serving_profile_that_is_not_preflight_proven(tmp_path: 
     assert not (tmp_path / "pod-gpu.lock").exists()
 
 
+def test_explicit_mechanics_qualification_launches_unproven_profile_and_records_purpose(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_state"] = "unproven"
+    manager, _, _, launcher, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader-api",),
+        launch_purpose=MECHANICS_QUALIFICATION_PURPOSE,
+    )
+
+    handle = manager.start(chair, TIER)
+
+    assert manager.launch_purpose == "mechanics-qualification"
+    assert handle.launch_audit["launch_purpose"] == "mechanics-qualification"
+    assert registry.ensure_calls == ["reader"]
+    assert len(publisher.calls) == 1
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
 def test_start_refuses_a_proven_adapter_over_an_unproven_base_before_any_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -829,6 +854,7 @@ def manager_for(
     residency_lease: FileResidencyLease | None = None,
     probe_http_status: int | None = None,
     usage: Mapping[str, object] | None = None,
+    launch_purpose: object | None = None,
 ):
     clock = Clock()
     http = FakeHttp(
@@ -870,6 +896,7 @@ def manager_for(
         monotonic=clock.monotonic,
         sleep=clock.sleep,
         residency_lease=residency_lease or FileResidencyLease(tmp_path / "pod-gpu.lock"),
+        _launch_purpose=launch_purpose,
     )
     return manager, clock, http, launcher, registry, publisher
 
@@ -4094,6 +4121,7 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
     assert result.receipt["resolved_revision_kind"] == "git-commit"
     request = http.calls[-1][2]
     assert isinstance(request, dict)
+    assert "chat_template_kwargs" not in request
     messages = request["messages"]
     assert isinstance(messages, list)
     image_url = messages[0]["content"][1]["image_url"]["url"]  # type: ignore[index]
@@ -4101,6 +4129,42 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
     assert image_url == "data:image/png;base64," + base64.b64encode(fixture_bytes).decode("ascii")
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
+
+
+def test_perlector_direct_response_mode_does_not_relax_the_exact_output_rule(
+    tmp_path: Path,
+) -> None:
+    chair = identity("perlector", "perlector-v1")
+    expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
+    answer_with_reasoning = f"I read the page.\n{expected}"
+    manager, _, http, _, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe=chair.serving_recipe,
+                chair=chair.role,
+                served_model_id="perlector-api",
+                port=8000,
+            ),
+        ),
+        model_ids=("perlector-api",),
+        outputs={"perlector-api": answer_with_reasoning},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    request = http.calls[-1][2]
+    assert isinstance(request, dict)
+    assert request["chat_template_kwargs"] == {"enable_thinking": False}
+    assert result.shape_valid is True
+    assert result.nonempty is True
+    assert result.format_valid is False
+    assert result.receipt["page_witness_matches"] is False
+    handle.stop()
 
 
 def test_vision_smoke_call_reports_multiple_nonempty_choices_honestly(
@@ -4218,6 +4282,140 @@ def test_vision_smoke_call_marks_text_outside_the_exact_witness_line_invalid(
     assert result.nonempty is True
     assert result.format_valid is False
     assert result.receipt["page_witness_matches"] is False
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_retains_exact_exchange_for_a_parsed_format_invalid_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    invalid_answer = f"PAGE-WITNESS: {PAGE_WITNESS} "
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": invalid_answer},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    retained: dict[str, bytes] = {}
+    wire: dict[str, bytes] = {}
+    original_request = http.request
+
+    def capture_wire(
+        method: str,
+        url: str,
+        *,
+        body: bytes | None,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        response = original_request(method, url, body=body, timeout_seconds=timeout_seconds)
+        if method == "POST" and url.endswith("/chat/completions"):
+            assert body is not None
+            wire["request"] = body
+            wire["response"] = response.body
+        return response
+
+    monkeypatch.setattr(http, "request", capture_wire)
+
+    def publish(request: bytes, response: bytes) -> tuple[dict[str, str], dict[str, str]]:
+        retained.update(request=request, response=response)
+        return (
+            {
+                "relative_path": "smoke-requests/sha256/request.json",
+                "sha256": hashlib.sha256(request).hexdigest(),
+            },
+            {
+                "relative_path": "smoke-responses/sha256/response.bin",
+                "sha256": hashlib.sha256(response).hexdigest(),
+            },
+        )
+
+    handle = manager.start(chair, TIER)
+    result = VisionSmokeCall(
+        PAGE_WITNESS,
+        utilization=lambda: (UtilizationSample("71", "31"),),
+        raw_exchange_publisher=publish,
+    )(handle, chair, fixture, smoke_placement())
+
+    assert result.format_valid is False
+    assert retained == wire
+    assert (
+        result.receipt["smoke_request_reference"]["sha256"]
+        == hashlib.sha256(retained["request"]).hexdigest()
+    )
+    assert (
+        result.receipt["smoke_response_reference"]["sha256"]
+        == hashlib.sha256(retained["response"]).hexdigest()
+    )
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_parser_failure_names_retained_exchange_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    retained: dict[str, bytes] = {}
+    original_request = http.request
+
+    def malformed_fixture_response(
+        method: str,
+        url: str,
+        *,
+        body: bytes | None,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        response = original_request(method, url, body=body, timeout_seconds=timeout_seconds)
+        if method == "POST" and url.endswith("/chat/completions"):
+            return HttpResponse(200, b'{"model":"reader-api","choices":[]}')
+        return response
+
+    def publish(request: bytes, response: bytes) -> tuple[dict[str, str], dict[str, str]]:
+        retained.update(request=request, response=response)
+        return (
+            {"relative_path": "smoke-requests/sha256/request.json", "sha256": "a" * 64},
+            {"relative_path": "smoke-responses/sha256/response.bin", "sha256": "b" * 64},
+        )
+
+    handle = manager.start(chair, TIER)
+    monkeypatch.setattr(http, "request", malformed_fixture_response)
+    call = VisionSmokeCall(
+        PAGE_WITNESS,
+        utilization=lambda: (UtilizationSample("71", "31"),),
+        raw_exchange_publisher=publish,
+    )
+    with pytest.raises(smoke_module.SmokeExchangeRetainedError) as caught:
+        call(handle, chair, fixture, smoke_placement())
+
+    error = caught.value
+    assert error.code == "VLLM_PROBE_RESPONSE_INVALID"
+    assert isinstance(error.__cause__, ReadinessError)
+    assert error.__cause__.code == "VLLM_PROBE_RESPONSE_INVALID"
+    assert "smoke-requests/sha256/request.json" in error.detail
+    assert "smoke-responses/sha256/response.bin" in error.detail
+    assert retained["response"] == b'{"model":"reader-api","choices":[]}'
+    assert retained["request"]
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
 

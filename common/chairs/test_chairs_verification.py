@@ -38,7 +38,6 @@ from common.chairs.models import ChairIdentity
 from common.chairs.registry import (
     CACHE_DESCRIPTOR,
     PRE_MATERIALIZATION_SENTINEL,
-    ChairRegistry,
     HuggingFaceMaterializationFetcher,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
@@ -426,12 +425,44 @@ def test_the_written_manifest_round_trips_through_its_own_reader(tmp_path):
     assert read_manifest(path, expected_digest=pin, chair="attestator_1") == manifest
 
 
-def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(tmp_path):
-    """The real roster's rows pin nothing yet, and must say so when asked to serve.
+def test_the_measured_real_roster_pins_each_shipped_manifest():
+    """The real roster's configured chairs name readable, measured manifests.
 
-    The parseable sentinel lets launch materialize the roster, but every door
+    This verifies only the committed manifest metadata and roster bindings. It
+    does not fetch a snapshot, start a serving process, or claim an inference.
+    """
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    configured = {
+        role: chair for role, chair in real.chairs.items() if isinstance(chair, ChairIdentity)
+    }
+
+    assert set(configured) == {
+        "designator_structure",
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "perlector",
+    }
+    assert (
+        configured["designator_structure"].digest_manifest
+        == configured["attestator_1"].digest_manifest
+    )
+    for role, identity in configured.items():
+        assert identity.digest_manifest != PRE_MATERIALIZATION_SENTINEL, role
+        assert read_manifest(
+            ROOT / "config" / identity.manifest,
+            expected_digest=identity.digest_manifest,
+            chair=role,
+        ).rows
+
+
+def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(tmp_path):
+    """A synthetic pre-materialization sentinel is refused before it can serve.
+
+    The parseable sentinel lets a launch materialize a roster, but every door
     that relies on a pin must refuse it before reading a manifest or producing
-    provenance.
+    provenance.  The shipped real roster has measured pins; this fixture keeps
+    the generic refusal boundary covered without claiming otherwise.
     """
     snapshot = write_snapshot(tmp_path / "cache" / "attestator_1", {"model.bin": b"weights\n"})
     pin_snapshot(snapshot, tmp_path / "manifests" / "attestator_1.json")
@@ -446,20 +477,6 @@ def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(
         registry.ensure(identity)
     with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
         registry.receipt(identity, serving_details())
-
-    # The refusal is about the shipped roster, not only about a synthetic one.
-    real = load_models_toml(ROOT / "config" / "models-real.toml")
-    checked = 0
-    for role, configured in real.chairs.items():
-        if not isinstance(configured, ChairIdentity):
-            continue
-        assert configured.digest_manifest == PRE_MATERIALIZATION_SENTINEL, role
-        with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
-            ChairRegistry(real).ensure(configured)
-        checked += 1
-    # Without this the loop body can be skipped entirely and the test still
-    # passes, reporting a refusal it never exercised (GOVERNANCE 10).
-    assert checked, "the shipped roster declares no configured chair to refuse"
 
 
 def test_the_materialization_fetcher_separates_client_state_without_deleting_repo_bytes(tmp_path):

@@ -30,7 +30,7 @@ import hashlib
 import os
 import secrets
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -41,7 +41,8 @@ from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from common.chairs.models import ChairIdentity
 from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSample
 
-from .errors import ServingConfigurationError
+from .errors import ServingConfigurationError, ServingError
+from .http import HttpResponse
 from .manager import AdapterCalibration, ServiceHandle, _active_chat_image_bytes
 
 _WITNESS_PREFIX = "PAGE-WITNESS: "
@@ -70,6 +71,23 @@ _GOLDEN_PAGE_FONT_SIZE = 40
 _GOLDEN_PAGE_FONT_FLOOR = 24
 _GOLDEN_PAGE_FONT_STEP = 2
 _NVIDIA_SMI_TIMEOUT_SECONDS = 30.0
+
+
+class SmokeExchangeRetainedError(ServingError):
+    """A smoke parser refusal whose exact request and response are retained."""
+
+    def __init__(
+        self,
+        error: ServingError,
+        request_reference: Mapping[str, str],
+        response_reference: Mapping[str, str],
+    ) -> None:
+        self.code = error.code
+        self.detail = (
+            f"{error}; smoke_request={request_reference.get('relative_path')}; "
+            f"smoke_response={response_reference.get('relative_path')}"
+        )
+        super().__init__(self.detail)
 
 
 def fresh_page_witness() -> str:
@@ -227,6 +245,10 @@ class VisionSmokeCall:
 
     page_witness: str
     utilization: Callable[[], tuple[UtilizationSample, ...]] = lambda: ()
+    page_witness_reference: Mapping[str, str] | None = None
+    raw_exchange_publisher: (
+        Callable[[bytes, bytes], tuple[Mapping[str, str], Mapping[str, str]]] | None
+    ) = None
 
     def __post_init__(self) -> None:
         if (
@@ -297,11 +319,41 @@ class VisionSmokeCall:
             prompt=self.prompt,
             mime_type=_FIXTURE_MIME_TYPE,
         ).request_payload()
+        # Qwen3.8 thinks by default, but this proof asks the Perlector for one
+        # literal transcription line.  Select the model's documented direct
+        # response mode for this smoke alone; the exact-output check below
+        # remains the proof and every other chair keeps its declared template.
+        if identity.role == "perlector":
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         # Inspect the sealed payload, not the path: reopening the fixture could
         # validate replacement bytes rather than the snapshot about to be sent.
         image_bytes = _active_chat_image_bytes(payload, label="golden-page request")
         _verify_png(image_bytes, max_pixels=placement.recipe.pixel_cap**2)
-        answer = handle.request_fixture_image("chat-completions", payload, fixture=fixture)
+        exchange_references: tuple[Mapping[str, str], Mapping[str, str]] | None = None
+
+        def retain_exchange(request: bytes, response: HttpResponse) -> None:
+            nonlocal exchange_references
+            if self.raw_exchange_publisher is not None:
+                # This callback runs after the HTTP boundary has the response
+                # bytes but before its parser validates their shape. A parsed
+                # format-invalid answer and a parser refusal therefore leave
+                # the same exact wire evidence behind.
+                exchange_references = self.raw_exchange_publisher(request, response.body)
+
+        try:
+            answer = handle.request_fixture_image(
+                "chat-completions",
+                payload,
+                fixture=fixture,
+                exchange_observer=retain_exchange,
+            )
+        except ServingError as error:
+            if exchange_references is None:
+                raise
+            request_reference, response_reference = exchange_references
+            raise SmokeExchangeRetainedError(
+                error, request_reference, response_reference
+            ) from error
 
         shape_valid = len(answer.outputs) == 1
         # Keep this independent of shape: multiple parsed choices are still
@@ -326,19 +378,30 @@ class VisionSmokeCall:
                 "golden-page utilization sampler returned more than "
                 f"{_MAXIMUM_UTILIZATION_SAMPLES} samples for one smoke request"
             )
+        receipt: dict[str, object] = {
+            "fixture_response_sha256": answer.response_sha256,
+            "resolved_identity": identity.to_record(),
+            "resolved_revision": identity.receipt_revision,
+            "resolved_revision_kind": identity.receipt_revision_kind,
+            "served_model_id": answer.model_id,
+            "page_witness_sha256": hashlib.sha256(self.page_witness.encode()).hexdigest(),
+            "page_witness_matches": format_valid,
+        }
+        if self.raw_exchange_publisher is not None:
+            if exchange_references is None:
+                raise ServingConfigurationError(
+                    "fixture request completed without raw request/response evidence"
+                )
+            request_reference, response_reference = exchange_references
+            receipt["smoke_request_reference"] = dict(request_reference)
+            receipt["smoke_response_reference"] = dict(response_reference)
+        if self.page_witness_reference is not None:
+            receipt["page_witness_reference"] = dict(self.page_witness_reference)
         return SmokeResult(
             shape_valid=shape_valid,
             nonempty=nonempty,
             format_valid=format_valid,
-            receipt={
-                "fixture_response_sha256": answer.response_sha256,
-                "resolved_identity": identity.to_record(),
-                "resolved_revision": identity.receipt_revision,
-                "resolved_revision_kind": identity.receipt_revision_kind,
-                "served_model_id": answer.model_id,
-                "page_witness_sha256": hashlib.sha256(self.page_witness.encode()).hexdigest(),
-                "page_witness_matches": format_valid,
-            },
+            receipt=receipt,
             utilization=samples,
         )
 

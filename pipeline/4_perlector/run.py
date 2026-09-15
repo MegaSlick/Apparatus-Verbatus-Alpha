@@ -129,6 +129,7 @@ from operations.serving.config import (  # noqa: E402
 from operations.serving.errors import ChairResponseRefusal  # noqa: E402
 from operations.serving.http import UrllibHttpTransport  # noqa: E402
 from operations.serving.manager import (  # noqa: E402
+    MECHANICS_QUALIFICATION_PURPOSE,
     ServingManager,
     StageContextReceiptPublisher,
 )
@@ -1899,6 +1900,11 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
             launcher=SubprocessLauncher(),
             http=UrllibHttpTransport(),
             receipt_publisher=StageContextReceiptPublisher(context),
+            _launch_purpose=(
+                MECHANICS_QUALIFICATION_PURPOSE
+                if getattr(context.args, "mechanics_qualification", False)
+                else None
+            ),
             # A live chair's engine logs, inside the run tree so they travel
             # with the evidence they belong to. They sit beside this stage's
             # artifacts and blobs rather than among them: `_stage_blob_inventory`

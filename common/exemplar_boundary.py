@@ -904,7 +904,7 @@ def _validate_embedded_triage_row(row: Any) -> None:
     if (
         not isinstance(actor, dict)
         or set(actor) != {"kind", "identity", "revision"}
-        or actor.get("kind") not in {"human", "model", "scantailor"}
+        or actor.get("kind") not in {"human", "model", "scantailor", "producer"}
         or not isinstance(actor.get("identity"), str)
         or not actor["identity"].strip()
         or (actor["kind"] == "human" and actor.get("revision") is not None)

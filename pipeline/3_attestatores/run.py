@@ -93,7 +93,11 @@ from operations.serving.config import (  # noqa: E402
 )
 from operations.serving.errors import ServingError  # noqa: E402
 from operations.serving.http import UrllibHttpTransport  # noqa: E402
-from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
+from operations.serving.manager import (  # noqa: E402
+    MECHANICS_QUALIFICATION_PURPOSE,
+    ServingManager,
+    StageContextReceiptPublisher,
+)
 from operations.serving.process import SubprocessLauncher  # noqa: E402
 from operations.serving.residency import (  # noqa: E402
     POD_RESIDENCY_LOCK_PATH,
@@ -4574,6 +4578,11 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         log_root=context.tree.resolve(context.tree.serving_log_path(ATTESTATORES)),
         residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/3_attestatores/run.py",
+        _launch_purpose=(
+            MECHANICS_QUALIFICATION_PURPOSE
+            if getattr(context.args, "mechanics_qualification", False)
+            else None
+        ),
     )
     return ChairClient(
         manager=manager,

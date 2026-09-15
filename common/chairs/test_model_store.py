@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from common.chairs import model_store
-from common.chairs.config import load_models_toml
+from common.chairs.config import load_models_toml, parse_models_config
 from common.chairs.errors import DigestMismatchRefusal
 from common.chairs.manifests import build_manifest, write_manifest
 from common.chairs.model_store import (
@@ -23,6 +23,8 @@ from common.chairs.model_store import (
     SURYA_OCR_2_REFUSAL,
     UNDECLARED_LICENCE_SNAPSHOT,
     UNTEXTED_LICENCE_SNAPSHOT,
+    VerifiedStoreFetcher,
+    configured_cache_materialization_plan,
     derived_inventory,
     load_download_record,
     materialize_real_roster,
@@ -36,7 +38,7 @@ from common.chairs.model_store import (
     write_download_record,
 )
 from common.chairs.models import ChairIdentity
-from common.chairs.registry import CACHE_DESCRIPTOR
+from common.chairs.registry import CACHE_DESCRIPTOR, ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1627,6 +1629,147 @@ def test_pod_materialization_plan_reverifies_source_bytes(tmp_path):
 
     with pytest.raises(DigestMismatchRefusal, match="config.json"):
         pod_materialization_plan(tmp_path)
+
+
+def test_configured_cache_plan_reuses_the_verified_huggingface_sources(tmp_path):
+    """The pending local Surya row cannot trigger a second HF acquisition.
+
+    The five real configured roles include two distinct Chandra cache entries.
+    They share source bytes, but the registry will publish its descriptor only
+    after each role's destination manifest verifies.
+    """
+
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    digests = {
+        entry["artifact"]: entry["digest_manifest"]
+        for entry in record["artifacts"]
+        if entry["state"] == "present"
+    }
+    identities = [
+        replace(
+            identity,
+            digest_manifest=digests[
+                next(item.artifact for item in REQUIRED_ARTIFACTS if item.chair == role)
+            ],
+        )
+        for role, identity in real.chairs.items()
+        if isinstance(identity, ChairIdentity) and identity.source == "huggingface"
+    ]
+
+    plan = configured_cache_materialization_plan(tmp_path, identities)
+
+    assert plan["pending"] == ["surya2-detection"]
+    assert set(plan["cache_root_entries"]) == {
+        "designator_structure",
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "perlector",
+    }
+    assert (
+        plan["cache_root_entries"]["designator_structure"]["snapshot"]
+        == plan["cache_root_entries"]["attestator_1"]["snapshot"]
+    )
+
+    destination = tmp_path / "chair-candidate"
+    destination.mkdir()
+    fetcher = VerifiedStoreFetcher(plan["cache_root_entries"])
+    perlector = next(identity for identity in identities if identity.role == "perlector")
+    fetcher.fetch(perlector, destination, ("config.json", "model.safetensors"))
+    source = Path(plan["cache_root_entries"]["perlector"]["snapshot"])
+    assert (destination / "config.json").read_bytes() == (source / "config.json").read_bytes()
+    assert (destination / "model.safetensors").read_bytes() == (
+        source / "model.safetensors"
+    ).read_bytes()
+
+
+def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(tmp_path):
+    """Five cache roles are supplied locally, including both Chandra roles."""
+
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    entries = {
+        entry["artifact"]: entry for entry in record["artifacts"] if entry["state"] == "present"
+    }
+    source_identities = []
+    chairs = {}
+    config_root = tmp_path / "configured-roster"
+    for role, identity in real.chairs.items():
+        if not isinstance(identity, ChairIdentity) or identity.source != "huggingface":
+            continue
+        artifact = next(item.artifact for item in REQUIRED_ARTIFACTS if item.chair == role)
+        entry = entries[artifact]
+        configured = replace(
+            identity,
+            digest_manifest=entry["digest_manifest"],
+            manifest=f"manifests/{role}.json",
+        )
+        source_identities.append(configured)
+        chairs[role] = {
+            "state": "configured",
+            "source": configured.source,
+            "repo": configured.repo,
+            "revision": configured.revision,
+            "digest_manifest": configured.digest_manifest,
+            "manifest": configured.manifest,
+            "serving_recipe": configured.serving_recipe,
+            "license_note": configured.license_note,
+        }
+        if configured.witness_adapter is not None:
+            chairs[role]["witness_adapter"] = configured.witness_adapter
+        if configured.witness_scope is not None:
+            chairs[role]["witness_scope"] = configured.witness_scope
+        manifest_target = config_root / configured.manifest
+        manifest_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(tmp_path / entry["manifest"], manifest_target)
+    config = parse_models_config(
+        {"witness_floor": 3, "chairs": chairs}, source_path=config_root / "models.toml"
+    )
+    plan = configured_cache_materialization_plan(tmp_path, source_identities)
+
+    class RecordingFetcher:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.delegate = VerifiedStoreFetcher(plan["cache_root_entries"])
+
+        def fetch(self, identity, destination, paths):  # type: ignore[no-untyped-def]
+            self.calls.append(identity.role)
+            self.delegate.fetch(identity, destination, paths)
+
+    fetcher = RecordingFetcher()
+    registry = ChairRegistry(config, cache_root=tmp_path / "chair-cache", fetcher=fetcher)
+    for identity in source_identities:
+        registry.ensure(identity)
+
+    assert set(fetcher.calls) == set(chairs)
+    assert (tmp_path / "chair-cache" / "designator_structure" / CACHE_DESCRIPTOR).is_file()
+    assert (tmp_path / "chair-cache" / "attestator_1" / CACHE_DESCRIPTOR).is_file()
+    assert (tmp_path / "chair-cache" / "designator_structure") != (
+        tmp_path / "chair-cache" / "attestator_1"
+    )
+
+    fetcher.calls.clear()
+    restarted = ChairRegistry(config, cache_root=tmp_path / "chair-cache", fetcher=fetcher)
+    for identity in source_identities:
+        restarted.ensure(identity)
+    assert fetcher.calls == []
+
+
+def test_configured_cache_plan_refuses_changed_source_or_configured_pin(tmp_path):
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    perlector = real.chairs["perlector"]
+    assert isinstance(perlector, ChairIdentity)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
+    perlector = replace(perlector, digest_manifest=entry["digest_manifest"])
+
+    with pytest.raises(DigestMismatchRefusal, match="configured pin"):
+        configured_cache_materialization_plan(tmp_path, [replace(perlector, revision="0" * 40)])
+
+    (tmp_path / entry["snapshot"] / "config.json").write_text('{"changed":true}', encoding="utf-8")
+    with pytest.raises(DigestMismatchRefusal, match="config.json"):
+        configured_cache_materialization_plan(tmp_path, [perlector])
 
 
 def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path):

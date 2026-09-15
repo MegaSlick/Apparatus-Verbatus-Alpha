@@ -27,6 +27,7 @@ from common.chairs.config import load_models_toml
 from common.chairs.errors import DigestMismatchRefusal
 from operations.http_deadline import CANCEL_GRACE_SECONDS
 
+from . import bootstrap as bootstrap_module
 from . import cli
 from . import launch as launch_module
 from .arming import ControllerArming, ControllerReadiness
@@ -5527,7 +5528,11 @@ def _image(
     (repository / ".git" / "config").write_text("\n".join(lines) + "\n", encoding="utf-8")
     interpreter = repository / REPOSITORY_VENV_DIRECTORY / "bin" / "python"
     interpreter.parent.mkdir(parents=True)
-    interpreter.write_text("", encoding="utf-8")
+    (repository / REPOSITORY_VENV_DIRECTORY / "pyvenv.cfg").write_text(
+        "home = /usr/bin\ninclude-system-site-packages = false\n", encoding="utf-8"
+    )
+    interpreter.symlink_to(sys.executable)
+    (interpreter.parent / "python3").symlink_to("python")
     return repository
 
 
@@ -5562,6 +5567,134 @@ def test_the_image_contract_passes_a_checkout_with_an_origin_and_a_prebuilt_venv
     # Never the URL itself: a remote URL is one of the places a credential may
     # legitimately sit, and this record is written onto the volume.
     assert "example.invalid" not in json.dumps(verified)
+
+
+def test_the_image_contract_accepts_a_standard_venv_python_symlink(
+    tmp_path: Path,
+) -> None:
+    """uv's `.venv/bin/python` names the venv but resolves to its base Python."""
+
+    repository = _image(tmp_path)
+    interpreter = _interpreter(repository)
+
+    assert interpreter.is_symlink()
+    assert not interpreter.resolve().is_relative_to(
+        (repository / REPOSITORY_VENV_DIRECTORY).resolve()
+    )
+
+    verified = verify_image_contract(
+        repository,
+        interpreter=interpreter,
+        interpreter_prefix=repository / REPOSITORY_VENV_DIRECTORY,
+        executables=_tools(tmp_path),
+        environment={},
+    )
+
+    assert verified["interpreter"] == str(interpreter)
+
+
+def test_the_image_contract_checks_the_running_interpreters_venv_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production call supplies only sys.executable and reads sys.prefix itself."""
+
+    repository = _image(tmp_path)
+    interpreter = _interpreter(repository)
+    venv = repository / REPOSITORY_VENV_DIRECTORY
+    monkeypatch.setattr(bootstrap_module.sys, "executable", str(interpreter))
+    monkeypatch.setattr(bootstrap_module.sys, "prefix", str(venv))
+
+    verified = verify_image_contract(
+        repository,
+        interpreter=interpreter,
+        executables=_tools(tmp_path),
+        environment={},
+    )
+
+    assert verified["interpreter"] == str(interpreter)
+
+
+def test_the_image_contract_refuses_an_inferred_system_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The inferred prefix must refuse, not only accept."""
+
+    repository = _image(tmp_path)
+    interpreter = _interpreter(repository)
+    monkeypatch.setattr(bootstrap_module.sys, "executable", str(interpreter))
+    monkeypatch.setattr(bootstrap_module.sys, "prefix", "/usr")
+
+    with pytest.raises(ImageContractRefusal, match="reports sys.prefix"):
+        verify_image_contract(
+            repository,
+            interpreter=interpreter,
+            executables=_tools(tmp_path),
+            environment={},
+        )
+
+
+def test_the_image_contract_accepts_a_standard_versioned_venv_launcher(tmp_path: Path) -> None:
+    repository = _image(tmp_path)
+    interpreter = repository / REPOSITORY_VENV_DIRECTORY / "bin" / "python3"
+
+    verified = verify_image_contract(
+        repository,
+        interpreter=interpreter,
+        interpreter_prefix=repository / REPOSITORY_VENV_DIRECTORY,
+        executables=_tools(tmp_path),
+        environment={},
+    )
+
+    assert verified["interpreter"] == str(interpreter)
+
+
+def test_the_image_contract_refuses_a_venv_named_interpreter_without_a_venv_marker(
+    tmp_path: Path,
+) -> None:
+    """A symlink below `.venv` alone must not make a system Python acceptable."""
+
+    repository = _image(tmp_path)
+    (repository / REPOSITORY_VENV_DIRECTORY / "pyvenv.cfg").unlink()
+
+    with pytest.raises(ImageContractRefusal, match="does not carry a readable pyvenv.cfg"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            interpreter_prefix=repository / REPOSITORY_VENV_DIRECTORY,
+            executables=_tools(tmp_path),
+            environment={},
+        )
+
+
+def test_the_image_contract_refuses_a_venv_named_interpreter_with_a_system_prefix(
+    tmp_path: Path,
+) -> None:
+    """The invoked symlink must actually have activated its own virtual environment."""
+
+    repository = _image(tmp_path)
+
+    with pytest.raises(ImageContractRefusal, match="reports sys.prefix"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            interpreter_prefix=Path("/usr"),
+            executables=_tools(tmp_path),
+            environment={},
+        )
+
+
+def test_the_image_contract_refuses_a_malformed_venv_marker(tmp_path: Path) -> None:
+    repository = _image(tmp_path)
+    (repository / REPOSITORY_VENV_DIRECTORY / "pyvenv.cfg").write_text("", encoding="utf-8")
+
+    with pytest.raises(ImageContractRefusal, match="without a base Python home"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            interpreter_prefix=repository / REPOSITORY_VENV_DIRECTORY,
+            executables=_tools(tmp_path),
+            environment={},
+        )
 
 
 def test_the_image_contract_names_an_unreadable_pointer_file(
@@ -5677,7 +5810,9 @@ def test_the_image_contract_refuses_an_interpreter_outside_the_repositorys_venv(
 
     repository = _image(tmp_path)
 
-    with pytest.raises(ImageContractRefusal, match="not inside"):
+    with pytest.raises(
+        ImageContractRefusal, match="not a repository virtual environment interpreter"
+    ):
         verify_image_contract(
             repository,
             interpreter=Path("/usr/bin/python3"),

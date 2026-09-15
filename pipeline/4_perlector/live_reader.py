@@ -373,10 +373,16 @@ class VLLMReader:
             kind="chat-completions",
             messages=({"role": "user", "content": content},),
             image_sha256s=image_sha256s,
+            # The model card declares thinking as its default, but the pinned
+            # Perlector instruction asks for the transcription itself.  Keep
+            # the vendor generation view empty and record the request-level
+            # chat-template selection exactly where ChairClient records what
+            # was sent.
             generation_declared={},
-            generation_sent={"max_tokens": self._max_tokens}
-            if self._max_tokens is not None
-            else {},
+            generation_sent={
+                "chat_template_kwargs": {"enable_thinking": False},
+                **({"max_tokens": self._max_tokens} if self._max_tokens is not None else {}),
+            },
             capacity=capacity,
         )
         response = self._client.read(request)

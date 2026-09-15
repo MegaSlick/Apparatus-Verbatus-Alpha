@@ -473,7 +473,18 @@ cannot travel in a commit.
    exists.
 3. **`upload` writes to a local folder by default** through the same checksum-verified,
    resumable transfer a network volume uses. `--network-volume DATACENTER:VOLUME_ID`
-   selects the S3-compatible target; it has never been run against a real endpoint.
+   selects the S3-compatible target. The first real endpoint test transferred an image
+   whose bytes hashed correctly after download, but RunPod discarded the custom SHA-256
+   metadata supplied on upload. The adapter therefore verifies missing-metadata objects
+   by streaming their bytes under the sealed size bound; that fallback is locally tested
+   and still awaits a second live endpoint run.
+
+   One immutable manifest owns each object prefix. The default `submission` writes images
+   under `submission/` and its ledger beside them as `submission-manifest.json`, matching
+   Boot B. Use `--prefix batch-02` for another retained batch on the same volume; it writes
+   `batch-02/` and `batch-02-manifest.json`. Reusing the same manifest is idempotent. A
+   different manifest at an occupied prefix is refused before any of its images are written.
+   A non-default batch must be paired with matching submission paths in its pod request.
 4. **`run` runs on this computer, not on a pod.** With no submission it processes the
    declared synthetic fixture; with `--submission-folder` and `--submission-manifest` it
    sends a real approved submission to the Door. The `--models-config` /

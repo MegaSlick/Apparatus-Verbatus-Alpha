@@ -85,9 +85,11 @@ pod provider that is not the in-memory fake.
 the files named by the sealed submission record to a real RunPod network volume. Storage
 transfer needs no pod and starts no GPU meter, but it does leave this computer. The
 operator must name the volume and is told exactly what will be contacted before a byte
-moves. Its credentials are read from the environment only. **That adapter has never been
-run against a real endpoint**:
-its logic is tested against an injected client and its network behaviour is untested.
+moves. Its credentials are read from the environment only. The first real endpoint test
+confirmed that image bytes round-trip but custom checksum metadata does not; the adapter's
+bounded target-byte fallback is locally tested and awaits a live rerun. A named `--prefix`
+allows another immutable submission on the retained volume without replacing the default
+`submission/` and `submission-manifest.json` pair.
 
 The Spec 11 **product bundle** is built in `pipeline/7_armarium`: `run.py` projects the
 manifest, acts, pages, and aggregate basis and seals the bundle into the run tree
