@@ -1965,15 +1965,15 @@ def test_every_stage_receives_the_runs_selected_serving_recipes_catalogue(monkey
         assert command[command.index("--serving-recipes-config") + 1] == str(selected)
 
 
-def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
+def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch, tmp_path):
     """The actual subprocess route seals the selected real pair, not the defaults.
 
-    Model materialization is deliberately still red: all-zero manifest digests
-    are pre-materialization sentinels. Reaching that named refusal proves the
+    The real roster carries measured manifest pins, while its serving catalogue
+    remains deliberately unproven.  Reaching that preflight refusal proves the
     real roster passed its native-adapter boundary and that the Door sealed the
-    caller-selected catalogue before the Designator tried to resolve a model.
-    Catalogue row completeness and unproven state are checked against these same
-    literal files in ``operations/serving/test_manager.py``.
+    caller-selected catalogue before any model could run.  Catalogue row
+    completeness and unproven state are checked against these same literal files
+    in ``operations/serving/test_manager.py``.
     """
 
     models = ROOT / "config" / "models-real.toml"
@@ -1981,10 +1981,11 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
     witness_context = ROOT / "config" / "witness_context-real.toml"
     run_root = tmp_path / "runs"
 
-    # The tier is what the real catalogue's live rows require to resolve at all:
-    # without it the Designator now refuses for the missing tier
-    # (`serving_mode_for`) and never reaches the roster's own materialization
-    # sentinel, which is the refusal this test is about.
+    # The tier selects a live-shaped row. Its deliberately unproven preflight
+    # state must refuse before a serving process or model request can begin.
+    # Subprocesses inherit this offline guard, so a regression past the
+    # preflight boundary cannot turn this acceptance test into a model download.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     result = orchestrate(
         run_root,
         "r",
@@ -1996,7 +1997,8 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
     )
 
     assert result.returncode == 2
-    assert "all-zero pre-materialization sentinel" in result.stderr
+    assert "preflight must prove this exact profile before launch" in result.stderr
+    assert "pre-materialization sentinel" not in result.stderr
     assert "has no witness_adapter" not in result.stderr
     run_record = json.loads((run_root / "r" / "run.json").read_text(encoding="utf-8"))
     expected = run_config_bindings(
