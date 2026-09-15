@@ -759,7 +759,7 @@ class OperatorSurface:
                     prefix=prefix,
                     journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
                 ).resume()
-                manifest_key = f"{prefix.rstrip('/')}/manifest.json"
+                manifest_key = f"{prefix.rstrip('/')}-manifest.json"
                 remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
                 if remote_manifest is not None and (
                     remote_manifest.sha256 != manifest_sha256

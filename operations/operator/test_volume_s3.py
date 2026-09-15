@@ -388,7 +388,7 @@ def test_upload_through_the_surface_sends_only_files_named_by_the_sealed_record(
 
     assert receipt.is_file()
     assert sorted(client.uploads) == [
-        "submission/manifest.json", "submission/page-one.bin", "submission/page-two.bin"
+        "submission-manifest.json", "submission/page-one.bin", "submission/page-two.bin"
     ]
     assert client.objects["submission/page-one.bin"][0] == (source / "page-one.bin").read_bytes()
     assert client.objects["submission/page-two.bin"][0] == (source / "page-two.bin").read_bytes()

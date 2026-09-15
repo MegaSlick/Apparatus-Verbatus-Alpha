@@ -869,7 +869,9 @@ but six of six refused is not the run's records coming home.
 | `<volume>/pod-transfer-journal.json` | `ChecksummedTransfer` | **a fixed name at the volume root** — no token. It is the only durable record of which submission rows were verified against target-observed bytes |
 
 **Not records, and deliberately not fetched:** `<volume>/chair-cache/` (materialized
-weights), `<volume>/submission/` (the submission's own page images, which is why nothing
+weights), `<volume>/submission/` (the submission's own page images) and
+`<volume>/submission-manifest.json` (the sealed ledger, deliberately beside rather than
+inside the submitted folder because the Door refuses pipeline records among source images),
 here ever lists the whole volume to find a key), and `<volume>/pod-transfer/` (the
 transferred bytes themselves, which the journal accounts for).
 
