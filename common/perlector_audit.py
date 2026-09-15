@@ -409,7 +409,11 @@ def truncation_classification(signals: dict[str, Any]) -> str:
 
 
 def validate_truncation_record(
-    value: Any, *, label: str, text: str | None = None
+    value: Any,
+    *,
+    label: str,
+    text: str | None = None,
+    length_floor_characters_per_page: int | None = None,
 ) -> dict[str, Any]:
     """The sealed shape of one raw truncation measurement, its verdict re-derived.
 
@@ -422,7 +426,11 @@ def validate_truncation_record(
     than checking the block for shape. `text`, where the caller holds the
     reading the record was measured over, binds `characters` to it as well,
     because a re-derivation from a character count nobody checked is still the
-    producer's word in another form. The classification is not the producer's
+    producer's word in another form. `length_floor_characters_per_page` binds
+    the other term of the predicate the same way, for a caller that holds the
+    sealed `[truncation]` table: without it the derivation proves only that the
+    record agrees with itself, and a record judged under a floor nobody sealed
+    agrees with itself perfectly. The classification is not the producer's
     word either: for the instrument's *raw* output it is a function of the four
     sealed signals (`truncation_classification`), so a record whose verdict
     contradicts its own signals is refused, and a declared stop word outside the
@@ -474,6 +482,23 @@ def validate_truncation_record(
         raise SchemaRefusal(
             f"{label} measure counts {measure['characters']} characters but the text it was "
             f"measured over has {len(text)}"
+        )
+    # The floor the record was judged under is the record's own word until a
+    # caller that holds the sealed policy binds it here, exactly as
+    # `characters` is bound by `text`. Re-deriving the signal from a floor the
+    # record chose for itself proves only internal consistency: a record naming
+    # floor 1 under a sealed floor of 50 derives `length_suspicious` false,
+    # classifies `complete`, and clears an audit hold the sealed policy would
+    # have held (CodeRabbit on PR #117). Refused before the derivation, so the
+    # refusal names the floor rather than the signal it produced.
+    if (
+        length_floor_characters_per_page is not None
+        and measure["length_floor_characters_per_page"] != length_floor_characters_per_page
+    ):
+        raise SchemaRefusal(
+            f"{label} was judged under length floor "
+            f"{measure['length_floor_characters_per_page']} but this run sealed "
+            f"{length_floor_characters_per_page}"
         )
     derived_length_signal = length_signal(
         characters=measure["characters"],
@@ -752,7 +777,13 @@ def validate_draft(payload: Any) -> dict[str, Any]:
     return value
 
 
-def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -> dict[str, Any]:
+def validate_finding(
+    payload: Any,
+    *,
+    text: str,
+    flag_text: str | None = None,
+    length_floor_characters_per_page: int | None = None,
+) -> dict[str, Any]:
     value = _closed(payload, _FINDING_FIELDS, "audit finding")
     refuse_capture_preference(value, what="an audit finding")
     if not isinstance(text, str):
@@ -800,6 +831,7 @@ def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -
             value["reproof_truncation"],
             label="an audit finding's re-proof termination",
             text=text,
+            length_floor_characters_per_page=length_floor_characters_per_page,
         )
     validate_reproof_call(value["reproof_call"], label="an audit finding's re-proof call")
     examination = examination_state(value["flags"], value["round_cap"], value["reproof_truncation"])
@@ -977,8 +1009,28 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
     return [{"start": start, "end": end, "triggering_flag_class": triggering["class"]}]
 
 
-def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]:
+def validate_chain(
+    tree,
+    reading: dict[str, Any],
+    act_id: str,
+    *,
+    length_floor_characters_per_page: int | None = None,
+) -> dict[str, Any]:
     """Validate the exact draft/finding/Perlectio relationship once for every reader.
+
+    `length_floor_characters_per_page` is the sealed `[truncation]` floor this
+    run judges under, from a caller that holds the sealed protocol bytes. It is
+    what stops a re-proof termination re-deriving its own `length_suspicious`
+    under a floor nobody sealed: `validate_truncation_record` recomputes the
+    signal from the record's *own* measure, so a record naming floor 1 under a
+    sealed floor of 50 is internally consistent, classifies `complete`, and
+    clears an audit hold that the sealed policy would have held (CodeRabbit on
+    PR #117). Given the floor, a record judged under any other is refused
+    before the signal is re-derived. `None` is the caller that does not hold
+    the sealed table -- the Recensor, which reads this chain across stages and
+    has no Perlector protocol of its own, and the fixture chamber, which runs
+    without a sealed protocol at all -- and it is a declared absence rather
+    than a silent skip, exactly as `validate_truncation_record`'s `text` is.
 
     **A known limit, stated rather than implied.** Where the sealed assessment
     says `assessed`, this function proves the exhausted-cap projection leads the
@@ -1007,6 +1059,7 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         finding.get("payload"),
         text=payload["text"],
         flag_text=draft_payload["semi_final_text"],
+        length_floor_characters_per_page=length_floor_characters_per_page,
     )
     shared_fields = (
         "act_key",

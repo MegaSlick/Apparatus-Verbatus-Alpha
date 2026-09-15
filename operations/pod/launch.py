@@ -294,7 +294,19 @@ def launch_evidence_keys(
     keys: list[str] = []
     for raw, siblings in bound_report_paths(docker_start_cmd):
         path = PurePosixPath(raw)
-        if ".." in raw.split("/") or not path.is_absolute() or not path.is_relative_to(mount):
+        # The mount itself is dropped with the rest: `relative_to` answers `.`
+        # for it, which has no name, and `with_name` on that raises
+        # `ValueError` -- so a receipt carrying a report path equal to the
+        # mount ended `fetch-run` in a traceback rather than in a key list
+        # (CodeRabbit on PR #117). It is the same condition
+        # `models._required_timer_arguments` already refuses on the create
+        # path, applied here to a record this verb only reads.
+        if (
+            ".." in raw.split("/")
+            or not path.is_absolute()
+            or path == mount
+            or not path.is_relative_to(mount)
+        ):
             continue
         relative = path.relative_to(mount)
         keys.append(relative.as_posix())

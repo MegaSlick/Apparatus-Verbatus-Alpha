@@ -15,6 +15,7 @@ import json
 import os
 import signal
 import stat
+import string
 import sys
 import time
 from contextlib import suppress
@@ -89,6 +90,9 @@ from .http import (
     require_exact_model_id,
 )
 from .manager import (
+    _ENDPOINT_ANSWERED_UNREADY,
+    _ENDPOINT_REFUSED,
+    _ENDPOINT_UNREACHABLE,
     _WATCHDOG_TAIL_BYTES,
     PROCESSOR_CONFIG_FILENAMES,
     AdapterCalibration,
@@ -97,6 +101,7 @@ from .manager import (
     ServingManager,
     StageContextReceiptPublisher,
     _progress_log_line,
+    _redacted,
     _watchdog_timeout,
     assert_no_discoverable_local_env,
     assert_processor_geometry,
@@ -140,6 +145,7 @@ class FakeProcess:
         pid: int,
         *,
         log_tail: str = "",
+        log_tails: tuple[str, ...] = (),
         exits_immediately: int | None = None,
         ignore_terminate: bool = False,
         ignore_kill: bool = False,
@@ -147,6 +153,8 @@ class FakeProcess:
         self.pid = pid
         self.exit_code = exits_immediately
         self.log_tail = log_tail
+        self.log_tails = log_tails
+        self.tail_reads = 0
         self.terminate_calls = 0
         self.kill_calls = 0
         self.wait_calls = 0
@@ -174,6 +182,14 @@ class FakeProcess:
         return self.exit_code
 
     def read_tail(self, maximum_bytes: int = 16_384) -> str:
+        # `log_tails` is a log that grows between reads, which is what a
+        # loading engine's own log does: the readiness loop reads it once per
+        # poll, and whether the progress line *moved* is what tells "still
+        # loading" from "stuck at 43% since the first poll".
+        if self.log_tails:
+            tail = self.log_tails[min(self.tail_reads, len(self.log_tails) - 1)]
+            self.tail_reads += 1
+            return tail[-maximum_bytes:]
         return self.log_tail[-maximum_bytes:]
 
 
@@ -279,12 +295,14 @@ class FakeLauncher:
         http: FakeHttp,
         *,
         log_tail: str = "",
+        log_tails: tuple[str, ...] = (),
         exits_immediately: int | None = None,
         ignore_terminate: bool = False,
         ignore_kill: bool = False,
     ) -> None:
         self.http = http
         self.log_tail = log_tail
+        self.log_tails = log_tails
         self.exits_immediately = exits_immediately
         self.ignore_terminate = ignore_terminate
         self.ignore_kill = ignore_kill
@@ -304,6 +322,7 @@ class FakeLauncher:
         process = FakeProcess(
             9000 + len(self.processes),
             log_tail=self.log_tail,
+            log_tails=self.log_tails,
             exits_immediately=self.exits_immediately,
             ignore_terminate=self.ignore_terminate,
             ignore_kill=self.ignore_kill,
@@ -799,6 +818,7 @@ def manager_for(
     sticky_after_stop: bool = False,
     ambiguous_after_stop: bool = False,
     log_tail: str = "",
+    log_tails: tuple[str, ...] = (),
     exits_immediately: int | None = None,
     package_version: str = "0.test",
     package_versions: Mapping[str, str] | None = None,
@@ -827,6 +847,7 @@ def manager_for(
     launcher = FakeLauncher(
         http,
         log_tail=log_tail,
+        log_tails=log_tails,
         exits_immediately=exits_immediately,
         ignore_terminate=ignore_terminate,
         ignore_kill=ignore_kill,
@@ -1216,9 +1237,11 @@ def test_a_watchdog_timeout_while_the_engine_is_loading_says_so_and_carries_the_
             ),
         ),
         model_ids=("reader-api",),
-        log_tail=(
+        log_tails=(
             "INFO 09-14 11:02:01 [gpu_model_runner.py:2213] Starting to load model reader\n"
-            "Loading safetensors checkpoint shards:  43% Completed | 12/28 [02:41<03:35]\n"
+            "Loading safetensors checkpoint shards:  21% Completed | 6/28 [01:20<04:56]\n",
+            "INFO 09-14 11:02:01 [gpu_model_runner.py:2213] Starting to load model reader\n"
+            "Loading safetensors checkpoint shards:  43% Completed | 12/28 [02:41<03:35]\n",
         ),
     )
     _never_answering(manager, launcher, http)
@@ -1229,6 +1252,7 @@ def test_a_watchdog_timeout_while_the_engine_is_loading_says_so_and_carries_the_
     message = str(excinfo.value)
     assert "VLLM_WATCHDOG_TIMEOUT" in message
     assert "still loading, not refused" in message
+    assert "it advanced while this start was waited on" in message
     assert "Loading safetensors checkpoint shards: 43% Completed | 12/28" in message
     assert "budget, not a measurement of this row's load time" in message
     assert "Launch log tail:" in message
@@ -1313,7 +1337,7 @@ def test_a_watchdog_timeout_over_an_unreadable_log_refuses_to_guess() -> None:
     error = _watchdog_timeout(
         process,
         last="loopback endpoint unavailable: connection refused",
-        unavailable=True,
+        endpoint_state=_ENDPOINT_REFUSED,
         budget_seconds=300.0,
     )
 
@@ -1327,7 +1351,7 @@ def test_an_empty_launch_log_says_it_is_empty_rather_than_appending_nothing() ->
     error = _watchdog_timeout(
         FakeProcess(4242, log_tail="   \n"),
         last="loopback endpoint unavailable: connection refused",
-        unavailable=True,
+        endpoint_state=_ENDPOINT_REFUSED,
         budget_seconds=300.0,
     )
 
@@ -1362,13 +1386,163 @@ def test_a_long_launch_log_is_carried_as_a_bounded_and_labelled_tail() -> None:
             log_tail="x" * 9_000 + "\nLoading weights took 412.10 seconds\n",
         ),
         last="loopback endpoint unavailable: connection refused",
-        unavailable=True,
+        endpoint_state=_ENDPOINT_REFUSED,
+        progress_advanced=True,
         budget_seconds=300.0,
     )
 
     assert "still loading, not refused" in error.detail
     assert f"[last {_WATCHDOG_TAIL_BYTES} bytes]" in error.detail
     assert len(error.detail) < 2_500
+
+
+def test_a_loading_marker_that_never_moved_is_not_reported_as_current_progress(
+    tmp_path: Path,
+) -> None:
+    """An early marker left in a retained log is not evidence of progress now.
+
+    "The engine was still starting when the bound expired" is the sentence an
+    operator extends `startup_timeout_seconds` on and keeps billing for. It was
+    produced by any loading marker anywhere in the tail, including one written
+    before the engine stopped making progress (CodeRabbit on PR #117). The
+    marker is still reported -- it is real evidence -- but as what it is.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        log_tail="Loading safetensors checkpoint shards:  43% Completed | 12/28 [02:41<03:35]\n",
+    )
+    _never_answering(manager, launcher, http)
+
+    with pytest.raises(ServingRecipeRefusal) as excinfo:
+        manager.start(chair, TIER)
+
+    message = str(excinfo.value)
+    assert "loading was observed, and nothing since" in message
+    assert "did not change while the" in message
+    # The strong claim -- the one an operator raises the bound on -- is absent.
+    assert "it advanced while this start was waited on" not in message
+    assert "still loading, not refused" not in message
+    # The evidence itself still travels: the claim is narrowed, not dropped.
+    assert "Loading safetensors checkpoint shards: 43% Completed | 12/28" in message
+    assert publisher.calls == []
+
+
+def test_an_endpoint_that_timed_out_is_not_reported_as_a_refused_connection() -> None:
+    """`EndpointUnavailable` is not a refusal unless it says it proved absence.
+
+    A timeout, a reset and a malformed local route all raise it with
+    `definitively_absent` false, and every one of them was recorded as a
+    refused connection -- so a start that timed out was told that raising
+    `startup_timeout_seconds` was unlikely to help, which is the opposite of
+    the truth (CodeRabbit on PR #117).
+    """
+
+    process = FakeProcess(4242, log_tail="INFO: nothing interesting here\n")
+
+    timed_out = _watchdog_timeout(
+        process,
+        last="loopback endpoint unavailable: read timed out",
+        endpoint_state=_ENDPOINT_UNREACHABLE,
+        budget_seconds=300.0,
+    )
+    refused = _watchdog_timeout(
+        process,
+        last="loopback endpoint unavailable: connection refused",
+        endpoint_state=_ENDPOINT_REFUSED,
+        budget_seconds=300.0,
+    )
+    answered = _watchdog_timeout(
+        process,
+        last="VLLM_HEALTH_UNAVAILABLE: /health returned HTTP 503",
+        endpoint_state=_ENDPOINT_ANSWERED_UNREADY,
+        budget_seconds=300.0,
+    )
+    nothing = _watchdog_timeout(
+        process,
+        last="service did not become ready",
+        endpoint_state=None,
+        budget_seconds=1.0,
+    )
+
+    assert "did not answer, and nothing proved it empty" in timed_out.detail
+    assert "connection refused" not in timed_out.detail
+    assert "unlikely to help" not in timed_out.detail
+    assert "connection refused, not still loading" in refused.detail
+    assert "answered but never ready" in answered.detail
+    assert "no readiness probe was ever answered" in nothing.detail
+
+
+def test_the_watchdog_tail_is_bounded_in_bytes_not_in_characters() -> None:
+    """The limit is spent in journals, pod reports and notifications, which carry bytes.
+
+    Slicing the string counted characters, so a non-ASCII tail travelled at
+    several times the documented size (CodeRabbit on PR #117).
+    """
+
+    error = _watchdog_timeout(
+        FakeProcess(4242, log_tail="\u00e9" * 4_000),
+        last="loopback endpoint unavailable: connection refused",
+        endpoint_state=_ENDPOINT_REFUSED,
+        budget_seconds=300.0,
+    )
+
+    label = f"[last {_WATCHDOG_TAIL_BYTES} bytes] "
+    assert label in error.detail
+    excerpt = error.detail.split(label, 1)[1]
+    assert len(excerpt.encode("utf-8")) <= _WATCHDOG_TAIL_BYTES
+    # The characters slice this replaced would have carried 1,200 two-byte
+    # characters, which is twice the documented limit.
+    assert len(excerpt) < 1_200
+
+
+def test_a_credential_inside_a_structured_log_field_is_redacted() -> None:
+    """A log line is not an argv, and a secret in it is rarely a bare token.
+
+    `looks_like_credential_value` answers for a whole token and rejects
+    anything carrying `.`, `:`, `/` or `@` as ordinary path punctuation, so
+    `token=hf_...`, a JSON `"token":"eyJ..."`, a `Bearer` header and a
+    tab-separated field all reached a journal, a pod report and a phone
+    notification unchanged (CodeRabbit on PR #117).
+    """
+
+    # Composed rather than written out: a credential-shaped literal in a source
+    # file is refused by this repository's own ingress scan, which is the same
+    # rule seen from the other side. The prefix comes from the shared list the
+    # detector reads, so a prefix added there is exercised here too.
+    from operations.pod.models import CREDENTIAL_VALUE_PREFIXES, looks_like_credential_value
+
+    shaped = CREDENTIAL_VALUE_PREFIXES[1] + string.ascii_lowercase + "012345"
+    assert shaped.startswith(CREDENTIAL_VALUE_PREFIXES)
+    assert looks_like_credential_value(shaped)
+    jwt = ".".join(
+        base64.urlsafe_b64encode(part).decode().rstrip("=")
+        for part in (b'{"alg":"HS256"}', b'{"sub":"1"}', b"signature-bytes-here")
+    )
+
+    assert _redacted(f"INFO start token={shaped} ok") == "INFO start token=[redacted] ok"
+    assert _redacted(f'INFO {{"token":"{jwt}"}} sent') == 'INFO {"token":"[redacted]"} sent'
+    assert (
+        _redacted(f"GET / Authorization: Bearer {jwt}") == "GET / Authorization: Bearer [redacted]"
+    )
+    assert _redacted(f"field\t{shaped}\tnext") == "field\t[redacted]\tnext"
+    assert _redacted(f"api_key = {shaped}") == "api_key = [redacted]"
+    # And the lines a reader is meant to recognise are left exactly as they are.
+    progress = "Loading safetensors checkpoint shards:  43% Completed | 12/28 [02:41<03:35]"
+    assert _redacted(progress) == progress
+    commit = "checked out a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0"
+    assert _redacted(commit) == commit
+    assert _redacted("weights at /workspace/models/model.safetensors") == (
+        "weights at /workspace/models/model.safetensors"
+    )
 
 
 def test_an_unreadable_launch_log_is_a_named_readiness_refusal(tmp_path: Path) -> None:
@@ -5739,7 +5913,7 @@ def test_a_credential_shaped_token_in_the_launch_log_never_travels_with_the_refu
             ),
         ),
         last="loopback endpoint unavailable: connection refused",
-        unavailable=True,
+        endpoint_state=_ENDPOINT_REFUSED,
         budget_seconds=300.0,
     )
 
@@ -5760,7 +5934,7 @@ def test_a_budget_gone_before_the_first_probe_answers_claims_no_observation() ->
     error = _watchdog_timeout(
         FakeProcess(4242, log_tail="INFO: nothing here\n"),
         last="service did not become ready",
-        unavailable=None,
+        endpoint_state=None,
         budget_seconds=1.0,
     )
 

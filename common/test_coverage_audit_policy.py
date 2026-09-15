@@ -220,3 +220,62 @@ def test_a_page_without_positive_integer_dimensions_is_refused():
     for width, height in ((0, 10), (10, 0), (-1, 10), (True, 10)):
         with pytest.raises(ContractError, match="does not have positive integer dimensions"):
             resolve_coverage_audit_policy(config, width, height)
+
+
+def _sealed_toml_without(block: str) -> str:
+    """The shipped grouping file with one provenance block dropped.
+
+    Built from the real file rather than hand-written, so this test cannot
+    quietly stop describing the configuration the pipeline actually loads.
+    """
+    text = DEFAULT_COVERAGE_AUDIT_CONFIG_PATH.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    start = next(index for index, line in enumerate(lines) if line.strip() == block)
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].lstrip().startswith("[")),
+        len(lines),
+    )
+    return "".join(lines[:start] + lines[end:])
+
+
+@pytest.mark.parametrize(
+    ("block", "named"),
+    [
+        ("[coverage_audit.noise_floor.provenance]", r"noise_floor\.provenance"),
+        ("[coverage_audit.provenance]", r"coverage_audit\.provenance"),
+    ],
+)
+def test_a_shipped_policy_with_no_provenance_block_is_refused_by_the_common_loader(
+    tmp_path, block, named
+):
+    """The Ink Map resolves this policy through the loader alone.
+
+    `pipeline/1_ink_map/run.py` calls `load_coverage_audit_config` and publishes
+    `ink-map` records under what it returns, without ever calling the
+    Designator's own loader -- and it runs before the Designator does. So a file
+    whose numbers are well-formed and whose provenance block is missing used to
+    reach a published measurement with nothing having asked where those numbers
+    came from (CodeRabbit on PR #117).
+    """
+    path = tmp_path / "no-provenance.toml"
+    path.write_text(_sealed_toml_without(block), encoding="utf-8")
+
+    with pytest.raises(ContractError, match=named):
+        load_coverage_audit_config(path)
+
+
+def test_a_provenance_block_claiming_calibration_without_samples_is_refused(tmp_path):
+    """The shared calibration rule, applied by the loader the Ink Map uses."""
+    text = DEFAULT_COVERAGE_AUDIT_CONFIG_PATH.read_text(encoding="utf-8")
+    # The over-claim has to be made for this test to mean anything: a shipped
+    # file that stopped carrying an uncalibrated block would otherwise leave it
+    # passing over an unmodified file.
+    assert "calibrated_for_this_corpus = false" in text
+    path = tmp_path / "over-claimed.toml"
+    path.write_text(
+        text.replace("calibrated_for_this_corpus = false", "calibrated_for_this_corpus = true"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContractError, match="sample_count is zero"):
+        load_coverage_audit_config(path)

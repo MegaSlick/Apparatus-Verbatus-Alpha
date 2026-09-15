@@ -311,12 +311,16 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # environment, so only the upload-only verb can ever see them.
     started = _clock()
     started_at = _stamp()
+    # Bound before the call, not inside it: the `finally` below reads this, and
+    # an interruption that is not an `OSError` -- a `KeyboardInterrupt` while a
+    # stage runs is the ordinary one -- used to leave the name unbound and
+    # replace the interruption with an `UnboundLocalError` from the stopwatch
+    # (CodeRabbit on PR #117). A stage that could not start is timed with no
+    # exit code, which is the same record the OSError path produced.
+    exit_code: int | None = None
     try:
         completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
-        exit_code: int | None = completed.returncode
-    except OSError:
-        exit_code = None
-        raise
+        exit_code = completed.returncode
     finally:
         # In `finally` so a stage that could not start, and one about to be
         # turned into a ContractError below, are both timed: the invocations a
@@ -434,9 +438,28 @@ def _record_stage_timing(
         entry["repository_commit"] = commit
         entry["repository_commit_detail"] = commit_detail
         existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-        entries = existing["entries"] if isinstance(existing, dict) else []
-        if not isinstance(entries, list):
-            entries = []
+        entries: list = []
+        if isinstance(existing, dict):
+            # Whose journal this is, before its entries are carried forward. Two
+            # runs pointed at one path used to keep the first run's entries and
+            # replace the identity above them, so the file then attributed one
+            # run's stage timings to another (CodeRabbit on PR #117). A journal
+            # that names a different run, root or schema is left exactly as it
+            # is and the conflict is reported; the stopwatch never edits a
+            # record it cannot account for.
+            identity = (
+                existing.get("schema"),
+                existing.get("run_id"),
+                existing.get("run_root"),
+            )
+            expected = (STAGE_TIMING_JOURNAL_SCHEMA, args.run_id, str(args.run_root))
+            if identity != expected:
+                raise ContractError(
+                    f"the timing journal at {path} already belongs to {identity!r}, and this "
+                    f"run is {expected!r}; it was left unchanged rather than merged"
+                )
+            if isinstance(existing.get("entries"), list):
+                entries = list(existing["entries"])
         entries.append(entry)
         _atomic_json(
             path,
@@ -707,6 +730,29 @@ def main() -> int:
 
     require_coherent_ingress_options(args)
     resolve_caller_paths(args)
+    # Both argv facts the journal rests on, proved here rather than at the
+    # first entry that happens to need them (CodeRabbit on PR #117).
+    #
+    # `repository_commit` refuses a short or decorated revision, and it used to
+    # be reached only from `_record_stage_timing` -- so a manual or semi run
+    # that started past the Door, or any run with no journal configured, could
+    # carry a malformed value through every stage it selected and record it
+    # nowhere.
+    repository_commit(args)
+    # And the journal is outside the run tree, as its own help text says. A
+    # journal at `<run-root>/<run-id>/timings.json` would add mutable,
+    # untracked bytes to an immutable tree once per stage invocation and change
+    # its byte identity; nothing refused it before.
+    journal = getattr(args, "stage_timing_journal", None)
+    if journal is not None:
+        journal_path = Path(journal).resolve()
+        run_directory = (Path(args.run_root) / args.run_id).resolve()
+        if journal_path == run_directory or journal_path.is_relative_to(run_directory):
+            raise ContractError(
+                f"--stage-timing-journal {journal_path} is inside this run's own tree at "
+                f"{run_directory}; the journal is mutable and the tree is not, so it is "
+                "written outside the tree or not at all"
+            )
 
     # Prove the algebra total before anything runs. A stage added later without a
     # class or a terminal decision should fail at the first run, not at the first

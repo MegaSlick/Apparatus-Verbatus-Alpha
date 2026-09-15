@@ -935,7 +935,18 @@ def _build_transfer(plan: Plan) -> Callable[[], dict[str, object]]:
 
     def _transfer() -> dict[str, object]:
         if not manifest.is_file():
-            return TransferReport((), (), submission_manifest_present=False).to_record()
+            # A configured manifest that is not there is a failure, not a
+            # vacuous success. The no-op above belongs to the consuming pod
+            # that configured neither value; returning it here recorded the
+            # TRANSFER step complete and let a producing pod continue without
+            # uploading the submission it declared (CodeRabbit on PR #117).
+            raise BootstrapStepFailure(
+                BootstrapStep.TRANSFER,
+                f"configured submission manifest {manifest} is missing",
+                "Restore the sealed submission manifest on the volume, then resume the "
+                "bootstrap; or start this pod with no --submission-manifest if it has "
+                "nothing to send.",
+            )
         if plan.transfer_target_factory is None:
             # Not reachable through `resolve_plan`, which refuses this pair at
             # plan time before anything is spent. Kept as the named contract

@@ -31,6 +31,7 @@ import pytest
 
 from operations.operator import cli as operator_cli
 from operations.operator.errors import ErrorCode, OperatorError
+from operations.operator.records import SCHEMA as RECEIPT_SCHEMA
 from operations.operator.volume_s3 import VolumeSpec
 
 from . import launch as launch_module
@@ -1214,19 +1215,55 @@ def test_a_report_path_outside_the_volume_is_dropped_not_returned() -> None:
     assert launch_module.launch_evidence_keys(command, volume_mount_path="/workspace") == ()
 
 
+def test_a_report_path_that_is_the_mount_itself_is_dropped_not_a_traceback() -> None:
+    """`relative_to(mount)` answers `.` for the mount, and `.` has no name.
+
+    A receipt carrying such a path made the sibling derivation raise
+    `ValueError: PurePosixPath('.') has an empty name`, so `fetch-run` ended in
+    a traceback instead of in a key list (CodeRabbit on PR #117). It is dropped
+    like any other path this verb could not fetch.
+    """
+
+    command = (
+        "python",
+        "--report-path",
+        "/workspace",
+        "--bootstrap-command-json",
+        "not json at all",
+    )
+
+    assert launch_module.launch_evidence_keys(command, volume_mount_path="/workspace") == ()
+
+
+def _launch_request(token: str, volume_id: str) -> dict:
+    return {
+        "volume_id": volume_id,
+        "volume_mount_path": "/workspace",
+        "docker_start_cmd": [
+            "python",
+            "--report-path",
+            f"/workspace/pod-runtime-report-{token}.json",
+        ],
+    }
+
+
 def _launch_receipt(path: Path, token: str, *, volume_id: str = "vol-1") -> Path:
+    """A launch receipt in the shape `ReceiptStore.write` actually writes one.
+
+    The action's own data sits under `payload`, never at the top level. This
+    fixture said otherwise until 2026-09-15, so the console's derivation could
+    read a key no real receipt carries and the suite stayed green over it
+    (CodeRabbit on PR #117); `test_the_console_derives_those_keys_from_a_real_
+    stored_receipt` below builds one through the store itself.
+    """
+
     path.write_text(
         json.dumps(
             {
-                "request": {
-                    "volume_id": volume_id,
-                    "volume_mount_path": "/workspace",
-                    "docker_start_cmd": [
-                        "python",
-                        "--report-path",
-                        f"/workspace/pod-runtime-report-{token}.json",
-                    ],
-                }
+                "schema": RECEIPT_SCHEMA,
+                "kind": "launch",
+                "recorded_at": "2026-09-15T00:00:00Z",
+                "payload": {"request": _launch_request(token, volume_id)},
             }
         ),
         encoding="utf-8",
@@ -1243,6 +1280,42 @@ def test_the_console_derives_those_keys_from_a_saved_launch_receipt(tmp_path: Pa
         f"pod-runtime-report-{token}-terminating.json",
     )
     assert operator_cli._derived_evidence_keys(None) == ()
+
+
+def test_the_console_derives_those_keys_from_a_real_stored_receipt(tmp_path: Path) -> None:
+    """The receipt written by the store the launch actually uses, not a hand-built one.
+
+    `ReceiptStore.write` wraps every action under `payload`, so a derivation
+    reading a top-level `request` refused every genuine launch receipt with
+    "does not carry a readable launch request" -- the one failure shape this
+    flag exists to prevent, on the flag itself (CodeRabbit on PR #117).
+    """
+
+    from operations.operator.records import ReceiptStore
+
+    token = "f" * 32
+    receipt = ReceiptStore(tmp_path / "state").write(
+        "launch", {"summary": "fixture launch", "request": _launch_request(token, "vol-1")}
+    )
+
+    assert operator_cli._derived_evidence_keys(receipt) == (
+        f"pod-runtime-report-{token}.json",
+        f"pod-runtime-report-{token}-terminating.json",
+    )
+
+
+def test_a_receipt_with_no_payload_wrapper_is_refused_rather_than_read(tmp_path: Path) -> None:
+    """A JSON file that is not an operator receipt is not a launch receipt."""
+
+    receipt = tmp_path / "launch.json"
+    receipt.write_text(
+        json.dumps({"request": _launch_request("a" * 32, "vol-1")}), encoding="utf-8"
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        operator_cli._derived_evidence_keys(receipt)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
 
 
 def test_a_launch_receipt_for_another_volume_is_refused_rather_than_used(

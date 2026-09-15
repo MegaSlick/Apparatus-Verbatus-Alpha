@@ -257,6 +257,27 @@ def verify_image_contract(
     return verified
 
 
+def _read_pointer_or_refuse(path: Path, repository: Path) -> str:
+    """One git pointer file, read as an image fact or refused as one.
+
+    The config read in `verify_image_contract` is already wrapped for this
+    reason; these two were not, so a pod image whose checkout is a linked
+    worktree with a `.git` file this process cannot read raised a bare
+    `OSError`. `checkout_commit` catches only `ImageContractRefusal`, so the
+    refusal lost its name and its remedy and the operator saw a traceback
+    while the card billed (CodeRabbit on PR #117).
+    """
+
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise ImageContractRefusal(
+            f"the checkout at {repository} carries a git pointer file this process cannot "
+            f"read ({path}: {error.strerror or error}); the bootstrap reads it to find the "
+            "configuration that proves there is an origin to fetch from"
+        ) from error
+
+
 def _git_config_path(repository: Path) -> Path | None:
     """The config file that governs ``repository``, following a worktree pointer.
 
@@ -271,7 +292,7 @@ def _git_config_path(repository: Path) -> Path | None:
         return marker / "config"
     if not marker.is_file():
         return None
-    text = marker.read_text(encoding="utf-8", errors="replace").strip()
+    text = _read_pointer_or_refuse(marker, repository).strip()
     if not text.startswith("gitdir:"):
         return None
     git_dir = Path(text.split(":", 1)[1].strip())
@@ -279,7 +300,7 @@ def _git_config_path(repository: Path) -> Path | None:
         git_dir = (repository / git_dir).resolve()
     common = git_dir / "commondir"
     if common.is_file():
-        relative = common.read_text(encoding="utf-8", errors="replace").strip()
+        relative = _read_pointer_or_refuse(common, repository).strip()
         if relative:
             candidate = Path(relative)
             git_dir = candidate if candidate.is_absolute() else (git_dir / candidate).resolve()

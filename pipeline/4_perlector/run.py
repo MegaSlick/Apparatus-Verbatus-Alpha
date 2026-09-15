@@ -2971,6 +2971,25 @@ def _reconciled_truncation(*, declared_failure: str | None, truncation_record: d
     return truncation_record
 
 
+def _sealed_length_floor(protocol_config: dict[str, Any] | None) -> int | None:
+    """This run's sealed truncation floor, for the validators that bind to it.
+
+    `None` where no sealed protocol reached this pass: `validate_reading_payload`
+    already refuses a reading that carries a protocol record without one, and
+    the unsealed test route substitutes a protocol dict with no `[truncation]`
+    table at all. A declared absence, never a guessed default -- the floor a
+    re-proof record is held to must be the one this run sealed or nothing.
+    """
+
+    if not isinstance(protocol_config, dict):
+        return None
+    table = protocol_config.get(protocol.TRUNCATION_TABLE)
+    if not isinstance(table, dict):
+        return None
+    floor = table.get(protocol.LENGTH_FLOOR_FIELD)
+    return floor if isinstance(floor, int) and not isinstance(floor, bool) else None
+
+
 def _audited_truncation(
     *,
     pass_b: dict,
@@ -3195,7 +3214,12 @@ def _sealed_sibling_semi_finals(
             protocol_sha256=protocol_sha256,
             inputs=reading["inputs"],
         )
-        chain = audit.validate_chain(context.tree, reading, act_id)
+        chain = audit.validate_chain(
+            context.tree,
+            reading,
+            act_id,
+            length_floor_characters_per_page=_sealed_length_floor(protocol_config),
+        )
         draft_payload = chain["draft"]["payload"]
         finding_payload = chain["finding"]["payload"]
         expected_page = expected[order_by_id[act_id]]["page_id"]
@@ -4474,6 +4498,25 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     # absence.
                     final_text = ""
                     payload["text"] = ""
+                    # Re-measured beside the emptied text, not left describing
+                    # the whitespace that was thrown away. The sealed
+                    # termination is bound to the text the finding publishes --
+                    # `validate_finding` refuses a record whose `characters`
+                    # disagrees with it -- so a re-proof that returned "   "
+                    # sealed a three-character measure over a published empty
+                    # reading and took the whole pass down inside the
+                    # producer's own `validate_chain` (CodeRabbit on PR #117).
+                    # The signals move with it: an empty reading is never
+                    # length-suspicious and never ends abruptly, which is the
+                    # same rubric the Pass-B `no-readable-text` path measures
+                    # under.
+                    reproof_truncation = truncation.classify(
+                        final_text,
+                        region_pixels=row["region_pixels"],
+                        page_pixels=row["page_pixels"],
+                        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+                        stop_reason=reproof["stop_reason"],
+                    )
                     # Through the one rubric the Pass-B path uses, so the
                     # re-proof's report is re-asked against the text this record
                     # now publishes rather than emptied under a state still
@@ -4614,6 +4657,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             context.tree,
             {"payload": payload, "inputs": reading_inputs},
             act_id,
+            length_floor_characters_per_page=_sealed_length_floor(protocol_config),
         )
         validate_reading_payload(
             payload,

@@ -81,6 +81,7 @@ from common.background import (
     infer_background_evidence,
     round_half_up_bp,
 )
+from common.calibration import calibrated_claim_has_sample_evidence
 from common.components import label_component_runs
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
@@ -259,6 +260,76 @@ COVERAGE_NOISE_FLOOR_TABLE: Final = "noise_floor"
 COVERAGE_NOISE_FLOOR_FIELDS: Final = (MINIMUM_INK_PIXELS_FIELD, MINIMUM_FRACTION_OUTSIDE_BP_FIELD)
 
 
+#: The closed provenance schema every sealed policy block in this file must
+#: carry, restated here rather than imported: the other two spellings live in
+#: `pipeline/2_designator/geometry.py` and are re-exported through that stage's
+#: `grouping_config`, and `common/` may not import a stage. A drift between
+#: them is caught by the one file both readers validate --
+#: `config/designator_grouping.toml` has to satisfy both.
+_PROVENANCE_FIELDS: Final = frozenset(
+    {
+        "source",
+        "corpus",
+        "sample_unit",
+        "sample_count",
+        "statistic",
+        "calibrated_for_this_corpus",
+        "caveat",
+    }
+)
+_TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_this_corpus"})
+
+
+def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
+    """One declared provenance block, held to the closed schema.
+
+    The Designator validates these blocks because it owns the file. It is not
+    the only stage that reads it: `pipeline/1_ink_map/run.py` resolves the
+    coverage-audit policy through `load_coverage_audit_config` alone and
+    publishes measurements under it *before* the Designator ever runs, so a
+    file whose numbers are well-formed and whose provenance block is missing
+    used to reach a published `ink-map` record with nothing having asked where
+    those numbers came from (CodeRabbit on PR #117). The loader below enforces
+    it now, on the same closed schema and with the same calibration rule.
+    """
+
+    if not isinstance(provenance, dict):
+        raise ContractError(
+            f"the grouping configuration has no {where} table; a policy value with no "
+            "declared source may not be shipped as a default"
+        )
+    unexpected = sorted(set(provenance) - _PROVENANCE_FIELDS)
+    if unexpected:
+        raise ContractError(
+            f"the grouping configuration's {where} carries unknown field(s) {unexpected}; "
+            "provenance is a closed schema so an unread field cannot be trusted"
+        )
+    missing = sorted(_PROVENANCE_FIELDS - set(provenance))
+    if missing:
+        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+    for field in sorted(_PROVENANCE_FIELDS - _TYPED_PROVENANCE_FIELDS):
+        if not isinstance(provenance[field], str) or not provenance[field].strip():
+            raise ContractError(
+                f"the grouping configuration's {where} field {field!r} is not a non-empty string"
+            )
+    if not _plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
+        raise ContractError(
+            f"the grouping configuration's {where} sample_count is not a non-negative integer"
+        )
+    if not isinstance(provenance["calibrated_for_this_corpus"], bool):
+        raise ContractError(
+            f"the grouping configuration's {where} calibrated_for_this_corpus is not a boolean"
+        )
+    if not calibrated_claim_has_sample_evidence(
+        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
+    ):
+        raise ContractError(
+            f"the grouping configuration's {where} says calibrated_for_this_corpus but "
+            "sample_count is zero"
+        )
+    return dict(provenance)
+
+
 def _plain_int(value: Any) -> bool:
     """An `int` that is not a `bool`.
 
@@ -407,9 +478,20 @@ def load_coverage_audit_config(
             "the coverage-audit configuration's [grouping.absolute] gap_tolerance_px is not a "
             "non-negative integer"
         )
+    audit = config.get("coverage_audit")
+    values = validate_coverage_audit_table(audit)
+    # The provenance blocks are validated by the loader rather than by the two
+    # table validators above, which take a bare table from callers that build
+    # one field at a time. This is the reader that opens a shipped file, and a
+    # shipped file may not carry a policy number with no declared source.
+    validate_provenance_block(audit.get("provenance"), where="[coverage_audit.provenance]")
+    validate_provenance_block(
+        audit[COVERAGE_NOISE_FLOOR_TABLE].get("provenance"),
+        where=f"[coverage_audit.{COVERAGE_NOISE_FLOOR_TABLE}.provenance]",
+    )
     return {
         "config_sha256": digest_bytes(data),
-        "coverage_audit": validate_coverage_audit_table(config.get("coverage_audit")),
+        "coverage_audit": values,
         "page_spanning_area_bp": spanning,
         "gap_tolerance_px": gap,
     }

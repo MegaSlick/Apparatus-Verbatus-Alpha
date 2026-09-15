@@ -3298,14 +3298,18 @@ def test_interactive_upload_keeps_an_existing_sealed_manifest_primary(
 def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The double-click route asks by name for all six records that lie under
+    """The double-click route asks by name for all ten records that lie under
     neither fetched prefix -- the bootstrap report, the pod-run report, that
-    report's ``-hold`` liveness sibling, the pod-timer runtime report, the
-    bootstrap journal and the volume-root transfer journal -- exactly what
+    report's ``-hold``, ``-liveness``, ``-timings`` and ``-transcript.log``
+    siblings, the pod-timer runtime report and its ``-terminating`` breadcrumb,
+    the bootstrap journal and the volume-root transfer journal -- exactly what
     ``--evidence-key`` is for, each independently optional. The liveness report
     and the transfer journal were not asked for at all while they had no route
-    home. A saved launch receipt is asked for first and derives the token-bound
-    keys itself; this is the route for a run whose receipt is not to hand."""
+    home, and the four token-named siblings ``launch_evidence_keys`` derives
+    were reachable only through a saved receipt until 2026-09-15 (CodeRabbit on
+    PR #117). A saved launch receipt is asked for first and derives the
+    token-bound keys itself; this is the route for a run whose receipt is not
+    to hand."""
 
     answers = iter(
         (
@@ -3317,7 +3321,11 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
             "runs/brought-home/bootstrap-report.json",
             "runs/brought-home/pod-run-report.json",
             "runs/brought-home/pod-run-report-hold.json",
+            "runs/brought-home/pod-run-report-liveness.json",
+            "runs/brought-home/pod-run-report-timings.json",
+            "runs/brought-home/pod-run-report-transcript.log",
             "pod-runtime-report.json",
+            "pod-runtime-report-terminating.json",
             "",  # bootstrap journal left blank
             "pod-transfer-journal.json",
             "",  # every launch's preflight tree, not one stem
@@ -3340,7 +3348,15 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
         "--evidence-key",
         "runs/brought-home/pod-run-report-hold.json",
         "--evidence-key",
+        "runs/brought-home/pod-run-report-liveness.json",
+        "--evidence-key",
+        "runs/brought-home/pod-run-report-timings.json",
+        "--evidence-key",
+        "runs/brought-home/pod-run-report-transcript.log",
+        "--evidence-key",
         "pod-runtime-report.json",
+        "--evidence-key",
+        "pod-runtime-report-terminating.json",
         "--evidence-key",
         "pod-transfer-journal.json",
     ]
@@ -3359,7 +3375,7 @@ def test_interactive_fetch_run_needs_no_evidence_key_at_all(
             "/local/into",
             "EU-CZ-1:vol123",
             "",  # launch receipt
-            *([""] * 6),  # the six evidence keys
+            *([""] * 10),  # the ten evidence keys
             "",  # preflight stem
         )
     )

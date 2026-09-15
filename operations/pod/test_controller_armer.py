@@ -16,6 +16,7 @@ and the observing drill armer must refuse a perfect report.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -33,6 +34,7 @@ from .controller_armer import (
     CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS,
     ChannelControllerArmer,
     ObservingControllerArmer,
+    close_reserve_seconds,
     report_key,
     report_path_of,
 )
@@ -45,6 +47,7 @@ from .models import (
     PodCreateRequest,
     looks_like_credential_field,
 )
+from .shutdown import BILLING_RECONCILIATION_ATTEMPTS, BILLING_RECONCILIATION_RETRY_SECONDS
 from .spend import SpendPolicy
 
 SPEND_FILE = str(Path(__file__).resolve().parent / "spend.py")
@@ -159,14 +162,23 @@ class FakeLiveness:
         never: bool = False,
         error: Exception | None = None,
         answers: object = None,
+        worst_case: float = 2.0,
     ) -> None:
         self.clock = clock
         self.starts_after = starts_after
         self.never = never
         self.error = error
         self.answers = answers
+        # What one call may cost the launcher, which `preflight` holds inside
+        # the policy's heartbeat timeout: a probe is a provider call made
+        # inside a poll pass, and an unbounded one lets the supervisor close
+        # the pod it is waiting on.
+        self.worst_case = worst_case
         self.probes = 0
         self.probed_at: list[float] = []
+
+    def worst_case_seconds(self) -> float:
+        return self.worst_case
 
     def started_at(self) -> datetime | None:
         self.probes += 1
@@ -597,15 +609,26 @@ def test_an_absent_report_refuses_at_the_bound_and_names_it(tmp_path: Path) -> N
 
 
 def test_the_bound_is_clamped_down_to_what_is_left_of_the_lease(tmp_path: Path) -> None:
+    """Clamped to the lease *less the close budget*, which is the point of it.
+
+    Clamped to the hard deadline itself, a slow launch waits right up to it and
+    the verified close only starts once the bound has expired -- so the pod
+    bills past its own hard deadline while the close it exists to guarantee is
+    attempted (CodeRabbit on PR #117). `close_reserve_seconds` is what the
+    policy says one close costs.
+    """
+
     clock = Clock()
     ask, record, store, lease = scene(tmp_path, clock, lifetime=120)
     channel = InMemoryChannel()
+    reserve = close_reserve_seconds(policy())
+    assert reserve > 0
 
     result = arm(armer(clock, channel, FakeStarter(channel)), ask, record, store, lease)
 
     assert not result.armed
-    assert "120s arming bound" in result.detail
-    assert clock.seconds <= 120
+    assert f"{120 - reserve:.0f}s arming bound" in result.detail
+    assert clock.seconds <= 120 - reserve
 
 
 def test_a_channel_that_cannot_answer_refuses_at_once_rather_than_polling(
@@ -848,6 +871,107 @@ def test_preflight_refuses_a_channel_that_cannot_answer_before_anything_is_paid_
     assert "could not answer a probe read" in readiness.detail
 
 
+def test_the_close_budget_reserved_is_the_one_this_policy_says_a_close_costs() -> None:
+    """One laptop-side close: the shutdown deadline plus the fixed billing tail.
+
+    The same arithmetic `SpendPolicy` already refuses a policy for not leaving
+    inside the hard lifetime, so the reserve cannot drift away from the budget
+    the policy was validated against.
+    """
+
+    tail = math.ceil((BILLING_RECONCILIATION_ATTEMPTS - 1) * BILLING_RECONCILIATION_RETRY_SECONDS)
+
+    assert close_reserve_seconds(policy()) == policy().shutdown_deadline_seconds + tail
+    assert close_reserve_seconds(SpendPolicy(state="unconfigured")) == 0.0
+
+
+def test_preflight_refuses_bounds_that_leave_this_policy_no_room_to_close() -> None:
+    """Boot A's squeeze, refused in code instead of described in prose.
+
+    The two shipped bounds are 600 and 300, and Boot A's hard lifetime is about
+    900 seconds in total: they fill that window exactly and leave nothing for
+    the close. Nothing held anybody to the remedy the module docstring names,
+    so a launch under such a policy waited to the deadline, returned
+    BOUND_EXPIRED, and only then began the verified close -- with the pod
+    billing past its own hard deadline throughout (CodeRabbit on PR #117).
+    """
+
+    clock = Clock()
+    ask = request(clock)
+    channel = InMemoryChannel()
+    squeezed = replace(policy(), hard_lifetime_seconds=900)
+
+    readiness = armer(
+        clock,
+        channel,
+        FakeStarter(channel),
+        container_timeout_seconds=CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS,
+        timeout_seconds=CONTROLLER_ARMING_TIMEOUT_SECONDS,
+    ).preflight(action="create", request=ask, policy=squeezed)
+
+    assert not readiness.ready
+    assert "this policy's whole hard lifetime is 900s" in readiness.detail
+    assert readiness.receipt["close_reserve_seconds"] == f"{close_reserve_seconds(squeezed):.1f}"
+    # And lowering them, which is what the docstring asks a factory to do, is
+    # accepted: the refusal is about the arithmetic, not about the bounds
+    # having names.
+    assert (
+        armer(
+            clock,
+            channel,
+            FakeStarter(channel),
+            container_timeout_seconds=500.0,
+            timeout_seconds=300.0,
+        )
+        .preflight(action="create", request=ask, policy=squeezed)
+        .ready
+    )
+
+
+def test_preflight_refuses_a_probe_whose_own_worst_case_breaks_the_heartbeat_budget() -> None:
+    """The probe runs inside a poll pass, so its duration is part of the gap.
+
+    Only `poll_seconds` was held inside the heartbeat timeout. A provider
+    status call is allowed 30 seconds by the shipped transport, so with the 5s
+    poll and a 30s timeout one slow call produced a ~35s silence, and the
+    supervisor -- started moments earlier over an unarmed lease -- closed the
+    pod while its image was still pulling (CodeRabbit on PR #117).
+    """
+
+    clock = Clock()
+    ask = request(clock)
+    channel = InMemoryChannel()
+    slow = FakeLiveness(clock, worst_case=30.0)
+
+    readiness = armer(clock, channel, FakeStarter(channel), liveness=slow).preflight(
+        action="create", request=ask, policy=policy()
+    )
+
+    assert not readiness.ready
+    assert "container-start probe's own 30.0s worst case" in readiness.detail
+
+    quick = FakeLiveness(clock, worst_case=2.0)
+    ready = armer(clock, channel, FakeStarter(channel), liveness=quick).preflight(
+        action="create", request=ask, policy=policy()
+    )
+    assert ready.ready
+    assert ready.receipt["container_probe_worst_case_seconds"] == "2.0"
+
+
+def test_a_probe_that_cannot_state_a_bound_is_refused_at_construction() -> None:
+    """A probe with no worst case has no term for the arithmetic above to use."""
+
+    clock = Clock()
+    channel = InMemoryChannel()
+
+    class Unbounded:
+        def started_at(self):  # type: ignore[no-untyped-def]
+            return None
+
+    with pytest.raises(ValueError, match="worst_case_seconds"):
+        armer(clock, channel, FakeStarter(channel), liveness=Unbounded())
+
+
 def test_preflight_refuses_an_unconfigured_policy() -> None:
     clock = Clock()
     ask = request(clock)
@@ -991,9 +1115,10 @@ def test_the_observing_armer_files_a_refusal_too(tmp_path: Path) -> None:
 
     assert not result.armed
     filed = json.loads(drill.evidence_path(LEASE_ID).read_text(encoding="utf-8"))
+    reserve = close_reserve_seconds(policy())
     assert filed["state"] == "report-absent-within-bound"
-    assert filed["bound_seconds"] == 60.0
-    assert filed["waited_seconds"] >= 60.0
+    assert filed["bound_seconds"] == 60.0 - reserve
+    assert filed["waited_seconds"] >= 60.0 - reserve
 
 
 def test_the_observing_armer_is_still_ready_at_preflight() -> None:

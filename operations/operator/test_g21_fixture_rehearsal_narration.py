@@ -64,7 +64,13 @@ def _rehearsal_messages(tmp_path: Path, *, scenario: str) -> list[str]:
         "the proposed diff, filtering through "
         "pipeline/1_exemplar/door.py::fixture_pages_for_scenario)"
     ),
-    strict=False,
+    # Strict: pytest reports an unexpected pass as XPASS and keeps the gate
+    # green, so the day `_declared_work` becomes scenario-aware these two would
+    # start passing silently, the marker the module docstring calls "the whole
+    # job" would never be removed, and both tests would go on running a whole
+    # orchestrator subprocess each for no signal (CodeRabbit on PR #117).
+    # Strict, the fix fails the gate once, by name, saying what to delete.
+    strict=True,
 )
 def test_happy_scenario_narration_never_names_a_page_it_never_touched(
     tmp_path: Path,
@@ -90,7 +96,13 @@ def test_happy_scenario_narration_never_names_a_page_it_never_touched(
         "the proposed diff, filtering through "
         "pipeline/1_exemplar/door.py::fixture_pages_for_scenario)"
     ),
-    strict=False,
+    # Strict: pytest reports an unexpected pass as XPASS and keeps the gate
+    # green, so the day `_declared_work` becomes scenario-aware these two would
+    # start passing silently, the marker the module docstring calls "the whole
+    # job" would never be removed, and both tests would go on running a whole
+    # orchestrator subprocess each for no signal (CodeRabbit on PR #117).
+    # Strict, the fix fails the gate once, by name, saying what to delete.
+    strict=True,
 )
 def test_review_scenario_narration_never_names_a_page_it_never_touched(
     tmp_path: Path,

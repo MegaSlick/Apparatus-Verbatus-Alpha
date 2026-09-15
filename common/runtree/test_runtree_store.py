@@ -2032,7 +2032,10 @@ def test_an_authority_without_a_commit_is_still_a_whole_authority(tmp_path):
     assert "repository_commit" not in make_run(tmp_path).read_run()
 
 
-@pytest.mark.parametrize("value", ["a1b2c3d", "A" * 40, "", COMMIT + "-dirty"])
+# `"g" * 40` is the case the others cannot make: a validator checking only
+# length and case would accept it, so without it nothing here establishes that
+# the revision must be hexadecimal (CodeRabbit on PR #117).
+@pytest.mark.parametrize("value", ["a1b2c3d", "A" * 40, "g" * 40, "", COMMIT + "-dirty"])
 def test_a_commit_that_is_not_a_full_lowercase_revision_is_refused(tmp_path, value):
     with pytest.raises(SchemaRefusal, match="forty lowercase hexadecimal"):
         make_run(tmp_path, repository_commit=value)

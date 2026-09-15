@@ -28,7 +28,7 @@ from .boot_b_request import (
 )
 from .cli import _request
 from .launch import _bind_report_path_to_launch
-from .models import PodCreateRequest
+from .models import DEFAULT_CONTAINER_DISK_GB, PodCreateRequest
 from .preflight import load_placement_table
 from .spend import SpendPolicy, load_spend_policy
 
@@ -195,7 +195,12 @@ def test_the_rendered_json_is_accepted_by_the_create_surface(tmp_path: Path) -> 
     loaded = _request(path)
 
     assert loaded.volume_mount_path == BOOT_B_VOLUME_MOUNT_PATH
-    assert loaded.container_disk_gb == 60
+    # Against the constant that carries the arithmetic, not against the number
+    # it currently holds: the first boot replaces that number with a
+    # measurement, and a request still printing the old one would be found by
+    # a free-space refusal on a rented card (CodeRabbit on PR #117).
+    assert loaded.container_disk_gb == DEFAULT_CONTAINER_DISK_GB
+    assert request["container_disk_gb"] == DEFAULT_CONTAINER_DISK_GB
     assert BOOT_B_REPOSITORY_PATH in _sealed_nested_argv(loaded.docker_start_cmd)[-1]
 
 
@@ -224,6 +229,34 @@ def test_sealing_binds_the_token_into_both_report_paths_and_the_journal() -> Non
     for index, item in enumerate(nested):
         if item in {"--report-path", "--journal"}:
             assert token in Path(nested[index + 1]).name, item
+
+
+def test_the_self_validation_runs_under_a_launch_token_like_a_real_create() -> None:
+    """The token rules are the ones this renderer exists to prove, so they must fire.
+
+    Every nested ``--report-path`` and ``--journal`` token rule in
+    ``models._required_timer_arguments`` is written ``if launch_token and
+    ...``. Validating with ``metadata={}`` left the token unset, so the
+    renderer proved its shape with exactly those rules switched off -- and the
+    class of defect it was written to stop could return unnoticed, to be
+    refused after Tyrel had authorised the run and the card was rented
+    (CodeRabbit on PR #117).
+    """
+
+    request = validated_pod_request(filled_request())
+
+    token = request.metadata["VERBATUS_LAUNCH_TOKEN"]
+    assert token
+    assert request.metadata["VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"]
+    assert (
+        token
+        in Path(request.docker_start_cmd[request.docker_start_cmd.index("--report-path") + 1]).name
+    )
+    nested = _sealed_nested_argv(request.docker_start_cmd)
+    bound = [index for index, item in enumerate(nested) if item in {"--report-path", "--journal"}]
+    assert len(bound) == 3
+    for index in bound:
+        assert token in Path(nested[index + 1]).name, nested[index]
 
 
 def test_two_nested_report_paths_naming_one_file_are_refused() -> None:
