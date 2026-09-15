@@ -101,6 +101,7 @@ class RecordedRunner:
     write_transcript: bool = True
     journal_run_id: str | None = "first-real-run"
     journal_entries: int = 1
+    transcript_failure: str | None = None
     calls: list[tuple[list[str], Path, dict[str, str]]] = field(default_factory=list)
     supervision: list[dict[str, object]] = field(default_factory=list)
 
@@ -133,7 +134,7 @@ class RecordedRunner:
         for _ in range(self.ticks):
             liveness(self.pid, True)
         liveness(self.pid, False)
-        return subprocess.CompletedProcess(argv, self.returncode)
+        return subprocess.CompletedProcess(argv, self.returncode, stderr=self.transcript_failure)
 
 
 def _policy(ws: Workspace, *, roots: list[str] | None = None) -> Path:
@@ -1579,3 +1580,103 @@ def test_a_held_run_keeps_its_own_reason_and_appends_the_missing_records(
     assert report["records_missing"] == ["transcript", "timing_journal"]
     assert "the stage's own reason is the last text in" in report["detail"]
     assert "transcript, timing_journal" in report["detail"]
+
+
+def test_a_transcript_the_runner_reports_incomplete_holds_the_run(tmp_path: Path) -> None:
+    """A transcript file that exists but lost text part-way is not a record that
+    came home; the runner says so and the run is held rather than complete."""
+
+    ws = _prepared(tmp_path)
+    report = _run_with(
+        ws, RecordedRunner(returncode=0, transcript_failure="the transcript write failed")
+    )
+
+    assert report["state"] == "held"
+    assert report["records_missing"] == ["transcript"]
+    entry = report["records_at_close"]["transcript"]
+    assert entry["present"] is True
+    assert entry["failure"] == "the transcript write failed"
+
+
+def test_an_oversized_or_pathological_journal_is_unreadable_not_an_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit runs before the final report is written; a journal the decoder
+    cannot take must be a named failure in that report, never an exception that
+    leaves the report saying `running`."""
+
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "TIMING_JOURNAL_READ_BYTES", 64)
+    runner = RecordedRunner(returncode=0, journal_entries=50)
+    report = _run_with(ws, runner)
+    assert report["records_missing"] == ["timing_journal"]
+    assert "larger than 64 bytes" in report["records_at_close"]["timing_journal"]["failure"]
+
+    monkeypatch.setattr(pod_run, "TIMING_JOURNAL_READ_BYTES", 4 * 1024 * 1024)
+    plan = object.__new__(pod_run.RunPlan)
+    object.__setattr__(plan, "report_path", tmp_path / "audit.json")
+    object.__setattr__(plan, "run_id", "first-real-run")
+    plan.transcript_path.write_bytes(b"x")
+    plan.liveness_path.write_bytes(b"{}")
+    plan.timing_journal_path.write_bytes(b"[" * 100_000 + b"]" * 100_000)
+    audit, missing = pod_run._records_at_close(plan)
+    assert missing == ["timing_journal"]
+    assert audit["timing_journal"]["failure"].startswith("unreadable: ")
+
+
+def test_a_transcript_write_that_fails_part_way_is_reported_and_the_pipe_still_drains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pump keeps reading after its writer fails, so the child is never blocked
+    on a full pipe, and the failure reaches the runner's return rather than dying
+    in the thread."""
+
+    transcript = tmp_path / "report-transcript.log"
+
+    def failing_write(self: pod_run.BoundedTranscript, chunk: bytes) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pod_run.BoundedTranscript, "write", failing_write)
+    # More than one pipe buffer's worth, so a reader that stopped would block the child.
+    program = "import sys; sys.stdout.write('x' * 300_000); sys.stdout.flush()"
+
+    completed = pod_run._run(
+        [sys.executable, "-c", program],
+        cwd=tmp_path,
+        env={"PATH": os.environ.get("PATH", "")},
+        transcript=transcript,
+        liveness=lambda pid, alive: None,
+        interval_seconds=0.01,
+    )
+
+    assert completed.returncode == 0
+    assert "the transcript write failed part-way" in completed.stderr
+    assert "No space left on device" in completed.stderr
+
+
+def test_a_descendant_holding_the_pipe_cannot_stop_the_runner_from_returning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child exits at once but leaves a grandchild holding its stdout; the
+    reader's join is bounded so `_run` returns, and the transcript is reported
+    incomplete rather than the final report never being written."""
+
+    monkeypatch.setattr(pod_run, "TRANSCRIPT_READER_JOIN_SECONDS", 0.2)
+    transcript = tmp_path / "report-transcript.log"
+    program = (
+        "import subprocess, sys; sys.stdout.write('parent\\n'); sys.stdout.flush(); "
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)'])"
+    )
+
+    completed = pod_run._run(
+        [sys.executable, "-c", program],
+        cwd=tmp_path,
+        env={"PATH": os.environ.get("PATH", "")},
+        transcript=transcript,
+        liveness=lambda pid, alive: None,
+        interval_seconds=0.01,
+    )
+
+    assert completed.returncode == 0
+    assert "still attached" in completed.stderr
+    assert "parent" in transcript.read_text(encoding="utf-8")

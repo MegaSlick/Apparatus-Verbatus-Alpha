@@ -424,8 +424,11 @@ check.
   are each written best-effort, because a lost stopwatch or tick must never be
   the reason a running orchestrator is abandoned; at close the report audits
   the three under `records_at_close` (present, and for the journal its entry
-  count and whether it is this run's) and lists any that are absent, unreadable
-  or another run's under `records_missing`, naming them in `detail`. A run the
+  count and whether it is this run's) and lists any that are absent, unreadable,
+  another run's, or — for the transcript — reported incomplete by the runner
+  (a write that failed part-way, or a descendant of the orchestrator still
+  holding its output pipe when the bounded wait for it ran out) under
+  `records_missing`, naming them in `detail`. A run the
   orchestrator completed is reported `held` (exit 3) when any of the three is
   missing: the timings are what the first live run exists to measure, so a run
   without them is one to review, not one to call done; it holds to the hard

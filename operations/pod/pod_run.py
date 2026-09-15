@@ -134,6 +134,16 @@ DEFAULT_RUNS_DIRECTORY = "runs"
 # objection the inherited-streams comment this replaces actually had.
 TRANSCRIPT_HEAD_BYTES = 8 * 1024 * 1024
 TRANSCRIPT_TAIL_BYTES = 1 * 1024 * 1024
+# How long the reader thread is waited for after the orchestrator itself has
+# exited. The pipe reaches end of file only when every holder closes it, and a
+# stray descendant of the orchestrator can hold it long after the orchestrator
+# is gone; an unbounded join there would keep `_run` from returning and the
+# final run report from ever being written (CodeRabbit on PR #117). The child
+# is dead by then, so nothing this waits for is the run's own output.
+TRANSCRIPT_READER_JOIN_SECONDS = 30.0
+# The stage-timing journal is read back at close to audit it; a file past this
+# bound is not a journal the orchestrator wrote and is not read whole.
+TIMING_JOURNAL_READ_BYTES = 4 * 1024 * 1024
 
 EXIT_COMPLETE = 0
 EXIT_REFUSED = 2
@@ -176,7 +186,9 @@ _HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
 
 # `argv, *, cwd, env, transcript, liveness, interval_seconds`. The last three are
 # what makes the child's output durable and its aliveness visible; a runner that
-# ignored them would put both back inside the container.
+# ignored them would put both back inside the container. The returned
+# `CompletedProcess.stderr` is the runner's report about its own tee: `None`
+# when the transcript is whole, a string naming why it is not.
 Runner = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
@@ -660,7 +672,9 @@ def _liveness_journal(
     return journal
 
 
-def _records_at_close(plan: RunPlan) -> tuple[dict[str, dict[str, object]], list[str]]:
+def _records_at_close(
+    plan: RunPlan, *, transcript_failure: str | None = None
+) -> tuple[dict[str, dict[str, object]], list[str]]:
     """What each record the report names actually left on the volume at close.
 
     The orchestrator's stage-timing journal, the liveness record and the
@@ -674,6 +688,11 @@ def _records_at_close(plan: RunPlan) -> tuple[dict[str, dict[str, object]], list
     or foreign one in the report itself, and a run whose named records did
     not all come home is held rather than complete, so the absence is a
     durable fact in the state rather than a line a reader has to grep for.
+
+    ``transcript_failure`` is what the runner reports about its own tee: a
+    transcript whose pump failed part-way, or whose reader was still attached
+    when the wait for it ran out, is a file that exists and is incomplete,
+    which ``is_file`` alone would call present.
     """
 
     audit: dict[str, dict[str, object]] = {}
@@ -686,9 +705,19 @@ def _records_at_close(plan: RunPlan) -> tuple[dict[str, dict[str, object]], list
         entry: dict[str, object] = {"path": str(path), "present": path.is_file()}
         if not entry["present"]:
             missing.append(name)
+        elif name == "transcript" and transcript_failure is not None:
+            entry["failure"] = transcript_failure
+            missing.append(name)
         elif name == "timing_journal":
             try:
-                journal = json.loads(path.read_text(encoding="utf-8"))
+                with path.open("rb") as handle:
+                    data = handle.read(TIMING_JOURNAL_READ_BYTES + 1)
+                if len(data) > TIMING_JOURNAL_READ_BYTES:
+                    raise ValueError(
+                        f"larger than {TIMING_JOURNAL_READ_BYTES} bytes, which no stage-timing "
+                        "journal the orchestrator writes is"
+                    )
+                journal = json.loads(data.decode("utf-8"))
                 entries = journal.get("entries") if isinstance(journal, dict) else None
                 owner = journal.get("run_id") if isinstance(journal, dict) else None
                 entry["entries"] = len(entries) if isinstance(entries, list) else None
@@ -702,8 +731,12 @@ def _records_at_close(plan: RunPlan) -> tuple[dict[str, dict[str, object]], list
                         "so in the transcript"
                     )
                     missing.append(name)
-            except (OSError, ValueError) as error:
-                entry["failure"] = f"unreadable: {error}"
+            except (OSError, ValueError, RecursionError, MemoryError) as error:
+                # `ValueError` covers the decode and the JSON errors; the last
+                # two are what a hostile or corrupt journal can raise from the
+                # decoder, and an audit that escapes here would leave the run
+                # report in its `running` state with no final outcome at all.
+                entry["failure"] = f"unreadable: {type(error).__name__}: {error}"
                 missing.append(name)
         audit[name] = entry
     return audit, missing
@@ -777,12 +810,18 @@ class BoundedTranscript:
             self._handle.close()
 
 
-def _pump(stream, transcript: BoundedTranscript, mirror) -> None:
+def _pump(stream, transcript: BoundedTranscript, mirror, failure: list[str]) -> None:
     """Copy the child's merged output to the transcript and to our own stderr.
 
     Mirrored, not diverted: the container log an operator watches live while a
     pod runs is the same text as before this teeing existed. The transcript is
     the copy that survives the pod.
+
+    A transcript write that fails (the volume is the usual suspect) is
+    recorded in ``failure`` and the pipe is still drained to the mirror: a
+    reader that stopped would block the child on a full pipe, and a failure
+    that stayed in this thread would leave a truncated file the close-time
+    audit could only call present (CodeRabbit on PR #117).
     """
 
     try:
@@ -794,7 +833,14 @@ def _pump(stream, transcript: BoundedTranscript, mirror) -> None:
             chunk = stream.read1(65536)
             if not chunk:
                 return
-            transcript.write(chunk)
+            if not failure:
+                try:
+                    transcript.write(chunk)
+                except Exception as error:  # noqa: BLE001 -- recorded, not raised, in a thread
+                    failure.append(
+                        f"the transcript write failed part-way ({type(error).__name__}: "
+                        f"{error}); the file is incomplete from that point"
+                    )
             if mirror is None:
                 continue
             try:
@@ -853,7 +899,10 @@ def _run(
     # `getattr`: a captured or replaced stderr need not expose a binary buffer,
     # and the mirror is the disposable half of this tee -- the transcript is not.
     mirror = getattr(sys.stderr, "buffer", None)
-    reader = threading.Thread(target=_pump, args=(child.stdout, writer, mirror), daemon=True)
+    failure: list[str] = []
+    reader = threading.Thread(
+        target=_pump, args=(child.stdout, writer, mirror, failure), daemon=True
+    )
     reader.start()
     try:
         while True:
@@ -870,10 +919,25 @@ def _run(
     finally:
         # Joined before the transcript is closed: the pump owns the writer
         # until the pipe is at end of file, and closing under it would lose
-        # the tail this whole mechanism exists to keep.
-        reader.join()
+        # the tail this whole mechanism exists to keep. Bounded, because the
+        # pipe reaches end of file only when every holder closes it and a
+        # descendant the orchestrator left behind can hold it indefinitely;
+        # the child itself is already gone, so what is waited for past this
+        # point is not the run's output, and the final report must be written.
+        reader.join(timeout=TRANSCRIPT_READER_JOIN_SECONDS)
+        if reader.is_alive():
+            failure.append(
+                f"the transcript reader was still attached {TRANSCRIPT_READER_JOIN_SECONDS:g}s "
+                "after the orchestrator exited: a descendant it left behind still holds its "
+                "output pipe, and the transcript was closed without that text"
+            )
         writer.close()
-    return subprocess.CompletedProcess(argv, child.returncode)
+    # The runner's own report about its tee rides on `stderr`, which the tee
+    # leaves unused (the child's streams are merged into the transcript): a
+    # string names the failure, `None` says the transcript is whole.
+    return subprocess.CompletedProcess(
+        argv, child.returncode, stderr=failure[0] if failure else None
+    )
 
 
 def main(
@@ -997,9 +1061,11 @@ def main(
         )
         orchestrator_exit: int | None = completed.returncode
         failure_detail: str | None = None
+        transcript_failure = completed.stderr if isinstance(completed.stderr, str) else None
     except OSError as error:
         orchestrator_exit = None
         failure_detail = f"the orchestrator could not start: {error}"
+        transcript_failure = None
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
     if exit_code == EXIT_FAILED and failure_detail is None:
         # `EXIT_FATAL` is a *named* orchestrator exit (`common/stage.py`:
@@ -1028,7 +1094,9 @@ def main(
         )
     state = _STATE_FOR_EXIT[exit_code]
     holding = exit_code in _HOLD_AFTER_EXITS
-    records_at_close, records_missing = _records_at_close(plan)
+    records_at_close, records_missing = _records_at_close(
+        plan, transcript_failure=transcript_failure
+    )
     if records_missing:
         absence = (
             "records this report names were not on the volume at close, or were not this "
