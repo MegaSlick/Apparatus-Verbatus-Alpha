@@ -29,7 +29,7 @@ serving receipt, launch audit and evidence manifest each smoke publishes land
 content-addressed beside the report (:class:`PodPreflightReceiptPublisher`),
 because at bootstrap time there is no run tree yet for a ``StageContext`` to
 own them.  Every effect behind that seam -- the GPU probe, the vLLM launcher,
-the loopback transport, the package inspector, the Hugging Face fetcher --
+the loopback transport, the package inspector, the cache-source fetcher --
 has an injection point in :class:`PreflightSeams`, which is how
 ``test_bootstrap_main.py`` proves the wiring green against the serving fakes
 without a card.
@@ -103,6 +103,10 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, Sequence
 
 from common.chairs.config import parse_models_config
+from common.chairs.model_store import (
+    VerifiedStoreFetcher,
+    configured_cache_materialization_plan,
+)
 from common.chairs.models import ChairIdentity, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
@@ -1003,8 +1007,16 @@ def _build_cache(plan: Plan) -> ChairCacheBootstrapAction:
     registry = ChairRegistry.from_toml(
         plan.models_config,  # type: ignore[arg-type]
         cache_root=plan.cache_root,
-        fetcher=HuggingFaceFetcher.from_huggingface_hub(),
     )
+    source_plan = configured_cache_materialization_plan(
+        plan.store_root,  # type: ignore[arg-type]
+        (
+            identity
+            for identity in registry.config.chairs.values()
+            if isinstance(identity, ChairIdentity)
+        ),
+    )
+    registry.fetcher = VerifiedStoreFetcher(source_plan["cache_root_entries"])
     # No same-pin repair is wired: `ChairRegistry` has no public "clear this
     # chair's cache" verb today, and inventing one to satisfy this optional
     # callback risks corrupting a cache silently rather than leaving a named,
@@ -1129,9 +1141,15 @@ def _build_preflight(
                 "bootstrap plan reached PREFLIGHT without its models, placement, or serving "
                 "recipes configuration; resolve_plan fills all three for every full plan"
             )
-        registry = ChairRegistry.from_toml(
-            models_config, cache_root=plan.cache_root, fetcher=chosen.fetcher_factory()
-        )
+        registry = ChairRegistry.from_toml(models_config, cache_root=plan.cache_root)
+        if seams is None:
+            # CHAIR_CACHE has already copied every verified source into its
+            # role cache.  PREFLIGHT verifies those destination manifests; a
+            # missing file is a named cache failure, never a second download
+            # or another full retained-store verification.
+            registry.fetcher = VerifiedStoreFetcher({})
+        else:
+            registry.fetcher = chosen.fetcher_factory()
         # One read each, digested from the bytes that are parsed: the serving
         # assembly re-reads both files and refuses if what it parses does not
         # digest to what is sealed here, so a substitution between the two
