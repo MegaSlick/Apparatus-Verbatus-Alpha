@@ -86,6 +86,7 @@ from .pod_timer import (
     _CLOSE_ATTEMPTS,
     TimerContext,
     _close_with_retries,
+    _note_termination,
     _persist_or_close,
     run_with_bootstrap,
     terminating_path,
@@ -4418,6 +4419,36 @@ def test_a_pre_delete_breadcrumb_says_a_close_was_attempted_from_inside_the_pod(
     assert json.loads(report_path.read_text(encoding="utf-8"))["bootstrap"]["state"] == "failed"
 
 
+def test_a_later_close_reason_never_renames_the_breadcrumb_already_on_the_volume(
+    tmp_path: Path,
+) -> None:
+    """The first breadcrumb names why the close was issued, and it stands.
+
+    `_write_report` is `atomic_write`: it replaces what is at the path. A
+    mandatory bootstrap child that fails writes the breadcrumb, and if the
+    report write then fails too, `_durable_failure_close` reaches the same path
+    again with "mandatory pod report write failed" and one allowed attempt. The
+    only record left on the volume then blamed the durable store for a close
+    the bootstrap caused (CodeRabbit on PR #117).
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-breadcrumb-order.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+    report_path = tmp_path / "pod-report.json"
+
+    _note_termination(context, report_path, "mandatory bootstrap child failed", _CLOSE_ATTEMPTS)
+    _note_termination(context, report_path, "mandatory pod report write failed", 1)
+
+    breadcrumb = json.loads(terminating_path(report_path).read_text(encoding="utf-8"))
+    assert breadcrumb["reason"] == "mandatory bootstrap child failed"
+    assert breadcrumb["close_attempts_allowed"] == _CLOSE_ATTEMPTS
+
+
 def test_a_breadcrumb_that_cannot_be_written_never_blocks_the_close(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -4436,13 +4467,91 @@ def test_a_breadcrumb_that_cannot_be_written_never_blocks_the_close(
     report_path = tmp_path / "pod-report.json"
     terminating_path(report_path).mkdir()
 
-    result, attempts = _close_with_retries(
+    result, attempts, breadcrumb_failure = _close_with_retries(
         context, "pod dead-man hard lifetime expired", clock.sleep, 1, report=report_path
     )
 
     assert attempts >= 1
     assert result.close_report is not None and result.close_report.verified
     assert "termination breadcrumb could not be written" in capsys.readouterr().err
+    # Reported, not only survived. The stderr line is transient -- nobody is
+    # attached to a pod's stderr -- so the failure is handed back for the
+    # durable report to carry, or the volume could keep a report saying
+    # `close: null` with nothing on it saying the DELETE was attempted at all
+    # (CodeRabbit, pre-merge review of PR #117).
+    assert breadcrumb_failure is not None
+    assert "termination breadcrumb could not be written" in breadcrumb_failure
+
+
+def test_a_failed_breadcrumb_is_named_in_the_durable_report_the_close_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The report is the only record left when the breadcrumb could not be written.
+
+    A close that fails to leave its pre-DELETE breadcrumb and then writes a
+    report saying `close: null` is indistinguishable, on the volume, from a
+    timer that never tried to close anything -- which is the exact ambiguity
+    the breadcrumb exists to remove (CodeRabbit, pre-merge review of PR #117).
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-breadcrumb-reported.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=1)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    report_path = tmp_path / "pod-report.json"
+    terminating_path(report_path).mkdir()
+
+    class FailedChild:
+        def poll(self) -> int:
+            return 17
+
+    run_with_bootstrap(
+        context,
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        interval_seconds=1,
+        popen=lambda argv: FailedChild(),  # type: ignore[arg-type]
+    )
+    capsys.readouterr()
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "termination breadcrumb could not be written" in report["termination_breadcrumb_failure"]
+    assert report["close_attempts"] >= 1
+
+
+def test_an_ordinary_close_leaves_no_breadcrumb_failure_field_at_all(tmp_path: Path) -> None:
+    """The field is a fault report, so its absence is what a clean run looks like."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.07")
+    store = LeaseStore(tmp_path / "timer-breadcrumb-clean.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=1)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+    report_path = tmp_path / "pod-report.json"
+
+    class FailedChild:
+        def poll(self) -> int:
+            return 17
+
+    run_with_bootstrap(
+        context,
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        interval_seconds=1,
+        popen=lambda argv: FailedChild(),  # type: ignore[arg-type]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "termination_breadcrumb_failure" not in report
+    assert terminating_path(report_path).is_file()
 
 
 def test_bare_timer_command_is_rejected_before_a_paid_create() -> None:
@@ -5453,6 +5562,45 @@ def test_the_image_contract_passes_a_checkout_with_an_origin_and_a_prebuilt_venv
     # Never the URL itself: a remote URL is one of the places a credential may
     # legitimately sit, and this record is written onto the volume.
     assert "example.invalid" not in json.dumps(verified)
+
+
+def test_the_image_contract_names_an_unreadable_pointer_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A linked worktree whose pointer file this process cannot read is an image fact.
+
+    The config read was already wrapped for exactly this reason; the two
+    pointer reads that find it were not, so the refusal escaped as a bare
+    `OSError`, lost its name and its remedy in `checkout_commit` -- which
+    catches only `ImageContractRefusal` -- and reached the operator as a
+    traceback while the card billed (CodeRabbit on PR #117).
+
+    The unreadable condition is injected at the read rather than built with a
+    mode-000 file: this suite runs as root in CI, where a mode-000 file is
+    readable and the condition cannot be built at all.
+    """
+
+    repository = tmp_path / "opt" / "verbatus"
+    repository.mkdir(parents=True)
+    marker = repository / ".git"
+    marker.write_text("gitdir: /elsewhere/.git/worktrees/verbatus\n", encoding="utf-8")
+
+    real_read_text = Path.read_text
+
+    def refusing_read(self: Path, *args: object, **kwargs: object) -> str:
+        if self == marker:
+            raise PermissionError(13, "Permission denied")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", refusing_read)
+
+    with pytest.raises(ImageContractRefusal, match="pointer file this process cannot read"):
+        verify_image_contract(
+            repository,
+            interpreter=_interpreter(repository),
+            executables=_tools(tmp_path),
+            environment={},
+        )
 
 
 def test_the_image_contract_refuses_a_directory_that_is_not_a_checkout(tmp_path: Path) -> None:

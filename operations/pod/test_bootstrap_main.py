@@ -1086,6 +1086,46 @@ def test_a_plan_with_no_submission_manifest_makes_transfer_a_vacuous_success() -
     assert record["submission_manifest"] == "absent"
 
 
+def test_a_configured_manifest_that_is_missing_fails_the_step_rather_than_no_opping() -> None:
+    """A producing pod that cannot find its declared submission has failed.
+
+    "Nothing to transfer" belongs to the consuming pod that configured neither
+    a manifest nor a target. Returning it for a *configured* manifest whose
+    file is absent recorded the TRANSFER step complete, so the pod went on
+    without uploading the submission it declared, and the only sign was a
+    report saying there had been nothing to send (CodeRabbit on PR #117).
+    """
+
+    from .bootstrap_main import BootstrapStep, BootstrapStepFailure, Plan, build_actions
+
+    plan = Plan(
+        volume_mount_path=Path("/volume"),
+        report_path=Path("/volume/report.json"),
+        interval_seconds=1.0,
+        keep_env=(),
+        dry_run=False,
+        hold_only=False,
+        repository=Path("/repo"),
+        repository_commit="a" * 40,
+        lockfile=Path("/repo/uv.lock"),
+        journal=Path("/volume/journal.json"),
+        store_root=Path("/volume/store"),
+        models_config=Path("/repo/models.toml"),
+        placement_config=Path("/repo/placement.toml"),
+        cache_root=Path("/volume/chair-cache"),
+        fixture=Path("/repo/proof/fixtures/synthetic-two-page-v0/page-1.png"),
+        submission_manifest=Path("/volume/submission/manifest.json"),
+        transfer_source_root=Path("/volume"),
+        transfer_target_factory="untracked.target:factory",
+    )
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        build_actions(plan).resume_transfer()
+
+    assert failure.value.step is BootstrapStep.TRANSFER
+    assert "manifest.json is missing" in str(failure.value)
+
+
 def test_a_submission_manifest_with_no_transfer_target_is_refused_at_plan_time(
     tmp_path: Path,
 ) -> None:
