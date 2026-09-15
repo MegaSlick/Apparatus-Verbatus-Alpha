@@ -660,6 +660,52 @@ def _liveness_journal(
     return journal
 
 
+def _records_at_close(plan: RunPlan) -> tuple[dict[str, dict[str, object]], list[str]]:
+    """What each record the report names actually left on the volume at close.
+
+    The orchestrator's stage-timing journal, the liveness record and the
+    transcript are all written best-effort by design: a stopwatch or a tick
+    must never be the reason a running orchestrator is abandoned, so each
+    writer says so on stderr and carries on. That stderr line lives in the
+    transcript, which is bounded, and nothing else said whether the file the
+    report *names* was actually there -- a fetched report could read
+    ``complete`` over an absent journal (CodeRabbit pre-merge check on PR
+    #117). This audits the three at close and names each missing, unreadable
+    or foreign one in the report itself, so the absence is a durable fact
+    beside the state rather than a line a reader has to know to grep for.
+    """
+
+    audit: dict[str, dict[str, object]] = {}
+    missing: list[str] = []
+    for name, path in (
+        ("transcript", plan.transcript_path),
+        ("liveness", plan.liveness_path),
+        ("timing_journal", plan.timing_journal_path),
+    ):
+        entry: dict[str, object] = {"path": str(path), "present": path.is_file()}
+        if not entry["present"]:
+            missing.append(name)
+        elif name == "timing_journal":
+            try:
+                journal = json.loads(path.read_text(encoding="utf-8"))
+                entries = journal.get("entries") if isinstance(journal, dict) else None
+                owner = journal.get("run_id") if isinstance(journal, dict) else None
+                entry["entries"] = len(entries) if isinstance(entries, list) else None
+                entry["run_id_matches"] = owner == plan.run_id
+                if entry["entries"] is None or not entry["run_id_matches"]:
+                    entry["failure"] = (
+                        f"the journal at {path} belongs to run {owner!r} or has no entries "
+                        "list; the orchestrator refuses to merge into a foreign journal and "
+                        "says so in the transcript"
+                    )
+                    missing.append(name)
+            except (OSError, ValueError) as error:
+                entry["failure"] = f"unreadable: {error}"
+                missing.append(name)
+        audit[name] = entry
+    return audit, missing
+
+
 def _refuse(refusal: PlanRefusal, *, now: Callable[[], datetime]) -> int:
     print(f"pod_run refused: {refusal}", file=sys.stderr)
     failure = _write_refusal(refusal.report_path, str(refusal), now=now)
@@ -979,12 +1025,26 @@ def main(
         )
     state = _STATE_FOR_EXIT[exit_code]
     holding = exit_code in _HOLD_AFTER_EXITS
+    records_at_close, records_missing = _records_at_close(plan)
+    if records_missing:
+        # Not a change of state: the orchestrator's exit is the run's outcome,
+        # and a lost stopwatch does not un-complete a run. It is a fact the
+        # report must carry beside that state, loudly, so a later reader does
+        # not infer from `complete` that every named record came home.
+        absence = (
+            "records this report names were not on the volume at close, or were not this "
+            f"run's: {', '.join(records_missing)}; the writer's own reason is in "
+            f"{plan.transcript_path} if that survived"
+        )
+        failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
     final: dict[str, object] = {
         **running,
         "state": state,
         "exit_code": exit_code,
         "orchestrator_exit": orchestrator_exit,
         "detail": failure_detail,
+        "records_at_close": records_at_close,
+        "records_missing": records_missing,
         "held_to_hard_deadline": holding,
         "hold_detail": (
             "the run finished; holding to the hard deadline so the pod timer does not read "

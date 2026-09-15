@@ -419,7 +419,15 @@ check.
   the run tree, both reports, the journal and the preflight evidence are on the
   volume, which outlives the pod, and `verbatus fetch-run` reads it over S3 with
   no pod running. Which way it went is in the run report's
-  `held_to_hard_deadline`.
+  `held_to_hard_deadline`. **The report also says whether the records it names
+  came home.** The transcript, the liveness record and the stage-timing journal
+  are each written best-effort, because a lost stopwatch or tick must never be
+  the reason a running orchestrator is abandoned; at close the report audits
+  the three under `records_at_close` (present, and for the journal its entry
+  count and whether it is this run's) and lists any that are absent, unreadable
+  or another run's under `records_missing`, appending the same to `detail`. The
+  state stays the orchestrator's exit — a missing journal does not un-complete
+  a run — but a fetched report can no longer read `complete` over an absence.
   **Nothing the run printed dies with the pod.** The orchestrator's stdout and
   stderr are merged into one pipe and teed into
   `<run report stem>-transcript.log` beside the report; because the orchestrator

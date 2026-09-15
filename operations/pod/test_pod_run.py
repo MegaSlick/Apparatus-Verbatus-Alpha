@@ -1445,3 +1445,122 @@ def test_the_pod_dependency_group_carries_exactly_the_recipe_pins() -> None:
         observed[name.strip().lower()] = version.strip()
 
     assert observed == _recipe_pins()
+
+
+# --- the records the report names are audited at close (CodeRabbit, PR #117) ----
+
+
+@dataclass
+class RecordWritingRunner(RecordedRunner):
+    """A fake orchestrator that leaves the records a real one leaves, or some of them."""
+
+    journal: dict | None = None
+    write_transcript: bool = True
+
+    def __call__(  # type: ignore[no-untyped-def]
+        self, argv, *, cwd, env, transcript, liveness, interval_seconds
+    ):
+        if self.write_transcript:
+            Path(transcript).write_bytes(b"orchestrator output\n")
+        if self.journal is not None:
+            journal_path = Path(transcript).with_name(
+                Path(transcript).name.replace("-transcript.log", "-timings.json")
+            )
+            journal_path.write_text(json.dumps(self.journal), encoding="utf-8")
+        return super().__call__(
+            argv,
+            cwd=cwd,
+            env=env,
+            transcript=transcript,
+            liveness=liveness,
+            interval_seconds=interval_seconds,
+        )
+
+
+def _run_with(ws: Workspace, runner: RecordedRunner) -> dict:
+    clock = Clock()
+    main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    return _report(ws)
+
+
+def test_a_complete_run_whose_named_records_all_came_home_reports_nothing_missing(
+    tmp_path: Path,
+) -> None:
+    ws = _prepared(tmp_path)
+    report = _run_with(
+        ws,
+        RecordWritingRunner(
+            returncode=0,
+            ticks=1,
+            journal={"schema": "x", "run_id": "first-real-run", "entries": [{}, {}]},
+        ),
+    )
+
+    assert report["state"] == "complete"
+    assert report["records_missing"] == []
+    assert report["detail"] is None
+    audit = report["records_at_close"]
+    assert audit["transcript"]["present"] is True
+    assert audit["liveness"]["present"] is True
+    assert audit["timing_journal"] == {
+        "path": str(ws.volume / "pod-run-report-timings.json"),
+        "present": True,
+        "entries": 2,
+        "run_id_matches": True,
+    }
+
+
+def test_a_complete_run_whose_timing_journal_never_landed_says_so_in_the_report(
+    tmp_path: Path,
+) -> None:
+    """The orchestrator journals best-effort and says so on stderr; the report it is
+    named in must not read `complete` over the absence (nothing is lost silently)."""
+
+    ws = _prepared(tmp_path)
+    report = _run_with(ws, RecordWritingRunner(returncode=0, ticks=1, journal=None))
+
+    assert report["state"] == "complete"
+    assert report["exit_code"] == 0
+    assert report["records_missing"] == ["timing_journal"]
+    assert report["records_at_close"]["timing_journal"]["present"] is False
+    assert "timing_journal" in report["detail"]
+    assert str(ws.volume / "pod-run-report-transcript.log") in report["detail"]
+
+
+def test_a_journal_belonging_to_another_run_is_reported_as_not_this_runs(
+    tmp_path: Path,
+) -> None:
+    ws = _prepared(tmp_path)
+    report = _run_with(
+        ws,
+        RecordWritingRunner(
+            returncode=0,
+            ticks=1,
+            journal={"schema": "x", "run_id": "some-other-run", "entries": [{}]},
+        ),
+    )
+
+    assert report["records_missing"] == ["timing_journal"]
+    entry = report["records_at_close"]["timing_journal"]
+    assert entry["present"] is True
+    assert entry["run_id_matches"] is False
+    assert "some-other-run" in entry["failure"]
+
+
+def test_a_held_run_keeps_its_own_reason_and_appends_the_missing_records(
+    tmp_path: Path,
+) -> None:
+    ws = _prepared(tmp_path)
+    report = _run_with(ws, RecordWritingRunner(returncode=3, ticks=1, write_transcript=False))
+
+    assert report["state"] == "held"
+    assert report["records_missing"] == ["transcript", "timing_journal"]
+    assert "the stage's own reason is the last text in" in report["detail"]
+    assert "transcript, timing_journal" in report["detail"]
