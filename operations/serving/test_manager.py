@@ -4094,6 +4094,7 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
     assert result.receipt["resolved_revision_kind"] == "git-commit"
     request = http.calls[-1][2]
     assert isinstance(request, dict)
+    assert "chat_template_kwargs" not in request
     messages = request["messages"]
     assert isinstance(messages, list)
     image_url = messages[0]["content"][1]["image_url"]["url"]  # type: ignore[index]
@@ -4101,6 +4102,42 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
     assert image_url == "data:image/png;base64," + base64.b64encode(fixture_bytes).decode("ascii")
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
+
+
+def test_perlector_direct_response_mode_does_not_relax_the_exact_output_rule(
+    tmp_path: Path,
+) -> None:
+    chair = identity("perlector", "perlector-v1")
+    expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
+    answer_with_reasoning = f"I read the page.\n{expected}"
+    manager, _, http, _, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe=chair.serving_recipe,
+                chair=chair.role,
+                served_model_id="perlector-api",
+                port=8000,
+            ),
+        ),
+        model_ids=("perlector-api",),
+        outputs={"perlector-api": answer_with_reasoning},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    request = http.calls[-1][2]
+    assert isinstance(request, dict)
+    assert request["chat_template_kwargs"] == {"enable_thinking": False}
+    assert result.shape_valid is True
+    assert result.nonempty is True
+    assert result.format_valid is False
+    assert result.receipt["page_witness_matches"] is False
+    handle.stop()
 
 
 def test_vision_smoke_call_reports_multiple_nonempty_choices_honestly(
@@ -4218,6 +4255,61 @@ def test_vision_smoke_call_marks_text_outside_the_exact_witness_line_invalid(
     assert result.nonempty is True
     assert result.format_valid is False
     assert result.receipt["page_witness_matches"] is False
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_retains_exact_exchange_for_a_parsed_format_invalid_answer(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    invalid_answer = f"PAGE-WITNESS: {PAGE_WITNESS} "
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": invalid_answer},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    retained: dict[str, bytes] = {}
+
+    def publish(request: bytes, response: bytes) -> tuple[dict[str, str], dict[str, str]]:
+        retained.update(request=request, response=response)
+        return (
+            {
+                "relative_path": "smoke-requests/sha256/request.json",
+                "sha256": hashlib.sha256(request).hexdigest(),
+            },
+            {
+                "relative_path": "smoke-responses/sha256/response.bin",
+                "sha256": hashlib.sha256(response).hexdigest(),
+            },
+        )
+
+    handle = manager.start(chair, TIER)
+    result = VisionSmokeCall(
+        PAGE_WITNESS,
+        utilization=lambda: (UtilizationSample("71", "31"),),
+        raw_exchange_publisher=publish,
+    )(handle, chair, fixture, smoke_placement())
+
+    assert result.format_valid is False
+    assert json.loads(retained["request"]) == http.calls[-1][2]
+    assert json.loads(retained["response"])["choices"][0]["message"]["content"] == invalid_answer
+    assert (
+        result.receipt["smoke_request_reference"]["sha256"]
+        == hashlib.sha256(retained["request"]).hexdigest()
+    )
+    assert (
+        result.receipt["smoke_response_reference"]["sha256"]
+        == hashlib.sha256(retained["response"]).hexdigest()
+    )
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
 

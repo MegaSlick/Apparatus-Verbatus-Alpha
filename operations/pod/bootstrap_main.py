@@ -375,6 +375,22 @@ class PodPreflightReceiptPublisher:
 
         return self._write_bytes("page-witnesses", witness.encode("ascii"), suffix=".txt")
 
+    def publish_smoke_exchange(
+        self, request: bytes, response: bytes
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Retain one fixture-bound request and its exact raw response bytes.
+
+        These are separate content-addressed artifacts because a model may
+        return an answer that is structurally parseable yet fails the smoke's
+        exact witness-format rule.  The receipt names both bytes in that red
+        outcome; neither is reconstructed from parsed fields.
+        """
+
+        return (
+            self._write_bytes("smoke-requests", request, suffix=".json"),
+            self._write_bytes("smoke-responses", response, suffix=".bin"),
+        )
+
     def _write(self, kind: str, value: Mapping[str, object]) -> dict[str, str]:
         return self._write_bytes(kind, canonical_bytes(value), suffix=".json")
 
@@ -1225,7 +1241,9 @@ def _build_preflight(
         profile = probe.profile(PREFLIGHT_DTYPE, expected_gpu_count=REQUESTED_GPU_COUNT)
         fixture, witness, page_bytes_at_render = _golden_page(plan, chosen)
         smoke_call = VisionSmokeCall(
-            witness, utilization=chosen.utilization or NvidiaSmiUtilization()
+            witness,
+            utilization=chosen.utilization or NvidiaSmiUtilization(),
+            raw_exchange_publisher=publisher.publish_smoke_exchange,
         )
         witness_reference = publisher.publish_page_witness(witness)
         smoke_call = replace(smoke_call, page_witness_reference=witness_reference)

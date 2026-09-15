@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import base64
 import hashlib
+import json
 import tomllib
 from pathlib import Path
 from typing import Mapping
@@ -1210,7 +1211,7 @@ def test_audit_reproof_with_no_delivered_request_refuses_exactly_as_the_fixture_
 
 
 def test_max_tokens_rides_generation_sent_only_when_given(tmp_path: Path) -> None:
-    client, endpoint, _blobs, chair = _built(tmp_path)
+    client, endpoint, blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
     with client:
         endpoint.script(ScriptedAnswer(content="a", finish_reason="stop"))
@@ -1220,9 +1221,20 @@ def test_max_tokens_rides_generation_sent_only_when_given(tmp_path: Path) -> Non
             delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
         )
     assert endpoint.requests[0]["max_tokens"] == 256
+    assert endpoint.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    call_record = next(
+        record
+        for record in (json.loads(written) for written in blobs.written)
+        if isinstance(record, dict) and record.get("schema") == "chair-call-record.v1"
+    )
+    assert call_record["generation_declared"] == {}
+    assert call_record["generation_sent"] == {
+        "chat_template_kwargs": {"enable_thinking": False},
+        "max_tokens": 256,
+    }
 
 
-def test_no_max_tokens_sends_none_and_the_client_never_adds_one(tmp_path: Path) -> None:
+def test_no_max_tokens_still_selects_perlector_direct_response_mode(tmp_path: Path) -> None:
     client, endpoint, _blobs, chair = _built(tmp_path)
     region_image, page_image = _image_bytes(b"r"), _image_bytes(b"p")
     with client:
@@ -1233,6 +1245,7 @@ def test_no_max_tokens_sends_none_and_the_client_never_adds_one(tmp_path: Path) 
             delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
         )
     assert "max_tokens" not in endpoint.requests[0]
+    assert endpoint.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 # --- FixtureReader carries no engine, so it must never publish engine_call ----

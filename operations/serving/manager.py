@@ -442,6 +442,7 @@ class ServiceHandle:
         payload: Mapping[str, object],
         *,
         fixture: str | Path,
+        exchange_observer: Callable[[bytes, HttpResponse], None] | None = None,
     ) -> OpenAIResult:
         """Request this service with the actual OpenAI chat image from ``fixture``.
 
@@ -470,7 +471,9 @@ class ServiceHandle:
             raise ServingConfigurationError(
                 "golden-page request image bytes do not match its supplied local fixture"
             )
-        result = self.request(kind, sealed_payload)
+        result = self._manager.request(
+            self, kind, sealed_payload, exchange_observer=exchange_observer
+        )
         self._fixture_requests_completed += 1
         self._last_fixture_request_sha256 = fixture_digest
         self._last_fixture_response = result
@@ -851,19 +854,33 @@ class ServingManager:
             raise
 
     def request(
-        self, handle: ServiceHandle, kind: str, payload: Mapping[str, object]
+        self,
+        handle: ServiceHandle,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        exchange_observer: Callable[[bytes, HttpResponse], None] | None = None,
     ) -> OpenAIResult:
         """Send a regular non-streaming request to the handle's exact served alias."""
 
         self._require_active(handle)
         self._assert_process_live(handle.process)
-        result = self._post_probe(
-            endpoint=handle.endpoint,
-            kind=kind,
-            payload=payload,
+        body = request_body(
+            payload,
             model_id=handle.profile.served_model_id,
             seed=handle.profile.seed,
             deterministic=False,
+        )
+        response = self.http.request(
+            "POST",
+            endpoint_for_probe(handle.endpoint, kind),
+            body=body,
+            timeout_seconds=_INFERENCE_TIMEOUT_SECONDS,
+        )
+        if exchange_observer is not None:
+            exchange_observer(body, response)
+        result = parse_openai_answer(
+            response, kind=kind, expected_model_id=handle.profile.served_model_id
         )
         handle._requests_completed += 1
         handle._last_request_was_fixture = False

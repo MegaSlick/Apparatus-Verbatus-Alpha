@@ -897,6 +897,41 @@ the `REPOSITORY` step does — before `git fetch`, and long before the ~10 GB en
 sync — and a pod whose image does not meet it goes red with a named reason and a remedy
 instead of a `ModuleNotFoundError` or an authentication prompt nobody can see.
 
+### Fresh Ubuntu 24.04 RunPod preparation
+
+After cloning the repository onto a fresh Ubuntu 24.04 RunPod container and **before**
+`uv sync`, run this one host-preparation command as root:
+
+```bash
+bash operations/pod/prepare_runtime.sh
+```
+
+It installs the repository-required official `uv 0.12.1` at `/usr/local/bin/uv`,
+`ninja-build` at `/usr/bin/ninja`, and a deliberately narrow `setpriv` build from
+util-linux 2.42.3 at `/usr/bin/setpriv`. The script verifies pinned upstream SHA-256
+digests before installing either downloaded artifact. It compiles only `setpriv` with
+`--disable-all-programs --enable-setpriv --disable-nls`; when replacing the stock Ubuntu
+24.04 binary, it keeps the old one at
+`/usr/local/lib/verbatus-runtime-prerequisites/setpriv.before-util-linux-2.42.3`.
+
+The script is idempotent. Before accepting either the existing or newly built `setpriv`,
+it requires this confinement probe to succeed:
+
+```bash
+setpriv --no-new-privs --landlock-access fs:write-file -- /bin/true
+```
+
+A kernel without working Landlock is a refusal. Do not bypass or disable that boundary;
+choose a Landlock-capable host instead. Run this preparation before the frozen environment,
+model materialization, chair cache, or any serving work: the stock Ubuntu 24.04 `setpriv`
+does not provide the required `--landlock-access` flag, and missing `/usr/bin/ninja` causes
+the Chandra and DAI vLLM warm-up path to fail.
+
+Use the pod's container-local disk for the cloned repository, `.venv`, and `UV_CACHE_DIR`.
+The observed serving stack needs roughly 101 GB of model cache against a 200 GB ephemeral
+container disk, so keep persistent network-volume storage for input images, outputs,
+evidence, and materialized models that must survive pod deletion.
+
 **The image carries a checkout. The bootstrap does not clone.** `checkout_commit` runs
 `git fetch --no-tags origin <sha>` and `git checkout --detach --force <sha>` with its
 working directory set to `--repository`. So the path named there must already be a git

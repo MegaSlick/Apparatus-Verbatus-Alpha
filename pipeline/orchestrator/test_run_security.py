@@ -60,6 +60,10 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         submission_folder=None,
         submission_manifest=None,
         data_gate_policy=None,
+        triage_decision_manifest=None,
+        triage_clusters=None,
+        triage_producer_recipe=None,
+        cache_root=None,
     )
 
 
