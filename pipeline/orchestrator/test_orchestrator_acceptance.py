@@ -5851,6 +5851,81 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(tm
         assert entry["repository_commit_detail"] is None
 
 
+def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tmp_path):
+    """Every selected sequence validates it, not only the one that opens at the Door.
+
+    `repository_commit` used to be reached from the Door's own argv build and
+    from the timing journal, so a manual or semi run starting later -- with no
+    journal configured, nothing else reads it -- could accept a malformed
+    revision and go on to execute stages (CodeRabbit on PR #117).
+    """
+
+    root = tmp_path / "runs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR),
+            "--fixture",
+            FIXTURE,
+            "--scenario",
+            "happy",
+            "--run-id",
+            "r",
+            "--run-root",
+            str(root),
+            "--stage",
+            "recensor",
+            "--repository-commit",
+            "a1b2c3d",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "is not a full lowercase" in result.stderr
+    assert not (root / "r").exists()
+
+
+def test_a_timing_journal_inside_the_run_tree_is_refused_before_anything_runs(tmp_path):
+    """The option says "outside the run tree" and now nothing else has to.
+
+    A journal under the run directory would add mutable bytes to an immutable
+    tree once per stage invocation and change the byte identity the rerun,
+    resume and restore checks all rest on (CodeRabbit on PR #117).
+    """
+
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "happy", stage_timing_journal=root / "r" / "timings.json")
+
+    assert result.returncode == 2
+    assert "is inside this run's own tree" in result.stderr
+    assert not (root / "r" / "timings.json").exists()
+
+
+def test_a_timing_journal_belonging_to_another_run_is_left_unchanged(tmp_path):
+    """Two runs at one journal path: the second must not inherit the first's entries.
+
+    Nothing checked the identity of an existing journal before appending, so
+    the first run's entries were kept while the top-level `run_id` was replaced
+    with the second's -- a file attributing one run's stage timings to another
+    (CodeRabbit on PR #117). The conflict is reported on stderr like every other
+    journal fault, because a stopwatch never fails a stage.
+    """
+
+    root = tmp_path / "runs"
+    journal = tmp_path / "timings.json"
+    assert orchestrate(root, "first", "happy", stage_timing_journal=journal).returncode == 0
+    before = journal.read_text(encoding="utf-8")
+
+    second = orchestrate(root, "second", "happy", stage_timing_journal=journal)
+
+    assert second.returncode == 0
+    assert journal.read_text(encoding="utf-8") == before
+    assert "already belongs to" in second.stderr
+
+
 def test_naming_no_timing_journal_leaves_the_run_tree_exactly_as_it_was(tmp_path):
     """The journal is opt-in precisely so the byte-identity checks below still
     measure the same tree."""
