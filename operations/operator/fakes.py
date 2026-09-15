@@ -88,7 +88,8 @@ class LocalFixtureObjectStore(TransferTarget):
         self.fail_once_for = fail_once_for
         self.puts: list[str] = []
 
-    def inspect(self, key: str) -> RemoteObject | None:
+    def inspect(self, key: str, *, expected_size: int | None = None) -> RemoteObject | None:
+        del expected_size
         self._path(key)
         path = self.root.resolve() / key
         # `_path` resolves for containment, so inspect the unresolved object key

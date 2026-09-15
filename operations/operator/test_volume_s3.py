@@ -9,7 +9,9 @@ unverified file can be counted as sent.
 
 from __future__ import annotations
 
+import hashlib
 import re
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import SplitResult, urlsplit
 
@@ -63,6 +65,11 @@ class FakeS3Client:
             Fileobj.read(),
             dict((ExtraArgs or {}).get("Metadata", {})),
         )
+
+    def get_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        del Bucket
+        payload, _metadata = self.objects[Key]
+        return {"Body": BytesIO(payload)}
 
 
 class _ResponseError(Exception):
@@ -263,30 +270,45 @@ def test_head_metadata_keys_are_read_case_insensitively() -> None:
     assert observed.sha256 == "a" * 64
 
 
-def test_a_target_that_never_returns_our_digest_cannot_be_called_complete(
+def test_missing_metadata_is_verified_by_a_bounded_target_byte_stream() -> None:
+    client = FakeS3Client()
+    payload = b"real runpod bytes"
+    client.objects["volume/page.bin"] = (payload, {})
+    client.drop_metadata = True
+
+    observed = S3VolumeTarget(_spec(), client=client).inspect(
+        "volume/page.bin", expected_size=len(payload)
+    )
+
+    assert observed is not None
+    assert observed.size == len(payload)
+    assert observed.sha256 == hashlib.sha256(payload).hexdigest()
+
+
+def test_a_target_that_drops_metadata_is_completed_from_target_bytes(
     tmp_path: Path,
 ) -> None:
     client = FakeS3Client()
     client.drop_metadata = True
     source, manifest = _manifest(tmp_path)
 
-    with pytest.raises(VolumeTransferRefusal, match="exists without the digest"):
-        ChecksummedTransfer(
-            source_root=source,
-            submission_manifest=manifest,
-            target=S3VolumeTarget(_spec(), client=client),
-            prefix="volume",
-            journal_path=tmp_path / "journal.json",
-        ).resume()
+    report = ChecksummedTransfer(
+        source_root=source,
+        submission_manifest=manifest,
+        target=S3VolumeTarget(_spec(), client=client),
+        prefix="volume",
+        journal_path=tmp_path / "journal.json",
+    ).resume()
 
-    assert client.uploads == ["volume/page-one.bin"]
+    assert report.completed_keys == ("volume/page-one.bin", "volume/page-two.bin")
+    assert client.uploads == ["volume/page-one.bin", "volume/page-two.bin"]
 
 
 def test_a_target_check_failure_reaches_the_three_part_upload_error(tmp_path: Path) -> None:
     surface = _surface(tmp_path)
     source, manifest = _manifest(tmp_path)
     client = FakeS3Client()
-    client.objects["volume/page-one.bin"] = (b"unknown prior bytes", {})
+    client.objects["submission/page-one.bin"] = (b"unknown prior bytes", {})
 
     with pytest.raises(OperatorError) as failure:
         surface.upload(
@@ -365,9 +387,11 @@ def test_upload_through_the_surface_sends_only_files_named_by_the_sealed_record(
     )
 
     assert receipt.is_file()
-    assert sorted(client.uploads) == ["volume/page-one.bin", "volume/page-two.bin"]
-    assert client.objects["volume/page-one.bin"][0] == (source / "page-one.bin").read_bytes()
-    assert client.objects["volume/page-two.bin"][0] == (source / "page-two.bin").read_bytes()
+    assert sorted(client.uploads) == [
+        "submission/manifest.json", "submission/page-one.bin", "submission/page-two.bin"
+    ]
+    assert client.objects["submission/page-one.bin"][0] == (source / "page-one.bin").read_bytes()
+    assert client.objects["submission/page-two.bin"][0] == (source / "page-two.bin").read_bytes()
     assert any("zero GPU-hours" in line for line in messages)
     payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
     assert payload["state"] == "complete"

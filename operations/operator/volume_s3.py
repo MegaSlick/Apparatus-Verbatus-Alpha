@@ -56,6 +56,7 @@ quoted rather than paraphrased where the detail is load-bearing:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import tempfile
@@ -216,8 +217,8 @@ class S3VolumeTarget:
             default_transfer_config() if transfer_config is None else transfer_config
         )
 
-    def inspect(self, key: str) -> RemoteObject | None:
-        """Present *and* carrying the digest we recorded for it. See docstring note 1."""
+    def inspect(self, key: str, *, expected_size: int | None = None) -> RemoteObject | None:
+        """Return target bytes' digest/size; metadata is only a fast path."""
 
         try:
             head = self.client.head_object(Bucket=self.spec.volume_id, Key=key)
@@ -241,14 +242,45 @@ class S3VolumeTarget:
         }
         recorded = normalized_metadata.get(SHA256_METADATA_KEY)
         size = head.get("ContentLength")
-        if not isinstance(recorded, str) or not isinstance(size, int):
+        if not isinstance(size, int) or size < 0:
             # The object is present, so `None` would authorize the transfer layer
             # to overwrite it. Missing metadata is unknown ownership, not absence.
             raise VolumeTransferRefusal(
-                f"network-volume object {key!r} exists without the digest and size "
+                f"network-volume object {key!r} exists without size "
                 "evidence Verbatus needs; it was not overwritten"
             )
-        return RemoteObject(sha256=recorded, size=size)
+        if expected_size is not None and size != expected_size:
+            return RemoteObject(sha256=recorded if isinstance(recorded, str) else "", size=size)
+        if isinstance(recorded, str):
+            return RemoteObject(sha256=recorded, size=size)
+        if expected_size is None:
+            raise VolumeTransferRefusal(
+                f"network-volume object {key!r} exists without digest metadata and no declared "
+                "size bound; it was not overwritten"
+            )
+        try:
+            response = self.client.get_object(Bucket=self.spec.volume_id, Key=key)
+            body = response.get("Body") if isinstance(response, Mapping) else None
+            if body is None or not callable(getattr(body, "read", None)):
+                raise VolumeTransferRefusal(f"network-volume object {key!r} has no readable body")
+            try:
+                payload = _read_bounded(body, expected_size + 1)
+            finally:
+                closer = getattr(body, "close", None)
+                if callable(closer):
+                    closer()
+        except VolumeTransferRefusal:
+            raise
+        except Exception as error:
+            raise VolumeTransferRefusal(
+                f"the network volume could not stream-verify {key!r}; it was not overwritten"
+            ) from error
+        if len(payload) != expected_size:
+            raise VolumeTransferRefusal(
+                f"network-volume object {key!r} streamed {len(payload)} bytes, not declared "
+                f"{expected_size}; it was not overwritten"
+            )
+        return RemoteObject(sha256=hashlib.sha256(payload).hexdigest(), size=size)
 
     def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
         """Send the exact bytes behind this already-opened handle, tagged with their digest.

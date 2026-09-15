@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import hashlib
+import io
 import json
 import os
 import secrets
@@ -695,7 +696,7 @@ class OperatorSurface:
         source: str | Path,
         *,
         sealed_manifest: str | Path,
-        prefix: str = "volume",
+        prefix: str = "submission",
         volume: VolumeSpec | None = None,
         target: TransferTarget | None = None,
     ) -> Path:
@@ -758,6 +759,28 @@ class OperatorSurface:
                     prefix=prefix,
                     journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
                 ).resume()
+                manifest_key = f"{prefix.rstrip('/')}/manifest.json"
+                remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
+                if remote_manifest is not None and (
+                    remote_manifest.sha256 != manifest_sha256
+                    or remote_manifest.size != len(manifest_bytes)
+                ):
+                    raise TransferFailure(
+                        f"target {manifest_key!r} exists but differs from the sealed submission "
+                        "manifest; it was not overwritten"
+                    )
+                if remote_manifest is None:
+                    store.put_file(
+                        manifest_key, io.BytesIO(manifest_bytes), expected_sha=manifest_sha256
+                    )
+                    remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
+                if remote_manifest is None or (
+                    remote_manifest.sha256 != manifest_sha256
+                    or remote_manifest.size != len(manifest_bytes)
+                ):
+                    raise TransferFailure(
+                        f"target {manifest_key!r} did not verify after publication"
+                    )
         except ContractError as error:
             # `ChecksummedTransfer.resume` reads the sealed manifest through
             # `submission_door.load_manifest` before it transfers a single

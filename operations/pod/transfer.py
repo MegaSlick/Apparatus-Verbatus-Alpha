@@ -36,7 +36,7 @@ class RemoteObject:
 class TransferTarget(Protocol):
     """Minimal storage seam; provider S3/API knowledge belongs in its adapter."""
 
-    def inspect(self, key: str) -> RemoteObject | None:
+    def inspect(self, key: str, *, expected_size: int | None = None) -> RemoteObject | None:
         """Return the target's digest/size evidence, or None if the object is absent."""
 
     def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
@@ -120,7 +120,7 @@ class ChecksummedTransfer:
                     raise TransferFailure(
                         f"source {relative!r} no longer matches the sealed submission manifest"
                     )
-                remote = self.target.inspect(key)
+                remote = self.target.inspect(key, expected_size=expected_size)
                 if remote is not None and (
                     remote.sha256 != expected_sha or remote.size != expected_size
                 ):
@@ -137,7 +137,7 @@ class ChecksummedTransfer:
                             f"transfer of {relative!r} failed: {error}"
                         ) from error
                     sent = True
-                    remote = self.target.inspect(key)
+                    remote = self.target.inspect(key, expected_size=expected_size)
             if remote is None or remote.sha256 != expected_sha or remote.size != expected_size:
                 raise TransferFailure(f"target {key!r} did not verify after transfer")
             if key not in completed:

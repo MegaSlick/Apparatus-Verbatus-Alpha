@@ -1737,7 +1737,7 @@ def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
     surface.upload(source, sealed_manifest=manifest)
 
     payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
-    assert payload["transfer"]["completed_keys"] == ["volume/page-one.bin"]
+    assert payload["transfer"]["completed_keys"] == ["submission/page-one.bin"]
     assert payload["submission_manifest_sha256"] == hashlib.sha256(original).hexdigest()
 
 
