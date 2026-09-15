@@ -233,6 +233,13 @@ def test_qualification_accepts_green_hold_report(tmp_path: Path) -> None:
     assert len(_qualify(paths)["candidates"]) == 5
 
 
+def test_qualification_refuses_record_without_producer_wrapper(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    paths["report"].write_text(json.dumps(wrapper["bootstrap"]), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="not a bootstrap result or hold report"):
+        _qualify(paths)
+
+
 def test_qualification_cannot_stamp_an_adapter_without_binding_its_base(tmp_path: Path) -> None:
     paths, _ = _qualification_fixture(tmp_path)
     models = paths["models"].read_text(encoding="utf-8")

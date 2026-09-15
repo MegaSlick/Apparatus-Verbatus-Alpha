@@ -224,8 +224,6 @@ def _bootstrap_record(report: Mapping[str, object]) -> Mapping[str, object]:
         if report.get("state") != expected_state:
             raise QualificationRefusal("bootstrap wrapper state does not record success")
         return _object(report.get("bootstrap"), "bootstrap result")
-    if {"color", "completed", "receipts"}.issubset(report):
-        return report
     raise QualificationRefusal("input is not a bootstrap result or hold report")
 
 
