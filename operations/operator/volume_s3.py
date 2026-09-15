@@ -37,12 +37,9 @@ quoted rather than paraphrased where the detail is load-bearing:
 
 **Stated as unconfirmed rather than asserted:**
 
-1. *Whether user metadata round-trips.* `put_file` writes each file's SHA-256 as S3
-   user metadata on upload and reads it back with `HeadObject`. Both operations
-   are documented as supported; the page says nothing either way about user
-   metadata surviving. If RunPod drops it, `HeadObject` returns no digest and this
-   class refuses the transfer. It must not report a present object as absent:
-   `ChecksummedTransfer` would then overwrite bytes it had no evidence it owned.
+1. *User metadata does not round-trip on the observed RunPod endpoint.* `put_file`
+   still writes the SHA-256 metadata, but `inspect` treats its absence as a request
+   to stream-hash the target bytes under the manifest's declared-size bound.
 2. *ETag is deliberately not used for that check.* A multipart ETag is not a
    whole-file MD5 even on AWS, the sealed manifest carries SHA-256 rather than
    MD5, and an integrity check built on a value whose definition is unclear is not
@@ -264,7 +261,7 @@ class S3VolumeTarget:
             if body is None or not callable(getattr(body, "read", None)):
                 raise VolumeTransferRefusal(f"network-volume object {key!r} has no readable body")
             try:
-                payload = _read_bounded(body, expected_size + 1)
+                observed_size, observed_sha256 = _stream_sha256(body, expected_size + 1)
             finally:
                 closer = getattr(body, "close", None)
                 if callable(closer):
@@ -275,12 +272,12 @@ class S3VolumeTarget:
             raise VolumeTransferRefusal(
                 f"the network volume could not stream-verify {key!r}; it was not overwritten"
             ) from error
-        if len(payload) != expected_size:
+        if observed_size != expected_size:
             raise VolumeTransferRefusal(
-                f"network-volume object {key!r} streamed {len(payload)} bytes, not declared "
+                f"network-volume object {key!r} streamed {observed_size} bytes, not declared "
                 f"{expected_size}; it was not overwritten"
             )
-        return RemoteObject(sha256=hashlib.sha256(payload).hexdigest(), size=size)
+        return RemoteObject(sha256=observed_sha256, size=size)
 
     def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
         """Send the exact bytes behind this already-opened handle, tagged with their digest.
@@ -601,6 +598,22 @@ def _unlink_quietly(path: str) -> None:
         os.unlink(path)
     except OSError:
         pass
+
+
+def _stream_sha256(body: Any, limit: int) -> tuple[int, str]:
+    """Hash a body incrementally, refusing to read more than ``limit`` bytes."""
+
+    digest = hashlib.sha256()
+    observed = 0
+    while observed < limit:
+        chunk = body.read(min(FETCH_CHUNK_BYTES, limit - observed))
+        if not chunk:
+            break
+        if not isinstance(chunk, (bytes, bytearray)):
+            raise TypeError("the network volume answered with a non-bytes body chunk")
+        digest.update(chunk)
+        observed += len(chunk)
+    return observed, digest.hexdigest()
 
 
 def _read_bounded(body: Any, limit: int) -> bytes:
