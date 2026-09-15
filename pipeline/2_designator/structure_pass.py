@@ -108,7 +108,6 @@ from common.request_capacity import (
     sealed_prompt_tokens,
     sendable_max_tokens,
 )
-from common.runtree.store import SERVING_LOGS_DIR
 from common.stage import (
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     DESIGNATOR_CHAIR,
@@ -255,15 +254,6 @@ def _reconcile_finding_kinds() -> None:
 
 
 _reconcile_finding_kinds()
-
-# One card, one resident chair, one lease: `POD_RESIDENCY_LOCK_PATH` is the
-# container-local path the pod preflight and every other serving stage take, so
-# a structure chair still running when a witness starts refuses instead of
-# co-residing -- including across two run trees, which a lease resolved inside
-# one of them could not see. The serving logs stay in this stage's own
-# directory, where `RunTree.inventory_scope()` names them and `fetch-run`
-# brings them home as unverified side evidence.
-SERVING_LOG_DIRECTORY: Final = SERVING_LOGS_DIR
 
 _SHARED_DETECTION_RATIONALE: Final = (
     "the ink scan found one region covering at least half of this rectangle, but the "
@@ -463,7 +453,17 @@ def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) ->
         launcher=SubprocessLauncher(),
         http=UrllibHttpTransport(),
         receipt_publisher=StageContextReceiptPublisher(context),
-        log_root=context.tree.resolve(f"2_designator/{SERVING_LOG_DIRECTORY}"),
+        # One card, one resident chair, one lease: `POD_RESIDENCY_LOCK_PATH` is
+        # the container-local path the pod preflight and every other serving
+        # stage take, so a structure chair still running when a witness starts
+        # refuses instead of co-residing -- including across two run trees,
+        # which a lease resolved inside one of them could not see. The serving
+        # logs stay in this stage's own writing directory, spelled by
+        # `RunTree.serving_log_path` and by nothing else: a directory restated
+        # at the call site is how the Attestatores came to pass the stage name
+        # where the writing directory was wanted, and `fetch-run` then refused
+        # the whole served tree.
+        log_root=context.tree.resolve(context.tree.serving_log_path(DESIGNATOR)),
         residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/2_designator/run.py",
     )

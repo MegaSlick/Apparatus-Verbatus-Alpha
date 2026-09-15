@@ -2144,12 +2144,22 @@ def test_the_inventory_scope_names_the_serving_log_directory_the_launcher_writes
     """
     from common.contracts.stages import WRITING_DIRECTORIES
 
-    scope = make_run(tmp_path).inventory_scope()
+    tree = make_run(tmp_path)
+    scope = tree.inventory_scope()
     for directory in sorted(set(WRITING_DIRECTORIES.values())):
         prefix = f"{directory}/{runtree_store.SERVING_LOGS_DIR}/"
         assert prefix in scope, f"{prefix} is written in the tree but falls outside the scope"
         log = f"{prefix}vllm-attestator_1-0123456789ab.log"
         assert any(log.startswith(item) for item in scope)
+    # And by the expression the stages actually call, per stage, not only by
+    # directory: `serving_log_path` takes a *stage*, and the two differ. A stage
+    # name passed where the writing directory was wanted is the defect this
+    # binds against -- `attestatores` against `3_attestatores`, which put every
+    # witness chair's engine log outside the scope.
+    for stage in sorted(WRITING_DIRECTORIES):
+        assert f"{tree.serving_log_path(stage)}/" in scope, (
+            f"{stage} would write its engine log outside the inventory scope"
+        )
 
 
 def test_a_serving_log_is_not_inventoried_as_evidence(tmp_path):

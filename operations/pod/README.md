@@ -824,23 +824,32 @@ from, rather than from memory**. The double-click route prompts for each of them
 Below, `<volume>` is `--volume-mount-path`, `<token>` is the launch token every
 launch-bound name carries, and `<stem>` is the bootstrap report's filename stem.
 
+**An `--evidence-key` is not the path in the first column.** Keys are volume-root-relative
+S3 keys — that is why the two fetched-by-prefix defaults are `runs/` and `preflight/`, with
+no leading slash — while a launch flag such as `--report-path` carries an absolute path
+under the mount. **The key is the path with the `<volume>/` mount prefix removed**, so
+`/runpod-volume/pod-run-report-<token>.json` is named as
+`--evidence-key pod-run-report-<token>.json`. A key passed with its mount prefix still on
+it begins with `/` and is refused per object, by name, in the receipt's `refusals` — loud,
+but six of six refused is not the run's records coming home.
+
 **Fetched by prefix, no key needed:**
 
 | Path on the volume | Written by | How it arrives |
 |---|---|---|
 | `<volume>/runs/<run-id>/` | the orchestrator's stages, through `RunTree` | `fetch-run`'s run prefix, every object checked against the tree's own digests |
-| `<volume>/runs/<run-id>/<stage>/serving-logs/` | `SubprocessLauncher`, per started chair | the same prefix, but **unverified**: no manifest records an engine log, so each is listed in the receipt's `unverified_serving_logs` with the digest of the bytes that arrived and is never counted among what was verified |
+| `<volume>/runs/<run-id>/<stage>/serving-logs/` | `SubprocessLauncher`, per started chair | the same prefix, but **unverified**: no manifest records an engine log, so each is listed in the receipt's `unverified_serving_logs` with the digest of the bytes that arrived and is never counted among what was verified. It is also the one object refused *by itself* rather than fatally — a log still being appended to, or grown past the per-object bound, lands in `refused_serving_logs` and the verified tree still comes home |
 | `<volume>/preflight/<stem>/` | `bootstrap_main`'s PREFLIGHT — golden page, serving logs, serving receipts, launch audits | `fetch-run`'s evidence prefix, into `<local root>/evidence/` |
 
 **Named with `--evidence-key`, or they stay on the volume:**
 
 | Path on the volume | Written by | How the key is derived |
 |---|---|---|
-| `<volume>/bootstrap-report-<token>.json` | `bootstrap_main --report-path`, rewritten on every hold tick | the `--report-path` the launch request carried |
-| the bootstrap journal, `<volume>/…-<token>.json` | `bootstrap_main --journal` | the `--journal` the launch request carried; it must be under the mount and carry the launch token |
-| `<volume>/pod-run-report-<token>.json` | `pod_run --report-path` | the nested `--report-path` the launch request carried |
+| `<volume>/bootstrap-report-<token>.json` | `bootstrap_main --report-path`, rewritten on every hold tick | the `--report-path` the launch request carried, mount prefix stripped |
+| the bootstrap journal, `<volume>/…-<token>.json` | `bootstrap_main --journal` | the `--journal` the launch request carried, mount prefix stripped; it must be under the mount and carry the launch token |
+| `<volume>/pod-run-report-<token>.json` | `pod_run --report-path` | the nested `--report-path` the launch request carried, mount prefix stripped |
 | `<volume>/pod-run-report-<token>-hold.json` | `pod_run`'s hold, after a `complete` or `held` run (`Plan.hold_path`) | **derivable from the line above**: the pod-run report key with `-hold` inserted before its suffix. It is the only record that the pod stayed alive to the hard deadline rather than dying at the end of the run |
-| `<volume>/pod-runtime-report-<token>.json` | `pod_timer --report-path` | the outermost `--report-path` the launch request carried |
+| `<volume>/pod-runtime-report-<token>.json` | `pod_timer --report-path` | the outermost `--report-path` the launch request carried, mount prefix stripped |
 | `<volume>/pod-transfer-journal.json` | `ChecksummedTransfer` | **a fixed name at the volume root** — no token. It is the only durable record of which submission rows were verified against target-observed bytes |
 
 **Not records, and deliberately not fetched:** `<volume>/chair-cache/` (materialized
@@ -854,7 +863,10 @@ container-local disk: the boundary is the one card the pod rents, not any one ru
 A lease resolved inside a run tree was scoped to the wrong thing — two stages resumed
 under different run ids each acquired their own and co-resided on one GPU, and the
 preflight's own lock was never met at all — and it asked an advisory lock of a network
-mount that is not known to honour one. It dies with the pod, as a lock should.
+mount that is not known to honour one. It dies with the pod, as a lock should. It is
+opened with `O_NOFOLLOW` and created 0600, so on a shared developer machine — where three
+pipeline stages now take that same fixed name — a symlink planted there is a named
+refusal rather than a lock quietly taken somewhere else.
 
 ## The pod image contract
 
@@ -1178,7 +1190,9 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   | `pod-transfer-journal.json` | which submission rows were verified against target-observed bytes |
 
   `pod-transfer-journal.json` has no derivation and is not in the `--launch-receipt` set;
-  name it with `--evidence-key` if the launch ran a transfer. Everything above is
+  name it with `--evidence-key` if the launch ran a transfer. Each key is the volume path
+  with the `<volume>/` mount prefix removed: a key still carrying the mount prefix starts
+  with `/` and is refused by name. Everything above is
   destroyed with the volume under the retention decision, so anything not fetched is
   gone (GOVERNANCE 2, 6). Record the receipt's `unverified_serving_logs` too: a served
   stage's engine logs come home digested but unchecked, and that is the one part of the

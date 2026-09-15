@@ -64,7 +64,7 @@ from .surface import (
     reconciliation_table,
 )
 from .volume_cost import ACCRUAL_FACT
-from .volume_s3 import VolumeSpec
+from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
 UTC = timezone.utc
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
@@ -4860,7 +4860,16 @@ class DirectoryRunReader:
     def fetch_to(self, key: str, destination: Path, *, max_bytes: int) -> int:
         self.fetched.append(key)
         payload = self.overrides.get(key, (self.root / key).read_bytes())
-        assert len(payload) <= max_bytes
+        if len(payload) > max_bytes:
+            # The real reader's own answer (`volume_s3.fetch_to`): a refusal
+            # naming the key and the bound, not a bare AssertionError that says
+            # nothing to whoever catches it. The bound is reachable on one class
+            # of object -- an engine log, which nothing truncates -- so what
+            # this raises decides what the caller can do about it.
+            raise VolumeTransferRefusal(
+                f"the network volume's object {key!r} is larger than the {max_bytes}-byte "
+                "bound this fetch will write"
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(payload)
         return len(payload)
@@ -4988,23 +4997,109 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     assert repeated["reused"] == payload["fetched"]
 
 
+# The three stages that serve a chair, and the module each one's
+# `default_serving_factory` lives in. Read from source below rather than
+# imported: a stage module pulls the whole serving stack in behind it, and the
+# claim being made is about the expression at the call site, not about a value
+# some fixture context would produce.
+_SERVING_STAGE_SOURCES = {
+    "designator": "pipeline/2_designator/structure_pass.py",
+    "attestatores": "pipeline/3_attestatores/run.py",
+    "perlector": "pipeline/4_perlector/run.py",
+}
+
+
+def _served_stage_log_keys(run_id: str) -> dict[str, str]:
+    """`<stage> -> volume key` for the engine log each serving stage really writes.
+
+    Derived from `RunTree.serving_log_path`, which is the expression every
+    stage's `default_serving_factory` passes to `ServingManager(log_root=...)`
+    -- pinned by `test_no_serving_stage_spells_its_own_log_directory` below.
+    Restating the directory here instead is what let the fixture pass while the
+    Attestatores wrote to `attestatores/serving-logs/`, a path the stage name
+    rather than the writing directory named and no inventory scope accounted
+    for: the test held what the fixture author believed, not what the stage
+    leaves. Only the directory is load-bearing; the file name is
+    `ServingManager._next_log_path`'s shape, and the fetch classifies on the
+    prefix.
+    """
+
+    from common.runtree.store import RunTree
+
+    tree = RunTree(Path("/nonexistent"), run_id)
+    names = {
+        "designator": "vllm-designator-0123456789ab.log",
+        "attestatores": "vllm-attestator_1-abcdef012345.log",
+        "perlector": "vllm-perlector-fedcba987654.log",
+    }
+    return {
+        stage: f"runs/{run_id}/{tree.serving_log_path(stage)}/{names[stage]}"
+        for stage in _SERVING_STAGE_SOURCES
+    }
+
+
+def test_every_serving_stage_writes_its_engine_log_inside_the_inventory_scope() -> None:
+    """The per-stage binding the fixture below cannot make on its own.
+
+    `_fetch_run_tree` reads `RunTree.inventory_scope()` as the whole of what a
+    run tree may hold and refuses the tree at the first key outside it. So a
+    stage whose `log_root` lands outside the scope does not lose a log -- it
+    loses the run, and the receipt names the log while nothing comes home. That
+    is what the Attestatores did, and no fixture written by hand could catch it,
+    because a hand-written fixture states the path the author believed.
+    """
+
+    from common.runtree.store import RunTree
+
+    tree = RunTree(Path("/nonexistent"), "brought-home")
+    scope = tree.inventory_scope()
+    for stage in _SERVING_STAGE_SOURCES:
+        relative = tree.serving_log_path(stage)
+        log = f"{relative}/vllm-{stage}-0123456789ab.log"
+        assert any(log.startswith(item) for item in scope), (
+            f"{stage} writes its engine log to {relative}/, which no inventory-scope "
+            "prefix accounts for; fetch-run would refuse the whole served run tree"
+        )
+        assert surface_module._is_serving_log(log), (
+            f"{stage}'s engine log is in scope but is not classified as a serving log, "
+            "so the fetch would try to verify it against a manifest nothing wrote"
+        )
+
+
+def test_no_serving_stage_spells_its_own_log_directory() -> None:
+    """Read from source, so a fourth serving stage with its own spelling fails here.
+
+    The defect this closes was one token: `f"{ATTESTATORES}/serving-logs"`,
+    where the stage is named `attestatores` and writes in `3_attestatores`. One
+    shared expression is the only thing that makes the test above a statement
+    about the stages rather than about itself.
+    """
+
+    for relative in sorted(_SERVING_STAGE_SOURCES.values()):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert re.search(
+            r"log_root=context\.tree\.resolve\(\s*context\.tree\.serving_log_path\(",
+            source,
+        ), f"{relative} does not build its serving log root from RunTree.serving_log_path"
+        assert '"serving-logs"' not in source and "'serving-logs'" not in source, (
+            f"{relative} spells the serving-log directory for itself; the store owns it"
+        )
+
+
 def _served_stage_leavings(volume: Path, run_id: str = "brought-home") -> dict[str, bytes]:
     """Exactly what a stage that served a chair leaves in the run tree, and nothing else.
 
     `SubprocessLauncher.launch` writes one engine log per started chair under
-    `<stage>/serving-logs/`. That is the whole of it now: the single-resident
-    lease used to sit at the tree root as `pod-gpu.lock` as well, and it moved
-    to `operations.serving.residency.POD_RESIDENCY_LOCK_PATH` on container-local
-    disk, because the boundary is the pod's card and not one run tree.
+    the stage's own `serving_log_path`. That is the whole of it now: the
+    single-resident lease used to sit at the tree root as `pod-gpu.lock` as
+    well, and it moved to `operations.serving.residency.POD_RESIDENCY_LOCK_PATH`
+    on container-local disk, because the boundary is the pod's card and not one
+    run tree.
     """
 
     written = {
-        f"runs/{run_id}/2_designator/serving-logs/vllm-designator-0123456789ab.log": (
-            b"INFO 09-14 00:00:00 api_server.py:1 vLLM API server version 0.27.1\n"
-        ),
-        f"runs/{run_id}/3_attestatores/serving-logs/vllm-attestator_1-abcdef012345.log": (
-            b"INFO 09-14 00:12:00 api_server.py:1 vLLM API server version 0.27.1\n"
-        ),
+        key: f"INFO 09-14 00:00:00 api_server.py:1 vLLM API server 0.27.1 ({stage})\n".encode()
+        for stage, key in _served_stage_log_keys(run_id).items()
     }
     for key, payload in written.items():
         target = volume / key
@@ -5039,11 +5134,12 @@ def test_fetch_run_brings_a_served_run_tree_home_and_names_its_logs_unverified(
     payload = surface.receipts.read(receipt)["payload"]
     assert payload["state"] == "verified"
     named = payload["unverified_serving_logs"]
-    assert [entry["relative_path"] for entry in named] == [
-        "2_designator/serving-logs/vllm-designator-0123456789ab.log",
-        "3_attestatores/serving-logs/vllm-attestator_1-abcdef012345.log",
-    ]
-    assert [entry["sha256"] for entry in named] == [_sha256(line) for line in logs.values()]
+    # Compared against what the stages' own `serving_log_path` produced, not
+    # against two paths restated here: a restatement is what let this test pass
+    # while the Attestatores wrote outside the inventory scope.
+    prefix = "runs/brought-home/"
+    assert [entry["relative_path"] for entry in named] == sorted(key[len(prefix) :] for key in logs)
+    assert [entry["sha256"] for entry in named] == [_sha256(logs[key]) for key in sorted(logs)]
     # Named, not folded into the verified count: the summary and the screen both
     # say so, so no reader takes a digested-but-unchecked log for a checked one.
     assert "digested but unverified" in payload["summary"]
@@ -5052,6 +5148,143 @@ def test_fetch_run_brings_a_served_run_tree_home_and_names_its_logs_unverified(
     # a receipt, so nothing it did changed what the stages reconcile to.
     assert payload["stages_verified"] == ["designator"]
     assert payload["envelope_only_artifacts"] == []
+
+
+def test_a_serving_log_that_grew_since_the_last_fetch_refuses_by_itself(
+    tmp_path: Path,
+) -> None:
+    """A held run fetched twice still comes home the second time.
+
+    An engine log is appended to while a chair serves, so the operator who
+    fetches a held run mid-flight and again at the end meets a log whose bytes
+    have grown. `_fetch_or_compare` never replaces a local file, which is right
+    for immutable evidence and fatal to the whole fetch if a log is held to it:
+    the second call brought home nothing at all, with no remedy named anywhere.
+    The log is refused by itself instead, named in the receipt and on the
+    screen, and the verified run tree still arrives (GOVERNANCE 2).
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+    grew = sorted(logs)[0]
+    (volume / grew).write_bytes(logs[grew] + b"INFO 09-14 00:30:00 shutting down\n")
+
+    messages.clear()
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    relative = grew[len("runs/brought-home/") :]
+    assert [item.split(":", 1)[0] for item in payload["refused_serving_logs"]] == [relative]
+    # The one that did not grow still came home, and the tree did.
+    assert [entry["relative_path"] for entry in payload["unverified_serving_logs"]] == [
+        key[len("runs/brought-home/") :] for key in sorted(logs) if key != grew
+    ]
+    assert payload["stages_verified"] == ["designator"]
+    assert any("A serving log did not come home" in line for line in messages)
+    # And the local copy is the one the first fetch verified, untouched.
+    assert (into / "brought-home" / relative).read_bytes() == logs[grew]
+
+
+def test_a_serving_log_past_the_object_bound_refuses_by_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A debug-level log outgrowing `MAX_FETCH_OBJECT_BYTES` costs the log, not the run.
+
+    Nothing truncates an engine log, so this bound is reachable on exactly one
+    class of object in the tree -- and every other class is content-addressed or
+    manifest-recorded evidence a page blob cannot approach. Raising it here
+    would be the same whole-tree refusal by a different route.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    huge = sorted(logs)[1]
+    (volume / huge).write_bytes(b"D" * 4096)
+    monkeypatch.setattr(surface_module, "MAX_FETCH_OBJECT_BYTES", 1024)
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    relative = huge[len("runs/brought-home/") :]
+    assert [item.split(":", 1)[0] for item in payload["refused_serving_logs"]] == [relative]
+    assert "bound this fetch will write" in payload["refused_serving_logs"][0]
+    assert payload["stages_verified"] == ["designator"]
+    # Nothing half-written was left standing where the log belongs.
+    assert not (into / "brought-home" / relative).exists()
+    assert any("A serving log did not come home" in line for line in messages)
+
+
+def test_a_symlink_where_a_serving_log_belongs_is_refused_and_left_alone(
+    tmp_path: Path,
+) -> None:
+    """Narrowing the blast radius does not narrow the check, or license a deletion.
+
+    `_fetch_or_compare` refuses a symlink before a byte is written -- a run tree
+    holds no aliases -- and that still happens for a log. What changed is that
+    the refusal is recorded against the log instead of taking the verified tree
+    with it. The link itself is something this call did not create, so the
+    cleanup after a refused log must leave it exactly where it was.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    into = tmp_path / "local-runs"
+    aliased = sorted(logs)[0][len("runs/brought-home/") :]
+    planted = into / "brought-home" / aliased
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.symlink_to(tmp_path / "somewhere-else.log")
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    assert [item.split(":", 1)[0] for item in payload["refused_serving_logs"]] == [aliased]
+    assert "symbolic link" in payload["refused_serving_logs"][0]
+    assert planted.is_symlink()
+    assert not planted.exists()  # still dangling: nothing was written through it
+    assert payload["stages_verified"] == ["designator"]
+
+
+def test_a_refused_serving_log_is_not_counted_among_what_was_verified(
+    tmp_path: Path,
+) -> None:
+    """The counts stay honest across both serving-log states (GOVERNANCE 10).
+
+    `fetched` and `reused` count arrivals; `verified_objects` counts what was
+    checked against a digest the run tree recorded. A log that arrived was not,
+    and a log that never arrived is in neither.
+    """
+
+    volume, reader = _volume_run(tmp_path)
+    logs = _served_stage_leavings(volume)
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["fetched"] == len(_files_under(volume / "runs" / "brought-home"))
+    assert payload["reused"] == 0
+    assert payload["verified_objects"] == payload["fetched"] - len(logs)
+    assert payload["refused_serving_logs"] == []
+    # The screen never says "every one checked" over a count holding the logs.
+    joined = "\n".join(messages)
+    assert "every one checked" not in joined
+    assert f"{payload['verified_objects']} of them checked against the run tree" in joined
 
 
 def test_fetch_run_still_refuses_an_unaccounted_object_beside_the_serving_logs(

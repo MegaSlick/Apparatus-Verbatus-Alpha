@@ -68,7 +68,6 @@ from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
-from common.runtree.store import SERVING_LOGS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -4558,15 +4557,21 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         launcher=SubprocessLauncher(),
         http=UrllibHttpTransport(),
         receipt_publisher=StageContextReceiptPublisher(context),
-        # The logs stay in this stage's own directory, where
+        # The logs stay in this stage's own writing directory, where
         # `RunTree.inventory_scope()` names them and `fetch-run` brings them
-        # home as unverified side evidence. The lease does not: one card is one
-        # pod's boundary, not one run tree's, so it takes the container-local
-        # path the pod preflight and every other serving stage take. A lease
-        # resolved inside a run tree let two stages resumed under different run
-        # ids both acquire and co-reside on one GPU, and put an advisory lock
-        # on a network mount that is not known to honour one.
-        log_root=context.tree.resolve(f"{ATTESTATORES}/{SERVING_LOGS_DIR}"),
+        # home as unverified side evidence. `serving_log_path`, never a
+        # directory spelled here: this call site read `f"{ATTESTATORES}/..."`,
+        # and the stage is named "attestatores" while it writes in
+        # "3_attestatores", so every engine log landed at a path no scope
+        # accounted for and `fetch-run` refused the whole served tree by name,
+        # bringing home nothing from a run that had already billed a card. The
+        # lease does not stay here: one card is one pod's boundary, not one run
+        # tree's, so it takes the container-local path the pod preflight and
+        # every other serving stage take. A lease resolved inside a run tree let
+        # two stages resumed under different run ids both acquire and co-reside
+        # on one GPU, and put an advisory lock on a network mount that is not
+        # known to honour one.
+        log_root=context.tree.resolve(context.tree.serving_log_path(ATTESTATORES)),
         residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/3_attestatores/run.py",
     )

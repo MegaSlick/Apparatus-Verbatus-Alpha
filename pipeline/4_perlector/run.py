@@ -81,13 +81,7 @@ from common.contracts.errors import (  # noqa: E402
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.outcomes import ATTACHMENT_BASES, page_attachment_basis  # noqa: E402
-from common.contracts.stages import (  # noqa: E402
-    ATTESTATORES,
-    DESIGNATOR,
-    EXEMPLAR,
-    PERLECTOR,
-    writing_directory,
-)
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.corpus_register import refuse_capture_preference  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
     atomic_delivered_pixels,
@@ -106,7 +100,7 @@ from common.native_witness import (  # noqa: E402
     validate_presented_page_binding,
     verify_native_capture_blob,
 )
-from common.runtree.store import RECEIPTS_DIR, SERVING_LOGS_DIR  # noqa: E402
+from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -150,16 +144,6 @@ from operations.serving.residency import (  # noqa: E402
 # into a named refusal instead of an unbounded preflight.  Real receipts are a
 # few kilobytes; these ceilings allow a large alpha run while keeping both one
 # object and the aggregate scan finite.
-# A live chair's engine logs, inside the run tree so they travel with the
-# evidence they belong to. They sit beside this stage's artifacts and blobs
-# rather than among them: `_stage_blob_inventory` walks `<stage>/blobs` alone,
-# so an engine still writing its log while the stage seals cannot make the
-# witnessed inventory false. `RunTree.inventory_scope()` names the directory,
-# which is what lets `fetch-run` bring the logs home as unverified side
-# evidence instead of refusing the whole served tree at the first one it lists.
-# The residency lease is not here: see `POD_RESIDENCY_LOCK_PATH`.
-SERVING_LOG_DIRECTORY: Final = SERVING_LOGS_DIR
-
 MAX_SAMPLING_APPROVAL_RECEIPTS: Final = 100_000
 MAX_SAMPLING_APPROVAL_RECEIPT_BYTES: Final = 4 * 1024 * 1024
 MAX_SAMPLING_APPROVAL_SCAN_BYTES: Final = 1024 * 1024 * 1024
@@ -1915,9 +1899,18 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
             launcher=SubprocessLauncher(),
             http=UrllibHttpTransport(),
             receipt_publisher=StageContextReceiptPublisher(context),
-            log_root=context.tree.resolve(
-                f"{writing_directory(context.stage)}/{SERVING_LOG_DIRECTORY}"
-            ),
+            # A live chair's engine logs, inside the run tree so they travel
+            # with the evidence they belong to. They sit beside this stage's
+            # artifacts and blobs rather than among them: `_stage_blob_inventory`
+            # walks `<stage>/blobs` alone, so an engine still writing its log
+            # while the stage seals cannot make the witnessed inventory false.
+            # `RunTree.serving_log_path` is the one place the directory is
+            # spelled, and `inventory_scope()` names the same one, which is what
+            # lets `fetch-run` bring the logs home as unverified side evidence
+            # instead of refusing the whole served tree at the first one it
+            # lists. The residency lease is not here: see
+            # `POD_RESIDENCY_LOCK_PATH`.
+            log_root=context.tree.resolve(context.tree.serving_log_path(context.stage)),
             # One card, one resident chair, one lease -- and the card belongs
             # to the pod, not to this run tree. `POD_RESIDENCY_LOCK_PATH` is
             # the container-local path the pod preflight and the other serving

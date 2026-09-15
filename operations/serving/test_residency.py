@@ -10,6 +10,7 @@ but closing the descriptor afterward does not.
 from __future__ import annotations
 
 import fcntl
+import os
 import re
 from pathlib import Path
 
@@ -62,6 +63,17 @@ def test_every_serving_caller_takes_the_one_pod_wide_lease_path() -> None:
         # `chosen.residency_lock` is `bootstrap_main`'s injection seam, whose
         # own default is the constant; every other spelling is a second
         # boundary, and a second boundary is no boundary.
+        #
+        # The regex reads one line and one positional argument, so exactly two
+        # spellings pass it: `FileResidencyLease(POD_RESIDENCY_LOCK_PATH)` and
+        # `FileResidencyLease(chosen.residency_lock)`. A correct call the
+        # formatter has wrapped across lines, or a keyword spelling
+        # (`FileResidencyLease(path=POD_RESIDENCY_LOCK_PATH)`), fails here and
+        # the message below will be wrong about why. That is the trade taken
+        # deliberately: a source read cannot tell a renamed variable holding the
+        # constant from a second lock path, and the failure is a caller to
+        # respell rather than a defect to hunt. If this fires on a call that
+        # does name the constant, widen the regex -- do not widen the boundary.
         assert not re.search(
             r"FileResidencyLease\((?!POD_RESIDENCY_LOCK_PATH\)|chosen\.residency_lock\))",
             source,
@@ -73,6 +85,29 @@ def test_every_serving_caller_takes_the_one_pod_wide_lease_path() -> None:
             f"{relative} still resolves a lock file name against its run tree; the lease "
             "is pod-wide and container-local"
         )
+
+
+def test_a_symlink_at_the_lease_path_is_refused_rather_than_followed(tmp_path: Path) -> None:
+    """The one pod-wide lease is a fixed name in a world-writable directory.
+
+    Inside the single-tenant pod container that is exactly right. On a shared
+    developer machine -- which is new, because three pipeline stages now take
+    the same fixed path -- another user's symlink at that name would otherwise
+    be followed, and the lock taken on whatever it pointed at while the lease
+    reported itself held. `O_NOFOLLOW` makes that a named refusal instead. Two
+    unrelated local runs still serialize on the shared path; that is the lease
+    doing its job on a machine with one card, and it refuses loudly either way.
+    """
+
+    real = tmp_path / "somebody-elses-file"
+    real.write_text("not a lease", encoding="utf-8")
+    link = tmp_path / "pod-gpu.lock"
+    link.symlink_to(real)
+
+    with pytest.raises(ResidencyError, match="could not acquire serving residency lease"):
+        FileResidencyLease(link).acquire(identity=None)  # type: ignore[arg-type]
+
+    assert real.read_text(encoding="utf-8") == "not a lease"
 
 
 def test_acquire_is_non_blocking_and_refuses_a_second_holder(tmp_path: Path) -> None:
@@ -170,7 +205,7 @@ def test_acquire_closes_the_handle_and_refuses_on_a_plain_oserror(
     """
 
     closed: list[bool] = []
-    real_open = Path.open
+    real_fdopen = os.fdopen
 
     class TrackingHandle:
         def __init__(self, real: object) -> None:
@@ -183,13 +218,16 @@ def test_acquire_closes_the_handle_and_refuses_on_a_plain_oserror(
             closed.append(True)
             self._real.close()  # type: ignore[attr-defined]
 
-    def _open(self: Path, *args: object, **kwargs: object) -> object:
-        return TrackingHandle(real_open(self, *args, **kwargs))
+    # The seam is `os.fdopen`, not `Path.open`: the lease opens its descriptor
+    # with `os.open(..., O_NOFOLLOW)` so a symlink at the one fixed lease path
+    # is refused rather than followed, and wraps that descriptor afterwards.
+    def _fdopen(descriptor: int, *args: object, **kwargs: object) -> object:
+        return TrackingHandle(real_fdopen(descriptor, *args, **kwargs))
 
     def _flock(fd: int, operation: int) -> None:
         raise OSError("simulated non-contention flock failure")
 
-    monkeypatch.setattr(Path, "open", _open)
+    monkeypatch.setattr(os, "fdopen", _fdopen)
     monkeypatch.setattr(fcntl, "flock", _flock)
 
     path = tmp_path / "pod-gpu.lock"
@@ -218,15 +256,17 @@ def test_acquire_reports_a_close_failure_inside_the_refusal_it_was_already_raisi
         def close(self) -> None:
             raise OSError("simulated close failure during acquire cleanup")
 
-    real_open = Path.open
+    real_fdopen = os.fdopen
 
-    def _open(self: Path, *args: object, **kwargs: object) -> object:
-        return ExplodingCloseHandle(real_open(self, *args, **kwargs))
+    # As above, the seam is `os.fdopen`: the lease opens with `os.open` and
+    # `O_NOFOLLOW`, then wraps the descriptor it got.
+    def _fdopen(descriptor: int, *args: object, **kwargs: object) -> object:
+        return ExplodingCloseHandle(real_fdopen(descriptor, *args, **kwargs))
 
     def _flock(fd: int, operation: int) -> None:
         raise BlockingIOError("simulated contention")
 
-    monkeypatch.setattr(Path, "open", _open)
+    monkeypatch.setattr(os, "fdopen", _fdopen)
     monkeypatch.setattr(fcntl, "flock", _flock)
 
     with pytest.raises(ResidencyError, match="another serving manager holds") as refused:
