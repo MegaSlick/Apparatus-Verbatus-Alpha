@@ -231,6 +231,24 @@ finding inside a dispatch fact. See findings F068/F083 — a published request n
 downstream can answer made the Designator exit 2, the orchestrator abort, and the
 Armarium refuse, leaving a run with no export by any sequence of stage invocations.
 
+**What that claim rests on, and the seam of it that is not yet measured.** The gate
+itself is measured: `test_unit14b_trigger_contract.py` compiles the live publication
+conditional out of `run.py` and evaluates it with every coverage and budget conjunct
+satisfied, so the route alone decides, and the real-route branch of
+`unresolved_observation_hold` is exercised directly. That a held act forces a partial
+export naming it is measured too, on the fixture route
+(`pipeline/orchestrator/test_orchestrator_acceptance.py`). **No single run measures the
+whole chain — gate, hold, partial export — on real ingress.** Doing that needs a run
+that is simultaneously a real submission and marked out by a served structure chair,
+with a scripted answer whose cuts deliberately leave ink outside them and a witness box
+pointing at it; no module in the tree drives that shape today
+(`pipeline/test_real_ingress_contexts_e2e.py` is real ingress with a hand-built
+Designator layer and stops at the conservation denominator;
+`pipeline/test_structure_chair_e2e.py` is the live structure chair on the fixture
+route). This is ledger finding F008, and the chain above is stated here as two proven
+halves rather than as one measured run, so nobody reads it as more than it is
+(GOVERNANCE 10).
+
 The nine `expected_acts` readers in this file are unchanged: on a real run the shared
 reader skips the fixture floor by name and recomputes every row from the Designator's
 own sealed evidence, and nothing in this stage believes a count it has not recomputed

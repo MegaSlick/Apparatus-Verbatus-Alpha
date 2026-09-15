@@ -242,7 +242,14 @@ def test_a_real_ingress_recrop_is_refused_by_name_and_recorded_before_anything_i
         orchestrator.drive_recovery(args, hard_failure_policy={})
 
     assert calls == []
-    printed = capsys.readouterr().out
+    streams = capsys.readouterr()
+    # On stderr, and asserted as stderr. The operator surface records a failed
+    # run's detail as `completed.stderr or completed.stdout`, and the
+    # `ContractError` this raises is itself printed to stderr, so a listing on
+    # stdout would be dropped from the receipt and this refusal would be
+    # recorded nowhere a human reads (GOVERNANCE 2).
+    assert streams.out == ""
+    printed = streams.err
     # Both acts, not only the one the raised exception carries.
     assert "recovery cannot be dispatched for 2 outstanding request(s)" in printed
     assert "act act_1 (request request_1, kind fallback-recrop)" in printed

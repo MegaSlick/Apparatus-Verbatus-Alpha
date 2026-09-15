@@ -1483,16 +1483,23 @@ def categorize(
     if review["outcome"] == "recovery-requested":
         # The refusal stands: an act mid-recovery has no established reading to
         # export, and exporting it as anything would be a partial delivered as
-        # complete. What it must not become is a run with no route out, which is
-        # what it was on a real submission before the Recensor stopped publishing
-        # a request nothing downstream could answer (F068/F083). The route is
-        # named here so an operator meeting this does not have to derive it.
+        # complete. What the operator was not told is which of two shapes this
+        # is: a fixture run whose recovery has simply not been driven yet, which
+        # ends here again once it is, or a real submission, where no stage can
+        # cut the recrop and the run has no export at all (F068/F083). Both are
+        # named here rather than left to be derived from a stage a run away, and
+        # neither names a remedy this tree does not implement.
         raise FatalAccounting(
             f"act {act_id} has an outstanding recovery request; its recrop must be reread "
-            "before an Archetypus can exist. The Designator cuts the recrop, dispatched by "
-            "the orchestrator's recovery member; on a real submission no such request is "
-            "published any more, so one found here predates that gate and is superseded by "
-            "re-running the Recensor"
+            "before an Archetypus can exist. On the fixture route the Designator cuts that "
+            "recrop, dispatched by the orchestrator's recovery member, so the run reaches "
+            "here again once recovery has been driven. On a real submission it cannot: the "
+            "Designator refuses `--operation recover` by name, and re-running the Recensor "
+            "does not clear the request either, because it holds an act with an outstanding "
+            "request without republishing. A request found here on a real submission "
+            "predates the gate that now withholds it, and this run has no export; the "
+            "request artifact and its review keep the evidence, and a fresh run of the same "
+            "submission from the Door does not reach this state"
         )
 
     established = artifacts_for(context, ARCHETYPUS, "archetypus", act_id, manifest_cache)
