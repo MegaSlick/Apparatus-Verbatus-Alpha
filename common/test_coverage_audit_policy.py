@@ -267,6 +267,10 @@ def test_a_shipped_policy_with_no_provenance_block_is_refused_by_the_common_load
 def test_a_provenance_block_claiming_calibration_without_samples_is_refused(tmp_path):
     """The shared calibration rule, applied by the loader the Ink Map uses."""
     text = DEFAULT_COVERAGE_AUDIT_CONFIG_PATH.read_text(encoding="utf-8")
+    # The over-claim has to be made for this test to mean anything: a shipped
+    # file that stopped carrying an uncalibrated block would otherwise leave it
+    # passing over an unmodified file.
+    assert "calibrated_for_this_corpus = false" in text
     path = tmp_path / "over-claimed.toml"
     path.write_text(
         text.replace("calibrated_for_this_corpus = false", "calibrated_for_this_corpus = true"),
