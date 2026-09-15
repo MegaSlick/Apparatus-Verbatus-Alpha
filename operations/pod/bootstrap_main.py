@@ -34,15 +34,14 @@ has an injection point in :class:`PreflightSeams`, which is how
 ``test_bootstrap_main.py`` proves the wiring green against the serving fakes
 without a card.
 
-**One thing the wiring cannot make green, said here rather than discovered on a
-billing card.**  Every vLLM row in ``config/serving_recipes_real.toml`` is
-``preflight_state = "unproven"``, and ``ServingManager.start`` refuses an
-unproven row by name before it launches anything; so the first real
-``PREFLIGHT`` is red at ``smoke-read-failed`` for every real chair until a
-reviewer stamps those rows proven, which the serving README says happens
-*after* a real-silicon preflight.  It is not this file's to fix; it is named so
-nobody reads a red first preflight as a wiring fault.  The stack itself is no
-longer the obstacle it was: the recipe's pins were re-planned onto
+**How the first real preflight closes its proof loop.**  Ordinary
+``ServingManager.start`` still refuses every ``preflight_state = "unproven"``
+row.  Only this smoke-preflight assembly receives the private qualification
+purpose that permits such a row to launch while retaining every snapshot,
+runtime, request, shutdown, and evidence check.  A green report can then be
+verified offline by ``operations.serving.qualify`` to render the identity and
+profile digests for review; the verifier edits no catalogue.  The stack itself
+was re-planned onto
 ``vllm 0.27.1`` / ``transformers 5.14.1``, which lock beside the project's
 ``huggingface_hub==1.26.0``, and ``bootstrap.py``'s ``uv sync`` now carries
 ``--group pod``.  That the wheels install and the weights load on real silicon
@@ -171,6 +170,7 @@ here does not make this file provider vocabulary -- the value is a Verbatus
 launch fact, not a RunPod one."""
 
 HOLD_SCHEMA = "pod-bootstrap-hold.v1"
+BOOTSTRAP_RESULT_SCHEMA = "pod-bootstrap-result.v1"
 DEFAULT_PROOF_FIXTURE = "synthetic-two-page-v0"
 """Matches ``operations/operator/surface.py``'s ``DEFAULT_FIXTURE``; duplicated
 rather than imported to avoid a pod-side dependency on the operator layer."""
@@ -1200,10 +1200,10 @@ def _build_preflight(
                 BootstrapStep.PREFLIGHT,
                 "preflight returned red: "
                 + json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
-                "Read the issues by chair: an unproven serving row refuses launch until a "
-                "reviewer stamps it proven, a cache mismatch names its chair, and an empty "
-                "utilization sample means nvidia-smi could not be read. Do not substitute a "
-                "fixture pass.",
+                "Read the issues by chair: a cache mismatch names its chair, a launch or "
+                "fixture-bound request failure names the affected serving profile, and an "
+                "empty utilization sample means nvidia-smi could not be read. Do not "
+                "substitute a fixture pass.",
             )
         return record
 
@@ -1520,6 +1520,19 @@ def run_bootstrap(
         _write_refusal_report(plan.report_path, f"could not build actions: {error}", now=now)
         return EXIT_REFUSED
     report = Bootstrapper(journal, actions).run()
+    result_record = {
+        "schema": BOOTSTRAP_RESULT_SCHEMA,
+        "state": "bootstrap-green" if report.green else "bootstrap-red",
+        "at": now().isoformat().replace("+00:00", "Z"),
+        "bootstrap": report.to_record(),
+    }
+    try:
+        atomic_write(plan.report_path, canonical_json(result_record))
+    except OSError as error:
+        print(
+            f"bootstrap result could not be written to {plan.report_path}: {error}", file=sys.stderr
+        )
+        return EXIT_REFUSED
     if not report.green:
         print(f"bootstrap step {report.failure_step}: {report.detail}", file=sys.stderr)
     return report

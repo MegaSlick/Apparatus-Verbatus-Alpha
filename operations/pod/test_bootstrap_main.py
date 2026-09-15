@@ -241,7 +241,11 @@ def test_red_bootstrap_step_exits_nonzero_and_never_holds(tmp_path: Path) -> Non
 
     assert exit_code == 3
     assert BootstrapStep.PREFLIGHT not in fake.calls
-    assert not ws.report_path.exists()
+    durable = json.loads(ws.report_path.read_text(encoding="utf-8"))
+    assert durable["schema"] == "pod-bootstrap-result.v1"
+    assert durable["state"] == "bootstrap-red"
+    assert durable["bootstrap"]["failure_step"] == "transfer"
+    assert durable["bootstrap"]["detail"] == "injected failure"
     assert clock.seconds == 0.0  # the hold loop never ran to sleep on anything
 
 
@@ -1756,17 +1760,11 @@ def test_a_mid_run_page_swap_is_refused_by_name_not_reported_green(tmp_path: Pat
     assert "disagree on the golden page's digest" in failure.value.detail
 
 
-def test_preflight_is_red_by_chair_name_while_a_serving_row_is_unproven(
+def test_preflight_qualification_launches_unproven_rows_only_inside_smoke_lifecycle(
     tmp_path: Path,
 ) -> None:
-    """The code as it stands: an unproven row refuses launch before any process.
+    """Preflight alone may measure an unproven row, then stops every child."""
 
-    Every row in ``config/serving_recipes_real.toml`` is unproven today, so this
-    is exactly the first real preflight's shape -- red at ``smoke-read-failed``
-    for every chair, with the refusal naming the row, and nothing launched.
-    """
-
-    from .bootstrap import BootstrapStepFailure
     from .bootstrap_main import _build_preflight, build_parser, resolve_plan
 
     ws, identities = _serving_workspace(tmp_path, preflight_state="unproven")
@@ -1774,14 +1772,15 @@ def test_preflight_is_red_by_chair_name_while_a_serving_row_is_unproven(
     plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
     seams, _http, launcher = _preflight_seams(tmp_path, identities)
 
-    with pytest.raises(BootstrapStepFailure) as failure:
-        _build_preflight(plan, seams)()
+    record = _build_preflight(plan, seams)()
 
-    detail = failure.value.detail
-    assert "smoke-read-failed" in detail
-    assert "preflight_state='unproven'" in detail
-    assert all(role in detail for role in identities)
-    assert launcher.calls == []
+    assert record["color"] == "green"
+    assert len(launcher.calls) == len(identities)
+    assert all(process.poll() is not None for process in launcher.processes)
+    for receipt in record["smoke_receipts"]:
+        audit = receipt["serving_launch_audit"]
+        assert audit["launch_purpose"] == "preflight-qualification"
+        assert audit["profile"]["preflight_state"] == "unproven"
 
 
 def test_a_supplied_golden_page_needs_its_witness_file_and_the_reverse(

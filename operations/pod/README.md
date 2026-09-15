@@ -308,14 +308,15 @@ check.
   `config/witness_context-real.toml` with `config/models-real.toml`), and
   `--fixture` with
   `--page-witness-file` lets an operator supply a rendered page instead.
-  `test_bootstrap_main.py` proves the wiring green through the real registry
-  over the committed model fixtures and the serving package's fakes, and red
-  by chair name when a row is unproven. **One thing keeps the first real
-  `PREFLIGHT` red, and it is not a wiring fault:** every vLLM row in
-  `config/serving_recipes_real.toml` is `preflight_state = "unproven"`, which
-  `ServingManager.start` refuses by name before it launches anything, so a
-  reviewer must stamp rows proven first (the serving README says that happens
-  after a real-silicon preflight — a circle this unit names rather than cuts).
+  `test_bootstrap_main.py` proves the wiring through the real registry over the
+  committed model fixtures and the serving package's fakes. Ordinary serving
+  still refuses an unproven row by chair name. The smoke-preflight assembly
+  alone can launch an unproven vLLM row for qualification while retaining all
+  ordinary launch and shutdown checks; its audit records that purpose and the
+  row state. After a green real-silicon report,
+  `python -m operations.serving.qualify` verifies the report and its
+  content-addressed artifacts and renders review candidates for only the
+  measured tier. It never edits the catalogue or marks another tier proven.
   The stack those rows name is installable now, see
   "The serving stack, re-planned and locked" below. Both the ordinary hold and the `--hold-only` drill
   hold to `VERBATUS_HARD_DEADLINE` (the same spelling the RunPod pod-timer

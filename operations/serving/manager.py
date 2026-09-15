@@ -128,6 +128,13 @@ _HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qw
 # match simply stops firing and every probe rejection reverts to the old
 # retry-to-watchdog behaviour -- a safe direction to fail in.
 _PROBE_HTTP_STATUS = re.compile(r"HTTP (\d{3})$")
+
+# Only the serving smoke assembly receives this identity token.  It permits an
+# unproven row to enter the existing start -> fixture read -> verified stop
+# lifecycle without adding a general-purpose bypass to ``start``.
+_PREFLIGHT_QUALIFICATION_PURPOSE: Final = object()
+_NORMAL_LAUNCH = "normal"
+_PREFLIGHT_QUALIFICATION_LAUNCH = "preflight-qualification"
 _READINESS_PROBE_TIMEOUT_SECONDS = 2.0
 """Per-request budget for one /health or /v1/models poll.
 
@@ -546,6 +553,7 @@ class ServingManager:
         monotonic: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
         shutdown_timeout_seconds: float = 10.0,
+        _launch_purpose: object | None = None,
     ) -> None:
         supplied_command_prefix = command_prefix is not None
         if command_prefix is None:
@@ -602,6 +610,8 @@ class ServingManager:
             raise ValueError("serving manager requires an explicit pod/GPU-scoped residency lease")
         if not isinstance(config_inputs, ServingConfigInputs):
             raise ValueError("serving manager requires exact sealed serving configuration inputs")
+        if _launch_purpose is not None and _launch_purpose is not _PREFLIGHT_QUALIFICATION_PURPOSE:
+            raise ValueError("serving launch purpose is owned by the preflight assembly")
         self.registry = registry
         self.recipes = recipes
         self.config_inputs = config_inputs
@@ -617,6 +627,10 @@ class ServingManager:
         self.monotonic = monotonic or time.monotonic
         self.sleep = sleep or time.sleep
         self.shutdown_timeout_seconds = shutdown_timeout_seconds
+        self._qualification_launch = _launch_purpose is _PREFLIGHT_QUALIFICATION_PURPOSE
+        self.launch_purpose = (
+            _PREFLIGHT_QUALIFICATION_LAUNCH if self._qualification_launch else _NORMAL_LAUNCH
+        )
         self._active: ServiceHandle | None = None
         self._residency_handle: ResidencyHandle | None = None
         self._unready_process: ServerProcess | None = None
@@ -670,7 +684,11 @@ class ServingManager:
             # with no registry.ensure work behind it, or the preflight gate's
             # "before snapshot verification" claim is false for exactly the
             # composed launches that need it most.
-            profile = _launchable(self.recipes.for_identity(identity, tier), identity)
+            profile = _launchable(
+                self.recipes.for_identity(identity, tier),
+                identity,
+                qualification=self._qualification_launch,
+            )
             self._assert_runtime(profile)
             base_identity, base_profile = self._base_profile(identity, tier, profile)
             primary_snapshot = self.registry.ensure(identity)
@@ -941,7 +959,11 @@ class ServingManager:
             )
         return (
             configured_base,
-            _launchable(self.recipes.for_identity(configured_base, tier), configured_base),
+            _launchable(
+                self.recipes.for_identity(configured_base, tier),
+                configured_base,
+                qualification=self._qualification_launch,
+            ),
         )
 
     def _assert_runtime(self, profile: ServingProfile) -> dict[str, str]:
@@ -1247,12 +1269,14 @@ class ServingManager:
                 "schema": "serving-launch-audit.v1",
                 "chair": identity.role,
                 "producer": self.producer,
+                "launch_purpose": self.launch_purpose,
                 "configuration_inputs": self.config_inputs.to_record(),
                 "started_at": started_at,
                 "endpoint": profile.endpoint,
                 "profile": {
                     "recipe": profile.recipe,
                     "tier": profile.tier,
+                    "preflight_state": profile.preflight_state,
                     "served_model_id": profile.served_model_id,
                     "host": profile.host,
                     "port": profile.port,
@@ -1618,7 +1642,10 @@ def assert_no_discoverable_local_env(*, directory: str | Path | None = None) -> 
 
 
 def _launchable(
-    profile: "ServingProfile | FixtureProfile | UnsupportedProfile", identity: ChairIdentity
+    profile: "ServingProfile | FixtureProfile | UnsupportedProfile",
+    identity: ChairIdentity,
+    *,
+    qualification: bool = False,
 ) -> ServingProfile:
     """Refuse non-launchable rows before snapshot and runtime checks.
 
@@ -1642,7 +1669,9 @@ def _launchable(
             "process was started; add and preflight a native serving implementation before "
             "launching this chair"
         )
-    if profile.preflight_state != "proven":
+    if profile.preflight_state != "proven" and not (
+        qualification and profile.preflight_state == "unproven"
+    ):
         raise ServingConfigurationError(
             f"chair {identity.role!r} serving profile is structurally marked "
             f"preflight_state={profile.preflight_state!r}; real-silicon preflight must "
@@ -1657,7 +1686,10 @@ def _launchable(
     # in hand, rather than launch on a claim that has quietly stopped being
     # about the thing being launched.
     observed_identity_digest = chair_preflight_identity_digest(identity)
-    if profile.preflight_identity_digest != observed_identity_digest:
+    if (
+        profile.preflight_state == "proven"
+        and profile.preflight_identity_digest != observed_identity_digest
+    ):
         raise ServingConfigurationError(
             f"chair {identity.role!r} serving profile was preflight-proven against chair "
             f"identity {profile.preflight_identity_digest!r}, but the configured identity "

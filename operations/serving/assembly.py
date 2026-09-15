@@ -25,7 +25,12 @@ from operations.pod.preflight import (
 from .config import ServingConfigInputs, ServingRecipes, load_serving_recipes
 from .errors import ServingConfigurationError
 from .http import HttpTransport, UrllibHttpTransport
-from .manager import PackageInspector, ReceiptPublisher, ServingManager
+from .manager import (
+    _PREFLIGHT_QUALIFICATION_PURPOSE,
+    PackageInspector,
+    ReceiptPublisher,
+    ServingManager,
+)
 from .preflight import CalibrationFor, ServingSmokeReader, SmokeCall, prepare_log_root
 from .process import ProcessLauncher, SubprocessLauncher
 from .residency import ResidencyLease
@@ -284,6 +289,7 @@ def _make_reader(
         command_prefix=command_prefix,
         residency_lease=residency_lease,
         producer=producer,
+        _launch_purpose=_PREFLIGHT_QUALIFICATION_PURPOSE,
     )
     return ServingSmokeReader(
         manager,
