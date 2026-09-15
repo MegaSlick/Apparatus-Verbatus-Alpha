@@ -164,13 +164,21 @@ def test_length_suspicious_refuses_a_floor_that_could_never_fire():
         length_suspicious("text", 100, floor=0)
 
 
-def test_classify_refuses_a_policy_whose_floor_is_not_an_integer():
-    with pytest.raises(ContractError, match="not an integer"):
+@pytest.mark.parametrize("floor", [True, "50", 50.0, None, 0, -1])
+def test_classify_refuses_a_policy_whose_floor_is_not_a_positive_integer(floor):
+    """Zero and negatives by name, not as an escaping `ValueError`.
+
+    `is_length_suspicious` raises `ValueError` for a floor of zero, which the
+    stage boundary does not classify as a contract refusal -- so a hand-built
+    policy carrying zero used to leave this module unnamed while a wrongly
+    typed one was refused properly (CodeRabbit on PR #117).
+    """
+    with pytest.raises(ContractError, match="not a positive integer"):
         truncation.classify(
             "text",
             region_pixels=100,
             page_pixels=1000,
-            truncation_policy={truncation.LENGTH_FLOOR_FIELD: True},
+            truncation_policy={truncation.LENGTH_FLOOR_FIELD: floor},
             stop_reason="stop",
         )
 
@@ -469,6 +477,47 @@ def test_the_shared_validator_binds_the_character_count_to_the_text():
     assert validate_truncation_record(record, label="x", text=FIXTURE_TEXT) == record
     with pytest.raises(SchemaRefusal, match="characters but the text"):
         validate_truncation_record(record, label="x", text=FIXTURE_TEXT + "!")
+
+
+def test_the_shared_validator_binds_the_floor_to_the_one_this_run_sealed():
+    """A re-derivation is only worth the floor it runs on, either.
+
+    `length_suspicious` is recomputed from the record's own measure, so a
+    record that names its own floor agrees with itself whatever that floor is:
+    under a sealed floor of 50, a re-proof record naming floor 1 derives the
+    signal false, classifies `complete`, and clears an audit hold the sealed
+    policy would have held. The caller that holds the sealed table passes it,
+    and a record judged under any other floor is refused before the signal is
+    derived (CodeRabbit on PR #117).
+    """
+    from common.contracts.errors import SchemaRefusal
+    from common.perlector_audit import validate_truncation_record
+
+    # A short reading over a whole page: suspicious under the sealed floor,
+    # clean under a floor of one, which is the forgery this refuses.
+    under_the_seal = classify("x", region_pixels=FIXTURE_PAGE, stop_reason="stop")
+    assert under_the_seal["signals"]["length_suspicious"] is True
+    assert (
+        validate_truncation_record(
+            under_the_seal, label="x", length_floor_characters_per_page=FLOOR
+        )
+        == under_the_seal
+    )
+
+    forged = truncation.classify(
+        "x",
+        region_pixels=FIXTURE_PAGE,
+        page_pixels=FIXTURE_PAGE,
+        truncation_policy={truncation.LENGTH_FLOOR_FIELD: 1},
+        stop_reason="stop",
+    )
+    # Internally consistent, and complete: exactly what makes the floor
+    # load-bearing rather than decorative.
+    assert forged["signals"]["length_suspicious"] is False
+    assert forged["classification"] == truncation.COMPLETE
+    assert validate_truncation_record(forged, label="x") == forged
+    with pytest.raises(SchemaRefusal, match="judged under length floor 1 but this run sealed"):
+        validate_truncation_record(forged, label="x", length_floor_characters_per_page=FLOOR)
 
 
 def test_a_policy_with_no_floor_at_all_is_refused_by_name():

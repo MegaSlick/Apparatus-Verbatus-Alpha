@@ -1708,6 +1708,29 @@ def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_
     assert findings["a1"]["payload"]["change_record"] == []
     assert findings["a1"]["payload"]["uncertain_spans"] == []
     audit.validate_chain(tree, cut, cut["subject_id"])
+    # And the floor that re-proof was judged under is this run's own sealed
+    # one, bound rather than taken on the record's word: `validate_truncation_
+    # record` re-derives `length_suspicious` from the record's own measure, so
+    # a record naming a floor nobody sealed agrees with itself perfectly and
+    # can clear a hold the sealed policy would have held (CodeRabbit on PR
+    # #117). The Perlector passes the sealed floor at both of its own call
+    # sites, which is why the run above published at all.
+    sealed_floor = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][
+        protocol.TRUNCATION_TABLE
+    ][protocol.LENGTH_FLOOR_FIELD]
+    assert (
+        findings["a1"]["payload"]["reproof_truncation"]["measure"][
+            "length_floor_characters_per_page"
+        ]
+        == sealed_floor
+    )
+    audit.validate_chain(
+        tree, cut, cut["subject_id"], length_floor_characters_per_page=sealed_floor
+    )
+    with pytest.raises(SchemaRefusal, match="judged under length floor"):
+        audit.validate_chain(
+            tree, cut, cut["subject_id"], length_floor_characters_per_page=sealed_floor + 1
+        )
 
     # The control act on the same run: an unchanged re-proof that completed.
     assert control["outcome"] == "read"
@@ -2381,3 +2404,103 @@ def test_an_unhashable_or_non_string_vocabulary_value_is_refused_by_name_not_typ
         )
     with pytest.raises(SchemaRefusal, match="is not an audit examination state"):
         audit.unresolved_state(bad)
+
+
+def test_an_emptied_reproof_is_re_measured_beside_the_text_it_publishes():
+    """The sealed termination must describe the reading the record publishes.
+
+    A re-proof that returns whitespace is projected to `no-readable-text`: the
+    published text becomes `""`. The termination measured over the whitespace
+    still counted those characters, and `validate_finding` binds `measure.
+    characters` to the published text -- so the producer's own `validate_chain`
+    raised `SchemaRefusal` on a correct record and the pass stopped before the
+    later acts were processed (CodeRabbit on PR #117).
+
+    Read from source for the reason `test_live_perlector.py::
+    _reading_inputs_composition` reads its own property from source: reaching
+    this branch behaviourally needs a declared fixture scenario whose Pass-C
+    re-proof returns whitespace, and the whole shared skeleton would have to
+    grow one to assert a two-line ordering inside one branch. The binding this
+    protects is asserted behaviourally beside it, over the validator that
+    refused.
+    """
+    import ast
+
+    source = Path(_perlector().__file__).read_text(encoding="utf-8")
+    module = ast.parse(source)
+    read_the_acts = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "_read_the_acts"
+    )
+    branches = [
+        node
+        for node in ast.walk(read_the_acts)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and any(
+            isinstance(comparator, ast.Constant) and comparator.value == "no-readable-text"
+            for comparator in node.test.comparators
+        )
+    ]
+    assert branches, "run.py no longer projects an emptied re-proof to no-readable-text"
+    emptying = [
+        branch
+        for branch in branches
+        if any(
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Subscript)
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == "text"
+                for target in node.targets
+            )
+            and isinstance(node.value, ast.Constant)
+            and node.value.value == ""
+            for node in ast.walk(branch)
+        )
+    ]
+    assert emptying, "no branch empties the published text; this pin has lost its subject"
+    for branch in emptying:
+        assert any(
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "reproof_truncation"
+                for target in node.targets
+            )
+            for node in ast.walk(branch)
+        ), (
+            "the branch that empties the published text must re-measure the sealed "
+            "termination beside it, or the finding describes a reading nobody published"
+        )
+
+
+def test_the_validator_that_refused_the_unmeasured_emptying_still_does():
+    """The behavioural half: the binding the branch above has to satisfy."""
+    import truncation
+
+    region, page = 160 * 80, 200 * 260
+    policy = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][
+        protocol.TRUNCATION_TABLE
+    ]
+    whitespace = truncation.classify(
+        "   ", region_pixels=region, page_pixels=page, truncation_policy=policy, stop_reason="stop"
+    )
+    emptied = truncation.classify(
+        "", region_pixels=region, page_pixels=page, truncation_policy=policy, stop_reason="stop"
+    )
+    assert whitespace["measure"]["characters"] == 3
+    assert emptied["measure"]["characters"] == 0
+
+    from common.perlector_audit import validate_truncation_record
+
+    with pytest.raises(SchemaRefusal, match="characters but the text"):
+        validate_truncation_record(
+            whitespace, label="an audit finding's re-proof termination", text=""
+        )
+    assert (
+        validate_truncation_record(
+            emptied, label="an audit finding's re-proof termination", text=""
+        )
+        == emptied
+    )

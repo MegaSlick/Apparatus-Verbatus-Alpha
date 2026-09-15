@@ -225,8 +225,18 @@ def classify(
     if LENGTH_FLOOR_FIELD not in truncation_policy:
         raise ContractError(f"the truncation policy declares no {LENGTH_FLOOR_FIELD}")
     floor = truncation_policy[LENGTH_FLOOR_FIELD]
-    if not isinstance(floor, int) or isinstance(floor, bool):
-        raise ContractError(f"the truncation policy's {LENGTH_FLOOR_FIELD} is not an integer")
+    # Non-positive is refused here and not left to `is_length_suspicious`: that
+    # function raises `ValueError` for a floor of zero, and a `ValueError` is
+    # not one of the named contract refusals this stage's boundary classifies,
+    # so a hand-built policy carrying zero escaped as an unclassified exception
+    # where a wrongly-typed one was named (CodeRabbit on PR #117). The bound is
+    # the same one `protocol.validate_truncation_table` applies to the sealed
+    # file: a floor of zero never fires and is the signal switched off by a
+    # value rather than by a decision.
+    if not isinstance(floor, int) or isinstance(floor, bool) or floor <= 0:
+        raise ContractError(
+            f"the truncation policy's {LENGTH_FLOOR_FIELD} is not a positive integer"
+        )
     signals: TruncationSignals = {
         "stop_reason_declared": stop_reason,
         "unclosed_structure": has_unclosed_structure(text),
