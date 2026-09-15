@@ -126,3 +126,23 @@ twelve source spreads may become twenty-four page inputs. Terra is implementing 
 connection through the real ScanTailor importer and standard triage producer. The cuts
 are operator-prescribed midpoints, not an assertion that the ScanTailor engine inferred
 them. Original pixels, source-frame geometry, rotation and reading order must survive.
+
+
+## User-prepared pages and rotation correction
+
+The user prepared four individual TIFF pages from the two pilot spreads. All four
+were uploaded and SHA-256 verified, then passed ordinary confined auto-ingest.
+No additional rotation was applied. The earlier180-degree value was part of the
+IIIF download URL: the image server had already applied that transformation. It
+was incorrect to treat it as an instruction to rotate the saved image again.
+The prescribed midpoint helper was not run on these inputs.
+
+The full automatic mechanics run `trial-four-page-20260915-mechanics` was launched
+on published6ece1c5 with these four TIFFs. Its launch is recorded separately from
+completion; no successful end-to-end result is claimed by this checkpoint. The
+user requests the pod remain running for Claude continuation, including at the
+Codex usage cutoff.
+
+The6ece fullgate failed only its formatting phase; all three ingress scans passed.
+The frozen formatter's one-file whitespace correction is applied here. A complete
+exact-head gate and GitHub review remain necessary before merge.

@@ -77,9 +77,7 @@ def load_orientations(path: str | Path) -> tuple[dict[str, int], str]:
         or not isinstance(value["orientations"], Mapping)
         or not value["orientations"]
         or any(
-            not isinstance(path, str)
-            or not path
-            or degrees not in {0, 180}
+            not isinstance(path, str) or not path or degrees not in {0, 180}
             for path, degrees in value["orientations"].items()
         )
     ):
