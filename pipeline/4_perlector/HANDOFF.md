@@ -900,31 +900,42 @@ those artifacts the interrupted attempt got to, and the pass answers for that pr
 - **An attempt interrupted inside its audit round is held, not read again.** `audit-draft`
   freezes the establishing reading's own text into immutable bytes. A live chair cannot
   reproduce that text, and the draft cannot be reused either, because the Perlectio it
-  belongs to was never written. That act publishes an explicit `not-run` Perlectio naming
-  the retained record (the same closed `_NOT_RUN_HELD_FIELDS` shape a Designator-held act
-  uses), the rest of the run is read, the stage seals, and the Recensor routes the held
-  act to review. Whether a Perlectio should instead gain a retained `failed` shape is not
-  this section's decision to make.
+  belongs to was never written. That act publishes an explicit `not-run` Perlectio in the
+  same closed `_NOT_RUN_HELD_FIELDS` shape a Designator-held act uses, and it *names* the
+  retained evidence rather than describing it: every artifact the interrupted attempt got
+  to is carried in the record's `inputs` as a digest-checked reference, so the reader the
+  Recensor routes to review reaches those bytes from the hold instead of reconstructing an
+  attempt identity by hand. The rest of the run is read, the stage seals, and the Recensor
+  routes the held act to review. Whether a Perlectio should instead gain a retained
+  `failed` shape is not this section's decision to make.
 
 Both are live-only: a fixture reader reproduces its own bytes, so a fixture resume
 republishes identically and the store reuses. Pinned by
-`test_live_perlector.py::test_a_live_pass_interrupted_after_its_pass_a_resumes_and_reuses_the_sealed_draft`
-and `::test_an_act_whose_audit_round_sealed_without_its_perlectio_is_held_not_read_again`,
-both of which fail with the exact `IncompatibleReuse` above when the handling is removed.
+`test_live_perlector.py::test_a_live_pass_interrupted_after_its_pass_a_resumes_and_reuses_the_sealed_draft`,
+`::test_a_resumed_act_reuses_the_sampled_arms_it_already_published` (which runs its own
+chain at 1000/1000 on both instrument arms, because `live_run` samples neither and a rule
+about sealed arms measures nothing on a tree that never publishes one), and
+`::test_an_act_whose_audit_round_sealed_without_its_perlectio_is_held_not_read_again`. Each
+fails with the exact `IncompatibleReuse` above when the handling it covers is removed.
 
 **One live-resume limit remains, named rather than hidden.** Every re-invocation of a live
 pass starts and stops the service, so an `--act` recovery loop pays a full model load per
 act (`pipeline/orchestrator/run.py`'s per-act dispatch). Ruling 16 permits a server that
 outlives one stage, but no cross-process handle exists; that is the next serving item.
 
-**A non-200 exits in this stage's own vocabulary.** `ChairResponseRefusal` is a
+**A response refusal exits in this stage's own vocabulary.** `ChairResponseRefusal` is a
 `ServingError`, which is a `RuntimeError` and not a `ContractError`, so `run_stage` never
 saw it: vLLM's 400 explaining a context overflow — the likeliest first answer from a real
 card — produced a Python traceback and exit 1 rather than a named refusal and `EXIT_FATAL`.
 `main` now translates it at the stage boundary and nowhere earlier: `ChairClient` still
 retains before it refuses, `live_reader` keeps its posture, and the refusal's code and the
-engine's own sentence travel verbatim into the message the stage exits on. Pinned by
-`::test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary`.
+engine's own sentence travel verbatim into the message the stage exits on. The clause takes
+the whole class, so the wrong-model refusal raised before any parse arrives the same way —
+every `CHAIR_RESPONSE_*` code is one way an answer failed to be a reading. Its sibling
+`ChairRequestRefusal` is deliberately not caught: that one says this stage built a request
+that may not go on the wire, which is a defect in this code rather than an account of the
+run, and a traceback naming the construction site is worth more there than a named exit.
+Pinned by `::test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary`.
 
 **`max_tokens` is not sent, and that is a decision.** No output bound is sealed
 anywhere, and this section does not invent one. vLLM bounds generation by

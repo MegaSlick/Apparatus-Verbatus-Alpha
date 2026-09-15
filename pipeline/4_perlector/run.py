@@ -2078,7 +2078,11 @@ def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
 # leaves some prefix of this list on disk with no Perlectio beside it, and a
 # resume has to answer for exactly that prefix instead of walking into an
 # `IncompatibleReuse` on the first one it republishes from a second live answer.
-_PRE_ESTABLISHING_ARTIFACTS: Final = (
+# Named for the Perlectio and not for the establishing reading: the last two are
+# published *after* that reading, and the Perlectio is the one thing all five
+# come before. A name that is wrong about two of its own entries is worse than no
+# name, because a later reader takes it at its word.
+_PRE_PERLECTIO_ARTIFACTS: Final = (
     ("lectio-prior", "lectio-prior"),
     (nuda.LECTIO_NUDA_KIND, "lectio-nuda"),
     ("primed-without-prior", "primed-without-prior"),
@@ -2112,7 +2116,7 @@ def _reading_already_sealed(context, act_id: str, ordinal: int) -> bool:
 
 
 def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
-    """Which pre-establishing artifacts of this attempt are already on disk.
+    """Which pre-Perlectio artifacts of this attempt are already on disk.
 
     An act reached by a *completed* attempt has a Perlectio, and
     `_reading_already_sealed` answers for it before this is ever asked. What is
@@ -2126,7 +2130,7 @@ def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
     """
     return frozenset(
         kind
-        for kind, operation in _PRE_ESTABLISHING_ARTIFACTS
+        for kind, operation in _PRE_PERLECTIO_ARTIFACTS
         if context.tree.has_artifact(
             PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
         )
@@ -2144,6 +2148,19 @@ def _sealed_prior_draft(context, act_id: str, ordinal: int) -> dict[str, Any] | 
     `_publish_lectio_prior` returns, so the establishing dossier cannot tell a
     resumed prior from a freshly published one; what distinguishes them is the
     provenance each record carries, and that stays on each record.
+
+    **The pair a resumed act seals spans two serving sessions, deliberately.**
+    Its `self_revision` measures this invocation's establishing text against the
+    interrupted invocation's Pass A, and the Perlectio carries no flag saying so
+    — a reader follows `provenance.receipt_ref` on the referenced `lectio-prior`
+    to see it. That is traceable rather than marked, and it is as far as this
+    can drift: `RunTree._verify_artifact_run` refuses any artifact produced
+    under a different `config_digest` than the run authority, so a reused prior
+    can never come from another model, revision or sealed configuration. What is
+    left is a same-configuration, different-session pairing, and the alternative
+    — re-asking Pass A to keep the pair inside one session — is the overwrite
+    GOVERNANCE 4 forbids. Whether the record should also *say* it is such a pair
+    is a change to a closed payload shape, and is not decided here.
     """
     identifier = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
     if not context.tree.has_artifact(PERLECTOR, "lectio-prior", identifier):
@@ -3654,6 +3671,16 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     bytes stay retained, and the detail the client built (the retained
     reference, and the head of the engine's own body) travels verbatim into the
     message this stage exits on.
+
+    The clause is the whole class, not the non-200 alone: every `CHAIR_RESPONSE_*`
+    code — the wrong-model refusal raised before any parse included — is one way
+    an engine's answer failed to be a reading, and all of them are the same kind
+    of fact about the run. `ChairRequestRefusal`, the sibling half of that pair,
+    is deliberately **not** caught. It says this stage built a request that may
+    not go on the wire — an unsupported kind, a manager-owned field, an image
+    digest that does not match the bytes — which is a defect in this code rather
+    than an account of the run, and a traceback naming the construction site is
+    worth more there than a named exit. The inconsistency is the intended one.
     """
     service = ResidentChair()
     try:
@@ -3856,6 +3883,22 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # resumes and reads every other act, and the Recensor routes this
             # one to review rather than the whole run dying on a reuse nobody
             # can clear. GOVERNANCE 2 — visibly partial, never silently absent.
+            #
+            # Named by digest-checked reference and not only in prose, so the
+            # reader routed here reaches the bytes instead of rebuilding an
+            # attempt identity by hand. `inputs` is outside the closed
+            # `_NOT_RUN_HELD_FIELDS` payload shape, so this costs that schema
+            # nothing. Every arm the attempt sealed is named, not only the audit
+            # pair that forced the hold: they are all evidence of the same
+            # interrupted attempt, and what survives of it should be legible
+            # from one record.
+            held_inputs = [
+                context.artifact_ref(
+                    PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
+                )
+                for kind, operation in _PRE_PERLECTIO_ARTIFACTS
+                if kind in sealed_arms
+            ]
             payload = {
                 "act_key": act["act_key"],
                 "attempt_ordinal": ordinal,
@@ -3864,7 +3907,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     f"published {', '.join(audit_round_sealed)} and before its Perlectio; "
                     "the reading that record froze cannot be produced again and the record "
                     "is immutable, so this act is held with that evidence retained rather "
-                    "than read a second time"
+                    "than read a second time. Every artifact that attempt published for "
+                    "this act is named in this record's inputs"
                 ),
                 "provenance": provenance_for(context, chair, attempted=False),
             }
@@ -3874,6 +3918,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 subject_id=act_id,
                 outcome="not-run",
                 attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
+                inputs=held_inputs,
                 payload=payload,
             )
             acknowledged += 1

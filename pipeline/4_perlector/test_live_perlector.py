@@ -33,6 +33,7 @@ from live_reader import EngineSignalRefusal
 
 from common.chairs.models import ChairIdentity
 from common.chairs.registry import ChairRegistry
+from common.contracts.approval import build_approval_record
 from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
@@ -90,6 +91,23 @@ def _perlector():
 
 
 perlector = _perlector()
+
+
+# Both instrument arms on for every act. `nuda_per_mille` and
+# `perlector_instrument_per_mille` are sealed into `config_digest`, so the whole
+# chain is given them and not only the Door, and a nonzero rate may not draw
+# without Tyrel's predeclared approval record (`resolve_sampling_approval`) --
+# which is why `_write_sampling_approvals` runs between the Door and the rest.
+SAMPLING_ARGUMENTS = (
+    "--nuda-per-mille",
+    "1000",
+    "--nuda-approval-ref",
+    perlector.NUDA_APPROVAL_SUBJECT,
+    "--perlector-instrument-per-mille",
+    "1000",
+    "--perlector-instrument-approval-ref",
+    perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+)
 
 
 def _perlector_identity():
@@ -190,7 +208,36 @@ def _live_catalogue(destination: Path) -> Path:
     return path
 
 
-def _chain_through_attestatores(root: Path, catalogue: Path, *, scenario: str = "happy") -> None:
+def _write_sampling_approvals(root: Path) -> None:
+    """The two predeclared approval records a sampled run must already carry.
+
+    Written against the `config_digest` the Door actually sealed rather than one
+    recomputed here: `run_config_bindings` would have to be handed this suite's
+    own tmp-path serving catalogue and every other default to agree, and a
+    mismatch would surface as a refusal about approvals rather than about the
+    binding that really drifted. One record per subject, because the sampling
+    gate requires exactly one validated record naming its experiment.
+    """
+    tree = RunTree(root, "r")
+    config_digest = tree.read_run()["config_digest"]
+    for subject in (
+        perlector.NUDA_APPROVAL_SUBJECT,
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+    ):
+        tree.write_approval_record(
+            build_approval_record(
+                subject_ids=[subject],
+                action="other",
+                reason="test-only sampling design for the live resume suite",
+                target_version_hash=config_digest,
+                timestamp="2026-09-14T00:00:00Z",
+            )
+        )
+
+
+def _chain_through_attestatores(
+    root: Path, catalogue: Path, *, scenario: str = "happy", sampled: bool = False
+) -> None:
     for program in CHAIN_THROUGH_ATTESTATORES:
         result = subprocess.run(
             [
@@ -204,12 +251,18 @@ def _chain_through_attestatores(root: Path, catalogue: Path, *, scenario: str = 
                 scenario,
                 "--serving-recipes-config",
                 str(catalogue),
+                *(SAMPLING_ARGUMENTS if sampled else ()),
             ],
             cwd=ROOT,
             capture_output=True,
             text=True,
         )
         assert result.returncode == 0, f"{program}: {result.stderr}"
+        if sampled and program == CHAIN_THROUGH_ATTESTATORES[0]:
+            # After the Door, because the record names the digest the Door
+            # sealed; before anything else, because the run tree is the only
+            # place the Perlector will look for it.
+            _write_sampling_approvals(root)
 
 
 @pytest.fixture(scope="module")
@@ -230,6 +283,31 @@ def chained_run(tmp_path_factory) -> tuple[Path, Path]:
 @pytest.fixture()
 def live_run(chained_run, tmp_path: Path) -> tuple[Path, Path]:
     template, catalogue = chained_run
+    root = tmp_path / "runs"
+    shutil.copytree(template, root)
+    return root, catalogue
+
+
+@pytest.fixture(scope="module")
+def sampled_chained_run(tmp_path_factory) -> tuple[Path, Path]:
+    """The same chain, sealed with both instrument arms drawing on every act.
+
+    `live_run` draws neither, so on that tree a sampled arm never publishes and
+    the resume's "an arm already on disk is not asked for again" rule has
+    nothing to act on. Its own chain, rather than a flag on `chained_run`,
+    because the rates are inside `config_digest`: a tree built at 0/1000 cannot
+    be read at 1000/1000 by any later invocation.
+    """
+    base = tmp_path_factory.mktemp("live-perlector-sampled")
+    catalogue = _live_catalogue(base)
+    root = base / "runs"
+    _chain_through_attestatores(root, catalogue, sampled=True)
+    return root, catalogue
+
+
+@pytest.fixture()
+def sampled_run(sampled_chained_run, tmp_path: Path) -> tuple[Path, Path]:
+    template, catalogue = sampled_chained_run
     root = tmp_path / "runs"
     shutil.copytree(template, root)
     return root, catalogue
@@ -322,6 +400,7 @@ def _run_perlector(
     *answers: ScriptedAnswer,
     scenario: str = "happy",
     endpoint_out: list | None = None,
+    sampled: bool = False,
 ):
     """Run the real stage in this process against a scripted endpoint.
 
@@ -362,6 +441,7 @@ def _run_perlector(
             str(catalogue),
             "--placement-tier",
             TIER,
+            *(SAMPLING_ARGUMENTS if sampled else ()),
         ],
     )
     return endpoint, perlector.main(serving_factory=factory)
@@ -761,6 +841,22 @@ def test_an_act_whose_audit_round_sealed_without_its_perlectio_is_held_not_read_
     assert readings[held_act]["outcome"] == "not-run"
     reason = readings[held_act]["payload"]["reason"]
     assert "audit-draft" in reason and "interrupted" in reason
+    # The hold is addressable, not only descriptive. Every artifact the
+    # interrupted attempt did publish is named on the record by digest-checked
+    # reference -- as every other Perlector record names what it rests on -- so
+    # the person the Recensor routes to review reaches the retained evidence
+    # from the hold itself instead of rebuilding an attempt identity by hand.
+    held_inputs = readings[held_act]["inputs"]
+    assert {Path(reference["relative_path"]).parent.name for reference in held_inputs} == {
+        "lectio-prior",
+        "audit-draft",
+    }
+    assert drafts[0].relative_to(root / "r").as_posix() in [
+        reference["relative_path"] for reference in held_inputs
+    ]
+    for reference in held_inputs:
+        named = root / "r" / reference["relative_path"]
+        assert digest_bytes(named.read_bytes()) == reference["sha256"]
     others = [act for act in readings if act != held_act]
     assert others, "the held act took the rest of the run down with it"
     for act in others:
@@ -796,6 +892,119 @@ def test_an_act_whose_audit_round_sealed_without_its_perlectio_is_held_not_read_
     held_reviews = [review for review in reviews if review["subject_id"] == held_act]
     assert held_reviews, "the held act reached no review record"
     assert held_reviews[0]["outcome"] == "held-for-review", held_reviews[0]["outcome"]
+
+
+# The three arms one attempt publishes before its Perlectio, in publication
+# order -- `run.py::_PRE_PERLECTIO_ARTIFACTS` minus the audit round, which is
+# the prefix a resume answers by reusing rather than by holding. Each arm's
+# reader pass kind and its artifact kind are the same string (`combined.py`
+# spells the pass, `run.py` publishes the kind), so one tuple serves both uses
+# below; a divergence between them would fail these assertions by name.
+LECTIO_PRIOR = "lectio-prior"
+LECTIO_NUDA = perlector.nuda.LECTIO_NUDA_KIND
+PRIMED_WITHOUT_PRIOR = "primed-without-prior"
+_PRE_PERLECTIO_ARMS = (LECTIO_PRIOR, LECTIO_NUDA, PRIMED_WITHOUT_PRIOR)
+
+
+def _record_asked_pass_kinds(monkeypatch) -> list[str]:
+    """Every pass kind this invocation actually asks a chair for, in order.
+
+    Patched at `combined`'s own seam rather than counted off the endpoint,
+    because that is where the resume decides *not* to ask: a reused arm is one
+    that never reaches this function, and a count of HTTP requests could not say
+    which arm a missing request belonged to.
+    """
+    asked: list[str] = []
+    real = perlector.combined.invoke_one_logical_read
+
+    def recording(*args, **kwargs):
+        asked.append(kwargs["pass_kind"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(perlector.combined, "invoke_one_logical_read", recording)
+    return asked
+
+
+def test_a_resumed_act_reuses_the_sampled_arms_it_already_published(
+    sampled_run, tmp_path, monkeypatch
+):
+    """A sealed `lectio-nuda` or `primed-without-prior` is reused, not re-asked.
+
+    The instrument arms publish before the Perlectio exactly as Pass A does, so
+    an interruption after them leaves immutable bytes a second live answer would
+    contradict. Asking again would republish them and be refused
+    (`IncompatibleReuse`) with no forward path, which is the same dead resume the
+    prior-draft case had.
+
+    What must *not* move is the sampling design itself: membership is derived
+    from the run's predeclared rate and the act's own facts, never stored, so a
+    reused arm stays sampled and stays counted (GOVERNANCE 10 -- the instrument
+    is not allowed to shrink because a run was interrupted). Only the reader call
+    is dropped. The act that was never reached is still read and still sampled,
+    which is what the second act proves here.
+    """
+    root, _catalogue = sampled_run
+    resumed_reading = READING.replace("SYNTHETIC LIVE READING", "A SECOND LIVE ANSWER")
+    assert resumed_reading != READING
+
+    asked = _record_asked_pass_kinds(monkeypatch)
+    _interrupt_after(monkeypatch, "primed-without-prior")
+    with pytest.raises(_Interrupted):
+        _run_perlector(
+            sampled_run,
+            tmp_path,
+            monkeypatch,
+            ScriptedAnswer(content=READING, finish_reason="stop"),
+            sampled=True,
+        )
+    # One act got all four arms and was struck publishing the last of the three
+    # that precede its Perlectio; the second act was never started.
+    assert asked == [*_PRE_PERLECTIO_ARMS, "perlectio"]
+    sealed = {kind: _artifacts(root, kind) for kind in _PRE_PERLECTIO_ARMS}
+    assert [len(paths) for paths in sealed.values()] == [1, 1, 1]
+    interrupted_act = json.loads(sealed[LECTIO_PRIOR][0].read_text(encoding="utf-8"))["subject_id"]
+    before = {kind: paths[0].read_bytes() for kind, paths in sealed.items()}
+    assert _perlectiones(root) == {}
+    monkeypatch.undo()
+
+    asked = _record_asked_pass_kinds(monkeypatch)
+    _endpoint, exit_code = _run_perlector(
+        sampled_run,
+        tmp_path / "resume",
+        monkeypatch,
+        ScriptedAnswer(content=resumed_reading, finish_reason="stop"),
+        sampled=True,
+    )
+    assert exit_code == 0
+    # The resumed act pays for the one arm it had not run; the untouched act
+    # pays for all four. Without the reuse the first three names reappear here,
+    # and the run dies republishing them.
+    assert asked == ["perlectio", *_PRE_PERLECTIO_ARMS, "perlectio"]
+
+    for kind, paths in sealed.items():
+        assert paths[0].read_bytes() == before[kind], f"{kind} was rewritten"
+        assert len(_artifacts(root, kind)) == 2, f"{kind} did not reach the second act"
+
+    readings = _perlectiones(root)
+    assert len(readings) == 2
+    for record in readings.values():
+        assert record["outcome"] != "not-run"
+        assert record["payload"]["text"] == resumed_reading
+    # The retained arms still hold the *first* engine answer while the reading
+    # they sit beside holds the second -- a re-asked arm could not produce that.
+    for kind, rate_field in (
+        (LECTIO_NUDA, "nuda_per_mille"),
+        (PRIMED_WITHOUT_PRIOR, "perlector_instrument_per_mille"),
+    ):
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in _artifacts(root, kind)]
+        retained = [record for record in records if record["subject_id"] == interrupted_act]
+        assert [record["payload"]["text"] for record in retained] == [READING]
+        # And it is still a record of a drawn sample, at the run's own rate: a
+        # resume that quietly dropped the arm would shrink the instrument.
+        assert retained[0]["payload"]["sampling"][rate_field] == 1000
+        # The act nothing interrupted is sampled and read in this session.
+        fresh = [record for record in records if record["subject_id"] != interrupted_act]
+        assert [record["payload"]["text"] for record in fresh] == [resumed_reading]
 
 
 def test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary(
