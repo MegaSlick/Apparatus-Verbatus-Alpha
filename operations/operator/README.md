@@ -319,9 +319,9 @@ token-named siblings the derivation below adds to those paths: the pod timer's
 `-transcript.log`. They are keys in their own right, so the prompt route asks for each of
 them too rather than leaving them reachable only through a saved receipt.
 
-The receipt states that limit and how many keys the call named — it does not claim they went unfetched when the operator named
-them — and `objects` and `refusals` say which of the named keys arrived. Nothing is left
-to be inferred from an empty folder.
+The receipt states that limit and how many keys the call named — it does not claim they
+went unfetched when the operator named them — and `objects` and `refusals` say which of
+the named keys arrived. Nothing is left to be inferred from an empty folder.
 
 **You do not have to retype the token.** The launch receipt this computer saved carries
 the sealed `docker_start_cmd`, and that command already names the bound report paths, so

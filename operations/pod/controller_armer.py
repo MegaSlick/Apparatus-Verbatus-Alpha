@@ -629,7 +629,10 @@ class ChannelControllerArmer:
                     "held inside the laptop heartbeat timeout",
                     receipt,
                 )
-            if not probe_seconds > 0 or probe_seconds != probe_seconds:
+            # `not x > 0` rather than `x <= 0`: it is also false for a NaN,
+            # which is the value a probe reporting "unknown" as a float would
+            # hand back.
+            if not probe_seconds > 0:
                 return ControllerReadiness(
                     False,
                     observed,
