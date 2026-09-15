@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import stat
 import sys
 import tomllib
 from pathlib import Path, PurePosixPath
@@ -379,6 +380,28 @@ def _verified_artifact_bytes(root: Path, reference: Mapping[str, object], label:
     if pure.is_absolute() or ".." in pure.parts:
         raise QualificationRefusal(f"{label} reference escapes the evidence root")
     path = root.joinpath(*pure.parts)
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise QualificationRefusal(f"cannot inspect {label} artifact path: {error}") from error
+    if not resolved_path.is_relative_to(resolved_root):
+        raise QualificationRefusal(f"{label} reference escapes the evidence root")
+    candidate = root
+    try:
+        if candidate.is_symlink():
+            raise QualificationRefusal(f"{label} artifact path contains a symlink")
+        for part in pure.parts:
+            candidate = candidate / part
+            if candidate.is_symlink():
+                raise QualificationRefusal(f"{label} artifact path contains a symlink")
+        leaf = path.lstat()
+    except QualificationRefusal:
+        raise
+    except OSError as error:
+        raise QualificationRefusal(f"cannot inspect {label} artifact path: {error}") from error
+    if not stat.S_ISREG(leaf.st_mode):
+        raise QualificationRefusal(f"{label} artifact is not a regular file")
     data = _read_bytes(path, label)
     if digest_bytes(data) != reference["sha256"]:
         raise QualificationRefusal(f"{label} artifact digest does not match its reference")

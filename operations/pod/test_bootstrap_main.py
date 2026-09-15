@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from .bootstrap_main import (
     HOLD_SCHEMA,
     REFUSAL_SCHEMA,
     PlanRefusal,
+    PodPreflightReceiptPublisher,
     build_parser,
     hold,
     main,
@@ -173,6 +175,108 @@ def _environ(
     if extra:
         environment.update(extra)
     return environment
+
+
+def _preflight_publisher(root: Path) -> PodPreflightReceiptPublisher:
+    return PodPreflightReceiptPublisher(root, object())  # type: ignore[arg-type]
+
+
+def test_preflight_evidence_first_publication_and_identical_retry(tmp_path: Path) -> None:
+    publisher = _preflight_publisher(tmp_path / "preflight")
+
+    first = publisher.publish_page_witness(WITNESS)
+    second = publisher.publish_page_witness(WITNESS)
+
+    assert second == first
+    target = publisher.root / first["relative_path"]
+    assert target.is_file() and not target.is_symlink()
+    assert target.read_bytes() == WITNESS.encode("ascii")
+
+
+@pytest.mark.parametrize("linked_component", ["kind", "sha256"])
+def test_preflight_evidence_refuses_parent_symlinks_without_touching_outside(
+    tmp_path: Path, linked_component: str
+) -> None:
+    root = tmp_path / "preflight"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_bytes(b"untouched")
+    before = {
+        path.relative_to(outside): path.read_bytes()
+        for path in outside.rglob("*")
+        if path.is_file()
+    }
+    if linked_component == "kind":
+        (root / "page-witnesses").symlink_to(outside, target_is_directory=True)
+    else:
+        (root / "page-witnesses").mkdir()
+        (root / "page-witnesses" / "sha256").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="preflight page-witnesses evidence path"):
+        _preflight_publisher(root).publish_page_witness(WITNESS)
+
+    assert {
+        path.relative_to(outside): path.read_bytes()
+        for path in outside.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_preflight_evidence_refuses_an_equal_bytes_leaf_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "preflight"
+    data = WITNESS.encode("ascii")
+    digest = hashlib.sha256(data).hexdigest()
+    target = root / "page-witnesses" / "sha256" / f"{digest}.txt"
+    target.parent.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(data)
+    target.symlink_to(outside)
+
+    with pytest.raises(RuntimeError, match="preflight page-witnesses evidence path"):
+        _preflight_publisher(root).publish_page_witness(WITNESS)
+
+    assert target.is_symlink()
+    assert outside.read_bytes() == data
+
+
+def test_preflight_evidence_rechecks_an_eexist_target_before_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "preflight"
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(WITNESS.encode("ascii"))
+
+    def plant_symlink(target: Path, _data: bytes, *, strict: bool) -> None:
+        assert strict is True
+        target.parent.mkdir(parents=True)
+        target.symlink_to(outside)
+        raise FileExistsError
+
+    monkeypatch.setattr(bootstrap_main, "exclusive_write", plant_symlink)
+    with pytest.raises(RuntimeError, match="preflight page-witnesses evidence path"):
+        _preflight_publisher(root).publish_page_witness(WITNESS)
+
+    assert outside.read_bytes() == WITNESS.encode("ascii")
+
+
+def test_preflight_evidence_refuses_a_fifo_without_reading_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "preflight"
+    data = WITNESS.encode("ascii")
+    digest = hashlib.sha256(data).hexdigest()
+    target = root / "page-witnesses" / "sha256" / f"{digest}.txt"
+    target.parent.mkdir(parents=True)
+    os.mkfifo(target)
+
+    def fail_read(_path: Path) -> bytes:
+        raise AssertionError("the FIFO must be rejected before read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+    with pytest.raises(RuntimeError, match="preflight page-witnesses evidence path"):
+        _preflight_publisher(root).publish_page_witness(WITNESS)
 
 
 # --- hold survives a completed bootstrap without exiting -------------------

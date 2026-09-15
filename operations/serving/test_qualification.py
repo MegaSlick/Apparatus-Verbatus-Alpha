@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tomllib
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from operations.pod.test_bootstrap_main import PROVEN_TIER, _serving_workspace
 
 from .config import parse_serving_recipes
-from .qualify import QualificationRefusal, qualification_candidates
+from .qualify import QualificationRefusal, _verified_artifact_bytes, qualification_candidates
 from .qualify import main as qualification_main
 
 HASH = "a" * 64
@@ -379,6 +380,75 @@ def test_qualification_refuses_changed_witness_artifact_bytes(tmp_path: Path) ->
 
     with pytest.raises(QualificationRefusal, match="artifact digest does not match"):
         _qualify(paths)
+
+
+@pytest.mark.parametrize("linked_component", ["kind", "sha256"])
+def test_qualification_refuses_parent_symlinks_outside_the_evidence_root(
+    tmp_path: Path, linked_component: str
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    data = b"retained artifact"
+    digest = digest_bytes(data)
+    relative = f"receipts/sha256/{digest}.json"
+    if linked_component == "kind":
+        (outside / "sha256").mkdir()
+        (root / "receipts").symlink_to(outside, target_is_directory=True)
+    else:
+        (root / "receipts").mkdir()
+        (root / "receipts" / "sha256").symlink_to(outside, target_is_directory=True)
+    outside_target = outside / ("sha256" if linked_component == "kind" else "") / f"{digest}.json"
+    outside_target.write_bytes(data)
+
+    with pytest.raises(QualificationRefusal, match="escapes the evidence root|symlink"):
+        _verified_artifact_bytes(
+            root, {"relative_path": relative, "sha256": digest}, "service receipt"
+        )
+
+    assert outside_target.read_bytes() == data
+
+
+def test_qualification_refuses_an_equal_bytes_leaf_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    data = b"retained artifact"
+    digest = digest_bytes(data)
+    target = root / "receipts" / "sha256" / f"{digest}.json"
+    target.parent.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(data)
+    target.symlink_to(outside)
+
+    with pytest.raises(QualificationRefusal, match="escapes the evidence root|symlink"):
+        _verified_artifact_bytes(
+            root,
+            {"relative_path": f"receipts/sha256/{digest}.json", "sha256": digest},
+            "service receipt",
+        )
+
+    assert outside.read_bytes() == data
+
+
+def test_qualification_refuses_a_fifo_without_reading_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "evidence"
+    digest = "a" * 64
+    target = root / "receipts" / "sha256" / f"{digest}.json"
+    target.parent.mkdir(parents=True)
+    os.mkfifo(target)
+
+    def fail_read(_path: Path) -> bytes:
+        raise AssertionError("the FIFO must be rejected before read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+    with pytest.raises(QualificationRefusal, match="not a regular file"):
+        _verified_artifact_bytes(
+            root,
+            {"relative_path": f"receipts/sha256/{digest}.json", "sha256": digest},
+            "service receipt",
+        )
 
 
 def test_qualification_refuses_a_normal_launch_audit(tmp_path: Path) -> None:

@@ -94,6 +94,7 @@ import json
 import math
 import os
 import secrets
+import stat
 import sys
 import time
 import tomllib
@@ -381,15 +382,61 @@ class PodPreflightReceiptPublisher:
         digest = digest_bytes(data)
         relative_path = f"{kind}/sha256/{digest}{suffix}"
         target = self.root / relative_path
+        self._validate_target(target, kind)
         try:
             exclusive_write(target, data, strict=True)
         except FileExistsError:
+            self._validate_target(target, kind)
             if target.read_bytes() != data:
                 raise RuntimeError(
                     f"preflight {kind} evidence at {target} exists with different bytes; "
                     "evidence is not overwritten"
                 ) from None
         return {"relative_path": relative_path, "sha256": digest}
+
+    def _validate_target(self, target: Path, kind: str) -> None:
+        try:
+            resolved_root = self.root.resolve(strict=False)
+            resolved_target = target.resolve(strict=False)
+        except (OSError, RuntimeError) as error:
+            raise RuntimeError(
+                f"preflight {kind} evidence path at {target} cannot be inspected: {error}"
+            ) from error
+        if not resolved_target.is_relative_to(resolved_root):
+            raise RuntimeError(
+                f"preflight {kind} evidence path at {target} escapes its publication root"
+            )
+
+        candidate = self.root
+        try:
+            for part in (kind, "sha256"):
+                if candidate.is_symlink():
+                    raise RuntimeError(
+                        f"preflight {kind} evidence path at {target} contains a symlink"
+                    )
+                if candidate.exists() and not candidate.is_dir():
+                    raise RuntimeError(
+                        f"preflight {kind} evidence path at {target} has a non-directory parent"
+                    )
+                candidate = candidate / part
+            if candidate.is_symlink():
+                raise RuntimeError(f"preflight {kind} evidence path at {target} contains a symlink")
+            if candidate.exists() and not candidate.is_dir():
+                raise RuntimeError(
+                    f"preflight {kind} evidence path at {target} has a non-directory parent"
+                )
+            if target.is_symlink():
+                raise RuntimeError(f"preflight {kind} evidence path at {target} is a symlink")
+            if target.exists() and not stat.S_ISREG(target.lstat().st_mode):
+                raise RuntimeError(
+                    f"preflight {kind} evidence path at {target} is not a regular file"
+                )
+        except RuntimeError:
+            raise
+        except OSError as error:
+            raise RuntimeError(
+                f"preflight {kind} evidence path at {target} cannot be inspected: {error}"
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
