@@ -210,6 +210,15 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
     candidates = record["candidates"]
     assert isinstance(candidates, list) and len(candidates) == 5
     assert {item["tier"] for item in candidates} == {PROVEN_TIER}
+    for candidate in candidates:
+        reference = candidate["page_witness_reference"]
+        witness_bytes = (paths["evidence"] / reference["relative_path"]).read_bytes()
+        assert witness_bytes == PAGE_WITNESS.encode("ascii")
+        assert digest_bytes(witness_bytes) == reference["sha256"]
+        assert reference["sha256"] == candidate["page_witness_sha256"]
+        assert candidate["smoke_fixture_output_sha256"] == digest_bytes(
+            canonical_bytes(["PAGE-WITNESS: " + witness_bytes.decode("ascii")])
+        )
     raw = tomllib.loads(paths["recipes"].read_text(encoding="utf-8"))
     by_key = {(item["recipe"], item["chair"], item["tier"]): item for item in candidates}
     for row in raw["profiles"]:

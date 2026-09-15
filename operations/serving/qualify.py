@@ -176,6 +176,11 @@ def qualification_candidates(
                 "tier": tier,
                 "preflight_identity_digest": identity_digest,
                 "preflight_digest": profile_digest,
+                "page_witness_reference": dict(
+                    _object(smoke.get("page_witness_reference"), "page witness reference")
+                ),
+                "page_witness_sha256": smoke["page_witness_sha256"],
+                "smoke_fixture_output_sha256": smoke["smoke_fixture_output_sha256"],
                 "service_receipt_reference": dict(
                     _object(smoke.get("receipt_reference"), "service receipt reference")
                 ),
