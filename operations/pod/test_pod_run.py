@@ -1618,7 +1618,12 @@ def test_an_oversized_or_pathological_journal_is_unreadable_not_an_escape(
     object.__setattr__(plan, "run_id", "first-real-run")
     plan.transcript_path.write_bytes(b"x")
     plan.liveness_path.write_bytes(b"{}")
-    plan.timing_journal_path.write_bytes(b"[" * 100_000 + b"]" * 100_000)
+    # The nesting wraps a 4,301-digit integer, as the branch's other deep-nesting
+    # regressions do: 3.12 recurses out of the decoder and 3.14 walks the nesting
+    # and refuses the integer at its own digit limit, so the audit lands in its
+    # unreadable path on either interpreter rather than on a shape check that
+    # happens to agree.
+    plan.timing_journal_path.write_bytes(b"[" * 10_000 + b"9" * 4301 + b"]" * 10_000)
     audit, missing = pod_run._records_at_close(plan)
     assert missing == ["timing_journal"]
     assert audit["timing_journal"]["failure"].startswith("unreadable: ")
