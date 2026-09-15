@@ -1643,6 +1643,14 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument("--cache-root", default=None)
     parser.add_argument(
+        "--mechanics-qualification",
+        action="store_true",
+        help=(
+            "explicit mechanics-only run: permit optically unproven serving "
+            "profiles; every real launch and receipt remains required"
+        ),
+    )
+    parser.add_argument(
         "--decoding-config",
         default=str(DEFAULT_DECODING_CONFIG_PATH),
         help="the sealed decoding posture for record readings and variance experiments",

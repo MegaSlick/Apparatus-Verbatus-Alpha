@@ -133,8 +133,10 @@ _PROBE_HTTP_STATUS = re.compile(r"HTTP (\d{3})$")
 # unproven row to enter the existing start -> fixture read -> verified stop
 # lifecycle without adding a general-purpose bypass to ``start``.
 _PREFLIGHT_QUALIFICATION_PURPOSE: Final = object()
+MECHANICS_QUALIFICATION_PURPOSE: Final = object()
 _NORMAL_LAUNCH = "normal"
 _PREFLIGHT_QUALIFICATION_LAUNCH = "preflight-qualification"
+_MECHANICS_QUALIFICATION_LAUNCH = "mechanics-qualification"
 _READINESS_PROBE_TIMEOUT_SECONDS = 2.0
 """Per-request budget for one /health or /v1/models poll.
 
@@ -613,8 +615,12 @@ class ServingManager:
             raise ValueError("serving manager requires an explicit pod/GPU-scoped residency lease")
         if not isinstance(config_inputs, ServingConfigInputs):
             raise ValueError("serving manager requires exact sealed serving configuration inputs")
-        if _launch_purpose is not None and _launch_purpose is not _PREFLIGHT_QUALIFICATION_PURPOSE:
-            raise ValueError("serving launch purpose is owned by the preflight assembly")
+        if _launch_purpose not in (
+            None,
+            _PREFLIGHT_QUALIFICATION_PURPOSE,
+            MECHANICS_QUALIFICATION_PURPOSE,
+        ):
+            raise ValueError("serving launch purpose is not a recognized qualification purpose")
         self.registry = registry
         self.recipes = recipes
         self.config_inputs = config_inputs
@@ -630,10 +636,14 @@ class ServingManager:
         self.monotonic = monotonic or time.monotonic
         self.sleep = sleep or time.sleep
         self.shutdown_timeout_seconds = shutdown_timeout_seconds
-        self._qualification_launch = _launch_purpose is _PREFLIGHT_QUALIFICATION_PURPOSE
-        self.launch_purpose = (
-            _PREFLIGHT_QUALIFICATION_LAUNCH if self._qualification_launch else _NORMAL_LAUNCH
+        self._qualification_launch = _launch_purpose in (
+            _PREFLIGHT_QUALIFICATION_PURPOSE,
+            MECHANICS_QUALIFICATION_PURPOSE,
         )
+        self.launch_purpose = {
+            _PREFLIGHT_QUALIFICATION_PURPOSE: _PREFLIGHT_QUALIFICATION_LAUNCH,
+            MECHANICS_QUALIFICATION_PURPOSE: _MECHANICS_QUALIFICATION_LAUNCH,
+        }.get(_launch_purpose, _NORMAL_LAUNCH)
         self._active: ServiceHandle | None = None
         self._residency_handle: ResidencyHandle | None = None
         self._unready_process: ServerProcess | None = None

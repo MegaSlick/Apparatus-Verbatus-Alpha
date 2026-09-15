@@ -94,6 +94,7 @@ from .manager import (
     _ENDPOINT_REFUSED,
     _ENDPOINT_UNREACHABLE,
     _WATCHDOG_TAIL_BYTES,
+    MECHANICS_QUALIFICATION_PURPOSE,
     PROCESSOR_CONFIG_FILENAMES,
     AdapterCalibration,
     ReceiptPublication,
@@ -606,6 +607,30 @@ def test_start_refuses_a_serving_profile_that_is_not_preflight_proven(tmp_path: 
     assert not (tmp_path / "pod-gpu.lock").exists()
 
 
+def test_explicit_mechanics_qualification_launches_unproven_profile_and_records_purpose(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_state"] = "unproven"
+    manager, _, _, launcher, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader-api",),
+        launch_purpose=MECHANICS_QUALIFICATION_PURPOSE,
+    )
+
+    handle = manager.start(chair, TIER)
+
+    assert manager.launch_purpose == "mechanics-qualification"
+    assert handle.launch_audit["launch_purpose"] == "mechanics-qualification"
+    assert registry.ensure_calls == ["reader"]
+    assert len(publisher.calls) == 1
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
 def test_start_refuses_a_proven_adapter_over_an_unproven_base_before_any_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -829,6 +854,7 @@ def manager_for(
     residency_lease: FileResidencyLease | None = None,
     probe_http_status: int | None = None,
     usage: Mapping[str, object] | None = None,
+    launch_purpose: object | None = None,
 ):
     clock = Clock()
     http = FakeHttp(
@@ -870,6 +896,7 @@ def manager_for(
         monotonic=clock.monotonic,
         sleep=clock.sleep,
         residency_lease=residency_lease or FileResidencyLease(tmp_path / "pod-gpu.lock"),
+        _launch_purpose=launch_purpose,
     )
     return manager, clock, http, launcher, registry, publisher
 

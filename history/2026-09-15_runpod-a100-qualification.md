@@ -1,6 +1,7 @@
 # RunPod A100 qualification checkpoint — 2026-09-15
 
-This records the live investigation through 18:48 UTC. It is evidence and a follow-up
+This records the initial 18:48 UTC checkpoint and the subsequent dated updates below.
+It is evidence and a follow-up
 list, not a declaration that the pipeline is proven. At this checkpoint the full
 RecordGold pipeline has not run and no model-quality score exists.
 
@@ -61,7 +62,7 @@ results belong to the eventual exact merge candidate; this checkpoint is not mer
 | Disk planning | Four snapshots occupy about 90.3 GB; five role caches about 100.9 GB because Chandra is used twice. Plan local scratch separately from durable storage. |
 | Runtime preparation/template | This batch ships preparation instructions; a reusable RunPod template and complete one-command launch remain follow-ups. |
 | Region and GPU availability | Network volumes constrain placement; advertised availability did not guarantee allocation. Other GPU families/tier combinations remain unmeasured. |
-| Spread preparation | Public ingestion currently provides no supported geometry input for real two-page splitting; the scantailor path uses fixture XML. |
+| Spread preparation | The existing importer supports ScanTailor Advanced v4. The missing connection is from imported geometry into confined ingest; this session is adding prescribed midpoint splits through that seam. |
 | Exact stage HTTP request retention | Stage outputs and presented pixels are retained, but exact original request bytes are currently hashed rather than stored. Smoke retention is corrected in this batch. |
 | Export portability | The configured export ZIP references pixels. Retain the complete run tree, including crops, not just the ZIP. |
 | Upload races and scoring integrity | Integrated fixes bind immutable upload ownership and presented-page identity and remove placeholder geometry text scores. S3 409 retry remains a fail-closed usability follow-up. |
@@ -96,3 +97,32 @@ The same batch bounds installer downloads, clarifies existing setpriv reuse, com
 retained smoke bytes directly with the HTTP boundary, and names retained request/response
 paths in parser-refusal errors while preserving the original error code and cause.
 The complete full gate has not yet been rerun on this correction.
+
+
+## Second startup qualification — 19:48 UTC
+
+Exact published GitHub commit `8e86e36c45aa0918b9c1d55ffda6c68ced90e0d9`
+loaded and served all five model roles on the A100. Chandra and Designator reproduced
+the generated page witness exactly. DAI omitted or confused characters, Churro omitted
+one character, and Perlector changed one letter's case. Perlector now returned the
+required response shape with thinking disabled; it still failed exact text comparison.
+The overall qualification remains red. No full pipeline run is established by these
+startup results.
+
+The complete second preflight evidence, including raw requests and responses, is
+retained on the network volume and copied locally. Archive:
+`bootstrap-report-verbatus-direct-ce7ae1c14307-evidence.tar.gz`, 61,438 bytes,
+SHA-256 `5b8786b60108d15a497e096d25a99c6b33a625d5ac9670e057a5097734f40152`.
+GitHub CI on the published commit passed Python 3.12 and 3.14, security and cleanroom
+checks. This does not replace the final exact-candidate local-equivalent gate.
+
+The user clarified that model accuracy must not block today's end-to-end mechanics
+test. A planned clearer-random-witness retry was therefore cancelled. The implementation
+must retain the red optical result and distinguish an explicit mechanics test from
+normal proven-profile operation. No failed receipt is relabelled as successful.
+
+The user also requires centre splits: two pilot spreads become four page inputs;
+twelve source spreads may become twenty-four page inputs. Terra is implementing the
+connection through the real ScanTailor importer and standard triage producer. The cuts
+are operator-prescribed midpoints, not an assertion that the ScanTailor engine inferred
+them. Original pixels, source-frame geometry, rotation and reading order must survive.

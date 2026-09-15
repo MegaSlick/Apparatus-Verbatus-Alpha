@@ -302,6 +302,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # "--placement-tier None" and stage_parser's own default (None) governs.
     if args.placement_tier is not None:
         command += ["--placement-tier", str(args.placement_tier)]
+    if getattr(args, "mechanics_qualification", False):
+        command.append("--mechanics-qualification")
     # Forwarded to every stage, not only to the door that snapshots it: the
     # drift refusal exists to catch a register appended *between* two stages of
     # one run, which is precisely the case an unforwarded flag cannot see.
@@ -603,6 +605,14 @@ def main() -> int:
         help="the sealed model-chair roster and recipes for this run",
     )
     parser.add_argument("--cache-root", default=None)
+    parser.add_argument(
+        "--mechanics-qualification",
+        action="store_true",
+        help=(
+            "run the full real mechanics with optically unproven profiles; "
+            "does not mark any profile proven"
+        ),
+    )
     parser.add_argument(
         "--decoding-config",
         default=str(DEFAULT_DECODING_CONFIG_PATH),

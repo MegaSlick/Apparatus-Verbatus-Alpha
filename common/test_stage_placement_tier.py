@@ -59,6 +59,7 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         hard_failure_config=ROOT / "config" / "hard_failure.toml",
         pdf_target_dpi=None,
         placement_tier=None,
+        mechanics_qualification=False,
         witness_context="named",
         witness_context_config=ROOT / "config" / "witness_context.toml",
         nuda_per_mille=0,
@@ -191,6 +192,7 @@ def test_placement_tier_flag_defaults_to_none():
     parser = stage_parser("placement tier default")
     parsed = parser.parse_args(["--run-root", "runs", "--run-id", "r"])
     assert parsed.placement_tier is None
+    assert parsed.mechanics_qualification is False
 
 
 def test_placement_tier_flag_carries_the_supplied_value():
