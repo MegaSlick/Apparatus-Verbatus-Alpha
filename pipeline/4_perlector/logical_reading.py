@@ -23,9 +23,13 @@ from common.physical_act_partition import build_physical_act_partition, source_l
 def _source_sha256_of_page(context, page_id: str) -> str:
     """The submitted capture digest a sealed Exemplar page derives from."""
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    digest = page.get("payload", {}).get("source_sha256")
+    # ``source_sha256`` identifies the sealed pixels. A TIFF/PDF page may be a
+    # recorded render whose sealed bytes differ from its submitted capture; the
+    # physical-act ledger is about that submitted capture, which Exemplar retains
+    # as ``declared_sha256``.  This also reads old sealed pages unchanged.
+    digest = page.get("payload", {}).get("declared_sha256")
     if not isinstance(digest, str) or not digest:
-        raise SchemaRefusal(f"Exemplar page {page_id!r} carries no source_sha256")
+        raise SchemaRefusal(f"Exemplar page {page_id!r} carries no declared_sha256")
     return digest
 
 
@@ -42,9 +46,11 @@ def _verified_source_ledger(context) -> set[str]:
             # the refusal evidence and legitimately carries no source. The act
             # whose continuation it held is excluded upstream as a held act.
             continue
-        digest = page.get("payload", {}).get("source_sha256")
+        digest = page.get("payload", {}).get("declared_sha256")
         if not isinstance(digest, str) or not digest:
-            raise SchemaRefusal(f"Exemplar page {entry['artifact_id']!r} carries no source_sha256")
+            raise SchemaRefusal(
+                f"Exemplar page {entry['artifact_id']!r} carries no declared_sha256"
+            )
         if digest not in submitted:
             raise SchemaRefusal(
                 "physical-act partition: an Exemplar page names a capture absent from "
