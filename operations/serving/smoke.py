@@ -30,7 +30,7 @@ import hashlib
 import os
 import secrets
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -227,6 +227,7 @@ class VisionSmokeCall:
 
     page_witness: str
     utilization: Callable[[], tuple[UtilizationSample, ...]] = lambda: ()
+    page_witness_reference: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -326,19 +327,22 @@ class VisionSmokeCall:
                 "golden-page utilization sampler returned more than "
                 f"{_MAXIMUM_UTILIZATION_SAMPLES} samples for one smoke request"
             )
+        receipt: dict[str, object] = {
+            "fixture_response_sha256": answer.response_sha256,
+            "resolved_identity": identity.to_record(),
+            "resolved_revision": identity.receipt_revision,
+            "resolved_revision_kind": identity.receipt_revision_kind,
+            "served_model_id": answer.model_id,
+            "page_witness_sha256": hashlib.sha256(self.page_witness.encode()).hexdigest(),
+            "page_witness_matches": format_valid,
+        }
+        if self.page_witness_reference is not None:
+            receipt["page_witness_reference"] = dict(self.page_witness_reference)
         return SmokeResult(
             shape_valid=shape_valid,
             nonempty=nonempty,
             format_valid=format_valid,
-            receipt={
-                "fixture_response_sha256": answer.response_sha256,
-                "resolved_identity": identity.to_record(),
-                "resolved_revision": identity.receipt_revision,
-                "resolved_revision_kind": identity.receipt_revision_kind,
-                "served_model_id": answer.model_id,
-                "page_witness_sha256": hashlib.sha256(self.page_witness.encode()).hexdigest(),
-                "page_witness_matches": format_valid,
-            },
+            receipt=receipt,
             utilization=samples,
         )
 

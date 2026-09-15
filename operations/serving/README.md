@@ -68,8 +68,10 @@ python -m operations.serving.qualify \
 
 The verifier requires a green completed preflight, exact cache and placement
 coverage, one fixture-bound served read per configured chair, positive service
-and fixture request counts, the same recipe and placement file digests, and all
-three referenced serving artifacts with matching content digests. It emits
+and fixture request counts, the same recipe and placement file digests, all
+three referenced serving artifacts with matching content digests, and the
+content-addressed page-witness token. It recomputes that token's digest and the
+semantic output digest for the exact expected witness line before it emits
 candidate `preflight_identity_digest` and `preflight_digest` values only for
 the measured tier. A reviewer writes the identity digest first, then the
 profile digest, and keeps every other tier unproven until separately measured.
@@ -444,7 +446,11 @@ the resolved identity and revision, the
 a response whose `model` is not the exact served alias, so this is per-answer and
 not per-connection state), the response digest that binds the receipt to the one
 request just made, and `sha256(witness)` — never the witness, the prompt, or the
-answer text. The durable smoke record therefore carries only the witness digest.
+answer text. The durable smoke record carries the witness digest and a content
+address for the witness token. The token is retained separately under
+the preflight evidence root, so the offline qualifier can recompute both that
+digest and the exact expected semantic-output digest without retaining the raw
+response or putting the witness plaintext in the report.
 
 **Whose job the witness is.** The witness proves a page read only because the
 fixture author rendered it into the page's pixels, so that author owns its

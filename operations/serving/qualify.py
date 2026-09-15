@@ -259,6 +259,29 @@ def _verify_smoke(
             raise QualificationRefusal(f"chair {identity.role!r} has no valid {field}")
     if smoke["supplied_fixture_sha256"] != golden_page_sha256:
         raise QualificationRefusal(f"chair {identity.role!r} smoked a different golden page")
+    witness_ref = _object(smoke.get("page_witness_reference"), "page witness reference")
+    witness_bytes = _verified_artifact_bytes(evidence_root, witness_ref, "page witness")
+    try:
+        witness = witness_bytes.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} page witness artifact is not ASCII"
+        ) from error
+    if (
+        not 32 <= len(witness) <= 128
+        or not witness
+        or not all(character.isalnum() or character in "-_" for character in witness)
+    ):
+        raise QualificationRefusal(f"chair {identity.role!r} page witness artifact is malformed")
+    if digest_bytes(witness_bytes) != smoke["page_witness_sha256"]:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} witness digest disagrees with its artifact"
+        )
+    expected_output_sha256 = digest_bytes(canonical_bytes([f"PAGE-WITNESS: {witness}"]))
+    if smoke["smoke_fixture_output_sha256"] != expected_output_sha256:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} output did not contain the retained page witness exactly"
+        )
     page_read = {
         "resolved_identity": identity.to_record(),
         "resolved_revision": identity.receipt_revision,
@@ -338,6 +361,10 @@ def _verify_smoke(
 def _verified_artifact(
     root: Path, reference: Mapping[str, object], label: str
 ) -> Mapping[str, object]:
+    return _json_object(_verified_artifact_bytes(root, reference, label), label)
+
+
+def _verified_artifact_bytes(root: Path, reference: Mapping[str, object], label: str) -> bytes:
     if set(reference) != {"relative_path", "sha256"} or not is_sha256(reference.get("sha256")):
         raise QualificationRefusal(f"{label} reference is malformed")
     relative = reference.get("relative_path")
@@ -350,7 +377,7 @@ def _verified_artifact(
     data = _read_bytes(path, label)
     if digest_bytes(data) != reference["sha256"]:
         raise QualificationRefusal(f"{label} artifact digest does not match its reference")
-    return _json_object(data, label)
+    return data
 
 
 def _verify_cache_receipts(raw_receipts: object, identities: Mapping[str, ChairIdentity]) -> None:

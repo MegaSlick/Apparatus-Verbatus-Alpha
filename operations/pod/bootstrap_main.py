@@ -97,7 +97,7 @@ import secrets
 import sys
 import time
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, Sequence
@@ -338,10 +338,11 @@ class PodPreflightReceiptPublisher:
     ``StageContextReceiptPublisher`` writes the receipt, the launch audit and
     the evidence manifest into a run tree.  A preflight runs before any run
     exists, so the same three records go under the launch's own preflight
-    directory instead, each named by the SHA-256 of its canonical bytes, and
-    the returned references are relative to that directory.  Same bytes twice
-    is a no-op; different bytes at one address is a refusal, so a repeated
-    preflight on a retained volume can add evidence but never replace it.
+    directory instead. The page witness is retained there as well so
+    the offline qualifier can recompute its digest and expected semantic output.
+    Each artifact is named by its content digest and references are relative to
+    that directory. Same bytes twice is a no-op; different bytes at one address
+    is a refusal, so a repeated preflight can add evidence but never replace it.
     """
 
     def __init__(self, root: Path, context: _PreflightContext) -> None:
@@ -364,10 +365,17 @@ class PodPreflightReceiptPublisher:
         )
         return ReceiptPublication(receipt_reference, audit_reference, evidence_reference)
 
+    def publish_page_witness(self, witness: str) -> dict[str, str]:
+        """Retain the witness token without putting its plaintext in the report."""
+
+        return self._write_bytes("page-witnesses", witness.encode("ascii"), suffix=".txt")
+
     def _write(self, kind: str, value: Mapping[str, object]) -> dict[str, str]:
-        data = canonical_bytes(value)
+        return self._write_bytes(kind, canonical_bytes(value), suffix=".json")
+
+    def _write_bytes(self, kind: str, data: bytes, *, suffix: str) -> dict[str, str]:
         digest = digest_bytes(data)
-        relative_path = f"{kind}/sha256/{digest}.json"
+        relative_path = f"{kind}/sha256/{digest}{suffix}"
         target = self.root / relative_path
         try:
             exclusive_write(target, data, strict=True)
@@ -1054,7 +1062,7 @@ def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str, bytes]:
     # container -- draws a fresh CSPRNG witness, and a fixed name would put
     # those pixels over the page the first preflight's receipts already name by
     # digest. Evidence is added, never replaced (GOVERNANCE 4), exactly as
-    # `PodPreflightReceiptPublisher` does for the three records beside it. The
+    # `PodPreflightReceiptPublisher` does for the serving records beside it. The
     # witness is URL-safe by construction (`secrets.token_urlsafe`), so it is a
     # filename as it stands.
     page = plan.preflight_root / "golden-page" / f"{witness}.png"
@@ -1154,6 +1162,8 @@ def _build_preflight(
         smoke_call = VisionSmokeCall(
             witness, utilization=chosen.utilization or NvidiaSmiUtilization()
         )
+        witness_reference = publisher.publish_page_witness(witness)
+        smoke_call = replace(smoke_call, page_witness_reference=witness_reference)
         reader = assemble_serving_smoke_reader(
             registry=registry,
             stage_context=context,

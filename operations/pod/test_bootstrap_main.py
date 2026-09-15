@@ -1634,6 +1634,16 @@ def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
     page = preflight_root / "golden-page" / f"{WITNESS}.png"
     assert page.is_file()
     assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
+    witness_references = {
+        tuple(sorted(receipt["page_witness_reference"].items()))
+        for receipt in record["smoke_receipts"]
+    }
+    assert len(witness_references) == 1
+    witness_reference = dict(next(iter(witness_references)))
+    assert (preflight_root / witness_reference["relative_path"]).read_text(
+        encoding="ascii"
+    ) == WITNESS
+    assert WITNESS not in json.dumps(record)
     for kind in ("receipts", "launch-audits", "serving-evidence"):
         assert len(list((preflight_root / kind / "sha256").glob("*.json"))) == len(identities)
     assert not record["assembly_proven"], "fakes are not a real assembly claim"
@@ -1846,7 +1856,11 @@ def test_a_supplied_golden_page_is_read_with_the_witness_its_file_names(
 
     assert record["color"] == "green"
     assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
-    assert not (ws.volume / "preflight" / ws.report_path.stem / "golden-page").exists()
+    preflight_root = ws.volume / "preflight" / ws.report_path.stem
+    assert not (preflight_root / "golden-page").exists()
+    reference = record["smoke_receipts"][0]["page_witness_reference"]
+    assert (preflight_root / reference["relative_path"]).read_text(encoding="ascii") == witness
+    assert witness not in json.dumps(record)
 
 
 class _NotCalled(BaseException):

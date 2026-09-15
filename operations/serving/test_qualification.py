@@ -16,12 +16,22 @@ from .qualify import QualificationRefusal, qualification_candidates
 from .qualify import main as qualification_main
 
 HASH = "a" * 64
+PAGE_WITNESS = "qualification-witness-0123456789abcdef"
 
 
 def _write_artifact(root: Path, kind: str, value: dict[str, object]) -> dict[str, str]:
     data = canonical_bytes(value)
     digest = digest_bytes(data)
     relative = f"{kind}/sha256/{digest}.json"
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return {"relative_path": relative, "sha256": digest}
+
+
+def _write_bytes_artifact(root: Path, kind: str, data: bytes) -> dict[str, str]:
+    digest = digest_bytes(data)
+    relative = f"{kind}/sha256/{digest}.txt"
     target = root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
@@ -41,6 +51,10 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
     }
     models = load_models_toml(ws.models_config)
     profile_rows = tomllib.loads(recipes_bytes.decode("utf-8"))["profiles"]
+    witness_bytes = PAGE_WITNESS.encode("ascii")
+    witness_ref = _write_bytes_artifact(evidence_root, "page-witnesses", witness_bytes)
+    witness_sha256 = digest_bytes(witness_bytes)
+    expected_output_sha256 = digest_bytes(canonical_bytes([f"PAGE-WITNESS: {PAGE_WITNESS}"]))
     smoke_receipts = []
     cache_receipts = []
     placements = []
@@ -115,14 +129,15 @@ def _qualification_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict[str, o
                 "utilization": [{"gpu_percent": "50", "cpu_percent": "10"}],
                 "supplied_fixture_sha256": HASH,
                 "smoke_fixture_response_sha256": "b" * 64,
-                "smoke_fixture_output_sha256": "c" * 64,
+                "smoke_fixture_output_sha256": expected_output_sha256,
                 "fixture_response_sha256": "b" * 64,
                 "resolved_identity": identity.to_record(),
                 "resolved_revision": identity.receipt_revision,
                 "resolved_revision_kind": identity.receipt_revision_kind,
                 "served_model_id": served_model_id,
-                "page_witness_sha256": "d" * 64,
+                "page_witness_sha256": witness_sha256,
                 "page_witness_matches": True,
+                "page_witness_reference": witness_ref,
                 "smoke_service_request_count": 1,
                 "smoke_fixture_request_count": 1,
                 "service_receipt": service_receipt,
@@ -207,6 +222,50 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
     assert sum(profile.preflight_state == "proven" for profile in parsed.profiles) == 5  # type: ignore[attr-defined]
 
 
+def test_bootstrap_witness_evidence_is_accepted_by_the_qualifier(tmp_path: Path) -> None:
+    """Exercise the real bootstrap producer shape through the offline verifier.
+
+    The injected GPU probe cannot mint production runtime provenance, so this
+    test supplies only that one paid-hardware fact after asserting the producer
+    correctly left it false. The page, witness artifact, smoke receipts, and
+    referenced serving artifacts all come from ``_build_preflight`` unchanged.
+    """
+
+    from operations.pod.bootstrap_main import _build_preflight, build_parser, resolve_plan
+    from operations.pod.test_bootstrap_main import Clock, _argv, _environ, _preflight_seams
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="unproven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, _launcher = _preflight_seams(tmp_path, identities)
+    preflight = _build_preflight(plan, seams)()
+    assert preflight["assembly_proven"] is False
+    preflight["assembly_proven"] = True
+    wrapper = {
+        "schema": "pod-bootstrap-result.v1",
+        "state": "bootstrap-green",
+        "at": "2026-09-15T12:00:00Z",
+        "bootstrap": {
+            "color": "green",
+            "completed": ["preflight"],
+            "receipts": {"preflight": preflight},
+            "failure_step": None,
+            "detail": None,
+            "remediation": None,
+        },
+    }
+    ws.report_path.write_text(json.dumps(wrapper), encoding="utf-8")
+
+    candidates = qualification_candidates(
+        report_path=ws.report_path,
+        evidence_root=plan.preflight_root,
+        models_config=ws.models_config,
+        recipes_config=plan.serving_recipes_config,
+        placement_config=ws.placement_config,
+    )["candidates"]
+
+    assert isinstance(candidates, list) and len(candidates) == len(identities)
+
+
 @pytest.mark.parametrize(
     ("schema", "state"),
     [
@@ -276,6 +335,40 @@ def test_qualification_refuses_inconsistent_page_read_evidence(
     paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
 
     with pytest.raises(QualificationRefusal, match="golden-page witness|page-read evidence"):
+        _qualify(paths)
+
+
+def test_qualification_refuses_a_witness_digest_that_disagrees_with_its_artifact(
+    tmp_path: Path,
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
+    smoke["page_witness_sha256"] = "e" * 64  # type: ignore[index]
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="witness digest disagrees"):
+        _qualify(paths)
+
+
+def test_qualification_refuses_an_output_digest_that_does_not_match_the_witness(
+    tmp_path: Path,
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
+    smoke["smoke_fixture_output_sha256"] = "e" * 64  # type: ignore[index]
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="retained page witness exactly"):
+        _qualify(paths)
+
+
+def test_qualification_refuses_changed_witness_artifact_bytes(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
+    reference = smoke["page_witness_reference"]  # type: ignore[index]
+    (paths["evidence"] / reference["relative_path"]).write_bytes(b"changed witness bytes")  # type: ignore[index]
+
+    with pytest.raises(QualificationRefusal, match="artifact digest does not match"):
         _qualify(paths)
 
 
