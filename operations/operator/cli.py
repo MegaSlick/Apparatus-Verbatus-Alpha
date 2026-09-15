@@ -268,6 +268,10 @@ _UNREADABLE_RECEIPT = (
     OSError,
     UnicodeDecodeError,
     json.JSONDecodeError,
+    # A receipt inside the byte bound can still nest deeply enough for the
+    # decoder to recurse out on 3.12; that is an unreadable receipt, not an
+    # internal failure for the catch-all (CodeRabbit on PR #117).
+    RecursionError,
     KeyError,
     TypeError,
     ValueError,

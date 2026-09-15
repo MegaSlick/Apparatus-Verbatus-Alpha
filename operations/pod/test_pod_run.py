@@ -1318,6 +1318,22 @@ def test_a_receipt_with_no_payload_wrapper_is_refused_rather_than_read(tmp_path:
     assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
 
 
+def test_a_pathologically_nested_launch_receipt_is_unreadable_not_an_internal_failure(
+    tmp_path: Path,
+) -> None:
+    """Deep nesting inside the byte bound refuses as an unreadable receipt on every
+    interpreter: 3.12's decoder recurses out, 3.14's walks it and refuses the integer
+    at its own digit limit; neither may reach the console's catch-all."""
+
+    receipt = tmp_path / "launch.json"
+    receipt.write_bytes(b"[" * 10_000 + b"9" * 4301 + b"]" * 10_000)
+
+    with pytest.raises(OperatorError) as refusal:
+        operator_cli._derived_evidence_keys(receipt)
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+
+
 def test_a_launch_receipt_for_another_volume_is_refused_rather_than_used(
     tmp_path: Path,
 ) -> None:
