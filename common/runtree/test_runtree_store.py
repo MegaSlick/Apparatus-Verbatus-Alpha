@@ -1882,15 +1882,35 @@ def test_read_bytes_refuses_a_file_grown_past_the_tree_read_limit(tmp_path, monk
     assert artifact.stat().st_size > 4  # the file itself was never truncated
 
 
-def test_read_run_refuses_a_run_authority_grown_past_the_tree_read_limit(tmp_path, monkeypatch):
-    """The same bound reaches `read_run`, routed through `_read_json`, not only
+def test_read_run_refuses_a_run_authority_grown_past_the_record_read_limit(tmp_path, monkeypatch):
+    """A bound reaches `read_run`, routed through `_read_json`, not only
     `read_bytes` -- a hostile or corrupted `run.json` must not be read whole
-    either."""
+    either. It is the record ceiling here, not the blob one: everything
+    `_read_json_with_bytes` opens is a JSON record, and the bytes are about to
+    be handed to `json.loads`, which costs several times their size again."""
     tree = make_run(tmp_path)
-    monkeypatch.setattr(runtree_store, "_MAX_TREE_READ_BYTES", 4)
+    monkeypatch.setattr(runtree_store, "MAX_RECORD_READ_BYTES", 4)
 
     with pytest.raises(SchemaRefusal, match="tree read limit"):
         tree.read_run()
+
+
+def test_read_bytes_takes_an_explicit_ceiling_when_a_caller_asks_for_one(tmp_path):
+    """G13: a caller reading a JSON record through `read_bytes` -- the fetch
+    verb's `_fetched_manifest` is the live one -- must be able to ask for the
+    record-sized ceiling rather than the blob-sized default, so the bytes it is
+    about to parse are bounded by what a record can legitimately be.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    relative = tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    size = tree.resolve(relative).stat().st_size
+    assert size > 4
+
+    assert len(tree.read_bytes(relative, max_bytes=size)) == size
+    with pytest.raises(SchemaRefusal, match="tree read limit"):
+        tree.read_bytes(relative, max_bytes=4)
 
 
 def test_a_manifest_refuses_an_unbounded_number_of_walk_entries(tmp_path, monkeypatch):
