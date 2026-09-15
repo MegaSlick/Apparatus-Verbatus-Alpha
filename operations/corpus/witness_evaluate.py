@@ -51,7 +51,7 @@ def witness_reading(attachment: Mapping[str, Any], testimonium: Mapping[str, Any
     return (OutputStatus.TRUNCATED if health.get("truncated") is True else OutputStatus.COMPLETE, text[span["start"]:span["end"]], None)
 
 
-def evaluate_page(*, reference_page: dict[str, Any], proposals: list[dict[str, Any]], attachments: Mapping[str, Mapping[str, Mapping[str, Any]]], testimonia: Mapping[str, Mapping[str, Any]], chairs: tuple[str, ...]) -> dict[str, Any]:
+def evaluate_page(*, reference_page: dict[str, Any], proposals: list[dict[str, Any]], attachments: Mapping[str, Mapping[str, list[dict[str, Any]]]], testimonia: Mapping[str, Mapping[str, Any]], chairs: tuple[str, ...]) -> dict[str, Any]:
     """Score one page. ``attachments`` is act-id -> chair -> sealed attachment/ref pair."""
     reference_page = validate_reference_page(reference_page)
     # Geometry is intentionally independent of chair and reference text.
@@ -62,7 +62,11 @@ def evaluate_page(*, reference_page: dict[str, Any], proposals: list[dict[str, A
         act_id = pair["pipeline_act_id"]
         ref = next(a for a in reference_page["acts"] if a["physical_act_id"] == pair["reference_physical_act_id"])
         for chair in chairs:
-            item = attachments.get(act_id, {}).get(chair)
+            candidates = attachments.get(act_id, {}).get(chair, [])
+            matches = [item for item in candidates if not item["attachment"].get("page_witness") or item["testimonium"].get("payload", {}).get("presented", {}).get("image_sha256") == reference_page["page"]["sha256"]]
+            if len(matches) > 1:
+                raise CorpusRefusal("malformed-record: duplicate attachments for one matched act page")
+            item = matches[0] if matches else None
             if item is None:
                 status, text, reason = OutputStatus.MISSING, None, "missing-act-attachment"
             else:
@@ -72,7 +76,8 @@ def evaluate_page(*, reference_page: dict[str, Any], proposals: list[dict[str, A
                 status, text, reason = witness_reading(attachment, reference)
             score = score_response(ref["text"], status=status, text=text, profile=GRAPHEMIC_V1)
             rows.append({"record_id": ref["record_id"], "pipeline_act_id": act_id, "chair": chair, "status": status.value, "reason": reason, "cer": score.cer.edits.errors, "cer_units": score.cer.reference_units, "wer": score.wer.edits.errors, "wer_units": score.wer.reference_units})
-    body = {"schema": SCHEMA, "reference_page_self_hash": reference_page["self_hash"], "geometry": geometry, "rows": rows, "missing_reference_records": geometry["misses"]}
+    totals = {chair: {"references": len([r for r in rows if r["chair"] == chair]) + len(geometry["misses"]), "scoreable": sum(r["chair"] == chair and r["status"] in {"complete", "truncated"} for r in rows), "cer_errors": sum(r["cer"] for r in rows if r["chair"] == chair), "cer_units": sum(r["cer_units"] for r in rows if r["chair"] == chair), "wer_errors": sum(r["wer"] for r in rows if r["chair"] == chair), "wer_units": sum(r["wer_units"] for r in rows if r["chair"] == chair), "missing_proposals": len(geometry["misses"])} for chair in chairs}
+    body = {"schema": SCHEMA, "reference_page_self_hash": reference_page["self_hash"], "geometry": geometry, "rows": rows, "totals": totals, "missing_reference_records": geometry["misses"]}
     body["self_hash"] = self_hash(body)
     return body
 
@@ -91,8 +96,8 @@ def _reference_pages(path: Path) -> dict[str, dict[str, Any]]:
     return pages
 
 
-def _attachment_index(tree: RunTree) -> dict[str, dict[str, dict[str, Any]]]:
-    indexed: dict[str, dict[str, dict[str, Any]]] = {}
+def _attachment_index(tree: RunTree) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    indexed: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] != "act-attachment":
             continue
@@ -108,10 +113,10 @@ def _attachment_index(tree: RunTree) -> dict[str, dict[str, dict[str, Any]]]:
                 raise CorpusRefusal("malformed-record: attachment has no Testimonium reference")
             kind = "page-testimonium" if attachment.get("page_witness") else "testimonium"
             testimony = tree.read_artifact(ATTESTATORES, kind, reference["artifact_id"])
-            indexed.setdefault(record["subject_id"], {})[attachment["chair"]] = {
+            indexed.setdefault(record["subject_id"], {}).setdefault(attachment["chair"], []).append({
                 "attachment": attachment,
                 "testimonium": testimony,
-            }
+            })
     return indexed
 
 
