@@ -5708,7 +5708,9 @@ def test_fetch_run_refuses_a_rebuildable_index_that_is_not_a_readable_record(
 
     volume, reader = _volume_run(tmp_path)
     index = volume / "runs" / "brought-home" / "2_designator" / "index.json"
-    index.write_bytes(b'{"extra":' + b"[" * 10_000 + b"]" * 10_000 + b"}")
+    # Nesting around a 4,301-digit integer: 3.12 refuses the nesting
+    # (RecursionError), 3.14 walks it and refuses the integer (ValueError).
+    index.write_bytes(b'{"extra":' + b"[" * 10_000 + b"9" * 4301 + b"]" * 10_000 + b"}")
     surface = _surface(tmp_path)
 
     with pytest.raises(OperatorError) as nested:

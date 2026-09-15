@@ -1383,6 +1383,15 @@ def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal
         verify_projection_identity(_zip_bytes(members), tmp_path)
 
 
+# Ten thousand levels of nesting around a 4,301-digit integer. CPython 3.12
+# refuses the nesting with `RecursionError` before it reaches the integer;
+# 3.14's decoder no longer recurses on the C stack and walks all ten thousand
+# levels, then refuses the integer with `ValueError` at the interpreter's
+# integer-string limit. Either way the reader's widened arm answers, which is
+# the invariant these tests pin; a bare nesting bomb pinned only the 3.12 path.
+_PATHOLOGICALLY_NESTED_JSON = b"[" * 10_000 + b"9" * 4301 + b"]" * 10_000
+
+
 def test_a_deeply_nested_acts_jsonl_row_is_refused_by_name_not_a_recursion_error(tmp_path):
     """G13: every Armarium JSONL reader widened its `except json.JSONDecodeError`
     to `(UnicodeDecodeError, ValueError, RecursionError)`; this pins the
@@ -1390,7 +1399,7 @@ def test_a_deeply_nested_acts_jsonl_row_is_refused_by_name_not_a_recursion_error
     same failure `common/chandra_layout.py` and `structure_answer.py` guard.
     """
     path = tmp_path / "acts.jsonl"
-    path.write_bytes(b"[" * 10_000 + b"]" * 10_000)
+    path.write_bytes(_PATHOLOGICALLY_NESTED_JSON)
     with pytest.raises(SchemaRefusal, match="an acts JSONL row is not JSON"):
         _jsonl_act_records(path, [])
 

@@ -425,7 +425,10 @@ def test_chandra_custody_refuses_a_pathologically_nested_binding():
         page_id=PAGE_ID,
         page_ordinal=PAGE_ORDINAL,
     )
-    nested = (b"[" * 10_000) + (b"]" * 10_000)
+    # Nesting around a 4,301-digit integer: 3.12 refuses the nesting
+    # (RecursionError), 3.14 walks it and refuses the integer (ValueError);
+    # the boundary's named refusal must answer both.
+    nested = (b"[" * 10_000) + (b"9" * 4301) + (b"]" * 10_000)
     digest = digest_bytes(nested)
     hostile_path = f"{RESPONSE_BLOB_PREFIX}{digest}"
     tree.blobs[hostile_path] = nested
