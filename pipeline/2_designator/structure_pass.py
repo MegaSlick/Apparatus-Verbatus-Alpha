@@ -86,8 +86,8 @@ from __future__ import annotations
 
 import base64
 import dataclasses
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
 from typing import Any, Final, Mapping, TypedDict, TypeVar, cast
 
 import geometry
