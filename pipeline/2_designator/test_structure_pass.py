@@ -1007,8 +1007,19 @@ def test_the_repetition_measure_separates_the_live_runs_looping_pages():
     phrase = "<div><p>" + ("de l'Eglise, " * 1600) + "</p></div>"
     assert structure_pass.repetition_share(phrase) >= structure_pass.DEGENERATE_REPETITION_SHARE
 
-    # Too short to ask the question of.
+    # A positive control at each end. One character repeated makes every window
+    # identical and scores exactly 1.0. A fifteen-character phrase repeated
+    # instead yields fifteen distinct windows and scores about 0.07 -- which is
+    # page 3's own magnitude, its `de l\'Église, ` being thirteen characters,
+    # and why the floor sits well under that rather than near 1.
+    assert structure_pass.repetition_share("a" * 600) == 1.0
+    phrase_share = structure_pass.repetition_share("abcdefghijklmno" * 40)
+    assert structure_pass.DEGENERATE_REPETITION_SHARE < phrase_share < 0.1
+
+    # Too short to ask the question of. The floor is a count of windows, and
+    # an answer under it is not judged either way.
     assert structure_pass.repetition_share("aaaa") == 0.0
+    assert structure_pass.repetition_share("ab" * 20) == 0.0
 
 
 def test_a_looping_answer_is_held_as_degenerate_not_as_a_cut_off():

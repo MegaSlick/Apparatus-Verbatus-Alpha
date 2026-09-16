@@ -962,6 +962,15 @@ def touches_ink(rectangle: Mapping[str, int], analysis: Mapping[str, Any]) -> bo
 # genuine repeated phrasing must not be called degenerate.
 DEGENERATE_REPETITION_SHARE: Final = 0.02
 _REPETITION_WINDOW: Final = 12
+# Answers shorter than this many overlapping windows score zero rather than
+# being judged. A count of windows, named rather than derived from the window
+# length, which is a different quantity and read as a mistake when the two were
+# multiplied (CodeRabbit on this branch). The value stays deliberately
+# conservative: the only answers this measure is asked about are cut-off ones,
+# which spent a whole context and run to five figures of characters, so the
+# floor excludes nothing real and refuses to call a fragment repeated twice in
+# a single line evidence of a loop.
+_MIN_WINDOWS_TO_JUDGE: Final = 48
 
 
 def repetition_share(text: str) -> float:
@@ -973,7 +982,7 @@ def repetition_share(text: str) -> float:
     only answers this question is asked of are ones that spent a whole context.
     """
     windows = len(text) - _REPETITION_WINDOW + 1
-    if windows < _REPETITION_WINDOW * 4:
+    if windows < _MIN_WINDOWS_TO_JUDGE:
         return 0.0
     counts = Counter(text[i : i + _REPETITION_WINDOW] for i in range(windows))
     return counts.most_common(1)[0][1] / windows
