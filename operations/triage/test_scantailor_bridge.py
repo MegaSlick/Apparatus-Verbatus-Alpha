@@ -8,10 +8,16 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from common.contracts.canonical import canonical_bytes
 from common.imaging import render_triage_derivative
 from operations.operator.scantailor_worker import parse
 from operations.triage.producer import SubmittedFrame, produce
-from operations.triage.scantailor_bridge import ScantailorBridgeRefusal, transcribe_midpoint_splits
+from operations.triage.scantailor_bridge import (
+    ORIENTATION_SCHEMA,
+    ScantailorBridgeRefusal,
+    load_orientations,
+    transcribe_midpoint_splits,
+)
 from operations.triage.scantailor_project import PrescribedSpread, prescribed_midpoint_project
 
 
@@ -114,3 +120,56 @@ def test_foreign_submitted_source_refuses_exact_coverage(tmp_path: Path):
             corpus_id="recordgold-pilot",
             mode="manual",
         )
+
+
+def test_a_declared_removed_half_is_refused_rather_than_published(tmp_path: Path):
+    """The operator deleted a half in ScanTailor; this bridge emits both.
+
+    `removed_half` was required by the closed image schema and then read by
+    nothing, so an excluded half reached the Door as an ordinary row and could
+    be established as an act with nothing downstream able to tell the removal
+    had been discarded (CodeRabbit). Refused rather than honoured: emitting
+    only the retained half would decide that half's physical ordering silently.
+    """
+    document, frames, sources = _document(tmp_path)
+    removed = {
+        **document,
+        "geometry": [
+            {
+                **document["geometry"][0],
+                "image": {**document["geometry"][0]["image"], "removed_half": "left"},
+            },
+            *document["geometry"][1:],
+        ],
+    }
+    with pytest.raises(ScantailorBridgeRefusal, match="declares a removed half"):
+        transcribe_midpoint_splits(
+            removed,
+            geometry_document_sha256="a" * 64,
+            submitted_by_source_path=frames,
+            corpus_id="recordgold-pilot",
+            mode="manual",
+            orientation_degrees_by_source_path={sources[0]: 0, sources[1]: 180},
+        )
+
+
+def test_a_boolean_orientation_is_refused_not_read_as_zero(tmp_path: Path):
+    """`False == 0` in Python, so a JSON boolean passed the membership test.
+
+    It then selected the zero-degree region order, recorded `0` for
+    `degrees * 1000`, and sealed `False` into the binding -- a malformed
+    canonical document accepted instead of refused (CodeRabbit).
+    """
+    orientations = {"schema": ORIENTATION_SCHEMA, "orientations": {"pages/a.jpg": False}}
+    raw = canonical_bytes(orientations) + b"\n"
+    path = tmp_path / "orientations.json"
+    path.write_bytes(raw)
+    with pytest.raises(ScantailorBridgeRefusal, match="wrong closed schema"):
+        load_orientations(path)
+
+    # The honest spellings still load.
+    for degrees in (0, 180):
+        good = {"schema": ORIENTATION_SCHEMA, "orientations": {"pages/a.jpg": degrees}}
+        good_path = tmp_path / f"orientations-{degrees}.json"
+        good_path.write_bytes(canonical_bytes(good) + b"\n")
+        assert load_orientations(good_path)[0] == {"pages/a.jpg": degrees}

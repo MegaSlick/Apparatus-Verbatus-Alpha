@@ -605,6 +605,22 @@ def evaluate_run(
     ]
 
     reports = []
+    # Two selected page IDs may name the same digest. Nothing above refuses it:
+    # the ledger does not enforce unique `page_sha256` and the reference-hash
+    # sets collapse duplicates, so both iterations would score the same page and
+    # ordinal -- doubling `reports`, each chair's totals and `missing_proposals`
+    # while `selected_ordinals` and `page_health` kept one entry (CodeRabbit).
+    # Refused here, beside the duplicate page-ID check, before any scoring.
+    digests_seen: dict[str, str] = {}
+    for page_id in sorted(selected):
+        digest = selected[page_id][0]
+        if digest in digests_seen:
+            raise CorpusRefusal(
+                f"reference-page-collision: selected pages {digests_seen[digest]!r} and "
+                f"{page_id!r} name the same page sha256 {digest}; one page is scored once"
+            )
+        digests_seen[digest] = page_id
+
     selected_ordinals: dict[int, str] = {}
     for page_id in sorted(selected):
         digest, expected_reference_hash = selected[page_id]

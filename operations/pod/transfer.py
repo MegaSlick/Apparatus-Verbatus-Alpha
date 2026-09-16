@@ -199,9 +199,15 @@ def normalize_transfer_prefix(value: str) -> str:
         not normalized
         or normalized.startswith("/")
         or "\x00" in normalized
-        or any(component in {"", ".", ".."} for component in normalized.split("/"))
+        # One component, never `submission/two`. A nested prefix writes image
+        # keys below it while control files land as siblings inside the default
+        # `submission/` inventory, so a later default Door run inventories files
+        # its manifest does not name and refuses the run -- after the upload has
+        # already reported success (CodeRabbit).
+        or "/" in normalized
+        or normalized in {".", ".."}
     ):
-        raise ValueError("transfer prefix must be a safe relative key prefix")
+        raise ValueError("transfer prefix must be one safe relative key component, without '/'")
     return normalized
 
 

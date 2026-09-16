@@ -1065,7 +1065,7 @@ def test_a_run_sealed_with_no_data_handling_digest_is_refused_by_name(real_root)
     assert "sealed no digest for the data-handling configuration" in str(refusal.value)
 
 
-def test_run_policy_digest_moves_with_each_of_its_seven_fields():
+def test_run_policy_digest_moves_with_each_of_its_eight_fields():
     base = dict(
         witness_context="named",
         witness_context_declaration_sha256="a" * 64,
@@ -1074,6 +1074,7 @@ def test_run_policy_digest_moves_with_each_of_its_seven_fields():
         perlector_instrument_per_mille=0,
         perlector_instrument_approval_ref="",
         draft_fed=True,
+        mechanics_qualification=False,
     )
     moved = {
         "witness_context": "blinded",
@@ -1083,6 +1084,10 @@ def test_run_policy_digest_moves_with_each_of_its_seven_fields():
         "perlector_instrument_per_mille": 1,
         "perlector_instrument_approval_ref": "perlector-prior-draft-instrument-design.v1",
         "draft_fed": False,
+        # A run created ordinarily must not resume under the mechanics flag and
+        # pass the reuse check, mixing ordinary and mechanics-only artefacts in
+        # one tree (CodeRabbit).
+        "mechanics_qualification": True,
     }
     assert real_run_policy_digest(**base) == real_run_policy_digest(**base)
     for field, value in moved.items():
@@ -1091,6 +1096,8 @@ def test_run_policy_digest_moves_with_each_of_its_seven_fields():
         )
     with pytest.raises(ContractError, match="draft_fed must be a bool"):
         real_run_policy_digest(**{**base, "draft_fed": 1})
+    with pytest.raises(ContractError, match="mechanics_qualification must be a bool"):
+        real_run_policy_digest(**{**base, "mechanics_qualification": 1})
 
 
 # --- one page index for both routes ----------------------------------------------

@@ -271,7 +271,16 @@ class S3VolumeTarget:
             finally:
                 closer = getattr(body, "close", None)
                 if callable(closer):
-                    closer()
+                    # A close that fails after the stream verified does not
+                    # unmake the bytes already read and digested. Left to the
+                    # outer handler it became a `VolumeTransferRefusal`, so a
+                    # verified transfer was recorded as partial on a cleanup
+                    # error (CodeRabbit). `S3VolumeObjectReader.read` already
+                    # suppresses this for the same reason.
+                    try:
+                        closer()
+                    except Exception:  # noqa: BLE001  (cleanup cannot invalidate read bytes)
+                        pass
         except VolumeTransferRefusal:
             raise
         except Exception as error:

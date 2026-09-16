@@ -190,6 +190,9 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
         "triage_decision_manifest",
         "triage_clusters",
         "triage_producer_recipe",
+        # Resolved here too, or an ordinary CLI run with a relative
+        # `--cache-root` would be refused by the boundary guard above.
+        "cache_root",
     ):
         value = getattr(args, attribute, None)
         if value is not None:
@@ -222,6 +225,15 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         ("submission_folder", "--submission-folder"),
         ("submission_manifest", "--submission-manifest"),
         ("data_gate_policy", "--data-gate-policy"),
+        # The three triage paths and the model cache were forwarded to children
+        # unchecked, so a direct caller could make the Door read triage data, or
+        # a stage read a model cache, relative to the repository rather than to
+        # the caller (CodeRabbit). They belong behind the same boundary as every
+        # other caller path.
+        ("triage_decision_manifest", "--triage-decision-manifest"),
+        ("triage_clusters", "--triage-clusters"),
+        ("triage_producer_recipe", "--triage-producer-recipe"),
+        ("cache_root", "--cache-root"),
     ):
         value = getattr(args, attribute, None)
         if value is not None and not Path(value).is_absolute():

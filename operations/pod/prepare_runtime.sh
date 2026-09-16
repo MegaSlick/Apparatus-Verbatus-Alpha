@@ -59,10 +59,19 @@ install_uv() {
     trap 'rm -rf "$workdir"' RETURN
     archive="$workdir/$UV_ARCHIVE"
     download "$archive" "$UV_URL"
-    echo "$UV_SHA256  $archive" | sha256sum --check --status
+    # Named, not a bare status: with `set -euo pipefail` a silent non-zero
+    # leaves the operator unable to tell a bad download from a bad pin
+    # (CodeRabbit; operations/pod/** requires failures report what they are).
+    if ! echo "$UV_SHA256  $archive" | sha256sum --check --status; then
+        echo "uv archive $archive failed its pinned sha256 $UV_SHA256" >&2
+        return 1
+    fi
     tar -xzf "$archive" -C "$workdir"
     install -D -m 0755 "$workdir/uv-x86_64-unknown-linux-gnu/uv" "$UV"
-    uv_is_pinned
+    if ! uv_is_pinned; then
+        echo "installed uv at $UV is not the pinned version $UV_VERSION" >&2
+        return 1
+    fi
     rm -rf "$workdir"
     trap - RETURN
 }
@@ -77,7 +86,10 @@ install_setpriv() {
     trap 'rm -rf "$workdir"' RETURN
     archive="$workdir/$UTIL_LINUX_ARCHIVE"
     download "$archive" "$UTIL_LINUX_URL"
-    echo "$UTIL_LINUX_SHA256  $archive" | sha256sum --check --status
+    if ! echo "$UTIL_LINUX_SHA256  $archive" | sha256sum --check --status; then
+        echo "util-linux archive $archive failed its pinned sha256 $UTIL_LINUX_SHA256" >&2
+        return 1
+    fi
     tar -xJf "$archive" -C "$workdir"
     source="$workdir/util-linux-$UTIL_LINUX_VERSION"
     (

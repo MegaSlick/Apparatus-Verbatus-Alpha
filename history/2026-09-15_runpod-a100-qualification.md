@@ -132,17 +132,17 @@ them. Original pixels, source-frame geometry, rotation and reading order must su
 
 The user prepared four individual TIFF pages from the two pilot spreads. All four
 were uploaded and SHA-256 verified, then passed ordinary confined auto-ingest.
-No additional rotation was applied. The earlier180-degree value was part of the
+No additional rotation was applied. The earlier 180-degree value was part of the
 IIIF download URL: the image server had already applied that transformation. It
 was incorrect to treat it as an instruction to rotate the saved image again.
 The prescribed midpoint helper was not run on these inputs.
 
 The full automatic mechanics run `trial-four-page-20260915-mechanics` was launched
-on published6ece1c5 with these four TIFFs. Its launch is recorded separately from
+on published `6ece1c5` with these four TIFFs. Its launch is recorded separately from
 completion; no successful end-to-end result is claimed by this checkpoint. The
 user requests the pod remain running for Claude continuation, including at the
 Codex usage cutoff.
 
-The6ece fullgate failed only its formatting phase; all three ingress scans passed.
+The `6ece1c5` full gate failed only its formatting phase; all three ingress scans passed.
 The frozen formatter's one-file whitespace correction is applied here. A complete
 exact-head gate and GitHub review remain necessary before merge.

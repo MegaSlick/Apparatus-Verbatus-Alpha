@@ -1917,6 +1917,7 @@ def real_run_policy_digest(
     perlector_instrument_per_mille: int,
     perlector_instrument_approval_ref: str,
     draft_fed: bool,
+    mechanics_qualification: bool = False,
 ) -> str:
     """The digest a real run seals its run-level reading knobs under.
 
@@ -1936,6 +1937,10 @@ def real_run_policy_digest(
     """
     if not isinstance(draft_fed, bool):
         raise ContractError(f"draft_fed must be a bool, got {draft_fed!r}")
+    if not isinstance(mechanics_qualification, bool):
+        raise ContractError(
+            f"mechanics_qualification must be a bool, got {mechanics_qualification!r}"
+        )
     return digest_of(
         {
             "witness_context_regime": witness_context,
@@ -1945,6 +1950,11 @@ def real_run_policy_digest(
             "perlector_instrument_per_mille": perlector_instrument_per_mille,
             "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
             "draft_fed": draft_fed,
+            # A behaviour-changing mode, sealed like every other one. Without it
+            # a run created ordinarily could be resumed under
+            # `--mechanics-qualification` and pass both reuse checks, mixing
+            # ordinary and mechanics-only artefacts in one tree (CodeRabbit).
+            "mechanics_qualification": mechanics_qualification,
         }
     )
 
@@ -1973,6 +1983,7 @@ def run_config_bindings(
     perlector_protocol_config_path: str | Path = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path: str | Path = DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     draft_fed: bool = True,
+    mechanics_qualification: bool = False,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     corpus_frame_config_path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
@@ -2162,6 +2173,7 @@ def run_config_bindings(
                 "perlector_protocol_config_sha256": perlector_protocol_config_digest,
                 "perlector_audit_config_sha256": perlector_audit_config_digest,
                 "draft_fed": draft_fed,
+                "mechanics_qualification": mechanics_qualification,
                 "serving_config_inputs": serving_config_inputs,
             }
         ),
@@ -2322,6 +2334,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
                 perlector_instrument_per_mille=args.perlector_instrument_per_mille,
                 perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
                 draft_fed=args.draft_fed,
+                mechanics_qualification=getattr(args, "mechanics_qualification", False),
             ),
         },
         "armarium_formats": armarium_formats,
@@ -4286,6 +4299,7 @@ def open_context(
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
+        mechanics_qualification=getattr(args, "mechanics_qualification", False),
         serving_recipes_config_path=args.serving_recipes_config,
         decoding_config_path=args.decoding_config,
     )

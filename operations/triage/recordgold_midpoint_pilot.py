@@ -71,6 +71,14 @@ def main(argv: list[str] | None = None) -> int:
     for identifier, degrees in args.page:
         relative = f"pages/{identifier}.jpg"
         source = args.source_root / relative
+        # Resolved and contained *before* the read, not after. A page
+        # identifier carrying separators or `..` otherwise makes this tool read
+        # an unrelated local file, and the containment check that exists
+        # further down only rejects the escaped path once its bytes are already
+        # in hand (CodeRabbit).
+        root = args.source_root.resolve()
+        if not source.resolve().is_relative_to(root):
+            parser.error(f"page identifier {identifier!r} leaves --source-root")
         try:
             data = source.read_bytes()
             width, height, _mode = producer._decode_dimensions_and_mode(data, relative)
@@ -82,7 +90,17 @@ def main(argv: list[str] | None = None) -> int:
         orientations[source_path] = degrees
     if args.geometry_document is None:
         if args.project_dir is None or not args.project_dir.is_dir():
-            parser.error("--project-dir must name an existing directory outside --source-root")
+            parser.error(
+                "--project-dir must name an existing directory that is a strict ancestor of --source-root"
+            )
+        if args.project_dir.resolve() == args.source_root.resolve():
+            # Equal paths satisfy `relative_to` with `Path(".")`, and the
+            # generator below would then write the project *into* the submitted
+            # source tree, adding an unsubmitted file to what the Door is about
+            # to read (CodeRabbit).
+            parser.error(
+                "--project-dir must be a strict ancestor of --source-root, not equal to it"
+            )
         try:
             relative_prefix = args.source_root.resolve().relative_to(args.project_dir.resolve())
         except ValueError:

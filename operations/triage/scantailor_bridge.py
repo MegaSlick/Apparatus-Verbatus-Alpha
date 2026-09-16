@@ -77,7 +77,16 @@ def load_orientations(path: str | Path) -> tuple[dict[str, int], str]:
         or not isinstance(value["orientations"], Mapping)
         or not value["orientations"]
         or any(
-            not isinstance(path, str) or not path or degrees not in {0, 180}
+            not isinstance(path, str)
+            or not path
+            # `type(degrees) is not int` before the membership test, not after:
+            # `False == 0` and `True == 1` in Python, so a JSON boolean passes
+            # `degrees not in {0, 180}` and travels on as an orientation. It
+            # then picks the zero-degree region order, records `0` for
+            # `degrees * 1000`, and seals `False` into the binding — an invalid
+            # canonical document accepted rather than refused (CodeRabbit).
+            or type(degrees) is not int
+            or degrees not in {0, 180}
             for path, degrees in value["orientations"].items()
         )
     ):
@@ -131,6 +140,21 @@ def transcribe_midpoint_splits(
             raise ScantailorBridgeRefusal("two ScanTailor sources map to one submitted path")
         width, height, image_mode = _dimensions(frame.data)
         image = entry["image"]
+        # A half the operator deleted in ScanTailor is a decision about what is
+        # on the page, and this bridge emits both halves unconditionally below.
+        # Read but never honoured, `removed_half` would let an excluded half
+        # reach the Door as an ordinary row and be established as an act, with
+        # nothing downstream able to tell the removal was discarded
+        # (CodeRabbit). Refused rather than honoured: emitting only the retained
+        # half would leave that half's physical ordering decided silently here,
+        # and this bridge already refuses every other shape it cannot translate
+        # exactly.
+        if image["removed_half"] is not None:
+            raise ScantailorBridgeRefusal(
+                "imported ScanTailor geometry declares a removed half; this bridge translates "
+                "both halves of a two-page entry and has no way to honour an exclusion, so the "
+                "project is refused rather than published with the operator's removal discarded"
+            )
         if image["width"] != width or image["height"] != height:
             raise ScantailorBridgeRefusal(
                 "imported ScanTailor dimensions disagree with submitted bytes"
