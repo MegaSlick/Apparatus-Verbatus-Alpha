@@ -76,7 +76,9 @@ from common.native_witness import (  # noqa: E402
     verify_native_capture_blob,
 )
 from common.perlector_audit import (  # noqa: E402
+    EXAMINATION_CAP_EXHAUSTED,
     EXAMINATION_INCOMPLETE,
+    EXAMINATION_REPROOF_REJECTED,
     unresolved_state,
     validate_chain,
 )
@@ -3251,10 +3253,36 @@ def review_route_from_findings(
                 "re-proof are both retained, and the act is held rather than delivered on a "
                 "re-examination that never finished"
             )
-        else:
+        elif audit_examination == EXAMINATION_REPROOF_REJECTED:
+            # The re-proof was delivered and its call ran to completion, but the
+            # text it changed reached outside every flag that could have asked
+            # for it -- a live reader's own rewrite, not a truncation, so it is
+            # never described as one. The rewrite itself was refused and never
+            # published; the establishing (Pass-B) reading is what stands, and
+            # the flag it was sent to settle is exactly as unassessed as an
+            # incomplete re-proof leaves it.
+            reasons.append(
+                "the Perlector's audit re-proof for this act completed but rewrote text "
+                "outside every location its own flag identified; the rewrite is refused rather "
+                "than published, the establishing reading is retained, and the act is held "
+                "rather than delivered on a re-examination that overran its own scope"
+            )
+        elif audit_examination in (None, EXAMINATION_CAP_EXHAUSTED):
+            # `None` is a caller asserting `audit_unresolved` without naming the
+            # specific examination behind it -- unlike `EXAMINATION_INCOMPLETE`
+            # and `EXAMINATION_REPROOF_REJECTED` above, cap-exhausted was never
+            # cross-checked against a derived examination even before this
+            # branch existed, so an omitted examination reads exactly as it
+            # always has: this generic reason, not a new refusal.
             reasons.append(
                 "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
                 "they remain explicit uncertainty rather than a silent retry"
+            )
+        else:
+            raise ContractError(
+                f"a Recensor review route found audit_unresolved with examination "
+                f"{audit_examination!r}, which is none of the states this composer knows how "
+                "to hold for"
             )
     if assessment_malformed:
         # A doubt report the schema could not anchor is a fault of the call's

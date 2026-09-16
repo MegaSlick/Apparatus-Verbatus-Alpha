@@ -979,6 +979,23 @@ def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch)
     assert "may belong to another act on the same page" in reason
 
 
+def test_review_route_holds_a_reproof_that_escaped_its_flagged_span():
+    """A completed-but-rejected audit re-proof is held, and named as neither
+    an incomplete re-proof nor an exhausted cap -- the failure a real card
+    produced on 2026-09-15 (`common.perlector_audit.EXAMINATION_REPROOF_REJECTED`).
+    """
+    outcome, reason = RUN.review_route_from_findings(
+        testimony_shortfall=False,
+        audit_unresolved=True,
+        under_witnessed=False,
+        audit_examination="reproof-rejected",
+    )
+    assert outcome == "held-for-review"
+    assert "rewrote text outside every location its own flag identified" in reason
+    assert "did not complete" not in reason
+    assert "exhausted" not in reason
+
+
 def _continuation_page_context(monkeypatch, *, reason):
     """A page whose only act is primary somewhere else, declared unalignable here.
 

@@ -1127,6 +1127,7 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
             "examination": "complete",
             "reproof_truncation": _COMPLETE_TRUNCATION,
             "reproof_call": None,
+            "reproof_change_span": {"start": 0, "end": 1},
         }
     )
     with pytest.raises(SchemaRefusal, match="unknown triggering flag class"):
@@ -1314,6 +1315,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
             "examination": "cap-exhausted",
             "reproof_truncation": None,
             "reproof_call": None,
+            "reproof_change_span": None,
         },
         text="abc",
         flag_text="abc",
@@ -1341,6 +1343,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
                 "examination": "cap-exhausted",
                 "reproof_truncation": None,
                 "reproof_call": None,
+                "reproof_change_span": None,
             },
             text="abc",
             flag_text="abc",
@@ -1975,6 +1978,7 @@ def _finding(**overrides) -> dict:
         "examination": "incomplete",
         "reproof_truncation": _CUT_OFF_TRUNCATION,
         "reproof_call": None,
+        "reproof_change_span": None,
     }
     finding = {**base, **overrides}
     finding["reproof_truncation"] = _termination_over(finding["reproof_truncation"], _FINDING_TEXT)
@@ -2045,6 +2049,84 @@ def test_an_audit_finding_cannot_call_a_cut_off_reproof_complete():
             },
             text_length=3,
         )
+
+
+def test_a_reproof_that_escapes_its_flag_is_rejected_not_completed():
+    """A live re-proof that rewrote text no flag asked for is held, never published.
+
+    This is the failure a real card produced on 2026-09-15: the re-proof's
+    call ran to completion (`stop`, not cut off), so it is not `incomplete`,
+    but its rewrite reached outside the one flag it was sent to settle. The
+    shared validator must accept the honest `reproof-rejected` record and
+    refuse the same facts sealed as `complete`.
+    """
+    flag_text = "abcdef"
+    span = {"start": 0, "end": 6}
+    flags = [{"class": "testimony-diff", "location": {"start": 4, "end": 6}}]
+    rejected = _finding(
+        examination="reproof-rejected",
+        unresolved=True,
+        reproof_truncation=_COMPLETE_TRUNCATION,
+        reproof_change_span=span,
+        flags=flags,
+    )
+    accepted = audit.validate_finding(rejected, text=flag_text, flag_text=flag_text)
+    assert accepted["examination"] == "reproof-rejected"
+    assert accepted["unresolved"] is True
+    assert accepted["change_record"] == []
+
+    # The same escaping span cannot be dressed as `complete`.
+    with pytest.raises(SchemaRefusal, match="make it 'reproof-rejected'"):
+        audit.validate_finding(
+            _finding(
+                examination="complete",
+                unresolved=False,
+                reproof_truncation=_COMPLETE_TRUNCATION,
+                reproof_change_span=span,
+                flags=flags,
+            ),
+            text=flag_text,
+            flag_text=flag_text,
+        )
+    # A rejected finding cannot publish the rewrite, cannot carry a change, and
+    # cannot claim rejection without the span that shows what escaped.
+    with pytest.raises(SchemaRefusal, match="published no change"):
+        audit.validate_finding(
+            _finding(
+                examination="reproof-rejected",
+                unresolved=True,
+                reproof_truncation=_COMPLETE_TRUNCATION,
+                reproof_change_span=span,
+                flags=flags,
+                change_record=[{"start": 0, "end": 6, "triggering_flag_class": "testimony-diff"}],
+            ),
+            text=flag_text,
+            flag_text=flag_text,
+        )
+    with pytest.raises(SchemaRefusal, match="frozen semi-final, not the rejected rewrite"):
+        audit.validate_finding(
+            _finding(
+                examination="reproof-rejected",
+                unresolved=True,
+                reproof_truncation=_COMPLETE_TRUNCATION,
+                reproof_change_span=span,
+                flags=flags,
+            ),
+            text="ghijkl",
+            flag_text=flag_text,
+        )
+    # A confirmed-unchanged complete re-proof still validates with no span at
+    # all: `reproof-rejected` is not the default shape of `complete`.
+    assert (
+        audit.validate_finding(
+            _finding(
+                examination="complete", unresolved=False, reproof_truncation=_COMPLETE_TRUNCATION
+            ),
+            text="abc",
+            flag_text="abc",
+        )["examination"]
+        == "complete"
+    )
 
 
 def test_a_v1_audit_record_is_refused_by_name_and_never_read_forward():

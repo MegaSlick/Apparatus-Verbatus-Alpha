@@ -62,28 +62,38 @@ REQUEST_SCHEMA: Final = "perlector-audit-request.v1"
 # misspelt pass than a shared constant would be, and it only works on literals.
 REPROOF_PASS_KIND: Final = "audit-reproof"
 AUDIT_CAP_EXHAUSTED: Final = "audit-round-cap-exhausted"
-# What became of the re-examination the frozen flags required. Four states,
+# What became of the re-examination the frozen flags required. Five states,
 # each a different sentence a consumer may say about the act:
-#   not-due        no flag was raised, so nothing was there to re-prove
-#   cap-exhausted  flags were raised and the sealed cap left no round to spend
-#   complete       one re-proof was delivered and its call ran to completion
-#   incomplete     one re-proof was delivered and the truncation instrument did
-#                  not classify its call complete -- the engine said it ran out
-#                  of budget, gave no word at all, or the text it returned
-#                  carried all three of the instrument's own cut-off signals
-# Text equality plays no part in any of them. A re-proof that returns the frozen
-# text after being cut off has confirmed nothing; `incomplete` is what it
-# records, and `unresolved_state` below is what makes that a hold.
+#   not-due          no flag was raised, so nothing was there to re-prove
+#   cap-exhausted    flags were raised and the sealed cap left no round to spend
+#   complete         one re-proof was delivered, its call ran to completion, and
+#                    any text it changed stayed inside a flag that covers it
+#   incomplete       one re-proof was delivered and the truncation instrument did
+#                    not classify its call complete -- the engine said it ran out
+#                    of budget, gave no word at all, or the text it returned
+#                    carried all three of the instrument's own cut-off signals
+#   reproof-rejected one re-proof was delivered and completed, but the text it
+#                    changed reaches outside every flag that could have asked
+#                    for it -- a live reader's own rewrite, not a truncation,
+#                    so it is never dressed as one; the rewrite is refused,
+#                    never published, and the establishing reading stands
+# Text equality plays no part in `not-due`, `cap-exhausted` or `incomplete`. A
+# re-proof that returns the frozen text after being cut off has confirmed
+# nothing; `incomplete` is what it records, and `unresolved_state` below is
+# what makes that a hold. `reproof-rejected` is the one state text equality
+# (via the sealed `reproof_change_span`) does decide, and only that.
 EXAMINATION_NOT_DUE: Final = "not-due"
 EXAMINATION_CAP_EXHAUSTED: Final = "cap-exhausted"
 EXAMINATION_COMPLETE: Final = "complete"
 EXAMINATION_INCOMPLETE: Final = "incomplete"
+EXAMINATION_REPROOF_REJECTED: Final = "reproof-rejected"
 EXAMINATION_STATES: Final = frozenset(
     {
         EXAMINATION_NOT_DUE,
         EXAMINATION_CAP_EXHAUSTED,
         EXAMINATION_COMPLETE,
         EXAMINATION_INCOMPLETE,
+        EXAMINATION_REPROOF_REJECTED,
     }
 )
 # The truncation instrument's closed vocabulary, restated here because a stage
@@ -155,6 +165,13 @@ _FINDING_FIELDS: Final = frozenset(
         "examination",
         "reproof_truncation",
         "reproof_call",
+        # The envelope `text_change_span` measured between the frozen semi-final
+        # and a delivered, completed re-proof's own text -- `None` whenever no
+        # such comparison exists (no reproof due, cap exhausted, or the
+        # delivered call did not complete). `examination_state` re-derives
+        # `complete` vs `reproof-rejected` from this span and `flags` alone, so
+        # containment is never taken on the producer's word.
+        "reproof_change_span",
     }
 )
 _PERLECTIO_AUDIT_FIELDS: Final = frozenset(
@@ -308,21 +325,35 @@ def reproof_delivery_due(flags: list[Any], round_cap: int) -> bool:
 
 
 def examination_state(
-    flags: list[Any], round_cap: int, reproof_truncation: dict[str, Any] | None
+    flags: list[Any],
+    round_cap: int,
+    reproof_truncation: dict[str, Any] | None,
+    *,
+    reproof_change_span: tuple[int, int] | None = None,
+    flag_text_length: int | None = None,
 ) -> str:
     """One spelling of what became of the re-examination the flags required.
 
     Derived, never chosen. The producer records the value this returns and
-    `validate_finding` recomputes it from the same three facts, so a finding
-    cannot call an examination `complete` over a re-proof the truncation
-    instrument classified otherwise, cannot record a re-proof where the plan and
-    cap delivered none, and cannot omit the termination of one that was due.
+    `validate_finding` recomputes it from the same facts, so a finding cannot
+    call an examination `complete` over a re-proof the truncation instrument
+    classified otherwise, cannot record a re-proof where the plan and cap
+    delivered none, cannot omit the termination of one that was due, and
+    cannot call a rewrite that escaped every flag `complete`.
 
     The third argument is the truncation instrument run over the re-proof's own
     response -- its text and its engine's stop word -- and nothing else. The
     published text is compared with the frozen semi-final elsewhere, for
     provenance; it is deliberately not an input here, because equality of
     characters was the thing that used to stand in for completion (F1).
+
+    `reproof_change_span` is the envelope `text_change_span` measured between
+    the frozen semi-final and a delivered, completed re-proof's own text --
+    `None` exactly when there is no such comparison to make (no reproof due,
+    cap exhausted, or the call itself did not complete) or the re-proof
+    returned the frozen text unchanged. `flag_text_length` is the frozen
+    semi-final's own length, required whenever a span is given because
+    `flag_contains_change`'s witness slack is measured against it.
     """
     if not flags:
         if reproof_truncation is not None:
@@ -341,6 +372,19 @@ def examination_state(
             "for it; a re-examination with no recorded ending cannot be called complete"
         )
     if reproof_truncation["classification"] == TRUNCATION_COMPLETE:
+        if reproof_change_span is not None:
+            if flag_text_length is None:
+                raise SchemaRefusal(
+                    "an audit records a re-proof's change span without the frozen semi-final's "
+                    "own length to measure witness slack against"
+                )
+            start, end = reproof_change_span
+            contained = any(
+                flag_contains_change(flag, start=start, end=end, before_length=flag_text_length)
+                for flag in flags
+            )
+            if not contained:
+                return EXAMINATION_REPROOF_REJECTED
         return EXAMINATION_COMPLETE
     return EXAMINATION_INCOMPLETE
 
@@ -350,13 +394,21 @@ def unresolved_state(examination: str) -> bool:
 
     `cap-exhausted` was the only unresolved state v1 could express. `incomplete`
     joins it: a re-examination that did not finish discharged nothing, whatever
-    characters it emitted before it stopped. `not-due` and `complete` are the
-    two resolved states, and `complete` is still not a per-flag claim -- one
-    call answers every flag at once (Recensor `audit_state`).
+    characters it emitted before it stopped. `reproof-rejected` joins both: a
+    re-examination that finished but rewrote text no flag asked it to discharges
+    nothing either -- its rewrite is refused, not published, so the flag it was
+    sent to settle is exactly as unsettled as if the round had never run.
+    `not-due` and `complete` are the two resolved states, and `complete` is
+    still not a per-flag claim -- one call answers every flag at once (Recensor
+    `audit_state`).
     """
     if type(examination) is not str or examination not in EXAMINATION_STATES:
         raise SchemaRefusal(f"{examination!r} is not an audit examination state")
-    return examination in {EXAMINATION_CAP_EXHAUSTED, EXAMINATION_INCOMPLETE}
+    return examination in {
+        EXAMINATION_CAP_EXHAUSTED,
+        EXAMINATION_INCOMPLETE,
+        EXAMINATION_REPROOF_REJECTED,
+    }
 
 
 def length_signal(*, characters: int, region_pixels: int, page_pixels: int, floor: int) -> bool:
@@ -820,21 +872,39 @@ def validate_finding(
         )
         if span["start"] == span["end"] or span["reason"] != AUDIT_CAP_EXHAUSTED:
             raise SchemaRefusal("an audit uncertainty span has no exhausted-cap reason or width")
+    flag_text_length = len(flag_text) if flag_text is not None else len(text)
+    span = value["reproof_change_span"]
+    if span is not None:
+        _location(span, text_length=flag_text_length, label="an audit finding's reproof change span")
+        reproof_change_span = (span["start"], span["end"])
+    else:
+        reproof_change_span = None
+    examination = examination_state(
+        value["flags"],
+        value["round_cap"],
+        value["reproof_truncation"],
+        reproof_change_span=reproof_change_span,
+        flag_text_length=flag_text_length,
+    )
     if value["reproof_truncation"] is not None:
         # `text` is the re-proof's own returned text, which is what the
         # termination record was measured over
         # (`pipeline/4_perlector/run.py`: one `final_text` feeds
         # `truncation.classify` and this validation), so the record's character
         # count is bound to the reading rather than taken on the producer's
-        # word (independent audit of 2026-09-14).
+        # word (independent audit of 2026-09-14) -- except when that reading was
+        # refused and never published: `text` here is the *published* text, the
+        # frozen semi-final for a `reproof-rejected` finding, and binding the
+        # rejected re-proof's own termination to it would refuse every honest
+        # rejection on a length mismatch that names nothing wrong. `text=None`
+        # is the documented "the caller does not hold it" case, never a skip.
         validate_truncation_record(
             value["reproof_truncation"],
             label="an audit finding's re-proof termination",
-            text=text,
+            text=None if examination == EXAMINATION_REPROOF_REJECTED else text,
             length_floor_characters_per_page=length_floor_characters_per_page,
         )
     validate_reproof_call(value["reproof_call"], label="an audit finding's re-proof call")
-    examination = examination_state(value["flags"], value["round_cap"], value["reproof_truncation"])
     if value["reproof_call"] is not None and value["reproof_truncation"] is None:
         raise SchemaRefusal(
             "an audit finding names a re-proof call although no re-proof was delivered"
@@ -843,8 +913,8 @@ def validate_finding(
         _refuse_call_verdict_disagreement(value["reproof_call"], value["reproof_truncation"])
     if value["examination"] != examination:
         raise SchemaRefusal(
-            f"an audit finding claims examination {value['examination']!r} but its flags, cap "
-            f"and re-proof termination make it {examination!r}"
+            f"an audit finding claims examination {value['examination']!r} but its flags, cap, "
+            f"re-proof termination and change span make it {examination!r}"
         )
     if value["unresolved"] != unresolved_state(examination):
         raise SchemaRefusal(
@@ -857,6 +927,35 @@ def validate_finding(
             "exhausted; an incomplete re-proof is recorded as an incomplete examination, "
             "never as a span"
         )
+    # One direction only: a span requires a delivered, completed re-proof, but
+    # a completed re-proof that returned the frozen text unchanged has nothing
+    # to measure a span over and correctly seals `None` (`text_change_span`
+    # only runs on `run.py`'s `final_text != pre_audit_text` branch) -- a
+    # confirmed-unchanged `complete` finding is not a `reproof-rejected` one.
+    if reproof_change_span is not None and not (
+        value["reproof_truncation"] is not None
+        and value["reproof_truncation"]["classification"] == TRUNCATION_COMPLETE
+    ):
+        raise SchemaRefusal(
+            "an audit finding's reproof change span exists only when a re-proof was "
+            "delivered and its call completed"
+        )
+    if examination == EXAMINATION_REPROOF_REJECTED:
+        if reproof_change_span is None:
+            raise SchemaRefusal(
+                "an audit finding claims a rejected re-proof without the change span that "
+                "would show what escaped every flag"
+            )
+        if value["change_record"] != []:
+            raise SchemaRefusal(
+                "an audit finding's re-proof was rejected, so it published no change; a "
+                "rejected re-proof's change record is empty by construction"
+            )
+        if flag_text is not None and text != flag_text:
+            raise SchemaRefusal(
+                "an audit finding's re-proof was rejected, so the published text is the "
+                "frozen semi-final, not the rejected rewrite"
+            )
     return value
 
 
@@ -978,24 +1077,11 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
     if before == after:
         return []
     start, end = text_change_span(before, after)
-
-    def _contains(flag: dict[str, Any]) -> bool:
-        location = flag["location"]
-        if location["start"] > start:
-            return False
-        if end <= location["end"]:
-            return True
-        # Only a witness-derived flag's end is suffix-trimmed against a
-        # string this function never sees, and only the true end of the text
-        # is where that trimming can fall short — see the docstring above.
-        return (
-            flag["class"] in WITNESS_DERIVED_LOCATION_CLASSES
-            and start < location["end"]
-            and end == len(before)
-            and end - location["end"] == 1
-        )
-
-    containing = [flag for flag in flags if _contains(flag)]
+    containing = [
+        flag
+        for flag in flags
+        if flag_contains_change(flag, start=start, end=end, before_length=len(before))
+    ]
     if not containing:
         raise SchemaRefusal("an audit re-proof changed text outside every flagged location")
     triggering = min(
@@ -1007,6 +1093,34 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
         ),
     )
     return [{"start": start, "end": end, "triggering_flag_class": triggering["class"]}]
+
+
+def flag_contains_change(
+    flag: dict[str, Any], *, start: int, end: int, before_length: int
+) -> bool:
+    """Whether one flag covers a `[start, end)` change envelope.
+
+    The exact predicate `change_record` refuses on when no flag satisfies it
+    for any flag in the frozen set -- factored out so `examination_state` and
+    `validate_finding` can re-derive the same verdict from a sealed
+    `reproof_change_span` instead of trusting a producer's claim that a
+    rewrite stayed in bounds (module docstring: "one derivation, shared with
+    every consumer").
+    """
+    location = flag["location"]
+    if location["start"] > start:
+        return False
+    if end <= location["end"]:
+        return True
+    # Only a witness-derived flag's end is suffix-trimmed against a string
+    # this function never sees, and only the true end of the text is where
+    # that trimming can fall short — see `change_record`'s docstring.
+    return (
+        flag["class"] in WITNESS_DERIVED_LOCATION_CLASSES
+        and start < location["end"]
+        and end == before_length
+        and end - location["end"] == 1
+    )
 
 
 def validate_chain(
