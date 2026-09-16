@@ -461,7 +461,7 @@ class _Tree:
         self.blobs = 0
 
     def read_artifact(self, *_args):
-        return {"payload": {"source_sha256": A}}
+        return {"payload": {"source_sha256": A, "declared_sha256": A}}
 
     def build_manifest(self, *_args):
         return {"artifacts": [{"kind": "page", "artifact_id": "page-a"}]}
@@ -576,6 +576,19 @@ def test_the_production_source_ledger_contains_only_exemplar_verified_captures()
     context = _Context()
     context.run["source_manifest"].append({"sha256": B})
     assert logical_reading._verified_source_ledger(context) == {A}
+
+
+def test_a_rendered_exemplar_page_uses_its_submitted_capture_for_the_partition_ledger():
+    """TIFF/PDF rendering changes sealed pixels but not the source capture identity."""
+
+    class RenderedTree(_Tree):
+        def read_artifact(self, *_args):
+            return {"payload": {"source_sha256": B, "declared_sha256": A}}
+
+    context = _Context()
+    context.tree = RenderedTree()
+    assert logical_reading._verified_source_ledger(context) == {A}
+    assert logical_reading._source_sha256_of_page(context, "pg_1") == A
 
 
 def test_two_rendered_pages_from_one_capture_form_one_view_without_losing_evidence():

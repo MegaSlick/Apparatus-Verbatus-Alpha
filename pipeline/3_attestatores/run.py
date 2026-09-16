@@ -82,6 +82,7 @@ from common.stage import (  # noqa: E402
     latest_attempt,
     open_stage_context,
     run_stage,
+    stage_manifest,
     stage_parser,
     validate_serving_provenance,
 )
@@ -93,7 +94,11 @@ from operations.serving.config import (  # noqa: E402
 )
 from operations.serving.errors import ServingError  # noqa: E402
 from operations.serving.http import UrllibHttpTransport  # noqa: E402
-from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
+from operations.serving.manager import (  # noqa: E402
+    MECHANICS_QUALIFICATION_PURPOSE,
+    ServingManager,
+    StageContextReceiptPublisher,
+)
 from operations.serving.process import SubprocessLauncher  # noqa: E402
 from operations.serving.residency import (  # noqa: E402
     POD_RESIDENCY_LOCK_PATH,
@@ -215,7 +220,7 @@ def proposed_regions(context, act_id: str) -> list[dict]:
     later consumer reads the run tree.
     """
     regions = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] == "region" and entry["subject_id"] == act_id:
             record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
             validate_serving_provenance(
@@ -241,7 +246,7 @@ def sealed_page_proposal_regions(context, page_ordinal: int) -> list[dict]:
     the Recensor's independent re-derivation of the same denominator.
     """
     regions = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] != "region":
             continue
         record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
@@ -603,7 +608,7 @@ def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
         raise SchemaRefusal("a Testimonium presented image is not digest-bound in record.inputs")
     if presented["kind"] == "region":
         matches = []
-        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
             if entry["kind"] != "region":
                 continue
             region = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
@@ -4574,6 +4579,11 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         log_root=context.tree.resolve(context.tree.serving_log_path(ATTESTATORES)),
         residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/3_attestatores/run.py",
+        _launch_purpose=(
+            MECHANICS_QUALIFICATION_PURPOSE
+            if getattr(context.args, "mechanics_qualification", False)
+            else None
+        ),
     )
     return ChairClient(
         manager=manager,

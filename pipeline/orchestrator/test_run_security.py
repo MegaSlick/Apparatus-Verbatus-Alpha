@@ -60,7 +60,28 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         submission_folder=None,
         submission_manifest=None,
         data_gate_policy=None,
+        triage_decision_manifest=None,
+        triage_clusters=None,
+        triage_producer_recipe=None,
+        cache_root=None,
+        mechanics_qualification=False,
     )
+
+
+def test_invoke_forwards_explicit_mechanics_qualification_to_stage(tmp_path, monkeypatch):
+    orchestrator = _load_orchestrator()
+    observed = {}
+
+    def completed(command, **kwargs):
+        observed["command"] = command
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", completed)
+    args = _invoke_args(tmp_path)
+    args.mechanics_qualification = True
+
+    assert orchestrator.invoke("pipeline/1_exemplar/door.py", args) == 0
+    assert observed["command"].count("--mechanics-qualification") == 1
 
 
 def test_child_python_ignores_an_injected_pythonpath_sitecustomize(tmp_path, monkeypatch):

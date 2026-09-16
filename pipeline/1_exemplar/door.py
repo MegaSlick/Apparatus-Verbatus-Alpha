@@ -1860,7 +1860,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         help="sealed triage-producer-recipe.v1 for the pre-door producer run",
     )
     args = parser.parse_args()
-    registry = registry_factory(args.models_config)
+    registry = (
+        registry_factory(args.models_config, cache_root=args.cache_root)
+        if args.cache_root is not None
+        else registry_factory(args.models_config)
+    )
 
     if args.submission_folder is not None:
         # The run-level cap is applied inside `real_submission`, once the run root
@@ -2175,6 +2179,7 @@ def real_submission(args, registry) -> int:
         perlector_audit_config_path=args.perlector_audit_config,
         decoding_config_path=args.decoding_config,
         draft_fed=args.draft_fed,
+        mechanics_qualification=getattr(args, "mechanics_qualification", False),
     )
     # The modes seal must be proved before triage rows can shape master-frame geometry.
     if triage_rows is not None:
@@ -2393,6 +2398,7 @@ def _real_bindings(
     perlector_audit_config_path=DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     decoding_config_path=DEFAULT_DECODING_CONFIG_PATH,
     draft_fed: bool = True,
+    mechanics_qualification: bool = False,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
 ) -> dict[str, Any]:
@@ -2605,6 +2611,7 @@ def _real_bindings(
                 perlector_instrument_per_mille=perlector_instrument_per_mille,
                 perlector_instrument_approval_ref=perlector_instrument_approval_ref,
                 draft_fed=draft_fed,
+                mechanics_qualification=mechanics_qualification,
             ),
         },
     }

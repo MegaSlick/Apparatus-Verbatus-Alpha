@@ -1663,10 +1663,28 @@ def _perlector_dissent():
 # category, crop geometry or count moved (GOVERNANCE 5).
 # Evidence: the comparison scripts and both run trees were built in this
 # session's scratch and are not retained in Git.
+# Both digests moved again on this branch, and for one reason: the audit
+# finding's closed schema gained `reproof_change_span`, the envelope a delivered
+# re-proof's text departed from the frozen semi-final by. Every audit finding in
+# both scenarios therefore carries one more field, and every reference digest
+# above it moves with that. **Neither file count moved** -- 100 and 111 stand --
+# which is the evidence that this is the same inventory with a changed record
+# shape rather than an artifact appearing or going missing: the two assertions
+# that pin the counts passed while these two failed. No established text,
+# outcome, category, crop geometry or count moved (GOVERNANCE 5); the new field
+# is `null` wherever no re-proof departed from the semi-final, which is every
+# act in the fixture scenarios.
+#
+# They moved once more when `mechanics_qualification` was bound into
+# `run_config_bindings` and `real_run_policy_digest`, so that a run created
+# ordinarily can no longer be resumed under the flag and pass the reuse checks.
+# That value is part of `config_digest` now, and every digest above it moves
+# with it. The file counts are again unchanged, for the same reason and with the
+# same evidence: the two count assertions passed while only these two failed.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "0176d071fa079af290683c6aa73de404f3e76900878f9124356cec1f77a6956c"
-REVIEW_RUN_TREE_DIGEST = "1f49ee36bdad741cb8bbcec965ff9c24a980b7eb36dcb073826320de377dd40c"
+HAPPY_RUN_TREE_DIGEST = "2f6346cb29ae16e7028267ee827cd81beb31911b9cb2aa10f2ea9988f34bf0cf"
+REVIEW_RUN_TREE_DIGEST = "62a8fb1a76c129566010562f80f493e03e96ee38c68580122f8c000c68e52432"
 
 
 def orchestrate(
@@ -1965,15 +1983,15 @@ def test_every_stage_receives_the_runs_selected_serving_recipes_catalogue(monkey
         assert command[command.index("--serving-recipes-config") + 1] == str(selected)
 
 
-def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
+def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch, tmp_path):
     """The actual subprocess route seals the selected real pair, not the defaults.
 
-    Model materialization is deliberately still red: all-zero manifest digests
-    are pre-materialization sentinels. Reaching that named refusal proves the
+    The real roster carries measured manifest pins, while its serving catalogue
+    remains deliberately unproven.  Reaching that preflight refusal proves the
     real roster passed its native-adapter boundary and that the Door sealed the
-    caller-selected catalogue before the Designator tried to resolve a model.
-    Catalogue row completeness and unproven state are checked against these same
-    literal files in ``operations/serving/test_manager.py``.
+    caller-selected catalogue before any model could run.  Catalogue row
+    completeness and unproven state are checked against these same literal files
+    in ``operations/serving/test_manager.py``.
     """
 
     models = ROOT / "config" / "models-real.toml"
@@ -1981,10 +1999,11 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
     witness_context = ROOT / "config" / "witness_context-real.toml"
     run_root = tmp_path / "runs"
 
-    # The tier is what the real catalogue's live rows require to resolve at all:
-    # without it the Designator now refuses for the missing tier
-    # (`serving_mode_for`) and never reaches the roster's own materialization
-    # sentinel, which is the refusal this test is about.
+    # The tier selects a live-shaped row. Its deliberately unproven preflight
+    # state must refuse before a serving process or model request can begin.
+    # Subprocesses inherit this offline guard, so a regression past the
+    # preflight boundary cannot turn this acceptance test into a model download.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     result = orchestrate(
         run_root,
         "r",
@@ -1996,7 +2015,8 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
     )
 
     assert result.returncode == 2
-    assert "all-zero pre-materialization sentinel" in result.stderr
+    assert "preflight must prove this exact profile before launch" in result.stderr
+    assert "pre-materialization sentinel" not in result.stderr
     assert "has no witness_adapter" not in result.stderr
     run_record = json.loads((run_root / "r" / "run.json").read_text(encoding="utf-8"))
     expected = run_config_bindings(

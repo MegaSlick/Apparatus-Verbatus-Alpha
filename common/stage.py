@@ -258,6 +258,49 @@ ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 # coincidence.  Found in audit; F-O3.
 WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
 
+# One manifest per stage per pass, for the stages a pass only reads.
+#
+# `RunTree.build_manifest` is uncached on purpose -- "derived from the tree every
+# time it is called, so it cannot drift from what the tree holds" -- and that
+# property is bought by walking, validating and digesting every artifact in the
+# stage. Consumers ask for it per *act*, and the cost is then acts × artifacts
+# with a SHA-256 in the inner step. Measured on the 2026-09-15 live run, against
+# four pages: 1.31 s per Designator build over 554 artifacts, 1.59 s per
+# Attestatores build over 2114, and a Recensor pass over 516 held acts spending
+# three quarters of an hour on nothing else. The Armarium had already reached
+# the same conclusion for itself (`_cached_manifest`, "against a stated scale of
+# tens of thousands of acts"); this is that remedy where every stage can reach it.
+#
+# Sound for exactly one reason: a stage is sealed before its consumers open, so
+# within a single pass an upstream inventory cannot change. The stage a pass is
+# itself writing is therefore never cached, which `stage_manifest` decides from
+# the context rather than from each caller remembering to say so.
+_PASS_MANIFESTS: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
+def stage_manifest(context, stage: str) -> dict[str, Any]:
+    """`context.tree.build_manifest(stage)`, built once per pass where that is safe.
+
+    Falls through to a fresh build whenever this cannot prove it is safe: for the
+    stage the context is writing to, and for any tree that cannot say which tree
+    it is. Keying an anonymous tree on `id()` would reuse an address and serve
+    one run's inventory for another's, which is the drift `build_manifest`
+    refuses to allow.
+    """
+    writing = getattr(context, "stage", None)
+    tree = context.tree
+    root = getattr(tree, "root", None)
+    run_id = getattr(tree, "run_id", None)
+    if writing is None or root is None or run_id is None or stage == writing:
+        return tree.build_manifest(stage)
+    key = (str(root), str(run_id), stage)
+    manifest = _PASS_MANIFESTS.get(key)
+    if manifest is None:
+        manifest = tree.build_manifest(stage)
+        _PASS_MANIFESTS[key] = manifest
+    return manifest
+
+
 # One closed vocabulary for staged driver selections and the console that
 # presents them.  Selection remains an invocation choice, never run-tree bytes.
 RUN_MODES: Final = TRIAGE_MODES
@@ -1641,6 +1684,15 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         ),
     )
     parser.add_argument("--models-config", default="config/models.toml")
+    parser.add_argument("--cache-root", default=None)
+    parser.add_argument(
+        "--mechanics-qualification",
+        action="store_true",
+        help=(
+            "explicit mechanics-only run: permit optically unproven serving "
+            "profiles; every real launch and receipt remains required"
+        ),
+    )
     parser.add_argument(
         "--decoding-config",
         default=str(DEFAULT_DECODING_CONFIG_PATH),
@@ -1865,6 +1917,7 @@ def real_run_policy_digest(
     perlector_instrument_per_mille: int,
     perlector_instrument_approval_ref: str,
     draft_fed: bool,
+    mechanics_qualification: bool = False,
 ) -> str:
     """The digest a real run seals its run-level reading knobs under.
 
@@ -1884,6 +1937,10 @@ def real_run_policy_digest(
     """
     if not isinstance(draft_fed, bool):
         raise ContractError(f"draft_fed must be a bool, got {draft_fed!r}")
+    if not isinstance(mechanics_qualification, bool):
+        raise ContractError(
+            f"mechanics_qualification must be a bool, got {mechanics_qualification!r}"
+        )
     return digest_of(
         {
             "witness_context_regime": witness_context,
@@ -1893,6 +1950,11 @@ def real_run_policy_digest(
             "perlector_instrument_per_mille": perlector_instrument_per_mille,
             "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
             "draft_fed": draft_fed,
+            # A behaviour-changing mode, sealed like every other one. Without it
+            # a run created ordinarily could be resumed under
+            # `--mechanics-qualification` and pass both reuse checks, mixing
+            # ordinary and mechanics-only artefacts in one tree (CodeRabbit).
+            "mechanics_qualification": mechanics_qualification,
         }
     )
 
@@ -1921,6 +1983,7 @@ def run_config_bindings(
     perlector_protocol_config_path: str | Path = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path: str | Path = DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     draft_fed: bool = True,
+    mechanics_qualification: bool = False,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     corpus_frame_config_path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
@@ -2110,6 +2173,7 @@ def run_config_bindings(
                 "perlector_protocol_config_sha256": perlector_protocol_config_digest,
                 "perlector_audit_config_sha256": perlector_audit_config_digest,
                 "draft_fed": draft_fed,
+                "mechanics_qualification": mechanics_qualification,
                 "serving_config_inputs": serving_config_inputs,
             }
         ),
@@ -2270,6 +2334,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
                 perlector_instrument_per_mille=args.perlector_instrument_per_mille,
                 perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
                 draft_fed=args.draft_fed,
+                mechanics_qualification=getattr(args, "mechanics_qualification", False),
             ),
         },
         "armarium_formats": armarium_formats,
@@ -4206,7 +4271,12 @@ def open_context(
         )
     fixture = load_fixture(args.fixture_root)
     scenario_for(fixture, args.scenario)
-    registry = registry_factory(args.models_config)
+    cache_root = getattr(args, "cache_root", None)
+    registry = (
+        registry_factory(args.models_config, cache_root=cache_root)
+        if cache_root is not None
+        else registry_factory(args.models_config)
+    )
     bindings = run_config_bindings(
         registry.config,
         fixture,
@@ -4229,6 +4299,7 @@ def open_context(
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
+        mechanics_qualification=getattr(args, "mechanics_qualification", False),
         serving_recipes_config_path=args.serving_recipes_config,
         decoding_config_path=args.decoding_config,
     )
@@ -4361,7 +4432,12 @@ def _open_real_context(
     """
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
-    registry = registry_factory(args.models_config)
+    cache_root = getattr(args, "cache_root", None)
+    registry = (
+        registry_factory(args.models_config, cache_root=cache_root)
+        if cache_root is not None
+        else registry_factory(args.models_config)
+    )
     bindings = real_run_bindings(registry.config, args)
     # Before any write and before the seal check, so a moved policy is named as
     # a policy and not as a missing boundary.

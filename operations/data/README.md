@@ -6,7 +6,10 @@ them, and are named here so nobody looks for a fourth.
 
 **Up, to the volume.** `verbatus upload --network-volume DATACENTER:VOLUME_ID` sends only
 the files a sealed submission record names, SHA-256-checked before and after
-(`operations/pod/transfer.py`, `operations/operator/volume_s3.py::S3VolumeTarget`).
+(`operations/pod/transfer.py`, `operations/operator/volume_s3.py::S3VolumeTarget`). The
+default object pair is `submission/` plus its sibling `submission-manifest.json`;
+`--prefix batch-02` produces `batch-02/` plus `batch-02-manifest.json` for another
+immutable batch on the same retained volume.
 
 **Back, from the volume.** `verbatus fetch-run --run-id <id> --into <local root>
 --network-volume DATACENTER:VOLUME_ID` lists every object under `runs/<id>/` on the

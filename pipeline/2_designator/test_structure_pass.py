@@ -979,6 +979,73 @@ def _assert_page_two_held(root: Path, reason_code: str) -> None:
     assert rows["residual:2:0"]["outcome"] == "held"
 
 
+def test_the_repetition_measure_separates_the_live_runs_looping_pages():
+    """The floor is set from the four real RecordGold pages of 2026-09-15.
+
+    Two completed and two spent their whole context on one repeated fragment.
+    The measured shares were 0.004 and 0.005 against 0.067 and 0.305, so the
+    floor sits an order of magnitude clear of both sides. These registers do
+    repeat their formulae, and a page of genuine repeated phrasing must keep
+    reading as a page.
+    """
+    healthy = (
+        '<div data-bbox="1 2 3 4" data-label="Text"><p>'
+        + ("Le dixieme jour d'Aoust mil sept cent vingt deux a este baptise " * 12)
+        + "</p></div>"
+    )
+    assert structure_pass.repetition_share(healthy) < structure_pass.DEGENERATE_REPETITION_SHARE
+
+    # Page 1's actual shape: a fragment emitted until the context ran out.
+    looped = (
+        "<div><p>Le Septieme Aoust mil sept cens vingt deux a este inhume"
+        + (". J" * 4000)
+        + "</p></div>"
+    )
+    assert structure_pass.repetition_share(looped) >= structure_pass.DEGENERATE_REPETITION_SHARE
+
+    # Page 3's shape: a whole phrase rather than two characters.
+    phrase = "<div><p>" + ("de l'Eglise, " * 1600) + "</p></div>"
+    assert structure_pass.repetition_share(phrase) >= structure_pass.DEGENERATE_REPETITION_SHARE
+
+    # A positive control at each end. One character repeated makes every window
+    # identical and scores exactly 1.0. A fifteen-character phrase repeated
+    # instead yields fifteen distinct windows and scores about 0.07 -- which is
+    # page 3's own magnitude, its `de l\'Église, ` being thirteen characters,
+    # and why the floor sits well under that rather than near 1.
+    assert structure_pass.repetition_share("a" * 600) == 1.0
+    phrase_share = structure_pass.repetition_share("abcdefghijklmno" * 40)
+    assert structure_pass.DEGENERATE_REPETITION_SHARE < phrase_share < 0.1
+
+    # Too short to ask the question of. The floor is a count of windows, and
+    # an answer under it is not judged either way.
+    assert structure_pass.repetition_share("aaaa") == 0.0
+    assert structure_pass.repetition_share("ab" * 20) == 0.0
+
+
+def test_a_looping_answer_is_held_as_degenerate_not_as_a_cut_off():
+    """A loop and a page too dense to finish want opposite repairs.
+
+    Reporting the loop as a cut-off sends a reader to the token budget, which
+    is exactly where this failure was first chased on 2026-09-15 before the
+    retained responses showed `. J. J. J.` 5,376 times.
+    """
+    looped = ". J" * 4000
+    dense = "".join(
+        f'<div data-bbox="1 {i} 3 4" data-label="Text"><p>acte numero {i} du registre</p></div>'
+        for i in range(60)
+    )
+    assert structure_pass._finish_reason_disposition("length", looped) == (
+        structure_pass.HELD_DEGENERATE
+    )
+    assert structure_pass._finish_reason_disposition("length", dense) == (
+        structure_pass.HELD_CUT_OFF
+    )
+    # No answer to read is still a cut-off, never a guess at degeneration.
+    assert structure_pass._finish_reason_disposition("length", None) == structure_pass.HELD_CUT_OFF
+    # A completed answer is this chair's word for the page, whatever it repeats.
+    assert structure_pass._finish_reason_disposition("stop", looped) is None
+
+
 def test_a_cut_off_answer_holds_the_page_even_though_it_parsed(live_run, tmp_path, monkeypatch):
     root, catalogue = live_run
     endpoint, exit_code = _run_designator(

@@ -128,6 +128,15 @@ _HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qw
 # match simply stops firing and every probe rejection reverts to the old
 # retry-to-watchdog behaviour -- a safe direction to fail in.
 _PROBE_HTTP_STATUS = re.compile(r"HTTP (\d{3})$")
+
+# Only the serving smoke assembly receives this identity token.  It permits an
+# unproven row to enter the existing start -> fixture read -> verified stop
+# lifecycle without adding a general-purpose bypass to ``start``.
+_PREFLIGHT_QUALIFICATION_PURPOSE: Final = object()
+MECHANICS_QUALIFICATION_PURPOSE: Final = object()
+_NORMAL_LAUNCH = "normal"
+_PREFLIGHT_QUALIFICATION_LAUNCH = "preflight-qualification"
+_MECHANICS_QUALIFICATION_LAUNCH = "mechanics-qualification"
 _READINESS_PROBE_TIMEOUT_SECONDS = 2.0
 """Per-request budget for one /health or /v1/models poll.
 
@@ -435,6 +444,7 @@ class ServiceHandle:
         payload: Mapping[str, object],
         *,
         fixture: str | Path,
+        exchange_observer: Callable[[bytes, HttpResponse], None] | None = None,
     ) -> OpenAIResult:
         """Request this service with the actual OpenAI chat image from ``fixture``.
 
@@ -463,7 +473,9 @@ class ServiceHandle:
             raise ServingConfigurationError(
                 "golden-page request image bytes do not match its supplied local fixture"
             )
-        result = self.request(kind, sealed_payload)
+        result = self._manager.request(
+            self, kind, sealed_payload, exchange_observer=exchange_observer
+        )
         self._fixture_requests_completed += 1
         self._last_fixture_request_sha256 = fixture_digest
         self._last_fixture_response = result
@@ -546,6 +558,7 @@ class ServingManager:
         monotonic: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
         shutdown_timeout_seconds: float = 10.0,
+        _launch_purpose: object | None = None,
     ) -> None:
         supplied_command_prefix = command_prefix is not None
         if command_prefix is None:
@@ -602,6 +615,12 @@ class ServingManager:
             raise ValueError("serving manager requires an explicit pod/GPU-scoped residency lease")
         if not isinstance(config_inputs, ServingConfigInputs):
             raise ValueError("serving manager requires exact sealed serving configuration inputs")
+        if _launch_purpose not in (
+            None,
+            _PREFLIGHT_QUALIFICATION_PURPOSE,
+            MECHANICS_QUALIFICATION_PURPOSE,
+        ):
+            raise ValueError("serving launch purpose is not a recognized qualification purpose")
         self.registry = registry
         self.recipes = recipes
         self.config_inputs = config_inputs
@@ -617,6 +636,14 @@ class ServingManager:
         self.monotonic = monotonic or time.monotonic
         self.sleep = sleep or time.sleep
         self.shutdown_timeout_seconds = shutdown_timeout_seconds
+        self._qualification_launch = _launch_purpose in (
+            _PREFLIGHT_QUALIFICATION_PURPOSE,
+            MECHANICS_QUALIFICATION_PURPOSE,
+        )
+        self.launch_purpose = {
+            _PREFLIGHT_QUALIFICATION_PURPOSE: _PREFLIGHT_QUALIFICATION_LAUNCH,
+            MECHANICS_QUALIFICATION_PURPOSE: _MECHANICS_QUALIFICATION_LAUNCH,
+        }.get(_launch_purpose, _NORMAL_LAUNCH)
         self._active: ServiceHandle | None = None
         self._residency_handle: ResidencyHandle | None = None
         self._unready_process: ServerProcess | None = None
@@ -670,7 +697,11 @@ class ServingManager:
             # with no registry.ensure work behind it, or the preflight gate's
             # "before snapshot verification" claim is false for exactly the
             # composed launches that need it most.
-            profile = _launchable(self.recipes.for_identity(identity, tier), identity)
+            profile = _launchable(
+                self.recipes.for_identity(identity, tier),
+                identity,
+                qualification=self._qualification_launch,
+            )
             self._assert_runtime(profile)
             base_identity, base_profile = self._base_profile(identity, tier, profile)
             primary_snapshot = self.registry.ensure(identity)
@@ -833,19 +864,33 @@ class ServingManager:
             raise
 
     def request(
-        self, handle: ServiceHandle, kind: str, payload: Mapping[str, object]
+        self,
+        handle: ServiceHandle,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        exchange_observer: Callable[[bytes, HttpResponse], None] | None = None,
     ) -> OpenAIResult:
         """Send a regular non-streaming request to the handle's exact served alias."""
 
         self._require_active(handle)
         self._assert_process_live(handle.process)
-        result = self._post_probe(
-            endpoint=handle.endpoint,
-            kind=kind,
-            payload=payload,
+        body = request_body(
+            payload,
             model_id=handle.profile.served_model_id,
             seed=handle.profile.seed,
             deterministic=False,
+        )
+        response = self.http.request(
+            "POST",
+            endpoint_for_probe(handle.endpoint, kind),
+            body=body,
+            timeout_seconds=_INFERENCE_TIMEOUT_SECONDS,
+        )
+        if exchange_observer is not None:
+            exchange_observer(body, response)
+        result = parse_openai_answer(
+            response, kind=kind, expected_model_id=handle.profile.served_model_id
         )
         handle._requests_completed += 1
         handle._last_request_was_fixture = False
@@ -941,7 +986,11 @@ class ServingManager:
             )
         return (
             configured_base,
-            _launchable(self.recipes.for_identity(configured_base, tier), configured_base),
+            _launchable(
+                self.recipes.for_identity(configured_base, tier),
+                configured_base,
+                qualification=self._qualification_launch,
+            ),
         )
 
     def _assert_runtime(self, profile: ServingProfile) -> dict[str, str]:
@@ -1247,12 +1296,14 @@ class ServingManager:
                 "schema": "serving-launch-audit.v1",
                 "chair": identity.role,
                 "producer": self.producer,
+                "launch_purpose": self.launch_purpose,
                 "configuration_inputs": self.config_inputs.to_record(),
                 "started_at": started_at,
                 "endpoint": profile.endpoint,
                 "profile": {
                     "recipe": profile.recipe,
                     "tier": profile.tier,
+                    "preflight_state": profile.preflight_state,
                     "served_model_id": profile.served_model_id,
                     "host": profile.host,
                     "port": profile.port,
@@ -1618,7 +1669,10 @@ def assert_no_discoverable_local_env(*, directory: str | Path | None = None) -> 
 
 
 def _launchable(
-    profile: "ServingProfile | FixtureProfile | UnsupportedProfile", identity: ChairIdentity
+    profile: "ServingProfile | FixtureProfile | UnsupportedProfile",
+    identity: ChairIdentity,
+    *,
+    qualification: bool = False,
 ) -> ServingProfile:
     """Refuse non-launchable rows before snapshot and runtime checks.
 
@@ -1642,7 +1696,9 @@ def _launchable(
             "process was started; add and preflight a native serving implementation before "
             "launching this chair"
         )
-    if profile.preflight_state != "proven":
+    if profile.preflight_state != "proven" and not (
+        qualification and profile.preflight_state == "unproven"
+    ):
         raise ServingConfigurationError(
             f"chair {identity.role!r} serving profile is structurally marked "
             f"preflight_state={profile.preflight_state!r}; real-silicon preflight must "
@@ -1657,7 +1713,10 @@ def _launchable(
     # in hand, rather than launch on a claim that has quietly stopped being
     # about the thing being launched.
     observed_identity_digest = chair_preflight_identity_digest(identity)
-    if profile.preflight_identity_digest != observed_identity_digest:
+    if (
+        profile.preflight_state == "proven"
+        and profile.preflight_identity_digest != observed_identity_digest
+    ):
         raise ServingConfigurationError(
             f"chair {identity.role!r} serving profile was preflight-proven against chair "
             f"identity {profile.preflight_identity_digest!r}, but the configured identity "

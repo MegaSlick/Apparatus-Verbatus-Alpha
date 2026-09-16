@@ -281,12 +281,13 @@ check.
   green this process holds until the pod is destroyed, re-journaling a
   liveness line at the monitoring interval; a red step exits non-zero at once,
   the correct immediate close. `ChairCacheBootstrapAction` is constructed here
-  for the first time in the tracked tree, using the real Hugging Face fetchers
-  already in `common/chairs/registry.py` for both chair-cache verification and
-  model-store materialization — **deferral 04-8 is only partly closed**: the
+  from a verified retained-store source plan: the registry copies each configured
+  role's pinned bytes into its own cache and verifies them before publication.
+  Only model-store materialization fetches from Hugging Face; cache preparation
+  and preflight have no network fallback. **Deferral 04-8 is only partly closed**: the
   class is constructed, but `refetch_same_pin=None` (the registry has no
   cache-clear verb), so the at-most-one same-pin re-fetch still does not ship,
-  and no test exercises the action. See the 04-8 row below. The transfer
+  while offline tests cover cache population and reuse. See the 04-8 row below. The transfer
   target stays optional: no submission manifest on the volume is a vacuous
   success and this process needs no object-store client at all; a manifest
   present with no configured target is a refusal, never a silently skipped
@@ -308,14 +309,15 @@ check.
   `config/witness_context-real.toml` with `config/models-real.toml`), and
   `--fixture` with
   `--page-witness-file` lets an operator supply a rendered page instead.
-  `test_bootstrap_main.py` proves the wiring green through the real registry
-  over the committed model fixtures and the serving package's fakes, and red
-  by chair name when a row is unproven. **One thing keeps the first real
-  `PREFLIGHT` red, and it is not a wiring fault:** every vLLM row in
-  `config/serving_recipes_real.toml` is `preflight_state = "unproven"`, which
-  `ServingManager.start` refuses by name before it launches anything, so a
-  reviewer must stamp rows proven first (the serving README says that happens
-  after a real-silicon preflight — a circle this unit names rather than cuts).
+  `test_bootstrap_main.py` proves the wiring through the real registry over the
+  committed model fixtures and the serving package's fakes. Ordinary serving
+  still refuses an unproven row by chair name. The smoke-preflight assembly
+  alone can launch an unproven vLLM row for qualification while retaining all
+  ordinary launch and shutdown checks; its audit records that purpose and the
+  row state. After a green real-silicon report,
+  `python -m operations.serving.qualify` verifies the report and its
+  content-addressed artifacts and renders review candidates for only the
+  measured tier. It never edits the catalogue or marks another tier proven.
   The stack those rows name is installable now, see
   "The serving stack, re-planned and locked" below. Both the ordinary hold and the `--hold-only` drill
   hold to `VERBATUS_HARD_DEADLINE` (the same spelling the RunPod pod-timer
@@ -867,9 +869,12 @@ but six of six refused is not the run's records coming home.
 | `<volume>/pod-transfer-journal.json` | `ChecksummedTransfer` | **a fixed name at the volume root** — no token. It is the only durable record of which submission rows were verified against target-observed bytes |
 
 **Not records, and deliberately not fetched:** `<volume>/chair-cache/` (materialized
-weights), `<volume>/submission/` (the submission's own page images, which is why nothing
-here ever lists the whole volume to find a key), and `<volume>/pod-transfer/` (the
-transferred bytes themselves, which the journal accounts for).
+weights), `<volume>/submission/` (the default submission's page images),
+`<volume>/submission-manifest.json` (its sealed ledger, deliberately beside rather than
+inside the submitted folder because the Door refuses pipeline records among source images),
+and `<volume>/pod-transfer/` (the transferred bytes themselves, which the journal accounts
+for). The uploader may place another immutable pair at `<prefix>/` and
+`<prefix>-manifest.json`; no fetch path lists the whole volume to discover one.
 
 **The single-resident GPU lease is not on this list, and that is the point.**
 `operations.serving.residency.POD_RESIDENCY_LOCK_PATH` is `/tmp/verbatus-pod-gpu.lock` on
@@ -891,6 +896,42 @@ now enforced as well as written: `bootstrap.verify_image_contract` runs as the f
 the `REPOSITORY` step does — before `git fetch`, and long before the ~10 GB environment
 sync — and a pod whose image does not meet it goes red with a named reason and a remedy
 instead of a `ModuleNotFoundError` or an authentication prompt nobody can see.
+
+### Fresh Ubuntu 24.04 RunPod preparation
+
+After cloning the repository onto a fresh Ubuntu 24.04 RunPod container and **before**
+`uv sync`, run this one host-preparation command as root:
+
+```bash
+bash operations/pod/prepare_runtime.sh
+```
+
+It installs the repository-required official `uv 0.12.1` at `/usr/local/bin/uv`,
+`ninja-build` at `/usr/bin/ninja`, and a Landlock-capable `setpriv` at
+`/usr/bin/setpriv`. The script retains an already-working `setpriv`; otherwise it verifies
+pinned upstream SHA-256 digests, builds only `setpriv` from util-linux 2.42.3 with
+`--disable-all-programs --enable-setpriv --disable-nls`, and replaces the stock Ubuntu
+24.04 binary while keeping the old one at
+`/usr/local/lib/verbatus-runtime-prerequisites/setpriv.before-util-linux-2.42.3`.
+
+The script is idempotent. Each download has a 20-second connect timeout, a five-minute
+transfer limit, and three retries. Before accepting either the existing or newly built `setpriv`,
+it requires this confinement probe to succeed:
+
+```bash
+setpriv --no-new-privs --landlock-access fs:write-file -- /bin/true
+```
+
+A kernel without working Landlock is a refusal. Do not bypass or disable that boundary;
+choose a Landlock-capable host instead. Run this preparation before the frozen environment,
+model materialization, chair cache, or any serving work: the stock Ubuntu 24.04 `setpriv`
+does not provide the required `--landlock-access` flag, and missing `/usr/bin/ninja` causes
+the Chandra and DAI vLLM warm-up path to fail.
+
+Use the pod's container-local disk for the cloned repository, `.venv`, and `UV_CACHE_DIR`.
+The observed serving stack needs roughly 101 GB of model cache against a 200 GB ephemeral
+container disk, so keep persistent network-volume storage for input images, outputs,
+evidence, and materialized models that must survive pod deletion.
 
 **The image carries a checkout. The bootstrap does not clone.** `checkout_commit` runs
 `git fetch --no-tags origin <sha>` and `git checkout --detach --force <sha>` with its
@@ -1089,9 +1130,11 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 - [ ] Confirm whether `GET /pods` paginates on an account holding many pods. Both the
   list-absence proof and launch-token recovery read it as one unpaginated array; a
   truncated list would mean a false absence or a second POST for one authorised launch.
-- [ ] Exercise the checksummed transfer end to end on the attached volume: upload the
-  sealed submission-manifest rows, read at least one object back, and record that the
-  post-upload digest verification actually ran against target-observed bytes.
+- [ ] Rerun the corrected checksummed transfer end to end on the attached volume. The first
+  test uploaded and independently GET-hashed an image successfully, while both HeadObject
+  and GetObject omitted the supplied custom metadata. The corrected adapter now streams and
+  hashes target bytes under the manifest's size bound when metadata is absent; its injected
+  client tests prove that path, but the corrected path still needs a live endpoint run.
 - [ ] Verify that the network volume is mounted at the sealed path, receives the
   token-bound pod report, survives a process restart, and supports the run tree's
   immutable hard-link publication. Write a control report and one pipeline artifact

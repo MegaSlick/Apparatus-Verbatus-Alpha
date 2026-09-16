@@ -680,6 +680,25 @@ def test_a_triage_row_carrying_a_field_outside_the_closed_schema_is_refused():
         verify_triage_derivative(contract, master, parent, sealed)
 
 
+def test_a_resolved_offline_producer_actor_survives_the_exemplar_boundary():
+    """Ordinary confined ingest emits this actor kind with its producer recipe."""
+    from common.exemplar_boundary import verify_triage_derivative
+
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    row = contract["derivative_page"]["triage_manifest_row"]
+    row["actor"] = {
+        "kind": "producer",
+        "identity": "operations.triage.producer",
+        "revision": "triage-producer-v1",
+    }
+    row["manifest_row_sha256"] = _rows_digest(row)
+    contract["derivative_page"]["triage_backlink"]["triage_manifest_row_sha256"] = row[
+        "manifest_row_sha256"
+    ]
+
+    verify_triage_derivative(contract, master, parent, sealed)
+
+
 @pytest.mark.parametrize(
     "forge",
     [

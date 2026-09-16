@@ -256,6 +256,10 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
         # and refused a tip that was not this pin.
         "--repository-commit",
         "a" * 40,
+        "--cache-root",
+        str(ws.volume / "chair-cache"),
+        "--placement-tier",
+        TIER,
     ]
     # The scrubbed environment is what the orchestrator sees: no transfer key.
     assert "RUNPOD_S3_ACCESS_KEY" not in env
@@ -277,6 +281,53 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(tmp_pat
     hold = _report(ws, "pod-run-report-hold.json")
     assert hold["state"] == "holding-after-complete"
     assert hold["tick"] == 4
+
+
+def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
+    tmp_path: Path,
+) -> None:
+    """The normal run uses the cache bootstrap verified and preserves Door triage inputs."""
+
+    ws = _prepared(tmp_path)
+    triage = ws.volume / "triage"
+    triage.mkdir()
+    decision = triage / "decisions.json"
+    clusters = triage / "clusters.json"
+    recipe = triage / "recipe.json"
+    for path in (decision, clusters, recipe):
+        path.write_text("{}", encoding="utf-8")
+    runner = RecordedRunner()
+    clock = Clock()
+
+    assert (
+        main(
+            _run_argv(
+                ws,
+                extra=(
+                    "--triage-decision-manifest",
+                    str(decision),
+                    "--triage-clusters",
+                    str(clusters),
+                    "--triage-producer-recipe",
+                    str(recipe),
+                ),
+            ),
+            environ=_environ(clock, lifetime=1.0),
+            now=clock.now,
+            sleeper=clock.sleep,
+            actions_factory=lambda plan: PreflightedActions(),
+            runner=runner,
+        )
+        == EXIT_COMPLETE
+    )
+    command = runner.calls[0][0]
+    assert command[command.index("--cache-root") + 1] == str(ws.volume / "chair-cache")
+    for flag, path in (
+        ("--triage-decision-manifest", decision),
+        ("--triage-clusters", clusters),
+        ("--triage-producer-recipe", recipe),
+    ):
+        assert command[command.index(flag) + 1] == str(path)
 
 
 @pytest.mark.parametrize(

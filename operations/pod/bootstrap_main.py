@@ -29,20 +29,19 @@ serving receipt, launch audit and evidence manifest each smoke publishes land
 content-addressed beside the report (:class:`PodPreflightReceiptPublisher`),
 because at bootstrap time there is no run tree yet for a ``StageContext`` to
 own them.  Every effect behind that seam -- the GPU probe, the vLLM launcher,
-the loopback transport, the package inspector, the Hugging Face fetcher --
+the loopback transport, the package inspector, the cache-source fetcher --
 has an injection point in :class:`PreflightSeams`, which is how
 ``test_bootstrap_main.py`` proves the wiring green against the serving fakes
 without a card.
 
-**One thing the wiring cannot make green, said here rather than discovered on a
-billing card.**  Every vLLM row in ``config/serving_recipes_real.toml`` is
-``preflight_state = "unproven"``, and ``ServingManager.start`` refuses an
-unproven row by name before it launches anything; so the first real
-``PREFLIGHT`` is red at ``smoke-read-failed`` for every real chair until a
-reviewer stamps those rows proven, which the serving README says happens
-*after* a real-silicon preflight.  It is not this file's to fix; it is named so
-nobody reads a red first preflight as a wiring fault.  The stack itself is no
-longer the obstacle it was: the recipe's pins were re-planned onto
+**How the first real preflight closes its proof loop.**  Ordinary
+``ServingManager.start`` still refuses every ``preflight_state = "unproven"``
+row.  Only this smoke-preflight assembly receives the private qualification
+purpose that permits such a row to launch while retaining every snapshot,
+runtime, request, shutdown, and evidence check.  A green report can then be
+verified offline by ``operations.serving.qualify`` to render the identity and
+profile digests for review; the verifier edits no catalogue.  The stack itself
+was re-planned onto
 ``vllm 0.27.1`` / ``transformers 5.14.1``, which lock beside the project's
 ``huggingface_hub==1.26.0``, and ``bootstrap.py``'s ``uv sync`` now carries
 ``--group pod``.  That the wheels install and the weights load on real silicon
@@ -95,15 +94,20 @@ import json
 import math
 import os
 import secrets
+import stat
 import sys
 import time
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, Sequence
 
 from common.chairs.config import parse_models_config
+from common.chairs.model_store import (
+    VerifiedStoreFetcher,
+    configured_cache_materialization_plan,
+)
 from common.chairs.models import ChairIdentity, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
@@ -171,6 +175,7 @@ here does not make this file provider vocabulary -- the value is a Verbatus
 launch fact, not a RunPod one."""
 
 HOLD_SCHEMA = "pod-bootstrap-hold.v1"
+BOOTSTRAP_RESULT_SCHEMA = "pod-bootstrap-result.v1"
 DEFAULT_PROOF_FIXTURE = "synthetic-two-page-v0"
 """Matches ``operations/operator/surface.py``'s ``DEFAULT_FIXTURE``; duplicated
 rather than imported to avoid a pod-side dependency on the operator layer."""
@@ -338,10 +343,11 @@ class PodPreflightReceiptPublisher:
     ``StageContextReceiptPublisher`` writes the receipt, the launch audit and
     the evidence manifest into a run tree.  A preflight runs before any run
     exists, so the same three records go under the launch's own preflight
-    directory instead, each named by the SHA-256 of its canonical bytes, and
-    the returned references are relative to that directory.  Same bytes twice
-    is a no-op; different bytes at one address is a refusal, so a repeated
-    preflight on a retained volume can add evidence but never replace it.
+    directory instead. The page witness is retained there as well so
+    the offline qualifier can recompute its digest and expected semantic output.
+    Each artifact is named by its content digest and references are relative to
+    that directory. Same bytes twice is a no-op; different bytes at one address
+    is a refusal, so a repeated preflight can add evidence but never replace it.
     """
 
     def __init__(self, root: Path, context: _PreflightContext) -> None:
@@ -364,20 +370,89 @@ class PodPreflightReceiptPublisher:
         )
         return ReceiptPublication(receipt_reference, audit_reference, evidence_reference)
 
+    def publish_page_witness(self, witness: str) -> dict[str, str]:
+        """Retain the witness token without putting its plaintext in the report."""
+
+        return self._write_bytes("page-witnesses", witness.encode("ascii"), suffix=".txt")
+
+    def publish_smoke_exchange(
+        self, request: bytes, response: bytes
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Retain one fixture-bound request and its exact raw response bytes.
+
+        These are separate content-addressed artifacts because a model may
+        return an answer that is structurally parseable yet fails the smoke's
+        exact witness-format rule.  The receipt names both bytes in that red
+        outcome; neither is reconstructed from parsed fields.
+        """
+
+        return (
+            self._write_bytes("smoke-requests", request, suffix=".json"),
+            self._write_bytes("smoke-responses", response, suffix=".bin"),
+        )
+
     def _write(self, kind: str, value: Mapping[str, object]) -> dict[str, str]:
-        data = canonical_bytes(value)
+        return self._write_bytes(kind, canonical_bytes(value), suffix=".json")
+
+    def _write_bytes(self, kind: str, data: bytes, *, suffix: str) -> dict[str, str]:
         digest = digest_bytes(data)
-        relative_path = f"{kind}/sha256/{digest}.json"
+        relative_path = f"{kind}/sha256/{digest}{suffix}"
         target = self.root / relative_path
+        self._validate_target(target, kind)
         try:
             exclusive_write(target, data, strict=True)
         except FileExistsError:
+            self._validate_target(target, kind)
             if target.read_bytes() != data:
                 raise RuntimeError(
                     f"preflight {kind} evidence at {target} exists with different bytes; "
                     "evidence is not overwritten"
                 ) from None
         return {"relative_path": relative_path, "sha256": digest}
+
+    def _validate_target(self, target: Path, kind: str) -> None:
+        try:
+            resolved_root = self.root.resolve(strict=False)
+            resolved_target = target.resolve(strict=False)
+        except (OSError, RuntimeError) as error:
+            raise RuntimeError(
+                f"preflight {kind} evidence path at {target} cannot be inspected: {error}"
+            ) from error
+        if not resolved_target.is_relative_to(resolved_root):
+            raise RuntimeError(
+                f"preflight {kind} evidence path at {target} escapes its publication root"
+            )
+
+        candidate = self.root
+        try:
+            for part in (kind, "sha256"):
+                if candidate.is_symlink():
+                    raise RuntimeError(
+                        f"preflight {kind} evidence path at {target} contains a symlink"
+                    )
+                if candidate.exists() and not candidate.is_dir():
+                    raise RuntimeError(
+                        f"preflight {kind} evidence path at {target} has a non-directory parent"
+                    )
+                candidate = candidate / part
+            if candidate.is_symlink():
+                raise RuntimeError(f"preflight {kind} evidence path at {target} contains a symlink")
+            if candidate.exists() and not candidate.is_dir():
+                raise RuntimeError(
+                    f"preflight {kind} evidence path at {target} has a non-directory parent"
+                )
+            if target.is_symlink():
+                raise RuntimeError(f"preflight {kind} evidence path at {target} is a symlink")
+            if target.exists() and not stat.S_ISREG(target.lstat().st_mode):
+                raise RuntimeError(
+                    f"preflight {kind} evidence path at {target} is not a regular file"
+                )
+        except RuntimeError:
+            raise
+        except OSError as error:
+            raise RuntimeError(
+                f"preflight {kind} evidence path at {target} cannot be inspected: {error}"
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -995,8 +1070,16 @@ def _build_cache(plan: Plan) -> ChairCacheBootstrapAction:
     registry = ChairRegistry.from_toml(
         plan.models_config,  # type: ignore[arg-type]
         cache_root=plan.cache_root,
-        fetcher=HuggingFaceFetcher.from_huggingface_hub(),
     )
+    source_plan = configured_cache_materialization_plan(
+        plan.store_root,  # type: ignore[arg-type]
+        (
+            identity
+            for identity in registry.config.chairs.values()
+            if isinstance(identity, ChairIdentity)
+        ),
+    )
+    registry.fetcher = VerifiedStoreFetcher(source_plan["cache_root_entries"])
     # No same-pin repair is wired: `ChairRegistry` has no public "clear this
     # chair's cache" verb today, and inventing one to satisfy this optional
     # callback risks corrupting a cache silently rather than leaving a named,
@@ -1054,7 +1137,7 @@ def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str, bytes]:
     # container -- draws a fresh CSPRNG witness, and a fixed name would put
     # those pixels over the page the first preflight's receipts already name by
     # digest. Evidence is added, never replaced (GOVERNANCE 4), exactly as
-    # `PodPreflightReceiptPublisher` does for the three records beside it. The
+    # `PodPreflightReceiptPublisher` does for the serving records beside it. The
     # witness is URL-safe by construction (`secrets.token_urlsafe`), so it is a
     # filename as it stands.
     page = plan.preflight_root / "golden-page" / f"{witness}.png"
@@ -1121,9 +1204,15 @@ def _build_preflight(
                 "bootstrap plan reached PREFLIGHT without its models, placement, or serving "
                 "recipes configuration; resolve_plan fills all three for every full plan"
             )
-        registry = ChairRegistry.from_toml(
-            models_config, cache_root=plan.cache_root, fetcher=chosen.fetcher_factory()
-        )
+        registry = ChairRegistry.from_toml(models_config, cache_root=plan.cache_root)
+        if seams is None:
+            # CHAIR_CACHE has already copied every verified source into its
+            # role cache.  PREFLIGHT verifies those destination manifests; a
+            # missing file is a named cache failure, never a second download
+            # or another full retained-store verification.
+            registry.fetcher = VerifiedStoreFetcher({})
+        else:
+            registry.fetcher = chosen.fetcher_factory()
         # One read each, digested from the bytes that are parsed: the serving
         # assembly re-reads both files and refuses if what it parses does not
         # digest to what is sealed here, so a substitution between the two
@@ -1152,8 +1241,12 @@ def _build_preflight(
         profile = probe.profile(PREFLIGHT_DTYPE, expected_gpu_count=REQUESTED_GPU_COUNT)
         fixture, witness, page_bytes_at_render = _golden_page(plan, chosen)
         smoke_call = VisionSmokeCall(
-            witness, utilization=chosen.utilization or NvidiaSmiUtilization()
+            witness,
+            utilization=chosen.utilization or NvidiaSmiUtilization(),
+            raw_exchange_publisher=publisher.publish_smoke_exchange,
         )
+        witness_reference = publisher.publish_page_witness(witness)
+        smoke_call = replace(smoke_call, page_witness_reference=witness_reference)
         reader = assemble_serving_smoke_reader(
             registry=registry,
             stage_context=context,
@@ -1200,10 +1293,10 @@ def _build_preflight(
                 BootstrapStep.PREFLIGHT,
                 "preflight returned red: "
                 + json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
-                "Read the issues by chair: an unproven serving row refuses launch until a "
-                "reviewer stamps it proven, a cache mismatch names its chair, and an empty "
-                "utilization sample means nvidia-smi could not be read. Do not substitute a "
-                "fixture pass.",
+                "Read the issues by chair: a cache mismatch names its chair, a launch or "
+                "fixture-bound request failure names the affected serving profile, and an "
+                "empty utilization sample means nvidia-smi could not be read. Do not "
+                "substitute a fixture pass.",
             )
         return record
 
@@ -1216,7 +1309,7 @@ class _LazyChairCache:
     ``build_actions`` runs before ``Bootstrapper.run`` -- before REPOSITORY has
     checked out ``--repository-commit`` and before UV_ENVIRONMENT has synced
     the lockfile.  ``_build_cache`` eagerly reads ``--models-config`` off disk
-    and constructs the production Hugging Face fetcher; built eagerly, a
+    and verifies the retained-store source plan; built eagerly, a
     CHAIR_CACHE receipt would attest to whatever ``models.toml`` happened to be
     on disk at container start, not to the commit the journal names
     (GOVERNANCE 6).  The transfer and model-store actions are already lazy this
@@ -1520,6 +1613,19 @@ def run_bootstrap(
         _write_refusal_report(plan.report_path, f"could not build actions: {error}", now=now)
         return EXIT_REFUSED
     report = Bootstrapper(journal, actions).run()
+    result_record = {
+        "schema": BOOTSTRAP_RESULT_SCHEMA,
+        "state": "bootstrap-green" if report.green else "bootstrap-red",
+        "at": now().isoformat().replace("+00:00", "Z"),
+        "bootstrap": report.to_record(),
+    }
+    try:
+        atomic_write(plan.report_path, canonical_json(result_record))
+    except OSError as error:
+        print(
+            f"bootstrap result could not be written to {plan.report_path}: {error}", file=sys.stderr
+        )
+        return EXIT_REFUSED
     if not report.green:
         print(f"bootstrap step {report.failure_step}: {report.detail}", file=sys.stderr)
     return report

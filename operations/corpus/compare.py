@@ -549,6 +549,109 @@ _MATRIX_ENTRY_FIELDS = frozenset(
 _EXCLUDED_COUNT_LENSES = frozenset({"by_kind", "by_origin"})
 
 
+def compare_page_geometry(
+    reference_page: dict[str, Any],
+    pipeline_acts: list[dict[str, Any]],
+    *,
+    threshold: Fraction = PREDECLARED_IOU_THRESHOLD,
+    excluded_region_counts: dict[str, dict[str, int]] | None = None,
+) -> dict[str, Any]:
+    """Return the exact page assignment and geometry without inventing text scores."""
+    reference_page = validate_reference_page(reference_page)
+    if not isinstance(threshold, Fraction) or not (0 < threshold <= 1):
+        raise CorpusRefusal(
+            f"malformed-record: threshold must be a Fraction in (0, 1], got {threshold!r}"
+        )
+    pipeline_acts = [_validate_pipeline_act(act) for act in pipeline_acts]
+    page_sha256 = reference_page["page"]["sha256"]
+    page_width = reference_page["page"]["width"]
+    page_height = reference_page["page"]["height"]
+    for act in pipeline_acts:
+        if act["page_sha256"] != page_sha256:
+            raise CorpusRefusal(
+                f"wrong-page: pipeline act {act['act_id']!r} carries page_sha256 "
+                f"{act['page_sha256']!r}, which does not match this reference page's "
+                f"{page_sha256!r}"
+            )
+        bounds = act["bounds"]
+        if bounds["x"] + bounds["w"] > page_width or bounds["y"] + bounds["h"] > page_height:
+            raise CorpusRefusal(
+                f"region-outside-page: pipeline act {act['act_id']!r} bounds {bounds} "
+                f"exceed this reference page's {page_width}x{page_height} bounds"
+            )
+    if excluded_region_counts is None:
+        excluded_region_counts = {"by_kind": {}, "by_origin": {}}
+    else:
+        excluded_region_counts = _closed(
+            excluded_region_counts, _EXCLUDED_COUNT_LENSES, "excluded_region_counts"
+        )
+        excluded_region_counts = {
+            "by_kind": dict(
+                _closed_counts(excluded_region_counts["by_kind"], "excluded_region_counts.by_kind")
+            ),
+            "by_origin": dict(
+                _closed_counts(
+                    excluded_region_counts["by_origin"], "excluded_region_counts.by_origin"
+                )
+            ),
+        }
+
+    reference_acts = list(reference_page["acts"])
+    ordered_pipeline = sorted(pipeline_acts, key=lambda act: act["act_id"])
+    matches = _best_assignment(ordered_pipeline, reference_acts, threshold)
+    matrix = []
+    for pact in ordered_pipeline:
+        for ract in reference_acts:
+            intersection = _intersection_area(pact["bounds"], ract["region"])
+            union = _area(pact["bounds"]) + _area(ract["region"]) - intersection
+            matrix.append(
+                {
+                    "pipeline_act_id": pact["act_id"],
+                    "reference_physical_act_id": ract["physical_act_id"],
+                    "intersection_area": intersection,
+                    "union_area": union,
+                    "eligible": intersection * threshold.denominator >= threshold.numerator * union,
+                }
+            )
+
+    matched_pairs = []
+    for pipeline_index, reference_index in sorted(matches.items()):
+        pact = ordered_pipeline[pipeline_index]
+        ract = reference_acts[reference_index]
+        intersection = _intersection_area(pact["bounds"], ract["region"])
+        union = _area(pact["bounds"]) + _area(ract["region"]) - intersection
+        matched_pairs.append(
+            {
+                "pipeline_act_id": pact["act_id"],
+                "reference_physical_act_id": ract["physical_act_id"],
+                "record_id": ract["record_id"],
+                "intersection_area": intersection,
+                "union_area": union,
+            }
+        )
+    matched_reference_indices = set(matches.values())
+    matched_pipeline_indices = set(matches)
+    return {
+        "corpus_id": reference_page["corpus_id"],
+        "reference_page_self_hash": reference_page["self_hash"],
+        "page": {"sha256": page_sha256},
+        "threshold": {"numerator": threshold.numerator, "denominator": threshold.denominator},
+        "matrix": matrix,
+        "matched_pairs": matched_pairs,
+        "misses": [
+            {"physical_act_id": act["physical_act_id"], "record_id": act["record_id"]}
+            for index, act in enumerate(reference_acts)
+            if index not in matched_reference_indices
+        ],
+        "unmatched_pipeline_acts": [
+            {"act_id": act["act_id"]}
+            for index, act in enumerate(ordered_pipeline)
+            if index not in matched_pipeline_indices
+        ],
+        "excluded_region_counts": excluded_region_counts,
+    }
+
+
 def compare_page(
     reference_page: dict[str, Any],
     pipeline_acts: list[dict[str, Any]],
@@ -593,87 +696,29 @@ def compare_page(
     as empty: the caller promised a mapping covering every act it expects
     compare_page to score.
     """
+    geometry = compare_page_geometry(
+        reference_page,
+        pipeline_acts,
+        threshold=threshold,
+        excluded_region_counts=excluded_region_counts,
+    )
     reference_page = validate_reference_page(reference_page)
-    if not isinstance(threshold, Fraction) or not (0 < threshold <= 1):
-        raise CorpusRefusal(
-            f"malformed-record: threshold must be a Fraction in (0, 1], got {threshold!r}"
-        )
-    pipeline_acts = [_validate_pipeline_act(act) for act in pipeline_acts]
-    page_sha256 = reference_page["page"]["sha256"]
-    page_width = reference_page["page"]["width"]
-    page_height = reference_page["page"]["height"]
-    for act in pipeline_acts:
-        if act["page_sha256"] != page_sha256:
-            raise CorpusRefusal(
-                f"wrong-page: pipeline act {act['act_id']!r} carries page_sha256 "
-                f"{act['page_sha256']!r}, which does not match this reference page's "
-                f"{page_sha256!r}"
-            )
-        bounds = act["bounds"]
-        if bounds["x"] + bounds["w"] > page_width or bounds["y"] + bounds["h"] > page_height:
-            raise CorpusRefusal(
-                f"region-outside-page: pipeline act {act['act_id']!r} bounds {bounds} "
-                f"exceed this reference page's {page_width}x{page_height} bounds"
-            )
-    if excluded_region_counts is None:
-        excluded_region_counts = {"by_kind": {}, "by_origin": {}}
-    else:
-        excluded_region_counts = _closed(
-            excluded_region_counts, _EXCLUDED_COUNT_LENSES, "excluded_region_counts"
-        )
-        excluded_region_counts = {
-            "by_kind": dict(
-                _closed_counts(excluded_region_counts["by_kind"], "excluded_region_counts.by_kind")
-            ),
-            "by_origin": dict(
-                _closed_counts(
-                    excluded_region_counts["by_origin"], "excluded_region_counts.by_origin"
-                )
-            ),
-        }
-
-    reference_acts = list(reference_page["acts"])  # already sorted by record_id
-    ordered_pipeline = sorted(pipeline_acts, key=lambda act: act["act_id"])
-
-    matches = _best_assignment(ordered_pipeline, reference_acts, threshold)
-
-    matrix: list[dict[str, Any]] = []
-    for pact in ordered_pipeline:
-        for ract in reference_acts:
-            intersection = _intersection_area(pact["bounds"], ract["region"])
-            union = _area(pact["bounds"]) + _area(ract["region"]) - intersection
-            eligible = intersection * threshold.denominator >= threshold.numerator * union
-            matrix.append(
-                {
-                    "pipeline_act_id": pact["act_id"],
-                    "reference_physical_act_id": ract["physical_act_id"],
-                    "intersection_area": intersection,
-                    "union_area": union,
-                    "eligible": eligible,
-                }
-            )
-
+    references = {act["physical_act_id"]: act for act in reference_page["acts"]}
     matched_pairs: list[dict[str, Any]] = []
-    for p, r in sorted(matches.items()):
-        pact = ordered_pipeline[p]
-        ract = reference_acts[r]
-        hypothesis = hypotheses.get(pact["act_id"])
+    for pair in geometry["matched_pairs"]:
+        act_id = pair["pipeline_act_id"]
+        ract = references[pair["reference_physical_act_id"]]
+        hypothesis = hypotheses.get(act_id)
         if hypothesis is None:
             raise CorpusRefusal(
-                f"missing-hypothesis: matched pipeline act {pact['act_id']!r} has no "
+                f"missing-hypothesis: matched pipeline act {act_id!r} has no "
                 "entry in the supplied hypotheses mapping"
             )
         status, text = hypothesis
         score = score_response(ract["text"], status=status, text=text, profile=profile)
-        intersection = _intersection_area(pact["bounds"], ract["region"])
-        union = _area(pact["bounds"]) + _area(ract["region"]) - intersection
         matched_pairs.append(
             {
-                "pipeline_act_id": pact["act_id"],
-                "reference_physical_act_id": ract["physical_act_id"],
-                "record_id": ract["record_id"],
-                "intersection_area": intersection,
-                "union_area": union,
+                **pair,
                 "cer": {
                     "reference_units": score.cer.reference_units,
                     "hypothesis_units": score.cer.hypothesis_units,
@@ -693,33 +738,11 @@ def compare_page(
                 "status": status.value,
             }
         )
-
-    matched_reference_indices = set(matches.values())
-    misses = [
-        {"physical_act_id": ract["physical_act_id"], "record_id": ract["record_id"]}
-        for r, ract in enumerate(reference_acts)
-        if r not in matched_reference_indices
-    ]
-
-    matched_pipeline_indices = set(matches.keys())
-    unmatched_pipeline = [
-        {"act_id": pact["act_id"]}
-        for p, pact in enumerate(ordered_pipeline)
-        if p not in matched_pipeline_indices
-    ]
-
     body = {
+        **geometry,
         "schema": SCHEMA,
-        "corpus_id": reference_page["corpus_id"],
-        "reference_page_self_hash": reference_page["self_hash"],
-        "page": {"sha256": reference_page["page"]["sha256"]},
-        "threshold": {"numerator": threshold.numerator, "denominator": threshold.denominator},
         "normalization_profile_id": profile.profile_id,
-        "matrix": matrix,
         "matched_pairs": matched_pairs,
-        "misses": misses,
-        "unmatched_pipeline_acts": unmatched_pipeline,
-        "excluded_region_counts": excluded_region_counts,
     }
     body["self_hash"] = self_hash(body)
     return validate_comparison(body)
@@ -845,5 +868,6 @@ __all__ = [
     "load_pipeline_proposal_acts",
     "count_excluded_designator_artifacts",
     "compare_page",
+    "compare_page_geometry",
     "validate_comparison",
 ]

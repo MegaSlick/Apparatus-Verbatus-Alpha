@@ -20,7 +20,8 @@ class FakeTarget:
         self.objects: dict[str, bytes] = {}
         self.puts: list[str] = []
 
-    def inspect(self, key: str) -> RemoteObject | None:
+    def inspect(self, key: str, *, expected_size: int | None = None) -> RemoteObject | None:
+        del expected_size
         value = self.objects.get(key)
         if value is None:
             return None

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from .bootstrap_main import (
     HOLD_SCHEMA,
     REFUSAL_SCHEMA,
     PlanRefusal,
+    PodPreflightReceiptPublisher,
     build_parser,
     hold,
     main,
@@ -175,6 +177,108 @@ def _environ(
     return environment
 
 
+def _preflight_publisher(root: Path) -> PodPreflightReceiptPublisher:
+    return PodPreflightReceiptPublisher(root, object())  # type: ignore[arg-type]
+
+
+def test_preflight_evidence_first_publication_and_identical_retry(tmp_path: Path) -> None:
+    publisher = _preflight_publisher(tmp_path / "preflight")
+
+    first = publisher.publish_page_witness(WITNESS)
+    second = publisher.publish_page_witness(WITNESS)
+
+    assert second == first
+    target = publisher.root / first["relative_path"]
+    assert target.is_file() and not target.is_symlink()
+    assert target.read_bytes() == WITNESS.encode("ascii")
+
+
+@pytest.mark.parametrize("linked_component", ["kind", "sha256"])
+def test_preflight_evidence_refuses_parent_symlinks_without_touching_outside(
+    tmp_path: Path, linked_component: str
+) -> None:
+    root = tmp_path / "preflight"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_bytes(b"untouched")
+    before = {
+        path.relative_to(outside): path.read_bytes()
+        for path in outside.rglob("*")
+        if path.is_file()
+    }
+    if linked_component == "kind":
+        (root / "page-witnesses").symlink_to(outside, target_is_directory=True)
+    else:
+        (root / "page-witnesses").mkdir()
+        (root / "page-witnesses" / "sha256").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="preflight page-witnesses evidence path"):
+        _preflight_publisher(root).publish_page_witness(WITNESS)
+
+    assert {
+        path.relative_to(outside): path.read_bytes()
+        for path in outside.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_preflight_evidence_refuses_an_equal_bytes_leaf_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "preflight"
+    data = WITNESS.encode("ascii")
+    digest = hashlib.sha256(data).hexdigest()
+    target = root / "page-witnesses" / "sha256" / f"{digest}.txt"
+    target.parent.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(data)
+    target.symlink_to(outside)
+
+    with pytest.raises(RuntimeError, match="preflight page-witnesses evidence path"):
+        _preflight_publisher(root).publish_page_witness(WITNESS)
+
+    assert target.is_symlink()
+    assert outside.read_bytes() == data
+
+
+def test_preflight_evidence_rechecks_an_eexist_target_before_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "preflight"
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(WITNESS.encode("ascii"))
+
+    def plant_symlink(target: Path, _data: bytes, *, strict: bool) -> None:
+        assert strict is True
+        target.parent.mkdir(parents=True)
+        target.symlink_to(outside)
+        raise FileExistsError
+
+    monkeypatch.setattr(bootstrap_main, "exclusive_write", plant_symlink)
+    with pytest.raises(RuntimeError, match="preflight page-witnesses evidence path"):
+        _preflight_publisher(root).publish_page_witness(WITNESS)
+
+    assert outside.read_bytes() == WITNESS.encode("ascii")
+
+
+def test_preflight_evidence_refuses_a_fifo_without_reading_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "preflight"
+    data = WITNESS.encode("ascii")
+    digest = hashlib.sha256(data).hexdigest()
+    target = root / "page-witnesses" / "sha256" / f"{digest}.txt"
+    target.parent.mkdir(parents=True)
+    os.mkfifo(target)
+
+    def fail_read(_path: Path) -> bytes:
+        raise AssertionError("the FIFO must be rejected before read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+    with pytest.raises(RuntimeError, match="preflight page-witnesses evidence path"):
+        _preflight_publisher(root).publish_page_witness(WITNESS)
+
+
 # --- hold survives a completed bootstrap without exiting -------------------
 
 
@@ -241,7 +345,11 @@ def test_red_bootstrap_step_exits_nonzero_and_never_holds(tmp_path: Path) -> Non
 
     assert exit_code == 3
     assert BootstrapStep.PREFLIGHT not in fake.calls
-    assert not ws.report_path.exists()
+    durable = json.loads(ws.report_path.read_text(encoding="utf-8"))
+    assert durable["schema"] == "pod-bootstrap-result.v1"
+    assert durable["state"] == "bootstrap-red"
+    assert durable["bootstrap"]["failure_step"] == "transfer"
+    assert durable["bootstrap"]["detail"] == "injected failure"
     assert clock.seconds == 0.0  # the hold loop never ran to sleep on anything
 
 
@@ -1630,6 +1738,16 @@ def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
     page = preflight_root / "golden-page" / f"{WITNESS}.png"
     assert page.is_file()
     assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
+    witness_references = {
+        tuple(sorted(receipt["page_witness_reference"].items()))
+        for receipt in record["smoke_receipts"]
+    }
+    assert len(witness_references) == 1
+    witness_reference = dict(next(iter(witness_references)))
+    assert (preflight_root / witness_reference["relative_path"]).read_text(
+        encoding="ascii"
+    ) == WITNESS
+    assert WITNESS not in json.dumps(record)
     for kind in ("receipts", "launch-audits", "serving-evidence"):
         assert len(list((preflight_root / kind / "sha256").glob("*.json"))) == len(identities)
     assert not record["assembly_proven"], "fakes are not a real assembly claim"
@@ -1756,17 +1874,11 @@ def test_a_mid_run_page_swap_is_refused_by_name_not_reported_green(tmp_path: Pat
     assert "disagree on the golden page's digest" in failure.value.detail
 
 
-def test_preflight_is_red_by_chair_name_while_a_serving_row_is_unproven(
+def test_preflight_qualification_launches_unproven_rows_only_inside_smoke_lifecycle(
     tmp_path: Path,
 ) -> None:
-    """The code as it stands: an unproven row refuses launch before any process.
+    """Preflight alone may measure an unproven row, then stops every child."""
 
-    Every row in ``config/serving_recipes_real.toml`` is unproven today, so this
-    is exactly the first real preflight's shape -- red at ``smoke-read-failed``
-    for every chair, with the refusal naming the row, and nothing launched.
-    """
-
-    from .bootstrap import BootstrapStepFailure
     from .bootstrap_main import _build_preflight, build_parser, resolve_plan
 
     ws, identities = _serving_workspace(tmp_path, preflight_state="unproven")
@@ -1774,14 +1886,15 @@ def test_preflight_is_red_by_chair_name_while_a_serving_row_is_unproven(
     plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(clock))
     seams, _http, launcher = _preflight_seams(tmp_path, identities)
 
-    with pytest.raises(BootstrapStepFailure) as failure:
-        _build_preflight(plan, seams)()
+    record = _build_preflight(plan, seams)()
 
-    detail = failure.value.detail
-    assert "smoke-read-failed" in detail
-    assert "preflight_state='unproven'" in detail
-    assert all(role in detail for role in identities)
-    assert launcher.calls == []
+    assert record["color"] == "green"
+    assert len(launcher.calls) == len(identities)
+    assert all(process.poll() is not None for process in launcher.processes)
+    for receipt in record["smoke_receipts"]:
+        audit = receipt["serving_launch_audit"]
+        assert audit["launch_purpose"] == "preflight-qualification"
+        assert audit["profile"]["preflight_state"] == "unproven"
 
 
 def test_a_supplied_golden_page_needs_its_witness_file_and_the_reverse(
@@ -1847,7 +1960,11 @@ def test_a_supplied_golden_page_is_read_with_the_witness_its_file_names(
 
     assert record["color"] == "green"
     assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
-    assert not (ws.volume / "preflight" / ws.report_path.stem / "golden-page").exists()
+    preflight_root = ws.volume / "preflight" / ws.report_path.stem
+    assert not (preflight_root / "golden-page").exists()
+    reference = record["smoke_receipts"][0]["page_witness_reference"]
+    assert (preflight_root / reference["relative_path"]).read_text(encoding="ascii") == witness
+    assert witness not in json.dumps(record)
 
 
 class _NotCalled(BaseException):

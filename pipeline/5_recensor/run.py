@@ -76,7 +76,9 @@ from common.native_witness import (  # noqa: E402
     verify_native_capture_blob,
 )
 from common.perlector_audit import (  # noqa: E402
+    EXAMINATION_CAP_EXHAUSTED,
     EXAMINATION_INCOMPLETE,
+    EXAMINATION_REPROOF_REJECTED,
     unresolved_state,
     validate_chain,
 )
@@ -115,6 +117,7 @@ from common.stage import (  # noqa: E402
     require_current_witness_basis,
     run_stage,
     scenario_for,
+    stage_manifest,
     stage_parser,
 )
 from common.testimony_content_coverage import (  # noqa: E402
@@ -130,7 +133,7 @@ def designator_hold(context, act_id: str) -> tuple[dict, str]:
     why is a claim with no evidence, and absent evidence never reads cleaner
     than damaged evidence.
     """
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] == "hold" and entry["subject_id"] == act_id:
             record = context.tree.read_artifact(DESIGNATOR, "hold", entry["artifact_id"])
             return record, entry["relative_path"]
@@ -142,7 +145,7 @@ def designator_hold(context, act_id: str) -> tuple[dict, str]:
 
 def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     records = []
-    for entry in context.tree.build_manifest(stage)["artifacts"]:
+    for entry in stage_manifest(context, stage)["artifacts"]:
         if entry["kind"] == kind and entry["subject_id"] == subject:
             records.append(context.tree.read_artifact(stage, kind, entry["artifact_id"]))
     return records
@@ -361,7 +364,7 @@ def occlusion_records_by_page(context) -> dict[str, list[dict]]:
     unreadable must not read alike, so this refuses instead of dropping.
     """
     records: dict[str, list[dict]] = {}
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] != "occlusion":
             continue
         record = context.tree.read_artifact(DESIGNATOR, "occlusion", entry["artifact_id"])
@@ -1528,7 +1531,7 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
     yet. That gap is named, not papered over, in `HANDOFF.md`.
     """
     by_page: dict[int, list[dict]] = {}
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] != "region":
             continue
         record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
@@ -1600,7 +1603,7 @@ def sealed_page_images(context) -> dict[int, dict]:
     that skips it.
     """
     pages: dict[int, dict] = {}
-    for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
+    for entry in stage_manifest(context, EXEMPLAR)["artifacts"]:
         if entry["kind"] != "page":
             continue
         record = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
@@ -1829,7 +1832,7 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
     """
     coverage_config = None
     maps: dict[int, dict | None] = {}
-    for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
+    for entry in stage_manifest(context, INK_MAP)["artifacts"]:
         if entry["kind"] != "ink-map":
             continue
         record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
@@ -2272,7 +2275,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         act["act_key"] for act in acts if act["act_key"].startswith("page-residual:")
     ]
     findings: dict[int, dict] = {}
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] != "conservation":
             continue
         record = context.tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])
@@ -2519,7 +2522,7 @@ def current_act_attachments(context) -> dict[str, dict]:
     deriving "current" its own way is the F-O1/F-O3 drift shape itself.
     """
     records: dict[str, list[dict]] = {}
-    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+    for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
         if entry["kind"] != "act-attachment":
             continue
         records.setdefault(entry["subject_id"], []).append(
@@ -2540,7 +2543,7 @@ def current_page_testimonia(context) -> dict[tuple[int, str], dict]:
     currency signal, and duplicate or gapped ordinals are accounting failures.
     """
     records: dict[tuple[int, str], list[dict]] = {}
-    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+    for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
         if entry["kind"] != "page-testimonium":
             continue
         record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
@@ -3251,10 +3254,36 @@ def review_route_from_findings(
                 "re-proof are both retained, and the act is held rather than delivered on a "
                 "re-examination that never finished"
             )
-        else:
+        elif audit_examination == EXAMINATION_REPROOF_REJECTED:
+            # The re-proof was delivered and its call ran to completion, but the
+            # text it changed reached outside every flag that could have asked
+            # for it -- a live reader's own rewrite, not a truncation, so it is
+            # never described as one. The rewrite itself was refused and never
+            # published; the establishing (Pass-B) reading is what stands, and
+            # the flag it was sent to settle is exactly as unassessed as an
+            # incomplete re-proof leaves it.
+            reasons.append(
+                "the Perlector's audit re-proof for this act completed but rewrote text "
+                "outside every location its own flag identified; the rewrite is refused rather "
+                "than published, the establishing reading is retained, and the act is held "
+                "rather than delivered on a re-examination that overran its own scope"
+            )
+        elif audit_examination in (None, EXAMINATION_CAP_EXHAUSTED):
+            # `None` is a caller asserting `audit_unresolved` without naming the
+            # specific examination behind it -- unlike `EXAMINATION_INCOMPLETE`
+            # and `EXAMINATION_REPROOF_REJECTED` above, cap-exhausted was never
+            # cross-checked against a derived examination even before this
+            # branch existed, so an omitted examination reads exactly as it
+            # always has: this generic reason, not a new refusal.
             reasons.append(
                 "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
                 "they remain explicit uncertainty rather than a silent retry"
+            )
+        else:
+            raise ContractError(
+                f"a Recensor review route found audit_unresolved with examination "
+                f"{audit_examination!r}, which is none of the states this composer knows how "
+                "to hold for"
             )
     if assessment_malformed:
         # A doubt report the schema could not anchor is a fault of the call's

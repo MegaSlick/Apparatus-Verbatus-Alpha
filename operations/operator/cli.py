@@ -23,6 +23,7 @@ from operations.pod.models import (
     PodCreateRequest,
     require_utc,
 )
+from operations.pod.transfer import normalize_transfer_prefix
 
 from . import console, notify_bridge, review_text
 from .advance import (
@@ -41,6 +42,14 @@ from .surface import DEFAULT_FIXTURE, OperatorSurface, bounded_tail
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
 MAX_REQUEST_BYTES = 1024 * 1024
+
+
+def _upload_prefix(value: str) -> str:
+    try:
+        return normalize_transfer_prefix(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
 
 _CHECKOUT_RESOURCES_BY_VERB: Final[dict[str, tuple[str, ...]]] = {
     # What each word reads from the workspace by checkout-relative path
@@ -441,6 +450,17 @@ def build_parser() -> PlainParser:
     )
     upload.add_argument("--policy", type=Path, help="data-handling policy used with --manifest-out")
     upload.add_argument(
+        "--prefix",
+        type=_upload_prefix,
+        default="submission",
+        help=(
+            "one safe relative object-key component for this immutable submission, with no "
+            "'/': its ledger is written beside it as <prefix>-manifest.json, and a nested "
+            "prefix would leave that ledger inside another prefix's inventory "
+            "(default: submission)"
+        ),
+    )
+    upload.add_argument(
         "--network-volume",
         metavar="DATACENTER:VOLUME_ID",
         help=(
@@ -750,12 +770,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "was sealed under"
                         ),
                     )
-                surface.upload(args.source, sealed_manifest=args.sealed_manifest, volume=volume)
+                surface.upload(
+                    args.source,
+                    sealed_manifest=args.sealed_manifest,
+                    prefix=args.prefix,
+                    volume=volume,
+                )
             else:
                 surface.submit_and_upload(
                     args.source,
                     manifest_out=args.manifest_out,
                     policy_path=args.policy,
+                    prefix=args.prefix,
                     volume=volume,
                 )
         elif args.verb == "ingest":

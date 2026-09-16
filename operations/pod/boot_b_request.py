@@ -210,7 +210,7 @@ def pod_request(
         # submission on the volume, which this run reads. The bootstrap half
         # names no manifest of its own -- this pod sends nothing anywhere.
         "--submission-manifest",
-        f"{volume_mount_path}/submission/manifest.json",
+        f"{volume_mount_path}/submission-manifest.json",
     ]
     bootstrap_half = [
         "--volume-mount-path",

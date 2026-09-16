@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+from collections import Counter
 from pathlib import Path
 from typing import Any, Final, Mapping, TypedDict, TypeVar, cast
 
@@ -122,7 +123,11 @@ from operations.serving.client import ChairClient, ChairRequest, ChairResponse, 
 from operations.serving.config import ServingConfigInputs, ServingRecipes, load_serving_recipes
 from operations.serving.errors import ServingError
 from operations.serving.http import EndpointUnavailable, UrllibHttpTransport
-from operations.serving.manager import ServingManager, StageContextReceiptPublisher
+from operations.serving.manager import (
+    MECHANICS_QUALIFICATION_PURPOSE,
+    ServingManager,
+    StageContextReceiptPublisher,
+)
 from operations.serving.process import SubprocessLauncher
 from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
@@ -155,9 +160,17 @@ HELD_RESPONSE_NOT_RETAINED: Final = "structure-response-not-retained"
 # is needed to read the ink, and trading a measurable refusal for an
 # unmeasurable misreading is not this pass's decision to make.
 HELD_REQUEST_TOO_LARGE: Final = "structure-request-too-large"
+# The call was cut off, and what it spent its context on was one fragment over
+# and over. That is a degenerate generation, not a page too dense to describe,
+# and the two want opposite repairs -- sampling that can leave a loop, against
+# room to finish an answer. Named apart from `HELD_CUT_OFF` because reporting a
+# loop as a cut-off sends a reader to the token budget, which is where this
+# failure was first (wrongly) chased on 2026-09-15.
+HELD_DEGENERATE: Final = "structure-answer-degenerate"
 STRUCTURE_HELD_CODES: Final = frozenset(
     {
         HELD_CUT_OFF,
+        HELD_DEGENERATE,
         HELD_CALL_UNUSABLE,
         HELD_NO_INK_OVERLAP,
         HELD_RESPONSE_NOT_RETAINED,
@@ -466,6 +479,11 @@ def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) ->
         log_root=context.tree.resolve(context.tree.serving_log_path(DESIGNATOR)),
         residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/2_designator/run.py",
+        _launch_purpose=(
+            MECHANICS_QUALIFICATION_PURPOSE
+            if getattr(context.args, "mechanics_qualification", False)
+            else None
+        ),
     )
     return ChairClient(
         manager=manager,
@@ -933,16 +951,63 @@ def touches_ink(rectangle: Mapping[str, int], analysis: Mapping[str, Any]) -> bo
     return False
 
 
-def _finish_reason_disposition(finish_reason: str | None) -> str | None:
+# The share of an answer's overlapping 12-character fragments that may be the
+# single most repeated one before the answer is read as a loop rather than as a
+# page. Measured over the four real RecordGold pages of the 2026-09-15 live run
+# (`workbench/active/RUNPOD_FUTURE_FIXES_2026-09-15.md`): the two pages that
+# completed scored 0.003 and 0.004, and the two that looped scored 0.061 (`de
+# l'Église,` 1,664 times) and 0.292 (`. J. J. J. J` 5,376 times). The floor sits
+# an order of magnitude above the healthy pair and an order below the looping
+# one, because these registers really do repeat their formulae and a page of
+# genuine repeated phrasing must not be called degenerate.
+DEGENERATE_REPETITION_SHARE: Final = 0.02
+_REPETITION_WINDOW: Final = 12
+# Answers shorter than this many overlapping windows score zero rather than
+# being judged. A count of windows, named rather than derived from the window
+# length, which is a different quantity and read as a mistake when the two were
+# multiplied (CodeRabbit on this branch). The value stays deliberately
+# conservative: the only answers this measure is asked about are cut-off ones,
+# which spent a whole context and run to five figures of characters, so the
+# floor excludes nothing real and refuses to call a fragment repeated twice in
+# a single line evidence of a loop.
+_MIN_WINDOWS_TO_JUDGE: Final = 48
+
+
+def repetition_share(text: str) -> float:
+    """How much of an answer is its own single most repeated fragment.
+
+    Overlapping windows, so a run of one phrase scores by the length of the run
+    rather than by how many whole copies fit. Short answers score zero: a
+    fragment repeated twice in a sentence is not evidence of anything, and the
+    only answers this question is asked of are ones that spent a whole context.
+    """
+    windows = len(text) - _REPETITION_WINDOW + 1
+    if windows < _MIN_WINDOWS_TO_JUDGE:
+        return 0.0
+    counts = Counter(text[i : i + _REPETITION_WINDOW] for i in range(windows))
+    return counts.most_common(1)[0][1] / windows
+
+
+def _finish_reason_disposition(finish_reason: str | None, answer: str | None = None) -> str | None:
     """`None` for a complete or unreported stop; a held code for a cut-off.
 
     The engine's own vocabulary is closed (`common/contracts/serving.py`), and
     a word outside it is refused rather than folded into either bucket -- the
     same rule the Attestatores apply to a witness's stop word.
+
+    A cut-off answer is read once more before it is named. One that spent its
+    context repeating a single fragment is held as `HELD_DEGENERATE`, because
+    calling it a cut-off would say the page needed more room when what it
+    needed was sampling that can leave a loop. Only a cut-off is examined: a
+    completed answer is this chair's word for the page whatever its phrasing
+    repeats, and reclassifying one on a text measure would let this pass
+    second-guess a reading it is not the judge of.
     """
     if finish_reason is None or finish_reason in ENGINE_STOP_COMPLETE:
         return None
     if finish_reason in ENGINE_STOP_CUT_OFF:
+        if answer is not None and repetition_share(answer) >= DEGENERATE_REPETITION_SHARE:
+            return HELD_DEGENERATE
         return HELD_CUT_OFF
     raise ContractError(
         f"the structure chair's response carries finish_reason {finish_reason!r}, which is "
@@ -1245,7 +1310,7 @@ def ask_page(
         # cut-off body that also fails to parse is still a cut-off, not a
         # parse refusal, and a stop word outside the closed vocabulary is
         # refused whether or not the body happened to parse.
-        cut_off = _finish_reason_disposition(response.finish_reason)
+        cut_off = _finish_reason_disposition(response.finish_reason, response.content)
         if cut_off is not None:
             # Held even though it may have parsed: a truncated act list is a
             # missed act either way.

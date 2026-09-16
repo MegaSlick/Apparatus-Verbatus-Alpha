@@ -23,6 +23,7 @@ from proof.build_model_fixtures import FIXTURE_CHAIRS, build, fixture_files
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = ROOT / "config"
 MODELS_CONFIG = CONFIG_ROOT / "models.toml"
+REAL_MODELS_CONFIG = CONFIG_ROOT / "models-real.toml"
 
 
 def test_every_configured_fixture_chair_has_a_generator_entry():
@@ -36,6 +37,7 @@ def test_every_configured_fixture_chair_has_a_generator_entry():
 def test_the_checked_in_snapshots_manifests_and_pins_all_agree(tmp_path):
     rebuilt_pins = build(tmp_path / "model-fixtures", tmp_path / "manifests")
     config = load_models_toml(MODELS_CONFIG)
+    real_config = load_models_toml(REAL_MODELS_CONFIG)
 
     assert set(rebuilt_pins) == set(FIXTURE_CHAIRS)
     assert {
@@ -43,9 +45,19 @@ def test_the_checked_in_snapshots_manifests_and_pins_all_agree(tmp_path):
         for path in (CONFIG_ROOT / "model-fixtures").rglob("*")
         if path.is_file()
     } == {f"{chair}/{name}" for chair in FIXTURE_CHAIRS for name in fixture_files(chair)}
-    assert {path.name for path in (CONFIG_ROOT / "manifests").iterdir() if path.is_file()} == {
-        f"{chair}.json" for chair in FIXTURE_CHAIRS
+    fixture_manifests = {
+        chair.manifest for chair in config.chairs.values() if isinstance(chair, ChairIdentity)
     }
+    real_manifests = {
+        chair.manifest for chair in real_config.chairs.values() if isinstance(chair, ChairIdentity)
+    }
+    assert fixture_manifests == {f"manifests/{chair}.json" for chair in FIXTURE_CHAIRS}
+    assert fixture_manifests.isdisjoint(real_manifests)
+    assert {
+        path.relative_to(CONFIG_ROOT).as_posix()
+        for path in (CONFIG_ROOT / "manifests").rglob("*")
+        if path.is_file()
+    } == fixture_manifests | real_manifests
     for chair in FIXTURE_CHAIRS:
         for name, data in fixture_files(chair).items():
             committed = (CONFIG_ROOT / "model-fixtures" / chair / name).read_bytes()

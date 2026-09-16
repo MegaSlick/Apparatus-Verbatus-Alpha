@@ -7,6 +7,7 @@ import importlib
 import inspect
 import io
 import json
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -209,6 +210,12 @@ def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
     """
     source, output, policy, _approved = _inputs(tmp_path)
     output.chmod(0o500)
+    if os.access(output, os.W_OK):  # pragma: no cover - root bypasses mode bits
+        output.chmod(0o700)
+        pytest.skip(
+            f"this process (uid={os.getuid()}) can write a mode-0500 directory; "
+            "the worker write-failure case cannot be built"
+        )
     try:
         exit_code = cli.main(
             [

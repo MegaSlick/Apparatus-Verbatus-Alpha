@@ -118,6 +118,7 @@ from common.stage import (  # noqa: E402
     reading_basis_regions,
     recovery_region_count,
     run_stage,
+    stage_manifest,
     stage_parser,
     validate_serving_provenance,
 )
@@ -129,6 +130,7 @@ from operations.serving.config import (  # noqa: E402
 from operations.serving.errors import ChairResponseRefusal  # noqa: E402
 from operations.serving.http import UrllibHttpTransport  # noqa: E402
 from operations.serving.manager import (  # noqa: E402
+    MECHANICS_QUALIFICATION_PURPOSE,
     ServingManager,
     StageContextReceiptPublisher,
 )
@@ -468,7 +470,7 @@ def regions_of(context, act_id: str) -> list[dict]:
     every region validated here requires one.
     """
     records = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] == "region" and entry["subject_id"] == act_id:
             record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
             validate_serving_provenance(
@@ -763,7 +765,7 @@ def validate_page_testimonium_record(
 def sealed_proposal_regions(context) -> list[dict]:
     """Every verified proposal in the run-wide routing denominator."""
     regions = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] != "region":
             continue
         record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
@@ -794,7 +796,7 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
     were still live.
     """
     records = []
-    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+    for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
         if entry["kind"] == "testimonium" and entry["subject_id"] == act_id:
             record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
             validate_serving_provenance(
@@ -928,7 +930,7 @@ def act_attachment_view(
     current = {record["payload"]["chair"]: record for record in testimonia}
     entries = [
         entry
-        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        for entry in stage_manifest(context, ATTESTATORES)["artifacts"]
         if entry["kind"] == "act-attachment" and entry["subject_id"] == act_id
     ]
     if not entries:
@@ -1899,6 +1901,11 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
             launcher=SubprocessLauncher(),
             http=UrllibHttpTransport(),
             receipt_publisher=StageContextReceiptPublisher(context),
+            _launch_purpose=(
+                MECHANICS_QUALIFICATION_PURPOSE
+                if getattr(context.args, "mechanics_qualification", False)
+                else None
+            ),
             # A live chair's engine logs, inside the run tree so they travel
             # with the evidence they belong to. They sit beside this stage's
             # artifacts and blobs rather than among them: `_stage_blob_inventory`
@@ -2945,12 +2952,23 @@ def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, t
         return declared_failure
     if truncation.holds_as_failure(truncation_record["classification"]):
         return "truncated"
-    if not text.strip():
+    if _publishes_empty(text):
         # The same emptiness rubric the publish-time schema uses: a reader
         # returning "\n" for one act is an unreadable act, not a reason to
         # abort the stage and lose the parish's other readings.
         return "no-readable-text"
     return "read"
+
+
+def _publishes_empty(text: str) -> bool:
+    """The one emptiness rubric, shared rather than spelled twice.
+
+    `_resolve_outcome` decides `no-readable-text` with it, and the audit's
+    containment check projects a re-proof through it before measuring what
+    that re-proof would actually publish. Two spellings would let the audit
+    measure an envelope over text the projection then threw away.
+    """
+    return not text.strip()
 
 
 def _reconciled_truncation(*, declared_failure: str | None, truncation_record: dict) -> dict:
@@ -4317,6 +4335,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         draft_ref = context.input_ref(draft.relative_path)
         final_text = payload["text"]
+        # Captured once, here, before anything below can mutate `payload["text"]`
+        # on an accepted rewrite: the frozen semi-final every containment check
+        # and the finding's `flag_text_length` measure against, whether or not
+        # a re-proof ever runs.
+        pre_audit_text = payload["text"]
         # The truncation instrument's verdict on the re-proof call itself, or
         # `None` while no re-proof has been delivered. Measured over the
         # re-proof's own text and stop word, *before* that text is compared with
@@ -4338,6 +4361,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         request_digest: str | None = None
         changes: list[dict[str, Any]] = []
         uncertainty: list[dict[str, Any]] = []
+        reproof_change_span: tuple[int, int] | None = None
         payload_fields = row["fields"]
         # A re-proof reading is evidence of this Perlectio whether or not it
         # changed the text: it is the second thing that looked at this act's
@@ -4413,16 +4437,54 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
                 stop_reason=reproof["stop_reason"],
             )
+            # The envelope a completed re-proof's own rewrite occupies, measured
+            # against the frozen semi-final before anything is published on its
+            # strength. `None` whenever there is nothing to measure: the call
+            # did not complete, or it returned the frozen text unchanged. This
+            # is computed once, here, so both the publish decision below and
+            # the sealed finding's `examination` derive from the same envelope
+            # rather than two comparisons that could drift.
+            # The text this re-proof would actually publish, not the text it
+            # returned: the projection below empties a whitespace-only reading
+            # (`_resolve_outcome`'s `no-readable-text`), and an emptied reading's
+            # envelope is the whole act rather than whatever span the raw
+            # response happened to touch. Measuring containment on the raw text
+            # and then publishing the emptied one would hand `change_record` an
+            # envelope nobody checked -- the same uncaught refusal, one branch
+            # further in.
+            projected_text = "" if _publishes_empty(final_text) else final_text
+            reproof_change_span: tuple[int, int] | None = None
+            reproof_change_contained = True
+            if projected_text != pre_audit_text:
+                span_start, span_end = audit.text_change_span(pre_audit_text, projected_text)
+                reproof_change_contained = any(
+                    audit.flag_contains_change(
+                        flag, start=span_start, end=span_end, before_length=len(pre_audit_text)
+                    )
+                    for flag in flags
+                )
+                # Sealed whenever a delivered re-proof's text departed from the
+                # frozen semi-final, whatever the instrument called the call.
+                # `examination_state` consults it only for a completed call --
+                # an `incomplete` examination is decided on the termination
+                # alone -- but the finding still needs the fact, because a
+                # sealed span beside a published semi-final is exactly how a
+                # later reader knows the re-proof's own text was refused rather
+                # than returned unchanged.
+                reproof_change_span = (span_start, span_end)
             # Everything from here to the end of this block is provenance and
             # projection for a re-proof whose text is the one published. It is
-            # entered on text inequality alone, on purpose: a re-proof that
-            # returned the frozen text confirms Pass B's call as the producer of
-            # the published reading, and moving `engine_call`, `truncation` and
-            # `self_revision` onto it would bind that reading to a response that
-            # did not produce it. Whether the re-proof *completed* is the
-            # separate fact `reproof_truncation` above already holds, and it is
-            # sealed whichever branch runs.
-            if final_text != payload["text"]:
+            # entered on text inequality *and containment*, on purpose: a
+            # re-proof that returned the frozen text confirms Pass B's call as
+            # the producer of the published reading, and a re-proof whose
+            # rewrite escapes every flag it was sent to settle is refused
+            # outright below rather than published on any of these fields --
+            # moving `engine_call`, `truncation` and `self_revision` onto a
+            # rejected rewrite would bind the published reading to a response
+            # that was never allowed to produce it. Whether the re-proof
+            # *completed* is the separate fact `reproof_truncation` above
+            # already holds, and it is sealed whichever branch runs.
+            if final_text != payload["text"] and reproof_change_contained:
                 payload["text"] = final_text
                 # The doubt report travels with the call whose text is
                 # published: a re-proof's spans are anchored to the re-proof's
@@ -4549,14 +4611,30 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # After the projection, not before it: `validate_chain` recomputes
             # the change record from the draft's semi-final against the
             # PUBLISHED text, so the record must describe the projected text.
-            changes = audit.change_record(pre_audit_text, final_text, flags)
+            # Guarded by the same containment this block's own `if` already
+            # checked: a rewrite that escaped every flag was never published
+            # above, and asking `change_record` to re-attribute it here would
+            # raise the exact refusal this stage now handles as a rejection
+            # instead of a crash (below), not a second chance to hit it.
+            if reproof_change_contained:
+                changes = audit.change_record(pre_audit_text, final_text, flags)
+            else:
+                changes = []
         # One derivation, shared with every consumer: what became of the
         # re-examination, and whether that leaves the flags unresolved. Only an
         # exhausted cap mints exhausted-cap spans; an incomplete re-proof is an
         # incomplete examination, recorded as that and routed to review by the
         # Recensor on that fact, never dressed as a span or as a truncation of a
-        # text that did in fact complete.
-        examination = audit.examination_state(flags, audit_policy["round_cap"], reproof_truncation)
+        # text that did in fact complete; a re-proof that completed but rewrote
+        # text outside every flag is `reproof-rejected`, never dressed as
+        # `complete` on the strength of a rewrite this stage refused to publish.
+        examination = audit.examination_state(
+            flags,
+            audit_policy["round_cap"],
+            reproof_truncation,
+            reproof_change_span=reproof_change_span,
+            flag_text_length=len(pre_audit_text),
+        )
         unresolved = audit.unresolved_state(examination)
         if examination == audit.EXAMINATION_CAP_EXHAUSTED:
             for flag in flags:
@@ -4577,6 +4655,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "unresolved": unresolved,
             "examination": examination,
             "reproof_truncation": reproof_truncation,
+            "reproof_change_span": (
+                {"start": reproof_change_span[0], "end": reproof_change_span[1]}
+                if reproof_change_span is not None
+                else None
+            ),
             # The retained response the termination above was measured over,
             # where the reader has an engine behind it: the fixture chamber has
             # none and seals `None`. Named on the finding because the
@@ -4587,7 +4670,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         }
         audit.validate_finding(
             finding_payload,
-            text=final_text,
+            # The text this act actually publishes, which is `final_text` in
+            # every branch that published the re-proof and the frozen
+            # semi-final in the one that refused it. `final_text` still names
+            # the rejected rewrite there, and validating the finding against a
+            # reading this stage declined to publish is the same false
+            # provenance the projection block is careful to avoid.
+            text=payload["text"],
             flag_text=draft_payload["semi_final_text"],
         )
         finding = context.publish(

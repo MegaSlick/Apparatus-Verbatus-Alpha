@@ -176,7 +176,12 @@ def test_crop_converts_an_admitted_cmyk_jpeg_to_a_png_compatible_display_mode():
 
 def test_crop_decodes_a_sealed_single_frame_heic_and_emits_lossless_png():
     source = BytesIO()
-    Image.new("RGB", (4, 3), (17, 34, 51)).save(source, format="HEIF", lossless=True)
+    Image.new("RGB", (4, 3), (17, 34, 51)).save(
+        source,
+        format="HEIF",
+        lossless=True,
+        enc_params={"x265:pools": "none", "x265:frame-threads": "1"},
+    )
 
     cropped = crop_png(source.getvalue(), {"x": 1, "y": 1, "w": 2, "h": 2})
 

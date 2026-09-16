@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -129,6 +130,7 @@ def verify_image_contract(
     repository: Path,
     *,
     interpreter: Path,
+    interpreter_prefix: Path | None = None,
     executables: Mapping[str, str] = BOOTSTRAP_EXECUTABLES,
     environment: Mapping[str, str] = BOOTSTRAP_ENVIRONMENT,
 ) -> dict[str, object]:
@@ -148,8 +150,11 @@ def verify_image_contract(
     * That remote reachable with **no HOME**: ``BOOTSTRAP_ENVIRONMENT`` supplies
       none, so git reads no ``~/.gitconfig``, no global credential helper and no
       ``~/.git-credentials``. Only the repository's own config is visible.
-    * The running interpreter inside ``<repository>/.venv``, because that is the
-      environment ``uv sync`` fills and the one ServingManager later inspects.
+    * The running interpreter and its ``sys.prefix`` inside ``<repository>/.venv``,
+      because that is the environment ``uv sync`` fills and the one ServingManager
+      later inspects.  A standard virtual environment's ``bin/python`` is usually
+      a symlink to its base Python, so this checks the invoked path and prefix,
+      not the symlink's target.
 
     Returns what it verified, for the REPOSITORY receipt. Never returns the
     origin URL or any part of it: a URL is one of the three places a credential
@@ -238,21 +243,51 @@ def verify_image_contract(
         else "not-in-the-repository-config"
     )
 
-    interpreter = Path(interpreter)
-    expected_venv = (repository / REPOSITORY_VENV_DIRECTORY).resolve()
-    try:
-        inside = interpreter.resolve().is_relative_to(expected_venv)
-    except OSError:  # pragma: no cover - resolve() on a vanished path
-        inside = False
-    if not inside:
+    expected_venv = Path(os.path.abspath(repository / REPOSITORY_VENV_DIRECTORY))
+    expected_bin = expected_venv / "bin"
+    invoked_interpreter = Path(os.path.abspath(interpreter))
+    if (
+        invoked_interpreter.parent != expected_bin
+        or re.fullmatch(r"python(?:3(?:\.\d+)*)?", invoked_interpreter.name) is None
+    ):
         raise ImageContractRefusal(
-            f"this bootstrap is running under {interpreter}, which is not inside "
-            f"{expected_venv}; `uv sync` fills that environment and every later step -- "
+            f"this bootstrap is running under {interpreter}, not a repository virtual environment "
+            f"interpreter below {expected_bin}; `uv sync` fills that environment "
+            "and every later step -- "
             "the chair cache, the vLLM launch, the installed-version check -- reads the "
             "interpreter it is running under, so a system python gets as far as "
             "PREFLIGHT and then fails on a missing pin, after the download has been paid "
             "for. The image must start this process from the repository's own .venv"
         )
+    venv_marker = expected_venv / "pyvenv.cfg"
+    try:
+        marker_text = venv_marker.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise ImageContractRefusal(
+            f"the repository virtual environment at {expected_venv} does not carry a readable "
+            "pyvenv.cfg; a path named .venv is not enough to establish that the invoked "
+            "interpreter receives that environment's installed packages"
+        ) from error
+    marker_entries: dict[str, str] = {}
+    for line in marker_text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            marker_entries[key.strip().lower()] = value.strip()
+    if not marker_entries.get("home"):
+        raise ImageContractRefusal(
+            f"the repository virtual environment at {expected_venv} has a pyvenv.cfg without "
+            "a base Python home; a malformed marker cannot establish a usable virtual environment"
+        )
+    if interpreter_prefix is None and invoked_interpreter == Path(os.path.abspath(sys.executable)):
+        interpreter_prefix = Path(sys.prefix)
+    if interpreter_prefix is not None:
+        observed_prefix = Path(os.path.abspath(interpreter_prefix))
+        if observed_prefix != expected_venv:
+            raise ImageContractRefusal(
+                f"this bootstrap is running under {interpreter}, but reports sys.prefix "
+                f"{interpreter_prefix} instead of its repository virtual environment "
+                f"{expected_venv}; the image must start the process through .venv/bin/python"
+            )
     verified["interpreter"] = str(interpreter)
     return verified
 
