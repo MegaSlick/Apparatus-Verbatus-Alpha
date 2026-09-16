@@ -116,8 +116,8 @@ from common.stage import (  # noqa: E402
     recovery_region_count,
     require_current_witness_basis,
     run_stage,
-    stage_manifest,
     scenario_for,
+    stage_manifest,
     stage_parser,
 )
 from common.testimony_content_coverage import (  # noqa: E402

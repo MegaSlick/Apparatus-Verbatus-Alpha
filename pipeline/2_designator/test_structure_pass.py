@@ -988,11 +988,19 @@ def test_the_repetition_measure_separates_the_live_runs_looping_pages():
     repeat their formulae, and a page of genuine repeated phrasing must keep
     reading as a page.
     """
-    healthy = "<div data-bbox=\"1 2 3 4\" data-label=\"Text\"><p>" + ("Le dixieme jour d'Aoust mil sept cent vingt deux a este baptise " * 12) + "</p></div>"
+    healthy = (
+        '<div data-bbox="1 2 3 4" data-label="Text"><p>'
+        + ("Le dixieme jour d'Aoust mil sept cent vingt deux a este baptise " * 12)
+        + "</p></div>"
+    )
     assert structure_pass.repetition_share(healthy) < structure_pass.DEGENERATE_REPETITION_SHARE
 
     # Page 1's actual shape: a fragment emitted until the context ran out.
-    looped = "<div><p>Le Septieme Aoust mil sept cens vingt deux a este inhume" + (". J" * 4000) + "</p></div>"
+    looped = (
+        "<div><p>Le Septieme Aoust mil sept cens vingt deux a este inhume"
+        + (". J" * 4000)
+        + "</p></div>"
+    )
     assert structure_pass.repetition_share(looped) >= structure_pass.DEGENERATE_REPETITION_SHARE
 
     # Page 3's shape: a whole phrase rather than two characters.
@@ -1012,7 +1020,7 @@ def test_a_looping_answer_is_held_as_degenerate_not_as_a_cut_off():
     """
     looped = ". J" * 4000
     dense = "".join(
-        f"<div data-bbox=\"1 {i} 3 4\" data-label=\"Text\"><p>acte numero {i} du registre</p></div>"
+        f'<div data-bbox="1 {i} 3 4" data-label="Text"><p>acte numero {i} du registre</p></div>'
         for i in range(60)
     )
     assert structure_pass._finish_reason_disposition("length", looped) == (

@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import common.stage as STAGE_MODULE
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.identities import attempt_id
 from common.native_witness import partition_disagreement
-import common.stage as STAGE_MODULE
 from common.stage import RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_WITHHELD
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1036,7 +1036,9 @@ def test_an_upstream_stage_manifest_is_built_once_a_pass_and_this_stages_never_i
 
     # A different run is a different answer, never the first one's.
     other = _CountingTree(records, run_id="other")
-    assert RUN.artifacts_for(_Context(tree=other, stage=RUN.RECENSOR), RUN.DESIGNATOR, "region", "act-1")
+    assert RUN.artifacts_for(
+        _Context(tree=other, stage=RUN.RECENSOR), RUN.DESIGNATOR, "region", "act-1"
+    )
     assert other.builds.count(RUN.DESIGNATOR) == 1
 
 
@@ -1056,7 +1058,9 @@ def test_a_pass_that_cannot_prove_what_it_writes_is_never_cached():
     del anonymous.root
     del anonymous.run_id
     for _ in range(3):
-        RUN.artifacts_for(_Context(tree=anonymous, stage=RUN.RECENSOR), RUN.DESIGNATOR, "region", "act-1")
+        RUN.artifacts_for(
+            _Context(tree=anonymous, stage=RUN.RECENSOR), RUN.DESIGNATOR, "region", "act-1"
+        )
     assert anonymous.builds.count(RUN.DESIGNATOR) == 3
 
     # A context that will not say which stage it writes.

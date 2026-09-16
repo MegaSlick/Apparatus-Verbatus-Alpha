@@ -875,7 +875,9 @@ def validate_finding(
     flag_text_length = len(flag_text) if flag_text is not None else len(text)
     span = value["reproof_change_span"]
     if span is not None:
-        _location(span, text_length=flag_text_length, label="an audit finding's reproof change span")
+        _location(
+            span, text_length=flag_text_length, label="an audit finding's reproof change span"
+        )
         reproof_change_span = (span["start"], span["end"])
     else:
         reproof_change_span = None
@@ -902,9 +904,7 @@ def validate_finding(
         # wrong. `text=None` is the documented "the caller does not hold it"
         # case, never a silent skip -- and a re-proof that returned the frozen
         # text unchanged seals no span, so it keeps the binding in full.
-        refused = (
-            reproof_change_span is not None and flag_text is not None and text == flag_text
-        )
+        refused = reproof_change_span is not None and flag_text is not None and text == flag_text
         validate_truncation_record(
             value["reproof_truncation"],
             label="an audit finding's re-proof termination",
@@ -1101,9 +1101,7 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
     return [{"start": start, "end": end, "triggering_flag_class": triggering["class"]}]
 
 
-def flag_contains_change(
-    flag: dict[str, Any], *, start: int, end: int, before_length: int
-) -> bool:
+def flag_contains_change(flag: dict[str, Any], *, start: int, end: int, before_length: int) -> bool:
     """Whether one flag covers a `[start, end)` change envelope.
 
     The exact predicate `change_record` refuses on when no flag satisfies it
