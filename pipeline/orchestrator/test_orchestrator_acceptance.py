@@ -1663,10 +1663,21 @@ def _perlector_dissent():
 # category, crop geometry or count moved (GOVERNANCE 5).
 # Evidence: the comparison scripts and both run trees were built in this
 # session's scratch and are not retained in Git.
+# Both digests moved again on this branch, and for one reason: the audit
+# finding's closed schema gained `reproof_change_span`, the envelope a delivered
+# re-proof's text departed from the frozen semi-final by. Every audit finding in
+# both scenarios therefore carries one more field, and every reference digest
+# above it moves with that. **Neither file count moved** -- 100 and 111 stand --
+# which is the evidence that this is the same inventory with a changed record
+# shape rather than an artifact appearing or going missing: the two assertions
+# that pin the counts passed while these two failed. No established text,
+# outcome, category, crop geometry or count moved (GOVERNANCE 5); the new field
+# is `null` wherever no re-proof departed from the semi-final, which is every
+# act in the fixture scenarios.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "0176d071fa079af290683c6aa73de404f3e76900878f9124356cec1f77a6956c"
-REVIEW_RUN_TREE_DIGEST = "1f49ee36bdad741cb8bbcec965ff9c24a980b7eb36dcb073826320de377dd40c"
+HAPPY_RUN_TREE_DIGEST = "78ee01f1a5f436c0986592a158f89b6faa27043deeeed2d39bc4ab361a468484"
+REVIEW_RUN_TREE_DIGEST = "4edeb8d18c0b630e5a908bd181d5ff13b84febbf7ef476b83426e998aaa2abee"
 
 
 def orchestrate(
