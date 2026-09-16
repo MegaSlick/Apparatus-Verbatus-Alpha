@@ -2951,12 +2951,23 @@ def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, t
         return declared_failure
     if truncation.holds_as_failure(truncation_record["classification"]):
         return "truncated"
-    if not text.strip():
+    if _publishes_empty(text):
         # The same emptiness rubric the publish-time schema uses: a reader
         # returning "\n" for one act is an unreadable act, not a reason to
         # abort the stage and lose the parish's other readings.
         return "no-readable-text"
     return "read"
+
+
+def _publishes_empty(text: str) -> bool:
+    """The one emptiness rubric, shared rather than spelled twice.
+
+    `_resolve_outcome` decides `no-readable-text` with it, and the audit's
+    containment check projects a re-proof through it before measuring what
+    that re-proof would actually publish. Two spellings would let the audit
+    measure an envelope over text the projection then threw away.
+    """
+    return not text.strip()
 
 
 def _reconciled_truncation(*, declared_failure: str | None, truncation_record: dict) -> dict:
@@ -4432,20 +4443,34 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # is computed once, here, so both the publish decision below and
             # the sealed finding's `examination` derive from the same envelope
             # rather than two comparisons that could drift.
+            # The text this re-proof would actually publish, not the text it
+            # returned: the projection below empties a whitespace-only reading
+            # (`_resolve_outcome`'s `no-readable-text`), and an emptied reading's
+            # envelope is the whole act rather than whatever span the raw
+            # response happened to touch. Measuring containment on the raw text
+            # and then publishing the emptied one would hand `change_record` an
+            # envelope nobody checked -- the same uncaught refusal, one branch
+            # further in.
+            projected_text = "" if _publishes_empty(final_text) else final_text
             reproof_change_span: tuple[int, int] | None = None
             reproof_change_contained = True
-            if (
-                reproof_truncation["classification"] == audit.TRUNCATION_COMPLETE
-                and final_text != pre_audit_text
-            ):
-                reproof_change_span = audit.text_change_span(pre_audit_text, final_text)
-                span_start, span_end = reproof_change_span
+            if projected_text != pre_audit_text:
+                span_start, span_end = audit.text_change_span(pre_audit_text, projected_text)
                 reproof_change_contained = any(
                     audit.flag_contains_change(
                         flag, start=span_start, end=span_end, before_length=len(pre_audit_text)
                     )
                     for flag in flags
                 )
+                # Sealed whenever a delivered re-proof's text departed from the
+                # frozen semi-final, whatever the instrument called the call.
+                # `examination_state` consults it only for a completed call --
+                # an `incomplete` examination is decided on the termination
+                # alone -- but the finding still needs the fact, because a
+                # sealed span beside a published semi-final is exactly how a
+                # later reader knows the re-proof's own text was refused rather
+                # than returned unchanged.
+                reproof_change_span = (span_start, span_end)
             # Everything from here to the end of this block is provenance and
             # projection for a re-proof whose text is the one published. It is
             # entered on text inequality *and containment*, on purpose: a

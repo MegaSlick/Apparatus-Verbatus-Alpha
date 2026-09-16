@@ -892,16 +892,23 @@ def validate_finding(
         # (`pipeline/4_perlector/run.py`: one `final_text` feeds
         # `truncation.classify` and this validation), so the record's character
         # count is bound to the reading rather than taken on the producer's
-        # word (independent audit of 2026-09-14) -- except when that reading was
-        # refused and never published: `text` here is the *published* text, the
-        # frozen semi-final for a `reproof-rejected` finding, and binding the
-        # rejected re-proof's own termination to it would refuse every honest
-        # rejection on a length mismatch that names nothing wrong. `text=None`
-        # is the documented "the caller does not hold it" case, never a skip.
+        # word (independent audit of 2026-09-14) -- except where the re-proof's
+        # text was refused and never published. A sealed change span beside a
+        # published text equal to the frozen semi-final is exactly that case:
+        # the re-proof departed from the semi-final (or there would be no
+        # span), yet the semi-final is what the act published, so the response
+        # the termination measured is not the text in hand. Binding it anyway
+        # would refuse every honest refusal on a length mismatch naming nothing
+        # wrong. `text=None` is the documented "the caller does not hold it"
+        # case, never a silent skip -- and a re-proof that returned the frozen
+        # text unchanged seals no span, so it keeps the binding in full.
+        refused = (
+            reproof_change_span is not None and flag_text is not None and text == flag_text
+        )
         validate_truncation_record(
             value["reproof_truncation"],
             label="an audit finding's re-proof termination",
-            text=None if examination == EXAMINATION_REPROOF_REJECTED else text,
+            text=None if refused else text,
             length_floor_characters_per_page=length_floor_characters_per_page,
         )
     validate_reproof_call(value["reproof_call"], label="an audit finding's re-proof call")
@@ -927,18 +934,17 @@ def validate_finding(
             "exhausted; an incomplete re-proof is recorded as an incomplete examination, "
             "never as a span"
         )
-    # One direction only: a span requires a delivered, completed re-proof, but
-    # a completed re-proof that returned the frozen text unchanged has nothing
-    # to measure a span over and correctly seals `None` (`text_change_span`
-    # only runs on `run.py`'s `final_text != pre_audit_text` branch) -- a
-    # confirmed-unchanged `complete` finding is not a `reproof-rejected` one.
-    if reproof_change_span is not None and not (
-        value["reproof_truncation"] is not None
-        and value["reproof_truncation"]["classification"] == TRUNCATION_COMPLETE
-    ):
+    # One direction only: a span requires a delivered re-proof, but a re-proof
+    # that returned the frozen text unchanged has nothing to measure a span
+    # over and correctly seals `None` (`text_change_span` only runs on
+    # `run.py`'s departed-text branch) -- a confirmed-unchanged finding is not
+    # a `reproof-rejected` one. The span is not restricted to a *completed*
+    # call: a cut-off re-proof can depart from the semi-final too, and the fact
+    # that it did is what tells a later reader its text was refused rather than
+    # returned as found.
+    if reproof_change_span is not None and value["reproof_truncation"] is None:
         raise SchemaRefusal(
-            "an audit finding's reproof change span exists only when a re-proof was "
-            "delivered and its call completed"
+            "an audit finding's reproof change span exists only when a re-proof was delivered"
         )
     if examination == EXAMINATION_REPROOF_REJECTED:
         if reproof_change_span is None:

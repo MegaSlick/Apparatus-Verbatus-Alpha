@@ -1940,6 +1940,150 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
     assert all(act["category"] == "held-for-review" for act in export["non_delivered"])
 
 
+@pytest.mark.parametrize(
+    ("stop_reason", "expected_examination"),
+    [
+        # The call completed and then overran its scope: the rejection state.
+        ("stop", "reproof-rejected"),
+        # The call was cut off AND overran its scope. The termination decides
+        # the examination -- an unfinished re-examination settles nothing
+        # whatever its text did -- but the rewrite is refused just the same,
+        # and the run must still survive it.
+        ("length", "incomplete"),
+    ],
+)
+def test_an_escaping_reproof_is_refused_whatever_ended_its_call(
+    tmp_path, monkeypatch, stop_reason, expected_examination
+):
+    """An escape is refused on the escape, not on why the call stopped."""
+    root = tmp_path / "runs"
+    _chain_through_attestatores(root, "audit-change")
+    perlector = _perlector()
+    declared = perlector.FixtureReader
+    reproofed: list[str] = []
+
+    class EscapingReader:
+        def __init__(self, fixture, fixture_scenario):
+            self._inner = declared(fixture, fixture_scenario)
+
+        def read(self, dossier, *, pass_kind, delivered_pixels=None, audit_request=None):
+            result = self._inner.read(
+                dossier,
+                pass_kind=pass_kind,
+                delivered_pixels=delivered_pixels,
+                audit_request=audit_request,
+            )
+            if pass_kind == "audit-reproof":
+                reproofed.append(dossier["act_key"])
+                return {**result, "text": "Zz " + result["text"], "stop_reason": stop_reason}
+            return result
+
+    monkeypatch.setattr(perlector, "FixtureReader", EscapingReader)
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "audit-change",
+        ],
+    )
+    assert perlector.main() == 0
+    assert reproofed
+
+    tree = RunTree(root, "r")
+    frozen = {
+        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
+        for record in _records(tree, "audit-draft")
+    }
+    findings = {
+        record["payload"]["act_key"]: record["payload"]
+        for record in _records(tree, "audit-finding")
+    }
+    for act_key in reproofed:
+        assert findings[act_key]["examination"] == expected_examination
+        assert findings[act_key]["unresolved"] is True
+        # The departure is sealed either way: it is what says the re-proof's
+        # own text was refused rather than returned unchanged.
+        assert findings[act_key]["reproof_change_span"] is not None
+    for final in _records(tree, "perlectio"):
+        act_key = final["payload"]["act_key"]
+        if act_key in reproofed:
+            assert final["payload"]["text"] == frozen[act_key]
+            audit.validate_chain(tree, final, final["subject_id"])
+
+
+def test_a_whitespace_reproof_that_erases_the_act_is_refused_not_crashed(tmp_path, monkeypatch):
+    """A re-proof returning only whitespace publishes an empty reading.
+
+    That projection (`_resolve_outcome`'s `no-readable-text`) widens the change
+    envelope to the whole act, which no narrow flag covers. Containment is
+    therefore measured over the text the projection would publish, not over the
+    whitespace the reader returned — otherwise `change_record` is handed an
+    envelope nobody checked and the refusal leaves `main` exactly as it did
+    before any of this (found by two independent reviews of the first fix).
+    """
+    root = tmp_path / "runs"
+    _chain_through_attestatores(root, "audit-change")
+    perlector = _perlector()
+    declared = perlector.FixtureReader
+    reproofed: list[str] = []
+
+    class ErasingReader:
+        def __init__(self, fixture, fixture_scenario):
+            self._inner = declared(fixture, fixture_scenario)
+
+        def read(self, dossier, *, pass_kind, delivered_pixels=None, audit_request=None):
+            result = self._inner.read(
+                dossier,
+                pass_kind=pass_kind,
+                delivered_pixels=delivered_pixels,
+                audit_request=audit_request,
+            )
+            if pass_kind == "audit-reproof":
+                reproofed.append(dossier["act_key"])
+                return {**result, "text": "   \n  ", "stop_reason": "stop"}
+            return result
+
+    monkeypatch.setattr(perlector, "FixtureReader", ErasingReader)
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "audit-change",
+        ],
+    )
+    assert perlector.main() == 0
+    assert reproofed
+
+    tree = RunTree(root, "r")
+    frozen = {
+        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
+        for record in _records(tree, "audit-draft")
+    }
+    for final in _records(tree, "perlectio"):
+        act_key = final["payload"]["act_key"]
+        if act_key not in reproofed:
+            continue
+        # The erasure reached outside every flag, so it was refused: the
+        # establishing reading stands rather than an empty one.
+        assert final["payload"]["text"] == frozen[act_key]
+        assert final["payload"]["audit"]["unresolved"] is True
+        audit.validate_chain(tree, final, final["subject_id"])
+
+
 def test_a_reproof_that_escapes_its_flag_holds_its_act_without_killing_the_run(
     tmp_path, monkeypatch
 ):
@@ -2165,9 +2309,12 @@ def test_a_reproof_that_escapes_its_flag_is_rejected_not_completed():
     shared validator must accept the honest `reproof-rejected` record and
     refuse the same facts sealed as `complete`.
     """
-    flag_text = "abcdef"
-    span = {"start": 0, "end": 6}
-    flags = [{"class": "testimony-diff", "location": {"start": 4, "end": 6}}]
+    # Three characters, matching `_FINDING_TEXT`, so the helper's sealed
+    # termination measure is the one this text was measured over: the
+    # rejection is what these assertions are about, not a length mismatch.
+    flag_text = _FINDING_TEXT
+    span = {"start": 0, "end": 3}
+    flags = [{"class": "testimony-diff", "location": {"start": 2, "end": 3}}]
     rejected = _finding(
         examination="reproof-rejected",
         unresolved=True,
@@ -2203,7 +2350,7 @@ def test_a_reproof_that_escapes_its_flag_is_rejected_not_completed():
                 reproof_truncation=_COMPLETE_TRUNCATION,
                 reproof_change_span=span,
                 flags=flags,
-                change_record=[{"start": 0, "end": 6, "triggering_flag_class": "testimony-diff"}],
+                change_record=[{"start": 0, "end": 3, "triggering_flag_class": "testimony-diff"}],
             ),
             text=flag_text,
             flag_text=flag_text,
@@ -2217,7 +2364,7 @@ def test_a_reproof_that_escapes_its_flag_is_rejected_not_completed():
                 reproof_change_span=span,
                 flags=flags,
             ),
-            text="ghijkl",
+            text="xyz",
             flag_text=flag_text,
         )
     # A confirmed-unchanged complete re-proof still validates with no span at
