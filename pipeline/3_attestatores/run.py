@@ -82,6 +82,7 @@ from common.stage import (  # noqa: E402
     latest_attempt,
     open_stage_context,
     run_stage,
+    stage_manifest,
     stage_parser,
     validate_serving_provenance,
 )
@@ -219,7 +220,7 @@ def proposed_regions(context, act_id: str) -> list[dict]:
     later consumer reads the run tree.
     """
     regions = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] == "region" and entry["subject_id"] == act_id:
             record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
             validate_serving_provenance(
@@ -245,7 +246,7 @@ def sealed_page_proposal_regions(context, page_ordinal: int) -> list[dict]:
     the Recensor's independent re-derivation of the same denominator.
     """
     regions = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] != "region":
             continue
         record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
@@ -607,7 +608,7 @@ def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
         raise SchemaRefusal("a Testimonium presented image is not digest-bound in record.inputs")
     if presented["kind"] == "region":
         matches = []
-        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
             if entry["kind"] != "region":
                 continue
             region = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])

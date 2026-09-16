@@ -88,6 +88,7 @@ from common.stage import (  # noqa: E402
     recovery_region_count,
     require_current_witness_basis,
     run_stage,
+    stage_manifest,
     stage_parser,
     validate_serving_provenance,
 )
@@ -533,7 +534,10 @@ def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
 
 def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     records = []
-    for entry in context.tree.build_manifest(stage)["artifacts"]:
+    # Once per pass for a stage this one only reads; `stage_manifest` falls
+    # through to a fresh build for this stage's own inventory, which this pass
+    # is writing (`common/stage.py`).
+    for entry in stage_manifest(context, stage)["artifacts"]:
         if entry["kind"] == kind and entry["subject_id"] == subject:
             records.append(context.tree.read_artifact(stage, kind, entry["artifact_id"]))
     return records
@@ -1691,7 +1695,7 @@ def accepted_act_ids(context) -> set[str]:
     # step a whole parish would pay for. `latest_attempt` per act keeps every
     # refusal — a missing, duplicate or non-contiguous attempt still fails.
     by_subject: dict[str, list[dict]] = {}
-    for entry in context.tree.build_manifest(RECENSOR)["artifacts"]:
+    for entry in stage_manifest(context, RECENSOR)["artifacts"]:
         if entry["kind"] != "review":
             continue
         record = context.tree.read_artifact(RECENSOR, "review", entry["artifact_id"])

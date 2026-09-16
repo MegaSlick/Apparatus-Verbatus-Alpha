@@ -118,6 +118,7 @@ from common.stage import (  # noqa: E402
     reading_basis_regions,
     recovery_region_count,
     run_stage,
+    stage_manifest,
     stage_parser,
     validate_serving_provenance,
 )
@@ -469,7 +470,7 @@ def regions_of(context, act_id: str) -> list[dict]:
     every region validated here requires one.
     """
     records = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] == "region" and entry["subject_id"] == act_id:
             record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
             validate_serving_provenance(
@@ -764,7 +765,7 @@ def validate_page_testimonium_record(
 def sealed_proposal_regions(context) -> list[dict]:
     """Every verified proposal in the run-wide routing denominator."""
     regions = []
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
         if entry["kind"] != "region":
             continue
         record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
@@ -795,7 +796,7 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
     were still live.
     """
     records = []
-    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+    for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
         if entry["kind"] == "testimonium" and entry["subject_id"] == act_id:
             record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
             validate_serving_provenance(
@@ -929,7 +930,7 @@ def act_attachment_view(
     current = {record["payload"]["chair"]: record for record in testimonia}
     entries = [
         entry
-        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        for entry in stage_manifest(context, ATTESTATORES)["artifacts"]
         if entry["kind"] == "act-attachment" and entry["subject_id"] == act_id
     ]
     if not entries:

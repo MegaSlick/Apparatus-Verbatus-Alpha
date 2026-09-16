@@ -258,6 +258,49 @@ ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 # coincidence.  Found in audit; F-O3.
 WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
 
+# One manifest per stage per pass, for the stages a pass only reads.
+#
+# `RunTree.build_manifest` is uncached on purpose -- "derived from the tree every
+# time it is called, so it cannot drift from what the tree holds" -- and that
+# property is bought by walking, validating and digesting every artifact in the
+# stage. Consumers ask for it per *act*, and the cost is then acts × artifacts
+# with a SHA-256 in the inner step. Measured on the 2026-09-15 live run, against
+# four pages: 1.31 s per Designator build over 554 artifacts, 1.59 s per
+# Attestatores build over 2114, and a Recensor pass over 516 held acts spending
+# three quarters of an hour on nothing else. The Armarium had already reached
+# the same conclusion for itself (`_cached_manifest`, "against a stated scale of
+# tens of thousands of acts"); this is that remedy where every stage can reach it.
+#
+# Sound for exactly one reason: a stage is sealed before its consumers open, so
+# within a single pass an upstream inventory cannot change. The stage a pass is
+# itself writing is therefore never cached, which `stage_manifest` decides from
+# the context rather than from each caller remembering to say so.
+_PASS_MANIFESTS: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
+def stage_manifest(context, stage: str) -> dict[str, Any]:
+    """`context.tree.build_manifest(stage)`, built once per pass where that is safe.
+
+    Falls through to a fresh build whenever this cannot prove it is safe: for the
+    stage the context is writing to, and for any tree that cannot say which tree
+    it is. Keying an anonymous tree on `id()` would reuse an address and serve
+    one run's inventory for another's, which is the drift `build_manifest`
+    refuses to allow.
+    """
+    writing = getattr(context, "stage", None)
+    tree = context.tree
+    root = getattr(tree, "root", None)
+    run_id = getattr(tree, "run_id", None)
+    if writing is None or root is None or run_id is None or stage == writing:
+        return tree.build_manifest(stage)
+    key = (str(root), str(run_id), stage)
+    manifest = _PASS_MANIFESTS.get(key)
+    if manifest is None:
+        manifest = tree.build_manifest(stage)
+        _PASS_MANIFESTS[key] = manifest
+    return manifest
+
+
 # One closed vocabulary for staged driver selections and the console that
 # presents them.  Selection remains an invocation choice, never run-tree bytes.
 RUN_MODES: Final = TRIAGE_MODES

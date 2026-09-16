@@ -10,6 +10,7 @@ import pytest
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.identities import attempt_id
 from common.native_witness import partition_disagreement
+import common.stage as STAGE_MODULE
 from common.stage import RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_WITHHELD
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -977,6 +978,94 @@ def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch)
     assert outcome == "held-for-review"
     assert "testimony coverage is incomplete at the whole-page level" in reason
     assert "may belong to another act on the same page" in reason
+
+
+class _CountingTree(_ArtifactTree):
+    """An `_ArtifactTree` that can say which tree it is, and counts its walks."""
+
+    def __init__(self, records, *, root="/runs", run_id="r"):
+        super().__init__(records)
+        self.root = root
+        self.run_id = run_id
+        self.builds: list[str] = []
+
+    def build_manifest(self, stage):
+        self.builds.append(stage)
+        return super().build_manifest(stage)
+
+
+def _designator_region():
+    return {
+        "stage": RUN.DESIGNATOR,
+        "kind": "region",
+        "artifact_id": "art_1",
+        "subject_id": "act-1",
+    }
+
+
+def _recensor_review():
+    return {
+        "stage": RUN.RECENSOR,
+        "kind": "review",
+        "artifact_id": "art_2",
+        "subject_id": "act-1",
+    }
+
+
+def test_an_upstream_stage_manifest_is_built_once_a_pass_and_this_stages_never_is():
+    """The 2026-09-15 live run spent three quarters of an hour here on four pages.
+
+    `build_manifest` walks, validates and digests every artifact in a stage and
+    is uncached on purpose, while `artifacts_for` asked for one afresh per act
+    over 516 held acts. Every stage below this one is sealed before the Recensor
+    opens, so one build per pass is the same answer far cheaper -- but the stage
+    this pass is *writing* must never be cached.
+    """
+    STAGE_MODULE._PASS_MANIFESTS.clear()
+    records = [_designator_region(), _recensor_review()]
+    tree = _CountingTree(records)
+    context = _Context(tree=tree, stage=RUN.RECENSOR)
+
+    for _ in range(5):
+        assert RUN.artifacts_for(context, RUN.DESIGNATOR, "region", "act-1")
+    assert tree.builds.count(RUN.DESIGNATOR) == 1, "an upstream stage is walked once a pass"
+
+    for _ in range(5):
+        RUN.artifacts_for(context, RUN.RECENSOR, "review", "act-1")
+    assert tree.builds.count(RUN.RECENSOR) == 5, "this stage's own inventory is never cached"
+
+    # A different run is a different answer, never the first one's.
+    other = _CountingTree(records, run_id="other")
+    assert RUN.artifacts_for(_Context(tree=other, stage=RUN.RECENSOR), RUN.DESIGNATOR, "region", "act-1")
+    assert other.builds.count(RUN.DESIGNATOR) == 1
+
+
+def test_a_pass_that_cannot_prove_what_it_writes_is_never_cached():
+    """Caching needs both a named tree and a named writing stage.
+
+    Keying an anonymous tree on `id()` would reuse an address and serve one
+    run's inventory for another's, and caching without knowing which stage the
+    pass writes could hand back a stale copy of the pass's own output. Both
+    fall through to a fresh walk instead.
+    """
+    STAGE_MODULE._PASS_MANIFESTS.clear()
+    records = [_designator_region()]
+
+    # A tree with no identity.
+    anonymous = _CountingTree(records)
+    del anonymous.root
+    del anonymous.run_id
+    for _ in range(3):
+        RUN.artifacts_for(_Context(tree=anonymous, stage=RUN.RECENSOR), RUN.DESIGNATOR, "region", "act-1")
+    assert anonymous.builds.count(RUN.DESIGNATOR) == 3
+
+    # A context that will not say which stage it writes.
+    unnamed = _CountingTree(records)
+    for _ in range(3):
+        RUN.artifacts_for(_Context(tree=unnamed), RUN.DESIGNATOR, "region", "act-1")
+    assert unnamed.builds.count(RUN.DESIGNATOR) == 3
+
+    assert STAGE_MODULE._PASS_MANIFESTS == {}
 
 
 def test_review_route_holds_a_reproof_that_escaped_its_flagged_span():
