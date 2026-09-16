@@ -1674,10 +1674,17 @@ def _perlector_dissent():
 # outcome, category, crop geometry or count moved (GOVERNANCE 5); the new field
 # is `null` wherever no re-proof departed from the semi-final, which is every
 # act in the fixture scenarios.
+#
+# They moved once more when `mechanics_qualification` was bound into
+# `run_config_bindings` and `real_run_policy_digest`, so that a run created
+# ordinarily can no longer be resumed under the flag and pass the reuse checks.
+# That value is part of `config_digest` now, and every digest above it moves
+# with it. The file counts are again unchanged, for the same reason and with the
+# same evidence: the two count assertions passed while only these two failed.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "78ee01f1a5f436c0986592a158f89b6faa27043deeeed2d39bc4ab361a468484"
-REVIEW_RUN_TREE_DIGEST = "4edeb8d18c0b630e5a908bd181d5ff13b84febbf7ef476b83426e998aaa2abee"
+HAPPY_RUN_TREE_DIGEST = "2f6346cb29ae16e7028267ee827cd81beb31911b9cb2aa10f2ea9988f34bf0cf"
+REVIEW_RUN_TREE_DIGEST = "62a8fb1a76c129566010562f80f493e03e96ee38c68580122f8c000c68e52432"
 
 
 def orchestrate(

@@ -2359,7 +2359,7 @@ def test_cli_upload_forwards_a_named_prefix_for_both_manifest_routes(
                 "--sealed-manifest",
                 str(tmp_path / "sealed.json"),
                 "--prefix",
-                "batch/two",
+                "batch-two",
             ]
         )
         == 0
@@ -2371,15 +2371,21 @@ def test_cli_upload_forwards_a_named_prefix_for_both_manifest_routes(
                 "--manifest-out",
                 str(tmp_path / "new.json"),
                 "--prefix",
-                "batch/three/",
+                "batch-three/",
             ]
         )
         == 0
     )
-    assert observed == [("sealed", "batch/two"), ("new", "batch/three")]
+    assert observed == [("sealed", "batch-two"), ("new", "batch-three")]
 
 
-@pytest.mark.parametrize("prefix", ("/absolute", "../escape", "a//b", "a/./b", "bad\x00key"))
+# `submission/two` joins these: a nested prefix writes image keys below it while
+# control files land as siblings inside the default `submission/` inventory, so a
+# later default Door run inventories files its manifest does not name and refuses
+# the run -- after the upload has already reported success (CodeRabbit).
+@pytest.mark.parametrize(
+    "prefix", ("/absolute", "../escape", "a//b", "a/./b", "bad\x00key", "submission/two")
+)
 def test_cli_upload_refuses_an_unsafe_object_prefix(prefix: str) -> None:
     with pytest.raises(OperatorError) as refusal:
         cli.build_parser().parse_args(
@@ -2394,7 +2400,7 @@ def test_cli_upload_refuses_an_unsafe_object_prefix(prefix: str) -> None:
             ]
         )
     assert refusal.value.code is ErrorCode.INVALID_COMMAND
-    assert "safe relative key prefix" in str(refusal.value.detail)
+    assert "safe relative key component" in str(refusal.value.detail)
 
 
 def test_cli_run_carries_real_ingress_options_to_the_operator_surface(

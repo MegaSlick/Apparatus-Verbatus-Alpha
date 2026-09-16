@@ -454,8 +454,10 @@ def build_parser() -> PlainParser:
         type=_upload_prefix,
         default="submission",
         help=(
-            "safe relative object prefix for this immutable submission; its ledger is written "
-            "beside it as <prefix>-manifest.json (default: submission)"
+            "one safe relative object-key component for this immutable submission, with no "
+            "'/': its ledger is written beside it as <prefix>-manifest.json, and a nested "
+            "prefix would leave that ledger inside another prefix's inventory "
+            "(default: submission)"
         ),
     )
     upload.add_argument(
