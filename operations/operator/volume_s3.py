@@ -279,7 +279,7 @@ class S3VolumeTarget:
                     # suppresses this for the same reason.
                     try:
                         closer()
-                    except Exception:  # noqa: BLE001  (cleanup cannot invalidate read bytes)
+                    except Exception:
                         pass
         except VolumeTransferRefusal:
             raise
