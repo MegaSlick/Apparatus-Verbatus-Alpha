@@ -4644,7 +4644,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         }
         audit.validate_finding(
             finding_payload,
-            text=final_text,
+            # The text this act actually publishes, which is `final_text` in
+            # every branch that published the re-proof and the frozen
+            # semi-final in the one that refused it. `final_text` still names
+            # the rejected rewrite there, and validating the finding against a
+            # reading this stage declined to publish is the same false
+            # provenance the projection block is careful to avoid.
+            text=payload["text"],
             flag_text=draft_payload["semi_final_text"],
         )
         finding = context.publish(

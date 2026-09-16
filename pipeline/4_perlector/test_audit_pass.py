@@ -1940,6 +1940,111 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
     assert all(act["category"] == "held-for-review" for act in export["non_delivered"])
 
 
+def test_a_reproof_that_escapes_its_flag_holds_its_act_without_killing_the_run(
+    tmp_path, monkeypatch
+):
+    """The stage-level regression for the failure a real A100 produced.
+
+    A live re-proof completed its call (`stop`, not cut off) and rewrote text
+    far outside the span its flag identified. `change_record` refused it,
+    correctly -- and because nothing caught that refusal, one act's overreach
+    ended the whole run after other acts had already sealed sound findings.
+
+    This drives the real Perlector `main` with a reader whose re-proof rewrites
+    from the very first character, which no flag in this scenario covers. The
+    run must finish, the act must be held as `reproof-rejected`, and the
+    rejected rewrite must never be the published text.
+    """
+    root = tmp_path / "runs"
+    _chain_through_attestatores(root, "audit-change")
+    perlector = _perlector()
+    declared = perlector.FixtureReader
+    reproofed: list[str] = []
+
+    class EscapingReader:
+        def __init__(self, fixture, fixture_scenario):
+            self._inner = declared(fixture, fixture_scenario)
+
+        def read(self, dossier, *, pass_kind, delivered_pixels=None, audit_request=None):
+            result = self._inner.read(
+                dossier,
+                pass_kind=pass_kind,
+                delivered_pixels=delivered_pixels,
+                audit_request=audit_request,
+            )
+            if pass_kind == "audit-reproof":
+                reproofed.append(dossier["act_key"])
+                # Rewritten from offset 0: every flag this scenario raises
+                # starts well inside the text, so the envelope escapes all of
+                # them -- the shape the live model produced.
+                return {**result, "text": "Zz " + result["text"], "stop_reason": "stop"}
+            return result
+
+    monkeypatch.setattr(perlector, "FixtureReader", EscapingReader)
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "audit-change",
+        ],
+    )
+    # The run finishes. This is the whole point: before this fix the refusal
+    # left `main` and took every other act's sealed work down with it.
+    assert perlector.main() == 0
+    assert reproofed, "the scenario must deliver at least one re-proof"
+
+    tree = RunTree(root, "r")
+    findings = {
+        record["payload"]["act_key"]: record["payload"]
+        for record in _records(tree, "audit-finding")
+    }
+    frozen = {
+        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
+        for record in _records(tree, "audit-draft")
+    }
+    # Every re-proofed act sealed a finding: the rejection is recorded, not a
+    # gap where a finding should have been.
+    assert set(reproofed) <= set(findings)
+    for act_key in reproofed:
+        finding = findings[act_key]
+        assert finding["examination"] == "reproof-rejected"
+        assert finding["unresolved"] is True
+        # Nothing was published on the strength of the rejected rewrite.
+        assert finding["change_record"] == []
+        assert finding["reproof_change_span"] is not None
+        # The re-proof's own termination is still sealed -- the call happened,
+        # and its evidence is retained whatever became of its text.
+        assert finding["reproof_truncation"]["classification"] == "complete"
+
+    for final in _records(tree, "perlectio"):
+        act_key = final["payload"]["act_key"]
+        if act_key not in reproofed:
+            continue
+        # The establishing reading stands; the rewrite never reached the page.
+        assert final["payload"]["text"] == frozen[act_key]
+        assert not final["payload"]["text"].startswith("Zz ")
+        assert final["payload"]["audit"]["examination"] == "reproof-rejected"
+        assert final["payload"]["audit"]["unresolved"] is True
+        audit.validate_chain(tree, final, final["subject_id"])
+
+    # And the hold is what the downstream stages actually report.
+    for stage, expected_exit in (("recensor", 3), ("archetypus", 0), ("armarium", 3)):
+        remainder = _run(root, "--stage", stage, scenario="audit-change")
+        assert remainder.returncode == expected_exit, (stage, remainder.stderr)
+    export = _export(tree)
+    assert export["aggregate"]["status"] == "partial"
+    held = {act["act_key"]: act for act in export["non_delivered"]}
+    for act_key in reproofed:
+        assert held[act_key]["category"] == "held-for-review"
+
+
 # The three-character reading every `_finding` unit test validates against, and
 # the geometry its re-proof termination is measured over. Since 2026-09-14 the
 # shared validator binds `measure.characters` to the reading the record was
