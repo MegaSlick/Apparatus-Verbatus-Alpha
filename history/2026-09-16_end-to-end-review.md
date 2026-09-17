@@ -365,3 +365,85 @@ Tyrel's decision, not a session's edit. Two lower-severity leads and a ledger-di
 correction (F040) round it out. **Recommended next action: Tyrel reviews findings 3-5 (the
 governed-doc discrepancies) and decides wording; the next working session picks up findings
 1, 2, 6, and 7 as ordinary engineering, each already scoped and cited above.**
+
+## Fourth pass — spot-checking the 2026-09-14 ledger's remaining findings
+
+Continuing the same session, under Tyrel's standing instruction to keep working and pushing
+to this same pull request until either usage runs out or nothing more is left to find. This
+pass returns to the task named at the top of "Coverage gaps" above and in the second pass's
+own "Not checked" list: roughly 75 of the 2026-09-14 ledger's 112 findings had never been
+individually checked against current HEAD at all (as distinct from the ~37 PR #117 claimed
+to have fixed, which the second and third passes above already audited).
+
+### Fixed in this pass
+
+**F098 — a laptop-driven run's receipt named its own commit; the orchestrator invocation
+running under it did not** (`operations/operator/surface.py`). `run()` already read
+`_repository_commit_or_reason` and recorded the commit on the receipt, but never passed it
+to the orchestrator subprocess — `pod_run` already does this for a pod-driven run. Fixed by
+extending the subprocess command with `--repository-commit` whenever the commit is readable
+(mirroring the receipt's own `commit_unreadable` case when it is not). Test added to
+`test_every_run_receipt_carries_identity_configuration_commit_and_output`. Commit `31acf0d`.
+
+**F004 — a top-level flag typed after the verb failed with no hint of the fix**
+(`operations/operator/cli.py`). `--workspace`/`--state-dir`/`--notify` live only on the
+top-level parser; argparse rejects them as "unrecognized arguments" once the verb token is
+consumed, with nothing pointing at the actual cause. `PlainParser.error` now recognizes this
+one specific message shape and appends a sentence naming which flag(s) belong before the
+verb; every other argparse message, genuine typos included, is untouched. New
+`operations/operator/test_cli.py`. Commit `222fbd9`.
+
+**F085 — every no-picker screen walked only `dict` and `list`; a `tuple` hid everything
+beneath it** (`common/corpus_register.py`, `pipeline/4_perlector/dossier.py`,
+`common/physical_act_partition.py`, `common/cross_capture_autopsia.py`,
+`common/cross_capture_dissent.py`). `common.contracts.canonical.canonical_bytes` serializes
+a tuple exactly like a list, so a forbidden preference field wrapped in one reached a sealed
+artifact looking like an ordinary array member — reproduced directly before the fix:
+`refuse_capture_preference({"a": ({"preferred": "cap1"},)})` returned without refusing.
+This is the same runtime half of GOVERNANCE 3 (hard rule 8, "do not build a picker") the
+whole `common/test_preference_screen_walks.py` family exists to guard, so all five
+independent walks were fixed, not only the two the ledger entry happened to name (the other
+two screens in that family, `physical_act_partition._refuse_preference` and
+`triage._refuse_preference_named`, both delegate to `refuse_capture_preference` and needed
+no separate change). A `set` is deliberately not addressed: unlike a tuple it cannot reach
+`canonical_bytes` silently — `json.dumps` raises `TypeError` on one — so it already fails
+loudly by an existing path rather than smuggling anything through; named here rather than
+silently scoped out (hard rule 7). New regression test drives all seven screens in the
+family with the reproduction above. Commit `46aa896`.
+
+**F087 — the reader's own record could not say whether a wall-clock deadline was actually in
+force** (`pipeline/3_attestatores/run.py`, plus `pipeline/4_perlector/run.py` and
+`pipeline/5_recensor/run.py`). `common/alignment.py::align_to_anchor` already answers
+whether its SIGALRM backstop was actually armed for a given match (a prior round of this
+same session added that); `pipeline/3_attestatores/run.py` called it and republished a
+subset of its result into the published `alignment` record, but dropped that one field, so a
+bounded alignment and one that ran fully unbounded and happened to finish both published
+`{"status": "aligned", ...}` indistinguishable from each other. Threaded through the two
+sites that actually publish an `aligned` record from a real `align_to_anchor` result (or,
+for the "genuinely-empty" trivial attach, disclose `False` because no witness text means the
+matcher never ran at all) — deliberately not added to any `unaligned` record, since a fired
+deadline already names itself via `reason: "alignment-deadline-exceeded"` and every other
+unaligned branch here never called `align_to_anchor` at all. Perlector and Recensor each
+carry their own independent closed-shape check on the published `aligned` record (a
+documented, deliberate duplication against exactly this kind of drift); both were updated
+to require and type-check the new field. Commit `644cb70`.
+
+**A mistake this session made and caught before it shipped, recorded plainly rather than
+folded away:** the first version of the F087 fix also added `deadline_in_force` to every
+`unaligned` alignment dict, on the reasoning that GOVERNANCE 2's "the measurement is
+recorded all the same" argued for uniform presence. That broke Perlector's and Recensor's
+exact-key-set schema checks for the *other* `unaligned` shapes those same dicts cover (a
+non-reading page-outcome refusal, a continuation-page mirror, an ambiguous-overlap
+downgrade) — both stages have a hard-coded `set(alignment) != {"status", "reason"}` check
+for the unaligned case, uniform across every reason code, so adding a key to only *some*
+unaligned constructions broke that equality for the whole shape at once. This was caught by
+running the full `pipeline/3_attestatores` + `pipeline/4_perlector` + `pipeline/5_recensor`
+suite before pushing — not a targeted selection — which failed real end-to-end orchestrator
+runs with `SchemaRefusal: an attached page witness has no computed alignment` across 14
+tests and 8 fixture errors. The fix was corrected to scope `deadline_in_force` to the
+`aligned` shape only, the two consumer schemas were updated to match, and the full
+three-stage suite was re-run clean (all green, confirmed twice from separate invocations)
+before the corrected version was pushed. The lesson already recorded earlier in this file —
+that a change touching a shared record shape needs the full consuming suite, not just the
+producer's own tests, before it ships — held again, and held because it was actually
+followed this time.
