@@ -269,8 +269,8 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ErrorCode.EXPORT_UNRECONCILED: ErrorCopy(
         "The recorded run claims complete, but its acts do not add up.",
         "The Armarium record was found and read; its delivered and non-delivered acts do "
-        "not reconcile to the total it claims, so no bundle was made and nothing was called "
-        "complete.",
+        "not add up to a total that can be checked, so no bundle was made and nothing was "
+        "called complete.",
         "Open the run tree read-only with `verbatus review` and check it against the sealed "
         "source with Tyrel; this is not a corrupted export, it is a record that cannot back "
         "up its own claim. Nothing was started or charged; this is safe.",

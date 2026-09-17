@@ -1042,16 +1042,34 @@ reconciliation check itself.
   generic `except Exception`, raising the new `ErrorCode.EXPORT_UNRECONCILED` with copy that
   says the record was found and read, its acts do not reconcile, and directs the operator to
   `verbatus review` and Tyrel rather than to re-running `verbatus run` (`EXPORT_MISSING`'s
-  own advice, wrong here). The six existing reconciliation tests that asserted the old
+  own advice, wrong here). The five existing reconciliation tests that asserted the old
   shared state or code — `test_run_refuses_a_complete_aggregate_whose_partition_undercounts_
   expected_acts`, `..._double_counts_one_act`, `..._with_a_malformed_act_record`,
   `test_a_complete_aggregate_with_no_expected_acts_is_refused_not_displayed_as_unknown`, and
   `test_export_refuses_a_complete_record_whose_partition_does_not_reconcile` — now assert
-  the distinct state/code; the two tests that fail earlier, inside `_armarium_export` itself
-  (a genuinely unreadable record — `test_a_non_list_pages_record_is_a_named_run_failure_not_
-  a_character_count`, `test_run_refuses_a_complete_aggregate_with_no_act_partition`) keep
-  asserting `"armarium-record-unreadable"`, correctly: that failure mode is unchanged.
+  the distinct state/code; two other tests, which fail before reconciliation is ever
+  reached, correctly keep asserting `"armarium-record-unreadable"`, because that failure
+  mode is unchanged: `test_run_refuses_a_complete_aggregate_with_no_act_partition` drives
+  the real `_armarium_export`, which refuses a record missing `delivered` outright, and
+  `test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count` is refused
+  earlier still, by `run()`'s own inline page-list check, before reconciliation is called at
+  all.
 
 Full `operations/`, `proof/`, and `.githooks/` directories together green (no new tests
-added — this round reclassifies six existing refusals rather than adding a new one).
+added — this round reclassifies five existing refusals rather than adding a new one).
 `ruff format`/`check` clean on every touched file.
+
+**Independent review of `afbb72b` (Opus, high effort, read-only)** confirmed the code
+correct on every point checked — handler ordering in both `run()` and `export()`, every
+updated test's actual code path, the new copy's accuracy, and that no other caller or
+string match was missed — and caught two record-accuracy slips in this section's own first
+draft: it said "six" reconciliation tests where five actually exist, and misattributed
+*which* of the two unchanged tests fails inside `_armarium_export` itself (it is
+`test_run_refuses_a_complete_aggregate_with_no_act_partition`; the page-record test fails
+earlier, inside `run()`'s own check, never reaching the reader). Both corrected above, per
+hard rule 7, the same way earlier passes in this document corrected their own slips. Also
+raised, not requiring a code change: `operations/operator/README.md`'s export section did
+not yet name the new `export-unreconciled` outcome (added, see below), and the new copy's
+middle sentence describes the count-mismatch refusal precisely but is a little loose for
+the other two reconciliation refusals (missing `expected_acts`, an unreadable act entry) —
+reworded for accuracy.
