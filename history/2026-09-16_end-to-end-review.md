@@ -1133,3 +1133,256 @@ without the eighth pass acknowledging it.
 
 `operations/operator/test_surface.py` (284 tests, one new) green; `ruff format`/`check`
 clean on every touched file.
+
+## Ninth pass — a broad Sonnet-driven survey of subsystems this review had not yet reached
+
+Everything above covered `operations/operator/`, `operations/pod/` (launch-receipt), `operations/
+notify/`, `pipeline/orchestrator/`, `pipeline/7_armarium/`, `.githooks/`, and `proof/
+build_fixture.py`. This pass surveys what was still untouched: every other pipeline stage
+(`pipeline/1_exemplar/`, `1_ink_map/`, `2_designator/`, `3_attestatores/`, `4_perlector/`,
+`5_recensor/`, `6_archetypus/`, `0_triage/`), `common/` (the shared foundation every stage
+depends on), and every other `operations/` subdirectory (`review/`, `submit/`, `triage/`,
+`serving/`, `bench/`, `corpus/`, `data/`, `seats/`, `spike_perlector/`), plus `config/` and
+`.github/workflows/`. Ten parallel Sonnet auditors, one per area, each briefed with this
+review's own established invariants (GOVERNANCE 2, hard rule 8's no-picker rule, the
+foreign-record rationale F113/F123 already established) and told not to re-flag anything
+already covered above. Every finding below was independently re-verified against the actual
+code before acting — the same discipline this review has applied to every CodeRabbit finding
+all along, now applied to the survey's own output.
+
+**Fixed:**
+
+- **F131** [major] — `pipeline/3_attestatores/run.py::_attempt_from_retained_testimonium`'s
+  guard against handing a resumed live pass geometry the interrupted pass withheld used
+  `content_health.recordable is True` as its test. `live_witness._content_health` sets
+  `recordable: True` unconditionally on every parsed branch, including the parsed-but-
+  unconfirmed-blank `failed` outcome (a response cut off, or with an unrecognized stop
+  word) — exactly the branch `captured_page_attempt` deliberately withholds
+  `observation_payload` for. The sibling function `_page_capture_from_record` had already
+  closed the identical gap by gating on `record["outcome"] in WITNESS_READING_OUTCOMES`
+  instead of parse state alone; this function still used the wider, incorrect test.
+  Verified real by reverting the fix and confirming the new regression test failed
+  (rehydrated bytes the interrupted pass never published) before re-applying it. Fixed the
+  same way as the sibling. New regression:
+  `test_a_resumed_parsed_but_unconfirmed_blank_act_carries_no_observation_payload`. An
+  independent Opus review of the fix confirmed it correct on every point checked (handler
+  ordering, every producer/outcome pairing, test fidelity, no missed call site) and caught
+  two test-docstring slips the fix's own commit introduced or made stale — a "two tests"
+  count that should have read "three" once a new one was inserted, and a claim that a
+  branch reads `content_health.recordable` when it now reads `record["outcome"]` instead —
+  both corrected in the same commit as the fix (`pipeline/3_attestatores/test_attestatores_
+  live_pass.py`).
+
+- **F132** [major, latent — confirmed reachable but not on any fixture this suite runs] —
+  a Recensor review's identity (`attempt_id(act_id, "recense", used_total + 1)`) was a
+  function only of the act's own recovery-request count, but `page_coverage_for` is
+  deliberately page-wide by design (HANDOFF.md: "a flagged page holds every act that
+  touches it... a successful recovery crop that reaches the missed ink clears the finding
+  on the very next Recensor pass"). Two acts sharing a page, neither of which ever
+  requests its own recovery, both publish at recense ordinal 1 on every Recensor pass
+  (`pipeline/orchestrator/run.py::drive_recovery` re-invokes the Recensor over the whole
+  run, unscoped, once per recovery round) — so if the page's residual-ink finding changes
+  between passes for a reason unrelated to either act's own recovery, the second pass
+  republishes different content under the same identity, and the immutable writer's
+  `IncompatibleReuse` refusal kills the whole run. Reproduced directly (no monkeypatched
+  internals): built a real tree through the Perlector, substituted `page_coverage_findings`
+  to flag every page for one Recensor pass, then removed the substitute and ran the
+  Recensor again — the second pass raised `IncompatibleReuse` exactly as predicted, before
+  any fix landed. A first design (mint the ordinal from "how many reviews already exist
+  for this act") was rejected by an independent Opus design review: it breaks a *different*
+  existing invariant (`recovery_state` assumes a recovery-requested review's ordinal
+  exactly equals its request's 1-indexed position) and fails the suite's own rerun-
+  idempotency test. The landed design instead gives the review its own attempt model,
+  mirroring this codebase's existing `StageContext.seal_boundary` pattern: a new
+  `current_review` reader finds the act's current review; `publish_review` tries the prior
+  review's own ordinal first (an unrelated page-wide fact usually leaves this act's content
+  unchanged, so the store's own byte-for-byte reuse makes that a no-op) and mints a fresh
+  ordinal only when the store proves the content actually differs, catching
+  `IncompatibleReuse` and retrying at `prior + 1`. The recovery-request's own ordinal
+  (`request_ordinal`, renamed from the reused `ordinal`) and the review's own ordinal are
+  now independent numbers, carried separately in the review's payload
+  (`recovery_request_ordinal` beside `attempt_ordinal`); `recovery_state`'s cross-check and
+  `common/stage.py::current_recovery_request` (a second file with the identical coupling,
+  found only by the design review, not by the first pass) both updated to read the request
+  ordinal from its own field rather than assuming it equals the review's. New regression:
+  `test_a_second_recensor_pass_that_clears_a_flag_does_not_collide_with_the_first`
+  (`pipeline/5_recensor/test_residual_ink_wiring.py`), which reproduces the two-pass
+  collision, proves the fix resolves it, and proves a third identical pass adds no new
+  artifact (rerun idempotency). Four existing hand-seeded tests updated for the new payload
+  field (`test_coverage_inputs.py`, `test_coverage_recovery_origin.py`,
+  `test_recovery_absolute_cap.py`, `test_recovery_kind_distinction.py`). The full blast-
+  radius run surfaced one further, expected consequence:
+  `pipeline/orchestrator/test_orchestrator_acceptance.py`'s
+  `test_repeating_the_review_scenario_also_changes_nothing` pins a digest of the entire run
+  tree for the `review` scenario (`REVIEW_RUN_TREE_DIGEST`) and failed, because the new
+  `recovery_request_ordinal` field is real, additional payload content on the one
+  recovery-requested review that scenario produces — exactly the class of change this
+  file's own established convention already documents pinning through once before (the
+  comment above the constant). Verified directly rather than assumed: ran the scenario
+  standalone, confirmed the file count is unchanged (111), confirmed by reading the actual
+  review artifacts that exactly one field changed on exactly one file (only the recovery-
+  requested review carries `recovery_request_ordinal`; the other two acts' reviews are
+  unaffected), and confirmed a second orchestrator invocation over the same tree reproduces
+  the identical snapshot and digest — the full-orchestrator proof of the same rerun-
+  idempotency property the dedicated Recensor regression test proves in isolation. Pinned
+  digest and its comment updated to record why. Full `pipeline/5_recensor/`,
+  `pipeline/6_archetypus/`, `common/`, `pipeline/orchestrator/`, and `pipeline/2_designator/`
+  suites green.
+
+- **F133** [major, money/serving tier] — `operations/serving/README.md` claimed three
+  preflight primitives "close hostile review item A's static-assertion gap... each is
+  wired by the adapter/request-shape units whose files actually render a request." A
+  repo-wide grep found every call to all three exists only inside their own unit tests;
+  none is reachable from any production code path. Confirmed independently by a second
+  design review before touching anything, because the first review's "wire all three"
+  framing was itself wrong: only `assert_image_before_text_on_wire` is correctly wirable
+  today. The other two would each become a tautology or a stale claim if wired as
+  written — `assert_resized_pixels_within_trained_geometry` has no vendor-declared trained
+  range carried anywhere in this tree to check against (only our own `--mm-processor-kwargs`
+  values, which our own resize already clamps into by construction), and
+  `assert_generation_config_key_coverage`'s one wirable chair (DAI) has serving rows now
+  configured `generation_config = "auto"` while the sent/withheld reasoning in
+  `pipeline/3_attestatores/feeding.py` was written against `"vllm"` — the two have drifted,
+  and wiring the check now would stamp a stale account of the wire as a passing assertion.
+  Fixed only what is real: moved `assert_image_before_text_on_wire` into `operations/
+  serving/http.py` (forced by an import-cycle constraint: `manager.py` already imports
+  `preflight.py`, so `preflight.py` cannot import back from `manager.py`'s module family;
+  `http.py` has no such cycle and already owns wire-shape rules), re-exported from
+  `preflight.py` for backward compatibility; added a new narrow walker,
+  `assert_wire_part_order`, that checks only `role=user` content lists that actually carry
+  an image (skipping the readiness probe's bare string content, Churro's non-`user`
+  system-turn preamble, and text-only user lists — all real, legitimate shapes the naive
+  "every message's first part must be an image" version would have wrongly refused); wired
+  it into `http.request_body`, the one seam every request this package renders already
+  passes through, so a future call site cannot route around it. This is also the seam that
+  exposed the actual bug the whole gap existed to catch:
+  `AdapterCalibration.from_image_fixture` (the golden-page smoke and both adapter-
+  calibration probes' payload builder) was itself text-first, image-second — the opposite
+  of every production request builder in this repository, and the one request that decides
+  whether a chair earns `proven`. Fixed to image-first, matching
+  `pipeline/3_attestatores/HANDOFF.md`'s own record that this exact defect was already
+  found and corrected in every other builder. Seven positional test indices updated
+  (`operations/serving/test_manager.py`). README rewritten to say what is actually true —
+  one primitive wired and how, the other two explicitly not wired and why, so the next
+  reader does not have to grep to find out. Full `operations/serving/` suite (376 tests)
+  green.
+
+**Declined, verified not a real vulnerability:**
+
+- **`operations/submit/submit.py`'s default private-refusal-report path** was flagged as
+  bypassing `gate.require_approved_storage_location` (an explicit symlink/redirect check)
+  for the one code path where the report path is derived from an already-validated
+  manifest path via `.with_suffix(...)` rather than re-validated directly. Checked the
+  actual write mechanism rather than trusting the gap's existence alone:
+  `atomic_create` writes via `os.link`, which fails outright (`FileExistsError`) if
+  anything — file, symlink, or directory — already exists at the destination; it can
+  never silently write through a planted symlink the way `open(path, "wb")` could.  The
+  fallback read path for an existing entry, `_existing_record_state`, is documented and
+  built to use `O_NOFOLLOW` and treats any symlink there as "unknown, refuse" rather than
+  following it. Both protections are independent of whether
+  `require_approved_storage_location`'s own symlink check ran against this exact derived
+  filename. Not a same-day-worthy fix; not touched.
+
+**Leads (not independently adversarially verified beyond a single reading — recorded per
+hard rule 7, not silently dropped, lower severity than the fixed findings above):**
+
+- `pipeline/1_exemplar/run.py:784` — the Exemplar's render-contract verifier tests
+  `"A" in source_bands` for alpha detection, but Pillow spells premultiplied alpha in
+  lower case (`La`/`RGBa`); the same mistake already fixed in two sibling copies of this
+  logic (`image_formats.py:1479`, `common/imaging.py:1230`), left unfixed in the verifier.
+  Reachability (whether a real multi-frame container ever presents Pillow mode `La`/`RGBa`)
+  not confirmed by execution.
+- `pipeline/1_exemplar/image_formats.py:183` — the HEIC/AVIF brand sniffer builds a set
+  from every 4-byte slice up to a length the submitted file's own first four bytes name,
+  so a crafted 64 MB file could drive ~16 million iterations before any decoder or bound
+  runs; the existing guard test's payload happens not to exercise this (repeats one
+  4-byte sequence, so the set never grows past two entries).
+- `pipeline/2_designator/` — four findings, all minor: stale HANDOFF.md conservation-
+  section prose, dead-but-undeclared code, one narrow duplicate-crop path, two small
+  schema-closure gaps. No collision or silent-loss defect in the identity/accounting
+  paths.
+- `pipeline/3_attestatores/run.py:1949` — the evidence-boundary check accepts a re-sealed
+  record claiming a reading (`read`/`genuinely-empty`) whose health shape says no response
+  ever arrived, which the HANDOFF's own stated invariant says should never validate.
+- `pipeline/3_attestatores/run.py:1850` — a resumed live pass reuses any act-scoped
+  Testimonium sealed at its ordinal without checking it was written by a live pass (the
+  exact check the page-chair path makes by name); latent, since both shipped serving
+  catalogues use one posture per tier today.
+- `pipeline/3_attestatores/feeding.py:591` — `dai_dimensions`'s docstring guarantee (a
+  view within the sealed pixel ceiling) is not unconditionally true for a sufficiently
+  extreme aspect ratio; no sealed page can currently produce one.
+- `common/stage.py:1457` — the final Armarium boundary check rebuilds its inventory with
+  lineage verification switched off, the one seal check in the pipeline that does not
+  re-prove the stage's own claim.
+- `common/chairs/receipts.py:102`, `common/chairs/model_store.py:1411`,
+  `common/chairs/manifests.py:63` — a serving receipt accepts an all-zero "not yet
+  measured" sentinel as a valid pin; manifest/record writes are not flushed despite a
+  docstring claiming they reuse the run tree's own publication rule (which does flush);
+  the digest-manifest reader has no size ceiling unlike its neighbors.
+- `common/runtree/store.py:686,792`, `common/README.md:12` — two code comments citing a
+  function's behavior or name that no longer matches reality; the module index lists nine
+  entries against roughly forty production modules.
+- `operations/submit/submit.py:461`, `operations/triage/recordgold_midpoint_pilot.py`
+  (four findings: schema-label drift, a basename-collision crash, a duplicate-check
+  keyed on the wrong identity, unguarded traceback on malformed input),
+  `operations/triage/reconcile.py:506,479` — a refusal-count message that doesn't say
+  the folder was empty; a publication path that overwrites without comparison unlike
+  every sibling; a file descriptor leak on read failure.
+- `operations/corpus/evaluate.py:599`, `compare.py:195,599`, `holdout.py:83` — run-wide
+  counts copied into every page's own record; an unobviously-bounded Hungarian-matcher
+  sentinel; an undocumented sort-order dependency for tie-break determinism; the
+  strongest hold-out layer is unbuildable if one row's URL is refused.
+- `operations/serving/http.py:461,256` — `_usage` silently discards the whole usage
+  object if any one of three fields is malformed; `request_body` treats an explicit
+  `null` model the same as absent and `temperature=False` the same as `0`.
+- `operations/bench/README.md:3` — names cells B0/B0.5/B2–B6 but the sealed matrix also
+  defines B5a.
+- `config/build_model_fixtures.py` (destructive-cleanup finding) — **fixed separately as
+  F134**, see below.
+- `config/README.md` — stale in several places since `spend.toml` was configured on
+  2026-09-06 (still describes it as unconfigured), an incomplete "sealed names today"
+  list, a vendor name used where the project's own vocabulary requires a chair name, and
+  two more minor drift points against `designator_grouping.toml` and the manifests
+  directory's real contents.
+- `config/hard_failure.toml:117` — a hard-failure kind's `reason` field is never checked
+  against the Door's closed refusal-code list, so a mistyped code loads cleanly and
+  counts nothing.
+- `config/serving_recipes_real.toml:212` — every real serving row sets
+  `trust_remote_code = true`, letting vendor Python execute on the rented pod; the file
+  otherwise documents nearly everything else about what it configures.
+- `pipeline/0_triage/manifest.py` — cites a planning document that does not exist in this
+  repository; ~130 lines of XML machinery reachable only from its own test; a comment
+  describing an older, now-wrong version of a canonical-encoding exception list.
+- `operations/triage/scantailor_bridge.py:185` — stamps a fixed `revision: "v4"` (the
+  project-file format version) into a field the contract defines as the ScanTailor
+  version.
+- `common/exemplar_boundary.py:406` — re-spells the triage colour-mode/actor-kind value
+  lists as literals; the drift test that exists for exactly this pins field names, not
+  these value sets.
+- `pipeline/orchestrator/run.py:184` — `resolve_caller_paths` absolutizes only some of
+  the caller-supplied paths the orchestrator forwards to subprocesses (`--fixture-root`
+  and roughly a dozen `--*-config` flags are not among them), so a relative path there
+  could name a different file depending on the subprocess's own working directory.
+
+**Fixed, separately from the leads above:**
+
+- **F134 — `proof/build_model_fixtures.py`** — the documented command (`python3 proof/
+  build_model_fixtures.py`) called `shutil.rmtree` on the whole `config/manifests/`
+  directory before rewriting it, but that directory is shared with the real serving
+  roster's own digest manifests (`chandra-ocr-2.json`, `churro-3B.json`,
+  `dai-recordgold-atr.json`, `qwen3.8-27B.json`) — confirmed by listing the directory
+  directly, not merely by reading the code. Running the fixture generator as documented
+  would silently delete real, checked-in production manifests. `config/model-fixtures/`
+  (the sibling directory) is genuinely exclusive to this generator and stays a full wipe;
+  `config/manifests/` cleanup narrowed to remove only the exact files this generator is
+  about to rewrite (`f"{chair}.json"` for the five declared fixture chairs), leaving
+  everything else untouched. The existing test asserting blanket removal of an
+  arbitrarily-named stale file was split: `model_root`'s full-wipe behavior kept its own
+  test, and a new test proves a non-fixture-named file in `manifest_root` (standing in for
+  a real-roster manifest) survives a rebuild. `proof/test_proof_model_fixtures.py` (9
+  tests) green.
+
+Full `operations/serving/` (376), `pipeline/5_recensor/`, `pipeline/3_attestatores/`, and
+`proof/test_proof_model_fixtures.py` suites green individually; a combined run of
+`pipeline/`, `operations/`, `proof/`, and `.githooks/` together confirms no regression
+across the wider tree.
