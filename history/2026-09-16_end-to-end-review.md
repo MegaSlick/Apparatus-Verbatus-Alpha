@@ -270,7 +270,45 @@ claims in the same PR body warrant the same treatment: read the actual current c
 the specific claim, not the commit message's summary of it, and run what can be run quickly.
 A second workflow was launched for this (twelve fix-groups plus the five refutations, each
 independently verified, each finding adversarially re-checked by a second reader before being
-kept). Results are appended below once it completes.
+kept). **Twelve of the twelve "fixed" groups checked out clean at current HEAD** (G1, G2, G3,
+G4, G5, G6-engineering, G7, G8, G20-part, G23-part — real tests actually run and green for
+each, not just code read) — those claims genuinely hold and are not relitigated here. Four of
+the five refutations also held on independent re-check (one, the RecursionError/`read_artifact`
+one, had already been checked in the first pass); the fifth ("verified under `-O`") is a
+precision note about the *ledger's wording*, not a code defect — no test actually runs
+`python -O`, though the guard it describes is immune to `-O` by construction (it is
+`SpendPolicy.__post_init__`'s explicit `raise`, not a bare `assert`), so the substance holds
+and only the phrase overclaims.
+
+**Three real gaps did surface, all fixed in this same PR** (commits `fa4c162`, `6d0e243`):
+
+- **G13's own claim wasn't fully true.** "Every untrusted-parse boundary... refuses by name...
+  instead of escaping" covered the JSON-parsing step but not `_verify_retained_references`,
+  which walks the already-parsed structure with its own separate recursion; 5 of its 6 call
+  sites had no `RecursionError` guard. Reproduced directly (a row shallow enough to parse but
+  with one deeply nested value inside it reached callers as a bare `RecursionError`). Fixed with
+  a single wrapper, `_verify_retained_references_bounded`, that every external call site now
+  goes through — so a future added call site inherits the guard rather than needing to
+  remember it, unlike the five that didn't.
+- **"Export refuses an ambiguous --run-id" was never implemented at all.** Grepped the whole
+  tree and the original PR diff for "ambiguous": zero hits related to run-id resolution.
+  `export()` took the latest of every receipt matching a run_id unconditionally, with no check
+  that they agreed on `run_root` — two genuinely different runs colliding on the same run_id
+  under different roots would resolve silently to whichever was recorded most recently. Fixed:
+  a new refusal (`ErrorCode.EXPORT_AMBIGUOUS`) fires when matching receipts disagree on
+  `run_root`, naming every candidate, and `export` gained an optional `--run-root` (mirroring
+  `review`'s existing one) to name the intended one.
+- **`--evidence-prefix` retyping was only half-eliminated.** `--evidence-key` deriving from a
+  saved `--launch-receipt` was genuinely fixed (confirmed), but `--evidence-prefix` still
+  defaulted to the whole `preflight/` tree even with a receipt named — the identical
+  "retype a 32-hex token by hand" problem the receipt-derivation feature exists to eliminate,
+  just still present for the other flag. Fixed with `launch_evidence_prefixes`, reusing the
+  same data `launch_evidence_keys` already reads, wired into fetch-run's dispatch the same way.
+
+All three touch pipeline-stage or pod/evidence-fetching code, so an independent review (general-
+purpose agent with a real shell this time, not a read-only one — the first review round in this
+session found that gap the hard way) is in progress; recorded here once it lands. Full
+`operations/operator/`, `operations/pod/`, and `pipeline/7_armarium/` suites: green throughout.
 
 **Correction to the record above:** F030/G21 was not a false "fixed" claim. PR #117's own body
 lists it under "Declined for this pull request, with reasons (each queued as a task)": "G16,
