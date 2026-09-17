@@ -50,6 +50,28 @@ def _refuse(message: str) -> ValueError:
     return ValueError(f"ScanTailor project refusal: {message}")
 
 
+def _safe_relative_component(value: str, what: str) -> str:
+    """Refuse an absolute path, a `..`/`.` component, or an embedded NUL (F025).
+
+    `directory`'s `path` and `file`'s `name` are attacker-chosen (a project file
+    is untrusted input, per this module's own docstring), and `Path.__truediv__`
+    silently discards everything to its left when the right side is absolute --
+    joining an absolute `name` onto a `path` therefore ignores `path` entirely
+    and neither string was checked for `..` traversal at all before this. Mirrors
+    `operations/pod/transfer.py::_under`'s established check for the same class
+    of untrusted relative path.
+    """
+
+    if (
+        not value
+        or value.startswith("/")
+        or "\x00" in value
+        or any(component in {"", ".", ".."} for component in value.split("/"))
+    ):
+        raise _refuse(f"{what} is not a safe relative path")
+    return value
+
+
 def _closed(element: ET.Element, tag: str, attributes: set[str], children: list[str]) -> None:
     if (
         element.tag != tag
@@ -101,14 +123,17 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         _closed(directory, "directory", {"id", "path"}, [])
         if directory.attrib["id"] in directory_paths:
             raise _refuse("directories repeat an id")
-        directory_paths[directory.attrib["id"]] = directory.attrib["path"]
+        directory_paths[directory.attrib["id"]] = _safe_relative_component(
+            directory.attrib["path"], "directory path"
+        )
     file_paths: dict[str, str] = {}
     for file in files:
         _closed(file, "file", {"id", "dirId", "name"}, [])
         if file.attrib["id"] in file_paths or file.attrib["dirId"] not in directory_paths:
             raise _refuse("files repeat an id or name an unknown directory")
         file_paths[file.attrib["id"]] = str(
-            Path(directory_paths[file.attrib["dirId"]]) / file.attrib["name"]
+            Path(directory_paths[file.attrib["dirId"]])
+            / _safe_relative_component(file.attrib["name"], "file name")
         )
     image_paths: dict[str, dict[str, Any]] = {}
     for image in images:
@@ -127,10 +152,16 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         identifier = image.attrib["id"]
         if identifier in image_paths or image.attrib["fileId"] not in file_paths:
             raise _refuse("images repeat an id or name an unknown file")
+        source_path = (project_path.parent / file_paths[image.attrib["fileId"]]).resolve()
+        if not source_path.is_relative_to(project_path.parent.resolve()):
+            # F025: every component was already checked as a safe relative
+            # path above; this is the defense-in-depth close of the same rule
+            # `operations/pod/transfer.py::_under` already applies to an
+            # untrusted relative path -- a symlink crossed during `.resolve()`
+            # is the one way an all-safe-looking join can still land outside.
+            raise _refuse("image source path escapes the project directory")
         image_paths[identifier] = {
-            "source_path": str(
-                (project_path.parent / file_paths[image.attrib["fileId"]]).resolve()
-            ),
+            "source_path": str(source_path),
             "file_image": _integer(image.attrib["fileImage"], "file image index"),
             "width": _integer(image[0].attrib["width"], "image width"),
             "height": _integer(image[0].attrib["height"], "image height"),

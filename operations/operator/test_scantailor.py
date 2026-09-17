@@ -36,6 +36,51 @@ def test_real_project_shape_round_trips_geometry_without_reducing_it(tmp_path: P
     assert parsed["source_image_count"] == 1
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    (
+        (b'path="masters"', b'path="/Users/tyrel/.ssh"'),
+        (b'path="masters"', b'path=".."'),
+        (b'path="masters"', b'path=""'),
+    ),
+)
+def test_an_absolute_or_traversing_directory_path_is_refused(
+    tmp_path: Path, attribute: bytes, value: bytes
+) -> None:
+    """F025: source_path is `(project_path.parent / file_paths[fileId]).resolve()`.
+
+    An absolute `directory path` makes the `/` join discard `project_path.parent`
+    entirely -- the same way `Path.__truediv__` is documented to behave -- so an
+    attacker-chosen project naming `/Users/tyrel/.ssh` as a "directory" and
+    `id_ed25519` as a "file" would otherwise resolve straight to that real path
+    and publish it, unvalidated, into the sealed geometry record.
+    """
+    hostile = PROJECT.replace(attribute, value, 1)
+    assert hostile != PROJECT
+    with pytest.raises(ValueError, match="directory path is not a safe relative path"):
+        scantailor_worker.parse(hostile, tmp_path / "hostile.ScanTailor")
+
+
+def test_a_traversing_file_name_is_refused(tmp_path: Path) -> None:
+    hostile = PROJECT.replace(b'name="spread.tif"', b'name="../../outside.tif"', 1)
+    assert hostile != PROJECT
+    with pytest.raises(ValueError, match="file name is not a safe relative path"):
+        scantailor_worker.parse(hostile, tmp_path / "hostile.ScanTailor")
+
+
+def test_a_symlink_that_escapes_the_project_directory_is_refused(tmp_path: Path) -> None:
+    """Every component looks like a safe relative path; only `.resolve()` reveals the escape."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "spread.tif").write_bytes(b"not read by this parser")
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "masters").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="image source path escapes the project directory"):
+        scantailor_worker.parse(PROJECT, project_dir / "scan.ScanTailor")
+
+
 def test_an_unknown_layout_type_is_named_not_reported_as_truncated(tmp_path: Path) -> None:
     """The refusal names the real fact: a layout this parser does not support.
 
