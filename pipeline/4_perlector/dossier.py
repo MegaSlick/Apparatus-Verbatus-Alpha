@@ -638,7 +638,7 @@ def assert_no_order_bearing_field(value: Any, path: str = "$") -> None:
                     "picker. Remove the field and rebuild the dossier from unranked testimony."
                 )
             continue
-        if isinstance(current, (dict, list)):
+        if isinstance(current, (dict, list, tuple)):
             marker = id(current)
             if marker in open_path:
                 raise ContractError(
@@ -657,6 +657,9 @@ def assert_no_order_bearing_field(value: Any, path: str = "$") -> None:
                 tasks.append(("key", key, trail))
                 tasks.append(("value", item, (f".{key}", trail)))
             pending.extend(reversed(tasks))
-        elif isinstance(current, list):
+        elif isinstance(current, (list, tuple)):
+            # F085: a tuple serializes exactly like a list through
+            # `canonical_bytes`, so a field wrapped in one must be screened the
+            # same way or it reaches the sealed dossier unexamined.
             for index in range(len(current) - 1, -1, -1):
                 pending.append(("value", current[index], (f"[{index}]", trail)))
