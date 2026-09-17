@@ -54,4 +54,11 @@ _(filled in as the review completes)_
 
 ## Gate result
 
-_(filled in once `check-fast.sh` finishes)_
+**Green.** `check-fast.sh` (ingress checks on the current worktree, `check-static.sh`, then
+`pytest -m "not full or scanner"`) ran to completion against HEAD (`485283b`) with a pinned
+uv 0.12.1: **9485 passed, 46 skipped, 2 xfailed, 0 failed**, in 36m51s. No ingress or static
+check reported a problem before the test run started (the script's `set -eu` would have
+stopped it there if one had). This does not stand in for `check-all.sh`'s full frozen-audit
+gate (the `--full`/`scanner`-marked tests and the dependency-audit group are out of scope
+here, per the coverage gaps above), but it means the everyday gate this project runs on
+every commit is clean at HEAD.
