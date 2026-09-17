@@ -410,11 +410,40 @@ def _print(text: str = "") -> None:
     print("\n".join(strip_control_bytes(line) for line in text.split("\n")))
 
 
+# F004: these three live only on the top-level parser, added before the verb
+# subparsers -- argparse stops accepting parent-parser options once the verb
+# token is consumed, so any of them typed after the verb (the only ordering
+# every subcommand's own flags are shown in) is rejected as unrecognized with
+# nothing in the message pointing at the fix.
+_TOP_LEVEL_ONLY_FLAGS: Final = ("--workspace", "--state-dir", "--notify")
+
+
 class PlainParser(argparse.ArgumentParser):
     """Argparse must use the same recovery contract as every other failure."""
 
     def error(self, message: str) -> None:
-        raise OperatorError(ErrorCode.INVALID_COMMAND, detail=message)
+        raise OperatorError(ErrorCode.INVALID_COMMAND, detail=_annotate_unrecognized(message))
+
+
+def _annotate_unrecognized(message: str) -> str:
+    """Name the fix for the one unrecognized-arguments cause this is (F004).
+
+    `message` is argparse's own wording, not this codebase's -- matched by
+    prefix rather than parsed, so a wording this function does not recognize
+    still reaches the operator unmodified instead of being misread.
+    """
+
+    prefix = "unrecognized arguments: "
+    if not message.startswith(prefix):
+        return message
+    tokens = {token.split("=", 1)[0] for token in message[len(prefix) :].split()}
+    named = [flag for flag in _TOP_LEVEL_ONLY_FLAGS if flag in tokens]
+    if not named:
+        return message
+    return (
+        f"{message} ({', '.join(named)} {'is' if len(named) == 1 else 'are'} accepted only "
+        "before the word, e.g. 'verbatus --state-dir DIR review ...', not after it)"
+    )
 
 
 def build_parser() -> PlainParser:
