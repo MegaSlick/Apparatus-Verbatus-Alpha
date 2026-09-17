@@ -1604,3 +1604,55 @@ get right once (the retention-before-refusal fix recorded earlier in this docume
 gap with no live attacker-controlled path today. A theoretical, same-class defect worth a
 future look if this call site's caller set ever grows past this repository's own trusted
 builders; not worth reordering a hard-won control-flow invariant for today.
+
+## Eleventh pass — another of the Ninth pass's own recorded leads
+
+**F138** — `common/chairs/manifests.py::read_manifest` (the digest-manifest reader every
+model verification goes through) read the whole manifest file into memory unconditionally
+before checking anything about it — `data = source.read_bytes()`, no bound. The Ninth pass's
+own lead named this as inconsistent with its sibling module: `model_store.py` already has an
+established, hardened pattern for exactly this class of read (a small structured control
+artifact, not model weight bytes) — `_read_limited_bytes`: `O_NOFOLLOW` refuses a
+symlink-redirected read, an `fstat`+`S_ISREG` check refuses a FIFO or device *before any
+blocking read*, and reading `limit + 1` bytes detects an oversized file without loading all
+of it. `read_manifest` had none of the three. Fixed by adding the same pattern to
+`manifests.py` itself as `_read_limited_manifest_bytes`, with `MAX_MANIFEST_BYTES =
+16_777_216` matching `model_store.py`'s own `MAX_SHARD_INDEX_BYTES` — real shipped manifests
+run from ~100 bytes to ~4 KB (`config/manifests/*.json`), so this ceiling is generous by
+several orders of magnitude, not tight.
+
+Reproduced, not just reasoned about: reverted the fix and ran the new FIFO test, which hung
+the test process indefinitely on the old code's unbounded blocking read (killed after
+confirming) — exactly the failure `model_store.py`'s own equivalent test is named to guard
+against. Separately confirmed the symlink test fails without the fix: the old code silently
+follows the symlink and returns the real target's manifest successfully, `DID NOT RAISE`.
+Verified by reading `O_NOFOLLOW`'s actual semantics (not assumed) that a symlinked path and a
+FIFO path fail at two different points — `os.open` itself raises before any `fstat` for a
+symlink, while a FIFO opens successfully and is caught by the regular-file check — so the two
+new tests match two different error messages on purpose, not by mistake.
+
+Independent Opus review found the design and control flow correct, both `O_NOFOLLOW`/FIFO
+error messages right, and the 16 MiB ceiling safely generous (real shipped manifests are
+~100-byte single rows; the ceiling covers roughly 130,000 rows), and one real problem before
+push: the FIFO test called `read_manifest` on the main thread with no deadline, so a
+regression would hang the whole suite silently rather than fail — the exact failure mode this
+session had to kill by hand while writing it, and precisely what this file's own established
+`..._instead_of_hanging_the_boot` pattern (a daemon-thread worker joined with a 15-second
+timeout) exists to prevent. Rewritten to use that pattern. Also fixed: the symlink test's
+target was an empty manifest `_validate_manifest` rejects on its own, so the unfixed code
+failed for the wrong reason (wrong error text, not "followed the symlink"); rebuilt against a
+genuinely valid, digest-pinned one-row manifest so the only way to reach the assertion is
+through the symlink protection. A docstring note now says why `_read_limited_manifest_bytes`
+duplicates ~25 lines of `model_store.py`'s helper rather than importing it: `model_store.py`
+already imports this module, so the reverse import would close a cycle — verified directly
+against `model_store.py`'s own import block, not taken on the reviewer's word. The review also
+named the symlink protection as defense-in-depth, not the closing of a live path: both current
+production callers already resolve or refuse a symlinked manifest path before `read_manifest`
+ever sees it (`registry.py`'s `.resolve()`, `model_store.py`'s own symlink-component refusal),
+so stated here as such rather than implied otherwise. Two further unbounded, same-class reads
+were found and named, not fixed in this round: `model_store.py:1217`'s `read_derived_inventory`
+and `registry.py:627`'s `_verify_cache_descriptor`, both control-artifact reads with the same
+theoretical FIFO-hang and unbounded-size exposure — recorded per hard rule 7, a lead for a
+future pass, not silently dropped.
+
+`common/chairs/` (327 tests, up from 324) and `proof/test_proof_model_fixtures.py` green.
