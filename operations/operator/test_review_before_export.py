@@ -500,6 +500,11 @@ def test_one_act_held_by_both_stages_is_two_labelled_records_and_one_held_act():
 
     text = "\n".join(review_text.render({"run_id": "r", "holds": [dict(hold) for hold in holds]}))
     assert "[Designator hold]" in text and "[Recensor review of that hold]" in text
+    # F041: the header counts acts, not hold records -- one act attested twice
+    # is "Held or unresolved acts (1)", matching the distinct count in the
+    # summary sentence just above it, not len(holds).
+    assert "Held or unresolved acts (1)" in text
+    assert "Held or unresolved acts (2)" not in text
 
 
 def test_a_review_outcome_outside_the_recensor_vocabulary_is_refused_not_skipped():

@@ -445,7 +445,13 @@ def render(projection: dict[str, Any]) -> list[str]:
 
     holds = _rows(projection, "holds")
     lines.append("")
-    lines.append(f"Held or unresolved acts ({len(holds)})")
+    # F041: one act held by the Designator and reviewed as held by the Recensor
+    # is two rows below and one act to resolve; counting rows here reported two
+    # acts held on a run that had one, contradicting README.md's own account of
+    # this header and the distinct count `review.py` already computes for the
+    # summary sentence just above.
+    held_acts = len({hold["act_id"] for hold in holds})
+    lines.append(f"Held or unresolved acts ({held_acts})")
     for hold in holds:
         examination = hold.get("audit_examination")
         audit_note = f"; audit examination {inert(examination)}" if examination else ""
