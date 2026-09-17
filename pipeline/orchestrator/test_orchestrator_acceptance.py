@@ -1681,10 +1681,32 @@ def _perlector_dissent():
 # That value is part of `config_digest` now, and every digest above it moves
 # with it. The file counts are again unchanged, for the same reason and with the
 # same evidence: the two count assertions passed while only these two failed.
+# The 2026-09-16 end-to-end review's F087 fix (`history/2026-09-16_end-to-end-review.md`)
+# moved both digests once more. `pipeline/3_attestatores/run.py` now carries
+# `align_to_anchor`'s own `deadline_in_force` answer into the published `aligned`
+# alignment record, where it was silently dropped before -- so a caller that ran
+# the matcher fully unbounded and happened to finish read identically to one that
+# was actually bounded. Attribution: two fresh runs of base commit 485283b's own
+# tree (a linked worktree, run under its own `common/`) against this candidate,
+# compared leaf by leaf over every JSON file in both trees. Happy 100 files/exit 0
+# and review 111 files/exit 3, file counts and exit codes unchanged on both sides;
+# one content-addressed blob re-addressed per scenario (the Armarium bundle, the
+# only artifact whose own bytes embed the changed records) and no other file
+# added or removed. There is exactly one non-digest change and no others: a new
+# `deadline_in_force: true` field on every `aligned` alignment record in
+# `3_attestatores/artifacts/act-attachment/*.json` (happy: 4 attachments across 2
+# records; review: 3 attachments across 2 records) -- `true` in both scenarios,
+# since this test's synthetic fixture pages align well inside the sealed pair
+# bound on a plain, single-threaded run and this build always runs single-threaded.
+# Everything else below it is a digest cascade (`self_hash`, `sha256` references,
+# `artifact_inventory`, `blob_inventory`, and the manifest/index entries that
+# carry them). No established text, outcome, category, crop geometry or count
+# moved (GOVERNANCE 5); the two count assertions above this comment passed while
+# only the two digest assertions failed.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "2f6346cb29ae16e7028267ee827cd81beb31911b9cb2aa10f2ea9988f34bf0cf"
-REVIEW_RUN_TREE_DIGEST = "62a8fb1a76c129566010562f80f493e03e96ee38c68580122f8c000c68e52432"
+HAPPY_RUN_TREE_DIGEST = "46a92beca8fb46ca6d32a3294c91501a3740bc62b3677e4c9597b50988331220"
+REVIEW_RUN_TREE_DIGEST = "bf00209817bb4f61976a784f3d055060bb7025953a68244bfd2b3eb69d0def53"
 
 
 def orchestrate(
