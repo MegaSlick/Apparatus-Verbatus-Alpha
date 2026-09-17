@@ -1088,28 +1088,48 @@ and one genuinely new finding this pass fixes.
 - **F130** [major — reverses this document's own earlier "cosmetic" disposition] — an empty
   string satisfies `isinstance(record.get("act_key"), str)`, so `delivered: [{"act_key":
   ""}]` with `expected_acts: 1` reconciled cleanly: one record, one distinct "identity", a
-  run or export reported complete over an act nothing actually names. The seventh pass's own
-  "Declined, with reason" section called this cosmetic because `common/stage.py` refuses an
-  empty `act_key` at the Designator's seal and "the real producer can never emit one" — true,
-  but beside the point: `_require_reconciled_act_partition` exists specifically to catch a
-  record that never went through today's seal at all (an older build, a pod running
-  different code — the same foreign-record rationale F113 and F123 already used to justify
-  requiring a valid `expected_acts` and counting distinct identities rather than trusting a
-  raw count). Relying on the producer to never emit an empty key was exactly the reasoning
-  already rejected for the other two checks in this same method; applying it selectively to
-  this one check was the actual defect, not the empty string itself. CodeRabbit's review
-  cited this repository's own `.coderabbit.yaml` path instruction for this file directly:
-  "A fault that drops, skips or silently substitutes one act is not a small bug." Fixed
-  exactly as suggested — the entry check now also rejects a falsy `act_key` alongside a
-  non-dict record or a non-string one, before it can be added to `act_keys`. New regression:
-  `test_run_refuses_a_complete_aggregate_with_an_empty_act_key`.
+  run or export reported complete over an act nothing actually names. The sixth pass's own
+  "Declined, with reason" section (in the independent review of `db576b4`) called this
+  cosmetic because `common/stage.py` refuses an empty `act_key` at the Designator's seal and
+  "the real producer can never emit one" — true, but beside the point:
+  `_require_reconciled_act_partition` exists specifically to catch a record that never went
+  through today's seal at all (an older build, a pod running different code — the same
+  foreign-record rationale F113 and F123 already used to justify requiring a valid
+  `expected_acts` and counting distinct identities rather than trusting a raw count). Relying
+  on the producer to never emit an empty key was exactly the reasoning already rejected for
+  the other two checks in this same method; applying it selectively to this one check was the
+  actual defect, not the empty string itself. CodeRabbit's review cited this repository's own
+  `.coderabbit.yaml` path instruction — a repo-wide instruction (`path: "**"`), not one
+  specific to this file: "A fault that drops, skips or silently substitutes one act is not a
+  small bug." Fixed exactly as suggested — the entry check now also rejects a falsy
+  `act_key` alongside a non-dict record or a non-string one, before it can be added to
+  `act_keys`. New regression: `test_run_refuses_a_complete_aggregate_with_an_empty_act_key`.
+  The sixth pass's *other* declined item beside this one (a non-list `delivered`/
+  `non_delivered` treated as empty rather than refused) named its own revisit trigger --
+  "worth revisiting if this method's own lines are touched again" -- and this fix does touch
+  them. Considered, not revisited: the fail-closed argument that decline gave still holds
+  unchanged by this fix (a non-list partition contributes zero keys, which reconciles only
+  if `expected_acts == 0`, and the real producer never writes `0` for a genuine complete
+  export) -- this fix narrows what counts as a *readable* entry, it doesn't touch how a
+  non-list `delivered`/`non_delivered` is handled before entries are even walked.
 
-**Verified, not re-litigated:** the F125 backup OS-residue decline (recorded in the sixth
-pass, independently re-confirmed in the seventh) was flagged again by the same automated
+**Verified, not re-litigated:** the F125 backup OS-residue decline (recorded and
+independently re-confirmed in the sixth pass, above) was flagged again by the same automated
 "Nothing Is Lost Silently" pre-merge check, which re-evaluates fresh each round with no
 memory of a prior round's decline. Restated on the PR itself rather than in code, since
 nothing about the reasoning changed: the fuller fix duplicates F103's already-declined
 schema-version work, and the simpler fix would undo F104's actual purpose.
+
+**Independent review of `96a7eec` (Fable, read-only)** confirmed the fix's short-circuit
+safety, that the new test genuinely fails without it and passes with it, and that it applies
+symmetrically to both `run()` and `export()` through the shared method. Caught two slips in
+this section's own first draft, both corrected above: it misattributed the earlier "cosmetic"
+decline to the seventh pass (it is the sixth's), and it described the quoted
+`.coderabbit.yaml` sentence as a path instruction specific to this file, when it is a
+repo-wide instruction (`path: "**"`). Also surfaced, and now addressed above: the sixth
+pass's other declined item (a non-list partition) had named its own "revisit if this
+method's lines are touched again" trigger, which this fix's edit to the same method fired
+without the eighth pass acknowledging it.
 
 `operations/operator/test_surface.py` (284 tests, one new) green; `ruff format`/`check`
 clean on every touched file.
