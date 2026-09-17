@@ -307,6 +307,7 @@ def _page_fact(*, ordinal, attached, anchor_basis=None, comparable=None):
             "line_geometry": [],
             "loss": {},
             "offset_maps": {},
+            "deadline_in_force": False,
         }
         if attached
         else {"status": "unaligned", "reason": "continuation-page-no-act-anchor"}

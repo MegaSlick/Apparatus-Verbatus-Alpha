@@ -871,6 +871,7 @@ def act_attachment_facts(
                         "line_geometry",
                         "loss",
                         "offset_maps",
+                        "deadline_in_force",
                     }
                     or not isinstance(alignment["anchor_basis"], str)
                     or alignment["anchor_basis"]
@@ -887,6 +888,10 @@ def act_attachment_facts(
                         alignment["anchor_basis"] != "act-anchor"
                         and alignment.get("anchor_chair") is not None
                     )
+                    # F087: same backstop fact Perlector now requires -- carried
+                    # through rather than re-derived, so the two stages cannot
+                    # silently drift on what a closed aligned shape contains.
+                    or not isinstance(alignment.get("deadline_in_force"), bool)
                 ):
                     raise FatalAccounting(
                         f"act {act_id} page witness {chair!r} carries a malformed aligned "

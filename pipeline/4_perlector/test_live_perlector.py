@@ -1713,6 +1713,7 @@ ALIGNED_ON_THE_ACT_ANCHOR = {
     "line_geometry": [],
     "loss": {"witness": {"markup_characters": 0}, "anchor": {"markup_characters": 0}},
     "offset_maps": {"witness": [], "anchor": []},
+    "deadline_in_force": False,
 }
 NATIVE_OVER_THE_ACT = [
     {

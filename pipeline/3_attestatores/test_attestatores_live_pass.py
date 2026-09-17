@@ -27,6 +27,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import signal
 import subprocess
 import sys
 import tomllib
@@ -2501,6 +2502,11 @@ def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_
     assert alignment["anchor_chair"] == "attestator_1"
     assert alignment["line_geometry"] == [{"bbox": {"x": 20, "y": 20, "w": 160, "h": 81}}]
     assert alignment["anchor_span"] == {"start": 0, "end": 34}
+    # F087: the published record carries align_to_anchor's own answer, not just
+    # its own return value -- this call ran on the main thread with the POSIX
+    # backstop available, so it was actually bounded.
+    posix_alarm_available = all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL"))
+    assert alignment["deadline_in_force"] is posix_alarm_available
     assert page_text[alignment["witness_span"]["start"] : alignment["witness_span"]["end"]] == (
         "SYNTHETIC ACT ONE alpha beta gamma"
     )
