@@ -307,8 +307,39 @@ and only the phrase overclaims.
 
 All three touch pipeline-stage or pod/evidence-fetching code, so an independent review (general-
 purpose agent with a real shell this time, not a read-only one — the first review round in this
-session found that gap the hard way) is in progress; recorded here once it lands. Full
-`operations/operator/`, `operations/pod/`, and `pipeline/7_armarium/` suites: green throughout.
+session found that gap the hard way) was dispatched before this section was first written.
+
+**This session pushed a real bug, and the independent review caught it before any harm.** The
+review found the `--evidence-prefix` fix above was itself wrong: `launch_evidence_prefixes`
+derived `relative.parent / relative.stem` from every bound report path, an inference from a
+single, unrelated grep hit ("CSPRNG witness under `<volume-mount-path>/preflight/`") rather than
+from reading how a real request is actually built. Every real request
+(`boot_a_request.py`/`boot_b_request.py`) writes its report paths at the **volume root** — never
+under `preflight/` at all. Only `bootstrap_main.Plan.preflight_root` computes a `preflight/`
+path, from `<mount>/preflight/<bootstrap_main's own --report-path stem>` specifically, not the
+pod timer's outer report and not (for a full run launch) `pod_run`'s own nested report. The
+pushed derivation matched none of the three, and because a *derived-but-wrong* prefix silently
+**overrode** the surface's correct whole-tree default, `fetch-run --launch-receipt X` with no
+explicit `--evidence-prefix` would have fetched **nothing** — where it previously fetched
+everything. On a paid, non-repeatable pod run that is exactly the GOALS 4 / GOVERNANCE 2 harm
+this whole finding exists to prevent, caused by the fix meant to prevent a smaller version of it.
+Both test fixtures for the wrong fix happened to put report paths under
+`/workspace/preflight/…` — the same "two covered cases, a third real one missed" shape this
+session has now found repeatedly in *other* people's code, reproduced in its own.
+
+Corrected within the hour (commit `5c6bdcb`, same PR, before any run could hit it): derives from
+bootstrap_main's own nested report path specifically, found by splitting the nested argv at the
+first literal `--` (`models._nested_argv_halves`, the same split `pod_run.split_argv` performs
+for real, at boot); verified empirically against both a full Boot B shape and a hold-only Boot A
+shape, matching the real `preflight_root` formula exactly, not just a plausible-looking string.
+The same review also found a smaller issue in the export-ambiguity fix (a malformed, unrelated
+receipt for the same run_id could block export of a sound one) — tightened in the same commit.
+Full `operations/operator/`, `operations/pod/`, and `pipeline/7_armarium/` suites: green
+throughout, with the corrected fixtures.
+
+**Recorded plainly rather than quietly folded into a clean-looking history, because this file's
+own point is that a fix is not verified until an independent read confirms it, no matter who
+wrote it** — including this session's own second-order fixes, which is exactly the case here.
 
 **Correction to the record above:** F030/G21 was not a false "fixed" claim. PR #117's own body
 lists it under "Declined for this pull request, with reasons (each queued as a task)": "G16,
