@@ -1,4 +1,4 @@
-# 2026-09-16 — end-to-end review: in progress
+# 2026-09-16 — end-to-end review
 
 Requested by Tyrel in-session: a general review of the project for errors and issues,
 "especially end to end." This is the working record, committed early and updated as the
@@ -148,9 +148,28 @@ from the other two.
 
 ### Checked and found sound
 
-Independent readers covered the orchestrator's recovery/hold control flow (the "rejected
-re-proof holds its act" and "unread page held, not miscalled a cut-off" claims in commit
-485283b, against GOVERNANCE 2/11), the Recensor and Archetypus test-file diffs, the base of
+**Orchestrator (commit 485283b's two headline claims).** Traced, not taken on faith. "A
+rejected re-proof holds its act instead of ending the run": `common/perlector_audit.py:327-389`
+derives `EXAMINATION_REPROOF_REJECTED` when a completed re-proof's change span escapes every
+flagged location; `pipeline/4_perlector/run.py:4478` gates the publish so a rejected rewrite
+never overwrites the published text and never reaches the uncaught-refusal path the old
+behavior risked; `pipeline/5_recensor/run.py:3257-3270` routes it to `held-for-review`
+(never `recovery-requested`, so it cannot loop or spend a recovery round); `outcomes.py:397`
+maps it to `HELD_FOR_REVIEW`, never `DELIVERED`. "An unread page is held rather than
+miscalled a cut-off": `pipeline/2_designator/structure_pass.py:991-1016` shows this is a
+diagnostic relabeling (`HELD_DEGENERATE` vs `HELD_CUT_OFF`, both in `STRUCTURE_HELD_CODES`,
+both already producing `DISPOSITION_HELD`) — a held page was never marked read before this
+change and still isn't after it; no downstream code branches on the specific reason code.
+One **pre-existing, not-a-defect** interaction worth naming rather than silently passing
+over: in `pipeline/5_recensor/run.py`, the coverage-recovery branch (`:3861-4024`) can
+`continue` — consuming an act's first recovery attempt — before the branch that would seal
+`held-for-review` for a reproof-rejected act ever runs. It only fires once per act, never
+discards the audit fact (carried onto the recovery-requested review's own payload), and
+matches GOVERNANCE 11's stated priority (recovery is for coverage, not content quality) — so
+it reads as intended, but no test exercises this exact co-occurrence (an act simultaneously
+reproof-rejected *and* wanting coverage recovery) end-to-end. Worth a test, not a fix.
+
+Independent readers also covered the Recensor and Archetypus test-file diffs, the base of
 the Perlector doubt-channel work, and the dependency additions in `pyproject.toml` (each
 carries the required provenance comment). None returned a defect.
 
@@ -194,11 +213,44 @@ F092, F007/F039/F078/F086; low: F079, F090, F111).
 
 ## Gate result
 
-**Green.** `check-fast.sh` (ingress checks on the current worktree, `check-static.sh`, then
-`pytest -m "not full or scanner"`) ran to completion against HEAD (`485283b`) with a pinned
-uv 0.12.1: **9485 passed, 46 skipped, 2 xfailed, 0 failed**, in 36m51s. No ingress or static
-check reported a problem before the test run started (the script's `set -eu` would have
-stopped it there if one had). This does not stand in for `check-all.sh`'s full frozen-audit
-gate (the `--full`/`scanner`-marked tests and the dependency-audit group are out of scope
-here, per the coverage gaps above), but it means the everyday gate this project runs on
+**Green, independently confirmed twice.** This session ran `check-fast.sh` (ingress checks
+on the current worktree, `check-static.sh`, then `pytest -m "not full or scanner"`) to
+completion against HEAD (`485283b`) with a pinned uv 0.12.1: **9485 passed, 46 skipped, 2
+xfailed, 0 failed**, in 36m51s. A separate reader in the review workflow independently ran
+`check-static.sh` plus the same pytest selection again from a fresh process and got the same
+result — no failing test, nothing to root-cause. The 2 xfails are finding 1 above's known
+narration defect, not a surprise. This does not stand in for `check-all.sh`'s full
+frozen-audit gate (the `--full`/`scanner`-marked tests and the dependency-audit group are out
+of scope here, per the coverage gaps above), but the everyday gate this project runs on
 every commit is clean at HEAD.
+
+## Dispositions (hard rule 13 — a decision recorded for every non-governed finding, not a
+deferral)
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Operator run-screen page mismatch | **Declined for now.** Already tracked by two `xfail` regression tests (not silent loss). `operations/operator/surface.py`'s display path is exactly the kind of change this project's own review-proportionality table says needs an independent reader, a CodeRabbit pass, and the full gate before the first push — more process than this session's remaining budget can safely carry to a clean landing. Top recommended follow-up for the next session. |
+| 2 | Armarium cross-row noise-floor check | **Declined for now**, same reasoning: `pipeline/7_armarium/` is a pipeline stage under the same table entry. Not reachable by an honest run — this closes a defense-in-depth gap against a corrupted/tampered bundle, not a live-path bug. |
+| 3 | README status line | **Reported to Tyrel, not edited.** Governed path (hard rule 10); the main session applies a change only once he approves substance, through the governed-edit procedure. |
+| 4 | ARCHITECTURE.md Recensor real-ingress gap | **Reported to Tyrel, not edited.** Governed path, same as above. |
+| 5 | Perlector doubt channel undocumented | **Reported to Tyrel, not edited.** Governed path, same as above. |
+| 6 | `build_fixture.py` self-check | **Declined for now.** Small and low-risk (`tests/config/cleanup` tier — CodeRabbit + full gate only), but left out to keep this PR's diff to review content and its scope legible in one piece; good first task next session. |
+| 7 | F040 half-fixed (uv pin duplication) | **Declined for now**, same reasoning as 6. |
+
+Nothing above is a TODO left in the diff itself — each line is a decision with its reason,
+recorded here as this project's convention requires.
+
+## Bottom line
+
+Ten independent finders covered the full `d6b3c42..HEAD` diff (175 files, +26,825/-1,461,
+including today's HEAD commit) plus README/ARCHITECTURE consistency and a ledger spot-check;
+every medium/high finding was adversarially re-verified against the current tree, not taken
+on the first reader's word. **The gate is green (9485 passed, 0 failed, confirmed twice
+independently). No correctness regression and no silently-lost result was found in the new
+diff.** Five real findings survived verification — one already-known, deliberately-tracked
+UX defect (finding 1) worth prioritizing next; one defense-in-depth gap in the Armarium
+export (finding 2); and three governed-document accuracy gaps (findings 3-5) that need
+Tyrel's decision, not a session's edit. Two lower-severity leads and a ledger-disposition
+correction (F040) round it out. **Recommended next action: Tyrel reviews findings 3-5 (the
+governed-doc discrepancies) and decides wording; the next working session picks up findings
+1, 2, 6, and 7 as ordinary engineering, each already scoped and cited above.**
