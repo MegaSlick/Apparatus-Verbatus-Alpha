@@ -898,15 +898,30 @@ class OperatorSurface:
             raise OperatorError(
                 ErrorCode.UPLOAD_PARTIAL, detail=f"{error} Saved receipt: {receipt}"
             ) from error
+        # F027: derived from the same fact `report` already carries, rather
+        # than hardcoded, so the top-level state and the nested transfer
+        # record can never disagree. Not reachable today through this verb --
+        # `manifest_snapshot` is always written just above before `resume()`
+        # ever checks for it -- but a future caller that reused this receipt
+        # shape with an operator-named path it had not first snapshotted
+        # would otherwise silently print "complete" over a transfer that sent
+        # nothing.
+        transfer_complete = report.submission_manifest_present
         receipt = self._write_action(
             "upload",
             {
                 "summary": (
-                    "Upload is complete; every recorded file was verified in the fixture volume."
-                    if fixture_only
-                    else "Upload is complete; every recorded file was verified at its target."
+                    (
+                        "Upload is complete; every recorded file was verified in the fixture "
+                        "volume."
+                        if fixture_only
+                        else "Upload is complete; every recorded file was verified at its target."
+                    )
+                    if transfer_complete
+                    else "Upload found no sealed submission record to send; nothing was "
+                    "transferred."
                 ),
-                "state": "complete",
+                "state": "complete" if transfer_complete else "nothing-to-transfer",
                 "submission_manifest_sha256": manifest_sha256,
                 "volume": _volume_record(volume),
                 "transfer": report.to_record(),
@@ -914,7 +929,11 @@ class OperatorSurface:
             },
             descriptor_action="upload",
         )
-        self.present("Upload complete. Every file in the sealed record was verified.")
+        self.present(
+            "Upload complete. Every file in the sealed record was verified."
+            if transfer_complete
+            else "Upload found no sealed submission record to send; nothing was transferred."
+        )
         self.present(f"Saved receipt: {receipt}")
         return receipt
 

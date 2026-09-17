@@ -39,6 +39,7 @@ from operations.pod.models import (
 )
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
 from operations.pod.spend import PRICE_MOVE_MARKER, load_spend_policy
+from operations.pod.transfer import TransferReport
 from operations.submit import gate
 from operations.submit import submit as submission_door
 from operations.submit.submit import build_manifest, walk_folder
@@ -1915,6 +1916,40 @@ def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
     payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
     assert payload["transfer"]["completed_keys"] == ["submission/page-one.bin"]
     assert payload["submission_manifest_sha256"] == hashlib.sha256(original).hexdigest()
+
+
+def test_a_nothing_to_transfer_report_does_not_read_as_upload_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F027: the top-level receipt state must agree with the nested transfer record.
+
+    Not reachable today through `upload()` itself -- the sealed manifest
+    snapshot it writes always exists by the time `resume()` checks for one --
+    but the two fields must still be derived from one fact, not asserted
+    separately, so a future caller of this same receipt shape cannot drift.
+    """
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    source = tmp_path / "submitted-pages"
+    source.mkdir()
+    (source / "page-one.bin").write_bytes(b"first\n")
+    manifest = tmp_path / "sealed-submission.json"
+    manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(source))))
+
+    monkeypatch.setattr(
+        surface_module.ChecksummedTransfer,
+        "resume",
+        lambda self: TransferReport((), (), submission_manifest_present=False),
+    )
+
+    surface.upload(source, sealed_manifest=manifest)
+
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["state"] == "nothing-to-transfer"
+    assert payload["transfer"]["state"] == "nothing-to-transfer"
+    assert "complete" not in payload["summary"]
+    assert not any("Upload complete" in line for line in messages)
+    assert any("nothing was transferred" in line for line in messages)
 
 
 def test_upload_refuses_an_oversized_manifest_before_constructing_a_transfer(
