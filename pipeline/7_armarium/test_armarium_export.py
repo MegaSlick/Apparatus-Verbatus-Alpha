@@ -30,6 +30,7 @@ from armarium_export import (
     _terminal_ledger,
     _validate_ink_map_pages,
     _verify_acts_schema,
+    _verify_retained_references_bounded,
     _zip_bytes,
     act_key_sort_key,
     build_armarium_bundle,
@@ -1447,6 +1448,27 @@ def test_a_huge_integer_in_an_acts_jsonl_row_is_refused_by_name(tmp_path):
     path.write_bytes(b'{"extra":' + b"9" * 4301 + b"}")
     with pytest.raises(SchemaRefusal, match="an acts JSONL row is not JSON"):
         _jsonl_act_records(path, [])
+
+
+def test_a_deeply_nested_retained_reference_is_refused_by_name_not_a_recursion_error():
+    """G13 (2026-09-14) widened every JSONL reader's parse-level exception
+    tuple, but `_verify_retained_references` walks the *already-parsed*
+    Python structure with its own separate recursion and was never given the
+    same guard -- so a row shallow enough to parse (e.g. under the ~10k-deep
+    JSON decoder limit pinned above) but with a deeply nested value inside a
+    field this walker actually recurses into (any dict/list/tuple value, not
+    only 'evidence') still reached callers as a bare `RecursionError` instead
+    of a named `SchemaRefusal`. Only one of this function's six call sites
+    (`_export_bundle`'s sources.json check) had its own inline guard; the
+    other five (acts JSONL, acts database, review-items JSONL, salvage-tier
+    JSONL, and act-citation evidence) did not. Testing the shared
+    `_verify_retained_references_bounded` wrapper directly, once, covers all
+    six -- they now all call it instead of the bare recursive function."""
+    nested: object = "leaf"
+    for _ in range(5000):
+        nested = {"nested": nested}
+    with pytest.raises(SchemaRefusal, match="nests too deeply for its availability walk"):
+        _verify_retained_references_bounded({"field": nested})
 
 
 def test_jsonl_uncertainty_status_may_not_contradict_the_layer_beside_it(tmp_path):
