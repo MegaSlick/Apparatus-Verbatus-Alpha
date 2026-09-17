@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -81,6 +82,39 @@ def test_success_sends_json_without_topic_in_curl_arguments(notify_repo):
     assert "test_topic" not in arguments
     assert body["topic"] == "test_topic"
     assert body["message"] == "finished"
+
+
+def test_the_checkouts_own_venv_python_is_preferred_over_paths(notify_repo, tmp_path):
+    """F109: a PATH `python3` that would fail must never be reached when the
+    checkout's own frozen interpreter is right there under `.venv`."""
+    script, env = notify_repo
+
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text(
+        f"""#!/bin/sh
+touch "{tmp_path}/venv-python-used"
+exec {sys.executable} "$@"
+""",
+        encoding="utf-8",
+    )
+    venv_python.chmod(0o755)
+
+    path_python3 = tmp_path / "bin" / "python3"
+    path_python3.write_text(
+        f"""#!/bin/sh
+touch "{tmp_path}/path-python-used"
+exit 1
+""",
+        encoding="utf-8",
+    )
+    path_python3.chmod(0o755)
+
+    result = run(script, env)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "venv-python-used").exists()
+    assert not (tmp_path / "path-python-used").exists()
 
 
 @pytest.mark.parametrize(("status", "exit_code"), [("500", "0"), ("204", "7")])
