@@ -227,18 +227,27 @@ every commit is clean at HEAD.
 ## Dispositions (hard rule 13 — a decision recorded for every non-governed finding, not a
 deferral)
 
+Tyrel gave this session more budget mid-review and asked it to keep going, so findings 1, 2,
+6, and 7 moved from "declined for now" to fixed in this same PR. CodeRabbit's CLI is not
+reachable in this sandbox (no credentials/network route to it here); substituted with an
+independent second reader (Opus, high effort) on the two pipeline-stage-tier changes (1, 2)
+per the proportionality table, plus each touched suite run individually and a full
+`check-all.sh` run on the complete diff — named as a substitution, not silently skipped.
+
 | # | Finding | Disposition |
 |---|---|---|
-| 1 | Operator run-screen page mismatch | **Declined for now.** Already tracked by two `xfail` regression tests (not silent loss). `operations/operator/surface.py`'s display path is exactly the kind of change this project's own review-proportionality table says needs an independent reader, a CodeRabbit pass, and the full gate before the first push — more process than this session's remaining budget can safely carry to a clean landing. Top recommended follow-up for the next session. |
-| 2 | Armarium cross-row noise-floor check | **Declined for now**, same reasoning: `pipeline/7_armarium/` is a pipeline stage under the same table entry. Not reachable by an honest run — this closes a defense-in-depth gap against a corrupted/tampered bundle, not a live-path bug. |
+| 1 | Operator run-screen page mismatch | **Fixed**, commit `b80746d`. `_declared_work` now filters pages and acts through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario`; both G21 xfail tests pass for real. Full `operations/operator/` suite green. |
+| 2 | Armarium cross-row noise-floor check | **Fixed**, commit `daaa153`. `_validate_ink_map_pages` now refuses a bundle whose flagged pages disagree on the sealed noise floor. Full `pipeline/7_armarium/` suite green. |
 | 3 | README status line | **Reported to Tyrel, not edited.** Governed path (hard rule 10); the main session applies a change only once he approves substance, through the governed-edit procedure. |
 | 4 | ARCHITECTURE.md Recensor real-ingress gap | **Reported to Tyrel, not edited.** Governed path, same as above. |
 | 5 | Perlector doubt channel undocumented | **Reported to Tyrel, not edited.** Governed path, same as above. |
-| 6 | `build_fixture.py` self-check | **Declined for now.** Small and low-risk (`tests/config/cleanup` tier — CodeRabbit + full gate only), but left out to keep this PR's diff to review content and its scope legible in one piece; good first task next session. |
-| 7 | F040 half-fixed (uv pin duplication) | **Declined for now**, same reasoning as 6. |
+| 6 | `build_fixture.py` self-check | **Fixed**, commit `f330033`. Reader-doubt/gap offsets now self-check against the actual source text at generation time. Output byte-identical; full `proof/` suite green. |
+| 7 | F040 half-fixed (uv pin duplication) | **Fixed**, commit `16bae29`. `check-all.sh` and `ci.yml` now read the version from `pyproject.toml` once; added a reconciliation test. Full `.githooks/test_ci_workflow.py` suite green (33 tests). |
 
-Nothing above is a TODO left in the diff itself — each line is a decision with its reason,
-recorded here as this project's convention requires.
+Independent-review and full-gate confirmation for 1 and 2 is in progress as this section is
+written; this file is updated again once that lands, per the same "write as you go" reasoning
+that opened this record. Nothing above is a TODO left in the diff itself — each line is a
+decision with its reason, recorded here as this project's convention requires.
 
 ## Bottom line
 
