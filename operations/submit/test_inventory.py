@@ -88,6 +88,25 @@ def test_an_oversized_source_keeps_its_exact_digest_and_drops_only_its_bytes(tmp
     assert found[0].sha256 == __import__("hashlib").sha256(payload).hexdigest()
 
 
+def test_aggregate_bytes_read_are_bounded_even_when_nothing_is_retained(tmp_path, monkeypatch):
+    """F026: `max_bytes=0` (every production caller) must not defeat this bound.
+
+    `_read_once` streams every source whole to its digest regardless of
+    `max_bytes`; only whether the bytes are *kept* depends on it. Before this
+    fix, `_Budget.admit` summed only the retained bytes, which are always zero
+    at `max_bytes=0`, so an unbounded total could stream through the hasher
+    with nothing to stop it until the file-count bound tripped.
+    """
+    monkeypatch.setattr(inventory, "MAX_SUBMITTED_READ_BYTES", 10)
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"x" * 6)
+    (folder / "b.png").write_bytes(b"x" * 6)
+
+    with pytest.raises(SubmissionInputError, match="total bytes read exceed the 10-byte"):
+        read_submission(folder, max_bytes=0)
+
+
 def test_a_source_changed_while_its_digest_is_read_is_a_named_refusal(tmp_path, monkeypatch):
     """A ledger may only bind one stable file, never a sequence of its revisions.
 

@@ -43,6 +43,16 @@ retained bytes, its directory depth and its entries per directory were all
 attacker-shaped. Depth was the sharpest — 2,000 nested directories escaped as a
 `RecursionError` and CPython's exit 1 rather than a named refusal, past the
 `ContractError` handler entirely.
+
+**A fifth direction: aggregate bytes actually read, not only retained (F026).**
+`_Budget.admit`'s own `size` parameter — the true bytes `_read_once` streamed to
+the digest, whatever `max_bytes` said — went unread by its body, so the aggregate
+check only ever summed `retained`. The production submitter and Door both ask for
+`max_bytes=0`, so `retained` is always zero for them and the aggregate check
+never tripped: a submission near the file-count and per-file-size limits could
+stream terabytes through the hasher with nothing to stop it before the file-count
+bound finally did. `MAX_SUBMITTED_READ_BYTES` now bounds `size` the same way
+`MAX_SUBMITTED_BYTES` already bounded `retained`.
 """
 
 import hashlib
@@ -65,13 +75,17 @@ _CHUNK: Final = 1024 * 1024
 # exhausts a machine. A bound nobody can reach is still the difference between a
 # named refusal and an out-of-memory kill nobody can read afterwards.
 #
-# `MAX_SUBMITTED_BYTES` counts *retained* bytes. The production submitter and Door
-# both ask for `max_bytes=0` and stream this inventory without retaining bodies;
-# their later source reads are bounded separately. The aggregate remains live for
-# any caller that asks this reusable reader to retain content. The other three bind
-# every caller.
+# `MAX_SUBMITTED_BYTES` counts *retained* bytes, always zero for the production
+# submitter and Door (both ask for `max_bytes=0`). `MAX_SUBMITTED_READ_BYTES`
+# (F026) is the aggregate bound that actually binds them: each source is still
+# read whole to its digest whatever `max_bytes` says, so 100,000 files each just
+# under the door's own 64 MiB per-file admission bound could otherwise stream
+# terabytes through the hasher with nothing to stop it -- the per-file limit
+# bounds one source, not a corpus, same as the retained-bytes bound already says
+# of itself.
 MAX_SUBMITTED_FILES: Final = 100_000
 MAX_SUBMITTED_BYTES: Final = 8 * 1024 * 1024 * 1024
+MAX_SUBMITTED_READ_BYTES: Final = 8 * 1024 * 1024 * 1024
 MAX_DIRECTORY_DEPTH: Final = 64
 MAX_DIRECTORY_ENTRIES: Final = 100_000
 
@@ -245,11 +259,12 @@ def refusal_record(entry: str | RawPathReference, reason: str) -> dict[str, str]
 class _Budget:
     """What one whole submission may consume, checked as the walk proceeds."""
 
-    __slots__ = ("files", "retained")
+    __slots__ = ("files", "retained", "read")
 
     def __init__(self) -> None:
         self.files = 0
         self.retained = 0
+        self.read = 0
 
     def admit(self, size: int, retained: int, *, entry: str) -> None:
         self.files += 1
@@ -263,6 +278,13 @@ class _Budget:
         if self.retained > MAX_SUBMITTED_BYTES:
             raise SubmissionInputError(
                 f"the submission's retained bytes exceed the {MAX_SUBMITTED_BYTES}-byte "
+                "aggregate limit; the per-file limit bounds one source, not a corpus",
+                entry=entry,
+            )
+        self.read += size
+        if self.read > MAX_SUBMITTED_READ_BYTES:
+            raise SubmissionInputError(
+                f"the submission's total bytes read exceed the {MAX_SUBMITTED_READ_BYTES}-byte "
                 "aggregate limit; the per-file limit bounds one source, not a corpus",
                 entry=entry,
             )
