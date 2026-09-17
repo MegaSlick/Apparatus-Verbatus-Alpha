@@ -28,6 +28,7 @@ from armarium_export import (
     _not_measured_status,
     _page_ledger_category,
     _terminal_ledger,
+    _validate_ink_map_pages,
     _verify_acts_schema,
     _zip_bytes,
     act_key_sort_key,
@@ -974,6 +975,37 @@ def test_a_zero_recorded_gate_is_refused_before_it_can_hold_every_page(gate):
             _formats(embed_pixels=False),
             _source_bytes,
         )
+
+
+def test_a_mismatched_noise_floor_across_pages_is_refused():
+    """`minimum_ink_pixels`/`minimum_fraction_outside_bp` are the run's single
+    sealed `[coverage_audit.noise_floor]`, passed through unchanged for every
+    page (unlike `substantial_ink_pixels`, which legitimately scales per
+    page). A bundle whose flagged pages disagree on either field cannot have
+    come from one honest run and must be refused, not silently accepted with
+    one page's hold decided by the wrong value."""
+    first = _edge_page(1, outside=5_000)
+    second = _edge_page(2, outside=5_000)
+    second["remeasured"]["minimum_ink_pixels"] += 1
+    with pytest.raises(SchemaRefusal, match="more than one sealed noise floor"):
+        _validate_ink_map_pages([first, second], "test bundle")
+
+
+def test_a_mismatched_fraction_gate_across_pages_is_refused():
+    """The other half of the same sealed pair, checked independently."""
+    first = _edge_page(1, outside=5_000)
+    second = _edge_page(2, outside=5_000)
+    second["remeasured"]["minimum_fraction_outside_bp"] += 1
+    with pytest.raises(SchemaRefusal, match="more than one sealed noise floor"):
+        _validate_ink_map_pages([first, second], "test bundle")
+
+
+def test_matching_noise_floors_across_pages_are_accepted():
+    """What an honest run always writes -- the same sealed noise floor on
+    every flagged row -- must not be refused."""
+    first = _edge_page(1, outside=5_000)
+    second = _edge_page(2, outside=0)
+    assert _validate_ink_map_pages([first, second], "test bundle") == [first, second]
 
 
 def test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine(tmp_path):

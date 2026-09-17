@@ -1474,6 +1474,28 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                 "inventing a re-measurement for a mapped page."
             )
         validated.append(row)
+    # `minimum_ink_pixels`/`minimum_fraction_outside_bp` are, unlike
+    # `substantial_ink_pixels`, the run's single sealed
+    # `[coverage_audit.noise_floor]` passed through unchanged for every page
+    # (`common.residual_ink.resolve_coverage_audit_policy` never scales
+    # them) -- so every flagged page's row must carry the same pair. Checked
+    # here, once, across the whole bundle, rather than trusted per row: a
+    # producer bug or a tampered bundle that inflated one page's noise floor
+    # would otherwise pass `_edge_hold_pages_from_validated_rows`'s per-row
+    # `coverage_flag` call and silently release that page's edge-ink hold.
+    noise_floors = {
+        (row["remeasured"]["minimum_ink_pixels"], row["remeasured"]["minimum_fraction_outside_bp"])
+        for row in validated
+        if row["initial_outcome"] == _UNCLAIMED_EDGE_INK
+    }
+    if len(noise_floors) > 1:
+        raise SchemaRefusal(
+            f"{subject} carries more than one sealed noise floor across its flagged ink-map "
+            f"pages ({sorted(noise_floors)}). minimum_ink_pixels and minimum_fraction_outside_bp "
+            "are one run's single sealed noise floor, identical for every page; a bundle with "
+            "more than one value cannot have come from one honest run. Rebuild the export from "
+            "the retained Ink Map evidence."
+        )
     return validated
 
 
