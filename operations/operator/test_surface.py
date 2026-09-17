@@ -56,6 +56,8 @@ from .surface import (
     Faults,
     OperatorSurface,
     _declared_work,
+    _door_module,
+    _exported_work,
     _pod_from_record,
     _pod_record,
     _repository_commit,
@@ -2739,6 +2741,100 @@ def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path:
             "a submitted filename reached the terminal; the policy's logging rule allows "
             "counts and the private report location there, not real names"
         )
+
+
+def test_door_module_leaves_no_trace_in_sys_path_or_sys_modules():
+    """Loading door.py in-process runs its own `sys.path.insert` calls and
+    bare sibling imports (`admission`, `manifest`, `pdf_render`,
+    `render_config`, `image_formats`); both must be fully undone, or a second
+    call (potentially against a different --workspace) would silently reuse
+    the first call's cached copies instead of loading the new one's, and this
+    operator's own sys.path would grow by three entries every single call."""
+    import sys
+
+    before_path = list(sys.path)
+    before_modules = set(sys.modules)
+
+    module = _door_module(ROOT)
+
+    assert sys.path == before_path
+    assert set(sys.modules) == before_modules
+    assert hasattr(module, "fixture_pages_for_scenario")
+
+    # Twice, to prove the second call reloads rather than serving the first
+    # call's now-purged-from-sys.modules but still-referenced module object.
+    _door_module(ROOT)
+    assert sys.path == before_path
+    assert set(sys.modules) == before_modules
+
+
+def test_exported_work_names_every_delivered_and_non_delivered_act():
+    """F030: the closing accounting line reads a completed run's own export
+    record, so it can name an act (like ink-free-page's minted fallback) that
+    no fixture declaration could have known about in advance."""
+    pages, acts = _exported_work(
+        [{"ordinal": 1, "outcome": "sealed"}, {"ordinal": 2, "outcome": "refused"}],
+        {
+            "delivered": [{"act_key": "a1"}],
+            "non_delivered": [{"act_key": "a2"}, {"act_key": "page-fallback:3"}],
+        },
+    )
+    assert pages == ["page 1", "page 2"]
+    assert acts == ["act a1", "act a2", "act page-fallback:3"]
+
+
+def test_exported_work_falls_back_to_a_generic_placeholder_on_empty_records():
+    """An export record with no page or act rows at all (rather than a
+    malformed one) is not this function's failure to diagnose; it prints a
+    placeholder rather than an empty, unreadable list."""
+    pages, acts = _exported_work([], {})
+    assert pages == ["the recorded pages"]
+    assert acts == ["the recorded acts"]
+
+
+def test_exported_work_discloses_rather_than_silently_drops_malformed_rows():
+    """A record this function cannot make sense of does not raise -- the
+    accounting line's own job is to report what a completed run produced, not
+    to re-validate the export schema a stricter reader already checked -- but
+    it is also not simply dropped, which would reopen F030's own mismatch: the
+    caller prints `len(page_records)`/`expected_acts` as the total beside
+    these names, and naming fewer than that with no explanation is the same
+    silent-partial-result GOVERNANCE 2 refuses."""
+    pages, acts = _exported_work(
+        [{"ordinal": 1}, {"no_ordinal": True}, "not-a-dict"],
+        {"delivered": [{"act_key": "a1"}, {"no_act_key": True}], "non_delivered": ["not-a-dict"]},
+    )
+    assert pages == ["page 1", "2 unreadable page record(s)"]
+    assert acts == ["act a1", "2 unreadable act record(s)"]
+
+
+def test_exported_work_treats_a_non_list_delivered_or_non_delivered_as_absent():
+    """A string is iterable character-by-character; without this guard
+    `"a1"` would silently become three one-character 'acts'."""
+    pages, acts = _exported_work(
+        [{"ordinal": 1}],
+        {"delivered": "not-a-list", "non_delivered": [{"act_key": "a2"}]},
+    )
+    assert pages == ["page 1"]
+    assert acts == ["act a2"]
+
+
+def test_exported_work_never_reads_a_bool_ordinal_as_a_page_number():
+    """`isinstance(True, int)` is true in Python; without excluding `bool`
+    explicitly a boolean ordinal would render as 'page True'."""
+    pages, _acts = _exported_work([{"ordinal": True}], {})
+    assert pages == ["1 unreadable page record(s)"]
+
+
+def test_exported_work_sorts_acts_by_key_regardless_of_delivery_order():
+    """Delivered and non-delivered are each already sorted on their own, but
+    concatenating two sorted lists is not itself sorted -- a held a2 before a
+    delivered a1 must still read a1-then-a2."""
+    pages, acts = _exported_work(
+        [],
+        {"delivered": [{"act_key": "a2"}], "non_delivered": [{"act_key": "a1"}]},
+    )
+    assert acts == ["act a1", "act a2"]
 
 
 def test_the_operator_does_not_read_the_ledger_before_the_door(

@@ -1,15 +1,24 @@
-"""Regression coverage for G21 (F001/F030): fixture-rehearsal narration must
-never name a page or act the running scenario did not actually touch.
+"""Regression coverage for G21 (F001/F030/F106): fixture-rehearsal narration
+must never name a page or act the running scenario did not actually touch,
+and never disagree with the total printed beside it.
 
 `_declared_work` (operations/operator/surface.py) used to read every
-`[[page]]` row out of the single fixed fixture declaration file
+`[[page]]`/`[[act]]` row out of the single fixed fixture declaration file
 (`proof/skeleton_fixture.toml`) regardless of which `--scenario` was actually
-running, and three call sites (the opening "Checking ..." line, the "Working
-next: ..." line, and the closing "Pages accounted for: ..." line) printed
-those names unconditionally. It now filters through
-`pipeline/1_exemplar/door.py::fixture_pages_for_scenario` -- the same
-question a real door application answers -- which is where a page gated to a
-scenario the current run never touches is dropped.
+running. Two problems followed from that, and both are fixed now:
+
+1. The opening "Checking ..." and "Working next: ..." lines named a page or
+   act a scenario-gated fixture row never activates for this scenario (e.g.
+   page 3, gated to `ink-free-page`). Fixed by filtering `_declared_work`
+   through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario` -- the
+   same question a real door application answers.
+2. The closing "Pages/Acts accounted for: ..." line named the *same* static,
+   pre-run declaration beside a *real*, post-run total -- so it disagreed
+   with its own total whenever a run minted an act the fixture cannot
+   declare (`ink-free-page`'s fallback act) or a page was refused after being
+   declared (`refused-page`). A static declaration can never answer for a
+   real outcome. Fixed by reading `_exported_work` from the completed run's
+   own Armarium export record instead, once one exists.
 
 This module is intentionally standalone (not appended to test_surface.py)
 because `operations/operator/surface.py` was, at the time this test was
@@ -83,3 +92,38 @@ def test_review_scenario_narration_never_names_a_page_it_never_touched(
         "the review scenario's narration named page 3, which this scenario "
         f"never touches: {messages!r}"
     )
+
+
+def test_ink_free_page_scenarios_closing_line_names_its_minted_fallback_act(
+    tmp_path: Path,
+) -> None:
+    """`ink-free-page` mints a fallback act (`page-fallback:3`) at runtime that
+    no fixture declaration can name in advance. F030: the closing line must
+    still name it, from the real export, or it silently omits an act that was
+    actually part of the run while its own total counts it."""
+
+    messages = _rehearsal_messages(tmp_path, scenario="ink-free-page")
+
+    accounted = next(line for line in messages if line.startswith("Pages accounted for"))
+    assert accounted == (
+        "Pages accounted for: page 1, page 2, page 3 (3 total). "
+        "Acts accounted for: act a1, act a2, act page-fallback:3 (3 total)."
+    ), accounted
+
+
+def test_refused_page_scenarios_closing_line_matches_its_own_total(
+    tmp_path: Path,
+) -> None:
+    """`refused-page` has the Door refuse page 2's declared bytes. F030: a
+    refused page is still part of the run's own page census (its outcome is
+    refused, not absent) and the closing line must name it consistently with
+    the total beside it -- and it must not name page 3, which this scenario
+    never touches."""
+
+    messages = _rehearsal_messages(tmp_path, scenario="refused-page")
+
+    accounted = next(line for line in messages if line.startswith("Pages accounted for"))
+    assert accounted == (
+        "Pages accounted for: page 1, page 2 (2 total). "
+        "Acts accounted for: act a1, act a2 (2 total)."
+    ), accounted

@@ -1604,7 +1604,7 @@ class OperatorSurface:
             f"{expected} act(s) accounted for" if expected is not None else "act total not recorded"
         )
         if submission_folder is None:
-            pages, acts, _declared_ok = _declared_work(self.workspace, scenario)
+            pages, acts = _exported_work(page_records, export_payload)
             self.present(
                 f"Pages accounted for: {', '.join(pages)} ({len(page_records)} total). "
                 f"Acts accounted for: {', '.join(acts)} ({expected_on_screen})."
@@ -4512,49 +4512,157 @@ def _human_duration(seconds: int) -> str:
 def _door_module(workspace: Path):
     """Load `pipeline/1_exemplar/door.py` by path, under a synthetic name.
 
-    `1_exemplar` cannot be reached by a normal dotted import (the digit
-    prefix makes `import 1_exemplar` invalid Python), and door.py is
-    otherwise invoked here only as a subprocess (`DOOR_PROGRAM`). This is the
-    same loader every stage's own test suite already uses to reach a sibling
-    stage's file for boundary testing — a deliberate, visible, single-purpose
-    load, not a stage-to-stage import (`pipeline/test_stage_import_boundaries.py`
-    binds pipeline stages to each other; it does not reach operations/).
+    By path, from this exact `workspace`, rather than
+    `importlib.import_module("pipeline.1_exemplar.door")` (which some tests
+    use, and which does resolve despite the digit prefix): that form
+    resolves against this process's own `sys.path`, which need not be this
+    `workspace` at all -- `--workspace` names an arbitrary checkout, and a
+    door loaded from the wrong one would answer for the wrong fixture. door.py
+    is otherwise invoked here only as a subprocess (`DOOR_PROGRAM`), a
+    boundary that gave it a fresh `sys.path` and module cache for free; loaded
+    in-process instead, its own top-level `sys.path.insert` calls would
+    otherwise grow this operator's `sys.path` by three entries on every call,
+    forever, and its bare sibling imports (`admission`, `manifest`,
+    `pdf_render`, `render_config`, `image_formats` — door-private stage files,
+    reached only because `sys.path` briefly names their directory) would
+    permanently occupy those bare names in `sys.modules`, so a second call
+    against a *different* `workspace` would silently reuse the first
+    workspace's cached copies instead of loading the new one's. Both are
+    restored/purged immediately after the load — before the returned module's
+    one method this caller actually calls is ever invoked, so nothing it
+    needs is torn down out from under it, only the traces left for whoever
+    calls this next.
     """
 
-    spec = importlib.util.spec_from_file_location(
-        "operator_door_fixture_scenarios", workspace / DOOR_PROGRAM
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    original_sys_path = list(sys.path)
+    original_sys_modules = set(sys.modules)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "operator_door_fixture_scenarios", workspace / DOOR_PROGRAM
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path[:] = original_sys_path
+        for name in set(sys.modules) - original_sys_modules:
+            del sys.modules[name]
 
 
 def _declared_work(workspace: Path, scenario: str) -> tuple[list[str], list[str], bool]:
-    """Name the fixture's actual declared work for this scenario, rather than
-    every page and act the fixture declares regardless of which one is running.
+    """Name the fixture's declared work for this scenario, before a run exists
+    to read instead — the opening "Checking ..." line's only source, since no
+    Armarium record exists yet to say what actually happened.  Once a run has
+    completed, `_exported_work` reads its real records instead: this function
+    can only ever describe intent, and F030 named exactly the mistake of
+    treating that description as if it were the outcome.
 
     Filters through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario` —
     the same scenario-gating a real door application would answer — instead of
     listing every `[[page]]`/`[[act]]` row unconditionally, which named a page
     (e.g. a scenario-gated page 3) the running scenario never touches (G21,
-    findings F001/F106).
+    findings F001/F030/F106).
 
-    The third element is `False` exactly when the declared fixture could not
-    be read, or this scenario could not be resolved against it, at all, so the
-    caller can say so — a generic placeholder shown without comment reads as
-    the real page/act list, which it is not.
+    The third element is `False` exactly when the declared fixture or its
+    stage programs could not be read at all, so the caller can say so — a
+    generic placeholder shown without comment reads as the real page/act
+    list, which it is not. `--scenario` naming a scenario this fixture does
+    not declare is a different failure (a typo, not an unreadable checkout)
+    and is raised directly rather than folded into that placeholder, which
+    would otherwise blame the checkout for what the argument got wrong.
     """
 
     try:
         fixture = load_fixture(str(workspace / "proof"))
-        active_pages = _door_module(workspace).fixture_pages_for_scenario(fixture, scenario)
+        door = _door_module(workspace)
+    except Exception:
+        return ["the declared pages"], ["the declared acts"], False
+    try:
+        active_pages = door.fixture_pages_for_scenario(fixture, scenario)
+    except ContractError as error:
+        raise OperatorError(
+            ErrorCode.INVALID_COMMAND,
+            detail=f"--scenario {scenario!r} could not be resolved against this checkout's "
+            f"declared fixture: {error}",
+        ) from error
+    # A malformed row past this point (a missing 'ordinal'/'key'/'page_ordinal')
+    # is the same "fixture could not be read" condition as above, not a
+    # different failure -- caught here too rather than left to escape as a
+    # raw KeyError into the operator's unclassified-error path.
+    try:
         active_ordinals = {page["ordinal"] for page in active_pages}
         pages = [f"page {page['ordinal']}" for page in active_pages]
         acts = [
             f"act {act['key']}" for act in fixture["act"] if act["page_ordinal"] in active_ordinals
         ]
-        if pages and acts and all(isinstance(value, str) for value in pages + acts):
-            return pages, acts, True
     except Exception:
-        pass
+        return ["the declared pages"], ["the declared acts"], False
+    if pages and acts and all(isinstance(value, str) for value in pages + acts):
+        return pages, acts, True
     return ["the declared pages"], ["the declared acts"], False
+
+
+def _exported_work(
+    page_records: list[Any], export_payload: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Name the pages and acts a completed run's own Armarium record carries —
+    never the fixture's static declaration, which F030 found naming a
+    scenario-gated page never touched, omitting an act the fixture declaration
+    could not know a live run would mint (`ink-free-page`'s fallback act), and
+    still naming a page the Door had in fact refused (`refused-page`). The
+    export record is the run's own account of what happened to every source
+    and every act, which is the only thing this line may describe once one
+    exists — mixing it with a fixture-derived name is the mistake this
+    replaces, not a smaller version of it.
+
+    `page_records` is `export_payload["pages"]`, already read and validated as
+    a list by the caller. `delivered`/`non_delivered` together are the export's
+    complete act partition (`pipeline/7_armarium/run.py`'s own comment: every
+    act that is not delivered lands in `non_delivered`, not only held/refused
+    review items) — read defensively here (a non-list value for either is
+    treated as absent, not iterated byte-by-byte) since this function must
+    never be the reason a completed run's own summary line cannot be printed.
+
+    A row this function cannot make sense of is dropped from the *names* it
+    prints, but never invisibly: the caller prints `len(page_records)` (or
+    `expected_acts`) as the total beside these names, and a name silently
+    dropped for being malformed would reopen exactly the names-versus-total
+    mismatch F030 named, just with "malformed" standing in for "unfiltered."
+    So a drop is disclosed as one more named entry instead, per GOVERNANCE 2:
+    a partial result is visibly partial.
+    """
+
+    valid_pages = [
+        record
+        for record in page_records
+        if isinstance(record, dict)
+        and isinstance(record.get("ordinal"), int)
+        and not isinstance(record["ordinal"], bool)
+    ]
+    pages = [f"page {record['ordinal']}" for record in valid_pages]
+    if unreadable := len(page_records) - len(valid_pages):
+        pages.append(f"{unreadable} unreadable page record(s)")
+
+    delivered = export_payload.get("delivered", [])
+    non_delivered = export_payload.get("non_delivered", [])
+    act_records = [
+        *(delivered if isinstance(delivered, list) else []),
+        *(non_delivered if isinstance(non_delivered, list) else []),
+    ]
+    valid_acts = sorted(
+        (
+            record
+            for record in act_records
+            if isinstance(record, dict) and isinstance(record.get("act_key"), str)
+        ),
+        key=lambda record: record["act_key"],
+    )
+    acts = [f"act {record['act_key']}" for record in valid_acts]
+    if unreadable := len(act_records) - len(valid_acts):
+        acts.append(f"{unreadable} unreadable act record(s)")
+
+    if not pages:
+        pages = ["the recorded pages"]
+    if not acts:
+        acts = ["the recorded acts"]
+    return pages, acts
