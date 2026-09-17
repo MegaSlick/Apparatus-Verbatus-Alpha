@@ -23,6 +23,7 @@ from typing import Callable
 import pytest
 
 from common.chairs.errors import ConfigurationRefusal
+from common.contracts.approval import ApprovalRecordReference
 from common.contracts.canonical import canonical_bytes
 from operations.pod import supervise as pod_supervise
 from operations.pod.fake_provider import FakeProvider
@@ -6931,6 +6932,46 @@ def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) 
     assert "  Command: verbatus status" in lines
     assert f"  Working directory: {os.getcwd()}" in lines
     assert any(line.startswith("- unexpected record 1: ") for line in lines)
+
+
+def test_status_names_an_advance_so_the_operators_sequence_is_reconstructible(
+    tmp_path: Path,
+) -> None:
+    """F108: status had no arm for advance at all before this.
+
+    Exercises `record_advance` and `_status_projection`'s new arm directly,
+    the way `record_backup`'s own coverage does for the sibling verb --
+    `_advance_with_confirmation`'s own boundary/confirmation machinery is
+    covered separately in test_advance_modes.py and test_permission_boundary.py.
+    """
+    surface = _surface(tmp_path)
+    reference = ApprovalRecordReference("2_designator/approvals/a.json", "b" * 64)
+
+    receipt = surface.record_advance(
+        run_id="staged",
+        run_root=tmp_path / "runs",
+        stage="designator",
+        reason="operator reviewed the completed run",
+        seal_digest="c" * 64,
+        reference=reference,
+    )
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "complete"
+    assert payload["stage"] == "designator"
+    assert payload["seal_digest"] == "c" * 64
+    assert payload["approval_record"] == {
+        "relative_path": "2_designator/approvals/a.json",
+        "sha256": "b" * 64,
+    }
+
+    lines = surface.status()
+    assert any(line.startswith("- advance record 1: ") for line in lines)
+    status = "\n".join(lines)
+    assert f"Run: staged; run root: {tmp_path / 'runs'}; stage: designator." in status
+    assert f"Passed boundary sealed at: {'c' * 64}." in status
+    assert "Approval record: 2_designator/approvals/a.json" in status
+    assert "Reason: operator reviewed the completed run" in status
 
 
 def test_the_cli_catch_all_writes_an_unexpected_receipt_and_names_it(

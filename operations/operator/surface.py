@@ -2496,6 +2496,44 @@ class OperatorSurface:
             descriptor_action="backup",
         )
 
+    def record_advance(
+        self,
+        *,
+        run_id: str,
+        run_root: str | Path,
+        stage: str,
+        reason: str,
+        seal_digest: str,
+        reference: Any,
+    ) -> Path:
+        """The advance verb's receipt, so `status` can say a boundary was passed (F108).
+
+        Only the success path: `_advance_with_confirmation` raises
+        `OperatorError(ADVANCE_REFUSED, ...)` directly on every refusal, well
+        before anything here could be reached, so there is no failure state
+        for this call to record. `advance`'s own approval record remains the
+        durable evidence of what happened; this is only what lets `status`
+        find it again without a person remembering which run it was.
+        """
+
+        return self._write_action(
+            "advance",
+            {
+                "summary": f"Run {run_id} passed the {stage} boundary: {reason}",
+                "state": "complete",
+                "run_id": run_id,
+                "run_root": self._state_relative(Path(run_root)),
+                "stage": stage,
+                "reason": reason,
+                "seal_digest": seal_digest,
+                "approval_record": {
+                    "relative_path": reference.relative_path,
+                    "sha256": reference.sha256,
+                },
+            },
+            descriptor_action="advance",
+        )
+
     def _active_launch_receipt(self) -> Path | None:
         return self._descriptor_receipt("active-launch", "launch")
 
@@ -3244,6 +3282,26 @@ def _status_projection(
         detail = payload.get("detail")
         if isinstance(detail, str) and detail.strip():
             lines.append(f"  Reason: {detail}")
+    elif action == "advance":
+        run_id = payload.get("run_id")
+        run_root = payload.get("run_root")
+        stage = payload.get("stage")
+        if isinstance(run_id, str):
+            lines.append(
+                f"  Run: {run_id}"
+                + (f"; run root: {run_root}" if isinstance(run_root, str) else "")
+                + (f"; stage: {stage}" if isinstance(stage, str) else "")
+                + "."
+            )
+        seal_digest = payload.get("seal_digest")
+        if isinstance(seal_digest, str):
+            lines.append(f"  Passed boundary sealed at: {seal_digest}.")
+        approval_record = payload.get("approval_record")
+        if isinstance(approval_record, dict):
+            lines.append(f"  Approval record: {approval_record.get('relative_path')}")
+        reason = payload.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            lines.append(f"  Reason: {reason}")
     elif action == "unexpected":
         exception_type = payload.get("exception_type")
         message = payload.get("message")

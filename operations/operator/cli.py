@@ -924,6 +924,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.stage,
                 reason=args.reason,
                 workspace=workspace,
+                surface=surface,
                 mode=args.mode,
                 from_stage=args.from_stage,
                 to_stage=args.to_stage,
@@ -1253,6 +1254,7 @@ def _advance_with_confirmation(
     *,
     reason: str,
     workspace: Path,
+    surface: OperatorSurface | None = None,
     mode: str = "manual",
     from_stage: str | None = None,
     to_stage: str | None = None,
@@ -1358,6 +1360,22 @@ def _advance_with_confirmation(
         expected_digest=digest,
     )
     _print(f"Advance record: {reference.relative_path} ({reference.sha256})")
+    if surface is not None:
+        # F108: without this, `status` had no arm for `advance` at all -- an
+        # operator's own sequence of launch/run/backup/advance/export could
+        # not be reconstructed from status alone. The approval record above
+        # remains the durable evidence; this only lets status find it again.
+        # Optional because most of this function's own test coverage exercises
+        # the confirmation/boundary-selection logic without an OperatorSurface
+        # at all; the real CLI dispatch always supplies one.
+        surface.record_advance(
+            run_id=run_id,
+            run_root=run_root,
+            stage=stage,
+            reason=reason,
+            seal_digest=digest,
+            reference=reference,
+        )
 
 
 def load_request(path: str | Path) -> PodCreateRequest:
