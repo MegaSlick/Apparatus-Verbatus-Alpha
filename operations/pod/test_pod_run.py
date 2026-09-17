@@ -1241,6 +1241,63 @@ def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() ->
     )
 
 
+def test_launch_run_id_reads_pod_runs_own_run_id_flag() -> None:
+    """`--run-id` is `pod_run`'s own flag, sealed inside the nested argv --
+    not a top-level request field the way `volume_id` is, so it can only be
+    read out of the sealed command."""
+
+    run_half = [
+        "python",
+        "-m",
+        "operations.pod.pod_run",
+        "--report-path",
+        "/workspace/pod-run-report.json",
+        "--run-id",
+        "r1",
+    ]
+    bootstrap_half = ["--volume-mount-path", "/workspace"]
+    nested = json.dumps([*run_half, "--", *bootstrap_half])
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--bootstrap-command-json",
+        nested,
+    )
+
+    assert launch_module.launch_run_id(command) == "r1"
+
+
+def test_launch_run_id_is_none_for_a_hold_only_launch() -> None:
+    """A hold-only boot starts no run and has no `--run-id` to name."""
+
+    hold_only = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.bootstrap_main",
+            "--hold-only",
+            "--volume-mount-path",
+            "/workspace",
+        ]
+    )
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--bootstrap-command-json",
+        hold_only,
+    )
+
+    assert launch_module.launch_run_id(command) is None
+
+
+def test_launch_run_id_is_none_with_no_bootstrap_command_at_all() -> None:
+    command = ("python", "--report-path", "/workspace/pod-runtime-report.json")
+
+    assert launch_module.launch_run_id(command) is None
+
+
 def test_evidence_prefix_derives_bootstrap_mains_own_preflight_directory() -> None:
     """F110/G11: every real request (boot_a_request.py, boot_b_request.py)
     writes its report paths at the *volume root*, never under `preflight/` --
@@ -1527,6 +1584,66 @@ def test_a_launch_receipt_for_another_volume_is_refused_rather_than_used(
 
     assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
     assert "vol-other" in refusal.value.detail
+
+
+def test_a_launch_receipt_for_another_run_is_refused_rather_than_used(tmp_path: Path) -> None:
+    """The quieter failure on the *same* volume: every derived key and prefix
+    would still resolve to real objects, just the wrong launch's -- stored
+    beside the fetched run and misstating its provenance rather than merely
+    failing to find them."""
+
+    from operations.operator.records import ReceiptStore
+
+    token = "g" * 32
+    nested = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.pod_run",
+            "--report-path",
+            f"/workspace/pod-run-report-{token}.json",
+            "--run-id",
+            "r1",
+        ]
+    )
+    request = {
+        "volume_id": "vol-1",
+        "volume_mount_path": "/workspace",
+        "docker_start_cmd": [
+            "python",
+            "-m",
+            "operations.pod.pod_timer",
+            "--report-path",
+            f"/workspace/pod-runtime-report-{token}.json",
+            "--bootstrap-command-json",
+            nested,
+        ],
+    }
+    receipt = ReceiptStore(tmp_path / "state").write(
+        "launch", {"summary": "fixture launch", "request": request}
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        operator_cli._derived_evidence_keys(
+            receipt, VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol-1"), "r2"
+        )
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "r1" in refusal.value.detail
+    assert "r2" in refusal.value.detail
+
+    # Fetching the run the receipt actually started still derives normally.
+    assert operator_cli._derived_evidence_keys(
+        receipt, VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol-1"), "r1"
+    ) == (
+        f"pod-runtime-report-{token}.json",
+        f"pod-runtime-report-{token}-terminating.json",
+        f"pod-run-report-{token}.json",
+        f"pod-run-report-{token}-hold.json",
+        f"pod-run-report-{token}-liveness.json",
+        f"pod-run-report-{token}-timings.json",
+        f"pod-run-report-{token}-transcript.log",
+    )
 
 
 def test_a_launch_receipt_read_through_a_link_is_refused(tmp_path: Path) -> None:

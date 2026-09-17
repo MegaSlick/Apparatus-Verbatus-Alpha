@@ -1543,6 +1543,30 @@ class OperatorSurface:
             # a malformed record cannot publish the happy-path receipt first.
             if not isinstance(page_records, list):
                 raise ValueError("the Armarium export's page record is not a list")
+            if state == "complete":
+                # `_armarium_export` only proves `delivered`/`non_delivered` are
+                # present and are lists; an honest producer always fills them to
+                # match `expected_acts` (`pipeline/7_armarium/run.py` refuses to
+                # publish otherwise), but a foreign record -- an older build, a
+                # tree fetched from a pod running different code -- could leave
+                # both empty while still claiming `status: complete`. `.get(...)`
+                # here, not the guaranteed-present read `_armarium_export` would
+                # give: this branch must stay safe for a payload that bypassed
+                # that reader entirely. GOVERNANCE 2: "complete" is refused
+                # unless everything reconciles.
+                expected_acts = export_payload.get("expected_acts")
+                if isinstance(expected_acts, int):
+                    delivered_acts = export_payload.get("delivered")
+                    non_delivered_acts = export_payload.get("non_delivered")
+                    accounted_for = (
+                        len(delivered_acts) if isinstance(delivered_acts, list) else 0
+                    ) + (len(non_delivered_acts) if isinstance(non_delivered_acts, list) else 0)
+                    if accounted_for != expected_acts:
+                        raise ValueError(
+                            "the Armarium export claims status complete but its delivered "
+                            f"and non_delivered acts total {accounted_for}, not the recorded "
+                            f"expected_acts of {expected_acts}"
+                        )
         except Exception as error:
             if completed.returncode == 3:
                 # Held before the Armarium -- the Attestatores' hold, or a
@@ -2901,7 +2925,7 @@ class OperatorSurface:
         # together, so a record missing one is never an honest partial write --
         # it is exactly the record a caller sees from a mismatched schema (an
         # older build, a record fetched from a pod running different code). A
-        # missing member is required, not merely typed when present: CodeRabbit
+        # Presence is required, not merely the right type when present: CodeRabbit
         # caught that `_exported_work` treated an absent `delivered`/`non_delivered`
         # as empty and printed "the recorded acts" instead of refusing -- GOVERNANCE
         # 2's "a partial result is visibly partial" runs through this reader too.
@@ -3294,12 +3318,12 @@ def _status_projection(
             lines.append(f"  Reason: {detail}")
     elif action == "advance":
         run_id = payload.get("run_id")
-        run_root = payload.get("run_root")
+        run_root = _display_path(payload.get("run_root"), state_root)
         stage = payload.get("stage")
         if isinstance(run_id, str):
             lines.append(
                 f"  Run: {run_id}"
-                + (f"; run root: {run_root}" if isinstance(run_root, str) else "")
+                + (f"; run root: {run_root}" if run_root else "")
                 + (f"; stage: {stage}" if isinstance(stage, str) else "")
                 + "."
             )

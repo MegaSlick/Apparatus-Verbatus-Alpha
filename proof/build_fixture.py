@@ -929,6 +929,18 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
     for row in READER_GAPS:
         source_text = next(act["text"] for act in ACTS if act["key"] == row["act_key"])
+        # Python slicing clamps an out-of-range stop index to the string's own
+        # length, so `source_text[:row["offset"]]` cannot distinguish an offset
+        # past the end from one landing exactly at it -- a `before` that happens
+        # to equal the whole source text would pass the check below for either.
+        # Checked explicitly first, the same way READER_DOUBTS above is checked
+        # for out-of-bounds rather than for a substring.
+        if row["offset"] > len(source_text):
+            raise ValueError(
+                f"reader_gap {row['scenario']!r} offset {row['offset']} is past the end of "
+                f"its {len(source_text)}-character source text; the source text changed "
+                "without updating the offset"
+            )
         if source_text[: row["offset"]] != row["before"]:
             raise ValueError(
                 f"reader_gap {row['scenario']!r} offset {row['offset']} follows "

@@ -17,7 +17,7 @@ from typing import Final, Sequence
 from common.checkout import missing_checkout_resources
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
-from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes
+from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes, launch_run_id
 from operations.pod.models import (
     DEFAULT_CONTAINER_DISK_GB,
     PodCreateRequest,
@@ -288,7 +288,7 @@ _UNREADABLE_RECEIPT = (
 
 
 def _read_launch_command(
-    receipt: Path | None, volume: VolumeSpec | None = None
+    receipt: Path | None, volume: VolumeSpec | None = None, run_id: str | None = None
 ) -> tuple[list[str], str] | None:
     """The sealed ``docker_start_cmd`` and volume mount a saved launch receipt
     names, shared by every deriver that reads launch-bound paths out of it
@@ -302,12 +302,19 @@ def _read_launch_command(
     32-hex token out of a JSON receipt to supply one; the receipt holds the
     sealed ``docker_start_cmd`` those paths were bound into.
 
-    Refused loudly rather than skipped in all three failure shapes, because each
+    Refused loudly rather than skipped in all four failure shapes, because each
     one would otherwise leave an operator believing the reports came home: a
-    receipt that cannot be read, a receipt that carries no launch request, and a
-    receipt for a *different* volume than the one this call is reading. The last
-    is the quiet one -- the derived paths would be real names of another
-    launch's records, fetched or refused against a volume that never held them.
+    receipt that cannot be read, a receipt that carries no launch request, a
+    receipt for a *different* volume than the one this call is reading, and a
+    receipt whose sealed command started a *different* run than the one being
+    fetched. The volume mismatch is quiet -- the derived paths would be real
+    names of another launch's records, fetched or refused against a volume
+    that never held them; a run-id mismatch on the *same* volume is quieter
+    still, because every derived key and prefix would still resolve to real
+    objects on that volume, just the wrong launch's: a receipt for ``r1``
+    passed to ``fetch-run --run-id r2`` would derive ``r1``'s evidence keys
+    and store them beside the fetched ``r2`` tree, misstating their
+    provenance rather than merely failing to find them.
 
     Read through the same bounded, no-follow open the reviewed pod request uses:
     a record this verb did not write is not read whole on trust. Returns
@@ -364,16 +371,27 @@ def _read_launch_command(
                 "for this run, or pass --evidence-key/--evidence-prefix explicitly"
             ),
         )
+    recorded_run_id = launch_run_id(command)
+    if run_id is not None and recorded_run_id is not None and recorded_run_id != run_id:
+        raise OperatorError(
+            ErrorCode.FETCH_RUN_FAILED,
+            detail=(
+                f"the launch receipt {receipt} started run {recorded_run_id!r}, and this call "
+                f"is fetching {run_id!r}. Deriving from it would store another run's evidence "
+                "beside this one and misstate its provenance; name the receipt for this run, "
+                "or pass --evidence-key/--evidence-prefix explicitly"
+            ),
+        )
     return command, mount
 
 
 def _derived_evidence_keys(
-    receipt: Path | None, volume: VolumeSpec | None = None
+    receipt: Path | None, volume: VolumeSpec | None = None, run_id: str | None = None
 ) -> tuple[str, ...]:
     """The launch-bound evidence keys a saved launch receipt already names —
     ``launch.launch_evidence_keys`` is the derivation, over `_read_launch_command`."""
 
-    read = _read_launch_command(receipt, volume)
+    read = _read_launch_command(receipt, volume, run_id)
     if read is None:
         return ()
     command, mount = read
@@ -381,7 +399,7 @@ def _derived_evidence_keys(
 
 
 def _derived_evidence_prefixes(
-    receipt: Path | None, volume: VolumeSpec | None = None
+    receipt: Path | None, volume: VolumeSpec | None = None, run_id: str | None = None
 ) -> tuple[str, ...]:
     """The launch-scoped evidence prefixes a saved launch receipt already
     names — ``launch.launch_evidence_prefixes`` is the derivation, over
@@ -391,7 +409,7 @@ def _derived_evidence_prefixes(
     manual-retyping failure those flags exist to eliminate was only half
     closed."""
 
-    read = _read_launch_command(receipt, volume)
+    read = _read_launch_command(receipt, volume, run_id)
     if read is None:
         return ()
     command, mount = read
@@ -881,11 +899,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 witness_context_config=args.witness_context_config,
             )
         elif args.verb == "fetch-run":
-            derived = _derived_evidence_keys(args.launch_receipt, volume)
+            derived = _derived_evidence_keys(args.launch_receipt, volume, args.run_id)
             for key in derived:
                 _print(f"Derived from the launch receipt: --evidence-key {key}")
             evidence_keys = tuple(dict.fromkeys((*(args.evidence_key or ()), *derived)))
-            derived_prefixes = _derived_evidence_prefixes(args.launch_receipt, volume)
+            derived_prefixes = _derived_evidence_prefixes(args.launch_receipt, volume, args.run_id)
             for prefix in derived_prefixes:
                 _print(f"Derived from the launch receipt: --evidence-prefix {prefix}")
             fetch_arguments: dict[str, object] = {

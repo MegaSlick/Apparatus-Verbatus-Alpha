@@ -370,6 +370,31 @@ def launch_evidence_prefixes(
     return tuple(dict.fromkeys(prefixes))
 
 
+def launch_run_id(docker_start_cmd: tuple[str, ...] | list[str]) -> str | None:
+    """The run id a full run launch's sealed ``docker_start_cmd`` actually
+    started, or ``None`` for a hold-only launch, which starts no run.
+
+    ``--run-id`` is ``pod_run``'s own required flag (``pod_run.py``'s
+    parser), sealed inside the nested ``--bootstrap-command-json`` argv, not
+    a top-level field of the request the way ``volume_id`` is -- so, like
+    the derivations above, it can only be read out of the sealed command,
+    not carried separately where it could silently disagree with it. Read
+    from the argv's pod_run half specifically (`_nested_argv_halves`'s
+    first), not the whole nested list, the same way `launch_evidence_prefixes`
+    reads `--report-path` from the bootstrap half only: a hold-only launch's
+    appended ``bootstrap_main`` half has no ``--run-id`` flag of its own to
+    collide with, but reading the split half rather than the flat list is
+    what keeps that true rather than assumed.
+    """
+
+    nested = _nested_bootstrap_argv(docker_start_cmd)
+    if nested is None or not _runs_the_orchestrator(nested):
+        return None
+    pod_run_half = _nested_argv_halves(nested)[0]
+    values = [value for value in _nested_flag_values(pod_run_half, "--run-id") if value is not None]
+    return values[-1] if values else None
+
+
 def _bound_report_path(raw_path: str, launch_token: str) -> str:
     original = PurePosixPath(raw_path)
     bound_name = f"{original.stem}-{launch_token}{original.suffix}"

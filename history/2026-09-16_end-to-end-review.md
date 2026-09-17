@@ -231,8 +231,15 @@ Tyrel gave this session more budget mid-review and asked it to keep going, so fi
 6, and 7 moved from "declined for now" to fixed in this same PR. CodeRabbit's CLI is not
 reachable in this sandbox (no credentials/network route to it here); substituted with an
 independent second reader (Opus, high effort) on the two pipeline-stage-tier changes (1, 2)
-per the proportionality table, plus each touched suite run individually and a full
-`check-all.sh` run on the complete diff — named as a substitution, not silently skipped.
+per the proportionality table, plus each touched suite run individually. **Correction, caught
+by CodeRabbit's own review of this PR:** the sentence originally here claimed a full
+`check-all.sh` gate had already run on the complete diff at this point. It had not — the
+paragraph two below this one already said, correctly, that the full gate was still in
+progress as this section was written. `check-fast.sh` plus the touched suites, run above and
+matching this project's own review-proportionality table for this tier of change, is the
+substitution actually made here; the full `.githooks/check-all.sh` gate is a merge
+precondition (hard rule 14), run once on the head that actually merges, not on every
+disposition round.
 
 | # | Finding | Disposition |
 |---|---|---|
@@ -245,11 +252,14 @@ per the proportionality table, plus each touched suite run individually and a fu
 | 7 | F040 half-fixed (uv pin duplication) | **Fixed**, commit `16bae29`. `check-all.sh` and `ci.yml` now read the version from `pyproject.toml` once; added a reconciliation test. Full `.githooks/test_ci_workflow.py` suite green (33 tests). |
 
 Finding 2's independent review (Opus) held on first pass: the Armarium cross-row check is
-correct as landed, no follow-up needed. A full `check-all.sh` gate run on the complete diff
-(all four fixes) is in progress as this section is written; this file is updated again once
-that lands, and again as a second, broader pass re-verifies the rest of PR #117's own
-disposition claims (below). Nothing above is a TODO left in the diff itself — each line is a
-decision with its reason, recorded here as this project's convention requires.
+correct as landed, no follow-up needed. **Correction, same catch as above:** this paragraph
+originally said a full `check-all.sh` gate run on the complete diff was "in progress" and
+that this file would be updated once it landed — it never was; no result for that run is
+recorded anywhere in this file. The full gate was never confirmed for this disposition
+round; only `check-fast.sh`-equivalent checks and the touched suites were, as corrected two
+paragraphs above. A second, broader pass re-verifies the rest of PR #117's own disposition
+claims below. Nothing above is a TODO left in the diff itself — each line is a decision with
+its reason, recorded here as this project's convention requires.
 
 **What two rounds of independent review on finding 1 says, worth recording rather than
 letting pass unremarked:** every round caught something real. The first review didn't just
@@ -631,7 +641,11 @@ exception type, message, traceback, argv and cwd, and `status` already shows it)
 The pull request opened for this review (`#119`) sat in draft, which the GitHub App reads
 as "skip" — CodeRabbit's automatic review never ran until the PR was marked ready and
 `@coderabbitai review` requested explicitly. Its pre-merge checks passed three
-(`Title check`, `Carried Code Is Named As Carried`, `No Witness Picker`) and raised two.
+(`Title check`, `Carried Code Is Named As Carried`, `No Witness Picker`) and raised two;
+its full walkthrough then posted 8 inline findings across the diff (2 major, 6 minor).
+Every finding below was independently re-verified by reading the current code before being
+accepted, not taken on the bot's word — several turned out narrower or wider than its own
+one-line description, recorded under each entry.
 
 ### Fixed in this pass
 
@@ -654,11 +668,119 @@ as "skip" — CodeRabbit's automatic review never ran until the PR was marked re
   drives the real `_armarium_export` — only `RunTree.read_artifact` is stubbed — with a
   `complete` aggregate and a `pages`/`non_delivered` payload missing `delivered`, and asserts
   the receipt lands as `armarium-record-unreadable`, never `complete`; a parametrized sibling
-  (`test_the_export_reader_refuses_a_member_missing_entirely`) covers the same gap for
-  `pages` and `non_delivered`. `operations/operator/test_surface.py`'s full suite (277
-  tests) and the full `operations/operator/` directory are green, as is `ruff format
-  --check` / `ruff check` on both changed files.
+  (`test_the_export_reader_refuses_a_member_missing_entirely`) covers the same gap for all
+  three members, `pages`, `delivered`, and `non_delivered` (the pre-existing non-list
+  parametrize test was widened to cover `delivered` too, and its payloads rebuilt so each
+  case corrupts only the one member under test, not left implicitly relying on iteration
+  order once presence became required).
+
+  **Independent review (Opus, high effort, read-only) held this correct and safe to push**,
+  and found four further points, all addressed: (A) [medium, arguable] a `complete` record
+  whose partition is *present but empty* still passed — `expected_acts` says otherwise, but
+  nothing reconciled the two, so a foreign record could still print "Run complete" beside a
+  false count. Fixed with one additional check in `run()`: when `state == "complete"` and
+  `expected_acts` is an int, `len(delivered) + len(non_delivered)` must equal it or the run
+  is refused the same way, with a new regression test
+  (`test_run_refuses_a_complete_aggregate_whose_partition_undercounts_expected_acts`).
+  (B) [low] four existing test doubles in `test_surface.py` described records the real
+  reader would now refuse (stubbing `_armarium_export` directly, so they still passed) —
+  given `"delivered": []`/`"non_delivered": []` so they stay realistic. (C) [low] the
+  validation loop's own comment read backwards ("a missing member is required" instead of
+  "presence is required") — reworded. (D) both addressed above: this entry now says what
+  the parametrized sibling actually covers, and names the non-list test's own repair.
+
+- **F114** [major] — a residue *directory* was walked and its contents backed up.
+  `sync_run_tree` (`operations/operator/backup.py`) checked `_is_os_residue(name)` only
+  after already deciding an entry was a regular file (`stat.S_ISREG`) — but `.Trashes`,
+  `.fseventsd` and `.Spotlight-V100` are directories on macOS, so they were never reached by
+  that check at all: they were walked like any other run-tree directory and their ordinary
+  contents hashed, copied, and published into the backup snapshot. The one existing test for
+  this exclusion (F104) covered only the file-form residue (`.DS_Store`, `._*`), so the gap
+  was untested. Fixed by moving the residue check immediately after the symlink refusal and
+  before the directory branch, so it applies uniformly regardless of entry kind. New test:
+  `test_a_residue_directory_is_never_walked_into`, a `.Trashes/` directory containing a
+  regular file, asserting the file never reaches the snapshot.
+
+- **F115** [minor] — `operations/notify/test_notify.py`'s generated shell wrapper for
+  `exec {sys.executable} "$@"` left `sys.executable` unquoted; a Python path containing a
+  space would split into multiple words and fail to start, before the test could verify
+  anything. Fixed with `shlex.quote(sys.executable)`.
+
+- **F116** [minor] — `proof/build_fixture.py`'s `reader_gap` self-check compared
+  `source_text[:row["offset"]]` against the declared `before` text, but Python slicing
+  clamps an out-of-range stop index, so an `offset` past the end of the source text could
+  not be told apart from one landing exactly at it if `before` happened to equal the whole
+  source. Fixed with an explicit `row["offset"] > len(source_text)` bounds check first,
+  mirroring the out-of-bounds check `READER_DOUBTS`'s own self-check already makes a few
+  lines above it.
+
+- **F117** [minor] — `_status_projection`'s `advance` status arm printed a state-relative
+  `run_root` straight from the receipt instead of rejoining it against `state_root` the way
+  the `run` arm already does with `_display_path`; an operator whose state directory held a
+  run root under it would see a path relative fragment that does not exist from their
+  current directory. Fixed to match the `run` arm exactly. New test:
+  `test_status_rejoins_a_state_relative_run_root_for_an_advance_record` — none of the
+  existing advance-record tests happened to use a state-relative run root, so the gap was
+  untested.
+
+- **F118** [minor] — `.githooks/test_ci_workflow.py`'s `test_the_pinned_uv_version_has_one_
+  source_of_truth` only asserted the *current* pinned version string was not duplicated; a
+  future version bump that left a stale hardcoded value in the actual install/compare
+  commands, while some unrelated line still mentioned "pyproject.toml"/"required-version" in
+  passing, would not have been caught. Strengthened with direct assertions that the exact
+  command shapes — `check-all.sh`'s `case "$uv_version" in "uv $required_uv_version"|...`
+  and `ci.yml`'s `pip install "uv==$required_uv_version"` — use the extracted shell
+  variable, not a literal.
+
+- **F119** [minor] — `test_created_records_own_the_pod_rate_alone_not_the_volume_rate_too`
+  (F063's own regression test, `operations/pod/test_provider_runpod.py`) asserted
+  `pod_hourly_usd` and the source string but never the injected `volume_hourly_usd` itself,
+  so a regression that corrupted the volume rate specifically would still pass. Added
+  `assert record.estimate.volume_hourly_usd == Decimal("0.05")`.
+
+- **F120** [major, heavy lift] — a launch receipt for one run could be supplied to
+  `fetch-run --run-id` naming a *different* run on the same volume. `_read_launch_command`
+  (`operations/operator/cli.py`) already refused a receipt recorded for the wrong network
+  volume, but never compared the sealed command's own `--run-id` (`pod_run`'s required flag,
+  sealed inside the nested `--bootstrap-command-json` argv — not a top-level request field
+  the way `volume_id` is) against the run being fetched. On the same volume this is quieter
+  than the volume mismatch: every derived evidence key and prefix would still resolve to
+  real objects, just another launch's, stored beside the fetched run and misstating their
+  provenance rather than merely failing to find them. Fixed with a new public derivation,
+  `launch.launch_run_id(docker_start_cmd)` (mirroring `launch_evidence_keys`/
+  `launch_evidence_prefixes`'s own existing pattern — reads `pod_run`'s own argv half of the
+  nested bootstrap command specifically, `None` for a hold-only launch which starts no run),
+  threaded through `_read_launch_command`/`_derived_evidence_keys`/
+  `_derived_evidence_prefixes` and the `fetch-run` verb's own call site (`args.run_id`), with
+  a refusal matching the volume check's own shape when both the receipt and the request name
+  a run id and they differ. New tests: `launch_run_id`'s own unit coverage
+  (`test_launch_run_id_reads_pod_runs_own_run_id_flag`,
+  `test_launch_run_id_is_none_for_a_hold_only_launch`,
+  `test_launch_run_id_is_none_with_no_bootstrap_command_at_all`) and a CLI-level regression,
+  `test_a_launch_receipt_for_another_run_is_refused_rather_than_used`, which also confirms
+  fetching the run the receipt actually started still derives normally.
+
 - The PR description didn't follow this repository's `.github/pull_request_template.md`
   headings. Rewritten to match exactly (`What changed` / `What it touches` / `Why it is
   here` / `Rebuild record, when applicable` / `How to undo it` / `What proves it works` /
   `Review candidate` / `Review findings`, plus the checklist).
+
+- Two self-contradictions in this file's own "Dispositions" section, caught by CodeRabbit's
+  review of this PR itself: it claimed a full `check-all.sh` gate had already run on the
+  complete diff, while two paragraphs later (and the earlier "Gate result" section) already
+  said, correctly, that only `check-fast.sh` plus the touched suites had run and the full
+  gate was still in progress / out of scope for that round. Corrected both passages in place
+  rather than papering over them, per hard rule 7.
+
+All of `operations/operator/test_surface.py` (279 tests), `operations/operator/
+test_backup.py`, `operations/notify/test_notify.py`, `proof/` (63 tests), `.githooks/
+test_ci_workflow.py` (33 tests), `operations/pod/test_pod_run.py`, `operations/pod/
+test_provider_runpod.py`, and `operations/operator/test_cli.py` are green individually; the
+full `operations/`, `proof/`, and `.githooks/` directories together are green with no
+failures. `ruff format --check` and `ruff check` pass across the whole repository.
+`check-fast.sh` (ingress checks, document check, `ruff`, and — with `shellcheck` installed
+mid-session, previously absent from this sandbox — the shell-script lint) passes apart from
+two pre-existing `shellcheck` warnings in `.githooks/check-all.sh`, a file untouched by this
+round; confirmed identical on base commit `485283b`'s own copy of that file, so not a
+regression from this diff, and not run by GitHub Actions CI at all (no workflow invokes
+`shellcheck`).

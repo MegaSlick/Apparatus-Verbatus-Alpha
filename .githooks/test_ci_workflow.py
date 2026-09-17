@@ -137,6 +137,16 @@ def test_the_pinned_uv_version_has_one_source_of_truth():
     )
     assert "pyproject.toml" in check_all_text and "required-version" in check_all_text
     assert "pyproject.toml" in ci_text and "required-version" in ci_text
+    # The absence check above only proves the *current* version isn't
+    # duplicated -- a future bump could leave a stale literal behind in the
+    # actual install/compare command while some other line still mentions
+    # "pyproject.toml"/"required-version" in passing, and this test would not
+    # notice. Pin the check to the exact command shape instead: the extracted
+    # shell variable, not a literal, must be what `check-all.sh` compares
+    # `uv --version` against and what `ci.yml` installs.
+    assert 'case "$uv_version" in' in check_all_text
+    assert '"uv $required_uv_version"|"uv $required_uv_version "*)' in check_all_text
+    assert 'pip install "uv==$required_uv_version"' in ci_text
 
 
 def test_every_runtime_dependency_is_inside_the_everyday_environment():

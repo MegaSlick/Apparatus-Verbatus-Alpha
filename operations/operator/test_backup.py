@@ -102,6 +102,34 @@ def test_os_residue_is_neither_copied_nor_inventoried(tmp_path: Path) -> None:
     assert record["excluded_publication_temporaries"] == []
 
 
+def test_a_residue_directory_is_never_walked_into(tmp_path: Path) -> None:
+    """`.Trashes`, `.fseventsd` and `.Spotlight-V100` are directories on macOS.
+
+    Before this fix, `_is_os_residue` was checked only after the walk had
+    already decided an entry was a regular file, so a residue name that was
+    actually a directory fell through untouched: it was walked like any other
+    run-tree directory and its ordinary contents were hashed, copied, and
+    published in the snapshot. A file living inside `.Trashes/` is exactly the
+    kind of thing this exclusion exists to keep out.
+    """
+    volume, run_id = _run_tree(tmp_path)
+    run = volume / run_id
+    (run / ".Trashes").mkdir()
+    (run / ".Trashes" / "deleted-elsewhere.json").write_bytes(b"not a run-tree member\n")
+    mac = tmp_path / "Mac Backup"
+
+    report = sync_run_tree(volume, run_id, mac)
+
+    assert report.copied == 2 and report.reused == 0
+    snapshot = mac / "snapshots" / "sha256" / f"{report.snapshot_sha256}.json"
+    record = json.loads(snapshot.read_text())
+    relative_paths = {row["relative_path"] for row in record["files"]}
+    assert relative_paths == {
+        "run.json",
+        "receipts/sha256/" + "a" * 64 + ".json",
+    }
+
+
 def test_two_inventory_passes_from_one_descriptor_see_the_same_tree(tmp_path: Path) -> None:
     """`sync_run_tree` scans the anchored root twice and compares the two views.
 

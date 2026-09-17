@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -94,7 +95,7 @@ def test_the_checkouts_own_venv_python_is_preferred_over_paths(notify_repo, tmp_
     venv_python.write_text(
         f"""#!/bin/sh
 touch "{tmp_path}/venv-python-used"
-exec {sys.executable} "$@"
+exec {shlex.quote(sys.executable)} "$@"
 """,
         encoding="utf-8",
     )

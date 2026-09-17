@@ -394,6 +394,7 @@ def test_created_records_own_the_pod_rate_alone_not_the_volume_rate_too() -> Non
     record = provider(transport).create(request())
 
     assert record.estimate.pod_hourly_usd == Decimal("0.77")
+    assert record.estimate.volume_hourly_usd == Decimal("0.05")
     assert "RunPod observed pod costPerHr" in record.estimate.source
     assert "not observed from the provider" in record.estimate.source
 

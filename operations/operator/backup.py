@@ -530,6 +530,19 @@ def _inventory_descriptor(
                 ) from error
             if stat.S_ISLNK(details.st_mode):
                 raise BackupRefusal(f"run tree member {relative!r} is a symbolic link")
+            if _is_os_residue(name):
+                # Neither copied nor inventoried: this member was never a run-tree
+                # member to begin with, so excluding it needs no entry in the
+                # snapshot the way a publication temporary's exclusion does --
+                # recording every OS's residue names in a versioned, worker-to-
+                # parent schema is a larger change than this fix makes (F103
+                # already names that same schema as due a version bump). Checked
+                # before the directory branch below, not only the file branch:
+                # `.Trashes`, `.fseventsd` and `.Spotlight-V100` are directories
+                # on macOS, and a check reached only after `stat.S_ISREG` would
+                # never see them -- they would be walked and their contents
+                # hashed into the snapshot like any other run-tree directory.
+                continue
             if stat.S_ISDIR(details.st_mode):
                 if len(stack) >= MAX_DIRECTORY_DEPTH:
                     raise BackupRefusal(
@@ -551,14 +564,6 @@ def _inventory_descriptor(
                 continue
             if not stat.S_ISREG(details.st_mode):
                 raise BackupRefusal(f"run tree member {relative!r} is not a regular file")
-            if _is_os_residue(name):
-                # Neither copied nor inventoried: this file was never a run-tree
-                # member to begin with, so excluding it needs no entry in the
-                # snapshot the way a publication temporary's exclusion does --
-                # recording every OS's residue names in a versioned, worker-to-
-                # parent schema is a larger change than this fix makes (F103
-                # already names that same schema as due a version bump).
-                continue
             _record_mac_spelling(relative, mac_spellings)
             if _is_publication_temporary(relative, managed_paths):
                 publication_temporaries.append(relative)

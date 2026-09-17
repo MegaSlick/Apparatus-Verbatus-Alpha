@@ -3174,6 +3174,7 @@ def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
         "aggregate": {"status": "complete", "reasons": []},
         "pages": "not a list of page records",
         "delivered": [],
+        "non_delivered": [],
         "expected_acts": 2,
     }
 
@@ -3287,6 +3288,41 @@ def test_the_export_reader_refuses_a_member_missing_entirely(
     )
     with pytest.raises(ValueError, match=f"missing {member}"):
         surface._armarium_export(tmp_path, "r1")
+
+
+def test_run_refuses_a_complete_aggregate_whose_partition_undercounts_expected_acts(
+    tmp_path: Path,
+) -> None:
+    """`delivered`/`non_delivered` being present lists is not enough on its own.
+
+    A foreign record could claim `status: complete` with `expected_acts: 3`
+    while `delivered` and `non_delivered` are both empty -- present, well-typed,
+    and wrong. Before this fix `run()` took `state` from `aggregate["status"]`
+    alone, so this record would still print "Run complete" and send a milestone
+    claiming acts accounted for that were never actually delivered or held.
+    """
+
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [],
+        "non_delivered": [],
+        "expected_acts": 3,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="undercounted-partition")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "total 0" in (failure.value.detail or "")
+    assert "expected_acts of 3" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] != "complete"
 
 
 def test_a_held_run_raises_run_held_not_run_failed(
@@ -3416,6 +3452,8 @@ def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
     surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
         "aggregate": {"status": "complete"},
         "pages": [],
+        "delivered": [],
+        "non_delivered": [],
     }
 
     def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
@@ -7049,6 +7087,38 @@ def test_status_names_an_advance_so_the_operators_sequence_is_reconstructible(
     assert any(line.startswith("- advance record 1: ") for line in lines)
     status = "\n".join(lines)
     assert f"Run: staged; run root: {tmp_path / 'runs'}; stage: designator." in status
+
+
+def test_status_rejoins_a_state_relative_run_root_for_an_advance_record(
+    tmp_path: Path,
+) -> None:
+    """The `advance` status arm must resolve a state-relative run root the
+    same way the `run` arm already does (`_display_path`), not print the
+    stored relative fragment unchanged.
+
+    `record_advance` stores `run_root` through `_state_relative`, which
+    keeps a run root under the state directory as a short relative path
+    (e.g. `runs`) so it survives the state directory being moved. Before
+    this fix, `_status_projection`'s `advance` arm printed that stored value
+    straight from the receipt instead of rejoining it against `state_root`
+    the way the `run` arm does -- the operator would see a path that does
+    not exist from their current directory.
+    """
+    surface = _surface(tmp_path)
+    reference = ApprovalRecordReference("2_designator/approvals/a.json", "b" * 64)
+    run_root = surface.state_root / "runs"
+
+    surface.record_advance(
+        run_id="under-state-root",
+        run_root=run_root,
+        stage="designator",
+        reason="operator reviewed the completed run",
+        seal_digest="c" * 64,
+        reference=reference,
+    )
+
+    status = "\n".join(surface.status())
+    assert f"Run: under-state-root; run root: {run_root}; stage: designator." in status
     assert f"Passed boundary sealed at: {'c' * 64}." in status
     assert "Approval record: 2_designator/approvals/a.json" in status
     assert "Reason: operator reviewed the completed run" in status
