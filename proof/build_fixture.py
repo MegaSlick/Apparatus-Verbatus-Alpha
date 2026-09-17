@@ -151,12 +151,16 @@ READER_ASSESSMENTS = (
     {"scenario": "reader-doubt-unreadable", "act_key": "a1", "state": "assessed", "problem": ""},
 )
 READER_DOUBTS = (
-    # "SYNTHETIC ACT ONE alpha beta gamma": "gamma" is [29, 34).
+    # "SYNTHETIC ACT ONE alpha beta gamma": "gamma" is [29, 34). `text` is
+    # checked against the source text at generation time (below), so an edit
+    # to `ACTS`/`AUDIT_REPROOFS` that moves this substring is refused here
+    # rather than silently emitting a span pointing at the wrong characters.
     {
         "scenario": "reader-doubt",
         "act_key": "a1",
         "start": 29,
         "end": 34,
+        "text": "gamma",
         "alternatives": ["gamna", "gaMma"],
         "confidence": "low",
     },
@@ -167,6 +171,7 @@ READER_DOUBTS = (
         "act_key": "a1",
         "start": 29,
         "end": 34,
+        "text": "gamma",
         "alternatives": ["gamma"],
         "confidence": "low",
         "pass_kind": "perlectio",
@@ -177,10 +182,15 @@ READER_DOUBTS = (
         "act_key": "a1",
         "start": 29,
         "end": 35,
+        "text": "gamma!",
         "alternatives": ["gamma"],
         "confidence": "medium",
         "pass_kind": "audit-reproof",
     },
+    # Deliberately malformed: `end` must stay past the source text's length, so
+    # the self-check below confirms this row still exercises the
+    # out-of-bounds refusal it exists to test, rather than checking a
+    # substring like the others.
     {
         "scenario": "reader-doubt-malformed",
         "act_key": "a1",
@@ -196,13 +206,21 @@ READER_DOUBTS = (
         "act_key": "a1",
         "start": 29,
         "end": 34,
+        "text": "gamma",
         "alternatives": ["gamna"],
         "confidence": "low",
     },
 )
 READER_GAPS = (
     # Between "alpha" and " beta": offset 23 is strictly inside the text.
-    {"scenario": "reader-doubt", "act_key": "a1", "position": "internal", "offset": 23},
+    # `before` is checked against the source text at generation time (below).
+    {
+        "scenario": "reader-doubt",
+        "act_key": "a1",
+        "position": "internal",
+        "offset": 23,
+        "before": "SYNTHETIC ACT ONE alpha",
+    },
 )
 
 # Fixture-only Pass-C response. It is deliberately separate from R5a's
@@ -857,6 +875,45 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         if "pass_kind" in row:
             lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
     for row in READER_DOUBTS:
+        # A hand-computed span drifts silently past an edit to the source text
+        # it names -- there is no other check between here and a test file
+        # that re-hardcodes the same numbers by hand. Checked here instead,
+        # the same way CHANDRA_ANCHORS checks its own act-text offsets above:
+        # the malformed row's whole point is to be out of bounds, so it is
+        # checked for that instead of for a substring.
+        source_text = (
+            next(
+                reproof["text"]
+                for reproof in AUDIT_REPROOFS
+                if reproof["scenario"] == row["scenario"] and reproof["act_key"] == row["act_key"]
+            )
+            if row.get("pass_kind") == "audit-reproof"
+            else next(act["text"] for act in ACTS if act["key"] == row["act_key"])
+        )
+        if row["scenario"] == "reader-doubt-malformed":
+            if row["end"] <= len(source_text):
+                raise ValueError(
+                    f"reader_doubt {row['scenario']!r} is declared malformed (out of bounds) "
+                    f"but its end {row['end']} is within the {len(source_text)}-character "
+                    "source text; it would no longer exercise the out-of-bounds refusal it "
+                    "exists to test"
+                )
+        else:
+            expected = row["text"]
+            if source_text.count(expected) != 1:
+                raise ValueError(
+                    f"reader_doubt {row['scenario']!r}/{row.get('pass_kind')!r} declares text "
+                    f"{expected!r}, which does not occur exactly once in its "
+                    f"{len(source_text)}-character source text; the span cannot be checked "
+                    "unambiguously"
+                )
+            if source_text[row["start"] : row["end"]] != expected:
+                raise ValueError(
+                    f"reader_doubt {row['scenario']!r}/{row.get('pass_kind')!r} span "
+                    f"[{row['start']}:{row['end']}] is {source_text[row['start'] : row['end']]!r}, "
+                    f"not the declared {expected!r}; the source text changed without updating "
+                    "the offsets"
+                )
         alternatives = ", ".join(toml_string(value) for value in row["alternatives"])
         lines += [
             "",
@@ -871,6 +928,13 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         if "pass_kind" in row:
             lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
     for row in READER_GAPS:
+        source_text = next(act["text"] for act in ACTS if act["key"] == row["act_key"])
+        if source_text[: row["offset"]] != row["before"]:
+            raise ValueError(
+                f"reader_gap {row['scenario']!r} offset {row['offset']} follows "
+                f"{source_text[: row['offset']]!r}, not the declared {row['before']!r}; the "
+                "source text changed without updating the offset"
+            )
         lines += [
             "",
             "[[reader_gap]]",
