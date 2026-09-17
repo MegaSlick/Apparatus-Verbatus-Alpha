@@ -236,7 +236,7 @@ per the proportionality table, plus each touched suite run individually and a fu
 
 | # | Finding | Disposition |
 |---|---|---|
-| 1 | Operator run-screen page mismatch | **Fixed**, commit `b80746d`. `_declared_work` now filters pages and acts through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario`; both G21 xfail tests pass for real. Full `operations/operator/` suite green. |
+| 1 | Operator run-screen page mismatch | **Fixed, in two rounds.** Round 1 (`b80746d`): `_declared_work` filters pages/acts through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario`; both G21 xfail tests pass for real. An independent reader (Opus) then found the fix only covered the two scenarios its own tests exercised — under `ink-free-page` and `refused-page` (both part of the original F030, not new discoveries) the closing accounting line still mismatched its own total, for reasons the static fixture declaration structurally cannot know (a runtime-minted act; a page refused after being declared). Round 2 (`b80746d`'s direct follow-through, same PR): added `_exported_work`, which reads the completed run's real Armarium export instead of the static declaration for the closing line only (the opening line still correctly uses the static declaration, since no real record exists yet); verified by running the CLI directly against both scenarios, not just by reading the diff. A second independent review of *that* round found five further real defects — an unguarded `sys.modules` leak in `_door_module`, three unguarded dict reads that could crash with a confusing "unclassified error" message on a malformed fixture row, and `_exported_work` silently dropping a malformed record from its printed names while the caller still printed the raw count as the total (reopening the same class of mismatch this whole fix exists to close) — all fixed (`6a89f69`), each with a new test, full `operations/operator/` suite green throughout. |
 | 2 | Armarium cross-row noise-floor check | **Fixed**, commit `daaa153`. `_validate_ink_map_pages` now refuses a bundle whose flagged pages disagree on the sealed noise floor. Full `pipeline/7_armarium/` suite green. |
 | 3 | README status line | **Reported to Tyrel, not edited.** Governed path (hard rule 10); the main session applies a change only once he approves substance, through the governed-edit procedure. |
 | 4 | ARCHITECTURE.md Recensor real-ingress gap | **Reported to Tyrel, not edited.** Governed path, same as above. |
@@ -244,10 +244,43 @@ per the proportionality table, plus each touched suite run individually and a fu
 | 6 | `build_fixture.py` self-check | **Fixed**, commit `f330033`. Reader-doubt/gap offsets now self-check against the actual source text at generation time. Output byte-identical; full `proof/` suite green. |
 | 7 | F040 half-fixed (uv pin duplication) | **Fixed**, commit `16bae29`. `check-all.sh` and `ci.yml` now read the version from `pyproject.toml` once; added a reconciliation test. Full `.githooks/test_ci_workflow.py` suite green (33 tests). |
 
-Independent-review and full-gate confirmation for 1 and 2 is in progress as this section is
-written; this file is updated again once that lands, per the same "write as you go" reasoning
-that opened this record. Nothing above is a TODO left in the diff itself — each line is a
+Finding 2's independent review (Opus) held on first pass: the Armarium cross-row check is
+correct as landed, no follow-up needed. A full `check-all.sh` gate run on the complete diff
+(all four fixes) is in progress as this section is written; this file is updated again once
+that lands, and again as a second, broader pass re-verifies the rest of PR #117's own
+disposition claims (below). Nothing above is a TODO left in the diff itself — each line is a
 decision with its reason, recorded here as this project's convention requires.
+
+**What two rounds of independent review on finding 1 says, worth recording rather than
+letting pass unremarked:** every round caught something real. The first review didn't just
+rubber-stamp a plausible fix; it found the fix solved the two cases its own tests happened to
+cover and quietly left the rest of the same finding open. The second review, on the fix for
+*that*, found the fix for the fix had its own new problems — a resource leak and three
+unguarded dict reads a hostile or merely malformed fixture row would hit. Fixing a bug is not
+the same activity as confirming a fix is complete, and this project's own history (F030 and
+F040 both marked "fixed" in PR #117 without actually being closed) says that confusing the two
+is a standing risk, not a one-off. Budget for the second pass, not just the first.
+
+## Second pass: re-verifying the rest of PR #117's own disposition claims
+
+Two of PR #117's fourteen "fixed" groups turned out incomplete when actually checked (F030/G21
+was honestly declined in the PR body, not falsely claimed — see below; F040/G15 was falsely
+claimed fixed). Given that hit rate, the remaining twelve "fixed" groups and the five "refuted"
+claims in the same PR body warrant the same treatment: read the actual current code against
+the specific claim, not the commit message's summary of it, and run what can be run quickly.
+A second workflow was launched for this (twelve fix-groups plus the five refutations, each
+independently verified, each finding adversarially re-checked by a second reader before being
+kept). Results are appended below once it completes.
+
+**Correction to the record above:** F030/G21 was not a false "fixed" claim. PR #117's own body
+lists it under "Declined for this pull request, with reasons (each queued as a task)": "G16,
+G17, G14, G18 copy, G21 ... share the operator files with this PR's receipt changes and were
+held for a follow-up to keep this diff reviewable. The G21 test is committed here marked xfail
+naming the finding." That is exactly what this session found and exactly what hard rule 7
+requires — a known gap, disclosed, not silently dropped. Picking it up this session was
+legitimate follow-up work, not catching a lie, and it is worth being precise about the
+difference: F040 was PR #117 saying something was fixed when it wasn't; F030 was PR #117
+correctly saying something was not fixed yet.
 
 ## Bottom line
 
