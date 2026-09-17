@@ -2213,9 +2213,11 @@ def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payloa
     as geometry, so the rule that guard states is now load-bearing for two
     adapters rather than one: a body no parser recognized must never be
     rehydrated as geometry, whichever page chair produced it. The branch is
-    adapter-agnostic already (`serving_call_ref` and `content_health.recordable`
-    are the only things it reads), and this is what says so -- without it the
-    claim rests on one chair's record and reads as Chandra's rule.
+    adapter-agnostic already (`serving_call_ref` and `record["outcome"]` are
+    the only things it reads -- not `content_health.recordable`, whose own
+    ambiguity on this exact outcome is F131's fix, below), and this is what
+    says so -- without it the claim rests on one chair's record and reads as
+    Chandra's rule.
 
     The blob is still read and digest-checked either way: the retained response
     has to be present and still itself before this record may stand in for a
@@ -2320,7 +2322,7 @@ def test_an_unparsed_resumed_record_still_reads_and_digest_checks_its_retained_b
 ):
     """The other half of the sibling above: withheld as geometry, still verified.
 
-    The two tests before this one prove the no-geometry rule and would both keep
+    The three tests before this one prove the no-geometry rule and would all keep
     passing if the implementation returned `observation_payload=None` the moment
     it saw `served_by_a_chair and not parsed_into_a_payload` -- before opening
     the blob at all. That regression looks harmless and is not: a resumed pass
