@@ -1649,16 +1649,18 @@ def _interactive_arguments() -> list[str]:
                 evidence_key = _ask(label)
                 if evidence_key:
                     arguments.extend(("--evidence-key", evidence_key))
-        # A volume is reused across launches, so preflight/ holds every
-        # launch's tree and a later reader cannot say which measured the
-        # chairs for this run. Naming this run's own stem is how one launch's
-        # evidence comes home on its own.
-        prefix = _ask(
-            "This run's preflight stem, as preflight/<bootstrap report stem> "
-            "(leave blank for every launch's preflight tree)"
-        )
-        if prefix:
-            arguments.extend(("--evidence-prefix", prefix))
+            # A volume is reused across launches, so preflight/ holds every
+            # launch's tree and a later reader cannot say which measured the
+            # chairs for this run. With a receipt named above, --launch-receipt
+            # already derives this run's own preflight stem (the same way it
+            # derives the evidence keys just asked for) -- asked here only in
+            # the no-receipt fallback, where nothing can derive it.
+            prefix = _ask(
+                "This run's preflight stem, as preflight/<bootstrap report stem> "
+                "(leave blank for every launch's preflight tree)"
+            )
+            if prefix:
+                arguments.extend(("--evidence-prefix", prefix))
         return arguments
     if verb == "export":
         return ["export"]

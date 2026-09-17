@@ -1731,14 +1731,16 @@ class OperatorSurface:
                 detail=f"run {recorded_id} is not a run recorded in this operator state",
             )
 
-        def _resolved_run_root(payload: dict[str, Any]) -> Path:
+        def _resolved_run_root(payload: dict[str, Any]) -> Path | None:
+            # `None` for a record this can't resolve, rather than refusing
+            # export outright over it: a record that will not end up selected
+            # (matching[-1], below) should not be able to block export of one
+            # that will, and the one that IS selected is still validated by
+            # this method's own existing try/except a few lines down --
+            # unchanged, so a single malformed record behaves exactly as it
+            # did before this function existed.
             value = payload.get("run_root")
-            if not isinstance(value, str):
-                raise OperatorError(
-                    ErrorCode.EXPORT_MISSING,
-                    detail=f"a run record for {recorded_id} has no usable run_root",
-                )
-            return self._state_path(value).resolve()
+            return self._state_path(value).resolve() if isinstance(value, str) else None
 
         if run_root is not None:
             named_root = run_root.resolve()
@@ -1751,7 +1753,9 @@ class OperatorSurface:
                     detail=f"run {recorded_id} has no record under run root {run_root}",
                 )
         else:
-            resolved_roots = {_resolved_run_root(payload) for payload in matching}
+            resolved_roots = {
+                root for payload in matching if (root := _resolved_run_root(payload)) is not None
+            }
             if len(resolved_roots) > 1:
                 candidates = ", ".join(str(candidate) for candidate in sorted(resolved_roots))
                 raise OperatorError(

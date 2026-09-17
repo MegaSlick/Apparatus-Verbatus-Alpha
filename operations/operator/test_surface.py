@@ -3552,6 +3552,34 @@ def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_n
     assert "run_root" in failure.value.render()
 
 
+def test_a_malformed_older_receipt_does_not_block_export_of_a_sound_later_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ambiguity check (above, EXPORT_AMBIGUOUS) reads every matching
+    receipt's run_root to compare them; a record it cannot resolve at all
+    must not be able to block export of the one that actually gets selected
+    (matching[-1]) just by existing earlier under the same run_id -- that
+    would be a new failure mode the ambiguity check introduced, not one it
+    was meant to guard against."""
+    surface = _surface(tmp_path)
+    surface._write_action(
+        "run",
+        {"summary": "an earlier, incomplete record", "run_id": "dup"},
+        descriptor_action="run",
+    )
+    surface._write_action(
+        "run",
+        {"summary": "test run", "state": "complete", "run_root": "runs", "run_id": "dup"},
+        descriptor_action="run",
+    )
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"sound"))
+    surface._armarium_export = lambda root, run_id: _complete_export(root, run_id)  # type: ignore[method-assign]
+
+    bundle = surface.export(run_id="dup")
+
+    assert bundle.read_bytes() == b"sound"
+
+
 def test_console_entry_renders_an_application_import_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6734,16 +6762,29 @@ def test_derived_evidence_prefixes_reads_the_launch_receipt(tmp_path: Path) -> N
     """F110/G11: `--evidence-prefix` derives from the same saved launch receipt
     `--evidence-key` already does (`cli._derived_evidence_keys`), so an
     operator is not asked to retype a 32-hex token by hand for one flag while
-    the other derives it for free."""
+    the other derives it for free. Real requests write every report path at
+    the volume root (boot_a_request.py, boot_b_request.py); only
+    bootstrap_main's own report path names this launch's preflight directory
+    (`preflight/<that report path's stem>`), so the fixture below mirrors a
+    real Boot B nested argv (pod_run's own argv, bootstrap_main's appended
+    after the first literal '--') rather than a simplified one."""
     token = "c" * 32
-    nested = json.dumps(
-        [
-            "python",
-            "-m",
-            "operations.pod.pod_run",
-            f"--report-path=/workspace/preflight/pod-run-report-{token}.json",
-        ]
-    )
+    run_half = [
+        "python",
+        "-m",
+        "operations.pod.pod_run",
+        "--report-path",
+        f"/workspace/pod-run-report-{token}.json",
+        "--run-id",
+        "r1",
+    ]
+    bootstrap_half = [
+        "--volume-mount-path",
+        "/workspace",
+        "--report-path",
+        f"/workspace/bootstrap-report-{token}.json",
+    ]
+    nested = json.dumps([*run_half, "--", *bootstrap_half])
     receipt = tmp_path / "launch-receipt.json"
     receipt.write_text(
         json.dumps(
@@ -6755,7 +6796,7 @@ def test_derived_evidence_prefixes_reads_the_launch_receipt(tmp_path: Path) -> N
                             "-m",
                             "operations.pod.pod_timer",
                             "--report-path",
-                            f"/workspace/preflight/pod-runtime-report-{token}.json",
+                            f"/workspace/pod-runtime-report-{token}.json",
                             "--bootstrap-command-json",
                             nested,
                         ],
@@ -6770,10 +6811,7 @@ def test_derived_evidence_prefixes_reads_the_launch_receipt(tmp_path: Path) -> N
 
     prefixes = cli._derived_evidence_prefixes(receipt, volume)
 
-    assert prefixes == (
-        f"preflight/pod-runtime-report-{token}",
-        f"preflight/pod-run-report-{token}",
-    )
+    assert prefixes == (f"preflight/bootstrap-report-{token}",)
 
 
 def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) -> None:
