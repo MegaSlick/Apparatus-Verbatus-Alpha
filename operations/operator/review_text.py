@@ -449,8 +449,13 @@ def render(projection: dict[str, Any]) -> list[str]:
     # is two rows below and one act to resolve; counting rows here reported two
     # acts held on a run that had one, contradicting README.md's own account of
     # this header and the distinct count `review.py` already computes for the
-    # summary sentence just above.
-    held_acts = len({hold["act_id"] for hold in holds})
+    # summary sentence just above. `.get()`, not a subscript: every other read
+    # of a `holds` entry in this function goes through `.get()`, because this
+    # renderer's whole job is to turn a malformed projection into
+    # `ProjectionShapeError` rather than an uncaught exception (see this
+    # module's own docstring) -- a subscript here would be the one place that
+    # promise did not hold.
+    held_acts = len({hold.get("act_id") for hold in holds})
     lines.append(f"Held or unresolved acts ({held_acts})")
     for hold in holds:
         examination = hold.get("audit_examination")
