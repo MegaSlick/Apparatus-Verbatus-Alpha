@@ -455,7 +455,7 @@ def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
     fake_bin.mkdir()
     uv = fake_bin / "uv"
     uv.write_text(
-        "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo 'uv "
+        '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo \'uv '
         f"{REQUIRED_UV_VERSION}'; exit 0; fi\nexit 0\n"
     )
     uv.chmod(0o755)
@@ -579,7 +579,7 @@ def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
     fake_bin.mkdir()
     uv = fake_bin / "uv"
     uv.write_text(
-        "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo 'uv "
+        '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo \'uv '
         f"{REQUIRED_UV_VERSION}'; exit 0; fi\nexit 0\n"
     )
     uv.chmod(0o755)
