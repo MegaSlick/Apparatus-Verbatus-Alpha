@@ -2727,7 +2727,7 @@ def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path:
             data_gate_policy=tmp_path / "data-gate-policy.json",
         )
 
-    declared_pages, declared_acts, declared_ok = _declared_work(ROOT)
+    declared_pages, declared_acts, declared_ok = _declared_work(ROOT, "happy")
     assert declared_ok, "the declared fixture is unreadable; this test proves nothing"
     for name in declared_pages + declared_acts:
         assert not any(name in line for line in messages), (

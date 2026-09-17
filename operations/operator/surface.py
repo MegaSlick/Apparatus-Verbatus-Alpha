@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -1294,7 +1295,7 @@ class OperatorSurface:
         started_at = utc_stamp(self.now())
         prior_state = self._prior_run_state(run_id)
         if submission_folder is None:
-            pages, acts, declared_ok = _declared_work(self.workspace)
+            pages, acts, declared_ok = _declared_work(self.workspace, scenario)
             if not declared_ok:
                 # Not a naming inconvenience: the orchestrator reads the same
                 # fixture from the same place, so a run started here would fail
@@ -1603,7 +1604,7 @@ class OperatorSurface:
             f"{expected} act(s) accounted for" if expected is not None else "act total not recorded"
         )
         if submission_folder is None:
-            pages, acts, _declared_ok = _declared_work(self.workspace)
+            pages, acts, _declared_ok = _declared_work(self.workspace, scenario)
             self.present(
                 f"Pages accounted for: {', '.join(pages)} ({len(page_records)} total). "
                 f"Acts accounted for: {', '.join(acts)} ({expected_on_screen})."
@@ -4508,18 +4509,50 @@ def _human_duration(seconds: int) -> str:
     return f"{seconds} seconds"
 
 
-def _declared_work(workspace: Path) -> tuple[list[str], list[str], bool]:
-    """Name the fixture's actual declared work rather than invent a progress number.
+def _door_module(workspace: Path):
+    """Load `pipeline/1_exemplar/door.py` by path, under a synthetic name.
+
+    `1_exemplar` cannot be reached by a normal dotted import (the digit
+    prefix makes `import 1_exemplar` invalid Python), and door.py is
+    otherwise invoked here only as a subprocess (`DOOR_PROGRAM`). This is the
+    same loader every stage's own test suite already uses to reach a sibling
+    stage's file for boundary testing — a deliberate, visible, single-purpose
+    load, not a stage-to-stage import (`pipeline/test_stage_import_boundaries.py`
+    binds pipeline stages to each other; it does not reach operations/).
+    """
+
+    spec = importlib.util.spec_from_file_location(
+        "operator_door_fixture_scenarios", workspace / DOOR_PROGRAM
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _declared_work(workspace: Path, scenario: str) -> tuple[list[str], list[str], bool]:
+    """Name the fixture's actual declared work for this scenario, rather than
+    every page and act the fixture declares regardless of which one is running.
+
+    Filters through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario` —
+    the same scenario-gating a real door application would answer — instead of
+    listing every `[[page]]`/`[[act]]` row unconditionally, which named a page
+    (e.g. a scenario-gated page 3) the running scenario never touches (G21,
+    findings F001/F106).
 
     The third element is `False` exactly when the declared fixture could not
-    be read at all, so the caller can say so — a generic placeholder shown
-    without comment reads as the real page/act list, which it is not.
+    be read, or this scenario could not be resolved against it, at all, so the
+    caller can say so — a generic placeholder shown without comment reads as
+    the real page/act list, which it is not.
     """
 
     try:
         fixture = load_fixture(str(workspace / "proof"))
-        pages = [f"page {page['ordinal']}" for page in fixture["page"]]
-        acts = [f"act {act['key']}" for act in fixture["act"]]
+        active_pages = _door_module(workspace).fixture_pages_for_scenario(fixture, scenario)
+        active_ordinals = {page["ordinal"] for page in active_pages}
+        pages = [f"page {page['ordinal']}" for page in active_pages]
+        acts = [
+            f"act {act['key']}" for act in fixture["act"] if act["page_ordinal"] in active_ordinals
+        ]
         if pages and acts and all(isinstance(value, str) for value in pages + acts):
             return pages, acts, True
     except Exception:

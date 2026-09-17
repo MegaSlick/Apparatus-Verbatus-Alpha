@@ -1,29 +1,24 @@
 """Regression coverage for G21 (F001/F030): fixture-rehearsal narration must
 never name a page or act the running scenario did not actually touch.
 
-`_declared_work` (operations/operator/surface.py) reads every `[[page]]` row
-out of the single fixed fixture declaration file (`proof/skeleton_fixture.toml`)
-regardless of which `--scenario` is actually running, and three call sites
-(the opening "Checking ..." line, the "Working next: ..." line, and the
-closing "Pages accounted for: ..." line) print those names unconditionally.
-`pipeline/1_exemplar/door.py::fixture_pages_for_scenario` already exists and
-answers exactly the question these call sites need -- which pages this
-scenario actually activates -- but `_declared_work` does not call it.
+`_declared_work` (operations/operator/surface.py) used to read every
+`[[page]]` row out of the single fixed fixture declaration file
+(`proof/skeleton_fixture.toml`) regardless of which `--scenario` was actually
+running, and three call sites (the opening "Checking ..." line, the "Working
+next: ..." line, and the closing "Pages accounted for: ..." line) printed
+those names unconditionally. It now filters through
+`pipeline/1_exemplar/door.py::fixture_pages_for_scenario` -- the same
+question a real door application answers -- which is where a page gated to a
+scenario the current run never touches is dropped.
 
 This module is intentionally standalone (not appended to test_surface.py)
-because `operations/operator/surface.py` is owned by another seat this wave;
-the fix and its exact diff are proposed in this build seat's report rather
-than applied here. The test below is written against the *fixed* behavior and
-is expected to fail until that diff lands, so it is marked `xfail` naming
-G21 -- once `_declared_work` is scenario-aware, removing the `xfail` marker
-is the whole job of picking this back up.
+because `operations/operator/surface.py` was, at the time this test was
+written, owned by another seat -- the fix landed later, in this diff.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 from .errors import OperatorError
 from .surface import OperatorSurface
@@ -57,21 +52,6 @@ def _rehearsal_messages(tmp_path: Path, *, scenario: str) -> list[str]:
     return messages
 
 
-@pytest.mark.xfail(
-    reason=(
-        "G21: _declared_work names every fixture page regardless of scenario; "
-        "awaiting the other seat's surface.py fix (see this build's report for "
-        "the proposed diff, filtering through "
-        "pipeline/1_exemplar/door.py::fixture_pages_for_scenario)"
-    ),
-    # Strict: pytest reports an unexpected pass as XPASS and keeps the gate
-    # green, so the day `_declared_work` becomes scenario-aware these two would
-    # start passing silently, the marker the module docstring calls "the whole
-    # job" would never be removed, and both tests would go on running a whole
-    # orchestrator subprocess each for no signal (CodeRabbit on PR #117).
-    # Strict, the fix fails the gate once, by name, saying what to delete.
-    strict=True,
-)
 def test_happy_scenario_narration_never_names_a_page_it_never_touched(
     tmp_path: Path,
 ) -> None:
@@ -89,21 +69,6 @@ def test_happy_scenario_narration_never_names_a_page_it_never_touched(
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "G21: _declared_work names every fixture page regardless of scenario; "
-        "awaiting the other seat's surface.py fix (see this build's report for "
-        "the proposed diff, filtering through "
-        "pipeline/1_exemplar/door.py::fixture_pages_for_scenario)"
-    ),
-    # Strict: pytest reports an unexpected pass as XPASS and keeps the gate
-    # green, so the day `_declared_work` becomes scenario-aware these two would
-    # start passing silently, the marker the module docstring calls "the whole
-    # job" would never be removed, and both tests would go on running a whole
-    # orchestrator subprocess each for no signal (CodeRabbit on PR #117).
-    # Strict, the fix fails the gate once, by name, saying what to delete.
-    strict=True,
-)
 def test_review_scenario_narration_never_names_a_page_it_never_touched(
     tmp_path: Path,
 ) -> None:
