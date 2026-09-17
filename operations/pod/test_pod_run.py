@@ -1244,7 +1244,15 @@ def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() ->
 def test_launch_run_id_reads_pod_runs_own_run_id_flag() -> None:
     """`--run-id` is `pod_run`'s own flag, sealed inside the nested argv --
     not a top-level request field the way `volume_id` is, so it can only be
-    read out of the sealed command."""
+    read out of the sealed command.
+
+    The bootstrap half below carries its own, different `--run-id` so this
+    proves `launch_run_id` reads `pod_run`'s half specifically
+    (`_nested_argv_halves(nested)[0]`) rather than the whole nested argv
+    flatly -- a flat read would find `bootstrap_half`'s `--run-id` first or
+    last depending on scan order and could return either value, not
+    reliably `pod_run`'s own.
+    """
 
     run_half = [
         "python",
@@ -1255,7 +1263,7 @@ def test_launch_run_id_reads_pod_runs_own_run_id_flag() -> None:
         "--run-id",
         "r1",
     ]
-    bootstrap_half = ["--volume-mount-path", "/workspace"]
+    bootstrap_half = ["--volume-mount-path", "/workspace", "--run-id", "r2"]
     nested = json.dumps([*run_half, "--", *bootstrap_half])
     command = (
         "python",

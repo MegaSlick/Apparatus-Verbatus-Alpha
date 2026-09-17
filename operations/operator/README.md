@@ -331,7 +331,10 @@ command (the outer one is the pod timer's, the one nested inside
 `--bootstrap-command-json` is the bootstrap child's), make it relative to the request's
 `volume_mount_path`, and add its siblings — `-terminating.json` for the timer's report,
 and `-hold.json`, `-liveness.json`, `-timings.json` and `-transcript.log` for `pod_run`'s.
-A receipt that cannot be read refuses by name rather than quietly deriving nothing.
+A receipt that cannot be read refuses by name rather than quietly deriving nothing, and so
+does one for a different network volume or a different run — deriving from it would name,
+or store evidence beside, records that were never this fetch's; name the receipt for this
+run, or pass `--evidence-key`/`--evidence-prefix` explicitly instead.
 
 **Name this run's own preflight tree.** A volume is reused across launches, so
 `preflight/` accumulates one subtree per launch and a later reader of `evidence/` cannot

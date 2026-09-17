@@ -353,6 +353,15 @@ def _read_launch_command(
             raise ValueError("docker_start_cmd is not a list of words")
         if not isinstance(mount, str) or not mount:
             raise ValueError("volume_mount_path is missing")
+        # Decoded here, inside the guard: `launch_run_id` does its own JSON
+        # decode of the nested `--bootstrap-command-json` value, which can
+        # recurse out on the same pathologically-nested input the outer
+        # receipt read above is already guarded against (`_UNREADABLE_RECEIPT`
+        # names `RecursionError` for exactly this). Computed outside this
+        # block, a deeply nested nested command would end the call in an
+        # uncaught traceback instead of the named refusal every other shape
+        # failure here gets.
+        recorded_run_id = launch_run_id(command)
     except _UNREADABLE_RECEIPT as error:
         raise OperatorError(
             ErrorCode.FETCH_RUN_FAILED,
@@ -371,7 +380,6 @@ def _read_launch_command(
                 "for this run, or pass --evidence-key/--evidence-prefix explicitly"
             ),
         )
-    recorded_run_id = launch_run_id(command)
     if run_id is not None and recorded_run_id is not None and recorded_run_id != run_id:
         raise OperatorError(
             ErrorCode.FETCH_RUN_FAILED,

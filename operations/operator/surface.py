@@ -1555,7 +1555,7 @@ class OperatorSurface:
                 # that reader entirely. GOVERNANCE 2: "complete" is refused
                 # unless everything reconciles.
                 expected_acts = export_payload.get("expected_acts")
-                if isinstance(expected_acts, int):
+                if isinstance(expected_acts, int) and not isinstance(expected_acts, bool):
                     delivered_acts = export_payload.get("delivered")
                     non_delivered_acts = export_payload.get("non_delivered")
                     accounted_for = (
@@ -2924,7 +2924,7 @@ class OperatorSurface:
         # real producer (`pipeline/7_armarium/run.py`) always writes all three
         # together, so a record missing one is never an honest partial write --
         # it is exactly the record a caller sees from a mismatched schema (an
-        # older build, a record fetched from a pod running different code). A
+        # older build, a record fetched from a pod running different code).
         # Presence is required, not merely the right type when present: CodeRabbit
         # caught that `_exported_work` treated an absent `delivered`/`non_delivered`
         # as empty and printed "the recorded acts" instead of refusing -- GOVERNANCE

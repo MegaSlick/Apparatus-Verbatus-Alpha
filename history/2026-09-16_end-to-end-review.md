@@ -772,6 +772,52 @@ one-line description, recorded under each entry.
   gate was still in progress / out of scope for that round. Corrected both passages in place
   rather than papering over them, per hard rule 7.
 
+### Independent review of F113 and F114–F120 (Opus, high effort, read-only, two rounds)
+
+Both fix commits were independently reviewed before push, per this repo's review-
+proportionality table (F120 in particular touches `operations/pod/`, the "pod, money,
+credentials, serving" tier). Both reviews returned "correct and safe to push"; the second
+found four further points, all addressed here rather than left for later:
+
+- **A crash risk in the highest-risk file.** `_read_launch_command` (`operations/operator/
+  cli.py`) called the new `launch_run_id(command)` *outside* the block that converts a
+  malformed receipt into the named `FETCH_RUN_FAILED` refusal. `launch_run_id` does its own
+  JSON decode of the nested `--bootstrap-command-json` value, which can recurse out on the
+  same pathologically-nested input the *outer* receipt read is already guarded against
+  (`_UNREADABLE_RECEIPT` names `RecursionError` for exactly that). Moved the call inside the
+  guarded block so this failure shape gets the same clean refusal every other one does,
+  rather than an uncaught traceback.
+- **A test that didn't prove its own claim.** `test_launch_run_id_reads_pod_runs_own_run_id_
+  flag`'s fixture put `--run-id r1` only in `pod_run`'s own argv half, so it would have
+  passed identically if `launch_run_id` read the whole nested command flatly instead of the
+  `pod_run` half specifically — the thing its own docstring says it must not do. Given the
+  bootstrap half a conflicting `--run-id r2` (synthetic; `bootstrap_main` has no such flag in
+  reality) so the test actually discriminates between the two readings.
+- **A bool/int inconsistency.** The new `expected_acts` reconciliation check in `run()`
+  used `isinstance(expected_acts, int)`, which is also true for `True`/`False` in Python — a
+  foreign record with `expected_acts: true` would reconcile against the number 1. This file
+  already excludes bool from an int check elsewhere (`_exported_work`'s page-ordinal
+  validation); made the new check consistent with that precedent.
+- **A documentation gap.** `operations/operator/README.md`'s `fetch-run --launch-receipt`
+  section said only that an unreadable receipt refuses by name; it did not say a receipt for
+  a different volume (already true before this round) or a different run (F120, this round)
+  does too. Extended the same sentence to name both.
+- **A leftover word from an earlier edit**, caught in the same pass: a stray "A" survived a
+  previous rewording of the `_armarium_export` validation comment ("...different code). A
+  Presence is required..."). Removed.
+
+Three more points the reviewer raised were read and explicitly declined, not silently
+dropped: a theoretical case where one pod boot legitimately runs two different run ids (the
+code does not support that today — `pod_run` takes exactly one sealed run id per boot — and
+the refusal already names the manual workaround, so there is nothing to change); the
+`"--run-id"` flag name being a second, unreconciled literal copy of `pod_run`'s own flag
+(true, but consistent with this file's existing `--report-path` copies, which have the same
+gap — not new debt this round introduces); and the generated shell scripts in
+`operations/notify/test_notify.py` having other `{tmp_path}` interpolations beside the
+`sys.executable` one F115 quoted — those are already inside literal double quotes in the
+heredoc, which already prevents the word-splitting a bare `sys.executable` was exposed to,
+so there was nothing left to fix there.
+
 All of `operations/operator/test_surface.py` (279 tests), `operations/operator/
 test_backup.py`, `operations/notify/test_notify.py`, `proof/` (63 tests), `.githooks/
 test_ci_workflow.py` (33 tests), `operations/pod/test_pod_run.py`, `operations/pod/
