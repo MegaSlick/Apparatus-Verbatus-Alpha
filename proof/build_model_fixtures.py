@@ -52,15 +52,28 @@ def fixture_files(chair: str) -> dict[str, bytes]:
 
 def build(model_root: Path, manifest_root: Path) -> dict[str, str]:
     """Write every fixture snapshot and manifest; return each chair's pin."""
-    # The output is an exact projection, so stale files must not survive a rebuild.
+    # `model_root` is this generator's own exclusive directory -- nothing else
+    # ever writes there -- so a stale entry under any name, including one for a
+    # chair long since dropped from `FIXTURE_CHAIRS`, is safe to wipe outright.
     # Only an absent root is harmless; other cleanup failures would preserve bytes.
-    for root in (model_root, manifest_root):
-        try:
-            root.lstat()
-        except FileNotFoundError:
-            continue
+    try:
+        model_root.lstat()
+    except FileNotFoundError:
+        pass
+    else:
         # A FileNotFoundError inside rmtree is a cleanup race, not an absent root.
-        shutil.rmtree(root)
+        shutil.rmtree(model_root)
+    # `manifest_root` (`config/manifests/`) is NOT exclusive to this generator:
+    # the real serving roster's own digest manifests are checked in beside the
+    # fixture ones, named after their models rather than a fixture chair
+    # (`config/models-real.toml`'s `manifest` entries). Blanket-removing the
+    # whole directory here, as the loop above still does for `model_root`,
+    # would destroy those on every fixture rebuild -- a real run's pinned
+    # manifests replaced by nothing, deleted by a command whose docstring
+    # advertises it as an ordinary offline fixture regeneration. Remove only
+    # the exact files this generator is about to rewrite.
+    for chair in FIXTURE_CHAIRS:
+        (manifest_root / f"{chair}.json").unlink(missing_ok=True)
     pins: dict[str, str] = {}
     for chair in FIXTURE_CHAIRS:
         directory = model_root / chair

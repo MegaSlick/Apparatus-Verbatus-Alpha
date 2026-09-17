@@ -109,7 +109,11 @@ over a held or partial run it still copies what was delivered, prints every reco
 reason, and then exits with `export-partial` rather than 0. A hold is not cleared by
 running the same run name again; that republishes the same sealed hold. It is resolved
 only by a new authorized run over the same sealed source, which is what the `run-held`
-message and `review` both say.
+message and `review` both say. A record that claims `complete` but whose delivered and
+non-delivered acts do not reconcile to its own declared total is refused outright, with
+no bundle written at all: that is `export-unreconciled`, distinct from a record `export`
+could not read (`export-missing`) -- the record was found and read, only its "complete"
+claim does not hold up, and `review` is where to look into why.
 
 `run`, `boot`, `ingest`, `triage`, `launch` and `spend` read configuration, stage code
 or proof material from the workspace, so each refuses in one sentence (`not-a-checkout`)
@@ -331,7 +335,11 @@ command (the outer one is the pod timer's, the one nested inside
 `--bootstrap-command-json` is the bootstrap child's), make it relative to the request's
 `volume_mount_path`, and add its siblings — `-terminating.json` for the timer's report,
 and `-hold.json`, `-liveness.json`, `-timings.json` and `-transcript.log` for `pod_run`'s.
-A receipt that cannot be read refuses by name rather than quietly deriving nothing.
+A receipt that cannot be read refuses by name rather than quietly deriving nothing, and so
+does one for a different network volume, a different run, or one that proves no run at all
+(a hold-only boot's receipt, asked for while fetching a named run) — deriving from it would
+name, or store evidence beside, records that were never this fetch's; name the receipt for
+this run, or pass `--evidence-key`/`--evidence-prefix` explicitly instead.
 
 **Name this run's own preflight tree.** A volume is reused across launches, so
 `preflight/` accumulates one subtree per launch and a later reader of `evidence/` cannot

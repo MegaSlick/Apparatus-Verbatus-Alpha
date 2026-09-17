@@ -168,6 +168,43 @@ def test_a_duplicate_kind_is_refused(tmp_path):
         load_hard_failure_policy(path)
 
 
+def test_a_misspelled_door_reason_names_itself_in_the_refusal(tmp_path):
+    """`reason` narrows a door-scoped kind to a real refusal alarm; unlike
+    `outcome`, nothing else in this loader ever reads the closed set it names,
+    so a typo here would otherwise load cleanly and simply never match a real
+    refusal again -- the hard-failure cap going silently and permanently blind
+    to that reason, with no error anywhere to say so."""
+    path = write_policy(
+        tmp_path,
+        'threshold = 2\n[[kind]]\nstage = "door"\noutcome = "refused"\nreason = "corupt"\n',
+    )
+    with pytest.raises(
+        ContractError, match="not one of the Door's closed refusal reasons"
+    ) as caught:
+        load_hard_failure_policy(path)
+    assert "corupt" in str(caught.value)
+
+
+def test_a_door_reason_scoped_kind_using_a_real_refusal_reason_is_accepted(tmp_path):
+    path = write_policy(
+        tmp_path,
+        'threshold = 2\n[[kind]]\nstage = "door"\noutcome = "refused"\nreason = "too-large"\n',
+    )
+    policy = load_hard_failure_policy(path)
+    assert ("door", "refused", "too-large") in policy["reason_kinds"]
+
+
+def test_a_reason_scoped_kind_on_a_non_door_stage_is_not_checked_against_door_reasons(tmp_path):
+    """Only the Door has a reason vocabulary this loader knows about; a reason
+    on another stage is free-form until that stage gets the same treatment."""
+    path = write_policy(
+        tmp_path,
+        'threshold = 2\n[[kind]]\nstage = "perlector"\noutcome = "failed"\nreason = "anything"\n',
+    )
+    policy = load_hard_failure_policy(path)
+    assert ("perlector", "failed", "anything") in policy["reason_kinds"]
+
+
 def test_no_kind_entries_is_refused(tmp_path):
     path = write_policy(tmp_path, "threshold = 2\n")
     with pytest.raises(ContractError, match="no \\[\\[kind\\]\\] entries"):

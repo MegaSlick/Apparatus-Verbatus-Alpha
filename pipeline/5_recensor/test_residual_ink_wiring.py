@@ -395,6 +395,94 @@ def test_a_flagged_page_holds_every_act_that_touches_it_through_main(tmp_path, m
         assert "carry ink outside every region currently cut" in review["payload"]["reason"]
 
 
+def test_a_second_recensor_pass_that_clears_a_flag_does_not_collide_with_the_first(
+    tmp_path, monkeypatch
+):
+    """F132: a review's identity must survive a page-wide fact changing for an act
+    that never itself recovered.
+
+    `page_coverage_for` is deliberately page-wide (HANDOFF.md: "a flagged page
+    holds every act that touches it ... a successful recovery crop that reaches
+    the missed ink clears the finding on the very next Recensor pass"), but
+    before this fix a review's identity (`attempt_id(act_id, "recense",
+    used_total + 1)`) was a function only of the act's OWN recovery-request
+    count. Two acts sharing a page, neither of which ever requests its own
+    recovery (`used_total` stays 0 for both across every pass), both publish
+    at recense ordinal 1 every time `main()` runs -- so if the page's finding
+    changes between passes for a reason unrelated to either act's own
+    recovery, the second pass republishes different bytes under the same
+    identity, and the immutable writer refuses it (`IncompatibleReuse`),
+    killing the whole run.
+
+    Reproduced here exactly as the sibling test above drives the flagged-page
+    wiring: substitute `page_coverage_findings` to flag every page for pass 1,
+    then run `main()` again with the substitute removed -- standing in for "a
+    recovery crop elsewhere reached the missed ink" without needing a real
+    recovery round, since the collision depends only on the review's content
+    changing while its ordinal does not.
+    """
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        _invoke(root, "r", "happy", program)
+
+    def flags_every_page(context, unused_sealed_pages=None):
+        return {ordinal: {"flagged": True} for ordinal in RUN.regions_by_source_page(context)}
+
+    monkeypatch.setattr(RUN, "page_coverage_findings", flags_every_page)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run.py", "--run-root", str(root), "--run-id", "r", "--scenario", "happy"],
+    )
+    first_exit = RUN.main()
+    assert first_exit == RUN.EXIT_HELD
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run.py", "--run-root", str(root), "--run-id", "r", "--scenario", "happy"],
+    )
+    second_exit = RUN.main()
+    assert second_exit == RUN.EXIT_COMPLETE
+
+    tree = RunTree(root, "r")
+    manifest_entries = [
+        entry for entry in tree.build_manifest(RECENSOR)["artifacts"] if entry["kind"] == "review"
+    ]
+    reviews_by_act: dict[str, list[dict]] = {}
+    for entry in manifest_entries:
+        review = tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        reviews_by_act.setdefault(review["payload"]["act_key"], []).append(review)
+    assert set(reviews_by_act) == {"a1", "a2"}
+    for act_key, reviews in reviews_by_act.items():
+        ordinals = sorted(review["payload"]["attempt_ordinal"] for review in reviews)
+        assert ordinals == [1, 2], f"act {act_key} did not publish two distinct reviews: {ordinals}"
+        by_ordinal = {review["payload"]["attempt_ordinal"]: review for review in reviews}
+        assert by_ordinal[1]["outcome"] == "held-for-review"
+        assert by_ordinal[1]["payload"]["page_coverage"]["flagged_pages"]
+        assert (
+            by_ordinal[2]["outcome"] != "held-for-review"
+            or not by_ordinal[2]["payload"]["page_coverage"]["flagged_pages"]
+        )
+
+    third_exit = RUN.main()
+    assert third_exit == RUN.EXIT_COMPLETE
+    unchanged_entries = [
+        entry for entry in tree.build_manifest(RECENSOR)["artifacts"] if entry["kind"] == "review"
+    ]
+    assert {entry["artifact_id"] for entry in unchanged_entries} == {
+        entry["artifact_id"] for entry in manifest_entries
+    }, "a third identical pass must not mint a new review artifact"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
 

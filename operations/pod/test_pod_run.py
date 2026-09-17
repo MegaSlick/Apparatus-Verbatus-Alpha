@@ -1241,6 +1241,173 @@ def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() ->
     )
 
 
+def test_launch_run_id_reads_pod_runs_own_run_id_flag() -> None:
+    """`--run-id` is `pod_run`'s own flag, sealed inside the nested argv --
+    not a top-level request field the way `volume_id` is, so it can only be
+    read out of the sealed command.
+
+    The bootstrap half below carries its own, different `--run-id` so this
+    proves `launch_run_id` reads `pod_run`'s half specifically
+    (`_nested_argv_halves(nested)[0]`) rather than the whole nested argv
+    flatly -- a flat read would find `bootstrap_half`'s `--run-id` first or
+    last depending on scan order and could return either value, not
+    reliably `pod_run`'s own.
+    """
+
+    run_half = [
+        "python",
+        "-m",
+        "operations.pod.pod_run",
+        "--report-path",
+        "/workspace/pod-run-report.json",
+        "--run-id",
+        "r1",
+    ]
+    bootstrap_half = ["--volume-mount-path", "/workspace", "--run-id", "r2"]
+    nested = json.dumps([*run_half, "--", *bootstrap_half])
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--bootstrap-command-json",
+        nested,
+    )
+
+    assert launch_module.launch_run_id(command) == "r1"
+
+
+def test_launch_run_id_is_none_for_a_hold_only_launch() -> None:
+    """A hold-only boot starts no run and has no `--run-id` to name."""
+
+    hold_only = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.bootstrap_main",
+            "--hold-only",
+            "--volume-mount-path",
+            "/workspace",
+        ]
+    )
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--bootstrap-command-json",
+        hold_only,
+    )
+
+    assert launch_module.launch_run_id(command) is None
+
+
+def test_launch_run_id_is_none_with_no_bootstrap_command_at_all() -> None:
+    command = ("python", "--report-path", "/workspace/pod-runtime-report.json")
+
+    assert launch_module.launch_run_id(command) is None
+
+
+def test_evidence_prefix_derives_bootstrap_mains_own_preflight_directory() -> None:
+    """F110/G11: every real request (boot_a_request.py, boot_b_request.py)
+    writes its report paths at the *volume root*, never under `preflight/` --
+    only `bootstrap_main.Plan.preflight_root` computes a `preflight/` path,
+    from `<mount>/preflight/<bootstrap_main's own --report-path stem>`. A
+    full run launch's nested argv is pod_run's own argv with bootstrap_main's
+    appended after the first literal `--` (`pod_run.split_argv`); the derived
+    prefix must come from bootstrap_main's own report path, not pod_run's and
+    not the pod timer's outer one -- reusing `bound_report_paths` here would
+    derive a prefix matching nothing on the volume, since it deliberately
+    does not distinguish pod_run's nested report from bootstrap_main's."""
+
+    token = "a" * 32
+    run_half = [
+        "python",
+        "-m",
+        "operations.pod.pod_run",
+        "--report-path",
+        f"/workspace/pod-run-report-{token}.json",
+        "--run-id",
+        "r1",
+    ]
+    bootstrap_half = [
+        "--volume-mount-path",
+        "/workspace",
+        "--report-path",
+        f"/workspace/bootstrap-report-{token}.json",
+        "--repository",
+        "https://example/repo",
+    ]
+    nested = json.dumps([*run_half, "--", *bootstrap_half])
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--bootstrap-command-json",
+        nested,
+        "--report-path",
+        f"/workspace/pod-runtime-report-{token}.json",
+    )
+
+    prefixes = launch_module.launch_evidence_prefixes(command, volume_mount_path="/workspace")
+
+    assert prefixes == (f"preflight/bootstrap-report-{token}",)
+    # Matches the real formula exactly, not just a plausible-looking string.
+    from operations.pod.bootstrap_main import PREFLIGHT_DIRECTORY
+
+    assert prefixes[0] == f"{PREFLIGHT_DIRECTORY}/bootstrap-report-{token}"
+
+
+def test_evidence_prefix_for_a_hold_only_launch_has_no_nested_dash_dash_split() -> None:
+    """Boot A's nested argv is bootstrap_main's own directly -- no pod_run
+    wrapper, no literal `--` to split on -- and `_nested_argv_halves` returns
+    the whole thing as its own last (and only) half in that case."""
+
+    token = "b" * 32
+    hold_only = [
+        "python",
+        "-m",
+        "operations.pod.bootstrap_main",
+        "--hold-only",
+        "--volume-mount-path",
+        "/workspace",
+        "--report-path",
+        f"/workspace/bootstrap-hold-only-report-{token}.json",
+    ]
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--bootstrap-command-json",
+        json.dumps(hold_only),
+        "--report-path",
+        f"/workspace/pod-runtime-report-{token}.json",
+    )
+
+    prefixes = launch_module.launch_evidence_prefixes(command, volume_mount_path="/workspace")
+
+    assert prefixes == (f"preflight/bootstrap-hold-only-report-{token}",)
+
+
+def test_evidence_prefix_drops_a_bootstrap_report_path_outside_the_volume() -> None:
+    """The same volume-boundary rule `launch_evidence_keys` applies."""
+
+    nested = json.dumps(["python", "--report-path", "/elsewhere/bootstrap-report.json"])
+    command = (
+        "python",
+        "--bootstrap-command-json",
+        nested,
+        "--report-path",
+        "/workspace/pod-runtime-report.json",
+    )
+
+    assert launch_module.launch_evidence_prefixes(command, volume_mount_path="/workspace") == ()
+
+
+def test_evidence_prefix_is_empty_with_no_bootstrap_command_at_all() -> None:
+    command = ("python", "--report-path", "/workspace/pod-runtime-report.json")
+
+    assert launch_module.launch_evidence_prefixes(command, volume_mount_path="/workspace") == ()
+
+
 def test_a_hold_only_launch_derives_no_record_pod_run_alone_writes() -> None:
     """A receipt full of refusals for records nothing ever wrote is a worse record
     than none, so which siblings apply is decided by which program writes them."""
@@ -1425,6 +1592,125 @@ def test_a_launch_receipt_for_another_volume_is_refused_rather_than_used(
 
     assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
     assert "vol-other" in refusal.value.detail
+
+
+def test_a_launch_receipt_for_another_run_is_refused_rather_than_used(tmp_path: Path) -> None:
+    """The quieter failure on the *same* volume: every derived key and prefix
+    would still resolve to real objects, just the wrong launch's -- stored
+    beside the fetched run and misstating its provenance rather than merely
+    failing to find them."""
+
+    from operations.operator.records import ReceiptStore
+
+    token = "g" * 32
+    nested = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.pod_run",
+            "--report-path",
+            f"/workspace/pod-run-report-{token}.json",
+            "--run-id",
+            "r1",
+        ]
+    )
+    request = {
+        "volume_id": "vol-1",
+        "volume_mount_path": "/workspace",
+        "docker_start_cmd": [
+            "python",
+            "-m",
+            "operations.pod.pod_timer",
+            "--report-path",
+            f"/workspace/pod-runtime-report-{token}.json",
+            "--bootstrap-command-json",
+            nested,
+        ],
+    }
+    receipt = ReceiptStore(tmp_path / "state").write(
+        "launch", {"summary": "fixture launch", "request": request}
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        operator_cli._derived_evidence_keys(
+            receipt, VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol-1"), "r2"
+        )
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "r1" in refusal.value.detail
+    assert "r2" in refusal.value.detail
+
+    # Fetching the run the receipt actually started still derives normally.
+    assert operator_cli._derived_evidence_keys(
+        receipt, VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol-1"), "r1"
+    ) == (
+        f"pod-runtime-report-{token}.json",
+        f"pod-runtime-report-{token}-terminating.json",
+        f"pod-run-report-{token}.json",
+        f"pod-run-report-{token}-hold.json",
+        f"pod-run-report-{token}-liveness.json",
+        f"pod-run-report-{token}-timings.json",
+        f"pod-run-report-{token}-transcript.log",
+    )
+
+
+def test_a_hold_only_launch_receipt_is_refused_when_a_run_id_is_requested(
+    tmp_path: Path,
+) -> None:
+    """`recorded_run_id is None` is not "nothing to compare" once a specific
+    run is being fetched: a hold-only launch still has its own real,
+    derivable evidence keys -- just none that belong to any run. Supplying
+    it to `fetch-run --run-id` would store that boot's evidence beside a
+    run it never proves started."""
+
+    from operations.operator.records import ReceiptStore
+
+    token = "h" * 32
+    hold_only = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.bootstrap_main",
+            "--hold-only",
+            "--report-path",
+            f"/workspace/bootstrap-hold-only-report-{token}.json",
+        ]
+    )
+    request = {
+        "volume_id": "vol-1",
+        "volume_mount_path": "/workspace",
+        "docker_start_cmd": [
+            "python",
+            "-m",
+            "operations.pod.pod_timer",
+            "--report-path",
+            f"/workspace/pod-runtime-report-{token}.json",
+            "--bootstrap-command-json",
+            hold_only,
+        ],
+    }
+    receipt = ReceiptStore(tmp_path / "state").write(
+        "launch", {"summary": "fixture launch", "request": request}
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        operator_cli._derived_evidence_keys(
+            receipt, VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol-1"), "r1"
+        )
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "does not prove that run 'r1' started" in refusal.value.detail
+
+    # The same receipt, asked for without naming a run, still derives its
+    # own (hold-only) evidence keys normally.
+    assert operator_cli._derived_evidence_keys(
+        receipt, VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol-1")
+    ) == (
+        f"pod-runtime-report-{token}.json",
+        f"pod-runtime-report-{token}-terminating.json",
+        f"bootstrap-hold-only-report-{token}.json",
+        f"bootstrap-hold-only-report-{token}-hold.json",
+    )
 
 
 def test_a_launch_receipt_read_through_a_link_is_refused(tmp_path: Path) -> None:

@@ -271,7 +271,20 @@ def request_body(
                     f"deterministic probe {field}={supplied!r}, expected {expected!r}"
                 )
             value[field] = expected
-    return _canonical_json(value)
+    # Render first, then check the decoded *rendered* snapshot -- never the
+    # still-mutable `value` -- so a request rendered here cannot route around
+    # it (hostile review item A; `assert_wire_part_order`'s own docstring
+    # names the one door downstream of this function that is not itself
+    # checked). Checking `value` directly would only prove the Python object
+    # graph looks right at the moment of the check: a `dict` subclass whose
+    # `get("type")` disagrees with what `json.dumps` actually serializes (or
+    # a concurrent mutation between the check and the serialize) would pass
+    # the check while the wire body itself opened with text (CodeRabbit,
+    # `2f68441`'s review) -- re-parsing the exact bytes closes that gap by
+    # construction, not by trusting the object that produced them.
+    rendered = _canonical_json(value)
+    assert_wire_part_order(json.loads(rendered), label=f"request for {model_id}")
+    return rendered
 
 
 def parse_openai_answer(
@@ -397,6 +410,92 @@ def parse_openai_reading(
     )
 
 
+def assert_image_before_text_on_wire(content: list[Mapping[str, object]]) -> None:
+    """Refuse a rendered chat request whose first content part is not the image.
+
+    Must be checked against the *rendered* content list -- the exact list
+    that serializes onto the wire -- never the Python call an adapter built
+    before rendering.  This assertion means anything only because
+    ``render_vllm_argv`` pins ``--chat-template-content-format openai``: under
+    vLLM's ``string`` format (what ``auto`` can resolve to, and what a future
+    template revision could resolve to differently) every image placeholder
+    is hoisted ahead of the text regardless of the caller's own part order
+    (vllm-project/vllm#14047), so a rendered body checked under ``string``
+    format would read image-first and pass no matter what order the caller
+    actually assembled -- a no-op that could never catch a caller putting
+    text first (hostile review item A). Under the pinned ``openai`` format
+    the rendered content list keeps the caller's own order verbatim, so this
+    check against the rendered body reflects a real caller ordering bug
+    rather than the engine's own reformatting.
+    """
+
+    if not content:
+        raise ServingConfigurationError(
+            "rendered request content is empty; there is no wire order to assert"
+        )
+    first = content[0]
+    if not isinstance(first, Mapping):
+        raise ServingConfigurationError("rendered request content parts must be objects")
+    first_type = first.get("type")
+    if first_type != "image_url":
+        raise ServingConfigurationError(
+            "rendered request content must open with an image_url part; the wire's first part "
+            f"is {first_type!r}"
+        )
+
+
+def assert_wire_part_order(payload: Mapping[str, object], *, label: str) -> None:
+    """Enforce image-before-text on every `role=user` content list that carries
+    an image, across the whole rendered request.
+
+    Narrower than "every message's first part must be an image": a
+    string-content message (the readiness probe's bare `"READY"`), a non-user
+    role (Churro's system-turn text preamble, `live_witness.py`), and a
+    text-only user content list (no `image_url` part at all) are all
+    legitimate shapes this check must not refuse. Checked here, inside
+    `request_body`, because this is the one place every request this package
+    renders already passes through -- the golden-page smoke, the readiness
+    probe, both adapter-calibration probes, and every pipeline reading
+    (`ServingManager.request`, `_post_probe`, `ChairClient.read`) -- so a
+    future seam cannot route a rendered request around it the way three
+    unwired functions once did (hostile review item A). `request_reading`
+    is the one door downstream of `request_body` that this walker cannot
+    see: it POSTs a caller-already-built body verbatim, so any future
+    caller that reaches it without going through `request_body` first
+    bypasses this check entirely -- today's only caller, `ChairClient.read`,
+    always builds through `request_body`.
+
+    An `image_url` part inside a non-`user` role message is one shape this
+    walker never inspects at all, not even for order -- it is skipped by
+    the role check before the image scan runs. No production builder in
+    this package emits one today, and `chat_image_bytes_all` separately
+    refuses an `image_url` outside a `role=user` content list on every path
+    that calls it -- but the readiness probe and a `requires_image=False`
+    calibration never call `chat_image_bytes_all`, so a hypothetical future
+    builder that placed an image in a system turn on one of those two paths
+    would pass both checks unnoticed. Named here rather than left for a
+    reader to discover by grep.
+    """
+
+    messages = payload.get("messages")
+    if not isinstance(messages, (list, tuple)):
+        return
+    for message in messages:
+        if not isinstance(message, Mapping) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, (list, tuple)):
+            continue
+        if not any(
+            isinstance(part, Mapping) and part.get("type") == "image_url" for part in content
+        ):
+            continue
+        try:
+            assert_image_before_text_on_wire(content)
+        except ServingConfigurationError as error:
+            raise ServingConfigurationError(f"{label}: {error}") from error
+
+
 def chat_image_bytes_all(
     payload: Mapping[str, object], *, label: str = "chat request"
 ) -> list[bytes]:
@@ -409,17 +508,24 @@ def chat_image_bytes_all(
     its URL a local ``data:image/...;base64,`` URI, and no ``image_url`` key
     may appear anywhere else in the payload — an ignored extension field must
     never let a caller claim an image was sent that vLLM would not see.
+
+    ``messages`` and each message's ``content`` accept a tuple as well as a
+    list, matching ``assert_wire_part_order`` (F133 follow-up): both
+    ``active_candidates`` and ``_all_image_url_candidates``'s own walk must
+    see the same shape a tuple-typed caller used, or an image inside it would
+    vanish from both counts equally and the mismatch this function exists to
+    catch would never fire.
     """
 
     messages = payload.get("messages")
-    if not isinstance(messages, list) or not messages:
+    if not isinstance(messages, (list, tuple)) or not messages:
         raise ServingConfigurationError(f"{label} must contain a non-empty chat messages list")
     active_candidates: list[object] = []
     for message in messages:
         if not isinstance(message, Mapping):
             raise ServingConfigurationError(f"{label} messages must be objects")
         content = message.get("content")
-        if not isinstance(content, list):
+        if not isinstance(content, (list, tuple)):
             continue
         for part in content:
             if not isinstance(part, Mapping) or part.get("type") != "image_url":
@@ -521,7 +627,7 @@ def _all_image_url_candidates(value: object) -> list[object]:
             else:
                 candidates.extend(_all_image_url_candidates(item))
         return candidates
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [candidate for item in value for candidate in _all_image_url_candidates(item)]
     return []
 

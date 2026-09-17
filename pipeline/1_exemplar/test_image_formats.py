@@ -99,6 +99,35 @@ def test_heic_brand_sniffing_does_not_allocate_from_the_ftyp_box_size():
     assert peak < 1024 * 1024
 
 
+def test_heic_brand_sniffing_does_not_scan_past_a_fixed_ceiling():
+    """A crafted box size or file length cannot drive the walk past a fixed bound.
+
+    The memory guard above repeats one 4-byte brand, so its set never grows past
+    two entries no matter how many offsets are walked -- it does not prove the
+    walk itself is bounded, only that a *duplicate*-heavy payload cannot exhaust
+    memory. Here every 4-byte slot is unique (so nothing collides and gets freed
+    immediately) and the real HEIC brand sits one slot past the scan ceiling,
+    with both the declared box size and the file's own length claiming far more
+    is readable: if the walk were still proportional to either -- up to
+    `MAX_SOURCE_BYTES`, 64 MiB, ~16 million iterations -- it would reach and
+    detect that brand. It must not.
+    """
+    ceiling = image_formats._FTYP_BRAND_SCAN_CEILING
+    filler_slots = (ceiling - 16) // 4
+    filler = b"".join(struct.pack(">I", i) for i in range(filler_slots))
+    data = (
+        struct.pack(">I", 0xFFFFFFFF)
+        + b"ftyp"
+        + b"isom"
+        + b"\x00" * 4
+        + filler
+        + b"heic"
+        + b"\x00" * 4096
+    )
+
+    assert sniff(data) is None
+
+
 # --- PNG -------------------------------------------------------------------------
 
 

@@ -2251,10 +2251,16 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
     # marker; the fixture path retains its declared bytes on every branch and is
     # deliberately untouched here.
     served_by_a_chair = payload.get("serving_call_ref") is not None
-    parsed_into_a_payload = (
-        isinstance(payload.get("content_health"), dict)
-        and payload["content_health"].get("recordable") is True
-    )
+    # `content_health.recordable is True` is wider than "this outcome is a
+    # reading": `live_witness._content_health` sets `recordable: True`
+    # unconditionally on every parsed branch, including the parsed-but-
+    # unconfirmed-blank `failed` outcome (cut off, or an unrecognized stop
+    # word) -- the same branch `captured_page_attempt` deliberately withholds
+    # `observation_payload` for. Gate on the outcome set that branch actually
+    # used, the same fix `_page_capture_from_record` already applies for the
+    # identical reason (GOVERNANCE 4): rehydrating on a wider test would hand
+    # a resume geometry the interrupted pass never published.
+    parsed_into_a_payload = record["outcome"] in WITNESS_READING_OUTCOMES
     if raw_response_ref is not None:
         validate_raw_response_ref(raw_response_ref)
         try:
@@ -4173,6 +4179,11 @@ def publish_page_testimonia_and_attachments(
                         ),
                         "loss": {"witness": _ZERO_ALIGNMENT_LOSS, "anchor": _ZERO_ALIGNMENT_LOSS},
                         "offset_maps": {"witness": [], "anchor": []},
+                        # F087: no witness text means align_to_anchor never ran,
+                        # so no deadline was ever needed -- disclosed rather than
+                        # left absent, the same closed-shape reasoning as every
+                        # other field on this trivial attach (GOVERNANCE 2).
+                        "deadline_in_force": False,
                     }
                 else:
                     page_text = page_texts.get((act["page_ordinal"], chair))
@@ -4280,10 +4291,22 @@ def publish_page_testimonia_and_attachments(
                                         "witness": result["witness"]["offset_map"],
                                         "anchor": result["anchor"]["offset_map"],
                                     },
+                                    # F087: align_to_anchor's own deadline_in_force
+                                    # answer, carried into the record this stage
+                                    # actually publishes rather than stopping at
+                                    # the function's return value.
+                                    "deadline_in_force": result["deadline_in_force"],
                                 }
                         else:
                             result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
                     if result["status"] == "unaligned":
+                        # No `deadline_in_force` here (unlike the aligned branch
+                        # below): an unaligned record's `reason` already names a
+                        # fired deadline explicitly (`DEADLINE_REASON`), so there
+                        # is no ambiguity left for the field to resolve, and
+                        # `result` in most of these branches is one of this
+                        # function's own short-circuits that never called
+                        # align_to_anchor at all.
                         alignment = {"status": "unaligned", "reason": result["reason"]}
             if page_witness:
                 # Derive each row from the primary alignment without mutating it:

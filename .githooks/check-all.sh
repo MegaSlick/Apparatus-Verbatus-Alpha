@@ -60,6 +60,21 @@ export UV_PROJECT_ENVIRONMENT
   exit 1
 }
 
+# The required uv version has exactly one declaration, pyproject.toml's
+# `[tool.uv] required-version` — read here with the frozen interpreter's
+# stdlib `tomllib` (no third-party package needed) rather than repeated as a
+# second literal in this script, which is how F040 (2026-09-14) drifted: a
+# version bump to one copy left the other two silently behind.
+required_uv_version=$("$frozen_python" -c '
+import tomllib
+with open("pyproject.toml", "rb") as handle:
+    project = tomllib.load(handle)
+print(project["tool"]["uv"]["required-version"].removeprefix("=="))
+' 2>/dev/null) && [ -n "$required_uv_version" ] || {
+  echo "check-all: pyproject.toml's [tool.uv] required-version could not be read" >&2
+  exit 1
+}
+
 # `uv sync` is exact by default: it reconciles the selected groups to uv.lock
 # and removes undeclared packages. `--offline` keeps this verification from
 # turning the checks before the final advisory audit into network-dependent
@@ -67,7 +82,7 @@ export UV_PROJECT_ENVIRONMENT
 # cached; otherwise the refusal names the online recovery command.
 uv_binary=$(command -v uv 2>/dev/null) || {
   echo "check-all: the frozen environment cannot be verified because uv is missing from PATH" >&2
-  echo "check-all: recovery: install pinned uv==0.12.1, then run 'uv sync --frozen --group test --group audit'" >&2
+  echo "check-all: recovery: install pinned uv==$required_uv_version, then run 'uv sync --frozen --group test --group audit'" >&2
   exit 1
 }
 case "$uv_binary" in
@@ -125,14 +140,14 @@ esac
 uv_version=$(/usr/bin/env -i HOME="$uv_home" PATH=/usr/bin:/bin \
   "$uv_binary" --version 2>/dev/null) || {
   echo "check-all: uv is on PATH but could not report its version, so the frozen environment is unverified" >&2
-  echo "check-all: recovery: install pinned uv==0.12.1, then run 'uv sync --frozen --group test --group audit'" >&2
+  echo "check-all: recovery: install pinned uv==$required_uv_version, then run 'uv sync --frozen --group test --group audit'" >&2
   exit 1
 }
 case "$uv_version" in
-  "uv 0.12.1"|"uv 0.12.1 "*) : ;;
+  "uv $required_uv_version"|"uv $required_uv_version "*) : ;;
   *)
-    echo "check-all: the frozen environment cannot be verified with $uv_version; this gate requires uv 0.12.1" >&2
-    echo "check-all: recovery: install pinned uv==0.12.1, then run 'uv sync --frozen --group test --group audit'" >&2
+    echo "check-all: the frozen environment cannot be verified with $uv_version; this gate requires uv $required_uv_version" >&2
+    echo "check-all: recovery: install pinned uv==$required_uv_version, then run 'uv sync --frozen --group test --group audit'" >&2
     exit 1
     ;;
 esac

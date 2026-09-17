@@ -23,6 +23,7 @@ from typing import Callable
 import pytest
 
 from common.chairs.errors import ConfigurationRefusal
+from common.contracts.approval import ApprovalRecordReference
 from common.contracts.canonical import canonical_bytes
 from operations.pod import supervise as pod_supervise
 from operations.pod.fake_provider import FakeProvider
@@ -39,6 +40,7 @@ from operations.pod.models import (
 )
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
 from operations.pod.spend import PRICE_MOVE_MARKER, load_spend_policy
+from operations.pod.transfer import TransferReport
 from operations.submit import gate
 from operations.submit import submit as submission_door
 from operations.submit.submit import build_manifest, walk_folder
@@ -52,10 +54,13 @@ from .records import MAX_RECORD_BYTES, DescriptorStore, ReceiptStore, RecordErro
 from .surface import (
     DOOR_PROGRAM,
     FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS,
+    MAX_NOTIFY_MESSAGE_CHARACTERS,
     OPERATOR_CLOSE_PREFIX,
     Faults,
     OperatorSurface,
     _declared_work,
+    _door_module,
+    _exported_work,
     _pod_from_record,
     _pod_record,
     _repository_commit,
@@ -1914,6 +1919,40 @@ def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
     assert payload["submission_manifest_sha256"] == hashlib.sha256(original).hexdigest()
 
 
+def test_a_nothing_to_transfer_report_does_not_read_as_upload_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F027: the top-level receipt state must agree with the nested transfer record.
+
+    Not reachable today through `upload()` itself -- the sealed manifest
+    snapshot it writes always exists by the time `resume()` checks for one --
+    but the two fields must still be derived from one fact, not asserted
+    separately, so a future caller of this same receipt shape cannot drift.
+    """
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    source = tmp_path / "submitted-pages"
+    source.mkdir()
+    (source / "page-one.bin").write_bytes(b"first\n")
+    manifest = tmp_path / "sealed-submission.json"
+    manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(source))))
+
+    monkeypatch.setattr(
+        surface_module.ChecksummedTransfer,
+        "resume",
+        lambda self: TransferReport((), (), submission_manifest_present=False),
+    )
+
+    surface.upload(source, sealed_manifest=manifest)
+
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["state"] == "nothing-to-transfer"
+    assert payload["transfer"]["state"] == "nothing-to-transfer"
+    assert "complete" not in payload["summary"]
+    assert not any("Upload complete" in line for line in messages)
+    assert any("nothing was transferred" in line for line in messages)
+
+
 def test_upload_refuses_an_oversized_manifest_before_constructing_a_transfer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2727,7 +2766,7 @@ def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path:
             data_gate_policy=tmp_path / "data-gate-policy.json",
         )
 
-    declared_pages, declared_acts, declared_ok = _declared_work(ROOT)
+    declared_pages, declared_acts, declared_ok = _declared_work(ROOT, "happy")
     assert declared_ok, "the declared fixture is unreadable; this test proves nothing"
     for name in declared_pages + declared_acts:
         assert not any(name in line for line in messages), (
@@ -2739,6 +2778,100 @@ def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path:
             "a submitted filename reached the terminal; the policy's logging rule allows "
             "counts and the private report location there, not real names"
         )
+
+
+def test_door_module_leaves_no_trace_in_sys_path_or_sys_modules():
+    """Loading door.py in-process runs its own `sys.path.insert` calls and
+    bare sibling imports (`admission`, `manifest`, `pdf_render`,
+    `render_config`, `image_formats`); both must be fully undone, or a second
+    call (potentially against a different --workspace) would silently reuse
+    the first call's cached copies instead of loading the new one's, and this
+    operator's own sys.path would grow by three entries every single call."""
+    import sys
+
+    before_path = list(sys.path)
+    before_modules = set(sys.modules)
+
+    module = _door_module(ROOT)
+
+    assert sys.path == before_path
+    assert set(sys.modules) == before_modules
+    assert hasattr(module, "fixture_pages_for_scenario")
+
+    # Twice, to prove the second call reloads rather than serving the first
+    # call's now-purged-from-sys.modules but still-referenced module object.
+    _door_module(ROOT)
+    assert sys.path == before_path
+    assert set(sys.modules) == before_modules
+
+
+def test_exported_work_names_every_delivered_and_non_delivered_act():
+    """F030: the closing accounting line reads a completed run's own export
+    record, so it can name an act (like ink-free-page's minted fallback) that
+    no fixture declaration could have known about in advance."""
+    pages, acts = _exported_work(
+        [{"ordinal": 1, "outcome": "sealed"}, {"ordinal": 2, "outcome": "refused"}],
+        {
+            "delivered": [{"act_key": "a1"}],
+            "non_delivered": [{"act_key": "a2"}, {"act_key": "page-fallback:3"}],
+        },
+    )
+    assert pages == ["page 1", "page 2"]
+    assert acts == ["act a1", "act a2", "act page-fallback:3"]
+
+
+def test_exported_work_falls_back_to_a_generic_placeholder_on_empty_records():
+    """An export record with no page or act rows at all (rather than a
+    malformed one) is not this function's failure to diagnose; it prints a
+    placeholder rather than an empty, unreadable list."""
+    pages, acts = _exported_work([], {})
+    assert pages == ["the recorded pages"]
+    assert acts == ["the recorded acts"]
+
+
+def test_exported_work_discloses_rather_than_silently_drops_malformed_rows():
+    """A record this function cannot make sense of does not raise -- the
+    accounting line's own job is to report what a completed run produced, not
+    to re-validate the export schema a stricter reader already checked -- but
+    it is also not simply dropped, which would reopen F030's own mismatch: the
+    caller prints `len(page_records)`/`expected_acts` as the total beside
+    these names, and naming fewer than that with no explanation is the same
+    silent-partial-result GOVERNANCE 2 refuses."""
+    pages, acts = _exported_work(
+        [{"ordinal": 1}, {"no_ordinal": True}, "not-a-dict"],
+        {"delivered": [{"act_key": "a1"}, {"no_act_key": True}], "non_delivered": ["not-a-dict"]},
+    )
+    assert pages == ["page 1", "2 unreadable page record(s)"]
+    assert acts == ["act a1", "2 unreadable act record(s)"]
+
+
+def test_exported_work_treats_a_non_list_delivered_or_non_delivered_as_absent():
+    """A string is iterable character-by-character; without this guard
+    `"a1"` would silently become three one-character 'acts'."""
+    pages, acts = _exported_work(
+        [{"ordinal": 1}],
+        {"delivered": "not-a-list", "non_delivered": [{"act_key": "a2"}]},
+    )
+    assert pages == ["page 1"]
+    assert acts == ["act a2"]
+
+
+def test_exported_work_never_reads_a_bool_ordinal_as_a_page_number():
+    """`isinstance(True, int)` is true in Python; without excluding `bool`
+    explicitly a boolean ordinal would render as 'page True'."""
+    pages, _acts = _exported_work([{"ordinal": True}], {})
+    assert pages == ["1 unreadable page record(s)"]
+
+
+def test_exported_work_sorts_acts_by_key_regardless_of_delivery_order():
+    """Delivered and non-delivered are each already sorted on their own, but
+    concatenating two sorted lists is not itself sorted -- a held a2 before a
+    delivered a1 must still read a1-then-a2."""
+    pages, acts = _exported_work(
+        [],
+        {"delivered": [{"act_key": "a2"}], "non_delivered": [{"act_key": "a1"}]},
+    )
+    assert acts == ["act a1", "act a2"]
 
 
 def test_the_operator_does_not_read_the_ledger_before_the_door(
@@ -3041,6 +3174,7 @@ def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
         "aggregate": {"status": "complete", "reasons": []},
         "pages": "not a list of page records",
         "delivered": [],
+        "non_delivered": [],
         "expected_acts": 2,
     }
 
@@ -3054,26 +3188,235 @@ def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
     assert receipt["state"] != "complete"
 
 
-@pytest.mark.parametrize("member", ("pages", "non_delivered"))
+def test_run_refuses_a_complete_aggregate_with_no_act_partition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`aggregate["status"] == "complete"` is not enough on its own.
+
+    `_exported_work` used to default a missing `delivered`/`non_delivered`
+    to an empty list and print the generic "the recorded acts" placeholder,
+    so a record honestly missing its act partition -- an older build, or a
+    record `fetch-run` brought home from a pod running different code --
+    could still finish with `state: complete` and a success line on the
+    console and the phone. Exercised through the real `_armarium_export`
+    (only `RunTree.read_artifact` is stubbed) so the guard that closes this
+    is the one `run()` actually calls, not a test double standing in for it.
+    """
+
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    import operations.operator.surface as surface_module
+
+    monkeypatch.setattr(
+        surface_module.RunTree,
+        "read_artifact",
+        lambda self, stage, kind, identity: {
+            "payload": {
+                "aggregate": {"status": "complete", "reasons": []},
+                "pages": [{"ordinal": 1}],
+                "non_delivered": [],
+                "expected_acts": 1,
+            }
+        },
+    )
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="missing-delivered")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "missing delivered" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] != "complete"
+
+
+@pytest.mark.parametrize("member", ("pages", "delivered", "non_delivered"))
 def test_the_export_reader_refuses_non_list_members_before_any_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member: str
 ) -> None:
     """The real `_armarium_export` guard, driven with a malformed artifact.
 
     Every other export test monkeypatches `_armarium_export` itself, so the
-    validation inside it would be dead code to the suite without this.
+    validation inside it would be dead code to the suite without this. The
+    other two required members are given as well-formed empty lists so the
+    failure is unambiguously about `member`, not about one checked earlier
+    in the loop.
     """
 
     surface = _surface(tmp_path)
     import operations.operator.surface as surface_module
 
+    payload = {"aggregate": {}, "pages": [], "delivered": [], "non_delivered": []}
+    payload[member] = "not a list"
     monkeypatch.setattr(
         surface_module.RunTree,
         "read_artifact",
-        lambda self, stage, kind, identity: {"payload": {"aggregate": {}, member: "not a list"}},
+        lambda self, stage, kind, identity: {"payload": payload},
     )
     with pytest.raises(ValueError, match=f"{member} is not a list"):
         surface._armarium_export(tmp_path, "r1")
+
+
+@pytest.mark.parametrize("member", ("pages", "delivered", "non_delivered"))
+def test_the_export_reader_refuses_a_member_missing_entirely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member: str
+) -> None:
+    """A record that omits `member` outright is refused, not defaulted to empty.
+
+    The producer (`pipeline/7_armarium/run.py`) always writes `pages`,
+    `delivered`, and `non_delivered` together, so a record missing one is
+    never an honest partial write -- it is what a mismatched schema looks
+    like (an older build, or a record `fetch-run` brought home from a pod
+    running different code). Before this, the loop below only checked type
+    when a key was present, so an absent member passed silently and
+    `_exported_work` printed the generic "the recorded acts" instead of the
+    run being refused -- the exact gap CodeRabbit's "Nothing Is Lost
+    Silently" check caught.
+    """
+
+    surface = _surface(tmp_path)
+    import operations.operator.surface as surface_module
+
+    payload = {"aggregate": {}, "pages": [], "delivered": [], "non_delivered": []}
+    del payload[member]
+    monkeypatch.setattr(
+        surface_module.RunTree,
+        "read_artifact",
+        lambda self, stage, kind, identity: {"payload": payload},
+    )
+    with pytest.raises(ValueError, match=f"missing {member}"):
+        surface._armarium_export(tmp_path, "r1")
+
+
+def test_run_refuses_a_complete_aggregate_whose_partition_undercounts_expected_acts(
+    tmp_path: Path,
+) -> None:
+    """`delivered`/`non_delivered` being present lists is not enough on its own.
+
+    A foreign record could claim `status: complete` with `expected_acts: 3`
+    while `delivered` and `non_delivered` are both empty -- present, well-typed,
+    and wrong. Before this fix `run()` took `state` from `aggregate["status"]`
+    alone, so this record would still print "Run complete" and send a milestone
+    claiming acts accounted for that were never actually delivered or held.
+    """
+
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [],
+        "non_delivered": [],
+        "expected_acts": 3,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="undercounted-partition")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "reconcile to 3 distinct act" in (failure.value.detail or "")
+    assert "0 record(s), 0 distinct" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreconciled"
+    assert receipt["state"] != "complete"
+
+
+def test_run_refuses_a_complete_aggregate_whose_partition_double_counts_one_act(
+    tmp_path: Path,
+) -> None:
+    """A raw `len()` cannot tell a duplicated act from two distinct ones.
+
+    Two entries naming the same `act_key` -- split across `delivered` and
+    `non_delivered`, or repeated in one of them -- could pad the raw count
+    to match `expected_acts` while a real, different act is missing
+    entirely. Reconciliation counts distinct act identities, not rows.
+    """
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [{"act_key": "a1"}],
+        "non_delivered": [{"act_key": "a1"}],
+        "expected_acts": 2,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="doubled-act")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "2 record(s), 1 distinct" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreconciled"
+    assert receipt["state"] != "complete"
+
+
+def test_run_refuses_a_complete_aggregate_with_a_malformed_act_record(
+    tmp_path: Path,
+) -> None:
+    """A partition entry with no readable `act_key` cannot be reconciled --
+    counting it toward `expected_acts` anyway would let a malformed entry
+    stand in for a real act."""
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [{"act_key": "a1"}, {"no_act_key": True}],
+        "non_delivered": [],
+        "expected_acts": 2,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="malformed-act")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "not a readable act record" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreconciled"
+    assert receipt["state"] != "complete"
+
+
+def test_run_refuses_a_complete_aggregate_with_an_empty_act_key(
+    tmp_path: Path,
+) -> None:
+    """An empty string satisfies `isinstance(..., str)` but names no act.
+
+    `common/stage.py` refuses an empty `act_key` at the Designator's own seal, but
+    that seal is exactly what a foreign or older-build record -- the same class this
+    reconciliation check exists to catch -- would not have gone through. Before this
+    fix, `delivered: [{"act_key": ""}]` with `expected_acts: 1` reconciled cleanly:
+    one record, one distinct "identity", and a run or export reported complete over
+    an act nothing actually names.
+    """
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [{"act_key": ""}],
+        "non_delivered": [],
+        "expected_acts": 1,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="empty-act-key")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "not a readable act record" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreconciled"
+    assert receipt["state"] != "complete"
 
 
 def test_a_held_run_raises_run_held_not_run_failed(
@@ -3145,9 +3488,60 @@ def test_a_malformed_reasons_field_is_named_unreadable_not_silently_dropped(
     assert "no reason recorded" not in notifications[0][1]
 
 
-def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
+def test_an_unbounded_notification_message_is_truncated_before_it_is_sent(
     tmp_path: Path,
 ) -> None:
+    """F020: a held run with hundreds of unsealed pages must not build a
+    notification message with no ceiling at all -- the transport already
+    truncates its own failure-detail string this way; the outbound message
+    needs the same treatment."""
+
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path)
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    long_message = "; ".join(f"page {i} was corrupt: reason {i}" for i in range(200))
+    assert len(long_message) > MAX_NOTIFY_MESSAGE_CHARACTERS
+
+    surface._notify("decision", long_message)
+
+    assert len(notifications) == 1
+    sent = notifications[0][1]
+    # The ceiling this test is named for covers the whole sent message,
+    # suffix included -- not the ceiling plus the suffix's own length.
+    assert len(sent) <= MAX_NOTIFY_MESSAGE_CHARACTERS
+    assert sent.startswith(long_message[:80])
+    assert sent.endswith("(truncated; see the run receipt for the full text)")
+
+
+def test_a_short_notification_message_is_untouched(tmp_path: Path) -> None:
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path)
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    surface._notify("milestone", "a short message")
+
+    assert notifications == [("milestone", "a short message")]
+
+
+def test_a_held_runs_missing_expected_act_total_is_named_on_screen(
+    tmp_path: Path,
+) -> None:
+    """ "total not recorded" is still a legitimate display for a *held* run:
+    reconciliation is a precondition for claiming `complete`, not for every
+    state a record can carry, and a hold is the pipeline asking a person to
+    decide, with no completed accounting to reconcile yet.
+    """
     messages: list[str] = []
     notifications: list[tuple[str, str]] = []
     surface = _surface(tmp_path, output=messages)
@@ -3155,8 +3549,10 @@ def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
         args=[], returncode=0, stdout="", stderr=""
     )
     surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
-        "aggregate": {"status": "complete"},
+        "aggregate": {"status": "held", "reasons": ["one act needs review"]},
         "pages": [],
+        "delivered": [],
+        "non_delivered": [],
     }
 
     def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
@@ -3165,16 +3561,51 @@ def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
 
     surface.notifier = record_notification
 
-    surface.run(run_id="missing-expected-total")
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="missing-expected-total")
 
+    assert failure.value.code is ErrorCode.RUN_HELD
     assert any("Acts accounted for:" in line and "total not recorded" in line for line in messages)
     assert notifications == [
         (
-            "milestone",
-            "Verbatus run missing-expected-total finished: 0 page(s), act total not recorded.",
+            "decision",
+            "Verbatus run missing-expected-total is held and needs a decision: "
+            "one act needs review",
         )
     ]
     assert "None" not in "\n".join(messages + [notifications[0][1]])
+
+
+def test_a_complete_aggregate_with_no_expected_acts_is_refused_not_displayed_as_unknown(
+    tmp_path: Path,
+) -> None:
+    """`expected_acts` is a precondition for claiming `complete`, not an
+    optional display value -- the real producer always writes it alongside
+    `delivered`/`non_delivered` (`pipeline/7_armarium/run.py`), so a record
+    missing it is exactly the shape a foreign or mismatched-schema record
+    takes. Before this fix a `complete` record with no `expected_acts`
+    skipped reconciliation entirely and displayed "total not recorded" as
+    if that were a normal, honest outcome.
+    """
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete"},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="missing-expected-total")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "expected_acts" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreconciled"
+    assert receipt["state"] != "complete"
 
 
 def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> None:
@@ -3283,6 +3714,7 @@ def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
         "pages": [],
         "delivered": [],
         "non_delivered": [],
+        "expected_acts": 0,
     }
     bundle_bytes = b"new evidence bundle"
 
@@ -3373,6 +3805,7 @@ def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: 
         "pages": [],
         "delivered": [],
         "non_delivered": [],
+        "expected_acts": 0,
     }
 
     with pytest.raises(OperatorError) as refusal:
@@ -3384,6 +3817,51 @@ def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: 
     assert list(exports.glob("*.zip")) == []
     assert list(exports.glob("*.staged")) == []
     assert list(exports.glob(".*tmp*")) == []
+
+
+def test_export_refuses_a_complete_record_whose_partition_does_not_reconcile(
+    tmp_path: Path,
+) -> None:
+    """`export` reads the same Armarium record `run()` does and must refuse a
+    "complete" claim it cannot reconcile the same way -- a run this session
+    independently reviewed pointed out that the reconciliation added for
+    `run()` lived only there: a run refused for exactly this reason still
+    leaves a receipt naming it, and `export --run-id` reads that receipt's
+    run tree fresh, so the same unreconciled record could still be exported
+    as complete through the door `run()` had already closed. No bundle
+    should be written, and no receipt should ever claim `complete`.
+    """
+    surface = _surface(tmp_path)
+    run_id = "export-side-reconciliation"
+    run_root = tmp_path / "runs"
+    (run_root / run_id / "7_armarium").mkdir(parents=True)
+    (run_root / run_id / "run.json").write_text("{}", encoding="utf-8")
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(run_root),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+        "expected_acts": 3,
+    }
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_UNRECONCILED
+    assert "reconcile to 3 distinct act" in str(refusal.value.detail)
+    exports = surface.state_root / "exports"
+    assert list(exports.glob("*.zip")) == []
+    assert list(exports.glob("*.staged")) == []
 
 
 def test_a_structural_export_refusal_still_leaves_a_receipt_and_no_staged_file(
@@ -3416,6 +3894,7 @@ def test_a_structural_export_refusal_still_leaves_a_receipt_and_no_staged_file(
         "pages": [],
         "delivered": [],
         "non_delivered": [],
+        "expected_acts": 0,
     }
 
     def refuse_structurally(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]
@@ -3454,6 +3933,34 @@ def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_n
 
     assert failure.value.code is ErrorCode.EXPORT_MISSING
     assert "run_root" in failure.value.render()
+
+
+def test_a_malformed_older_receipt_does_not_block_export_of_a_sound_later_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ambiguity check (above, EXPORT_AMBIGUOUS) reads every matching
+    receipt's run_root to compare them; a record it cannot resolve at all
+    must not be able to block export of the one that actually gets selected
+    (matching[-1]) just by existing earlier under the same run_id -- that
+    would be a new failure mode the ambiguity check introduced, not one it
+    was meant to guard against."""
+    surface = _surface(tmp_path)
+    surface._write_action(
+        "run",
+        {"summary": "an earlier, incomplete record", "run_id": "dup"},
+        descriptor_action="run",
+    )
+    surface._write_action(
+        "run",
+        {"summary": "test run", "state": "complete", "run_root": "runs", "run_id": "dup"},
+        descriptor_action="run",
+    )
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"sound"))
+    surface._armarium_export = lambda root, run_id: _complete_export(root, run_id)  # type: ignore[method-assign]
+
+    bundle = surface.export(run_id="dup")
+
+    assert bundle.read_bytes() == b"sound"
 
 
 def test_console_entry_renders_an_application_import_failure(
@@ -6217,7 +6724,7 @@ def _complete_export(run_root, run_id):  # type: ignore[no-untyped-def]
     return {
         "aggregate": {"status": "complete", "reasons": []},
         "pages": [{"ordinal": 1}],
-        "delivered": [{}],
+        "delivered": [{"act_key": "a1"}],
         "non_delivered": [],
         "expected_acts": 1,
     }
@@ -6278,6 +6785,9 @@ def test_every_run_receipt_carries_identity_configuration_commit_and_output(
         assert (commit is None) != (receipt["repository_commit_unreadable"] is None)
         if commit is not None:
             assert commit == _repository_commit(ROOT)
+            # F098: the orchestrator invocation itself must carry the commit
+            # the receipt says the run ran under, not only the receipt.
+            assert argv[argv.index("--repository-commit") + 1] == commit
     assert finished["exit_code"] == 0
     assert finished["stderr_tail"] == "1 door refusal(s); see report\n"
     assert finished["stdout_tail"] == "run r: complete\n"
@@ -6574,6 +7084,122 @@ def test_export_with_a_run_id_uses_that_run_even_after_another_was_recorded(
     assert "never-recorded" in missing.value.render()
 
 
+def test_export_refuses_a_run_id_recorded_under_two_different_run_roots(
+    tmp_path: Path,
+) -> None:
+    """A run_id is not guaranteed unique across every root this operator state
+    has ever recorded; two genuinely different runs colliding on the same name
+    is a real ambiguity, not "the same run, re-recorded" (which is what taking
+    the latest receipt for an unambiguous run_id already, correctly, does)."""
+    surface = _surface(tmp_path)
+    for root in ("root-a", "root-b"):
+        surface._write_action(
+            "run",
+            {"summary": "test run", "state": "complete", "run_root": root, "run_id": "dup"},
+            descriptor_action="run",
+        )
+
+    with pytest.raises(OperatorError) as ambiguous:
+        surface.export(run_id="dup")
+    assert ambiguous.value.code is ErrorCode.EXPORT_AMBIGUOUS
+    rendered = ambiguous.value.render()
+    assert str(surface.state_root / "root-a") in rendered
+    assert str(surface.state_root / "root-b") in rendered
+
+
+def test_export_run_root_disambiguates_a_colliding_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    for root in ("root-a", "root-b"):
+        surface._write_action(
+            "run",
+            {"summary": "test run", "state": "complete", "run_root": root, "run_id": "dup"},
+            descriptor_action="run",
+        )
+    seen: list[tuple[Path, str]] = []
+
+    def export_of(root, run_id):  # type: ignore[no-untyped-def]
+        seen.append((root, run_id))
+        return _complete_export(root, run_id)
+
+    surface._armarium_export = export_of  # type: ignore[method-assign]
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"root-b"))
+
+    surface.export(run_id="dup", run_root=surface.state_root / "root-b")
+
+    assert seen == [(surface.state_root / "root-b", "dup")]
+
+
+def test_export_run_root_naming_no_matching_receipt_is_refused(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    surface._write_action(
+        "run",
+        {"summary": "test run", "state": "complete", "run_root": "root-a", "run_id": "solo"},
+        descriptor_action="run",
+    )
+
+    with pytest.raises(OperatorError) as missing:
+        surface.export(run_id="solo", run_root=tmp_path / "not-a-recorded-root")
+    assert missing.value.code is ErrorCode.EXPORT_MISSING
+
+
+def test_derived_evidence_prefixes_reads_the_launch_receipt(tmp_path: Path) -> None:
+    """F110/G11: `--evidence-prefix` derives from the same saved launch receipt
+    `--evidence-key` already does (`cli._derived_evidence_keys`), so an
+    operator is not asked to retype a 32-hex token by hand for one flag while
+    the other derives it for free. Real requests write every report path at
+    the volume root (boot_a_request.py, boot_b_request.py); only
+    bootstrap_main's own report path names this launch's preflight directory
+    (`preflight/<that report path's stem>`), so the fixture below mirrors a
+    real Boot B nested argv (pod_run's own argv, bootstrap_main's appended
+    after the first literal '--') rather than a simplified one."""
+    token = "c" * 32
+    run_half = [
+        "python",
+        "-m",
+        "operations.pod.pod_run",
+        "--report-path",
+        f"/workspace/pod-run-report-{token}.json",
+        "--run-id",
+        "r1",
+    ]
+    bootstrap_half = [
+        "--volume-mount-path",
+        "/workspace",
+        "--report-path",
+        f"/workspace/bootstrap-report-{token}.json",
+    ]
+    nested = json.dumps([*run_half, "--", *bootstrap_half])
+    receipt = tmp_path / "launch-receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "payload": {
+                    "request": {
+                        "docker_start_cmd": [
+                            "python",
+                            "-m",
+                            "operations.pod.pod_timer",
+                            "--report-path",
+                            f"/workspace/pod-runtime-report-{token}.json",
+                            "--bootstrap-command-json",
+                            nested,
+                        ],
+                        "volume_mount_path": "/workspace",
+                        "volume_id": "vol123",
+                    }
+                }
+            }
+        )
+    )
+    volume = VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol123")
+
+    prefixes = cli._derived_evidence_prefixes(receipt, volume)
+
+    assert prefixes == (f"preflight/bootstrap-report-{token}",)
+
+
 def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) -> None:
     surface = _surface(tmp_path)
     volume, reader = _volume_run(tmp_path)
@@ -6606,6 +7232,78 @@ def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) 
     assert "  Command: verbatus status" in lines
     assert f"  Working directory: {os.getcwd()}" in lines
     assert any(line.startswith("- unexpected record 1: ") for line in lines)
+
+
+def test_status_names_an_advance_so_the_operators_sequence_is_reconstructible(
+    tmp_path: Path,
+) -> None:
+    """F108: status had no arm for advance at all before this.
+
+    Exercises `record_advance` and `_status_projection`'s new arm directly,
+    the way `record_backup`'s own coverage does for the sibling verb --
+    `_advance_with_confirmation`'s own boundary/confirmation machinery is
+    covered separately in test_advance_modes.py and test_permission_boundary.py.
+    """
+    surface = _surface(tmp_path)
+    reference = ApprovalRecordReference("2_designator/approvals/a.json", "b" * 64)
+
+    receipt = surface.record_advance(
+        run_id="staged",
+        run_root=tmp_path / "runs",
+        stage="designator",
+        reason="operator reviewed the completed run",
+        seal_digest="c" * 64,
+        reference=reference,
+    )
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "complete"
+    assert payload["stage"] == "designator"
+    assert payload["seal_digest"] == "c" * 64
+    assert payload["approval_record"] == {
+        "relative_path": "2_designator/approvals/a.json",
+        "sha256": "b" * 64,
+    }
+
+    lines = surface.status()
+    assert any(line.startswith("- advance record 1: ") for line in lines)
+    status = "\n".join(lines)
+    assert f"Run: staged; run root: {tmp_path / 'runs'}; stage: designator." in status
+
+
+def test_status_rejoins_a_state_relative_run_root_for_an_advance_record(
+    tmp_path: Path,
+) -> None:
+    """The `advance` status arm must resolve a state-relative run root the
+    same way the `run` arm already does (`_display_path`), not print the
+    stored relative fragment unchanged.
+
+    `record_advance` stores `run_root` through `_state_relative`, which
+    keeps a run root under the state directory as a short relative path
+    (e.g. `runs`) so it survives the state directory being moved. Before
+    this fix, `_status_projection`'s `advance` arm printed that stored value
+    straight from the receipt instead of rejoining it against `state_root`
+    the way the `run` arm does -- the operator would see a path that does
+    not exist from their current directory.
+    """
+    surface = _surface(tmp_path)
+    reference = ApprovalRecordReference("2_designator/approvals/a.json", "b" * 64)
+    run_root = surface.state_root / "runs"
+
+    surface.record_advance(
+        run_id="under-state-root",
+        run_root=run_root,
+        stage="designator",
+        reason="operator reviewed the completed run",
+        seal_digest="c" * 64,
+        reference=reference,
+    )
+
+    status = "\n".join(surface.status())
+    assert f"Run: under-state-root; run root: {run_root}; stage: designator." in status
+    assert f"Passed boundary sealed at: {'c' * 64}." in status
+    assert "Approval record: 2_designator/approvals/a.json" in status
+    assert "Reason: operator reviewed the completed run" in status
 
 
 def test_the_cli_catch_all_writes_an_unexpected_receipt_and_names_it(

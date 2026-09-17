@@ -1681,10 +1681,48 @@ def _perlector_dissent():
 # That value is part of `config_digest` now, and every digest above it moves
 # with it. The file counts are again unchanged, for the same reason and with the
 # same evidence: the two count assertions passed while only these two failed.
+# The 2026-09-16 end-to-end review's F087 fix (`history/2026-09-16_end-to-end-review.md`)
+# moved both digests once more. `pipeline/3_attestatores/run.py` now carries
+# `align_to_anchor`'s own `deadline_in_force` answer into the published `aligned`
+# alignment record, where it was silently dropped before -- so a caller that ran
+# the matcher fully unbounded and happened to finish read identically to one that
+# was actually bounded. Attribution: two fresh runs of base commit 485283b's own
+# tree (a linked worktree, run under its own `common/`) against this candidate,
+# compared leaf by leaf over every JSON file in both trees. Happy 100 files/exit 0
+# and review 111 files/exit 3, file counts and exit codes unchanged on both sides;
+# one content-addressed blob re-addressed per scenario (the Armarium bundle, the
+# only artifact whose own bytes embed the changed records) and no other file
+# added or removed. There is exactly one non-digest change and no others: a new
+# `deadline_in_force: true` field on every `aligned` alignment record in
+# `3_attestatores/artifacts/act-attachment/*.json` (happy: 4 attachments across 2
+# records; review: 3 attachments across 2 records) -- `true` in both scenarios,
+# since this test's synthetic fixture pages align well inside the sealed pair
+# bound on a plain, single-threaded run and this build always runs single-threaded.
+# Everything else below it is a digest cascade (`self_hash`, `sha256` references,
+# `artifact_inventory`, `blob_inventory`, and the manifest/index entries that
+# carry them). No established text, outcome, category, crop geometry or count
+# moved (GOVERNANCE 5); the two count assertions above this comment passed while
+# only the two digest assertions failed.
+# F132 gave the Recensor review its own attempt model (`pipeline/5_recensor/
+# run.py::publish_review`/`current_review`): a review's own recense ordinal is
+# minted from whether its content actually changed, not from the act's
+# recovery-request count, and the review that answers a recovery request now
+# carries that request's ordinal as its own field, `recovery_request_ordinal`,
+# rather than reusing `attempt_ordinal` for both facts. `happy` requests no
+# recovery, so its snapshot and digest are untouched; `review`'s one
+# recovery-requested review (a1's first) gains the new field -- one changed
+# field, on one file, and the same digest cascade (`self_hash`, the manifest
+# entry that carries it, and the content-addressed Armarium bundle that
+# embeds the changed record) this file's own established convention already
+# names for the prior such change. File count unchanged (111): no artifact
+# added or removed, and a repeat run over the same tree still reproduces the
+# identical snapshot and digest -- confirmed directly, not only through this
+# suite, since F132's own rerun-idempotency guarantee is exactly what this
+# test exists to hold the whole orchestrator to.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "2f6346cb29ae16e7028267ee827cd81beb31911b9cb2aa10f2ea9988f34bf0cf"
-REVIEW_RUN_TREE_DIGEST = "62a8fb1a76c129566010562f80f493e03e96ee38c68580122f8c000c68e52432"
+HAPPY_RUN_TREE_DIGEST = "46a92beca8fb46ca6d32a3294c91501a3740bc62b3677e4c9597b50988331220"
+REVIEW_RUN_TREE_DIGEST = "4da6710a2d88454be73fbe9ea12948c3fec08f160fbf6d941aae65a459c3fac0"
 
 
 def orchestrate(

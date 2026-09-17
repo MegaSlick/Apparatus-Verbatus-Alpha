@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -135,6 +136,12 @@ UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
 MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_NOTIFY_MESSAGE_CHARACTERS = 500
+"""A held run with hundreds of unsealed pages built a notification message with
+one entry per page and no ceiling at all (F020); the underlying transport truncates
+`notify_bridge`'s own failure-detail string the same way, at 160 characters, so a
+cap here is not a new idea in this codebase, only a missing one on the outbound
+message itself."""
 # The Door's program path, named once. Two spellings of it — the fault drill's
 # call site and the guard that decides the drill forwards real ingress — is how
 # the drill could go on running while quietly stopping injecting: change one and
@@ -441,6 +448,17 @@ class FixtureBootstrapActions:
                 "Repair the named fixture check, then run `verbatus boot` again; this is safe.",
             )
         return record
+
+
+class UnreconciledActPartitionError(ValueError):
+    """A `complete` Armarium export whose act partition does not reconcile.
+
+    Distinct from a plain `ValueError` so `OperatorSurface.run()` and
+    `.export()` can each tell "this record could not be read at all" apart
+    from "this record was read fine and does not add up" -- the record
+    exists, so treating it as missing, or its copy as failed, tells the
+    operator the wrong thing (CodeRabbit).
+    """
 
 
 class OperatorSurface:
@@ -891,15 +909,30 @@ class OperatorSurface:
             raise OperatorError(
                 ErrorCode.UPLOAD_PARTIAL, detail=f"{error} Saved receipt: {receipt}"
             ) from error
+        # F027: derived from the same fact `report` already carries, rather
+        # than hardcoded, so the top-level state and the nested transfer
+        # record can never disagree. Not reachable today through this verb --
+        # `manifest_snapshot` is always written just above before `resume()`
+        # ever checks for it -- but a future caller that reused this receipt
+        # shape with an operator-named path it had not first snapshotted
+        # would otherwise silently print "complete" over a transfer that sent
+        # nothing.
+        transfer_complete = report.submission_manifest_present
         receipt = self._write_action(
             "upload",
             {
                 "summary": (
-                    "Upload is complete; every recorded file was verified in the fixture volume."
-                    if fixture_only
-                    else "Upload is complete; every recorded file was verified at its target."
+                    (
+                        "Upload is complete; every recorded file was verified in the fixture "
+                        "volume."
+                        if fixture_only
+                        else "Upload is complete; every recorded file was verified at its target."
+                    )
+                    if transfer_complete
+                    else "Upload found no sealed submission record to send; nothing was "
+                    "transferred."
                 ),
-                "state": "complete",
+                "state": "complete" if transfer_complete else "nothing-to-transfer",
                 "submission_manifest_sha256": manifest_sha256,
                 "volume": _volume_record(volume),
                 "transfer": report.to_record(),
@@ -907,7 +940,11 @@ class OperatorSurface:
             },
             descriptor_action="upload",
         )
-        self.present("Upload complete. Every file in the sealed record was verified.")
+        self.present(
+            "Upload complete. Every file in the sealed record was verified."
+            if transfer_complete
+            else "Upload found no sealed submission record to send; nothing was transferred."
+        )
         self.present(f"Saved receipt: {receipt}")
         return receipt
 
@@ -1294,7 +1331,7 @@ class OperatorSurface:
         started_at = utc_stamp(self.now())
         prior_state = self._prior_run_state(run_id)
         if submission_folder is None:
-            pages, acts, declared_ok = _declared_work(self.workspace)
+            pages, acts, declared_ok = _declared_work(self.workspace, scenario)
             if not declared_ok:
                 # Not a naming inconvenience: the orchestrator reads the same
                 # fixture from the same place, so a run started here would fail
@@ -1366,6 +1403,14 @@ class OperatorSurface:
         # these and had none of them; a later session diagnosing a run from
         # the state directory alone has nothing else to go on.
         commit, commit_unreadable = _repository_commit_or_reason(self.workspace)
+        if commit is not None:
+            # F098: the run tree itself, not only this receipt, must carry the
+            # commit it ran under -- pod_run already passes this to a pod-driven
+            # orchestrator invocation; a laptop-driven run left it out. Omitted
+            # (not a refusal) when unreadable, matching the orchestrator's own
+            # optional --repository-commit and this receipt's own commit_unreadable
+            # field -- a laptop checkout without git history is a real, allowed case.
+            command.extend(("--repository-commit", commit))
         facts: dict[str, Any] = {
             "ingress": ingress_mode,
             "run_root": self._state_relative(run_root),
@@ -1509,6 +1554,8 @@ class OperatorSurface:
             # a malformed record cannot publish the happy-path receipt first.
             if not isinstance(page_records, list):
                 raise ValueError("the Armarium export's page record is not a list")
+            if state == "complete":
+                self._require_reconciled_act_partition(export_payload)
         except Exception as error:
             if completed.returncode == 3:
                 # Held before the Armarium -- the Attestatores' hold, or a
@@ -1547,13 +1594,23 @@ class OperatorSurface:
                 raise OperatorError(
                     ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
                 ) from error
-            reason = f"the Armarium export record could not be read: {error}"
+            if isinstance(error, UnreconciledActPartitionError):
+                reason = f"the Armarium export record does not reconcile: {error}"
+                state = "armarium-record-unreconciled"
+                summary = (
+                    "Run ended with an Armarium record that was read but does not "
+                    "reconcile as complete."
+                )
+            else:
+                reason = f"the Armarium export record could not be read: {error}"
+                state = "armarium-record-unreadable"
+                summary = "Run ended before its Armarium record was available."
             receipt = self._write_action(
                 "run",
                 {
                     **ended,
-                    "summary": "Run ended before its Armarium record was available.",
-                    "state": "armarium-record-unreadable",
+                    "summary": summary,
+                    "state": state,
                     "reason": reason,
                     "detail": reason,
                     "armarium_export_unreadable": str(error),
@@ -1603,7 +1660,7 @@ class OperatorSurface:
             f"{expected} act(s) accounted for" if expected is not None else "act total not recorded"
         )
         if submission_folder is None:
-            pages, acts, _declared_ok = _declared_work(self.workspace)
+            pages, acts = _exported_work(page_records, export_payload)
             self.present(
                 f"Pages accounted for: {', '.join(pages)} ({len(page_records)} total). "
                 f"Acts accounted for: {', '.join(acts)} ({expected_on_screen})."
@@ -1696,13 +1753,17 @@ class OperatorSurface:
 
     # -- export ---------------------------------------------------------------
 
-    def export(self, *, run_id: str | None = None) -> Path:
+    def export(self, *, run_id: str | None = None, run_root: Path | None = None) -> Path:
         """Make a local evidence bundle from the base-tree Armarium artifact.
 
         The run is named first, before any work: with no `run_id` the most
         recently recorded run is chosen and said so, rather than discovered
         from a bundle filename after the fact. With one, the latest receipt for
-        that run is used even when another run was recorded since.
+        that run is used even when another run was recorded since — unless the
+        same `run_id` is recorded under more than one run root, which is not
+        "the same run, recorded twice" but a genuine name collision between
+        two different runs; that is refused rather than guessed at, naming
+        every candidate, with `run_root` as the way to say which one is meant.
         """
 
         run_records = self._run_receipts()
@@ -1725,11 +1786,55 @@ class OperatorSurface:
                 ErrorCode.EXPORT_MISSING,
                 detail=f"run {recorded_id} is not a run recorded in this operator state",
             )
+
+        def _resolved_run_root(payload: dict[str, Any]) -> Path | None:
+            # `None` for a record this can't resolve, rather than refusing
+            # export outright over it: a record that will not end up selected
+            # (matching[-1], below) should not be able to block export of one
+            # that will, and the one that IS selected is still validated by
+            # this method's own existing try/except a few lines down --
+            # unchanged, so a single malformed record behaves exactly as it
+            # did before this function existed.
+            value = payload.get("run_root")
+            return self._state_path(value).resolve() if isinstance(value, str) else None
+
+        if run_root is not None:
+            named_root = run_root.resolve()
+            matching = [
+                payload for payload in matching if _resolved_run_root(payload) == named_root
+            ]
+            if not matching:
+                raise OperatorError(
+                    ErrorCode.EXPORT_MISSING,
+                    detail=f"run {recorded_id} has no record under run root {run_root}",
+                )
+        else:
+            resolved_roots = {
+                root for payload in matching if (root := _resolved_run_root(payload)) is not None
+            }
+            if len(resolved_roots) > 1:
+                candidates = ", ".join(str(candidate) for candidate in sorted(resolved_roots))
+                raise OperatorError(
+                    ErrorCode.EXPORT_AMBIGUOUS,
+                    detail=f"run {recorded_id} is recorded under {len(resolved_roots)} run "
+                    f"roots: {candidates}",
+                )
         run_record = matching[-1]
         try:
             run_root = self._state_path(str(run_record["run_root"]))
             self.present(f"Exporting run {recorded_id} from run root {run_root}.")
             export_payload = self._armarium_export(run_root, recorded_id)
+            # The same reconciliation `run()` requires before it will call a
+            # record complete: `export` reads this same record independently
+            # (a run refused for this exact reason still leaves a receipt
+            # `export` can be asked for later), and a record that could not
+            # be called complete there must not be called complete here
+            # either -- GOVERNANCE 2 through whichever verb reads it.
+            aggregate = export_payload["aggregate"]
+            if aggregate.get("status") == "complete":
+                self._require_reconciled_act_partition(export_payload)
+        except UnreconciledActPartitionError as error:
+            raise OperatorError(ErrorCode.EXPORT_UNRECONCILED, detail=str(error)) from error
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
         exports_dir = self.state_root / "exports"
@@ -2425,6 +2530,44 @@ class OperatorSurface:
             descriptor_action="backup",
         )
 
+    def record_advance(
+        self,
+        *,
+        run_id: str,
+        run_root: str | Path,
+        stage: str,
+        reason: str,
+        seal_digest: str,
+        reference: Any,
+    ) -> Path:
+        """The advance verb's receipt, so `status` can say a boundary was passed (F108).
+
+        Only the success path: `_advance_with_confirmation` raises
+        `OperatorError(ADVANCE_REFUSED, ...)` directly on every refusal, well
+        before anything here could be reached, so there is no failure state
+        for this call to record. `advance`'s own approval record remains the
+        durable evidence of what happened; this is only what lets `status`
+        find it again without a person remembering which run it was.
+        """
+
+        return self._write_action(
+            "advance",
+            {
+                "summary": f"Run {run_id} passed the {stage} boundary: {reason}",
+                "state": "complete",
+                "run_id": run_id,
+                "run_root": self._state_relative(Path(run_root)),
+                "stage": stage,
+                "reason": reason,
+                "seal_digest": seal_digest,
+                "approval_record": {
+                    "relative_path": reference.relative_path,
+                    "sha256": reference.sha256,
+                },
+            },
+            descriptor_action="advance",
+        )
+
     def _active_launch_receipt(self) -> Path | None:
         return self._descriptor_receipt("active-launch", "launch")
 
@@ -2787,11 +2930,81 @@ class OperatorSurface:
             raise ValueError("Armarium export record has no usable aggregate")
         # The list-valued members every consumer counts or walks: a string here
         # would render a confident wrong page count into a receipt, and a number
-        # would kill export with a bare TypeError after the bundle exists.
+        # would kill export with a bare TypeError after the bundle exists. The
+        # real producer (`pipeline/7_armarium/run.py`) always writes all three
+        # together, so a record missing one is never an honest partial write --
+        # it is exactly the record a caller sees from a mismatched schema (an
+        # older build, a record fetched from a pod running different code).
+        # Presence is required, not merely the right type when present: CodeRabbit
+        # caught that `_exported_work` treated an absent `delivered`/`non_delivered`
+        # as empty and printed "the recorded acts" instead of refusing -- GOVERNANCE
+        # 2's "a partial result is visibly partial" runs through this reader too.
         for member in ("pages", "delivered", "non_delivered"):
-            if member in payload and not isinstance(payload[member], list):
+            if member not in payload:
+                raise ValueError(f"Armarium export record is missing {member}")
+            if not isinstance(payload[member], list):
                 raise ValueError(f"Armarium export record's {member} is not a list")
         return payload
+
+    def _require_reconciled_act_partition(self, export_payload: dict[str, Any]) -> None:
+        """Refuse an Armarium export claiming `status: complete` whose act
+        partition does not actually reconcile -- called by both `run()` and
+        `export()`, the two verbs that decide "complete" from this same
+        record, so a record either refuses through both or neither.
+
+        `_armarium_export` only proves `delivered`/`non_delivered` are
+        present and are lists; an honest producer always fills them with
+        exactly one entry per expected act -- never both lists, never twice
+        (`pipeline/7_armarium/run.py` refuses to publish otherwise) -- and
+        always carries a matching `expected_acts`. A foreign record -- an
+        older build, a tree fetched from a pod running different code --
+        could still claim `status: complete` with no `expected_acts` to
+        reconcile against, a raw count padded by a duplicated or malformed
+        entry, or an act dropped from one list while doubled in the other; a
+        raw `len()` cannot tell any of those apart from an honest total.
+        `.get(...)` here, not the guaranteed-present read `_armarium_export`
+        would give: this must stay safe for a payload that bypassed that
+        reader entirely (every export test but the reader's own stubs
+        `_armarium_export` directly). Caller decides what "complete" was
+        claiming here: GOVERNANCE 2: "complete" is refused unless everything
+        reconciles.
+        """
+
+        expected_acts = export_payload.get("expected_acts")
+        if (
+            not isinstance(expected_acts, int)
+            or isinstance(expected_acts, bool)
+            or expected_acts < 0
+        ):
+            raise UnreconciledActPartitionError(
+                "the Armarium export claims status complete but its expected_acts "
+                f"is not a valid non-negative count: {expected_acts!r}"
+            )
+        delivered_acts = export_payload.get("delivered")
+        non_delivered_acts = export_payload.get("non_delivered")
+        act_records = [
+            *(delivered_acts if isinstance(delivered_acts, list) else []),
+            *(non_delivered_acts if isinstance(non_delivered_acts, list) else []),
+        ]
+        act_keys: set[str] = set()
+        for record in act_records:
+            if (
+                not isinstance(record, dict)
+                or not isinstance(record.get("act_key"), str)
+                or not record["act_key"]
+            ):
+                raise UnreconciledActPartitionError(
+                    "the Armarium export claims status complete but one of its "
+                    "delivered/non_delivered entries is not a readable act record"
+                )
+            act_keys.add(record["act_key"])
+        if len(act_keys) != len(act_records) or len(act_keys) != expected_acts:
+            raise UnreconciledActPartitionError(
+                "the Armarium export claims status complete but its delivered "
+                f"and non_delivered acts do not reconcile to {expected_acts} "
+                f"distinct act(s) ({len(act_records)} record(s), {len(act_keys)} "
+                "distinct)"
+            )
 
     def _write_base_armarium_bundle(self, run_root: Path, run_id: str, destination: Path) -> None:
         tree = RunTree(run_root, run_id)
@@ -2955,6 +3168,13 @@ class OperatorSurface:
         # carry a newline; shell_notifier refuses a multi-line message, so the
         # decision moment would be dropped exactly when a person is needed.
         one_line = " ".join(message.split()) or "no detail recorded"
+        if len(one_line) > MAX_NOTIFY_MESSAGE_CHARACTERS:
+            # The suffix counts against the same limit it announces: appending
+            # it after a full-length slice let the notifier receive more than
+            # MAX_NOTIFY_MESSAGE_CHARACTERS, past the very ceiling this exists
+            # to enforce.
+            suffix = "... (truncated; see the run receipt for the full text)"
+            one_line = one_line[: MAX_NOTIFY_MESSAGE_CHARACTERS - len(suffix)] + suffix
         try:
             outcome = self.notifier(event, one_line)
         except Exception as error:  # a broken notifier is not a broken run
@@ -3168,6 +3388,26 @@ def _status_projection(
         detail = payload.get("detail")
         if isinstance(detail, str) and detail.strip():
             lines.append(f"  Reason: {detail}")
+    elif action == "advance":
+        run_id = payload.get("run_id")
+        run_root = _display_path(payload.get("run_root"), state_root)
+        stage = payload.get("stage")
+        if isinstance(run_id, str):
+            lines.append(
+                f"  Run: {run_id}"
+                + (f"; run root: {run_root}" if run_root else "")
+                + (f"; stage: {stage}" if isinstance(stage, str) else "")
+                + "."
+            )
+        seal_digest = payload.get("seal_digest")
+        if isinstance(seal_digest, str):
+            lines.append(f"  Passed boundary sealed at: {seal_digest}.")
+        approval_record = payload.get("approval_record")
+        if isinstance(approval_record, dict):
+            lines.append(f"  Approval record: {approval_record.get('relative_path')}")
+        reason = payload.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            lines.append(f"  Reason: {reason}")
     elif action == "unexpected":
         exception_type = payload.get("exception_type")
         message = payload.get("message")
@@ -4508,20 +4748,160 @@ def _human_duration(seconds: int) -> str:
     return f"{seconds} seconds"
 
 
-def _declared_work(workspace: Path) -> tuple[list[str], list[str], bool]:
-    """Name the fixture's actual declared work rather than invent a progress number.
+def _door_module(workspace: Path):
+    """Load `pipeline/1_exemplar/door.py` by path, under a synthetic name.
 
-    The third element is `False` exactly when the declared fixture could not
-    be read at all, so the caller can say so — a generic placeholder shown
-    without comment reads as the real page/act list, which it is not.
+    By path, from this exact `workspace`, rather than
+    `importlib.import_module("pipeline.1_exemplar.door")` (which some tests
+    use, and which does resolve despite the digit prefix): that form
+    resolves against this process's own `sys.path`, which need not be this
+    `workspace` at all -- `--workspace` names an arbitrary checkout, and a
+    door loaded from the wrong one would answer for the wrong fixture. door.py
+    is otherwise invoked here only as a subprocess (`DOOR_PROGRAM`), a
+    boundary that gave it a fresh `sys.path` and module cache for free; loaded
+    in-process instead, its own top-level `sys.path.insert` calls would
+    otherwise grow this operator's `sys.path` by three entries on every call,
+    forever, and its bare sibling imports (`admission`, `manifest`,
+    `pdf_render`, `render_config`, `image_formats` — door-private stage files,
+    reached only because `sys.path` briefly names their directory) would
+    permanently occupy those bare names in `sys.modules`, so a second call
+    against a *different* `workspace` would silently reuse the first
+    workspace's cached copies instead of loading the new one's. Both are
+    restored/purged immediately after the load — before the returned module's
+    one method this caller actually calls is ever invoked, so nothing it
+    needs is torn down out from under it, only the traces left for whoever
+    calls this next.
+    """
+
+    original_sys_path = list(sys.path)
+    original_sys_modules = set(sys.modules)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "operator_door_fixture_scenarios", workspace / DOOR_PROGRAM
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path[:] = original_sys_path
+        for name in set(sys.modules) - original_sys_modules:
+            del sys.modules[name]
+
+
+def _declared_work(workspace: Path, scenario: str) -> tuple[list[str], list[str], bool]:
+    """Name the fixture's declared work for this scenario, before a run exists
+    to read instead — the opening "Checking ..." line's only source, since no
+    Armarium record exists yet to say what actually happened.  Once a run has
+    completed, `_exported_work` reads its real records instead: this function
+    can only ever describe intent, and F030 named exactly the mistake of
+    treating that description as if it were the outcome.
+
+    Filters through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario` —
+    the same scenario-gating a real door application would answer — instead of
+    listing every `[[page]]`/`[[act]]` row unconditionally, which named a page
+    (e.g. a scenario-gated page 3) the running scenario never touches (G21,
+    findings F001/F030/F106).
+
+    The third element is `False` exactly when the declared fixture or its
+    stage programs could not be read at all, so the caller can say so — a
+    generic placeholder shown without comment reads as the real page/act
+    list, which it is not. `--scenario` naming a scenario this fixture does
+    not declare is a different failure (a typo, not an unreadable checkout)
+    and is raised directly rather than folded into that placeholder, which
+    would otherwise blame the checkout for what the argument got wrong.
     """
 
     try:
         fixture = load_fixture(str(workspace / "proof"))
-        pages = [f"page {page['ordinal']}" for page in fixture["page"]]
-        acts = [f"act {act['key']}" for act in fixture["act"]]
-        if pages and acts and all(isinstance(value, str) for value in pages + acts):
-            return pages, acts, True
+        door = _door_module(workspace)
     except Exception:
-        pass
+        return ["the declared pages"], ["the declared acts"], False
+    try:
+        active_pages = door.fixture_pages_for_scenario(fixture, scenario)
+    except ContractError as error:
+        raise OperatorError(
+            ErrorCode.INVALID_COMMAND,
+            detail=f"--scenario {scenario!r} could not be resolved against this checkout's "
+            f"declared fixture: {error}",
+        ) from error
+    # A malformed row past this point (a missing 'ordinal'/'key'/'page_ordinal')
+    # is the same "fixture could not be read" condition as above, not a
+    # different failure -- caught here too rather than left to escape as a
+    # raw KeyError into the operator's unclassified-error path.
+    try:
+        active_ordinals = {page["ordinal"] for page in active_pages}
+        pages = [f"page {page['ordinal']}" for page in active_pages]
+        acts = [
+            f"act {act['key']}" for act in fixture["act"] if act["page_ordinal"] in active_ordinals
+        ]
+    except Exception:
+        return ["the declared pages"], ["the declared acts"], False
+    if pages and acts and all(isinstance(value, str) for value in pages + acts):
+        return pages, acts, True
     return ["the declared pages"], ["the declared acts"], False
+
+
+def _exported_work(
+    page_records: list[Any], export_payload: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Name the pages and acts a completed run's own Armarium record carries —
+    never the fixture's static declaration, which F030 found naming a
+    scenario-gated page never touched, omitting an act the fixture declaration
+    could not know a live run would mint (`ink-free-page`'s fallback act), and
+    still naming a page the Door had in fact refused (`refused-page`). The
+    export record is the run's own account of what happened to every source
+    and every act, which is the only thing this line may describe once one
+    exists — mixing it with a fixture-derived name is the mistake this
+    replaces, not a smaller version of it.
+
+    `page_records` is `export_payload["pages"]`, already read and validated as
+    a list by the caller. `delivered`/`non_delivered` together are the export's
+    complete act partition (`pipeline/7_armarium/run.py`'s own comment: every
+    act that is not delivered lands in `non_delivered`, not only held/refused
+    review items) — read defensively here (a non-list value for either is
+    treated as absent, not iterated byte-by-byte) since this function must
+    never be the reason a completed run's own summary line cannot be printed.
+
+    A row this function cannot make sense of is dropped from the *names* it
+    prints, but never invisibly: the caller prints `len(page_records)` (or
+    `expected_acts`) as the total beside these names, and a name silently
+    dropped for being malformed would reopen exactly the names-versus-total
+    mismatch F030 named, just with "malformed" standing in for "unfiltered."
+    So a drop is disclosed as one more named entry instead, per GOVERNANCE 2:
+    a partial result is visibly partial.
+    """
+
+    valid_pages = [
+        record
+        for record in page_records
+        if isinstance(record, dict)
+        and isinstance(record.get("ordinal"), int)
+        and not isinstance(record["ordinal"], bool)
+    ]
+    pages = [f"page {record['ordinal']}" for record in valid_pages]
+    if unreadable := len(page_records) - len(valid_pages):
+        pages.append(f"{unreadable} unreadable page record(s)")
+
+    delivered = export_payload.get("delivered", [])
+    non_delivered = export_payload.get("non_delivered", [])
+    act_records = [
+        *(delivered if isinstance(delivered, list) else []),
+        *(non_delivered if isinstance(non_delivered, list) else []),
+    ]
+    valid_acts = sorted(
+        (
+            record
+            for record in act_records
+            if isinstance(record, dict) and isinstance(record.get("act_key"), str)
+        ),
+        key=lambda record: record["act_key"],
+    )
+    acts = [f"act {record['act_key']}" for record in valid_acts]
+    if unreadable := len(act_records) - len(valid_acts):
+        acts.append(f"{unreadable} unreadable act record(s)")
+
+    if not pages:
+        pages = ["the recorded pages"]
+    if not acts:
+        acts = ["the recorded acts"]
+    return pages, acts

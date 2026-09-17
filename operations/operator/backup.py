@@ -39,6 +39,29 @@ MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 # hard-link errors must name that filesystem constraint without weakening the
 # temp-then-link publication guarantee.
 _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
+# F104: OS-generated residue, never written by any stage and never part of what
+# a stage seals -- admitting it as an ordinary run-tree file let a folder a Mac
+# had merely been opened in back a backup snapshot that read as evidence.
+# Recognized by exact name or, for AppleDouble sidecars, by prefix; matched
+# against the bare filename only, since Finder/Explorer drop these at every
+# depth they visit, not only at a run tree's root.
+_OS_RESIDUE_NAMES: Final = frozenset(
+    {
+        ".DS_Store",
+        ".Spotlight-V100",
+        ".fseventsd",
+        ".Trashes",
+        ".TemporaryItems",
+        "Thumbs.db",
+        "desktop.ini",
+    }
+)
+
+
+def _is_os_residue(name: str) -> bool:
+    return name in _OS_RESIDUE_NAMES or name.startswith("._")
+
+
 _LAYOUT_DIRECTORIES: Final = (
     PurePosixPath("objects"),
     PurePosixPath("objects/sha256"),
@@ -507,6 +530,19 @@ def _inventory_descriptor(
                 ) from error
             if stat.S_ISLNK(details.st_mode):
                 raise BackupRefusal(f"run tree member {relative!r} is a symbolic link")
+            if _is_os_residue(name):
+                # Neither copied nor inventoried: this member was never a run-tree
+                # member to begin with, so excluding it needs no entry in the
+                # snapshot the way a publication temporary's exclusion does --
+                # recording every OS's residue names in a versioned, worker-to-
+                # parent schema is a larger change than this fix makes (F103
+                # already names that same schema as due a version bump). Checked
+                # before the directory branch below, not only the file branch:
+                # `.Trashes`, `.fseventsd` and `.Spotlight-V100` are directories
+                # on macOS, and a check reached only after `stat.S_ISREG` would
+                # never see them -- they would be walked and their contents
+                # hashed into the snapshot like any other run-tree directory.
+                continue
             if stat.S_ISDIR(details.st_mode):
                 if len(stack) >= MAX_DIRECTORY_DEPTH:
                     raise BackupRefusal(

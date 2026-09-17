@@ -39,7 +39,12 @@ from common.background import (  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
-from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
+from common.contracts.errors import (  # noqa: E402
+    ContractError,
+    FatalAccounting,
+    IncompatibleReuse,
+    SchemaRefusal,
+)
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ATTACHMENT_BASES,
@@ -871,6 +876,7 @@ def act_attachment_facts(
                         "line_geometry",
                         "loss",
                         "offset_maps",
+                        "deadline_in_force",
                     }
                     or not isinstance(alignment["anchor_basis"], str)
                     or alignment["anchor_basis"]
@@ -887,6 +893,10 @@ def act_attachment_facts(
                         alignment["anchor_basis"] != "act-anchor"
                         and alignment.get("anchor_chair") is not None
                     )
+                    # F087: same backstop fact Perlector now requires -- carried
+                    # through rather than re-derived, so the two stages cannot
+                    # silently drift on what a closed aligned shape contains.
+                    or not isinstance(alignment.get("deadline_in_force"), bool)
                 ):
                     raise FatalAccounting(
                         f"act {act_id} page witness {chair!r} carries a malformed aligned "
@@ -1332,7 +1342,15 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
         if review.get("outcome") != "recovery-requested":
             continue
         payload = _payload(review, f"recovery-requested review of {act_id}")
+        # The review's own recense ordinal -- a function of its content
+        # (`publish_review`), not of this act's recovery count -- bound to its
+        # own sealed identity below, exactly as every other review is.
         ordinal = payload.get("attempt_ordinal")
+        # Which recovery request this review answers: the request's own
+        # position among this act's requests, named separately because the
+        # two ordinals are no longer the same number (`publish_review`'s
+        # docstring, F132).
+        request_ordinal = payload.get("recovery_request_ordinal")
         request_ref = payload.get("recovery_request_ref")
         matching_request = next(
             (
@@ -1348,14 +1366,17 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
             or not isinstance(ordinal, int)
             or isinstance(ordinal, bool)
             or review.get("attempt_id") != attempt_id(act_id, "recense", ordinal)
+            or not isinstance(request_ordinal, int)
+            or isinstance(request_ordinal, bool)
         ):
             raise FatalAccounting(
                 f"recovery-requested review of {act_id} has no exact matching recovery request"
             )
-        request = requests_by_ordinal.get(ordinal)
+        request = requests_by_ordinal.get(request_ordinal)
         if request is None or request["artifact_id"] != matching_request:
             raise FatalAccounting(
-                f"recovery-requested review of {act_id} disagrees with its request ordinal"
+                f"recovery-requested review of {act_id} names recovery attempt "
+                f"{request_ordinal}, which is not the position of the request it references"
             )
         request_payload = _payload(request, f"recovery request for {act_id}")
         if (
@@ -3317,16 +3338,46 @@ def review_route_from_findings(
     return "held-for-review", "; ".join(reasons)
 
 
+def current_review(context, act_id: str) -> dict | None:
+    """This act's current Recensor review, or `None` before its first.
+
+    `stage_manifest` rebuilds fresh from the tree on every call, so this also
+    sees a review this same pass already published for the act -- not only
+    ones from an earlier invocation.
+    """
+    reviews = artifacts_for(context, RECENSOR, "review", act_id)
+    if not reviews:
+        return None
+    return latest_attempt(reviews, f"Recensor review of {act_id}", operation="recense")
+
+
 def publish_review(
     context,
     *,
     subject_id: str,
     outcome: str,
-    attempt: str,
+    prior: dict | None,
     inputs: list[dict],
     payload: dict,
 ) -> dict:
     """Write a review only after rejecting witness-selection vocabulary.
+
+    A review's identity is not a pure function of the act's own recovery
+    history: `page_coverage_for` (GOALS 1, HANDOFF.md) deliberately derives a
+    review's content from every act sharing its page, so a page-wide fact can
+    legitimately change an act's review between Recensor passes even when that
+    act never itself recovers. Minting the next ordinal from the act's own
+    recovery-request count (as this used to) let two passes republish
+    different content under the same identity, which the immutable writer
+    correctly refuses -- killing a run that should have completed. Instead,
+    `prior` (this act's current review, from `current_review`, or `None`
+    before its first) decides the ordinal: try the prior review's own ordinal
+    first -- an unrelated page-wide fact usually leaves this act's content
+    unchanged, and the store's own byte-for-byte reuse makes that a no-op --
+    and mint a fresh ordinal only when the store proves this pass's content
+    actually differs. `attempt_ordinal` lives in the payload the caller
+    builds; this function stamps it in place rather than trusting the caller
+    to have already matched it to the ordinal it lands at.
 
     Review records are a second durable consumer beside Perlectio: screening
     only the route inputs would leave a future direct payload field unchecked.
@@ -3348,14 +3399,28 @@ def publish_review(
             f"the Recensor review of {subject_id!r} has malformed measurement evidence "
             f"in {measurement_field}: {error}"
         ) from error
-    return context.publish(
-        kind="review",
-        subject_id=subject_id,
-        outcome=outcome,
-        attempt=attempt,
-        inputs=inputs,
-        payload=payload,
-    )
+    ordinal = 1 if prior is None else prior["payload"]["attempt_ordinal"]
+    try:
+        return context.publish(
+            kind="review",
+            subject_id=subject_id,
+            outcome=outcome,
+            attempt=attempt_id(subject_id, "recense", ordinal),
+            inputs=inputs,
+            payload={**payload, "attempt_ordinal": ordinal},
+        )
+    except IncompatibleReuse:
+        if prior is None:
+            raise
+        ordinal = prior["payload"]["attempt_ordinal"] + 1
+        return context.publish(
+            kind="review",
+            subject_id=subject_id,
+            outcome=outcome,
+            attempt=attempt_id(subject_id, "recense", ordinal),
+            inputs=inputs,
+            payload={**payload, "attempt_ordinal": ordinal},
+        )
 
 
 def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
@@ -3679,12 +3744,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 context,
                 subject_id=act_id,
                 outcome="held-for-review",
-                attempt=attempt_id(act_id, "recense", 1),
+                prior=current_review(context, act_id),
                 inputs=[context.input_ref(hold_path)]
                 + [context.input_ref(region["payload"]["image_path"]) for region in hold_regions],
                 payload={
                     "act_key": act_key,
-                    "attempt_ordinal": 1,
                     "reason": f"the Designator held this act: {hold['payload']['reason']}",
                     "coverage": coverage,
                     "geometry_coverage": geometry_coverage,
@@ -3851,7 +3915,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # orchestrator can only refuse turns a graceful hold into a hard failure
         # for no gain."
         recrop_dispatchable = not real_route
-        ordinal = used_total + 1
+        # Names the recovery-*request*'s own position among this act's requests
+        # -- `attempt_id(act_id, "recover", ...)`, below -- never the review's
+        # identity: a review's own ordinal is a function of its content, not of
+        # how many times this act has recovered (`publish_review`'s docstring).
+        request_ordinal = used_total + 1
 
         # The cap is enforced at the request boundary rather than by convention
         # (spec 09's third test): the kind's own allowance, the pooled total, and
@@ -3946,7 +4014,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # taught to follow wrappers is a firewall that can be walked around.
             recovery_payload = {
                 "act_key": act_key,
-                "attempt_ordinal": ordinal,
+                "attempt_ordinal": request_ordinal,
                 "recovery_kind": FALLBACK_RECROP,
                 # The origin as data beside the sentence that states it, so
                 # the page-wide bound counts a recorded fact rather than
@@ -3975,7 +4043,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 kind="recovery-request",
                 subject_id=act_id,
                 outcome="recovery-requested",
-                attempt=attempt_id(act_id, "recover", ordinal),
+                attempt=attempt_id(act_id, "recover", request_ordinal),
                 inputs=[reading_ref],
                 payload=recovery_payload,
             )
@@ -3992,11 +4060,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 context,
                 subject_id=act_id,
                 outcome="recovery-requested",
-                attempt=attempt_id(act_id, "recense", ordinal),
+                prior=current_review(context, act_id),
                 inputs=[reading_ref, request_ref],
                 payload={
                     "act_key": act_key,
-                    "attempt_ordinal": ordinal,
+                    # Which recovery request this review answers -- distinct
+                    # from the review's own `attempt_ordinal`, which
+                    # `publish_review` derives from content, not from this
+                    # act's recovery count (`recovery_state` cross-checks this
+                    # field against the request it names).
+                    "recovery_request_ordinal": request_ordinal,
                     "recovery_kind": FALLBACK_RECROP,
                     "coverage": coverage,
                     # R6 audit F-O7: this was the only review shape carrying
@@ -4182,7 +4255,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             context,
             subject_id=act_id,
             outcome=outcome,
-            attempt=attempt_id(act_id, "recense", ordinal),
+            prior=current_review(context, act_id),
             # `latest`, never `readings[0]`: manifest order is a hash, so after a
             # recovery the first record can be the superseded attempt, and citing
             # its crop as the basis for accepting the new reading is deterministic
@@ -4193,7 +4266,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             + [context.input_ref(reference["image_path"]) for reference in basis_regions],
             payload={
                 "act_key": act_key,
-                "attempt_ordinal": ordinal,
                 "reason": reason,
                 "coverage": coverage,
                 "geometry_coverage": geometry_coverage,

@@ -27,6 +27,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import signal
 import subprocess
 import sys
 import tomllib
@@ -2212,9 +2213,11 @@ def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payloa
     as geometry, so the rule that guard states is now load-bearing for two
     adapters rather than one: a body no parser recognized must never be
     rehydrated as geometry, whichever page chair produced it. The branch is
-    adapter-agnostic already (`serving_call_ref` and `content_health.recordable`
-    are the only things it reads), and this is what says so -- without it the
-    claim rests on one chair's record and reads as Chandra's rule.
+    adapter-agnostic already (`serving_call_ref` and `record["outcome"]` are
+    the only things it reads -- not `content_health.recordable`, whose own
+    ambiguity on this exact outcome is F131's fix, below), and this is what
+    says so -- without it the claim rests on one chair's record and reads as
+    Chandra's rule.
 
     The blob is still read and digest-checked either way: the retained response
     has to be present and still itself before this record may stand in for a
@@ -2259,12 +2262,67 @@ def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payloa
     assert attempt.observation_payload is None
 
 
+def test_a_resumed_parsed_but_unconfirmed_blank_act_carries_no_observation_payload(
+    live_run, tmp_path
+):
+    """The sibling gap in `_attempt_from_retained_testimonium` this function shares
+    with `_page_capture_from_record`
+    (`test_a_resumed_parsed_but_unconfirmed_blank_chandra_page_carries_no_observation_payload`,
+    above).
+
+    `content_health.recordable is True` does not mean "this outcome is a
+    reading": `_content_health` sets `recordable: True` on every parsed
+    branch, including the parsed-but-unconfirmed-blank `failed` outcome (cut
+    off, or an unrecognized stop word) -- the branch `captured_page_attempt`
+    deliberately withholds `observation_payload` for. This record's
+    `content_health` reports `recordable: True` while its `outcome` is
+    `failed`, so gating rehydration on `recordable` alone would hand the
+    resume geometry the interrupted pass never published; gating on
+    `record["outcome"] in WITNESS_READING_OUTCOMES` instead closes the gap.
+    """
+    run_root = fresh_tree(live_run, tmp_path)
+    context = open_live_context(live_run, run_root)
+    raw_response_ref = attestatores.retained_blob_ref(
+        context, b"a chandra body that parsed but was cut off before any stop word"
+    )
+    record = {
+        "outcome": "failed",
+        "payload": {
+            "payload": "",
+            "witness_reported": None,
+            "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            "content_health": {
+                "native_type": "text",
+                "encoding": "utf-8",
+                "recordable": True,
+                "empty": True,
+                "blank": True,
+                "truncated": None,
+                "characters": 0,
+                "truncation_basis": "not-a-confirmed-blank-page",
+            },
+            "reason": "not a confirmed blank page: the response was cut off before any stop word",
+            "raw_response_ref": raw_response_ref,
+            "serving_call_ref": {
+                "relative_path": "3_attestatores/blobs/sha256/call",
+                "sha256": "c" * 64,
+            },
+            "native_capture": None,
+            "provenance": {"receipt_ref": None},
+        },
+    }
+
+    attempt = attestatores._attempt_from_retained_testimonium(context.tree, record)
+
+    assert attempt.observation_payload is None
+
+
 def test_an_unparsed_resumed_record_still_reads_and_digest_checks_its_retained_blob(
     live_run, tmp_path
 ):
     """The other half of the sibling above: withheld as geometry, still verified.
 
-    The two tests before this one prove the no-geometry rule and would both keep
+    The three tests before this one prove the no-geometry rule and would all keep
     passing if the implementation returned `observation_payload=None` the moment
     it saw `served_by_a_chair and not parsed_into_a_payload` -- before opening
     the blob at all. That regression looks harmless and is not: a resumed pass
@@ -2501,6 +2559,11 @@ def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_
     assert alignment["anchor_chair"] == "attestator_1"
     assert alignment["line_geometry"] == [{"bbox": {"x": 20, "y": 20, "w": 160, "h": 81}}]
     assert alignment["anchor_span"] == {"start": 0, "end": 34}
+    # F087: the published record carries align_to_anchor's own answer, not just
+    # its own return value -- this call ran on the main thread with the POSIX
+    # backstop available, so it was actually bounded.
+    posix_alarm_available = all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL"))
+    assert alignment["deadline_in_force"] is posix_alarm_available
     assert page_text[alignment["witness_span"]["start"] : alignment["witness_span"]["end"]] == (
         "SYNTHETIC ACT ONE alpha beta gamma"
     )

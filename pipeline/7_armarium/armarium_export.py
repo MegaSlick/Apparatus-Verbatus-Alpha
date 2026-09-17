@@ -563,15 +563,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_salvage_region_references(sources, root)
     _act_citation_sources(sources)
     _act_outcome_sources(sources)
-    try:
-        _verify_retained_references(sources)
-    except RecursionError as error:
-        # sources.json passed the parser but the availability walk is its own
-        # recursion; a package nested past what this machine can walk is
-        # refused by name, never surfaced as an unnamed recursion failure.
-        raise SchemaRefusal(
-            "the package sources citation nests too deeply for its availability walk"
-        ) from error
+    _verify_retained_references_bounded(sources)
     _verify_manifest_source_counts(manifest, sources)
     _verify_pixel_claims(manifest, formats, sources)
     _verify_display_claim(manifest)
@@ -1474,6 +1466,28 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                 "inventing a re-measurement for a mapped page."
             )
         validated.append(row)
+    # `minimum_ink_pixels`/`minimum_fraction_outside_bp` are, unlike
+    # `substantial_ink_pixels`, the run's single sealed
+    # `[coverage_audit.noise_floor]` passed through unchanged for every page
+    # (`common.residual_ink.resolve_coverage_audit_policy` never scales
+    # them) -- so every flagged page's row must carry the same pair. Checked
+    # here, once, across the whole bundle, rather than trusted per row: a
+    # producer bug or a tampered bundle that inflated one page's noise floor
+    # would otherwise pass `_edge_hold_pages_from_validated_rows`'s per-row
+    # `coverage_flag` call and silently release that page's edge-ink hold.
+    noise_floors = {
+        (row["remeasured"]["minimum_ink_pixels"], row["remeasured"]["minimum_fraction_outside_bp"])
+        for row in validated
+        if row["initial_outcome"] == _UNCLAIMED_EDGE_INK
+    }
+    if len(noise_floors) > 1:
+        raise SchemaRefusal(
+            f"{subject} carries more than one sealed noise floor across its flagged ink-map "
+            f"pages ({sorted(noise_floors)}). minimum_ink_pixels and minimum_fraction_outside_bp "
+            "are one run's single sealed noise floor, identical for every page; a bundle with "
+            "more than one value cannot have come from one honest run. Rebuild the export from "
+            "the retained Ink Map evidence."
+        )
     return validated
 
 
@@ -2714,6 +2728,24 @@ def _verify_retained_references(value: Any) -> None:
     elif isinstance(value, (list, tuple)):
         for item in value:
             _verify_retained_references(item)
+
+
+def _verify_retained_references_bounded(value: Any) -> None:
+    """`_verify_retained_references`, refusing by name instead of escaping when
+    a citation nests past what this machine's Python recursion limit can walk
+    — the same untrusted-parse-boundary hardening G13 (2026-09-14) applied to
+    every other reader here, missed at five of this walker's six call sites
+    (only :567's had its own inline guard; a 2000-level-deep `provenance`
+    field, for one, reached `_jsonl_act_records` as a bare `RecursionError`
+    instead of a `SchemaRefusal`). Every external call site uses this
+    instead of the bare recursive function, once, here, so a future added
+    call site inherits the guard rather than needing to remember it."""
+    try:
+        _verify_retained_references(value)
+    except RecursionError as error:
+        raise SchemaRefusal(
+            "a product reference nests too deeply for its availability walk"
+        ) from error
 
 
 def _verify_evidence_refs(evidence_refs: Any, *, subject: str) -> None:
@@ -4450,7 +4482,7 @@ def _act_citation_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str,
         )
         if not isinstance(record.get("evidence"), dict):
             raise SchemaRefusal("a source act-citation has no witness evidence")
-        _verify_retained_references(record["evidence"])
+        _verify_retained_references_bounded(record["evidence"])
         # sources.json is the only evidence-citation carrier common to every format
         # selection, including a text-bundle-only package.
         _verify_evidence_refs(
@@ -4478,7 +4510,7 @@ def _jsonl_act_records(
             raise SchemaRefusal("an acts JSONL row has no recognized schema")
         if set(record) != _ACT_RECORD_FIELDS:
             raise SchemaRefusal("an acts JSONL row has an unrecognized field set")
-        _verify_retained_references(record)
+        _verify_retained_references_bounded(record)
         _verify_evidence_refs(record.get("evidence_refs"), subject="an acts JSONL row")
         act_id, act_key, category = (
             record.get("act_id"),
@@ -4709,7 +4741,7 @@ def _database_act_records(
                 raise SchemaRefusal(
                     "the acts database has unreadable provenance evidence"
                 ) from error
-            _verify_retained_references(parsed)
+            _verify_retained_references_bounded(parsed)
             decoded.append(parsed)
         evidence_refs = decoded[2].get("evidence_refs") if isinstance(decoded[2], dict) else None
         _verify_evidence_refs(evidence_refs, subject="an acts database row")
@@ -4764,7 +4796,7 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
             raise SchemaRefusal("a review-items JSONL row is not JSON") from error
         if not isinstance(record, dict):
             raise SchemaRefusal("a review-items JSONL row is not an object")
-        _verify_retained_references(record)
+        _verify_retained_references_bounded(record)
         act_id, act_key, category, reason = (
             record.get("act_id"),
             record.get("act_key"),
@@ -4808,7 +4840,7 @@ def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
             raise SchemaRefusal("a salvage-tier JSONL row is not JSON") from error
         if not isinstance(record, dict) or record.get("schema") != SALVAGE_RECORD_SCHEMA:
             raise SchemaRefusal("a salvage-tier JSONL row has no recognized schema")
-        _verify_retained_references(record)
+        _verify_retained_references_bounded(record)
         if set(record) != {
             "schema",
             "salvage_id",

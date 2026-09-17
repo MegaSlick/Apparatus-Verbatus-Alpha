@@ -656,7 +656,7 @@ def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> N
         if kind == "exit":
             open_path.discard(current)
             continue
-        if isinstance(current, (dict, list)):
+        if isinstance(current, (dict, list, tuple)):
             marker = id(current)
             if marker in open_path:
                 raise SchemaRefusal(
@@ -673,7 +673,11 @@ def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> N
                     f"{what} may not express capture preference: {sorted(forbidden)}"
                 )
             pending.extend(("value", item) for item in current.values())
-        elif isinstance(current, list):
+        elif isinstance(current, (list, tuple)):
+            # F085: `canonical_bytes` serializes a tuple exactly like a list, so
+            # a preference field wrapped in one reached a sealed artifact
+            # looking like an ordinary array member unless this walk also
+            # descends into it.
             pending.extend(("value", item) for item in current)
 
 

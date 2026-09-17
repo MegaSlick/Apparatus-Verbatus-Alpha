@@ -46,8 +46,10 @@ class ErrorCode(StrEnum):
     RUN_FAILED = "run-failed"
     RUN_HELD = "run-held"
     EXPORT_MISSING = "export-missing"
+    EXPORT_AMBIGUOUS = "export-ambiguous"
     EXPORT_FAILED = "export-failed"
     EXPORT_PARTIAL = "export-partial"
+    EXPORT_UNRECONCILED = "export-unreconciled"
     CLOSE_NOTHING = "close-nothing"
     CLOSE_LEASE_UNREADABLE = "close-lease-unreadable"
     CLOSE_LEASE_RECORD_FAILED = "close-lease-record-failed"
@@ -245,6 +247,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "No local bundle was made and no result was invented.",
         "Run `verbatus run` first, or use the run name that already has an export; this is safe.",
     ),
+    ErrorCode.EXPORT_AMBIGUOUS: ErrorCopy(
+        "That run name is recorded under more than one run root.",
+        "Verbatus will not guess which recorded run you mean, so no local bundle was made.",
+        "Name the intended one with --run-root (the saved detail lists every candidate); this is safe.",
+    ),
     ErrorCode.EXPORT_FAILED: ErrorCopy(
         "Verbatus could not make the local export copy.",
         "The sealed Armarium record remains where it was; no changed export was claimed.",
@@ -258,6 +265,15 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Read the recorded reasons, open the run tree read-only with `verbatus review`, and "
         "decide with Tyrel what happens next; a hold is resolved only by a new authorized "
         "run over the same sealed source. Nothing was started or charged; this is safe.",
+    ),
+    ErrorCode.EXPORT_UNRECONCILED: ErrorCopy(
+        "The recorded run claims complete, but its acts do not add up.",
+        "The Armarium record was found and read; its delivered and non-delivered acts do "
+        "not add up to a total that can be checked, so no bundle was made and nothing was "
+        "called complete.",
+        "Open the run tree read-only with `verbatus review` and check it against the sealed "
+        "source with Tyrel; this is not a corrupted export, it is a record that cannot back "
+        "up its own claim. Nothing was started or charged; this is safe.",
     ),
     ErrorCode.CLOSE_NOTHING: ErrorCopy(
         "There is no recorded pod waiting to be closed.",

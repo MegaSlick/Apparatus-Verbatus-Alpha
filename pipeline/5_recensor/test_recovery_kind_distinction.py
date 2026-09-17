@@ -248,6 +248,7 @@ def test_recovery_state_accepts_both_real_kinds(tmp_path):
         payload={
             "act_key": "a1",
             "attempt_ordinal": 1,
+            "recovery_request_ordinal": 1,
             "recovery_kind": PAGE_LEVEL_REREAD,
             "coverage": {},
             "perlectio_ref": perlectio_ref,
@@ -285,6 +286,7 @@ def test_recovery_state_accepts_both_real_kinds(tmp_path):
         payload={
             "act_key": "a1",
             "attempt_ordinal": 2,
+            "recovery_request_ordinal": 2,
             "recovery_kind": FALLBACK_RECROP,
             "coverage": {},
             "perlectio_ref": perlectio_ref,

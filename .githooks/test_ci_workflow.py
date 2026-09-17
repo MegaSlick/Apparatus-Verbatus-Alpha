@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,16 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 FROZEN_AUDIT_REQUIREMENTS = ROOT / ".githooks" / "frozen_audit_requirements.py"
+CHECK_ALL = ROOT / ".githooks" / "check-all.sh"
 BASH = ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c"]
+
+# The one declaration of the uv version the gate and CI both require
+# (F040, 2026-09-14): read here, not repeated as a literal, so a fixture below
+# that has to fabricate a matching `uv --version` output follows a version
+# bump automatically instead of silently drifting from it.
+REQUIRED_UV_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["uv"][
+    "required-version"
+].removeprefix("==")
 
 _audit_spec = importlib.util.spec_from_file_location(
     "verbatus_frozen_audit_requirements", FROZEN_AUDIT_REQUIREMENTS
@@ -106,6 +116,37 @@ def test_ci_installs_the_frozen_project_environment_before_running_the_gate():
     assert "uv lock --check" in text
     assert "uv sync --frozen --group test --group audit" in text
     assert "python -m pip install ." not in text
+
+
+def test_the_pinned_uv_version_has_one_source_of_truth():
+    """F040 (2026-09-14): a version bump to pyproject.toml's `[tool.uv]
+    required-version` must not leave a second, unreconciled copy in
+    check-all.sh or ci.yml to silently drift from it. Both must read the
+    version rather than repeat the literal -- checked here by asserting the
+    literal does not appear in either file at all, so a future hardcoded
+    reintroduction fails this test by name instead of drifting unnoticed."""
+    check_all_text = CHECK_ALL.read_text()
+    ci_text = workflow_text()
+    assert REQUIRED_UV_VERSION not in check_all_text, (
+        f"check-all.sh hard-codes the pinned uv version {REQUIRED_UV_VERSION!r} "
+        "a second time instead of reading pyproject.toml's [tool.uv] required-version"
+    )
+    assert REQUIRED_UV_VERSION not in ci_text, (
+        f"ci.yml hard-codes the pinned uv version {REQUIRED_UV_VERSION!r} a second "
+        "time instead of reading pyproject.toml's [tool.uv] required-version"
+    )
+    assert "pyproject.toml" in check_all_text and "required-version" in check_all_text
+    assert "pyproject.toml" in ci_text and "required-version" in ci_text
+    # The absence check above only proves the *current* version isn't
+    # duplicated -- a future bump could leave a stale literal behind in the
+    # actual install/compare command while some other line still mentions
+    # "pyproject.toml"/"required-version" in passing, and this test would not
+    # notice. Pin the check to the exact command shape instead: the extracted
+    # shell variable, not a literal, must be what `check-all.sh` compares
+    # `uv --version` against and what `ci.yml` installs.
+    assert 'case "$uv_version" in' in check_all_text
+    assert '"uv $required_uv_version"|"uv $required_uv_version "*)' in check_all_text
+    assert 'pip install "uv==$required_uv_version"' in ci_text
 
 
 def test_every_runtime_dependency_is_inside_the_everyday_environment():
@@ -317,6 +358,12 @@ def gate_repo(tmp_path):
     repo = new_repo(tmp_path / "gate")
     (repo / ".githooks").mkdir()
     shutil.copy(ROOT / ".githooks" / "check-all.sh", repo / ".githooks" / "check-all.sh")
+    # check-all.sh now reads its required uv version from pyproject.toml
+    # (F040) rather than carrying its own copy, so a synthetic repo needs one
+    # too, with the same pin the real repository declares.
+    (repo / "pyproject.toml").write_text(
+        f'[tool.uv]\nrequired-version = "=={REQUIRED_UV_VERSION}"\n'
+    )
     return repo
 
 
@@ -418,7 +465,8 @@ def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
     fake_bin.mkdir()
     uv = fake_bin / "uv"
     uv.write_text(
-        "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo 'uv 0.12.1'; exit 0; fi\nexit 0\n"
+        '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo \'uv '
+        f"{REQUIRED_UV_VERSION}'; exit 0; fi\nexit 0\n"
     )
     uv.chmod(0o755)
     environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
@@ -437,7 +485,7 @@ def test_the_gate_refuses_a_repository_controlled_uv_binary(tmp_path):
         timeout=60,
     )
     uv = repo / "uv"
-    uv.write_text("#!/bin/sh\necho 'uv 0.12.1'\n")
+    uv.write_text(f"#!/bin/sh\necho 'uv {REQUIRED_UV_VERSION}'\n")
     uv.chmod(0o755)
     environment = {**os.environ, "PATH": f"{repo}{os.pathsep}{os.environ['PATH']}"}
 
@@ -455,7 +503,7 @@ def test_the_gate_refuses_an_outside_uv_symlink_to_repository_code(tmp_path):
         timeout=60,
     )
     owned = repo / "owned-uv"
-    owned.write_text("#!/bin/sh\necho 'uv 0.12.1'\n")
+    owned.write_text(f"#!/bin/sh\necho 'uv {REQUIRED_UV_VERSION}'\n")
     owned.chmod(0o755)
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -483,7 +531,8 @@ def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_pa
     uv = fake_bin / "uv"
     uv.write_text(
         "#!/bin/sh\n"
-        "if [ \"${1:-}\" = --version ]; then echo 'uv 0.12.1 (fixture-platform)'; exit 0; fi\n"
+        'if [ "${1:-}" = --version ]; then echo '
+        f"'uv {REQUIRED_UV_VERSION} (fixture-platform)'; exit 0; fi\n"
         'calls="${0%/*}/../uv-calls"\n'
         'printf \'%s|%s|%s\\n\' "$UV_PROJECT_ENVIRONMENT" "${UV_INEXACT-unset}" '
         '"${UV_NO_GROUP-unset}" > "$calls"\n'
@@ -540,7 +589,8 @@ def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
     fake_bin.mkdir()
     uv = fake_bin / "uv"
     uv.write_text(
-        "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo 'uv 0.12.1'; exit 0; fi\nexit 0\n"
+        '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo \'uv '
+        f"{REQUIRED_UV_VERSION}'; exit 0; fi\nexit 0\n"
     )
     uv.chmod(0o755)
     # The stub records that it ran. Asserting only `returncode == 1` proved

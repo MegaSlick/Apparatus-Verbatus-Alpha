@@ -215,8 +215,17 @@ if [ "$event" = start ] && start_was_delivered_recently; then
   exit 0
 fi
 
+# F109: prefer this checkout's own frozen interpreter over whatever `python3`
+# PATH happens to resolve to. A pod image, a minimal Linux install, or a Mac
+# whose only `python3` is the Command Line Tools stub can all lack one; the
+# checkout's `.venv` is the one interpreter this build actually depends on.
+python_bin=python3
+if [ -x "$root/.venv/bin/python" ]; then
+  python_bin="$root/.venv/bin/python"
+fi
+
 if ! payload=$(NTFY_TOPIC=$topic NTFY_TITLE=$title NTFY_PRIORITY=$priority \
-  NTFY_TAG=$tag NTFY_MESSAGE=$message python3 -c '
+  NTFY_TAG=$tag NTFY_MESSAGE=$message "$python_bin" -c '
 import json, os
 print(json.dumps({
     "topic": os.environ["NTFY_TOPIC"],

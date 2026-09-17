@@ -1331,6 +1331,7 @@ def act_attachment_view(
                         "line_geometry",
                         "loss",
                         "offset_maps",
+                        "deadline_in_force",
                     }
                     or alignment.get("status") != "aligned"
                     or (
@@ -1342,6 +1343,11 @@ def act_attachment_view(
                         and alignment.get("anchor_chair") is not None
                     )
                     or span != alignment.get("witness_span")
+                    # F087: whether align_to_anchor's own SIGALRM backstop was
+                    # actually armed for this match, not only whether it finished
+                    # -- an unbounded run that happened to finish reads identically
+                    # to a bounded one otherwise.
+                    or not isinstance(alignment.get("deadline_in_force"), bool)
                 ):
                     raise SchemaRefusal("an attached page witness has no computed alignment")
                 page_text = page_payload.get("payload")

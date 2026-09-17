@@ -84,7 +84,7 @@ def _refuse_textual(value: Any) -> None:
         if kind == "exit":
             open_path.discard(current)
             continue
-        if isinstance(current, (dict, list)):
+        if isinstance(current, (dict, list, tuple)):
             marker = id(current)
             if marker in open_path:
                 raise SchemaRefusal(
@@ -101,7 +101,10 @@ def _refuse_textual(value: Any) -> None:
                     "correspondence proposal: textual evidence cannot match physical acts"
                 )
             pending.extend(("value", item) for item in current.values())
-        elif isinstance(current, list):
+        elif isinstance(current, (list, tuple)):
+            # F085: a tuple serializes exactly like a list through
+            # `canonical_bytes`, so this walk must descend into one too or a
+            # forbidden field wrapped in one reaches a sealed proposal unseen.
             pending.extend(("value", item) for item in current)
 
 

@@ -281,6 +281,33 @@ def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
     assert "Advance record:" in rendered
 
 
+@requires_host_boundary
+def test_a_supplied_surface_records_the_advance_for_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F108: passing `surface` wires the advance into status; omitting it costs nothing."""
+    from .surface import OperatorSurface
+
+    run_root, run_id = _run(tmp_path)
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
+    surface = OperatorSurface(ROOT, tmp_path / "operator-state", present=lambda _line="": None)
+
+    cli._advance_with_confirmation(
+        run_root,
+        run_id,
+        "designator",
+        reason="operator reviewed the manual boundary",
+        workspace=ROOT,
+        surface=surface,
+        mode="manual",
+    )
+
+    status = "\n".join(surface.status())
+    assert any(line.startswith("- advance record 1: ") for line in status.splitlines())
+    assert f"Run: {run_id}; run root: {run_root}; stage: designator." in status
+    assert "Reason: operator reviewed the manual boundary" in status
+
+
 def test_semi_mode_refuses_an_intermediate_boundary_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

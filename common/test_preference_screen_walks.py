@@ -392,6 +392,29 @@ def test_a_value_shared_between_siblings_is_not_a_cycle(
         screen({"left": {"clean": 1}, "right": [{"clean": 2}, offending]})
 
 
+@pytest.mark.parametrize(
+    ("label", "screen", "forbidden", "refusal", "match", "cycle_refusal", "cycle_match"),
+    DRIVEN_SCREENS,
+    ids=[row[0] for row in DRIVEN_SCREENS],
+)
+def test_a_forbidden_field_wrapped_in_a_tuple_is_not_hidden_from_any_screen(
+    label, screen, forbidden, refusal, match, cycle_refusal, cycle_match
+):
+    """A tuple is not a leaf just because these walks used to treat it as one (F085).
+
+    Every screen in the family descended only into `dict` and `list`, so a
+    forbidden field buried inside a `tuple` reached the bottom of the walk
+    unexamined -- and `common.contracts.canonical.canonical_bytes` serializes a
+    tuple exactly like a list, so the hidden field still reached a sealed
+    artifact looking like an ordinary array member. Reproduced directly before
+    this test existed: every screen here passed a payload no different in kind
+    from what it already refuses, only because the offending value sat one
+    tuple below where the walk was willing to look.
+    """
+    with pytest.raises(refusal, match=re.escape(match)):
+        screen({"nested": (dict(forbidden),)})
+
+
 def test_the_supported_autopsia_path_names_a_cyclic_views_mapping():
     """The thread's own case, through the public entry point rather than the screen.
 

@@ -129,7 +129,7 @@ def _refuse_scalar_claim_keys(value: Any) -> None:
         if kind == "exit":
             open_path.discard(current)
             continue
-        if isinstance(current, (dict, list)):
+        if isinstance(current, (dict, list, tuple)):
             marker = id(current)
             if marker in open_path:
                 raise SchemaRefusal(
@@ -155,7 +155,9 @@ def _refuse_scalar_claim_keys(value: Any) -> None:
                         "or a variance number"
                     )
                 pending.append(("value", item))
-        elif isinstance(current, list):
+        elif isinstance(current, (list, tuple)):
+            # F085: a tuple serializes exactly like a list through
+            # `canonical_bytes`, so it must be walked the same way here too.
             pending.extend(("value", item) for item in current)
 
 

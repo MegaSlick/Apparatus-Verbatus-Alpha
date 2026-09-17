@@ -500,6 +500,11 @@ def test_one_act_held_by_both_stages_is_two_labelled_records_and_one_held_act():
 
     text = "\n".join(review_text.render({"run_id": "r", "holds": [dict(hold) for hold in holds]}))
     assert "[Designator hold]" in text and "[Recensor review of that hold]" in text
+    # F041: the header counts acts, not hold records -- one act attested twice
+    # is "Held or unresolved acts (1)", matching the distinct count in the
+    # summary sentence just above it, not len(holds).
+    assert "Held or unresolved acts (1)" in text
+    assert "Held or unresolved acts (2)" not in text
 
 
 def test_a_review_outcome_outside_the_recensor_vocabulary_is_refused_not_skipped():
@@ -801,6 +806,37 @@ def test_a_run_authority_that_is_not_an_object_is_a_note_beside_the_page_count(t
     count, note = review._declared_page_count(_Authority())
     assert count is None
     assert "is not an object" in note
+
+
+def test_a_nonexistent_run_id_is_a_wrong_command_not_damaged_evidence(tmp_path: Path):
+    """F035: a mistyped run id must not read as "preserve and investigate."
+
+    `RunTree.__init__` only validates the id's shape, so a run id naming
+    nothing reaches `projection()`'s own tree read, where it used to fall into
+    the catch-all meant for a tree that exists and failed verification.
+    """
+    run_root = tmp_path / "runs"
+    run_root.mkdir()
+
+    with pytest.raises(OperatorError) as refused:
+        review.ReadOnlyRun(run_root, "nope").projection()
+
+    assert refused.value.code is ErrorCode.INVALID_COMMAND
+    assert "nope" in refused.value.render()
+    assert "does not exist" in refused.value.render()
+
+
+def test_a_run_json_that_fails_verification_still_reads_as_damaged_not_missing(
+    witnessed_run: Path, tmp_path: Path
+):
+    """The other half of F035's split: an existing, damaged tree is unaffected."""
+    run_root = _writable_copy(witnessed_run, tmp_path / "runs")
+    (run_root / RUN_ID / "run.json").write_bytes(b"not valid json")
+
+    with pytest.raises(OperatorError) as refused:
+        _projection(run_root)
+
+    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
 def test_a_stage_that_wrote_records_but_never_sealed_is_named_interrupted_not_damaged(

@@ -171,6 +171,23 @@ exactly the reading the review assessed. Ordinary terminal records use
 `accepted` or `held-for-review`; held Designator acts instead directly input
 their hold evidence.
 
+**`attempt_ordinal` is minted from the review's own content, not counted from
+recovery requests (F132).** `current_review` (`pipeline/5_recensor/run.py`)
+reads the act's latest sealed review, if any, and `publish_review` reuses its
+`attempt_ordinal` unless the new payload actually differs -- the same
+content-diff "reuse if unchanged" pattern `StageContext.seal_boundary` already
+uses elsewhere -- retrying at the next ordinal only on an `IncompatibleReuse`
+refusal (a real content change at the same attempt). A recovery-requested
+review additionally carries `recovery_request_ordinal`: the position of that
+recovery request within the act's own recovery count, which is what
+`common.stage.current_recovery_request` now reads to find the live request.
+The two fields answer different questions and must not be read for each
+other -- `attempt_ordinal` is the review's identity, `recovery_request_ordinal`
+is the recovery request's -- and before F132 they were silently the same
+number only because a second recensor pass always incremented both together;
+a pass that changes the review without a new recovery request (clearing a
+flag the first pass raised, for one) is exactly where they now diverge.
+
 An accepted review is not a new reading and does not select among witnesses. It
 only records that this precise Perlectio and the conserved geometry/coverage
 reconciled.

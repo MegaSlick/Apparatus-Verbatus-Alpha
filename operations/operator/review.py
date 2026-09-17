@@ -25,7 +25,7 @@ from common.contracts.stages import (
     RECENSOR,
     STAGES,
 )
-from common.runtree.store import RunTree
+from common.runtree.store import RUN_FILE, RunTree
 from common.stage import latest_attempt
 
 from .advance import ADVANCE_SUBJECT_PREFIX, verify_sealed_boundary
@@ -166,6 +166,22 @@ class ReadOnlyRun:
 
     def projection(self) -> ReviewProjection:
         tree = self._tree
+        if not (tree.root / RUN_FILE).exists():
+            # F035: a mistyped or nonexistent run id is a wrong command, not
+            # damaged evidence -- RunTree.__init__ only validates the id's
+            # shape, so a name that simply names nothing reaches this far and
+            # would otherwise fall into the catch-all below, which reads as
+            # "preserve the run tree unchanged and investigate," advice aimed
+            # at a tree that exists and failed verification, not one that was
+            # never there. Checked at the exact path RunTree itself will look,
+            # so this can never disagree with read_run() about what "there".
+            raise OperatorError(
+                ErrorCode.INVALID_COMMAND,
+                detail=(
+                    f"no run named {tree.run_id!r} was found under {tree.root}: "
+                    f"{RUN_FILE} does not exist there, so there is nothing to review"
+                ),
+            )
         try:
             boundaries: list[dict[str, Any]] = []
             stage_records: list[dict[str, Any]] = []

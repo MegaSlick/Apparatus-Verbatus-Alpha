@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from common.chairs import manifests
 from common.chairs.config import load_models_toml
 from common.chairs.errors import (
     ConfigurationRefusal,
@@ -349,6 +350,61 @@ def test_a_manifest_that_cannot_be_read_at_all_is_refused_naming_the_chair(tmp_p
     with pytest.raises(DigestMismatchRefusal) as caught:
         read_manifest(path, expected_digest="0" * 64, chair="attestator_1")
     assert caught.value.chair == "attestator_1"
+
+
+def test_manifest_read_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
+    """A manifest is a small control artifact, not model weight bytes -- unlike
+    `model_store.py`'s own bounded control-artifact reads, this one used to read
+    the whole file into memory before checking anything about it."""
+    monkeypatch.setattr(manifests, "MAX_MANIFEST_BYTES", 32)
+    path = tmp_path / "manifest.json"
+    path.write_bytes(b"{" + b"x" * 32)
+
+    with pytest.raises(DigestMismatchRefusal, match="32-byte control-artifact limit"):
+        read_manifest(path, expected_digest="0" * 64, chair="attestator_1")
+
+
+def test_a_manifest_path_that_is_a_symlink_is_refused_rather_than_followed(tmp_path):
+    """The target is a genuinely valid, one-row manifest pinned to its own real
+    digest -- not an empty one `_validate_manifest` would reject outright -- so
+    an unfixed reader that followed the symlink would return successfully
+    (`DID NOT RAISE`), not fail for an unrelated reason. The refusal below is
+    the symlink protection, and nothing else."""
+    write_snapshot(tmp_path / "snapshot", {"weights.bin": b"fixture bytes\n"})
+    real = tmp_path / "real-manifest.json"
+    pin = pin_snapshot(tmp_path / "snapshot", real)
+    link = tmp_path / "manifest.json"
+    link.symlink_to(real)
+
+    with pytest.raises(DigestMismatchRefusal, match="cannot read manifest"):
+        read_manifest(link, expected_digest=pin, chair="attestator_1")
+
+
+def test_a_manifest_fifo_is_refused_before_any_blocking_read(tmp_path):
+    """A regression here is a hang, not a failure -- asserted from a worker
+    thread with a deadline so it surfaces as a failed test rather than a suite
+    that never finishes, matching this file's own established pattern
+    (`test_a_validated_file_swapped_for_a_fifo_is_refused_instead_of_hanging_the_boot`)."""
+    import threading
+
+    path = tmp_path / "manifest.json"
+    os.mkfifo(path)
+    outcome: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            read_manifest(path, expected_digest="0" * 64, chair="attestator_1")
+            outcome.append(None)
+        except BaseException as error:
+            outcome.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=15)
+
+    assert not worker.is_alive(), "the read blocked on the FIFO instead of refusing"
+    assert isinstance(outcome[0], DigestMismatchRefusal)
+    assert "must be a regular file" in str(outcome[0])
 
 
 def test_a_symlinked_file_inside_a_snapshot_is_refused_rather_than_followed(tmp_path):

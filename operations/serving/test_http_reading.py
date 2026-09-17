@@ -17,12 +17,19 @@ import json
 
 import pytest
 
-from .errors import ChairRequestRefusal, ChairResponseRefusal, ServiceStopError
+from .errors import (
+    ChairRequestRefusal,
+    ChairResponseRefusal,
+    ServiceStopError,
+    ServingConfigurationError,
+)
 from .http import (
     HttpResponse,
+    assert_wire_part_order,
     chat_image_bytes_all,
     parse_openai_answer,
     parse_openai_reading,
+    request_body,
 )
 from .test_manager import TIER, identity, manager_for, profile_row
 
@@ -306,6 +313,24 @@ def test_chat_image_bytes_all_accepts_no_images() -> None:
     assert chat_image_bytes_all(payload) == []
 
 
+def test_chat_image_bytes_all_finds_an_image_in_tuple_shaped_messages_and_content() -> None:
+    # Same defect class as assert_wire_part_order's tuple gap (F133 follow-up,
+    # item A): a tuple serializes onto the wire exactly like a list, and
+    # `_all_image_url_candidates`'s own list-only walk would otherwise miss
+    # it too, so `active_candidates` and `all_candidates` would undercount
+    # equally and the mismatch this function exists to catch would never fire.
+    payload = {
+        "messages": (
+            {
+                "role": "user",
+                "content": ({"type": "image_url", "image_url": {"url": _png_data_uri(1)}},),
+            },
+        )
+    }
+
+    assert chat_image_bytes_all(payload) == [bytes([1])]
+
+
 # --- ServiceHandle.request_reading ---
 
 
@@ -382,3 +407,184 @@ def test_request_reading_refuses_once_the_owned_process_has_exited(tmp_path) -> 
 
     with pytest.raises(Exception, match="VLLM_PROCESS_EXITED"):
         handle.request_reading("chat-completions", b"{}", 5.0)
+
+
+# --- assert_wire_part_order: the request-wide walker request_body wires in (F133 follow-up) ---
+
+
+def test_assert_wire_part_order_skips_a_non_list_messages_value() -> None:
+    assert_wire_part_order({"messages": "not-a-list"}, label="probe")  # does not raise
+    assert_wire_part_order({}, label="probe")  # does not raise
+
+
+def test_assert_wire_part_order_skips_an_image_outside_a_user_role() -> None:
+    payload = {
+        "messages": [
+            {
+                "role": "system",
+                "content": [{"type": "image_url", "image_url": {"url": _png_data_uri(1)}}],
+            }
+        ]
+    }
+
+    assert_wire_part_order(payload, label="probe")  # does not raise
+
+
+def test_assert_wire_part_order_skips_string_content() -> None:
+    payload = {"messages": [{"role": "user", "content": "READY"}]}
+
+    assert_wire_part_order(payload, label="probe")  # does not raise
+
+
+def test_assert_wire_part_order_skips_a_text_only_user_content_list() -> None:
+    payload = {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}
+
+    assert_wire_part_order(payload, label="probe")  # does not raise
+
+
+def test_assert_wire_part_order_accepts_image_before_text() -> None:
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                    {"type": "text", "text": "hi"},
+                ],
+            }
+        ]
+    }
+
+    assert_wire_part_order(payload, label="probe")  # does not raise
+
+
+def test_assert_wire_part_order_refuses_text_before_image_with_the_given_label() -> None:
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(ServingConfigurationError, match="request for reader-api"):
+        assert_wire_part_order(payload, label="request for reader-api")
+
+
+def test_assert_wire_part_order_catches_a_text_first_tuple_content_list() -> None:
+    # A tuple serializes onto the wire as a JSON array exactly like a list, so
+    # a direct caller of this walker (unlike `request_body`, which checks a
+    # `json.loads` decode -- always a plain list -- since F137) must not have
+    # that shape silently skip the check (F133 follow-up, F3).
+    payload = {
+        "messages": (
+            {
+                "role": "user",
+                "content": (
+                    {"type": "text", "text": "hi"},
+                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                ),
+            },
+        )
+    }
+
+    with pytest.raises(ServingConfigurationError):
+        assert_wire_part_order(payload, label="tuple probe")
+
+
+# --- request_body: proving the walker actually refuses on the seam it is wired into ---
+
+
+def test_request_body_refuses_a_text_before_image_user_message() -> None:
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this page"},
+                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(ServingConfigurationError, match="request for reader-api"):
+        request_body(payload, model_id="reader-api", seed=0, deterministic=True)
+
+
+def test_request_body_accepts_an_image_before_text_user_message() -> None:
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                    {"type": "text", "text": "describe this page"},
+                ],
+            }
+        ]
+    }
+
+    body = request_body(payload, model_id="reader-api", seed=0, deterministic=True)
+
+    assert json.loads(body)["messages"][0]["content"][0]["type"] == "image_url"
+
+
+def test_request_body_accepts_the_readiness_probes_bare_string_content() -> None:
+    payload = {"messages": [{"role": "user", "content": "READY"}]}
+
+    body = request_body(payload, model_id="reader-api", seed=0, deterministic=True)
+
+    assert json.loads(body)["messages"][0]["content"] == "READY"
+
+
+def test_request_body_accepts_a_system_preamble_with_an_image_first_user_turn() -> None:
+    payload = {
+        "messages": [
+            {"role": "system", "content": [{"type": "text", "text": "you read pages"}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                    {"type": "text", "text": "read this"},
+                ],
+            },
+        ]
+    }
+
+    body = request_body(payload, model_id="reader-api", seed=0, deterministic=True)
+
+    assert json.loads(body)["messages"][1]["content"][0]["type"] == "image_url"
+
+
+def test_request_body_refuses_a_content_part_whose_get_disagrees_with_its_own_wire_value() -> None:
+    # A `dict` subclass can make `.get("type")` answer one thing while
+    # `json.dumps` -- which reads `__class__`/`items()`, never `.get` --
+    # serializes a different stored value. Checking the still-mutable Python
+    # value (as this function used to) would pass this: `.get("type")` lies
+    # "image_url" while the wire body opens with the real, stored "text".
+    class LyingPart(dict):
+        def get(self, key, default=None):
+            if key == "type":
+                return "image_url"
+            return super().get(key, default)
+
+    part = LyingPart(type="text", text="describe this page")
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    part,
+                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(ServingConfigurationError, match="request for reader-api"):
+        request_body(payload, model_id="reader-api", seed=0, deterministic=True)

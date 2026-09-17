@@ -25,6 +25,7 @@ from .arming import (
     ControllerReadiness,
     FailClosedControllerArmer,
 )
+from .bootstrap_main import PREFLIGHT_DIRECTORY
 from .durable import atomic_write, canonical_json
 from .lease import LeaseStore, PodLease
 from .models import (
@@ -36,6 +37,7 @@ from .models import (
     PodEstimate,
     PodRecord,
     SpendRefusal,
+    _nested_argv_halves,
     _nested_flag_values,
     rebind_nested_flag,
     utc_now,
@@ -314,6 +316,83 @@ def launch_evidence_keys(
             relative.with_name(f"{relative.stem}{suffix}").as_posix() for suffix in siblings
         )
     return tuple(dict.fromkeys(keys))
+
+
+def launch_evidence_prefixes(
+    docker_start_cmd: tuple[str, ...] | list[str], *, volume_mount_path: str
+) -> tuple[str, ...]:
+    """The one volume-relative evidence prefix that scopes a fetch to this
+    launch's preflight directory (F110/G11).
+
+    ``--evidence-key`` (`launch_evidence_keys`, above) names individual
+    objects, derived from every bound report path; ``--evidence-prefix``
+    names a whole directory to bring home under ``<into>/evidence/`` in bulk,
+    and its own default is the *entire* ``preflight/`` tree -- correct across
+    every launch a volume has ever seen, wrong for attributing one of them.
+
+    This is deliberately **not** built from `bound_report_paths`: every real
+    request (`boot_a_request.py`, `boot_b_request.py`) writes its report
+    paths at the *volume root*, not under ``preflight/`` -- only
+    ``bootstrap_main.PreflightRequest.preflight_root`` does, and it names
+    ``<mount>/preflight/<bootstrap_main's own --report-path stem>``, not the
+    pod timer's outer report and not (for a full run launch) ``pod_run``'s
+    own nested report. `bound_report_paths` deliberately does not
+    distinguish those two nested reports (both get the same run-report
+    siblings, by design, for `launch_evidence_keys`'s purpose), so reusing it
+    here would derive a prefix matching nothing on the volume -- exactly
+    the defect this function replaces one round of.
+
+    A full run launch's nested ``--bootstrap-command-json`` argv is
+    ``pod_run``'s own argv with ``bootstrap_main``'s appended after the
+    first literal ``--`` (``pod_run.split_argv``); a hold-only launch has no
+    ``--`` and the nested argv *is* ``bootstrap_main``'s own. Either way,
+    `_nested_argv_halves` returns bootstrap_main's own half last.
+    """
+
+    nested = _nested_bootstrap_argv(docker_start_cmd)
+    if nested is None:
+        return ()
+    bootstrap_half = _nested_argv_halves(nested)[-1]
+    mount = PurePosixPath(volume_mount_path)
+    prefixes: list[str] = []
+    for raw in _nested_flag_values(bootstrap_half, "--report-path"):
+        if raw is None:
+            continue
+        path = PurePosixPath(raw)
+        if (
+            ".." in raw.split("/")
+            or not path.is_absolute()
+            or path == mount
+            or not path.is_relative_to(mount)
+        ):
+            continue
+        prefixes.append((PurePosixPath(PREFLIGHT_DIRECTORY) / path.stem).as_posix())
+    return tuple(dict.fromkeys(prefixes))
+
+
+def launch_run_id(docker_start_cmd: tuple[str, ...] | list[str]) -> str | None:
+    """The run id a full run launch's sealed ``docker_start_cmd`` actually
+    started, or ``None`` for a hold-only launch, which starts no run.
+
+    ``--run-id`` is ``pod_run``'s own required flag (``pod_run.py``'s
+    parser), sealed inside the nested ``--bootstrap-command-json`` argv, not
+    a top-level field of the request the way ``volume_id`` is -- so, like
+    the derivations above, it can only be read out of the sealed command,
+    not carried separately where it could silently disagree with it. Read
+    from the argv's pod_run half specifically (`_nested_argv_halves`'s
+    first), not the whole nested list, the same way `launch_evidence_prefixes`
+    reads `--report-path` from the bootstrap half only: a hold-only launch's
+    appended ``bootstrap_main`` half has no ``--run-id`` flag of its own to
+    collide with, but reading the split half rather than the flat list is
+    what keeps that true rather than assumed.
+    """
+
+    nested = _nested_bootstrap_argv(docker_start_cmd)
+    if nested is None or not _runs_the_orchestrator(nested):
+        return None
+    pod_run_half = _nested_argv_halves(nested)[0]
+    values = [value for value in _nested_flag_values(pod_run_half, "--run-id") if value is not None]
+    return values[-1] if values else None
 
 
 def _bound_report_path(raw_path: str, launch_token: str) -> str:

@@ -83,20 +83,39 @@ def test_no_two_fixture_chairs_share_a_snapshot():
     assert len(set(pins.values())) == len(pins) == len(FIXTURE_CHAIRS)
 
 
-def test_builder_removes_stale_snapshot_and_manifest_files(tmp_path):
+def test_builder_removes_stale_snapshot_files(tmp_path):
+    """`model_root` is this generator's own exclusive directory, so a stale
+    entry under any name -- including one for a chair long since dropped from
+    `FIXTURE_CHAIRS` -- is safe to wipe outright."""
     model_root = tmp_path / "model-fixtures"
     manifest_root = tmp_path / "manifests"
     (model_root / "attestator_1").mkdir(parents=True)
     (model_root / "attestator_1" / "stale.bin").write_bytes(b"stale")
     (model_root / "retired").mkdir()
-    (manifest_root / "retired.json").parent.mkdir(parents=True)
-    (manifest_root / "retired.json").write_text("stale")
 
     build(model_root, manifest_root)
 
     assert not (model_root / "attestator_1" / "stale.bin").exists()
     assert not (model_root / "retired").exists()
-    assert not (manifest_root / "retired.json").exists()
+
+
+def test_builder_removes_only_the_manifests_it_owns(tmp_path):
+    """`manifest_root` (`config/manifests/`) is NOT exclusive to this generator:
+    the real serving roster's own digest manifests are checked in beside the
+    fixture ones. A file not named after a current `FIXTURE_CHAIRS` entry --
+    a real-roster manifest, or a genuinely retired fixture chair's leftover --
+    must survive a rebuild; only the exact files this generator is about to
+    rewrite may be touched."""
+    model_root = tmp_path / "model-fixtures"
+    manifest_root = tmp_path / "manifests"
+    manifest_root.mkdir(parents=True)
+    (manifest_root / "retired.json").write_text("stale fixture leftover")
+    (manifest_root / "qwen3.8-27B.json").write_text("a real-roster manifest")
+
+    build(model_root, manifest_root)
+
+    assert (manifest_root / "retired.json").read_text() == "stale fixture leftover"
+    assert (manifest_root / "qwen3.8-27B.json").read_text() == "a real-roster manifest"
 
 
 def test_builder_does_not_suppress_a_failed_cleanup(

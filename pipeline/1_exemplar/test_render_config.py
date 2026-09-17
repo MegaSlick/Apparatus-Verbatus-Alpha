@@ -163,6 +163,67 @@ def test_exemplar_accepts_the_lossless_tiff_contract_for_high_precision_fanned_p
     )
 
 
+@pytest.mark.parametrize(
+    ("source_mode", "source_bands", "expected_mode"),
+    [("La", ["L", "a"], "LA"), ("RGBa", ["R", "G", "B", "a"], "RGBA")],
+)
+def test_exemplar_accepts_a_premultiplied_alpha_contract_the_renderer_actually_produces(
+    source_mode, source_bands, expected_mode
+):
+    """Pillow spells premultiplied alpha in lower case (`La`/`RGBa`); the
+    contract verifier must read that the same way `image_formats.py`'s
+    renderer already does, or a page the renderer correctly converted to
+    `LA`/`RGBA` would be refused for "changing its mode conversion" because
+    a case-sensitive `"A" in source_bands` read no alpha at all.
+    """
+    contract = {
+        "renderer": "Pillow",
+        "renderer_version": "1",
+        "container_page_index": 0,
+        "output": {"codec": "png", "color_mode": expected_mode},
+        "width": 2,
+        "height": 2,
+        "pillow_heif_version": "1",
+        "libheif_version": "1",
+        "source_mode": source_mode,
+        "source_bands": source_bands,
+        "mode_transform": f"convert-to-{expected_mode.lower()}",
+    }
+
+    _exemplar_module()._verify_render_contract(
+        contract,
+        0,
+        {"geometry": {"width": 2, "height": 2}},
+        {},
+        container_format="heic",
+    )
+
+
+def test_exemplar_refuses_a_premultiplied_alpha_contract_claiming_the_wrong_conversion():
+    contract = {
+        "renderer": "Pillow",
+        "renderer_version": "1",
+        "container_page_index": 0,
+        "output": {"codec": "png", "color_mode": "RGB"},
+        "width": 2,
+        "height": 2,
+        "pillow_heif_version": "1",
+        "libheif_version": "1",
+        "source_mode": "La",
+        "source_bands": ["L", "a"],
+        "mode_transform": "convert-to-rgb",
+    }
+
+    with pytest.raises(ContractError, match="changes its mode conversion"):
+        _exemplar_module()._verify_render_contract(
+            contract,
+            0,
+            {"geometry": {"width": 2, "height": 2}},
+            {},
+            container_format="heic",
+        )
+
+
 def test_run_override_is_sealed_in_authority_and_changed_resume_writes_nothing(
     tmp_path, monkeypatch
 ):

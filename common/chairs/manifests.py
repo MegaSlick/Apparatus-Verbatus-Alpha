@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -12,6 +13,14 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 
 from .errors import DigestMismatchRefusal
 from .models import ChairIdentity, DigestManifest, ManifestRow, VerifiedSnapshot, is_sha256
+
+# A manifest is a small control artifact (path/sha256/size rows), not raw model
+# weight bytes -- `model_store.py`'s own control artifacts (`download_record.json`,
+# a shard index) draw exactly this distinction and bound their reads; unlike
+# them, `read_manifest` used to read the whole file into memory before checking
+# anything about it, no matter its size. Matches `MAX_SHARD_INDEX_BYTES` there:
+# generous for even a many-thousand-file snapshot, still a fixed ceiling.
+MAX_MANIFEST_BYTES = 16_777_216
 
 
 def manifest_digest(manifest: DigestManifest) -> str:
@@ -60,7 +69,7 @@ def read_manifest(path: str | Path, *, expected_digest: str, chair: str) -> Dige
 
     source = Path(path)
     try:
-        data = source.read_bytes()
+        data = _read_limited_manifest_bytes(source, chair)
         raw = json.loads(data)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise DigestMismatchRefusal(chair, f"cannot read manifest {source}: {error}") from error
@@ -78,6 +87,39 @@ def read_manifest(path: str | Path, *, expected_digest: str, chair: str) -> Dige
             f"manifest differs: expected digest {expected_digest}, got {actual}",
         )
     return manifest
+
+
+def _read_limited_manifest_bytes(path: Path, chair: str) -> bytes:
+    """Read one manifest control artifact without allowing boundary amplification.
+
+    Mirrors `model_store._read_limited_bytes`: a regular-file check plus
+    `O_NOFOLLOW` refuses a symlink-redirected read, and reading `limit + 1`
+    bytes detects an oversized file without loading all of it. Duplicated
+    rather than imported: `model_store.py` already imports this module, so the
+    reverse import would close a cycle.
+    """
+
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+        )
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise DigestMismatchRefusal(chair, f"manifest {path} must be a regular file")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            payload = handle.read(MAX_MANIFEST_BYTES + 1)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if len(payload) > MAX_MANIFEST_BYTES:
+        raise DigestMismatchRefusal(
+            chair,
+            f"manifest {path} exceeds the {MAX_MANIFEST_BYTES}-byte control-artifact limit",
+        )
+    return payload
 
 
 def verify_snapshot(
