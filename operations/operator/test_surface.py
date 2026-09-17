@@ -6402,6 +6402,9 @@ def test_every_run_receipt_carries_identity_configuration_commit_and_output(
         assert (commit is None) != (receipt["repository_commit_unreadable"] is None)
         if commit is not None:
             assert commit == _repository_commit(ROOT)
+            # F098: the orchestrator invocation itself must carry the commit
+            # the receipt says the run ran under, not only the receipt.
+            assert argv[argv.index("--repository-commit") + 1] == commit
     assert finished["exit_code"] == 0
     assert finished["stderr_tail"] == "1 door refusal(s); see report\n"
     assert finished["stdout_tail"] == "run r: complete\n"

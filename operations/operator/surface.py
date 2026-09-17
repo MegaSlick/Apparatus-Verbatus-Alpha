@@ -1367,6 +1367,14 @@ class OperatorSurface:
         # these and had none of them; a later session diagnosing a run from
         # the state directory alone has nothing else to go on.
         commit, commit_unreadable = _repository_commit_or_reason(self.workspace)
+        if commit is not None:
+            # F098: the run tree itself, not only this receipt, must carry the
+            # commit it ran under -- pod_run already passes this to a pod-driven
+            # orchestrator invocation; a laptop-driven run left it out. Omitted
+            # (not a refusal) when unreadable, matching the orchestrator's own
+            # optional --repository-commit and this receipt's own commit_unreadable
+            # field -- a laptop checkout without git history is a real, allowed case.
+            command.extend(("--repository-commit", commit))
         facts: dict[str, Any] = {
             "ingress": ingress_mode,
             "run_root": self._state_relative(run_root),
