@@ -1697,13 +1697,17 @@ class OperatorSurface:
 
     # -- export ---------------------------------------------------------------
 
-    def export(self, *, run_id: str | None = None) -> Path:
+    def export(self, *, run_id: str | None = None, run_root: Path | None = None) -> Path:
         """Make a local evidence bundle from the base-tree Armarium artifact.
 
         The run is named first, before any work: with no `run_id` the most
         recently recorded run is chosen and said so, rather than discovered
         from a bundle filename after the fact. With one, the latest receipt for
-        that run is used even when another run was recorded since.
+        that run is used even when another run was recorded since — unless the
+        same `run_id` is recorded under more than one run root, which is not
+        "the same run, recorded twice" but a genuine name collision between
+        two different runs; that is refused rather than guessed at, naming
+        every candidate, with `run_root` as the way to say which one is meant.
         """
 
         run_records = self._run_receipts()
@@ -1726,6 +1730,35 @@ class OperatorSurface:
                 ErrorCode.EXPORT_MISSING,
                 detail=f"run {recorded_id} is not a run recorded in this operator state",
             )
+
+        def _resolved_run_root(payload: dict[str, Any]) -> Path:
+            value = payload.get("run_root")
+            if not isinstance(value, str):
+                raise OperatorError(
+                    ErrorCode.EXPORT_MISSING,
+                    detail=f"a run record for {recorded_id} has no usable run_root",
+                )
+            return self._state_path(value).resolve()
+
+        if run_root is not None:
+            named_root = run_root.resolve()
+            matching = [
+                payload for payload in matching if _resolved_run_root(payload) == named_root
+            ]
+            if not matching:
+                raise OperatorError(
+                    ErrorCode.EXPORT_MISSING,
+                    detail=f"run {recorded_id} has no record under run root {run_root}",
+                )
+        else:
+            resolved_roots = {_resolved_run_root(payload) for payload in matching}
+            if len(resolved_roots) > 1:
+                candidates = ", ".join(str(candidate) for candidate in sorted(resolved_roots))
+                raise OperatorError(
+                    ErrorCode.EXPORT_AMBIGUOUS,
+                    detail=f"run {recorded_id} is recorded under {len(resolved_roots)} run "
+                    f"roots: {candidates}",
+                )
         run_record = matching[-1]
         try:
             run_root = self._state_path(str(run_record["run_root"]))

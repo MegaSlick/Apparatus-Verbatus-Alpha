@@ -6670,6 +6670,112 @@ def test_export_with_a_run_id_uses_that_run_even_after_another_was_recorded(
     assert "never-recorded" in missing.value.render()
 
 
+def test_export_refuses_a_run_id_recorded_under_two_different_run_roots(
+    tmp_path: Path,
+) -> None:
+    """A run_id is not guaranteed unique across every root this operator state
+    has ever recorded; two genuinely different runs colliding on the same name
+    is a real ambiguity, not "the same run, re-recorded" (which is what taking
+    the latest receipt for an unambiguous run_id already, correctly, does)."""
+    surface = _surface(tmp_path)
+    for root in ("root-a", "root-b"):
+        surface._write_action(
+            "run",
+            {"summary": "test run", "state": "complete", "run_root": root, "run_id": "dup"},
+            descriptor_action="run",
+        )
+
+    with pytest.raises(OperatorError) as ambiguous:
+        surface.export(run_id="dup")
+    assert ambiguous.value.code is ErrorCode.EXPORT_AMBIGUOUS
+    rendered = ambiguous.value.render()
+    assert str(surface.state_root / "root-a") in rendered
+    assert str(surface.state_root / "root-b") in rendered
+
+
+def test_export_run_root_disambiguates_a_colliding_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    for root in ("root-a", "root-b"):
+        surface._write_action(
+            "run",
+            {"summary": "test run", "state": "complete", "run_root": root, "run_id": "dup"},
+            descriptor_action="run",
+        )
+    seen: list[tuple[Path, str]] = []
+
+    def export_of(root, run_id):  # type: ignore[no-untyped-def]
+        seen.append((root, run_id))
+        return _complete_export(root, run_id)
+
+    surface._armarium_export = export_of  # type: ignore[method-assign]
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", _fake_bundle(b"root-b"))
+
+    surface.export(run_id="dup", run_root=surface.state_root / "root-b")
+
+    assert seen == [(surface.state_root / "root-b", "dup")]
+
+
+def test_export_run_root_naming_no_matching_receipt_is_refused(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    surface._write_action(
+        "run",
+        {"summary": "test run", "state": "complete", "run_root": "root-a", "run_id": "solo"},
+        descriptor_action="run",
+    )
+
+    with pytest.raises(OperatorError) as missing:
+        surface.export(run_id="solo", run_root=tmp_path / "not-a-recorded-root")
+    assert missing.value.code is ErrorCode.EXPORT_MISSING
+
+
+def test_derived_evidence_prefixes_reads_the_launch_receipt(tmp_path: Path) -> None:
+    """F110/G11: `--evidence-prefix` derives from the same saved launch receipt
+    `--evidence-key` already does (`cli._derived_evidence_keys`), so an
+    operator is not asked to retype a 32-hex token by hand for one flag while
+    the other derives it for free."""
+    token = "c" * 32
+    nested = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.pod_run",
+            f"--report-path=/workspace/preflight/pod-run-report-{token}.json",
+        ]
+    )
+    receipt = tmp_path / "launch-receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "payload": {
+                    "request": {
+                        "docker_start_cmd": [
+                            "python",
+                            "-m",
+                            "operations.pod.pod_timer",
+                            "--report-path",
+                            f"/workspace/preflight/pod-runtime-report-{token}.json",
+                            "--bootstrap-command-json",
+                            nested,
+                        ],
+                        "volume_mount_path": "/workspace",
+                        "volume_id": "vol123",
+                    }
+                }
+            }
+        )
+    )
+    volume = VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol123")
+
+    prefixes = cli._derived_evidence_prefixes(receipt, volume)
+
+    assert prefixes == (
+        f"preflight/pod-runtime-report-{token}",
+        f"preflight/pod-run-report-{token}",
+    )
+
+
 def test_status_names_fetch_run_volumes_and_unexpected_failures(tmp_path: Path) -> None:
     surface = _surface(tmp_path)
     volume, reader = _volume_run(tmp_path)

@@ -316,6 +316,38 @@ def launch_evidence_keys(
     return tuple(dict.fromkeys(keys))
 
 
+def launch_evidence_prefixes(
+    docker_start_cmd: tuple[str, ...] | list[str], *, volume_mount_path: str
+) -> tuple[str, ...]:
+    """Volume-relative evidence prefixes that scope a fetch to this one launch.
+
+    ``--evidence-key`` (`launch_evidence_keys`, above) names individual
+    objects; ``--evidence-prefix`` names a whole directory stem to bring home
+    under ``<into>/evidence/`` in bulk, and its own default is the *entire*
+    ``preflight/`` tree -- correct across every launch a volume has ever seen,
+    wrong for attributing one of them (F110/G11). The stem this derives is the
+    same one an operator was asked to retype by hand: ``relative.parent /
+    relative.stem`` for each bound report path, the same paths
+    `launch_evidence_keys` already extracts, read once and reused rather than
+    walked a second time with a second set of edge cases to get wrong.
+    """
+
+    mount = PurePosixPath(volume_mount_path)
+    prefixes: list[str] = []
+    for raw, _siblings in bound_report_paths(docker_start_cmd):
+        path = PurePosixPath(raw)
+        if (
+            ".." in raw.split("/")
+            or not path.is_absolute()
+            or path == mount
+            or not path.is_relative_to(mount)
+        ):
+            continue
+        relative = path.relative_to(mount)
+        prefixes.append((relative.parent / relative.stem).as_posix())
+    return tuple(dict.fromkeys(prefixes))
+
+
 def _bound_report_path(raw_path: str, launch_token: str) -> str:
     original = PurePosixPath(raw_path)
     bound_name = f"{original.stem}-{launch_token}{original.suffix}"

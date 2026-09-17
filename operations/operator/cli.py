@@ -17,7 +17,7 @@ from typing import Final, Sequence
 from common.checkout import missing_checkout_resources
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
-from operations.pod.launch import launch_evidence_keys
+from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes
 from operations.pod.models import (
     DEFAULT_CONTAINER_DISK_GB,
     PodCreateRequest,
@@ -287,31 +287,36 @@ _UNREADABLE_RECEIPT = (
 )
 
 
-def _derived_evidence_keys(
+def _read_launch_command(
     receipt: Path | None, volume: VolumeSpec | None = None
-) -> tuple[str, ...]:
-    """The launch-bound evidence keys a saved launch receipt already names.
+) -> tuple[list[str], str] | None:
+    """The sealed ``docker_start_cmd`` and volume mount a saved launch receipt
+    names, shared by every deriver that reads launch-bound paths out of it
+    (``_derived_evidence_keys``, ``_derived_evidence_prefixes``) so the read,
+    the shape checks and the cross-volume refusal exist in one place rather
+    than once per deriver with their own chance to disagree.
 
     ``fetch-run`` will not guess at the launch-token-named reports -- guessing
     means listing a whole volume that also holds the submission's page images --
-    so it asks for them by key. Nobody should have to retype a 32-hex token out
-    of a JSON receipt to supply one; the receipt holds the sealed
-    ``docker_start_cmd`` those paths were bound into, and
-    ``launch.launch_evidence_keys`` is the derivation.
+    so it asks for them by key or prefix. Nobody should have to retype a
+    32-hex token out of a JSON receipt to supply one; the receipt holds the
+    sealed ``docker_start_cmd`` those paths were bound into.
 
     Refused loudly rather than skipped in all three failure shapes, because each
     one would otherwise leave an operator believing the reports came home: a
     receipt that cannot be read, a receipt that carries no launch request, and a
     receipt for a *different* volume than the one this call is reading. The last
-    is the quiet one -- the keys would be real names of another launch's records,
-    fetched or refused against a volume that never held them.
+    is the quiet one -- the derived paths would be real names of another
+    launch's records, fetched or refused against a volume that never held them.
 
     Read through the same bounded, no-follow open the reviewed pod request uses:
-    a record this verb did not write is not read whole on trust.
+    a record this verb did not write is not read whole on trust. Returns
+    ``None`` when no receipt was named, so a caller can fall back to its own
+    default rather than treating "nothing asked" as a shape failure.
     """
 
     if receipt is None:
-        return ()
+        return None
     try:
         descriptor = os.open(receipt, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
         with os.fdopen(descriptor, "rb") as handle:
@@ -346,7 +351,7 @@ def _derived_evidence_keys(
             ErrorCode.FETCH_RUN_FAILED,
             detail=(
                 f"the launch receipt {receipt} does not carry a readable launch request, so "
-                f"no evidence key could be derived from it: {error}"
+                f"no evidence key or prefix could be derived from it: {error}"
             ),
         ) from error
     if volume is not None and recorded_volume != volume.volume_id:
@@ -354,12 +359,43 @@ def _derived_evidence_keys(
             ErrorCode.FETCH_RUN_FAILED,
             detail=(
                 f"the launch receipt {receipt} is for network volume {recorded_volume!r}, and "
-                f"this call is reading {volume.volume_id!r}. Deriving keys from it would name "
+                f"this call is reading {volume.volume_id!r}. Deriving from it would name "
                 "another launch's records on a volume that never held them; name the receipt "
-                "for this run, or pass the keys with --evidence-key"
+                "for this run, or pass --evidence-key/--evidence-prefix explicitly"
             ),
         )
+    return command, mount
+
+
+def _derived_evidence_keys(
+    receipt: Path | None, volume: VolumeSpec | None = None
+) -> tuple[str, ...]:
+    """The launch-bound evidence keys a saved launch receipt already names —
+    ``launch.launch_evidence_keys`` is the derivation, over `_read_launch_command`."""
+
+    read = _read_launch_command(receipt, volume)
+    if read is None:
+        return ()
+    command, mount = read
     return launch_evidence_keys(command, volume_mount_path=mount)
+
+
+def _derived_evidence_prefixes(
+    receipt: Path | None, volume: VolumeSpec | None = None
+) -> tuple[str, ...]:
+    """The launch-scoped evidence prefixes a saved launch receipt already
+    names — ``launch.launch_evidence_prefixes`` is the derivation, over
+    `_read_launch_command`. F110/G11: without this, ``--launch-receipt``
+    alone derived the exact ``--evidence-key`` values but left
+    ``--evidence-prefix`` at its whole-``preflight/``-tree default, so the
+    manual-retyping failure those flags exist to eliminate was only half
+    closed."""
+
+    read = _read_launch_command(receipt, volume)
+    if read is None:
+        return ()
+    command, mount = read
+    return launch_evidence_prefixes(command, volume_mount_path=mount)
 
 
 def _print(text: str = "") -> None:
@@ -603,6 +639,14 @@ def build_parser() -> PlainParser:
         "export", help="copy the recorded base Armarium evidence locally and print reconciliation"
     )
     export.add_argument("--run-id", help="the explicitly recorded run to export")
+    export.add_argument(
+        "--run-root",
+        type=Path,
+        help=(
+            "the folder containing the run tree, needed only when --run-id names more than "
+            "one recorded run root (an ambiguous name Verbatus refuses to guess between)"
+        ),
+    )
 
     close = verbs.add_parser(
         "close", help="record a typed confirmation, then verify close and captured cost"
@@ -812,19 +856,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             for key in derived:
                 _print(f"Derived from the launch receipt: --evidence-key {key}")
             evidence_keys = tuple(dict.fromkeys((*(args.evidence_key or ()), *derived)))
+            derived_prefixes = _derived_evidence_prefixes(args.launch_receipt, volume)
+            for prefix in derived_prefixes:
+                _print(f"Derived from the launch receipt: --evidence-prefix {prefix}")
             fetch_arguments: dict[str, object] = {
                 "run_id": args.run_id,
                 "into": args.into,
                 "volume": volume,
                 "evidence_keys": evidence_keys,
             }
-            # Passed only when named, so the surface's own default (the whole
-            # preflight/ tree) stays the default rather than being restated here.
-            if args.evidence_prefix:
-                fetch_arguments["evidence_prefixes"] = tuple(args.evidence_prefix)
+            # Passed only when named or derived, so the surface's own default
+            # (the whole preflight/ tree) stays the default when neither is --
+            # restating it here would just be a second place to keep in sync.
+            evidence_prefixes = tuple(
+                dict.fromkeys((*(args.evidence_prefix or ()), *derived_prefixes))
+            )
+            if evidence_prefixes:
+                fetch_arguments["evidence_prefixes"] = evidence_prefixes
             surface.fetch_run(**fetch_arguments)  # type: ignore[arg-type]
         elif args.verb == "export":
-            surface.export(run_id=args.run_id)
+            surface.export(run_id=args.run_id, run_root=args.run_root)
         elif args.verb == "close":
             prepared_close = surface.prepare_close(pod_id=args.pod_id)
             confirmation = _typed_close_confirmation(prepared_close.phrase)

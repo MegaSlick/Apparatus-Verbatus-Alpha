@@ -1241,6 +1241,53 @@ def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() ->
     )
 
 
+def test_evidence_prefixes_derive_the_preflight_stem_evidence_keys_derive_from() -> None:
+    """F110/G11: `--evidence-prefix`'s default is the whole `preflight/` tree,
+    which mixes every launch a volume has ever seen; the stem that scopes a
+    fetch to just this one is the same data `launch_evidence_keys` already
+    reads out of the sealed start command, not a second thing to derive."""
+
+    token = "a" * 32
+    nested = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.pod_run",
+            f"--report-path=/workspace/preflight/pod-run-report-{token}.json",
+        ]
+    )
+    command = (
+        "python",
+        "-m",
+        "operations.pod.pod_timer",
+        "--report-path",
+        f"/workspace/preflight/pod-runtime-report-{token}.json",
+        "--bootstrap-command-json",
+        nested,
+    )
+
+    prefixes = launch_module.launch_evidence_prefixes(command, volume_mount_path="/workspace")
+
+    assert prefixes == (
+        f"preflight/pod-runtime-report-{token}",
+        f"preflight/pod-run-report-{token}",
+    )
+
+
+def test_evidence_prefixes_drop_a_report_path_outside_the_volume() -> None:
+    """The same volume-boundary rule `launch_evidence_keys` applies."""
+
+    command = (
+        "python",
+        "--report-path",
+        "/elsewhere/preflight/pod-runtime-report.json",
+        "--bootstrap-command-json",
+        "not json at all",
+    )
+
+    assert launch_module.launch_evidence_prefixes(command, volume_mount_path="/workspace") == ()
+
+
 def test_a_hold_only_launch_derives_no_record_pod_run_alone_writes() -> None:
     """A receipt full of refusals for records nothing ever wrote is a worse record
     than none, so which siblings apply is decided by which program writes them."""

@@ -46,6 +46,7 @@ class ErrorCode(StrEnum):
     RUN_FAILED = "run-failed"
     RUN_HELD = "run-held"
     EXPORT_MISSING = "export-missing"
+    EXPORT_AMBIGUOUS = "export-ambiguous"
     EXPORT_FAILED = "export-failed"
     EXPORT_PARTIAL = "export-partial"
     CLOSE_NOTHING = "close-nothing"
@@ -244,6 +245,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "There is no completed Armarium export record for that run.",
         "No local bundle was made and no result was invented.",
         "Run `verbatus run` first, or use the run name that already has an export; this is safe.",
+    ),
+    ErrorCode.EXPORT_AMBIGUOUS: ErrorCopy(
+        "That run name is recorded under more than one run root.",
+        "Verbatus will not guess which recorded run you mean, so no local bundle was made.",
+        "Name the intended one with --run-root (the saved detail lists every candidate); this is safe.",
     ),
     ErrorCode.EXPORT_FAILED: ErrorCopy(
         "Verbatus could not make the local export copy.",
