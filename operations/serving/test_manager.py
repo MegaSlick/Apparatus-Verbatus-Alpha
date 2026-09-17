@@ -85,6 +85,7 @@ from .errors import (
 from .http import (
     EndpointUnavailable,
     HttpResponse,
+    assert_image_before_text_on_wire,
     parse_model_ids,
     parse_openai_answer,
     require_exact_model_id,
@@ -111,7 +112,6 @@ from .preflight import (
     ServingSmokeReader,
     UsageReconciliation,
     assert_generation_config_key_coverage,
-    assert_image_before_text_on_wire,
     assert_resized_pixels_within_trained_geometry,
     prepare_log_root,
     reconcile_usage_against_capacity,

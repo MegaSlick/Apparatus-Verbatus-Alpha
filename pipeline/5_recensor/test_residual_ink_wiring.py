@@ -468,9 +468,10 @@ def test_a_second_recensor_pass_that_clears_a_flag_does_not_collide_with_the_fir
         by_ordinal = {review["payload"]["attempt_ordinal"]: review for review in reviews}
         assert by_ordinal[1]["outcome"] == "held-for-review"
         assert by_ordinal[1]["payload"]["page_coverage"]["flagged_pages"]
-        assert by_ordinal[2]["outcome"] != "held-for-review" or not by_ordinal[2]["payload"][
-            "page_coverage"
-        ]["flagged_pages"]
+        assert (
+            by_ordinal[2]["outcome"] != "held-for-review"
+            or not by_ordinal[2]["payload"]["page_coverage"]["flagged_pages"]
+        )
 
     third_exit = RUN.main()
     assert third_exit == RUN.EXIT_COMPLETE

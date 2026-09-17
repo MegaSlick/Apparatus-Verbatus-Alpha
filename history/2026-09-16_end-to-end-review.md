@@ -1245,10 +1245,11 @@ all along, now applied to the survey's own output.
   `pipeline/3_attestatores/feeding.py` was written against `"vllm"` — the two have drifted,
   and wiring the check now would stamp a stale account of the wire as a passing assertion.
   Fixed only what is real: moved `assert_image_before_text_on_wire` into `operations/
-  serving/http.py` (forced by an import-cycle constraint: `manager.py` already imports
-  `preflight.py`, so `preflight.py` cannot import back from `manager.py`'s module family;
-  `http.py` has no such cycle and already owns wire-shape rules), re-exported from
-  `preflight.py` for backward compatibility; added a new narrow walker,
+  serving/http.py` (forced by an import-cycle constraint stated backwards in this
+  section's own first draft — corrected below — `preflight.py` imports `manager.py`,
+  which imports `http.py`; neither `http.py` nor `manager.py` can import back from
+  `preflight.py` without closing that cycle, and `http.py` already owns wire-shape
+  rules); added a new narrow walker,
   `assert_wire_part_order`, that checks only `role=user` content lists that actually carry
   an image (skipping the readiness probe's bare string content, Churro's non-`user`
   system-turn preamble, and text-only user lists — all real, legitimate shapes the naive
@@ -1386,3 +1387,81 @@ Full `operations/serving/` (376), `pipeline/5_recensor/`, `pipeline/3_attestator
 `proof/test_proof_model_fixtures.py` suites green individually; a combined run of
 `pipeline/`, `operations/`, `proof/`, and `.githooks/` together confirms no regression
 across the wider tree.
+
+### Independent panel review of F133 (`a0155a9`) — Opus and Fable, high effort, read-only
+
+The serving tier's own review-proportionality table requires an independent panel, not one
+reader, before the first push. Dispatched two independent reviewers, given only the
+commit's diff and told nothing about each other's brief, and treated every finding the same
+way this whole review has treated CodeRabbit's: re-verified against the actual code before
+acting, nothing taken on the reviewer's word alone. Both converged on the same core defects
+by different reasoning paths; Opus additionally traced every production call site of
+`assert_wire_part_order` (including the Perlector, which neither the original brief nor
+Fable's review named) and confirmed no real request is wrongly refused.
+
+**Fixed:**
+
+- **The new walker had zero test coverage.** `assert_wire_part_order` — the function the
+  whole commit exists to add — was reachable from exactly one existing test, and that test
+  called the older inner primitive directly on a hand-built list; it would have stayed
+  green if the new walker had been deleted outright. For the money/serving tier this is
+  precisely the failure this commit was written to repair (three functions that looked
+  wired and were not). Added eleven tests to `operations/serving/test_http_reading.py`:
+  seven direct against `assert_wire_part_order` (each of its skip cases — non-list
+  messages, non-user role, string content, text-only content — plus the catch case with its
+  label prefix, plus a tuple-typed variant proving the very next finding is actually fixed),
+  and four integration-level against `request_body` itself (refuses a text-before-image
+  user message with the model-id label; accepts image-before-text; accepts the readiness
+  probe's bare string content; accepts a system preamble ahead of an image-first user turn).
+- **A tuple-typed `content` or `messages` value walked past the guard unseen.** The walker's
+  two `isinstance(x, list)` checks do not match a tuple, but `json.dumps` serializes a tuple
+  onto the wire as a JSON array exactly like a list — so a caller handing over tuple-shaped
+  parts would read image-first-or-not to a human but skip the check entirely.  Not
+  hypothetical: `ChairRequest.messages` (`client.py`) is itself a tuple, frozen at
+  construction, and survives today only because `client.py` wraps it in `list(...)` before
+  calling `request_body` — remove that one wrap and the guard goes silent while requests
+  keep flowing, the opposite of what its own docstring claims about a future seam not being
+  able to route around it. Both `isinstance` checks in `assert_wire_part_order`
+  (`operations/serving/http.py`) now accept `(list, tuple)`.
+- **The import-cycle justification recorded above was stated backwards.** Corrected in
+  place (see the F133 entry above, now reading `preflight.py` imports `manager.py`, which
+  imports `http.py`) rather than left for a future reader to inherit the wrong arrow. The
+  code decision itself — moving the function to `http.py` — was already right; only the
+  recorded reasoning was inverted.
+- **A stale comment.** `operations/serving/manager.py`'s `--chat-template-content-format`
+  justification still named `preflight.assert_image_before_text_on_wire` after the function
+  moved to `http.py` in the same commit; corrected to `http.assert_image_before_text_on_wire`.
+- **The `preflight.py` re-export shim.** `assert_image_before_text_on_wire` was re-exported
+  from `preflight.py` "for backward compatibility," but a repository-wide search found
+  exactly one importer of that path — this package's own test file — and no production
+  code. A private repository's own test importing from the wrong module is not backward
+  compatibility; it is one file that never got updated. Decided under hard rule 13 (an
+  ordinary engineering call, recorded here rather than parked): removed the re-export from
+  `preflight.py` and repointed `test_manager.py`'s one import to `http.py`, the function's
+  actual home.
+- **The README's route-around claim overstated one door.** `request_reading`
+  (`ServiceHandle`/`ServingManager`) POSTs an already-built body verbatim and is never
+  itself checked; the README's "a future call site cannot route around it" was true only
+  because `request_reading`'s sole caller, `ChairClient.read`, happens to always build
+  through `request_body` first. Softened to name `request_reading` as the one door that
+  must keep doing so, rather than implying the check applies unconditionally everywhere
+  downstream of `request_body`.
+- **The docstring did not name its own blind spot.** `assert_wire_part_order` skips every
+  non-`user` role before it ever looks for an image, which is correct for every builder in
+  this repository today but was not stated as a deliberate, bounded gap. Added a paragraph
+  naming it: no production builder places an image outside a `role=user` turn, and
+  `chat_image_bytes_all` separately refuses one on every path that calls it, but the
+  readiness probe and a `requires_image=False` calibration never call
+  `chat_image_bytes_all`, so a hypothetical future builder on one of those two paths would
+  pass both checks unnoticed.
+- **`pipeline/5_recensor/HANDOFF.md`** — F132's own follow-up, not this commit's: added a
+  paragraph to the `kind="review"` section documenting that `attempt_ordinal` is now minted
+  from the review's own content rather than counted from recovery requests, and that
+  `recovery_request_ordinal` answers a different question (a recovery request's position,
+  not the review's identity) and must not be read for the other.
+
+`operations/serving/` (416 tests, up from 376) and `pipeline/5_recensor/` green. Both
+reviewers' remaining points (the non-`user`-role gap, the route-around softening) were
+resolved above rather than left as leads, because both sit inside this same review round's
+own commit and this tier's table requires the panel's findings actually closed, not
+deferred.

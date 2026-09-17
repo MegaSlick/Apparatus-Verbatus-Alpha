@@ -42,7 +42,6 @@ from operations.pod.preflight import (
 
 from .config import ServingProfile
 from .errors import AdapterActivityError, ServiceStopError, ServingConfigurationError
-from .http import assert_image_before_text_on_wire  # noqa: F401
 from .manager import AdapterCalibration, ServiceHandle, ServingManager
 
 SmokeCall = Callable[[ServiceHandle, ChairIdentity, Path, PlacementTier], SmokeResult]

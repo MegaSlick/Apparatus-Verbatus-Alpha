@@ -1864,7 +1864,7 @@ def render_vllm_argv(
         # (vllm-project/vllm#14047) -- so a check against the *rendered*
         # request body would read green no matter what order the caller
         # actually assembled, silently defeating
-        # `preflight.assert_image_before_text_on_wire` (hostile review item
+        # `http.assert_image_before_text_on_wire` (hostile review item
         # A).  Under `openai` format the rendered content list keeps the
         # caller's own order verbatim, which is what makes that assertion
         # mean anything on the wire.

@@ -372,10 +372,16 @@ each, recorded here rather than left for a reader to discover by grep:
   from inside `request_body` itself — the one seam every request this
   package renders already passes through (the golden-page smoke, the
   readiness probe, both adapter-calibration probes, and every pipeline
-  reading), so a future call site cannot route around it. It correctly skips
-  the readiness probe's bare string content, a non-`user` role (Churro's
-  system-turn text preamble), and a text-only user content list with no
-  image part at all.
+  reading). It correctly skips the readiness probe's bare string content, a
+  non-`user` role (Churro's system-turn text preamble), and a text-only user
+  content list with no image part at all. One door sits downstream of this
+  seam and is not itself checked: `ServiceHandle.request_reading` POSTs a
+  caller-already-built body verbatim, so a future caller that reached it
+  without building that body through `request_body` first would bypass this
+  check entirely. Today's only caller, `ChairClient.read`, always builds
+  through `request_body`, so the claim holds in practice, not by
+  construction — a new caller of `request_reading` must keep doing the
+  same.
 - `assert_resized_pixels_within_trained_geometry(...)` — refuses a
   post-resize image outside a chair's own declared trained pixel range.
   **Not wired.** Its two `trained_*` parameters are the *vendor's* declared

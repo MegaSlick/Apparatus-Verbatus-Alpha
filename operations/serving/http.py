@@ -449,17 +449,33 @@ def assert_wire_part_order(payload: Mapping[str, object], *, label: str) -> None
     probe, both adapter-calibration probes, and every pipeline reading
     (`ServingManager.request`, `_post_probe`, `ChairClient.read`) -- so a
     future seam cannot route a rendered request around it the way three
-    unwired functions once did (hostile review item A).
+    unwired functions once did (hostile review item A). `request_reading`
+    is the one door downstream of `request_body` that this walker cannot
+    see: it POSTs a caller-already-built body verbatim, so any future
+    caller that reaches it without going through `request_body` first
+    bypasses this check entirely -- today's only caller, `ChairClient.read`,
+    always builds through `request_body`.
+
+    An `image_url` part inside a non-`user` role message is one shape this
+    walker never inspects at all, not even for order -- it is skipped by
+    the role check before the image scan runs. No production builder in
+    this package emits one today, and `chat_image_bytes_all` separately
+    refuses an `image_url` outside a `role=user` content list on every path
+    that calls it -- but the readiness probe and a `requires_image=False`
+    calibration never call `chat_image_bytes_all`, so a hypothetical future
+    builder that placed an image in a system turn on one of those two paths
+    would pass both checks unnoticed. Named here rather than left for a
+    reader to discover by grep.
     """
 
     messages = payload.get("messages")
-    if not isinstance(messages, list):
+    if not isinstance(messages, (list, tuple)):
         return
     for message in messages:
         if not isinstance(message, Mapping) or message.get("role") != "user":
             continue
         content = message.get("content")
-        if not isinstance(content, list):
+        if not isinstance(content, (list, tuple)):
             continue
         if not any(
             isinstance(part, Mapping) and part.get("type") == "image_url" for part in content
