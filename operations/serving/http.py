@@ -271,6 +271,10 @@ def request_body(
                     f"deterministic probe {field}={supplied!r}, expected {expected!r}"
                 )
             value[field] = expected
+    # Checked against this exact value -- what `_canonical_json` below renders
+    # onto the wire -- so a future seam cannot route a rendered request around
+    # it (hostile review item A; `assert_wire_part_order`'s own docstring).
+    assert_wire_part_order(value, label=f"request for {model_id}")
     return _canonical_json(value)
 
 
@@ -395,6 +399,76 @@ def parse_openai_reading(
         ),
         usage=_usage(payload),
     )
+
+
+def assert_image_before_text_on_wire(content: list[Mapping[str, object]]) -> None:
+    """Refuse a rendered chat request whose first content part is not the image.
+
+    Must be checked against the *rendered* content list -- the exact list
+    that serializes onto the wire -- never the Python call an adapter built
+    before rendering.  This assertion means anything only because
+    ``render_vllm_argv`` pins ``--chat-template-content-format openai``: under
+    vLLM's ``string`` format (what ``auto`` can resolve to, and what a future
+    template revision could resolve to differently) every image placeholder
+    is hoisted ahead of the text regardless of the caller's own part order
+    (vllm-project/vllm#14047), so a rendered body checked under ``string``
+    format would read image-first and pass no matter what order the caller
+    actually assembled -- a no-op that could never catch a caller putting
+    text first (hostile review item A). Under the pinned ``openai`` format
+    the rendered content list keeps the caller's own order verbatim, so this
+    check against the rendered body reflects a real caller ordering bug
+    rather than the engine's own reformatting.
+    """
+
+    if not content:
+        raise ServingConfigurationError(
+            "rendered request content is empty; there is no wire order to assert"
+        )
+    first = content[0]
+    if not isinstance(first, Mapping):
+        raise ServingConfigurationError("rendered request content parts must be objects")
+    first_type = first.get("type")
+    if first_type != "image_url":
+        raise ServingConfigurationError(
+            "rendered request content must open with an image_url part; the wire's first part "
+            f"is {first_type!r}"
+        )
+
+
+def assert_wire_part_order(payload: Mapping[str, object], *, label: str) -> None:
+    """Enforce image-before-text on every `role=user` content list that carries
+    an image, across the whole rendered request.
+
+    Narrower than "every message's first part must be an image": a
+    string-content message (the readiness probe's bare `"READY"`), a non-user
+    role (Churro's system-turn text preamble, `live_witness.py`), and a
+    text-only user content list (no `image_url` part at all) are all
+    legitimate shapes this check must not refuse. Checked here, inside
+    `request_body`, because this is the one place every request this package
+    renders already passes through -- the golden-page smoke, the readiness
+    probe, both adapter-calibration probes, and every pipeline reading
+    (`ServingManager.request`, `_post_probe`, `ChairClient.read`) -- so a
+    future seam cannot route a rendered request around it the way three
+    unwired functions once did (hostile review item A).
+    """
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return
+    for message in messages:
+        if not isinstance(message, Mapping) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        if not any(
+            isinstance(part, Mapping) and part.get("type") == "image_url" for part in content
+        ):
+            continue
+        try:
+            assert_image_before_text_on_wire(content)
+        except ServingConfigurationError as error:
+            raise ServingConfigurationError(f"{label}: {error}") from error
 
 
 def chat_image_bytes_all(

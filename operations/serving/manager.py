@@ -319,11 +319,11 @@ class AdapterCalibration:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
                             },
+                            {"type": "text", "text": prompt},
                         ],
                     }
                 ]

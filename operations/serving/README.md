@@ -352,26 +352,58 @@ whether it arrives through `ServingSmokeReader.read` or directly through
 `ChairClient.__enter__`, so a check placed anywhere upstream of it would
 guard only the caller that happened to run it.
 
-Three further preflight primitives, generic and offline-testable, close
-hostile review item A's static-assertion gap so `proven` can never again be
-earned by a smoke string alone; each is wired by the adapter/request-shape
-units whose files actually render a request:
+Three further preflight primitives exist toward hostile review item A's
+static-assertion gap, so `proven` cannot be earned by a smoke string alone.
+One is wired into production; the other two are not, for reasons specific to
+each, recorded here rather than left for a reader to discover by grep:
 
-- `assert_image_before_text_on_wire(content)` — refuses a rendered chat
-  request whose first content part is not the image, checked against the
-  exact list that serializes onto the wire. This means anything only because
-  `render_vllm_argv` pins `--chat-template-content-format openai`: under
-  vLLM's `string` format every image placeholder is hoisted ahead of the
-  text regardless of a caller's own part order (vllm-project/vllm#14047),
-  which would make a rendered-body check pass no matter what order the
-  caller assembled — so the format is pinned, and this check runs against
-  the rendered body, never the pre-render call, so it still catches an
-  adapter that built the wrong order.
+- `assert_image_before_text_on_wire(content)` (`http.py`) — refuses a
+  rendered chat request whose first content part is not the image, checked
+  against the exact list that serializes onto the wire. This means anything
+  only because `render_vllm_argv` pins `--chat-template-content-format
+  openai`: under vLLM's `string` format every image placeholder is hoisted
+  ahead of the text regardless of a caller's own part order
+  (vllm-project/vllm#14047), which would make a rendered-body check pass no
+  matter what order the caller assembled — so the format is pinned, and this
+  check runs against the rendered body, never the pre-render call, so it
+  still catches an adapter that built the wrong order. **Wired**: `http.py`'s
+  `assert_wire_part_order` walks every rendered request's `role=user`
+  content lists that carry an image and calls this primitive on each one,
+  from inside `request_body` itself — the one seam every request this
+  package renders already passes through (the golden-page smoke, the
+  readiness probe, both adapter-calibration probes, and every pipeline
+  reading), so a future call site cannot route around it. It correctly skips
+  the readiness probe's bare string content, a non-`user` role (Churro's
+  system-turn text preamble), and a text-only user content list with no
+  image part at all.
 - `assert_resized_pixels_within_trained_geometry(...)` — refuses a
   post-resize image outside a chair's own declared trained pixel range.
+  **Not wired.** Its two `trained_*` parameters are the *vendor's* declared
+  training range (model card, `processor_config.json`); nothing in this
+  repository carries that per chair today. What exists instead is each
+  serving row's own `min_pixels`/`max_pixels`
+  (`config/serving_recipes_real.toml`) — this package's own
+  `--mm-processor-kwargs` values, which `common/request_capacity.py`'s
+  `smart_resize` already clamps into by construction. Wiring the assertion
+  to those row values would make it a tautology that can only ever observe
+  our own resize arithmetic, never a chair actually read outside its
+  trained scale — a metric that cannot be measured is a failure, not a
+  pass. Wiring it needs the vendor's declared range carried as cited data
+  first (`cleanroom/README.md`'s procedure), one vendor at a time.
 - `assert_generation_config_key_coverage(...)` — refuses a vendor
   `generation_config.json` key that is neither sent on the wire nor named,
-  with a reason, as deliberately withheld.
+  with a reason, as deliberately withheld. **Not wired.** Only one chair's
+  vendor file is carried at all (`attestator_2`/DAI,
+  `pipeline/3_attestatores/feeding.py`), so wiring today would cover one
+  chair in four; and that chair's own serving rows are now
+  `generation_config = "auto"` (`config/serving_recipes_real.toml`), which
+  the wire-sending reasoning in `feeding.py` was written against `"vllm"`
+  for — the two have drifted, and under `auto` vLLM may read the vendor's
+  file itself rather than what this package explicitly sends. Wiring the
+  check before that drift is resolved would stamp a stale account of the
+  wire as a passing assertion. Every real serving row is still
+  `preflight_state = "unproven"`, so nothing already stamped `proven` rests
+  on either of these two gaps.
 
 ## Pod seam
 

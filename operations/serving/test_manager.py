@@ -1960,7 +1960,7 @@ def test_image_calibration_builder_binds_data_uri_bytes_to_its_fixture(tmp_path:
         prompt="Read the fixture.",
         mime_type="image/png",
     )
-    url = calibration.payload["messages"][0]["content"][1]["image_url"]["url"]  # type: ignore[index]
+    url = calibration.payload["messages"][0]["content"][0]["image_url"]["url"]  # type: ignore[index]
     assert isinstance(url, str) and url.startswith("data:image/png;base64,")
     assert calibration.fixture_sha256 == hashlib.sha256(fixture.read_bytes()).hexdigest()
 
@@ -1981,10 +1981,10 @@ def test_image_calibration_seals_nested_payload_against_later_mutation(tmp_path:
         prompt="Read the fixture.",
         mime_type="image/png",
     )
-    nested_url = calibration.payload["messages"][0]["content"][1]["image_url"]  # type: ignore[index]
+    nested_url = calibration.payload["messages"][0]["content"][0]["image_url"]  # type: ignore[index]
     nested_url["url"] = "https://example.invalid/replaced.png"  # type: ignore[index]
 
-    sealed_url = calibration.request_payload()["messages"][0]["content"][1]["image_url"][  # type: ignore[index]
+    sealed_url = calibration.request_payload()["messages"][0]["content"][0]["image_url"][  # type: ignore[index]
         "url"
     ]
     assert isinstance(sealed_url, str) and sealed_url.startswith("data:image/png;base64,")
@@ -4124,7 +4124,7 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
     assert "chat_template_kwargs" not in request
     messages = request["messages"]
     assert isinstance(messages, list)
-    image_url = messages[0]["content"][1]["image_url"]["url"]  # type: ignore[index]
+    image_url = messages[0]["content"][0]["image_url"]["url"]  # type: ignore[index]
     assert isinstance(image_url, str)
     assert image_url == "data:image/png;base64," + base64.b64encode(fixture_bytes).decode("ascii")
     handle.stop()
@@ -4835,7 +4835,7 @@ def test_fixture_request_refuses_an_image_hidden_outside_openai_chat_content(
     fixture = tmp_path / "golden-page.png"
     fixture.write_bytes(b"fixture page")
     valid = fixture_image_payload(fixture)
-    image_url = valid["messages"][0]["content"][1]["image_url"]  # type: ignore[index]
+    image_url = valid["messages"][0]["content"][0]["image_url"]  # type: ignore[index]
     hidden_image_payload = {
         "messages": [{"role": "user", "content": "text-only request"}],
         "ignored_extension": {"image_url": image_url},
@@ -4865,7 +4865,7 @@ def test_fixture_request_requires_an_openai_image_object_at_the_active_content_b
     fixture = tmp_path / "golden-page.png"
     fixture.write_bytes(b"fixture page")
     malformed = json.loads(json.dumps(fixture_image_payload(fixture)))
-    malformed["messages"][0]["content"][1]["image_url"] = "data:image/png;base64,ZmFrZQ=="
+    malformed["messages"][0]["content"][0]["image_url"] = "data:image/png;base64,ZmFrZQ=="
     handle = manager.start(chair, TIER)
 
     with pytest.raises(ServingConfigurationError, match="OpenAI image object"):
@@ -4913,7 +4913,7 @@ def test_fixture_request_dispatches_the_same_payload_snapshot_it_validates(tmp_p
     handle.request_fixture_image("chat-completions", SwitchingMapping(), fixture=fixture)
     sent = [body for method, _, body in http.calls if method == "POST"][-1]
     assert sent is not None
-    assert sent["messages"][0]["content"][1]["type"] == "image_url"  # type: ignore[index]
+    assert sent["messages"][0]["content"][0]["type"] == "image_url"  # type: ignore[index]
     handle.stop()
 
 
