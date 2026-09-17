@@ -65,9 +65,18 @@ jobs:
         # — `--frozen` deliberately skips that check, so a step with only the
         # sync would install happily from a stale lock and report a green gate.
         # The sync is then the smoke test that the exact `--frozen` install spec
-        # 04 assumes really does resolve.
+        # 04 assumes really does resolve. The uv version comes from
+        # pyproject.toml's own `[tool.uv] required-version` — the same single
+        # declaration `.githooks/check-all.sh` reads — rather than a second
+        # hardcoded copy here that could silently drift from it (F040).
         run: |
-          python -m pip install uv==0.12.1
+          required_uv_version=$(python -c '
+          import tomllib
+          with open("pyproject.toml", "rb") as handle:
+              project = tomllib.load(handle)
+          print(project["tool"]["uv"]["required-version"].removeprefix("=="))
+          ')
+          python -m pip install "uv==$required_uv_version"
           uv lock --check
           uv sync --frozen --group test --group audit
 
