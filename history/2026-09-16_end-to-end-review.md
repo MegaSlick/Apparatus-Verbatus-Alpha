@@ -447,3 +447,181 @@ before the corrected version was pushed. The lesson already recorded earlier in 
 that a change touching a shared record shape needs the full consuming suite, not just the
 producer's own tests, before it ships — held again, and held because it was actually
 followed this time.
+
+### Ten more findings closed, spot-checked from the same 2026-09-14 ledger
+
+Continuing the fourth pass: a dedicated workflow independently re-verified 26 of the
+ledger's remaining unchecked findings against current HEAD (seven agents, each reading the
+full original claim, re-deriving it from the current code, and recommending fix/decline
+with reasoning — not taken on the first reader's word). Four came back already fixed by
+earlier work (F003, F016, F102, F107 — confirmed by re-reading the current code and, for
+F016, by re-running its own regression test); the rest are dispositioned below and in the
+next section. Ten were judged genuinely fixable now and were:
+
+**F041 — the held-acts header counted hold records, not acts** (`operations/operator/review_text.py`).
+Contradicted README.md's own documented account of the header and the distinct-act count
+`review.py:1467` already computes for the summary sentence directly above it. Now derives
+the same count. Commit `66b11e5`.
+
+**F109 — notify.sh depended on a `python3` on PATH rather than this checkout's own
+interpreter** (`operations/notify/notify.sh`). A pod image, minimal Linux install, or a Mac
+with only the Command Line Tools' stub `python3` would fail loudly exactly where
+`.venv/bin/python` would have worked. Now prefers `$root/.venv/bin/python` when executable.
+Commit `ddf31ba`.
+
+**F020 — the outbound notification message had no length ceiling** (`operations/operator/surface.py`).
+A held run with hundreds of unresolved pages/acts could build a message of unbounded size,
+passed as one argv element to a script that posts it to a third-party service with no size
+check anywhere in that chain. Capped at 500 characters, mirroring the 160-character cap
+`notify_bridge` already applies to its own failure-detail string. Commit `57a72b0`.
+
+**F104 — backup admitted OS-generated residue as run-tree evidence** (`operations/operator/backup.py`).
+A `.DS_Store` or AppleDouble `._*` sidecar was silently copied and inventoried exactly like
+a real run-tree member. Now excluded before being read at all; deliberately not recorded in
+the snapshot the way a publication temporary's exclusion is, since that would need the same
+schema-version bump F103 (below) already names as due its own review. Commit `79de3e6`.
+
+**F035 — a mistyped run id was reported as damaged evidence to preserve and investigate**
+(`operations/operator/review.py`). `RunTree.__init__` only validates the id's shape, so a
+name that names nothing reached the catch-all meant for a tree that exists and failed
+verification. Now checked at the exact path `RunTree` itself reads, before that catch-all,
+and raised as `INVALID_COMMAND` instead. Commit `2d7ebae`.
+
+**F025 — a ScanTailor project could name an absolute or traversing source path unchecked**
+(`operations/operator/scantailor_worker.py`). `(project_path.parent / file_paths[fileId]).resolve()`
+never validated either untrusted attribute it was built from; an absolute `directory path`
+discards `project_path.parent` entirely (`Path.__truediv__`'s documented behavior) and `..`
+was accepted outright, then `.resolve()`d against the real filesystem — a project naming
+`<directory path="/Users/tyrel/.ssh"/><file name="id_ed25519"/>` would have resolved
+straight to that real path. Fixed with the same checks `operations/pod/transfer.py::_under`
+already applies elsewhere, plus a final containment check as defense against a symlink
+crossed during resolution. Commit `c1ae01d`.
+
+**F026 — the submission walk's aggregate-byte bound only ever counted retained bytes, always
+zero on every production path** (`operations/submit/inventory.py`). `_Budget.admit`'s own
+`size` parameter — the true bytes read, whatever `max_bytes` said — went unread by its body;
+both production callers ask for `max_bytes=0`, so the aggregate-byte refusal was dead code,
+and 100,000 files each just under the door's own 64 MiB per-file bound could stream
+terabytes through the hasher before the file-count bound finally tripped. New
+`MAX_SUBMITTED_READ_BYTES` now bounds the bytes actually read. Commit `114215a`.
+
+**F027 — the upload receipt's top-level state could disagree with its own transfer record**
+(`operations/operator/surface.py`). Hardcoded `"state": "complete"` beside an embedded
+transfer record that can independently read `"nothing-to-transfer"`. Not reachable today
+through `upload()` itself (the manifest snapshot it writes always exists by the time the
+transfer checks for one) but asserted independently rather than derived from one fact —
+exactly the landmine for a future caller of the same receipt shape. Now both derive from
+`report.submission_manifest_present`. Commit `c89bd0f`.
+
+**F063 — the volume's hourly rate was labelled observed from the provider when it never
+is** (`operations/pod/provider_runpod.py`, `operations/operator/volume_cost.py`). RunPod's
+v1 API publishes no network-volume price endpoint; every `PodEstimate` this codebase builds
+for the volume side carries the injected `volume_price` resolver's figure, never a live
+quote, yet the combined estimate source string and the close-report's own docstring both
+claimed "observed." Both corrected to say what is actually true. Two independent reviews
+confirmed this touches nothing requested, billed, computed, or provisioned, and that no
+consumer depends on the old exact string by equality. Commit `d9626f3`.
+
+**F108 — status had no arm for an advance, so the operator's own sequence could not be
+fully reconstructed** (`operations/operator/cli.py`, `operations/operator/surface.py`).
+`_backup_in_custody` already wrote a receipt `status` could read back; `_advance_with_confirmation`
+did not, and `_status_projection` had nothing to read even if it had. New
+`OperatorSurface.record_advance` mirrors `record_backup`'s pattern (success only — every
+refusal here already raises `OperatorError` directly, so there is no failure state to
+capture), wired through a `surface` parameter that defaults to `None` rather than forcing
+all eighteen existing test call sites for this function to construct one. Commit `0b7c1e8`.
+
+Three independent review passes (one per subsystem cluster: review/backup, notify/submission,
+scantailor/upload/advance) were dispatched against all ten of these commits before they were
+considered closed, each with real Bash access to re-run the actual test suites rather than
+read-only inspection.
+
+### Confirmed still valid, declined for now — with the specific reason each time
+
+Per hard rule 13, a decline is a decision, not a deferral, and needs a real reason rather
+than "ran out of time." Each of these was independently re-verified against current HEAD
+(still reproducible, still the file:line the ledger named or its current equivalent) and
+then declined for the reason stated:
+
+- **F019** [medium, security] — a submitted image's decoder-error text (chunk names, tag
+  numbers — attacker-chosen bytes) still reaches a push notification to a third-party
+  service (`ntfy.sh`) through `common/contracts/outcomes.py`'s per-page reason string,
+  unfiltered. A concrete fix exists (build the notification from the already-computed
+  closed-vocabulary counts `aggregate.get("by_page_outcome")`/`by_category"` instead of the
+  raw joined reason strings, leaving the full text in the console and receipt) but this is a
+  security/data-handling-boundary change to this project's own "keep submitted material off
+  operational channels" rule, and correctness here means proving no other `reasons.append(...)`
+  call in `outcomes.py` — present or future — can smuggle file-derived text the same way.
+  Per the review table that warrants one independent reader before it ships; queued rather
+  than rushed in the same pass as ten other fixes.
+- **F037** [medium] — two concurrent `verbatus run --run-id X` invocations both proceed
+  unblocked and both report "Run complete"; nothing holds a lock for a run's duration the
+  way `launch` already refuses a second in-flight window. The fix is a real behavior change
+  to the `run` execution path (an OS-level advisory lock spanning the orchestrator subprocess,
+  with a new refusal on contention) that must not deadlock or wrongly refuse a genuine
+  solo resume — a correctness/concurrency change to sealed-evidence integrity, squarely
+  "a pipeline stage or a contract" tier.
+- **F038** [medium] and **F103** [medium] — an unaccounted file in a sealed stage is
+  invisible to `review` and copied by `backup` as if it were evidence, and the backup
+  snapshot's own schema (`mac-run-backup.v2`) carries no timestamp, source, host or
+  completeness marker. Both need a versioned-schema change (a new field, a version bump,
+  updates to `_verify_backup_snapshot`'s and `BackupReport`'s exact-field-set checks and
+  every test that constructs one) — real work, not a same-day patch, and F104 above was
+  deliberately kept schema-free specifically to avoid colliding with whichever version bump
+  eventually lands both of these together.
+- **F100** [medium] — a partial copy of a complete run reads as an interrupted one and
+  `review` recommends resuming it, because no run-tree schema element records "this run
+  reached the Armarium" independent of which stage directories a given copy happens to
+  contain. The real fix is a new sealed run-level end record referenced from the Armarium
+  boundary — a run-tree contract addition touching the orchestrator, `common/runtree/store.py`,
+  and `review.py`'s stage-state derivation together.
+- **F105** [medium] — macOS Finder residue inside a run tree (`.DS_Store`, `._*`) is
+  reported as damaged evidence by the stage-seal verification path (`common/stage.py`'s
+  `_stage_blob_inventory`), not merely by backup. Splits into a low-risk half (name the
+  residue pattern in the refusal message) and a higher-risk half (skip it during seal
+  verification, changing what a seal's own inventory digest is computed over) — the second
+  half touches the same hardened, symlink/case-collision-aware walk `common/stage.py` and
+  `common/runtree/store.py` share across every stage boundary, and should not ship as a
+  solo cosmetic patch.
+- **F034** [medium] — the one supported resume command omits the sealed roster trio
+  (`--models-config`/`--serving-recipes-config`/`--witness-context-config`) when a run was
+  sealed under a non-default one. Closing this properly needs `_next_action` to read
+  `adapter_recipes` from the run tree and compare it against a shared "is this the fixture
+  roster" reference the way `operations/pod/bootstrap_main.py` already does by path — but
+  `review`'s read-only boundary never sees the external state-directory receipt that holds
+  the literal config paths, so the best available fix is a diagnostic sentence, not a
+  reconstructed command, and needs the interface change (threading `adapter_recipes` and a
+  shared fixture-roster reference into `_next_action`) done deliberately rather than as a
+  same-day guess at the naming convention.
+- **F112** [low] — a Landlock/Seatbelt confinement backend failure is discovered only when
+  `review`/`backup`/`advance` actually run it, never by `status`. The fix means `status`
+  itself spawning a confinement probe subprocess, which changes `status`'s own documented
+  contract ("read descriptors, receipts and leases without writes or provider calls") and
+  touches the same custody module this project treats as safety-critical — a small idea
+  with a security-adjacent surface that wants an independent reader, not a solo add.
+- **F065** and **F066** [low] — no ports/datacenter are requested on pod creation (so a
+  failed first pod cannot be inspected), and `pod_run` holds a completed run to the full
+  lease as billed idle time rather than closing early. Both are live-paid-infrastructure
+  behavior questions: F065 would change the literal HTTP body sent to a billed RunPod
+  create call (opening a network port, pinning a datacenter) with no live account in this
+  sandbox to verify the accepted shape against; F066's durable fix is explicitly named in
+  `pod_run.py`'s own comments as a `pod_timer` contract change shared by every boot type
+  that this unit deliberately does not make unilaterally. Hard rule 1 reserves "paid or
+  live infrastructure" for Tyrel; both are named to him rather than guessed at here.
+- **F081** [info] and **F080** [info] — every published run-tree file is mode 0600 with no
+  widening (confirmed accurate, not a defect the ledger asks to fix outright), and a
+  decode-environment difference after transfer is reported as one flat, undifferentiated
+  stderr line mixing genuinely-expected fields (platform, machine) with real ones (decoder
+  version). The first is a confidentiality-posture choice this codebase treats as
+  deliberate elsewhere (least-privilege defaults for security-sensitive files); the second
+  is explicitly deferred in `common/stage.py`'s own comments to a not-yet-landed policy
+  decision ("Unit 17") about when a decoder difference becomes fatal — better decided
+  alongside that than twice.
+
+**Already fixed, confirmed by re-reading current code (not touched this pass):** F003
+(`RUN_FAILED`/`UPLOAD_PARTIAL` already carry the captured reason, not just a receipt path),
+F016 (pipeline stage subprocesses already use `credential_free_environment()`, confirmed by
+re-running `test_pipeline_children_do_not_receive_any_provider_credential`), F102 (the
+fetch-run receipt already records `datacenter_id`/`volume_id`/`endpoint_url` via
+`_volume_record`), F107 (`record_unexpected` already writes a bounded receipt with
+exception type, message, traceback, argv and cwd, and `status` already shows it).
