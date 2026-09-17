@@ -1015,3 +1015,43 @@ Two full test rounds after these fixes: `operations/operator/test_surface.py` (2
 `proof/` (64 tests) are green individually; the full `operations/`, `proof/`, and
 `.githooks/` directories together are green with no failures. `ruff format`/`check` clean
 repo-wide.
+
+## Seventh pass — CodeRabbit's re-review of `f9b18af`
+
+CodeRabbit's next review pass, on the commit that landed F128, kept all five pre-merge
+checks green (Title, Description, Carried Code, No Witness Picker, and — newly present
+this round — Nothing Is Lost Silently) and raised one further inline finding on the
+reconciliation check itself.
+
+**Fixed:**
+
+- **F129** [minor, classification only — no change to what is refused] —
+  `_require_reconciled_act_partition`'s three refusals (F113/F123/F128) raised a bare
+  `ValueError`, so both callers caught it with their generic `except Exception` and filed
+  it under the same code and receipt state as an export record that could not be read at
+  all: `run()` wrote `"armarium-record-unreadable"` and `export()` raised
+  `ErrorCode.EXPORT_MISSING`, whose own copy says "There is no completed Armarium export
+  record for that run" — false for this case, since the record exists and was read; only
+  its "complete" claim does not hold up. Fixed exactly as suggested: a dedicated exception,
+  `UnreconciledActPartitionError(ValueError)`, defined at module level next to the file's
+  existing `FetchRunRefusal` convention; `_require_reconciled_act_partition`'s three raises
+  now use it. `run()` gains a branch ahead of its generic fallthrough that writes
+  `"armarium-record-unreconciled"` (kept under `ErrorCode.RUN_FAILED`, per CodeRabbit's own
+  instruction — this is still a run-level failure) with a summary naming that the record was
+  read, not missing. `export()` gains `except UnreconciledActPartitionError` ahead of its
+  generic `except Exception`, raising the new `ErrorCode.EXPORT_UNRECONCILED` with copy that
+  says the record was found and read, its acts do not reconcile, and directs the operator to
+  `verbatus review` and Tyrel rather than to re-running `verbatus run` (`EXPORT_MISSING`'s
+  own advice, wrong here). The six existing reconciliation tests that asserted the old
+  shared state or code — `test_run_refuses_a_complete_aggregate_whose_partition_undercounts_
+  expected_acts`, `..._double_counts_one_act`, `..._with_a_malformed_act_record`,
+  `test_a_complete_aggregate_with_no_expected_acts_is_refused_not_displayed_as_unknown`, and
+  `test_export_refuses_a_complete_record_whose_partition_does_not_reconcile` — now assert
+  the distinct state/code; the two tests that fail earlier, inside `_armarium_export` itself
+  (a genuinely unreadable record — `test_a_non_list_pages_record_is_a_named_run_failure_not_
+  a_character_count`, `test_run_refuses_a_complete_aggregate_with_no_act_partition`) keep
+  asserting `"armarium-record-unreadable"`, correctly: that failure mode is unchanged.
+
+Full `operations/`, `proof/`, and `.githooks/` directories together green (no new tests
+added — this round reclassifies six existing refusals rather than adding a new one).
+`ruff format`/`check` clean on every touched file.

@@ -3321,7 +3321,7 @@ def test_run_refuses_a_complete_aggregate_whose_partition_undercounts_expected_a
     assert "reconcile to 3 distinct act" in (failure.value.detail or "")
     assert "0 record(s), 0 distinct" in (failure.value.detail or "")
     receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
-    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] == "armarium-record-unreconciled"
     assert receipt["state"] != "complete"
 
 
@@ -3353,7 +3353,7 @@ def test_run_refuses_a_complete_aggregate_whose_partition_double_counts_one_act(
     assert failure.value.code is ErrorCode.RUN_FAILED
     assert "2 record(s), 1 distinct" in (failure.value.detail or "")
     receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
-    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] == "armarium-record-unreconciled"
     assert receipt["state"] != "complete"
 
 
@@ -3381,7 +3381,7 @@ def test_run_refuses_a_complete_aggregate_with_a_malformed_act_record(
     assert failure.value.code is ErrorCode.RUN_FAILED
     assert "not a readable act record" in (failure.value.detail or "")
     receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
-    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] == "armarium-record-unreconciled"
     assert receipt["state"] != "complete"
 
 
@@ -3570,7 +3570,7 @@ def test_a_complete_aggregate_with_no_expected_acts_is_refused_not_displayed_as_
     assert failure.value.code is ErrorCode.RUN_FAILED
     assert "expected_acts" in (failure.value.detail or "")
     receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
-    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] == "armarium-record-unreconciled"
     assert receipt["state"] != "complete"
 
 
@@ -3823,7 +3823,7 @@ def test_export_refuses_a_complete_record_whose_partition_does_not_reconcile(
     with pytest.raises(OperatorError) as refusal:
         surface.export(run_id=run_id)
 
-    assert refusal.value.code is ErrorCode.EXPORT_MISSING
+    assert refusal.value.code is ErrorCode.EXPORT_UNRECONCILED
     assert "reconcile to 3 distinct act" in str(refusal.value.detail)
     exports = surface.state_root / "exports"
     assert list(exports.glob("*.zip")) == []

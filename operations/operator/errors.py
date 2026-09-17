@@ -49,6 +49,7 @@ class ErrorCode(StrEnum):
     EXPORT_AMBIGUOUS = "export-ambiguous"
     EXPORT_FAILED = "export-failed"
     EXPORT_PARTIAL = "export-partial"
+    EXPORT_UNRECONCILED = "export-unreconciled"
     CLOSE_NOTHING = "close-nothing"
     CLOSE_LEASE_UNREADABLE = "close-lease-unreadable"
     CLOSE_LEASE_RECORD_FAILED = "close-lease-record-failed"
@@ -264,6 +265,15 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Read the recorded reasons, open the run tree read-only with `verbatus review`, and "
         "decide with Tyrel what happens next; a hold is resolved only by a new authorized "
         "run over the same sealed source. Nothing was started or charged; this is safe.",
+    ),
+    ErrorCode.EXPORT_UNRECONCILED: ErrorCopy(
+        "The recorded run claims complete, but its acts do not add up.",
+        "The Armarium record was found and read; its delivered and non-delivered acts do "
+        "not reconcile to the total it claims, so no bundle was made and nothing was called "
+        "complete.",
+        "Open the run tree read-only with `verbatus review` and check it against the sealed "
+        "source with Tyrel; this is not a corrupted export, it is a record that cannot back "
+        "up its own claim. Nothing was started or charged; this is safe.",
     ),
     ErrorCode.CLOSE_NOTHING: ErrorCopy(
         "There is no recorded pod waiting to be closed.",

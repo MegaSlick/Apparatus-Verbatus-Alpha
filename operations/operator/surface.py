@@ -450,6 +450,17 @@ class FixtureBootstrapActions:
         return record
 
 
+class UnreconciledActPartitionError(ValueError):
+    """A `complete` Armarium export whose act partition does not reconcile.
+
+    Distinct from a plain `ValueError` so `OperatorSurface.run()` and
+    `.export()` can each tell "this record could not be read at all" apart
+    from "this record was read fine and does not add up" -- the record
+    exists, so treating it as missing, or its copy as failed, tells the
+    operator the wrong thing (CodeRabbit).
+    """
+
+
 class OperatorSurface:
     """One durable, fake-only surface over launch, boot, upload, run, export, close, and status."""
 
@@ -1583,13 +1594,23 @@ class OperatorSurface:
                 raise OperatorError(
                     ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
                 ) from error
-            reason = f"the Armarium export record could not be read: {error}"
+            if isinstance(error, UnreconciledActPartitionError):
+                reason = f"the Armarium export record does not reconcile: {error}"
+                state = "armarium-record-unreconciled"
+                summary = (
+                    "Run ended with an Armarium record that was read but does not "
+                    "reconcile as complete."
+                )
+            else:
+                reason = f"the Armarium export record could not be read: {error}"
+                state = "armarium-record-unreadable"
+                summary = "Run ended before its Armarium record was available."
             receipt = self._write_action(
                 "run",
                 {
                     **ended,
-                    "summary": "Run ended before its Armarium record was available.",
-                    "state": "armarium-record-unreadable",
+                    "summary": summary,
+                    "state": state,
                     "reason": reason,
                     "detail": reason,
                     "armarium_export_unreadable": str(error),
@@ -1812,6 +1833,8 @@ class OperatorSurface:
             aggregate = export_payload["aggregate"]
             if aggregate.get("status") == "complete":
                 self._require_reconciled_act_partition(export_payload)
+        except UnreconciledActPartitionError as error:
+            raise OperatorError(ErrorCode.EXPORT_UNRECONCILED, detail=str(error)) from error
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
         exports_dir = self.state_root / "exports"
@@ -2953,7 +2976,7 @@ class OperatorSurface:
             or isinstance(expected_acts, bool)
             or expected_acts < 0
         ):
-            raise ValueError(
+            raise UnreconciledActPartitionError(
                 "the Armarium export claims status complete but its expected_acts "
                 f"is not a valid non-negative count: {expected_acts!r}"
             )
@@ -2966,13 +2989,13 @@ class OperatorSurface:
         act_keys: set[str] = set()
         for record in act_records:
             if not isinstance(record, dict) or not isinstance(record.get("act_key"), str):
-                raise ValueError(
+                raise UnreconciledActPartitionError(
                     "the Armarium export claims status complete but one of its "
                     "delivered/non_delivered entries is not a readable act record"
                 )
             act_keys.add(record["act_key"])
         if len(act_keys) != len(act_records) or len(act_keys) != expected_acts:
-            raise ValueError(
+            raise UnreconciledActPartitionError(
                 "the Armarium export claims status complete but its delivered "
                 f"and non_delivered acts do not reconcile to {expected_acts} "
                 f"distinct act(s) ({len(act_records)} record(s), {len(act_keys)} "
