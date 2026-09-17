@@ -4,10 +4,13 @@
 operator watches stop; the volume is the part they forget, because the
 expensive-looking thing has just visibly ended.
 
-The close report already carries the volume's *observed* hourly rate, and that
-figure stays the number this surface quotes. What is added here is the two facts
-that make the figure matter, and they are quoted from RunPod's own documentation
-rather than asserted:
+The close report already carries the volume's hourly rate, and that figure stays
+the number this surface quotes. It is not a live provider quote (F063): RunPod's
+v1 API publishes no endpoint for a network volume's price, so this figure is
+always the rate supplied when the volume was named, carried through rather than
+observed -- said plainly below rather than implied as measured. What is added
+here beyond that is the two facts that make the figure matter, and they are
+quoted from RunPod's own documentation rather than asserted:
 
 - **"Data is retained when Pods terminate or Serverless workers scale to zero."**
   Closing the pod does not delete the volume.
@@ -56,7 +59,8 @@ def volume_cost_lines(*, volume_id: str | None, hourly_usd: str) -> list[str]:
     subject = f"the retained volume {volume_id}" if volume_id else "the retained volume"
     return [
         f"Closing the pod does not delete {subject}, and it keeps its own charge.",
-        f"Its recorded ongoing price is ${hourly_usd} per hour.",
+        f"Its recorded ongoing price is ${hourly_usd} per hour, as supplied at launch -- "
+        "RunPod's API has no live quote for a network volume's price.",
         (
             f'RunPod\'s own documentation says: "{RETENTION_FACT}" and '
             f'"{ACCRUAL_FACT}" '

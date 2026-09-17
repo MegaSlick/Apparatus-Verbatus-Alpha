@@ -387,6 +387,17 @@ def test_create_correlates_the_launch_token_before_it_posts() -> None:
     assert body["containerDiskInGb"] == request().container_disk_gb
 
 
+def test_created_records_own_the_pod_rate_alone_not_the_volume_rate_too() -> None:
+    """F063: the volume rate is still the injected estimate(), never observed here."""
+    transport = ScriptedTransport([json_response([]), json_response(pod_payload(), 201)])
+
+    record = provider(transport).create(request())
+
+    assert record.estimate.pod_hourly_usd == Decimal("0.77")
+    assert "RunPod observed pod costPerHr" in record.estimate.source
+    assert "not observed from the provider" in record.estimate.source
+
+
 def test_create_sends_the_container_disk_the_request_asked_for() -> None:
     transport = ScriptedTransport([json_response([]), json_response(pod_payload(), 201)])
 

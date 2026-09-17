@@ -1004,7 +1004,14 @@ class RunPodProvider:
             estimate=PodEstimate(
                 hourly,
                 as_decimal(self.volume_price(volume_id), "RunPod volume price"),
-                "RunPod observed pod costPerHr",
+                # F063: the two figures do not share one provenance. The pod
+                # rate above is read from this exact create/adopt response;
+                # the volume rate is still the injected resolver estimate()
+                # uses too -- v1 publishes no live network-volume price/size
+                # endpoint this adapter has found -- so the combined source
+                # string must not claim both were observed from the provider.
+                "RunPod observed pod costPerHr; volume rate supplied at launch, not observed "
+                "from the provider",
                 self.now(),
             ),
             volume_id=volume_id,
