@@ -380,16 +380,27 @@ def _read_launch_command(
                 "for this run, or pass --evidence-key/--evidence-prefix explicitly"
             ),
         )
-    if run_id is not None and recorded_run_id is not None and recorded_run_id != run_id:
-        raise OperatorError(
-            ErrorCode.FETCH_RUN_FAILED,
-            detail=(
+    if run_id is not None and recorded_run_id != run_id:
+        # `recorded_run_id is None` is not "nothing to compare": a hold-only
+        # launch (or a receipt whose nested command cannot be decoded) still
+        # has its own real, derivable evidence keys and prefixes -- just none
+        # that belong to any run. Asked for while fetching a specific run,
+        # a receipt that cannot prove it belongs to that run is refused the
+        # same as one proven to belong to a different one.
+        if recorded_run_id is None:
+            detail = (
+                f"the launch receipt {receipt} does not prove that run {run_id!r} started; "
+                "name the receipt for this run, or pass --evidence-key/--evidence-prefix "
+                "explicitly"
+            )
+        else:
+            detail = (
                 f"the launch receipt {receipt} started run {recorded_run_id!r}, and this call "
                 f"is fetching {run_id!r}. Deriving from it would store another run's evidence "
                 "beside this one and misstate its provenance; name the receipt for this run, "
                 "or pass --evidence-key/--evidence-prefix explicitly"
-            ),
-        )
+            )
+        raise OperatorError(ErrorCode.FETCH_RUN_FAILED, detail=detail)
     return command, mount
 
 

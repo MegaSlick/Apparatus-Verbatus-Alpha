@@ -930,15 +930,17 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
     for row in READER_GAPS:
         source_text = next(act["text"] for act in ACTS if act["key"] == row["act_key"])
         # Python slicing clamps an out-of-range stop index to the string's own
-        # length, so `source_text[:row["offset"]]` cannot distinguish an offset
-        # past the end from one landing exactly at it -- a `before` that happens
-        # to equal the whole source text would pass the check below for either.
-        # Checked explicitly first, the same way READER_DOUBTS above is checked
-        # for out-of-bounds rather than for a substring.
-        if row["offset"] > len(source_text):
+        # length and accepts a negative one by counting from the end, so
+        # `source_text[:row["offset"]]` cannot distinguish either from a
+        # legitimate offset landing on the same prefix -- a `before` that
+        # happens to equal the whole source text, or its text minus one
+        # character, would pass the check below for either. Checked
+        # explicitly first, the same way READER_DOUBTS above is checked for
+        # out-of-bounds rather than for a substring.
+        if not 0 <= row["offset"] <= len(source_text):
             raise ValueError(
-                f"reader_gap {row['scenario']!r} offset {row['offset']} is past the end of "
-                f"its {len(source_text)}-character source text; the source text changed "
+                f"reader_gap {row['scenario']!r} offset {row['offset']} is outside its "
+                f"{len(source_text)}-character source text; the source text changed "
                 "without updating the offset"
             )
         if source_text[: row["offset"]] != row["before"]:

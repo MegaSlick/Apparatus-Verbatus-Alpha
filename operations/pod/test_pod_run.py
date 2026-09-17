@@ -1654,6 +1654,65 @@ def test_a_launch_receipt_for_another_run_is_refused_rather_than_used(tmp_path: 
     )
 
 
+def test_a_hold_only_launch_receipt_is_refused_when_a_run_id_is_requested(
+    tmp_path: Path,
+) -> None:
+    """`recorded_run_id is None` is not "nothing to compare" once a specific
+    run is being fetched: a hold-only launch still has its own real,
+    derivable evidence keys -- just none that belong to any run. Supplying
+    it to `fetch-run --run-id` would store that boot's evidence beside a
+    run it never proves started."""
+
+    from operations.operator.records import ReceiptStore
+
+    token = "h" * 32
+    hold_only = json.dumps(
+        [
+            "python",
+            "-m",
+            "operations.pod.bootstrap_main",
+            "--hold-only",
+            "--report-path",
+            f"/workspace/bootstrap-hold-only-report-{token}.json",
+        ]
+    )
+    request = {
+        "volume_id": "vol-1",
+        "volume_mount_path": "/workspace",
+        "docker_start_cmd": [
+            "python",
+            "-m",
+            "operations.pod.pod_timer",
+            "--report-path",
+            f"/workspace/pod-runtime-report-{token}.json",
+            "--bootstrap-command-json",
+            hold_only,
+        ],
+    }
+    receipt = ReceiptStore(tmp_path / "state").write(
+        "launch", {"summary": "fixture launch", "request": request}
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        operator_cli._derived_evidence_keys(
+            receipt, VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol-1"), "r1"
+        )
+
+    assert refusal.value.code is ErrorCode.FETCH_RUN_FAILED
+    assert "does not prove that run 'r1' started" in refusal.value.detail
+
+    # The same receipt, asked for without naming a run, still derives its
+    # own (hold-only) evidence keys normally.
+    assert operator_cli._derived_evidence_keys(
+        receipt, VolumeSpec(datacenter_id="EU-CZ-1", volume_id="vol-1")
+    ) == (
+        f"pod-runtime-report-{token}.json",
+        f"pod-runtime-report-{token}-terminating.json",
+        f"bootstrap-hold-only-report-{token}.json",
+        f"bootstrap-hold-only-report-{token}-hold.json",
+    )
+
+
 def test_a_launch_receipt_read_through_a_link_is_refused(tmp_path: Path) -> None:
     """A record this verb did not write is not read whole on trust."""
 

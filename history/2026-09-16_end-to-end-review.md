@@ -642,7 +642,8 @@ The pull request opened for this review (`#119`) sat in draft, which the GitHub 
 as "skip" — CodeRabbit's automatic review never ran until the PR was marked ready and
 `@coderabbitai review` requested explicitly. Its pre-merge checks passed three
 (`Title check`, `Carried Code Is Named As Carried`, `No Witness Picker`) and raised two;
-its full walkthrough then posted 8 inline findings across the diff (2 major, 6 minor).
+its full walkthrough then posted 8 inline findings across the diff (2 major, 5 minor, 1
+medium).
 Every finding below was independently re-verified by reading the current code before being
 accepted, not taken on the bot's word — several turned out narrower or wider than its own
 one-line description, recorded under each entry.
@@ -818,12 +819,100 @@ gap — not new debt this round introduces); and the generated shell scripts in
 heredoc, which already prevents the word-splitting a bare `sys.executable` was exposed to,
 so there was nothing left to fix there.
 
-All of `operations/operator/test_surface.py` (279 tests), `operations/operator/
-test_backup.py`, `operations/notify/test_notify.py`, `proof/` (63 tests), `.githooks/
-test_ci_workflow.py` (33 tests), `operations/pod/test_pod_run.py`, `operations/pod/
-test_provider_runpod.py`, and `operations/operator/test_cli.py` are green individually; the
-full `operations/`, `proof/`, and `.githooks/` directories together are green with no
-failures. `ruff format --check` and `ruff check` pass across the whole repository.
+### Sixth pass — CodeRabbit's re-review of `33d90c8..d81034a`
+
+CodeRabbit's automatic re-review (triggered by the `@coderabbitai review` request after that
+push) marked all 8 of the fifth pass's findings "✅ Addressed" and passed 4 of 5 pre-merge
+checks (Title, Description, Carried Code, No Witness Picker). It raised 5 new inline findings
+and kept one pre-merge check failing.
+
+**Fixed:**
+
+- **F121** [minor] — this file's own walkthrough said the fifth pass found "2 major, 6
+  minor"; the actual detailed entries are 2 major, 5 minor, and 1 medium (F113). Corrected.
+- **F122** [major] — `_read_launch_command`'s new run-id check (F120) only refused when
+  *both* the receipt's and the request's run ids were known and differed; a receipt whose
+  run id could not be derived at all (`recorded_run_id is None` — a hold-only launch, or a
+  nested command that cannot be decoded) passed through untouched even when a specific run
+  was requested. A hold-only launch still has its own real, derivable evidence keys (its own
+  report path), just none that belong to any run — so this was reachable, not theoretical:
+  `fetch-run --run-id r1 --launch-receipt <a hold-only boot's receipt>` would derive that
+  boot's own keys and apply them to run `r1`'s fetch. Fixed by refusing whenever a run id is
+  requested and the receipt does not *prove* it belongs to that run (`recorded_run_id !=
+  run_id`, treating `None` as never proving anything), with a distinct message naming that
+  the receipt proves no run at all versus proving a different one. New test:
+  `test_a_hold_only_launch_receipt_is_refused_when_a_run_id_is_requested`, which also
+  confirms the same receipt still derives its own keys normally when no run id is requested.
+- **F123** [major, heavy lift] — the `expected_acts` reconciliation added for F113 (see
+  above) only checked a raw `len(delivered) + len(non_delivered)` against `expected_acts`,
+  and skipped the check entirely when `expected_acts` was missing or malformed rather than
+  refusing. A raw length cannot tell a duplicated or malformed act entry from a genuine one
+  ("Reconcile unique valid acts, not raw list entries" — CodeRabbit, grounded in this repo's
+  own coding guideline, "a fault that drops, skips or silently substitutes one act is not a
+  small bug"), and a missing `expected_acts` is exactly the same "mismatched schema" shape
+  F113 already treats `pages`/`delivered`/`non_delivered` as -- the real producer
+  (`pipeline/7_armarium/run.py`) writes `expected_acts` in the same unconditional payload
+  literal as those three. Rewritten to: require `expected_acts` to be a present,
+  non-boolean, non-negative int (refusing `complete` outright otherwise, the same as a
+  missing `pages`/`delivered`/`non_delivered`); walk `delivered`+`non_delivered` together,
+  refusing on the first entry that is not a dict with a string `act_key`; and require the
+  *distinct* `act_key` count to equal both the raw record count (no duplicates) and
+  `expected_acts` (no drops). This changes one existing test's own expected outcome —
+  `test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone` asserted a
+  `complete` record with no `expected_acts` displayed "total not recorded" and *succeeded*;
+  under the tightened reading that is no longer a legitimate shape, so it now asserts refusal
+  (renamed `test_a_complete_aggregate_with_no_expected_acts_is_refused_not_displayed_as_
+  unknown`). "total not recorded" is not dead code, though: a *held* run can still
+  legitimately lack `expected_acts` (reconciliation is a precondition for claiming
+  `complete`, not for every state), so a new sibling test
+  (`test_a_held_runs_missing_expected_act_total_is_named_on_screen`) covers that display path
+  going forward. Two more new tests cover the specific gaps CodeRabbit named:
+  `test_run_refuses_a_complete_aggregate_whose_partition_double_counts_one_act` (the same
+  `act_key` in both `delivered` and `non_delivered`) and
+  `test_run_refuses_a_complete_aggregate_with_a_malformed_act_record` (an entry with no
+  readable `act_key`). The shared `_complete_export` test fixture's own `delivered` entry
+  was `[{}]` — no `act_key` at all — which every test built on top of it inherited without
+  noticing, since nothing reconciled identities before this pass; given `"act_key": "a1"`.
+- **F124** [minor] — the same slice-clamping gap F116 closed for an offset *past* the end of
+  the source text is also open for a *negative* offset: Python accepts a negative slice
+  bound by counting from the end, so `source_text[:row["offset"]]` with `offset = -1` reads
+  as "all but the last character," which a `before` value could coincidentally match.
+  Tightened the bound to `0 <= row["offset"] <= len(source_text)`.
+
+**Declined, with reason:**
+
+- **F125** [major, pre-merge check: "Nothing Is Lost Silently"] — the backup snapshot
+  records which files it excludes as publication temporaries (`excluded_publication_
+  temporaries`), but not which it excludes as OS residue (F104, F114 above): "a later reader
+  cannot distinguish an intentional exclusion from a missing source member." Confirmed
+  accurate — `_verify_backup_snapshot`'s exact-field-set check
+  (`{"schema", "run_id", "files", "excluded_publication_temporaries"}`) has no residue field,
+  and this session's own new test for F114 proves the asymmetry directly. Declined for two
+  reasons, not one: first, the fuller resolution CodeRabbit itself proposes — "extend and
+  version the backup schema, record every excluded relative path... include that exclusion
+  set in both pre-copy and post-copy reconciliation" — is exactly the class of change F103
+  (Fourth pass, declined) already named as out of scope for a same-day patch: a version bump
+  plus updates to `_verify_backup_snapshot`'s exact-field-set check and every test in
+  `test_backup.py` that constructs a snapshot record by hand. Second, and more load-bearing:
+  the *simpler* alternative resolution CodeRabbit also offers — "prefer refusing the backup
+  when OS-residue entries are present" — would not be a smaller version of the same fix, it
+  would undo F104's own reason for existing. F104 (already merged, before this PR) was
+  written specifically so that ordinary Finder/Explorer droppings left by a person simply
+  opening a run tree in a Finder window do not fail an otherwise-good backup; refusing
+  whenever residue is present would make backup fail on exactly the routine case F104 exists
+  to tolerate. Recording an exclusion is real, deliberate schema work belonging with F103's
+  disposition, not a same-day patch riding on this pass's fixes; named to Tyrel as a
+  reconciliation option for when that schema-version work happens, not silently dropped.
+
+`operations/operator/test_surface.py` (282 tests, up from 279 — three net-new reconciliation/
+refusal tests, one test renamed and its scenario changed from a held run to a complete one
+per F123 above), `operations/pod/test_pod_run.py` (up two tests for F120/F122), `operations/
+operator/test_backup.py`, `operations/notify/test_notify.py`, `operations/pod/
+test_provider_runpod.py`, `operations/operator/test_cli.py`, `proof/` (63 tests), and
+`.githooks/test_ci_workflow.py` (33 tests) are all green individually; the full
+`operations/`, `proof/`, and `.githooks/` directories together are green with no failures.
+`ruff format --check` and `ruff check` pass across the whole repository.
+
 `check-fast.sh` (ingress checks, document check, `ruff`, and — with `shellcheck` installed
 mid-session, previously absent from this sandbox — the shell-script lint) passes apart from
 two pre-existing `shellcheck` warnings in `.githooks/check-all.sh`, a file untouched by this

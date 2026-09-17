@@ -3318,8 +3318,68 @@ def test_run_refuses_a_complete_aggregate_whose_partition_undercounts_expected_a
         surface.run(run_id="undercounted-partition")
 
     assert failure.value.code is ErrorCode.RUN_FAILED
-    assert "total 0" in (failure.value.detail or "")
-    assert "expected_acts of 3" in (failure.value.detail or "")
+    assert "reconcile to 3 distinct act" in (failure.value.detail or "")
+    assert "0 record(s), 0 distinct" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] != "complete"
+
+
+def test_run_refuses_a_complete_aggregate_whose_partition_double_counts_one_act(
+    tmp_path: Path,
+) -> None:
+    """A raw `len()` cannot tell a duplicated act from two distinct ones.
+
+    Two entries naming the same `act_key` -- split across `delivered` and
+    `non_delivered`, or repeated in one of them -- could pad the raw count
+    to match `expected_acts` while a real, different act is missing
+    entirely. Reconciliation counts distinct act identities, not rows.
+    """
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [{"act_key": "a1"}],
+        "non_delivered": [{"act_key": "a1"}],
+        "expected_acts": 2,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="doubled-act")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "2 record(s), 1 distinct" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] != "complete"
+
+
+def test_run_refuses_a_complete_aggregate_with_a_malformed_act_record(
+    tmp_path: Path,
+) -> None:
+    """A partition entry with no readable `act_key` cannot be reconciled --
+    counting it toward `expected_acts` anyway would let a malformed entry
+    stand in for a real act."""
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [{"act_key": "a1"}, {"no_act_key": True}],
+        "non_delivered": [],
+        "expected_acts": 2,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="malformed-act")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "not a readable act record" in (failure.value.detail or "")
     receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
     assert receipt["state"] == "armarium-record-unreadable"
     assert receipt["state"] != "complete"
@@ -3440,9 +3500,14 @@ def test_a_short_notification_message_is_untouched(tmp_path: Path) -> None:
     assert notifications == [("milestone", "a short message")]
 
 
-def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
+def test_a_held_runs_missing_expected_act_total_is_named_on_screen(
     tmp_path: Path,
 ) -> None:
+    """ "total not recorded" is still a legitimate display for a *held* run:
+    reconciliation is a precondition for claiming `complete`, not for every
+    state a record can carry, and a hold is the pipeline asking a person to
+    decide, with no completed accounting to reconcile yet.
+    """
     messages: list[str] = []
     notifications: list[tuple[str, str]] = []
     surface = _surface(tmp_path, output=messages)
@@ -3450,7 +3515,7 @@ def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
         args=[], returncode=0, stdout="", stderr=""
     )
     surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
-        "aggregate": {"status": "complete"},
+        "aggregate": {"status": "held", "reasons": ["one act needs review"]},
         "pages": [],
         "delivered": [],
         "non_delivered": [],
@@ -3462,16 +3527,51 @@ def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
 
     surface.notifier = record_notification
 
-    surface.run(run_id="missing-expected-total")
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="missing-expected-total")
 
+    assert failure.value.code is ErrorCode.RUN_HELD
     assert any("Acts accounted for:" in line and "total not recorded" in line for line in messages)
     assert notifications == [
         (
-            "milestone",
-            "Verbatus run missing-expected-total finished: 0 page(s), act total not recorded.",
+            "decision",
+            "Verbatus run missing-expected-total is held and needs a decision: "
+            "one act needs review",
         )
     ]
     assert "None" not in "\n".join(messages + [notifications[0][1]])
+
+
+def test_a_complete_aggregate_with_no_expected_acts_is_refused_not_displayed_as_unknown(
+    tmp_path: Path,
+) -> None:
+    """`expected_acts` is a precondition for claiming `complete`, not an
+    optional display value -- the real producer always writes it alongside
+    `delivered`/`non_delivered` (`pipeline/7_armarium/run.py`), so a record
+    missing it is exactly the shape a foreign or mismatched-schema record
+    takes. Before this fix a `complete` record with no `expected_acts`
+    skipped reconciliation entirely and displayed "total not recorded" as
+    if that were a normal, honest outcome.
+    """
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete"},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="missing-expected-total")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "expected_acts" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] != "complete"
 
 
 def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> None:
@@ -6542,7 +6642,7 @@ def _complete_export(run_root, run_id):  # type: ignore[no-untyped-def]
     return {
         "aggregate": {"status": "complete", "reasons": []},
         "pages": [{"ordinal": 1}],
-        "delivered": [{}],
+        "delivered": [{"act_key": "a1"}],
         "non_delivered": [],
         "expected_acts": 1,
     }

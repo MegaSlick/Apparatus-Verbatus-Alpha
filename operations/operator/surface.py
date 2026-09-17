@@ -1545,28 +1545,51 @@ class OperatorSurface:
                 raise ValueError("the Armarium export's page record is not a list")
             if state == "complete":
                 # `_armarium_export` only proves `delivered`/`non_delivered` are
-                # present and are lists; an honest producer always fills them to
-                # match `expected_acts` (`pipeline/7_armarium/run.py` refuses to
-                # publish otherwise), but a foreign record -- an older build, a
-                # tree fetched from a pod running different code -- could leave
-                # both empty while still claiming `status: complete`. `.get(...)`
+                # present and are lists; an honest producer always fills them
+                # with exactly one entry per expected act -- never both lists,
+                # never twice (`pipeline/7_armarium/run.py` refuses to publish
+                # otherwise) -- and always carries a matching `expected_acts`.
+                # A foreign record -- an older build, a tree fetched from a pod
+                # running different code -- could still claim `status: complete`
+                # with no `expected_acts` to reconcile against, a raw count
+                # padded by a duplicated or malformed entry, or an act dropped
+                # from one list while doubled in the other; a raw `len()`
+                # cannot tell any of those apart from an honest total. `.get(...)`
                 # here, not the guaranteed-present read `_armarium_export` would
                 # give: this branch must stay safe for a payload that bypassed
                 # that reader entirely. GOVERNANCE 2: "complete" is refused
                 # unless everything reconciles.
                 expected_acts = export_payload.get("expected_acts")
-                if isinstance(expected_acts, int) and not isinstance(expected_acts, bool):
-                    delivered_acts = export_payload.get("delivered")
-                    non_delivered_acts = export_payload.get("non_delivered")
-                    accounted_for = (
-                        len(delivered_acts) if isinstance(delivered_acts, list) else 0
-                    ) + (len(non_delivered_acts) if isinstance(non_delivered_acts, list) else 0)
-                    if accounted_for != expected_acts:
+                if (
+                    not isinstance(expected_acts, int)
+                    or isinstance(expected_acts, bool)
+                    or expected_acts < 0
+                ):
+                    raise ValueError(
+                        "the Armarium export claims status complete but its expected_acts "
+                        f"is not a valid non-negative count: {expected_acts!r}"
+                    )
+                delivered_acts = export_payload.get("delivered")
+                non_delivered_acts = export_payload.get("non_delivered")
+                act_records = [
+                    *(delivered_acts if isinstance(delivered_acts, list) else []),
+                    *(non_delivered_acts if isinstance(non_delivered_acts, list) else []),
+                ]
+                act_keys: set[str] = set()
+                for record in act_records:
+                    if not isinstance(record, dict) or not isinstance(record.get("act_key"), str):
                         raise ValueError(
-                            "the Armarium export claims status complete but its delivered "
-                            f"and non_delivered acts total {accounted_for}, not the recorded "
-                            f"expected_acts of {expected_acts}"
+                            "the Armarium export claims status complete but one of its "
+                            "delivered/non_delivered entries is not a readable act record"
                         )
+                    act_keys.add(record["act_key"])
+                if len(act_keys) != len(act_records) or len(act_keys) != expected_acts:
+                    raise ValueError(
+                        "the Armarium export claims status complete but its delivered "
+                        f"and non_delivered acts do not reconcile to {expected_acts} "
+                        f"distinct act(s) ({len(act_records)} record(s), {len(act_keys)} "
+                        "distinct)"
+                    )
         except Exception as error:
             if completed.returncode == 3:
                 # Held before the Armarium -- the Attestatores' hold, or a
