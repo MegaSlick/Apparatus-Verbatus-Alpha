@@ -272,8 +272,9 @@ def request_body(
                 )
             value[field] = expected
     # Checked against this exact value -- what `_canonical_json` below renders
-    # onto the wire -- so a future seam cannot route a rendered request around
-    # it (hostile review item A; `assert_wire_part_order`'s own docstring).
+    # onto the wire -- so a request rendered here cannot route around it
+    # (hostile review item A; `assert_wire_part_order`'s own docstring names
+    # the one door downstream of this function that is not itself checked).
     assert_wire_part_order(value, label=f"request for {model_id}")
     return _canonical_json(value)
 
@@ -499,17 +500,24 @@ def chat_image_bytes_all(
     its URL a local ``data:image/...;base64,`` URI, and no ``image_url`` key
     may appear anywhere else in the payload — an ignored extension field must
     never let a caller claim an image was sent that vLLM would not see.
+
+    ``messages`` and each message's ``content`` accept a tuple as well as a
+    list, matching ``assert_wire_part_order`` (F133 follow-up): both
+    ``active_candidates`` and ``_all_image_url_candidates``'s own walk must
+    see the same shape a tuple-typed caller used, or an image inside it would
+    vanish from both counts equally and the mismatch this function exists to
+    catch would never fire.
     """
 
     messages = payload.get("messages")
-    if not isinstance(messages, list) or not messages:
+    if not isinstance(messages, (list, tuple)) or not messages:
         raise ServingConfigurationError(f"{label} must contain a non-empty chat messages list")
     active_candidates: list[object] = []
     for message in messages:
         if not isinstance(message, Mapping):
             raise ServingConfigurationError(f"{label} messages must be objects")
         content = message.get("content")
-        if not isinstance(content, list):
+        if not isinstance(content, (list, tuple)):
             continue
         for part in content:
             if not isinstance(part, Mapping) or part.get("type") != "image_url":
@@ -611,7 +619,7 @@ def _all_image_url_candidates(value: object) -> list[object]:
             else:
                 candidates.extend(_all_image_url_candidates(item))
         return candidates
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [candidate for item in value for candidate in _all_image_url_candidates(item)]
     return []
 

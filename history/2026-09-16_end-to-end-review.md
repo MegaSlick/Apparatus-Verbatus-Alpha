@@ -1265,7 +1265,7 @@ all along, now applied to the survey's own output.
   found and corrected in every other builder. Seven positional test indices updated
   (`operations/serving/test_manager.py`). README rewritten to say what is actually true —
   one primitive wired and how, the other two explicitly not wired and why, so the next
-  reader does not have to grep to find out. Full `operations/serving/` suite (376 tests)
+  reader does not have to grep to find out. Full `operations/serving/` suite (405 tests)
   green.
 
 **Declined, verified not a real vulnerability:**
@@ -1383,7 +1383,7 @@ hard rule 7, not silently dropped, lower severity than the fixed findings above)
   a real-roster manifest) survives a rebuild. `proof/test_proof_model_fixtures.py` (9
   tests) green.
 
-Full `operations/serving/` (376), `pipeline/5_recensor/`, `pipeline/3_attestatores/`, and
+Full `operations/serving/` (405), `pipeline/5_recensor/`, `pipeline/3_attestatores/`, and
 `proof/test_proof_model_fixtures.py` suites green individually; a combined run of
 `pipeline/`, `operations/`, `proof/`, and `.githooks/` together confirms no regression
 across the wider tree.
@@ -1460,8 +1460,62 @@ Fable's review named) and confirmed no real request is wrongly refused.
   `recovery_request_ordinal` answers a different question (a recovery request's position,
   not the review's identity) and must not be read for the other.
 
-`operations/serving/` (416 tests, up from 376) and `pipeline/5_recensor/` green. Both
+`operations/serving/` (416 tests, up from 405) and `pipeline/5_recensor/` green. Both
 reviewers' remaining points (the non-`user`-role gap, the route-around softening) were
 resolved above rather than left as leads, because both sit inside this same review round's
 own commit and this tier's table requires the panel's findings actually closed, not
 deferred.
+
+### Verifying the panel-review fixes — Fable, second pass
+
+Before pushing, re-dispatched a fresh reader against the uncommitted fix diff itself
+(not the original commit) to check each of the eight fixes above actually does what it
+claims, independently of the reasoning that produced it — the same "verify the fix, not
+just the finding" discipline this review has applied throughout. All eight passed. Five
+smaller issues surfaced, one worth fixing before push:
+
+- **The tuple fix stopped one function short.** `assert_wire_part_order`'s two
+  `isinstance` checks were widened to accept a tuple, but `chat_image_bytes_all` and its
+  private helper `_all_image_url_candidates` (`operations/serving/http.py`) still checked
+  `list` alone. Not the same failure mode — a tuple-shaped image content list would pass
+  the order check but then vanish from *both* `active_candidates` and `all_candidates`
+  in `chat_image_bytes_all`, so their length-match guard would see zero and zero and
+  raise nothing, silently returning no image bytes for a request that carried one. Same
+  defect class the walker fix was written to close, one function over. Reproduced first —
+  stashed the fix and confirmed the new test fails with `VLLM`-style
+  `ServingConfigurationError: ... must contain a non-empty chat messages list` on a
+  tuple-shaped payload — then widened all three remaining `isinstance` checks to
+  `(list, tuple)` and re-ran to confirm green. One new test,
+  `test_chat_image_bytes_all_finds_an_image_in_tuple_shaped_messages_and_content`.
+- **This entry's own test count didn't add up.** "416 tests, up from 376" was wrong on
+  both ends: recounting `operations/serving/` directly at `a5f7352` (immediately before
+  F133) gives 405, not 376 — a0155a9 added no test functions itself, only reworded seven
+  existing index assertions, so the two counts should have matched and didn't; the 376
+  recorded above was simply a mistaken figure, not a different scope. Corrected both
+  occurrences to 405, and this round's own count to 417 (405 + 11 in the panel-review
+  fixes + 1 more from the tuple fix just above).
+- **An inline comment beside the `request_body` call site** (`operations/serving/http.py`,
+  directly above `assert_wire_part_order(value, ...)`) still read "so a future seam cannot
+  route a rendered request around it" without the `request_reading` qualification the
+  docstring and README now carry ten lines below. Reworded to "so a request rendered here
+  cannot route around it," scoped to what the comment can actually see.
+- **The original F133 entry corrects its import-cycle sentence in place but left its own
+  "so a future call site cannot route around it" standing**, relying on this panel
+  section to walk it back three hundred lines later. A reader stopping at the first entry
+  would carry the overstated claim. Left as-is deliberately: the import-cycle sentence
+  was a factual error (named the wrong module), corrected as one; the route-around
+  sentence was accurate when a0155a9 landed and became an overstatement only once this
+  panel round found the `request_reading` gap — that is what the panel section exists to
+  record, not a second error to retract in place. Named here so a reader who stops at the
+  F133 entry alone knows the panel section revises it.
+- **A third unchecked door, informational.** `ServiceHandle.request` /
+  `ServingManager.request` also renders through `request_body` without calling
+  `chat_image_bytes_all`; production traffic is safe because its only caller,
+  `request_fixture_image`, checks the image first, but the method is public and two tests
+  call it directly. `assert_wire_part_order`'s docstring names "two paths" that skip
+  `chat_image_bytes_all` as a statement about production reachability, not a claim to
+  enumerate the whole public API surface — true as scoped, so left as written rather than
+  reworded to a claim about surface area the docstring was never making.
+
+`operations/serving/` (417 tests, up from 405) green after the tuple-in-`chat_image_bytes_all`
+fix and its new test.

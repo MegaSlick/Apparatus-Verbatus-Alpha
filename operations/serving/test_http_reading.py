@@ -313,6 +313,24 @@ def test_chat_image_bytes_all_accepts_no_images() -> None:
     assert chat_image_bytes_all(payload) == []
 
 
+def test_chat_image_bytes_all_finds_an_image_in_tuple_shaped_messages_and_content() -> None:
+    # Same defect class as assert_wire_part_order's tuple gap (F133 follow-up,
+    # item A): a tuple serializes onto the wire exactly like a list, and
+    # `_all_image_url_candidates`'s own list-only walk would otherwise miss
+    # it too, so `active_candidates` and `all_candidates` would undercount
+    # equally and the mismatch this function exists to catch would never fire.
+    payload = {
+        "messages": (
+            {
+                "role": "user",
+                "content": ({"type": "image_url", "image_url": {"url": _png_data_uri(1)}},),
+            },
+        )
+    }
+
+    assert chat_image_bytes_all(payload) == [bytes([1])]
+
+
 # --- ServiceHandle.request_reading ---
 
 
