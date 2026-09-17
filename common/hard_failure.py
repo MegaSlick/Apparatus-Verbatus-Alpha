@@ -25,7 +25,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify
-from common.contracts.stages import PERLECTOR, STAGES
+from common.contracts.stages import DOOR, PERLECTOR, STAGES
 
 DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "hard_failure.toml"
@@ -45,6 +45,24 @@ MAX_HARD_FAILURE_CONFIG_BYTES: Final = 1 << 20
 MAX_HARD_FAILURE_KINDS: Final = 128
 PERLECTOR_INSTRUMENT_KINDS: Final = frozenset(
     {"lectio-nuda", "lectio-prior", "primed-without-prior"}
+)
+# Duplicated in miniature rather than importing `pipeline/1_exemplar/
+# admission.RefusalReason` (`common/` may not import `pipeline/`, enforced the
+# same way `_reason_code`'s own docstring explains). A door-scoped `[[kind]]`
+# entry's `reason` is checked against this closed set so a mistyped code is
+# refused loudly at config load, not accepted silently and matched against
+# nothing forever -- the exact failure mode a mistyped `reason` here would
+# otherwise cause, with no error anywhere to say the cap had gone quiet.
+DOOR_REFUSAL_REASONS: Final = frozenset(
+    {
+        "empty",
+        "unreadable",
+        "too-large",
+        "unrecognized-format",
+        "corrupt",
+        "unsupported-variant",
+        "digest-mismatch",
+    }
 )
 
 
@@ -85,7 +103,10 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
     unsupported format, an oversized file) rather than evidence the run itself
     is going wrong. Reason-scoped entries are tracked separately from bare
     (stage, outcome) ones precisely so a bare entry is never accidentally
-    widened by a reason-scoped sibling, or vice versa.
+    widened by a reason-scoped sibling, or vice versa. A door-scoped `reason`
+    is additionally checked against `DOOR_REFUSAL_REASONS`, the Door's own
+    closed refusal vocabulary duplicated here, so a typo'd code is refused
+    loudly at load rather than silently matching nothing forever.
     """
     path = Path(path)
     try:
@@ -162,6 +183,12 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
             raise ContractError(
                 f"a hard-failure [[kind]] names ({stage!r}, {outcome!r}) with a reason that "
                 "is not a non-empty string"
+            )
+        if "reason" in fields and stage == DOOR and reason not in DOOR_REFUSAL_REASONS:
+            raise ContractError(
+                f"a hard-failure [[kind]] names ({stage!r}, {outcome!r}) with reason "
+                f"{reason!r}, which is not one of the Door's closed refusal reasons "
+                f"{sorted(DOOR_REFUSAL_REASONS)}"
             )
         identity = (stage, outcome, reason if "reason" in fields else None)
         if identity in seen:

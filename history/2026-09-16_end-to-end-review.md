@@ -1656,3 +1656,42 @@ theoretical FIFO-hang and unbounded-size exposure — recorded per hard rule 7, 
 future pass, not silently dropped.
 
 `common/chairs/` (327 tests, up from 324) and `proof/test_proof_model_fixtures.py` green.
+
+**F139** — `common/hard_failure.py::load_hard_failure_policy` validates that a reason-scoped
+`[[kind]]` entry's `reason` is a non-empty string, but never checked it against the Door's
+actual closed refusal-code vocabulary (`empty`, `unreadable`, `too-large`,
+`unrecognized-format`, `corrupt`, `unsupported-variant`, `digest-mismatch`) — the config's
+own `outcome` field is checked this way (a typo'd outcome refuses loudly, "in no terminal
+set"), but `reason` was not. A typo here (`reason = "corupt"`) would load cleanly and simply
+never match a real Door refusal again: this repository's own run-level hard-failure cap —
+Tyrel's ruled "more than two in a thousand pages needs looking at" boundary — silently and
+permanently blind to that one reason, with nothing anywhere saying so. Reproduced: reverted
+the fix and confirmed the new test's expected `ContractError` genuinely `DID NOT RAISE`
+without it.
+
+Fixed under the same constraint `_reason_code` (a sibling function in this same file)
+already documents and works around: `common/` may not import `pipeline/`, enforced by an
+executable AST test that scans the whole `common/` tree, so the Door's closed reason set is
+duplicated in miniature as `DOOR_REFUSAL_REASONS` rather than importing
+`pipeline/1_exemplar/admission.RefusalReason` — the same precedent this file already set,
+extended to a second function rather than reasoned about differently. The check is scoped to
+`stage == "door"` only, since that is the one stage this policy schema currently reason-scopes
+at all; a reason on any other stage remains free-form until that stage earns the same
+treatment (named as a boundary, not silently assumed universal).
+
+Independent Fable review found the fix correct on every item checked (the new check's
+placement, the duplicated set matching the real enum byte-for-byte, the import-boundary
+claim, the shipped config still loading, both test pairs classifying FAILED, nothing
+downstream reading the raw config) and one worthwhile hardening: the duplicated
+`DOOR_REFUSAL_REASONS` set has no test pinning it to the enum it copies, so a future rename
+in `admission.py` left unmirrored here would silently reopen the exact gap this fix just
+closed, one step removed. Added `pipeline/1_exemplar/test_door.py::
+test_the_hard_failure_caps_door_reason_vocabulary_matches_this_enum` (`pipeline/` may import
+`common/` freely, so the drift check lives beside the enum it pins, not beside the copy) —
+asserts `{member.value for member in RefusalReason} == DOOR_REFUSAL_REASONS` directly. Also
+added one docstring sentence to `load_hard_failure_policy` naming the new check, since only
+the constant's own comment mentioned it before.
+
+`common/test_hard_failure.py` (41 tests, up from 38) and the full `common/contracts/`,
+`pipeline/1_exemplar/test_door.py`, `pipeline/orchestrator/test_run_level_hard_failure_cap.py`,
+and `common/chairs/test_chairs_import_boundary.py` suites (505 tests) green together.
