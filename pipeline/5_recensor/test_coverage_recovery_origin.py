@@ -495,6 +495,12 @@ def _seed_request(tree: RunTree, act_id: str, ordinal: int, reason: str) -> None
             payload={
                 "act_key": "a1",
                 "attempt_ordinal": ordinal,
+                # This seeded scenario's review content genuinely differs each
+                # round (a fresh recovery_request_ref and perlectio_ref every
+                # time), so its own recense ordinal happens to track the
+                # request ordinal here -- the two are independent fields since
+                # F132, not the same number by construction.
+                "recovery_request_ordinal": ordinal,
                 "recovery_kind": FALLBACK_RECROP,
                 "coverage": {},
                 "perlectio_ref": perlectio_ref,

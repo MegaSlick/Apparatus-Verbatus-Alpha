@@ -101,7 +101,7 @@ def test_review_measurement_refusal_names_subject_and_field_before_publication(
             context,
             subject_id="act-under-review",
             outcome="held-for-review",
-            attempt="test-attempt",
+            prior=None,
             inputs=[],
             payload=payload,
         )
@@ -119,7 +119,7 @@ def test_review_payload_refuses_witness_preference_vocabulary(field):
             _PublishingContext(),
             subject_id="act-1",
             outcome="accepted",
-            attempt="act-1:recense:1",
+            prior=None,
             inputs=[],
             payload={field: True},
         )

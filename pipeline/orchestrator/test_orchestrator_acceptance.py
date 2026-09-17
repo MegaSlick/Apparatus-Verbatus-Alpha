@@ -1703,10 +1703,26 @@ def _perlector_dissent():
 # carry them). No established text, outcome, category, crop geometry or count
 # moved (GOVERNANCE 5); the two count assertions above this comment passed while
 # only the two digest assertions failed.
+# F132 gave the Recensor review its own attempt model (`pipeline/5_recensor/
+# run.py::publish_review`/`current_review`): a review's own recense ordinal is
+# minted from whether its content actually changed, not from the act's
+# recovery-request count, and the review that answers a recovery request now
+# carries that request's ordinal as its own field, `recovery_request_ordinal`,
+# rather than reusing `attempt_ordinal` for both facts. `happy` requests no
+# recovery, so its snapshot and digest are untouched; `review`'s one
+# recovery-requested review (a1's first) gains the new field -- one changed
+# field, on one file, and the same digest cascade (`self_hash`, the manifest
+# entry that carries it, and the content-addressed Armarium bundle that
+# embeds the changed record) this file's own established convention already
+# names for the prior such change. File count unchanged (111): no artifact
+# added or removed, and a repeat run over the same tree still reproduces the
+# identical snapshot and digest -- confirmed directly, not only through this
+# suite, since F132's own rerun-idempotency guarantee is exactly what this
+# test exists to hold the whole orchestrator to.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
 HAPPY_RUN_TREE_DIGEST = "46a92beca8fb46ca6d32a3294c91501a3740bc62b3677e4c9597b50988331220"
-REVIEW_RUN_TREE_DIGEST = "bf00209817bb4f61976a784f3d055060bb7025953a68244bfd2b3eb69d0def53"
+REVIEW_RUN_TREE_DIGEST = "4da6710a2d88454be73fbe9ea12948c3fec08f160fbf6d941aae65a459c3fac0"
 
 
 def orchestrate(

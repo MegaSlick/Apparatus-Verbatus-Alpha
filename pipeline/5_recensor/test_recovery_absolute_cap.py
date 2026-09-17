@@ -113,6 +113,7 @@ def _publish_recovery_request(tree: RunTree, act_id: str, ordinal: int) -> None:
         payload={
             "act_key": "a1",
             "attempt_ordinal": ordinal,
+            "recovery_request_ordinal": ordinal,
             "recovery_kind": FALLBACK_RECROP,
             "coverage": {},
             "perlectio_ref": perlectio_ref,

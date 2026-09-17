@@ -4757,7 +4757,11 @@ def current_recovery_request(
         raise ContractError(f"recovery-requested review of {act_id} has no payload")
     request_ref = review_payload.get("recovery_request_ref")
     reading_ref = review_payload.get("perlectio_ref")
-    ordinal = review_payload.get("attempt_ordinal")
+    # The request's own position among this act's requests -- distinct from
+    # the review's `attempt_ordinal`, which is a function of the review's
+    # content rather than this act's recovery count (F132: a review's own
+    # ordinal and its named request's ordinal are no longer the same number).
+    ordinal = review_payload.get("recovery_request_ordinal")
     if (
         not isinstance(request_ref, dict)
         or request_ref not in review.get("inputs", [])
