@@ -141,6 +141,14 @@ _HEIC_BRANDS: Final = frozenset(
 )
 _AVIF_BRANDS: Final = frozenset({b"avif", b"avis"})
 _HEIF_BRANDS: Final = frozenset({b"mif1", b"msf1"})
+# A real `ftyp` box's compatible-brands list is a handful of 4-byte codes --
+# never remotely this many. Bounding how far `_iso_bmff_image_format` walks
+# independent of an attacker-declared box size or the file's own length keeps
+# sniffing near-constant-time: unbounded, a crafted admission-ceiling-sized
+# file (`MAX_SOURCE_BYTES`) whose header claims a matching box size drives
+# millions of 4-byte slice-and-set-insert iterations before any decoder or
+# size bound runs.
+_FTYP_BRAND_SCAN_CEILING: Final = 16 + 256 * 4
 
 
 def sniff(data: bytes) -> str | None:
@@ -179,7 +187,7 @@ def _iso_bmff_image_format(data: bytes) -> str | None:
         return None
     box_size = struct.unpack(">I", data[:4])[0]
     major_brand = data[8:12]
-    readable_end = min(max(box_size, 12), len(data))
+    readable_end = min(max(box_size, 12), len(data), _FTYP_BRAND_SCAN_CEILING)
     brands = {major_brand} | {data[offset : offset + 4] for offset in range(16, readable_end, 4)}
     if brands & _HEIC_BRANDS:
         return "heic"

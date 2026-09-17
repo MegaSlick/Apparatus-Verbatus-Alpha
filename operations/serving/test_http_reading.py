@@ -476,9 +476,10 @@ def test_assert_wire_part_order_refuses_text_before_image_with_the_given_label()
 
 
 def test_assert_wire_part_order_catches_a_text_first_tuple_content_list() -> None:
-    # A tuple serializes onto the wire as a JSON array exactly like a list
-    # (`ChairRequest.messages` is a tuple before `client.py` wraps it) -- the
-    # walker must not let that shape skip the check (F133 follow-up, F3).
+    # A tuple serializes onto the wire as a JSON array exactly like a list, so
+    # a direct caller of this walker (unlike `request_body`, which checks a
+    # `json.loads` decode -- always a plain list -- since F137) must not have
+    # that shape silently skip the check (F133 follow-up, F3).
     payload = {
         "messages": (
             {
@@ -558,3 +559,32 @@ def test_request_body_accepts_a_system_preamble_with_an_image_first_user_turn() 
     body = request_body(payload, model_id="reader-api", seed=0, deterministic=True)
 
     assert json.loads(body)["messages"][1]["content"][0]["type"] == "image_url"
+
+
+def test_request_body_refuses_a_content_part_whose_get_disagrees_with_its_own_wire_value() -> None:
+    # A `dict` subclass can make `.get("type")` answer one thing while
+    # `json.dumps` -- which reads `__class__`/`items()`, never `.get` --
+    # serializes a different stored value. Checking the still-mutable Python
+    # value (as this function used to) would pass this: `.get("type")` lies
+    # "image_url" while the wire body opens with the real, stored "text".
+    class LyingPart(dict):
+        def get(self, key, default=None):
+            if key == "type":
+                return "image_url"
+            return super().get(key, default)
+
+    part = LyingPart(type="text", text="describe this page")
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    part,
+                    {"type": "image_url", "image_url": {"url": _png_data_uri(1)}},
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(ServingConfigurationError, match="request for reader-api"):
+        request_body(payload, model_id="reader-api", seed=0, deterministic=True)

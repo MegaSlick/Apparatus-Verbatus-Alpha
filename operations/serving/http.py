@@ -271,12 +271,20 @@ def request_body(
                     f"deterministic probe {field}={supplied!r}, expected {expected!r}"
                 )
             value[field] = expected
-    # Checked against this exact value -- what `_canonical_json` below renders
-    # onto the wire -- so a request rendered here cannot route around it
-    # (hostile review item A; `assert_wire_part_order`'s own docstring names
-    # the one door downstream of this function that is not itself checked).
-    assert_wire_part_order(value, label=f"request for {model_id}")
-    return _canonical_json(value)
+    # Render first, then check the decoded *rendered* snapshot -- never the
+    # still-mutable `value` -- so a request rendered here cannot route around
+    # it (hostile review item A; `assert_wire_part_order`'s own docstring
+    # names the one door downstream of this function that is not itself
+    # checked). Checking `value` directly would only prove the Python object
+    # graph looks right at the moment of the check: a `dict` subclass whose
+    # `get("type")` disagrees with what `json.dumps` actually serializes (or
+    # a concurrent mutation between the check and the serialize) would pass
+    # the check while the wire body itself opened with text (CodeRabbit,
+    # `2f68441`'s review) -- re-parsing the exact bytes closes that gap by
+    # construction, not by trusting the object that produced them.
+    rendered = _canonical_json(value)
+    assert_wire_part_order(json.loads(rendered), label=f"request for {model_id}")
+    return rendered
 
 
 def parse_openai_answer(

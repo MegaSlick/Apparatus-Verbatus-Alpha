@@ -1295,7 +1295,7 @@ hard rule 7, not silently dropped, lower severity than the fixed findings above)
   not confirmed by execution.
 - `pipeline/1_exemplar/image_formats.py:183` — the HEIC/AVIF brand sniffer builds a set
   from every 4-byte slice up to a length the submitted file's own first four bytes name,
-  so a crafted 64 MB file could drive ~16 million iterations before any decoder or bound
+  so a crafted 64 MiB file could drive ~16 million iterations before any decoder or bound
   runs; the existing guard test's payload happens not to exercise this (repeats one
   4-byte sequence, so the set never grows past two entries).
 - `pipeline/2_designator/` — four findings, all minor: stale HANDOFF.md conservation-
@@ -1519,3 +1519,88 @@ smaller issues surfaced, one worth fixing before push:
 
 `operations/serving/` (417 tests, up from 405) green after the tuple-in-`chat_image_bytes_all`
 fix and its new test.
+
+## Tenth pass — two of the Ninth pass's own recorded leads, independently fixed
+
+The Ninth pass's leads list named these but did not fix them at the time (recorded per hard
+rule 7, not silently dropped). Picked up as the next round of the standing find-and-fix work.
+Both independently reviewed before push (Fable for F135, Opus for F136), each producing a
+targeted, self-contained diff plus a regression test reproduced failing-then-passing against
+the actual bug before landing — this review's standing discipline, not relaxed for a smaller
+fix.
+
+**F135** — `pipeline/1_exemplar/run.py::_verify_render_contract`'s Pillow-renderer branch
+tested `"A" in source_bands` for alpha detection, the same case-sensitive mistake already
+fixed in its two sibling copies (`image_formats.py`'s renderer, `common/imaging.py`'s crop
+converter). Pillow spells premultiplied alpha in lower case (`La`/`RGBa`); a page the
+renderer correctly converted to `LA`/`RGBA` would read as carrying no alpha at all and be
+refused for "changing its mode conversion" — the verifier disagreeing with the very renderer
+it exists to check. Fixed to mirror the already-shipped logic exactly: check
+`{"La": "LA", "RGBa": "RGBA"}.get(source_mode)` first, fall back to the case-insensitive
+band scan only on a miss. Two new tests in `pipeline/1_exemplar/test_render_config.py`
+(hand-built contracts, since no currently-reachable production path decodes a file into
+Pillow mode `La`/`RGBa` — confirmed by an independent reviewer, who additionally confirmed
+this is a producer/verifier consistency fix, not a closure of an observed live refusal) prove
+both directions: the correct conversion is accepted, a wrong one is still refused. Reproduced
+first: reverting just this fix made both new "accepts" tests raise `ContractError` and the
+"refuses" test raise nothing — the old logic wrongly refused the right answer and wrongly
+accepted a specific wrong one in the same breath.
+
+**F136** — `pipeline/1_exemplar/image_formats.py::_iso_bmff_image_format`, the HEIC/AVIF/HEIF
+brand sniffer that `sniff()` calls on every submitted source file before any size or decoder
+bound has run, built its brand set by walking `range(16, readable_end, 4)` where
+`readable_end` was capped only by the file's own declared `ftyp` box size and the buffer's own
+length — both attacker-controlled up to `MAX_SOURCE_BYTES` (64 MiB). A crafted ~64 MiB file
+whose header claims a matching box size drives roughly sixteen million 4-byte slice-and-set-
+insert iterations. An existing test already guarded the memory dimension, but by repeating one
+4-byte value: every duplicate is hashed, found already present, and its transient object freed
+immediately by CPython's refcounting, so peak memory stays flat regardless of how many
+iterations actually ran — it does not, and was never exercised to, bound the iteration count
+or the case of an attacker filling the file with unique 4-byte values, which would blow past
+that same memory ceiling too. Fixed by capping the walk to a fixed ceiling
+(`_FTYP_BRAND_SCAN_CEILING`, 256 compatible-brand slots past the 16-byte header) independent of
+both the declared box size and the file's length — real `ftyp` boxes never carry remotely that
+many brands. New test constructs a payload with unique filler and places a genuine `heic`
+brand one slot past the ceiling with both the declared box size and the file's own length
+claiming far more is readable; empirically confirmed against the pre-fix code (loaded
+standalone, called directly) that the old logic actually returned `"heic"` for this exact
+payload before fixing it, then confirmed the new code returns `None`.
+
+`pipeline/1_exemplar/` (348 tests, up from 344) green.
+
+**F137** — CodeRabbit's automatic re-review of `2f68441` found a gap in `request_body`
+(`operations/serving/http.py`) that survived the panel-review round above: `assert_wire_part_order`
+was checked against `value`, the still-mutable Python object about to be serialized, not against
+what `_canonical_json` actually renders. Demonstrated, not asserted: a `dict` subclass whose
+`get("type")` answers `"image_url"` while its *stored* value is `"text"` passes the check
+(`.get` is all the walker reads) but serializes with `"text"` on the wire (`json.dumps` reads
+the real stored value, never `.get`) — proved end to end against the actual current code, not
+just the isolated `checked_type`/`wire_type` divergence CodeRabbit's own script showed: a real
+call to `request_body` with such a part did not raise, and the returned bytes opened with text.
+Fixed exactly as proposed: serialize once, decode that exact rendered snapshot with `json.loads`,
+check the decode, return the same already-rendered bytes — closing the gap by re-reading what
+was actually written rather than trusting the object that wrote it, which also makes the earlier
+`(list, tuple)` `isinstance` widening (F133's panel-review round) no longer load-bearing for this
+call site specifically (a JSON decode is always a plain `list`), though it stays correct and
+necessary for `assert_wire_part_order`'s other, non-round-tripped callers -- the new direct unit
+tests among them. New regression test reproduces the exact failure this finding demonstrated
+(unpatched: does not raise; patched: raises with the model-id label), reproduced first against
+the pre-fix code to confirm it actually fails the way the finding claims.
+
+`operations/serving/` (418 tests, up from 417) green.
+
+**Declined, verified reachable only in theory (F137's own independent review, Fable):**
+`ChairClient.read` (`operations/serving/client.py:459-461`) digests images from
+`request.messages` — the caller's own pre-render objects — and compares against the caller's
+claimed `request.image_sha256s` *before* `request_body` renders anything, the same
+`.get`-vs-serialized-value gap F137 just closed for `request_body` itself. Verified real in
+principle (`_decode_image_url` reads a candidate's `"url"` key by both `.get` and `[]`
+depending on the path), but every message builder in this repository constructs plain `dict`
+literals; nothing carries a `dict` subclass into a `ChairRequest`. Not fixed here: the correct
+fix (verify digests against `chat_image_bytes_all(json.loads(body))`, after `body =
+request_body(...)`) reorders `read`'s own carefully-documented "refuse an unbuildable request
+... before anything is built or sent" sequence — an invariant this exact PR already fought to
+get right once (the retention-before-refusal fix recorded earlier in this document) — for a
+gap with no live attacker-controlled path today. A theoretical, same-class defect worth a
+future look if this call site's caller set ever grows past this repository's own trusted
+builders; not worth reordering a hard-won control-flow invariant for today.

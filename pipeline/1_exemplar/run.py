@@ -781,7 +781,20 @@ def _verify_render_contract(
             expected_mode = source_mode
             expected_codec = "png"
         else:
-            expected_mode = "RGBA" if "A" in source_bands else "RGB"
+            # Premultiplied alpha is its own case, mirroring the renderer
+            # (`image_formats.py`): Pillow spells that band in lower case, so
+            # `"A" in source_bands` reads `La`/`RGBa` as carrying no alpha and
+            # expects an RGB conversion the renderer never performed (it
+            # converts `La` only to `LA` and `RGBa` only to `RGBA`), which
+            # would wrongly refuse a page this contract actually rendered
+            # correctly.
+            premultiplied = {"La": "LA", "RGBa": "RGBA"}.get(source_mode)
+            if premultiplied is not None:
+                expected_mode = premultiplied
+            elif any(band.upper() == "A" for band in source_bands):
+                expected_mode = "RGBA"
+            else:
+                expected_mode = "RGB"
             expected_transform = f"convert-to-{expected_mode.lower()}"
             expected_codec = "png"
         if (
