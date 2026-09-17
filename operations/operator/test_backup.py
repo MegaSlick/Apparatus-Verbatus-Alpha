@@ -73,6 +73,35 @@ def test_backup_is_content_addressed_resumable_and_verifies_each_digest(tmp_path
         assert hashlib.sha256(stored.read_bytes()).hexdigest() == row["sha256"]
 
 
+def test_os_residue_is_neither_copied_nor_inventoried(tmp_path: Path) -> None:
+    """F104: a Finder/Explorer droppings is not a run-tree member.
+
+    canonical_bytes has nothing to do with this path -- the residue is excluded
+    before it is ever read, not merely kept out of the published record -- so a
+    `.DS_Store` left by opening the tree in a Finder window, or an AppleDouble
+    sidecar carried along by a naive copy, must not be admitted as if it were
+    evidence a stage actually wrote.
+    """
+    volume, run_id = _run_tree(tmp_path)
+    run = volume / run_id
+    (run / ".DS_Store").write_bytes(b"binary finder metadata\n")
+    (run / "._run.json").write_bytes(b"resource fork\n")
+    (run / "receipts" / "sha256" / ".DS_Store").write_bytes(b"binary finder metadata\n")
+    mac = tmp_path / "Mac Backup"
+
+    report = sync_run_tree(volume, run_id, mac)
+
+    assert report.copied == 2 and report.reused == 0
+    snapshot = mac / "snapshots" / "sha256" / f"{report.snapshot_sha256}.json"
+    record = json.loads(snapshot.read_text())
+    relative_paths = {row["relative_path"] for row in record["files"]}
+    assert relative_paths == {
+        "run.json",
+        "receipts/sha256/" + "a" * 64 + ".json",
+    }
+    assert record["excluded_publication_temporaries"] == []
+
+
 def test_two_inventory_passes_from_one_descriptor_see_the_same_tree(tmp_path: Path) -> None:
     """`sync_run_tree` scans the anchored root twice and compares the two views.
 
