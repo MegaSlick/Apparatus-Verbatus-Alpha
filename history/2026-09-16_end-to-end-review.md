@@ -625,3 +625,40 @@ re-running `test_pipeline_children_do_not_receive_any_provider_credential`), F10
 fetch-run receipt already records `datacenter_id`/`volume_id`/`endpoint_url` via
 `_volume_record`), F107 (`record_unexpected` already writes a bounded receipt with
 exception type, message, traceback, argv and cwd, and `status` already shows it).
+
+## Fifth pass — CodeRabbit's automatic review on PR #119
+
+The pull request opened for this review (`#119`) sat in draft, which the GitHub App reads
+as "skip" — CodeRabbit's automatic review never ran until the PR was marked ready and
+`@coderabbitai review` requested explicitly. Its pre-merge checks passed three
+(`Title check`, `Carried Code Is Named As Carried`, `No Witness Picker`) and raised two.
+
+### Fixed in this pass
+
+- **F113** [medium] — `Nothing Is Lost Silently`. `_armarium_export`
+  (`operations/operator/surface.py`) validated `pages`/`delivered`/`non_delivered` only
+  when the key was present: `if member in payload and not isinstance(...)`. A record
+  honestly missing one of the three — the shape a mismatched schema produces, not
+  something the current producer (`pipeline/7_armarium/run.py`) ever writes, which always
+  includes all three together — passed through unchallenged. `run()` then read only
+  `aggregate["status"]` to decide `state`, and `_exported_work` defaulted the missing
+  list to `[]` and printed the generic "the recorded acts" instead of naming or refusing
+  the gap, so a run could be reported `complete` with its act partition unaccounted for.
+  This is the same bug class already fixed once in this file's `_write_base_armarium_bundle`
+  (that function's own comment cites the identical CodeRabbit precedent). Fixed by requiring
+  presence, not just type, for all three members — closing the gap at the one place every
+  caller of `_armarium_export` already goes through, so `run()`'s existing (and already
+  correctly tested) `armarium-record-unreadable` path now catches it too, with no change
+  needed to `_exported_work`'s own defensive fallback. Regression coverage: a new
+  `run()`-level integration test (`test_run_refuses_a_complete_aggregate_with_no_act_partition`)
+  drives the real `_armarium_export` — only `RunTree.read_artifact` is stubbed — with a
+  `complete` aggregate and a `pages`/`non_delivered` payload missing `delivered`, and asserts
+  the receipt lands as `armarium-record-unreadable`, never `complete`; a parametrized sibling
+  (`test_the_export_reader_refuses_a_member_missing_entirely`) covers the same gap for
+  `pages` and `non_delivered`. `operations/operator/test_surface.py`'s full suite (277
+  tests) and the full `operations/operator/` directory are green, as is `ruff format
+  --check` / `ruff check` on both changed files.
+- The PR description didn't follow this repository's `.github/pull_request_template.md`
+  headings. Rewritten to match exactly (`What changed` / `What it touches` / `Why it is
+  here` / `Rebuild record, when applicable` / `How to undo it` / `What proves it works` /
+  `Review candidate` / `Review findings`, plus the checklist).

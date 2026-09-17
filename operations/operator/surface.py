@@ -2896,9 +2896,19 @@ class OperatorSurface:
             raise ValueError("Armarium export record has no usable aggregate")
         # The list-valued members every consumer counts or walks: a string here
         # would render a confident wrong page count into a receipt, and a number
-        # would kill export with a bare TypeError after the bundle exists.
+        # would kill export with a bare TypeError after the bundle exists. The
+        # real producer (`pipeline/7_armarium/run.py`) always writes all three
+        # together, so a record missing one is never an honest partial write --
+        # it is exactly the record a caller sees from a mismatched schema (an
+        # older build, a record fetched from a pod running different code). A
+        # missing member is required, not merely typed when present: CodeRabbit
+        # caught that `_exported_work` treated an absent `delivered`/`non_delivered`
+        # as empty and printed "the recorded acts" instead of refusing -- GOVERNANCE
+        # 2's "a partial result is visibly partial" runs through this reader too.
         for member in ("pages", "delivered", "non_delivered"):
-            if member in payload and not isinstance(payload[member], list):
+            if member not in payload:
+                raise ValueError(f"Armarium export record is missing {member}")
+            if not isinstance(payload[member], list):
                 raise ValueError(f"Armarium export record's {member} is not a list")
         return payload
 

@@ -3187,25 +3187,105 @@ def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
     assert receipt["state"] != "complete"
 
 
-@pytest.mark.parametrize("member", ("pages", "non_delivered"))
+def test_run_refuses_a_complete_aggregate_with_no_act_partition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`aggregate["status"] == "complete"` is not enough on its own.
+
+    `_exported_work` used to default a missing `delivered`/`non_delivered`
+    to an empty list and print the generic "the recorded acts" placeholder,
+    so a record honestly missing its act partition -- an older build, or a
+    record `fetch-run` brought home from a pod running different code --
+    could still finish with `state: complete` and a success line on the
+    console and the phone. Exercised through the real `_armarium_export`
+    (only `RunTree.read_artifact` is stubbed) so the guard that closes this
+    is the one `run()` actually calls, not a test double standing in for it.
+    """
+
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    import operations.operator.surface as surface_module
+
+    monkeypatch.setattr(
+        surface_module.RunTree,
+        "read_artifact",
+        lambda self, stage, kind, identity: {
+            "payload": {
+                "aggregate": {"status": "complete", "reasons": []},
+                "pages": [{"ordinal": 1}],
+                "non_delivered": [],
+                "expected_acts": 1,
+            }
+        },
+    )
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="missing-delivered")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "missing delivered" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] != "complete"
+
+
+@pytest.mark.parametrize("member", ("pages", "delivered", "non_delivered"))
 def test_the_export_reader_refuses_non_list_members_before_any_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member: str
 ) -> None:
     """The real `_armarium_export` guard, driven with a malformed artifact.
 
     Every other export test monkeypatches `_armarium_export` itself, so the
-    validation inside it would be dead code to the suite without this.
+    validation inside it would be dead code to the suite without this. The
+    other two required members are given as well-formed empty lists so the
+    failure is unambiguously about `member`, not about one checked earlier
+    in the loop.
     """
 
     surface = _surface(tmp_path)
     import operations.operator.surface as surface_module
 
+    payload = {"aggregate": {}, "pages": [], "delivered": [], "non_delivered": []}
+    payload[member] = "not a list"
     monkeypatch.setattr(
         surface_module.RunTree,
         "read_artifact",
-        lambda self, stage, kind, identity: {"payload": {"aggregate": {}, member: "not a list"}},
+        lambda self, stage, kind, identity: {"payload": payload},
     )
     with pytest.raises(ValueError, match=f"{member} is not a list"):
+        surface._armarium_export(tmp_path, "r1")
+
+
+@pytest.mark.parametrize("member", ("pages", "delivered", "non_delivered"))
+def test_the_export_reader_refuses_a_member_missing_entirely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member: str
+) -> None:
+    """A record that omits `member` outright is refused, not defaulted to empty.
+
+    The producer (`pipeline/7_armarium/run.py`) always writes `pages`,
+    `delivered`, and `non_delivered` together, so a record missing one is
+    never an honest partial write -- it is what a mismatched schema looks
+    like (an older build, or a record `fetch-run` brought home from a pod
+    running different code). Before this, the loop below only checked type
+    when a key was present, so an absent member passed silently and
+    `_exported_work` printed the generic "the recorded acts" instead of the
+    run being refused -- the exact gap CodeRabbit's "Nothing Is Lost
+    Silently" check caught.
+    """
+
+    surface = _surface(tmp_path)
+    import operations.operator.surface as surface_module
+
+    payload = {"aggregate": {}, "pages": [], "delivered": [], "non_delivered": []}
+    del payload[member]
+    monkeypatch.setattr(
+        surface_module.RunTree,
+        "read_artifact",
+        lambda self, stage, kind, identity: {"payload": payload},
+    )
+    with pytest.raises(ValueError, match=f"missing {member}"):
         surface._armarium_export(tmp_path, "r1")
 
 
