@@ -2988,7 +2988,11 @@ class OperatorSurface:
         ]
         act_keys: set[str] = set()
         for record in act_records:
-            if not isinstance(record, dict) or not isinstance(record.get("act_key"), str):
+            if (
+                not isinstance(record, dict)
+                or not isinstance(record.get("act_key"), str)
+                or not record["act_key"]
+            ):
                 raise UnreconciledActPartitionError(
                     "the Armarium export claims status complete but one of its "
                     "delivered/non_delivered entries is not a readable act record"

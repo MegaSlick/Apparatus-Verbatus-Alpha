@@ -3385,6 +3385,40 @@ def test_run_refuses_a_complete_aggregate_with_a_malformed_act_record(
     assert receipt["state"] != "complete"
 
 
+def test_run_refuses_a_complete_aggregate_with_an_empty_act_key(
+    tmp_path: Path,
+) -> None:
+    """An empty string satisfies `isinstance(..., str)` but names no act.
+
+    `common/stage.py` refuses an empty `act_key` at the Designator's own seal, but
+    that seal is exactly what a foreign or older-build record -- the same class this
+    reconciliation check exists to catch -- would not have gone through. Before this
+    fix, `delivered: [{"act_key": ""}]` with `expected_acts: 1` reconciled cleanly:
+    one record, one distinct "identity", and a run or export reported complete over
+    an act nothing actually names.
+    """
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [{"ordinal": 1}],
+        "delivered": [{"act_key": ""}],
+        "non_delivered": [],
+        "expected_acts": 1,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="empty-act-key")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "not a readable act record" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreconciled"
+    assert receipt["state"] != "complete"
+
+
 def test_a_held_run_raises_run_held_not_run_failed(
     tmp_path: Path,
 ) -> None:

@@ -1000,6 +1000,8 @@ section, both from this same pass's own earlier writing. All four addressed here
 - **An empty-string `act_key`** technically satisfies the entry check's `isinstance(..., str)`
   test. The real producer can never emit one (`common/stage.py` refuses an empty act key at
   the seal). Cosmetic; not worth a same-day line for a case the producer cannot reach.
+  **Superseded below (F130): this reasoning was inconsistent with why the rest of this same
+  method exists.**
 
 **Verified, not re-litigated:** the review re-confirmed F125's decline (the backup
 OS-residue audit-trail finding) as "defensible engineering... not a rationalization," reading
@@ -1073,3 +1075,41 @@ not yet name the new `export-unreconciled` outcome (added, see below), and the n
 middle sentence describes the count-mismatch refusal precisely but is a little loose for
 the other two reconciliation refusals (missing `expected_acts`, an unreadable act entry) —
 reworded for accuracy.
+
+## Eighth pass — CodeRabbit's re-review of `79e7192`, and reversing an earlier decline
+
+CodeRabbit's review of the F129 commits kept the "No Witness Picker" and every other
+carried-forward check green, confirmed F129 itself ("✅ Addressed in commits afbb72b to
+79e7192"), and raised two more items: the standing F125 decline (unchanged, restated below)
+and one genuinely new finding this pass fixes.
+
+**Fixed:**
+
+- **F130** [major — reverses this document's own earlier "cosmetic" disposition] — an empty
+  string satisfies `isinstance(record.get("act_key"), str)`, so `delivered: [{"act_key":
+  ""}]` with `expected_acts: 1` reconciled cleanly: one record, one distinct "identity", a
+  run or export reported complete over an act nothing actually names. The seventh pass's own
+  "Declined, with reason" section called this cosmetic because `common/stage.py` refuses an
+  empty `act_key` at the Designator's seal and "the real producer can never emit one" — true,
+  but beside the point: `_require_reconciled_act_partition` exists specifically to catch a
+  record that never went through today's seal at all (an older build, a pod running
+  different code — the same foreign-record rationale F113 and F123 already used to justify
+  requiring a valid `expected_acts` and counting distinct identities rather than trusting a
+  raw count). Relying on the producer to never emit an empty key was exactly the reasoning
+  already rejected for the other two checks in this same method; applying it selectively to
+  this one check was the actual defect, not the empty string itself. CodeRabbit's review
+  cited this repository's own `.coderabbit.yaml` path instruction for this file directly:
+  "A fault that drops, skips or silently substitutes one act is not a small bug." Fixed
+  exactly as suggested — the entry check now also rejects a falsy `act_key` alongside a
+  non-dict record or a non-string one, before it can be added to `act_keys`. New regression:
+  `test_run_refuses_a_complete_aggregate_with_an_empty_act_key`.
+
+**Verified, not re-litigated:** the F125 backup OS-residue decline (recorded in the sixth
+pass, independently re-confirmed in the seventh) was flagged again by the same automated
+"Nothing Is Lost Silently" pre-merge check, which re-evaluates fresh each round with no
+memory of a prior round's decline. Restated on the PR itself rather than in code, since
+nothing about the reasoning changed: the fuller fix duplicates F103's already-declined
+schema-version work, and the simpler fix would undo F104's actual purpose.
+
+`operations/operator/test_surface.py` (284 tests, one new) green; `ruff format`/`check`
+clean on every touched file.
