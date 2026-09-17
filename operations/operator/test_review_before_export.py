@@ -808,6 +808,37 @@ def test_a_run_authority_that_is_not_an_object_is_a_note_beside_the_page_count(t
     assert "is not an object" in note
 
 
+def test_a_nonexistent_run_id_is_a_wrong_command_not_damaged_evidence(tmp_path: Path):
+    """F035: a mistyped run id must not read as "preserve and investigate."
+
+    `RunTree.__init__` only validates the id's shape, so a run id naming
+    nothing reaches `projection()`'s own tree read, where it used to fall into
+    the catch-all meant for a tree that exists and failed verification.
+    """
+    run_root = tmp_path / "runs"
+    run_root.mkdir()
+
+    with pytest.raises(OperatorError) as refused:
+        review.ReadOnlyRun(run_root, "nope").projection()
+
+    assert refused.value.code is ErrorCode.INVALID_COMMAND
+    assert "nope" in refused.value.render()
+    assert "does not exist" in refused.value.render()
+
+
+def test_a_run_json_that_fails_verification_still_reads_as_damaged_not_missing(
+    witnessed_run: Path, tmp_path: Path
+):
+    """The other half of F035's split: an existing, damaged tree is unaffected."""
+    run_root = _writable_copy(witnessed_run, tmp_path / "runs")
+    (run_root / RUN_ID / "run.json").write_bytes(b"not valid json")
+
+    with pytest.raises(OperatorError) as refused:
+        _projection(run_root)
+
+    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+
+
 def test_a_stage_that_wrote_records_but_never_sealed_is_named_interrupted_not_damaged(
     witnessed_run: Path, tmp_path: Path
 ):
