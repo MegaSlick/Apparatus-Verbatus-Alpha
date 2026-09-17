@@ -2251,10 +2251,16 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
     # marker; the fixture path retains its declared bytes on every branch and is
     # deliberately untouched here.
     served_by_a_chair = payload.get("serving_call_ref") is not None
-    parsed_into_a_payload = (
-        isinstance(payload.get("content_health"), dict)
-        and payload["content_health"].get("recordable") is True
-    )
+    # `content_health.recordable is True` is wider than "this outcome is a
+    # reading": `live_witness._content_health` sets `recordable: True`
+    # unconditionally on every parsed branch, including the parsed-but-
+    # unconfirmed-blank `failed` outcome (cut off, or an unrecognized stop
+    # word) -- the same branch `captured_page_attempt` deliberately withholds
+    # `observation_payload` for. Gate on the outcome set that branch actually
+    # used, the same fix `_page_capture_from_record` already applies for the
+    # identical reason (GOVERNANCE 4): rehydrating on a wider test would hand
+    # a resume geometry the interrupted pass never published.
+    parsed_into_a_payload = record["outcome"] in WITNESS_READING_OUTCOMES
     if raw_response_ref is not None:
         validate_raw_response_ref(raw_response_ref)
         try:
