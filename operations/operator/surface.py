@@ -136,6 +136,12 @@ UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
 MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_NOTIFY_MESSAGE_CHARACTERS = 500
+"""A held run with hundreds of unsealed pages built a notification message with
+one entry per page and no ceiling at all (F020); the underlying transport truncates
+`notify_bridge`'s own failure-detail string the same way, at 160 characters, so a
+cap here is not a new idea in this codebase, only a missing one on the outbound
+message itself."""
 # The Door's program path, named once. Two spellings of it — the fault drill's
 # call site and the guard that decides the drill forwards real ingress — is how
 # the drill could go on running while quietly stopping injecting: change one and
@@ -3001,6 +3007,11 @@ class OperatorSurface:
         # carry a newline; shell_notifier refuses a multi-line message, so the
         # decision moment would be dropped exactly when a person is needed.
         one_line = " ".join(message.split()) or "no detail recorded"
+        if len(one_line) > MAX_NOTIFY_MESSAGE_CHARACTERS:
+            one_line = (
+                f"{one_line[:MAX_NOTIFY_MESSAGE_CHARACTERS]}... "
+                "(truncated; see the run receipt for the full text)"
+            )
         try:
             outcome = self.notifier(event, one_line)
         except Exception as error:  # a broken notifier is not a broken run

@@ -52,6 +52,7 @@ from .records import MAX_RECORD_BYTES, DescriptorStore, ReceiptStore, RecordErro
 from .surface import (
     DOOR_PROGRAM,
     FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS,
+    MAX_NOTIFY_MESSAGE_CHARACTERS,
     OPERATOR_CLOSE_PREFIX,
     Faults,
     OperatorSurface,
@@ -3239,6 +3240,52 @@ def test_a_malformed_reasons_field_is_named_unreadable_not_silently_dropped(
     assert notifications[0][0] == "decision"
     assert "hold reasons were not a list and were not read" in notifications[0][1]
     assert "no reason recorded" not in notifications[0][1]
+
+
+def test_an_unbounded_notification_message_is_truncated_before_it_is_sent(
+    tmp_path: Path,
+) -> None:
+    """F020: a held run with hundreds of unsealed pages must not build a
+    notification message with no ceiling at all -- the transport already
+    truncates its own failure-detail string this way; the outbound message
+    needs the same treatment."""
+
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path)
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    long_message = "; ".join(f"page {i} was corrupt: reason {i}" for i in range(200))
+    assert len(long_message) > MAX_NOTIFY_MESSAGE_CHARACTERS
+
+    surface._notify("decision", long_message)
+
+    assert len(notifications) == 1
+    sent = notifications[0][1]
+    assert len(sent) <= MAX_NOTIFY_MESSAGE_CHARACTERS + len(
+        "... (truncated; see the run receipt for the full text)"
+    )
+    assert sent.startswith(long_message[:80])
+    assert sent.endswith("(truncated; see the run receipt for the full text)")
+
+
+def test_a_short_notification_message_is_untouched(tmp_path: Path) -> None:
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path)
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    surface._notify("milestone", "a short message")
+
+    assert notifications == [("milestone", "a short message")]
 
 
 def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
