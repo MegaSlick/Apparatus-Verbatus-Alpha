@@ -29,6 +29,7 @@ from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
     ACTS,
     CHURRO_PAGE_RESPONSES,
+    READER_GAPS,
     RECOVERY_BOUNDS,
     SCENARIO_TESTIMONY,
     TESTIMONY,
@@ -142,6 +143,19 @@ def test_the_skeleton_declaration_is_up_to_date(skeleton):
 def test_inline_toml_objects_refuse_keys_that_are_not_bare_safe(key):
     with pytest.raises(ValueError, match="object keys must be bare-safe"):
         toml_value({key: "value"})
+
+
+def test_a_negative_reader_gap_offset_is_refused(monkeypatch):
+    """Python's slicing accepts a negative offset by counting from the end,
+    so `source_text[:row["offset"]]` could not tell a negative offset apart
+    from a legitimate one landing on the same prefix -- the bounds check
+    must reject it explicitly, the way it already rejects one past the end.
+    """
+    malformed = [{**READER_GAPS[0], "offset": -1}]
+    monkeypatch.setattr("proof.build_fixture.READER_GAPS", malformed)
+
+    with pytest.raises(ValueError, match=r"offset -1 is outside its"):
+        build_skeleton_fixture(render_all())
 
 
 # --- The pipeline's declaration agrees with the rendered geometry --------------

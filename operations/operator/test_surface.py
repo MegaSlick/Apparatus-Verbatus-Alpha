@@ -3478,9 +3478,9 @@ def test_an_unbounded_notification_message_is_truncated_before_it_is_sent(
 
     assert len(notifications) == 1
     sent = notifications[0][1]
-    assert len(sent) <= MAX_NOTIFY_MESSAGE_CHARACTERS + len(
-        "... (truncated; see the run receipt for the full text)"
-    )
+    # The ceiling this test is named for covers the whole sent message,
+    # suffix included -- not the ceiling plus the suffix's own length.
+    assert len(sent) <= MAX_NOTIFY_MESSAGE_CHARACTERS
     assert sent.startswith(long_message[:80])
     assert sent.endswith("(truncated; see the run receipt for the full text)")
 
@@ -3680,6 +3680,7 @@ def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
         "pages": [],
         "delivered": [],
         "non_delivered": [],
+        "expected_acts": 0,
     }
     bundle_bytes = b"new evidence bundle"
 
@@ -3770,6 +3771,7 @@ def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: 
         "pages": [],
         "delivered": [],
         "non_delivered": [],
+        "expected_acts": 0,
     }
 
     with pytest.raises(OperatorError) as refusal:
@@ -3781,6 +3783,51 @@ def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: 
     assert list(exports.glob("*.zip")) == []
     assert list(exports.glob("*.staged")) == []
     assert list(exports.glob(".*tmp*")) == []
+
+
+def test_export_refuses_a_complete_record_whose_partition_does_not_reconcile(
+    tmp_path: Path,
+) -> None:
+    """`export` reads the same Armarium record `run()` does and must refuse a
+    "complete" claim it cannot reconcile the same way -- a run this session
+    independently reviewed pointed out that the reconciliation added for
+    `run()` lived only there: a run refused for exactly this reason still
+    leaves a receipt naming it, and `export --run-id` reads that receipt's
+    run tree fresh, so the same unreconciled record could still be exported
+    as complete through the door `run()` had already closed. No bundle
+    should be written, and no receipt should ever claim `complete`.
+    """
+    surface = _surface(tmp_path)
+    run_id = "export-side-reconciliation"
+    run_root = tmp_path / "runs"
+    (run_root / run_id / "7_armarium").mkdir(parents=True)
+    (run_root / run_id / "run.json").write_text("{}", encoding="utf-8")
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(run_root),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+        "expected_acts": 3,
+    }
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_MISSING
+    assert "reconcile to 3 distinct act" in str(refusal.value.detail)
+    exports = surface.state_root / "exports"
+    assert list(exports.glob("*.zip")) == []
+    assert list(exports.glob("*.staged")) == []
 
 
 def test_a_structural_export_refusal_still_leaves_a_receipt_and_no_staged_file(
@@ -3813,6 +3860,7 @@ def test_a_structural_export_refusal_still_leaves_a_receipt_and_no_staged_file(
         "pages": [],
         "delivered": [],
         "non_delivered": [],
+        "expected_acts": 0,
     }
 
     def refuse_structurally(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]

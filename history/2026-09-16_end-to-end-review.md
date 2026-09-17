@@ -823,8 +823,12 @@ so there was nothing left to fix there.
 
 CodeRabbit's automatic re-review (triggered by the `@coderabbitai review` request after that
 push) marked all 8 of the fifth pass's findings "✅ Addressed" and passed 4 of 5 pre-merge
-checks (Title, Description, Carried Code, No Witness Picker). It raised 5 new inline findings
-and kept one pre-merge check failing.
+checks (Title, Description, Carried Code, No Witness Picker). It raised 5 new inline review
+comments and kept one pre-merge check failing. Four F-numbers cover them, not five: F123
+below is one rewrite closing two of the five comments together (require `expected_acts`,
+and reconcile distinct act identities rather than a raw count) — both landed on the same
+few lines of the same reconciliation block, so one fix and one entry cover both. No number
+between F122 and F124 is skipped by omission; F123 is simply two comments wide.
 
 **Fixed:**
 
@@ -878,6 +882,15 @@ and kept one pre-merge check failing.
   bound by counting from the end, so `source_text[:row["offset"]]` with `offset = -1` reads
   as "all but the last character," which a `before` value could coincidentally match.
   Tightened the bound to `0 <= row["offset"] <= len(source_text)`.
+- **F127** [minor] — `_notify`'s own 500-character ceiling (F020, Fourth pass) sliced the
+  message to the full `MAX_NOTIFY_MESSAGE_CHARACTERS` and then appended a ~57-character
+  truncation suffix, so a long notification actually sent exceeded the limit it announced by
+  the suffix's own length. Caught by CodeRabbit's outside-diff-range comment on
+  `surface.py`'s notify path, in the same review as F121-F124 but not itself one of the five
+  inline findings addressed above. Fixed by reserving space for the suffix before slicing.
+  The existing F020 regression test had the identical bug in its own assertion — it asserted
+  `len(sent) <= MAX_NOTIFY_MESSAGE_CHARACTERS + len(suffix)`, tolerating exactly the
+  oversized message instead of catching it; corrected to assert the real ceiling.
 
 **Declined, with reason:**
 
@@ -904,11 +917,14 @@ and kept one pre-merge check failing.
   disposition, not a same-day patch riding on this pass's fixes; named to Tyrel as a
   reconciliation option for when that schema-version work happens, not silently dropped.
 
-`operations/operator/test_surface.py` (282 tests, up from 279 — three net-new reconciliation/
-refusal tests, one test renamed and its scenario changed from a held run to a complete one
-per F123 above), `operations/pod/test_pod_run.py` (up two tests for F120/F122), `operations/
+`operations/operator/test_surface.py` (283 tests, up from 279 — four net-new reconciliation/
+refusal tests, including one covering the `export()` gap named below; one existing test kept
+its `complete` scenario but had its expected outcome changed from success to refusal per
+F123 above, and a new sibling test covers the same missing-`expected_acts` gap for a *held*
+run instead), `operations/pod/test_pod_run.py` (up two tests for F120/F122), `operations/
 operator/test_backup.py`, `operations/notify/test_notify.py`, `operations/pod/
-test_provider_runpod.py`, `operations/operator/test_cli.py`, `proof/` (63 tests), and
+test_provider_runpod.py`, `operations/operator/test_cli.py`, `proof/` (64 tests, up one for
+the negative-offset regression named below), and
 `.githooks/test_ci_workflow.py` (33 tests) are all green individually; the full
 `operations/`, `proof/`, and `.githooks/` directories together are green with no failures.
 `ruff format --check` and `ruff check` pass across the whole repository.
@@ -919,3 +935,83 @@ two pre-existing `shellcheck` warnings in `.githooks/check-all.sh`, a file untou
 round; confirmed identical on base commit `485283b`'s own copy of that file, so not a
 regression from this diff, and not run by GitHub Actions CI at all (no workflow invokes
 `shellcheck`).
+
+### Independent review of `db576b4` (Opus, high effort, read-only, round three)
+
+A third independent read-only review, dispatched on the same commit CodeRabbit's sixth-pass
+re-review (above) also covered, returned "correct" on all three code changes and found two
+further points worth acting on plus two record-accuracy slips in this file's own sixth-pass
+section, both from this same pass's own earlier writing. All four addressed here.
+
+**Fixed:**
+
+- **F128** [major in effect] — the same "complete" claim this pass's F123 taught `run()` to
+  refuse could still reach `verbatus export` unreconciled. `run()` and `export()` both read
+  the Armarium record independently and both decide "complete" from it, but the F113/F123
+  reconciliation lived only in `run()`. Reachable in the ordinary sequence this project's own
+  verbs support, not only in theory: `verbatus run` reads a record that claims complete but
+  does not reconcile, refuses it, and writes a run receipt recording that refusal; a later
+  `verbatus export --run-id` for the same run selects receipts by run id alone, re-reads the
+  *same* Armarium record fresh, and — with nothing in `export()` to catch it — would publish
+  it as complete: receipt, exit 0, and the "landed" phone milestone, exactly the shape
+  GOVERNANCE 2 forbids. Fixed by extracting the reconciliation into a shared method,
+  `_require_reconciled_act_partition`, called from both `run()` (unchanged in effect) and
+  `export()` (new — checked immediately after reading the record, before any bundle is
+  written, so a reconciliation failure joins export's existing "record could not be read"
+  refusals as `EXPORT_MISSING` rather than reaching the bundle-write stage at all). Three
+  existing export tests whose stub payloads claimed `complete` with an empty partition and no
+  `expected_acts` (testing bundle-write-stage refusals, not reconciliation) needed
+  `"expected_acts": 0` added so they still reach the code path they were written to test.
+  New regression: `test_export_refuses_a_complete_record_whose_partition_does_not_reconcile`.
+- **README wording** — `operations/operator/README.md`'s `fetch-run --launch-receipt`
+  section named "a different network volume or a different run" as refused; extended to name
+  a receipt that "proves no run at all" (a hold-only boot's receipt, asked for while fetching
+  a named run — F122's own refusal shape), matching what the code actually refuses.
+- **Negative-offset test coverage** — F124's bounds check (`0 <= row["offset"] <=
+  len(source_text)`) had no test proving its negative branch; the existing declared fixture
+  data has no such row to exercise it incidentally. Added
+  `test_a_negative_reader_gap_offset_is_refused` in `proof/test_proof_fixture_build.py`,
+  driving the real `build_skeleton_fixture` with `READER_GAPS` monkeypatched to one row whose
+  offset is `-1`, everything else left real.
+- **Two slips in this file's own sixth-pass writing, caught by the same review**: the opening
+  paragraph above said CodeRabbit "raised 5 new inline findings" while the Fixed list below it
+  names four F-numbers (F121-F124) — not a lost finding; F123 is one fix covering two of
+  CodeRabbit's five review comments (require `expected_acts`, and reconcile distinct
+  identities), both on the same lines of the same block. The sentence now says so explicitly
+  rather than leaving an unexplained gap that reads as a dropped finding. Separately, the test
+  totals paragraph said the renamed F123 test's "scenario changed from a held run to a
+  complete one" — backwards; the renamed test's scenario was `complete` throughout, only its
+  expected outcome changed (success to refusal), and the *new* sibling test is the one that
+  covers a held run. Corrected in place, per hard rule 7, the same way this file's own
+  fourth-pass self-contradiction about `check-all.sh` was corrected earlier in this document.
+
+**Declined, with reason:**
+
+- **A defensive-coding tightening in `_require_reconciled_act_partition`** — a non-list
+  `delivered`/`non_delivered` is currently treated as empty (contributing zero act records)
+  rather than refused outright, unlike a malformed *entry* inside one of those lists, which is
+  refused. The reviewer would raise on a non-list for consistency with the entry check beside
+  it. Left as is: `_armarium_export` already proves both are lists for every payload that goes
+  through the real reader, so this is defense-in-depth for a test double that bypasses that
+  reader entirely, not a path any real caller reaches — and the current behavior already fails
+  closed (a non-list partition can only ever make reconciliation fail, since `expected_acts`
+  is never `0` for a genuine complete export per `pipeline/7_armarium/run.py`'s own conservation
+  check). Worth revisiting if this method's own lines are touched again, not on its own.
+- **An empty-string `act_key`** technically satisfies the entry check's `isinstance(..., str)`
+  test. The real producer can never emit one (`common/stage.py` refuses an empty act key at
+  the seal). Cosmetic; not worth a same-day line for a case the producer cannot reach.
+
+**Verified, not re-litigated:** the review re-confirmed F125's decline (the backup
+OS-residue audit-trail finding) as "defensible engineering... not a rationalization," reading
+the same F103/F104 precedent this file already cites, and found the residual risk it still
+carries — residue is matched by filename only, at any depth, so a real artifact that happened
+to be named like one would be silently dropped with nothing in the snapshot to say so — worth
+naming plainly rather than treating F125's decline as closing the question. Recorded here so
+it is not lost: no pipeline stage names its artifacts this way today (they are digest- and
+id-derived), so there is no known live exposure, and this is not a new decision, just F125's
+own residual risk stated once more in the open.
+
+Two full test rounds after these fixes: `operations/operator/test_surface.py` (283 tests) and
+`proof/` (64 tests) are green individually; the full `operations/`, `proof/`, and
+`.githooks/` directories together are green with no failures. `ruff format`/`check` clean
+repo-wide.

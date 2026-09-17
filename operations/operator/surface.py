@@ -1544,52 +1544,7 @@ class OperatorSurface:
             if not isinstance(page_records, list):
                 raise ValueError("the Armarium export's page record is not a list")
             if state == "complete":
-                # `_armarium_export` only proves `delivered`/`non_delivered` are
-                # present and are lists; an honest producer always fills them
-                # with exactly one entry per expected act -- never both lists,
-                # never twice (`pipeline/7_armarium/run.py` refuses to publish
-                # otherwise) -- and always carries a matching `expected_acts`.
-                # A foreign record -- an older build, a tree fetched from a pod
-                # running different code -- could still claim `status: complete`
-                # with no `expected_acts` to reconcile against, a raw count
-                # padded by a duplicated or malformed entry, or an act dropped
-                # from one list while doubled in the other; a raw `len()`
-                # cannot tell any of those apart from an honest total. `.get(...)`
-                # here, not the guaranteed-present read `_armarium_export` would
-                # give: this branch must stay safe for a payload that bypassed
-                # that reader entirely. GOVERNANCE 2: "complete" is refused
-                # unless everything reconciles.
-                expected_acts = export_payload.get("expected_acts")
-                if (
-                    not isinstance(expected_acts, int)
-                    or isinstance(expected_acts, bool)
-                    or expected_acts < 0
-                ):
-                    raise ValueError(
-                        "the Armarium export claims status complete but its expected_acts "
-                        f"is not a valid non-negative count: {expected_acts!r}"
-                    )
-                delivered_acts = export_payload.get("delivered")
-                non_delivered_acts = export_payload.get("non_delivered")
-                act_records = [
-                    *(delivered_acts if isinstance(delivered_acts, list) else []),
-                    *(non_delivered_acts if isinstance(non_delivered_acts, list) else []),
-                ]
-                act_keys: set[str] = set()
-                for record in act_records:
-                    if not isinstance(record, dict) or not isinstance(record.get("act_key"), str):
-                        raise ValueError(
-                            "the Armarium export claims status complete but one of its "
-                            "delivered/non_delivered entries is not a readable act record"
-                        )
-                    act_keys.add(record["act_key"])
-                if len(act_keys) != len(act_records) or len(act_keys) != expected_acts:
-                    raise ValueError(
-                        "the Armarium export claims status complete but its delivered "
-                        f"and non_delivered acts do not reconcile to {expected_acts} "
-                        f"distinct act(s) ({len(act_records)} record(s), {len(act_keys)} "
-                        "distinct)"
-                    )
+                self._require_reconciled_act_partition(export_payload)
         except Exception as error:
             if completed.returncode == 3:
                 # Held before the Armarium -- the Attestatores' hold, or a
@@ -1848,6 +1803,15 @@ class OperatorSurface:
             run_root = self._state_path(str(run_record["run_root"]))
             self.present(f"Exporting run {recorded_id} from run root {run_root}.")
             export_payload = self._armarium_export(run_root, recorded_id)
+            # The same reconciliation `run()` requires before it will call a
+            # record complete: `export` reads this same record independently
+            # (a run refused for this exact reason still leaves a receipt
+            # `export` can be asked for later), and a record that could not
+            # be called complete there must not be called complete here
+            # either -- GOVERNANCE 2 through whichever verb reads it.
+            aggregate = export_payload["aggregate"]
+            if aggregate.get("status") == "complete":
+                self._require_reconciled_act_partition(export_payload)
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
         exports_dir = self.state_root / "exports"
@@ -2959,6 +2923,62 @@ class OperatorSurface:
                 raise ValueError(f"Armarium export record's {member} is not a list")
         return payload
 
+    def _require_reconciled_act_partition(self, export_payload: dict[str, Any]) -> None:
+        """Refuse an Armarium export claiming `status: complete` whose act
+        partition does not actually reconcile -- called by both `run()` and
+        `export()`, the two verbs that decide "complete" from this same
+        record, so a record either refuses through both or neither.
+
+        `_armarium_export` only proves `delivered`/`non_delivered` are
+        present and are lists; an honest producer always fills them with
+        exactly one entry per expected act -- never both lists, never twice
+        (`pipeline/7_armarium/run.py` refuses to publish otherwise) -- and
+        always carries a matching `expected_acts`. A foreign record -- an
+        older build, a tree fetched from a pod running different code --
+        could still claim `status: complete` with no `expected_acts` to
+        reconcile against, a raw count padded by a duplicated or malformed
+        entry, or an act dropped from one list while doubled in the other; a
+        raw `len()` cannot tell any of those apart from an honest total.
+        `.get(...)` here, not the guaranteed-present read `_armarium_export`
+        would give: this must stay safe for a payload that bypassed that
+        reader entirely (every export test but the reader's own stubs
+        `_armarium_export` directly). Caller decides what "complete" was
+        claiming here: GOVERNANCE 2: "complete" is refused unless everything
+        reconciles.
+        """
+
+        expected_acts = export_payload.get("expected_acts")
+        if (
+            not isinstance(expected_acts, int)
+            or isinstance(expected_acts, bool)
+            or expected_acts < 0
+        ):
+            raise ValueError(
+                "the Armarium export claims status complete but its expected_acts "
+                f"is not a valid non-negative count: {expected_acts!r}"
+            )
+        delivered_acts = export_payload.get("delivered")
+        non_delivered_acts = export_payload.get("non_delivered")
+        act_records = [
+            *(delivered_acts if isinstance(delivered_acts, list) else []),
+            *(non_delivered_acts if isinstance(non_delivered_acts, list) else []),
+        ]
+        act_keys: set[str] = set()
+        for record in act_records:
+            if not isinstance(record, dict) or not isinstance(record.get("act_key"), str):
+                raise ValueError(
+                    "the Armarium export claims status complete but one of its "
+                    "delivered/non_delivered entries is not a readable act record"
+                )
+            act_keys.add(record["act_key"])
+        if len(act_keys) != len(act_records) or len(act_keys) != expected_acts:
+            raise ValueError(
+                "the Armarium export claims status complete but its delivered "
+                f"and non_delivered acts do not reconcile to {expected_acts} "
+                f"distinct act(s) ({len(act_records)} record(s), {len(act_keys)} "
+                "distinct)"
+            )
+
     def _write_base_armarium_bundle(self, run_root: Path, run_id: str, destination: Path) -> None:
         tree = RunTree(run_root, run_id)
         source = tree.root
@@ -3122,10 +3142,12 @@ class OperatorSurface:
         # decision moment would be dropped exactly when a person is needed.
         one_line = " ".join(message.split()) or "no detail recorded"
         if len(one_line) > MAX_NOTIFY_MESSAGE_CHARACTERS:
-            one_line = (
-                f"{one_line[:MAX_NOTIFY_MESSAGE_CHARACTERS]}... "
-                "(truncated; see the run receipt for the full text)"
-            )
+            # The suffix counts against the same limit it announces: appending
+            # it after a full-length slice let the notifier receive more than
+            # MAX_NOTIFY_MESSAGE_CHARACTERS, past the very ceiling this exists
+            # to enforce.
+            suffix = "... (truncated; see the run receipt for the full text)"
+            one_line = one_line[: MAX_NOTIFY_MESSAGE_CHARACTERS - len(suffix)] + suffix
         try:
             outcome = self.notifier(event, one_line)
         except Exception as error:  # a broken notifier is not a broken run
