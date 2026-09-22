@@ -1335,6 +1335,16 @@ class OfflineControllerTests(unittest.TestCase):
                 assert controller.lifecycle(root)["pod_create_outcome"] == "response-invalid"
                 assert "private-test-key" not in (root / "events.jsonl").read_text()
 
+    def test_volume_headroom_exceeding_combined_cap_refuses_before_provider_calls(self) -> None:
+        with self.temporary_path() as directory:
+            root, _, auth = make_session(Path(directory))
+            auth["max_volume_hourly_usd"] = "0.05"
+            transport = ScriptedTransport([])
+            with self.assertRaisesRegex(controller.Refusal, "combined rate"):
+                controller.launch(controller.RunPodV2(transport), root, auth, "private-test-key")
+            assert not transport.calls
+            assert controller.lifecycle(root).get("create_window_started_at") is None
+
     def temporary_path(self):
         return tempfile.TemporaryDirectory(prefix="verbatus-controller-test-")
 

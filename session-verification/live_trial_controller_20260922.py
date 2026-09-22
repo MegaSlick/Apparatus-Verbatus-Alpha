@@ -384,7 +384,7 @@ def validate_authorization(
         raise Refusal("expected pod rate exceeds its authorization ceiling")
     if money["expected_volume_hourly_usd"] > money["max_volume_hourly_usd"]:
         raise Refusal("expected volume rate exceeds its authorization ceiling")
-    combined = money["expected_pod_hourly_usd"] + money["expected_volume_hourly_usd"]
+    combined = money["expected_pod_hourly_usd"] + money["max_volume_hourly_usd"]
     if combined > money["max_combined_hourly_usd"]:
         raise Refusal("expected combined rate exceeds its authorization ceiling")
     if combined > Decimal("1") and authorization["acknowledges_combined_hourly_above_usd_1"] is not True:
