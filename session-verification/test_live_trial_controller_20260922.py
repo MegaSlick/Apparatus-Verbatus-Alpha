@@ -1259,6 +1259,42 @@ def case_close_error_exits_only_when_no_paid_create_was_attempted(tmp_path: Path
     ).read_text()
 
 
+def case_close_loop_slows_after_absence_and_restores_fast_cleanup(tmp_path: Path) -> None:
+    session_dir, _, _ = make_session(tmp_path)
+    with controller.lifecycle_locked(session_dir) as life:
+        life["pod_create_attempted"] = True
+    api = controller.RunPodV2(
+        lambda _method, _route, _body: (_ for _ in ()).throw(
+            AssertionError("mocked close loop reached provider transport")
+        )
+    )
+    absent = {
+        "green": False,
+        "pod_get_404_and_full_list_absent": True,
+        "volume_get_404_and_list_absent": True,
+    }
+    may_remain = {
+        "green": False,
+        "pod_get_404_and_full_list_absent": False,
+        "volume_get_404_and_list_absent": True,
+    }
+    with (
+        mock.patch.object(
+            controller,
+            "close_resources",
+            side_effect=[
+                absent,
+                controller.Refusal("provider rate limited this close tick"),
+                may_remain,
+                {"green": True},
+            ],
+        ),
+        mock.patch.object(controller.time, "sleep", return_value=None) as sleep_mock,
+    ):
+        assert controller.close_until_bounded(api, session_dir, poll_seconds=10.0) == 0
+    assert [call.args[0] for call in sleep_mock.call_args_list] == [60, 10.0, 10.0]
+
+
 def case_billing_rejects_gaps_bad_metadata_and_bad_money() -> None:
     created = controller.utc_now().replace(minute=5, second=0, microsecond=0)
     cutoff = created.replace(minute=45)
@@ -1530,6 +1566,12 @@ class OfflineControllerTests(unittest.TestCase):
     def test_close_without_paid_attempt_exits(self) -> None:
         with self.temporary_path() as directory:
             case_close_error_exits_only_when_no_paid_create_was_attempted(
+                Path(directory)
+            )
+
+    def test_absent_resources_slow_only_billing_reconciliation(self) -> None:
+        with self.temporary_path() as directory:
+            case_close_loop_slows_after_absence_and_restores_fast_cleanup(
                 Path(directory)
             )
 

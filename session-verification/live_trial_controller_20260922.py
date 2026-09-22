@@ -47,6 +47,7 @@ MAX_TOTAL_SECONDS = 2 * 60 * 60
 WATCHDOG_READY_MAX_AGE_SECONDS = 30
 PROVISIONING_TIMEOUT_SECONDS = 20 * 60
 POST_DELETE_BILLING_WAIT_SECONDS = 30 * 60
+ABSENT_RESOURCE_BILLING_POLL_SECONDS = 60
 LIFECYCLE_LOCK_TIMEOUT_SECONDS = 5
 SCHEMA_SESSION = "verbatus-runpod-live-session.v1"
 SCHEMA_AUTHORIZATION = "verbatus-runpod-live-authorization.v1"
@@ -1797,6 +1798,7 @@ def close_until_bounded(api: RunPodV2, session_dir: Path, *, poll_seconds: float
     """Keep trying to stop metered resources; only billing lag gets a bounded exit."""
 
     while True:
+        sleep_seconds = poll_seconds
         try:
             result = close_resources(api, session_dir)
         except BaseException as error:
@@ -1832,6 +1834,10 @@ def close_until_bounded(api: RunPodV2, session_dir: Path, *, poll_seconds: float
                 result.get("pod_get_404_and_full_list_absent")
                 and result.get("volume_get_404_and_list_absent")
             )
+            if resources_absent:
+                sleep_seconds = max(
+                    poll_seconds, ABSENT_RESOURCE_BILLING_POLL_SECONDS
+                )
             life = lifecycle(session_dir)
             reconcile_until = life.get("billing_reconcile_until")
             if (
@@ -1841,10 +1847,10 @@ def close_until_bounded(api: RunPodV2, session_dir: Path, *, poll_seconds: float
             ):
                 event(session_dir, "billing-still-unverified-after-bounded-reconciliation")
                 return 3
-        # If a pod or volume may remain, do not let the host backstop silently stop
-        # trying merely because the planned two-hour work window has ended.
+        # Keep the fast cleanup cadence whenever a resource may remain.  Once both
+        # resources are freshly proven absent, only billing reconciliation remains.
         try:
-            time.sleep(poll_seconds)
+            time.sleep(sleep_seconds)
         except BaseException:
             # Once a paid action may exist, an interrupt requests closure; it does not
             # make the only host closer disappear.
