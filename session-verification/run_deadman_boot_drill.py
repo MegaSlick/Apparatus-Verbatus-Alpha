@@ -500,9 +500,9 @@ def main() -> int:
     private_evidence_workspace = workspace.with_name(
         workspace.name + "-private-evidence"
     )
-    if private_evidence_workspace.exists():
-        shutil.rmtree(private_evidence_workspace)
-    private_evidence_workspace.mkdir(mode=0o700)
+    if private_evidence_workspace.exists() or private_evidence_workspace.is_symlink():
+        raise RuntimeError("private evidence workspace already exists")
+    private_evidence_workspace.mkdir(parents=True, mode=0o700)
     workspace.mkdir(parents=True, mode=0o700)
     arguments.summary.parent.mkdir(parents=True, exist_ok=True)
     source_path = workspace.parent / "deadman-drill-source.py"
