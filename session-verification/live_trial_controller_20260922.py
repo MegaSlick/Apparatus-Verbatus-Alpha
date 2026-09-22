@@ -829,6 +829,8 @@ def assert_paid_create_window(
     """Recheck authorization and useful runtime immediately before a paid POST."""
 
     now = now or utc_now()
+    if (session_dir / "stop.requested.json").exists():
+        raise Refusal(f"{action} refused because the durable stop flag is present")
     life = lifecycle(session_dir)
     expires = parse_time(authorization["expires_at"], "authorization expiry")
     inference_cutoff = parse_time(life.get("inference_cutoff"), "inference cutoff")
@@ -1195,6 +1197,8 @@ def launch(
     api_key: str,
 ) -> dict[str, object]:
     identity = session_identity(session_dir)
+    if (session_dir / "stop.requested.json").exists():
+        raise Refusal("launch refused because the durable stop flag is present")
     checked = validate_authorization(authorization, identity)
     verify_watchdog_prearmed(session_dir)
     with lifecycle_locked(session_dir) as life:
@@ -1660,7 +1664,10 @@ def record_runtime_ack(session_dir: Path, receipt_path: Path, output_path: Path)
             raise Refusal("a different runtime receipt was already consumed by the pod")
         current["runtime_ack_prepared"] = True
         current["runtime_receipt_sha256"] = ack["runtime_receipt_sha256"]
-        if not closure_started(current):
+        if (
+            not closure_started(current)
+            and current.get("runtime_ack_consumed_by_pod") is not True
+        ):
             current["phase"] = "runtime-ack-prepared-awaiting-pod-acknowledgement"
     event(session_dir, "runtime-receipt-accepted", pod_id=life["pod_id"])
     return ack
@@ -1724,6 +1731,17 @@ def close_until_bounded(api: RunPodV2, session_dir: Path, *, poll_seconds: float
         except BaseException as error:
             with contextlib.suppress(BaseException):
                 event(session_dir, "close-attempt-unverified", error_type=type(error).__name__)
+            try:
+                life_after_error = lifecycle(session_dir)
+            except BaseException:
+                life_after_error = None
+            if (
+                isinstance(life_after_error, dict)
+                and life_after_error.get("pod_create_attempted") is False
+                and life_after_error.get("volume_create_attempted") is False
+            ):
+                event(session_dir, "close-complete-no-paid-action-was-attempted")
+                return 0
             result = None
         with contextlib.suppress(BaseException):
             durable_write(
@@ -1971,6 +1989,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise Refusal("--execute-exact-session does not equal this exact random session")
             if not args.i_understand_this_creates_billable_resources:
                 raise Refusal("literal billable-resource execution flag is absent")
+            if (args.session_dir / "stop.requested.json").exists():
+                raise Refusal("launch refused because the durable stop flag is present")
             authorization = read_json(args.authorization, "authorization")
             api_key = load_api_key()
             result = launch(RunPodV2(UrllibTransport(api_key)), args.session_dir, authorization, api_key)

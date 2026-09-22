@@ -662,7 +662,9 @@ def case_runtime_ack_binds_pid1_deadline_worker_probe_and_receipt_digest(
     controller.record_runtime_ack(
         session_dir, receipt_path, tmp_path / "second-controller-ack.json"
     )
-    assert controller.lifecycle(session_dir)["runtime_ack_consumed_by_pod"] is True
+    repeated = controller.lifecycle(session_dir)
+    assert repeated["runtime_ack_consumed_by_pod"] is True
+    assert repeated["phase"] == "runtime-verified-for-inference"
 
     receipt["worker_probe"]["proc1_environ_denied"] = False
     receipt_path.write_bytes(controller.canonical_bytes(receipt))
@@ -894,6 +896,11 @@ def case_deadline_is_rechecked_after_intent_and_before_each_post(
 
 
 def case_launch_gates_touch_no_provider(test: unittest.TestCase, tmp_path: Path) -> None:
+    messages = {
+        "absent": "cannot read watchdog readiness",
+        "stale": "stale or future-dated",
+        "unlocked": "watchdog lock is not held",
+    }
     for variant in ("absent", "stale", "unlocked"):
         session_dir, identity, auth = make_session(tmp_path / variant)
         if variant != "absent":
@@ -910,7 +917,7 @@ def case_launch_gates_touch_no_provider(test: unittest.TestCase, tmp_path: Path)
                 },
             )
         transport = ScriptedTransport([])
-        with test.assertRaises(controller.Refusal):
+        with test.assertRaisesRegex(controller.Refusal, messages[variant]):
             controller.launch(
                 controller.RunPodV2(transport), session_dir, auth, "private-test-key"
             )
@@ -944,6 +951,83 @@ def case_launch_gates_touch_no_provider(test: unittest.TestCase, tmp_path: Path)
         )
     assert code == 2
     launch_mock.assert_not_called()
+
+
+def case_durable_stop_refuses_launch_and_both_paid_posts(
+    test: unittest.TestCase, tmp_path: Path
+) -> None:
+    session_dir, identity, auth = make_session(tmp_path / "launch")
+    controller.durable_touch(session_dir / "stop.requested.json")
+    transport = ScriptedTransport([])
+    with test.assertRaisesRegex(controller.Refusal, "durable stop flag is present"):
+        controller.launch(
+            controller.RunPodV2(transport), session_dir, auth, "private-test-key"
+        )
+    assert not transport.calls
+
+    with (
+        mock.patch.object(controller, "read_json", wraps=controller.read_json) as read_mock,
+        mock.patch.object(controller, "load_api_key") as key_mock,
+        mock.patch.object(controller, "launch") as launch_mock,
+    ):
+        assert (
+            controller.main(
+                [
+                    "launch",
+                    "--session-dir",
+                    str(session_dir),
+                    "--authorization",
+                    str(tmp_path / "must-not-be-read.json"),
+                    "--execute-exact-session",
+                    str(identity["session_id"]),
+                    "--i-understand-this-creates-billable-resources",
+                ]
+            )
+            == 2
+        )
+    assert read_mock.call_count == 1
+    key_mock.assert_not_called()
+    launch_mock.assert_not_called()
+
+    volume_session, volume_identity, volume_auth = make_session(tmp_path / "volume")
+    volume_checked = controller.validate_authorization(volume_auth, volume_identity)
+    deadlines(volume_session, volume_checked)
+    controller.durable_touch(volume_session / "stop.requested.json")
+    volume_transport = ScriptedTransport([])
+    with test.assertRaisesRegex(controller.Refusal, "durable stop flag is present"):
+        controller.create_volume_once(
+            controller.RunPodV2(volume_transport),
+            volume_session,
+            volume_identity,
+            volume_checked,
+        )
+    assert not volume_transport.calls
+    assert (
+        controller.lifecycle(volume_session)["volume_create_outcome"]
+        == "not-sent-window-closed"
+    )
+
+    pod_session, pod_identity, pod_auth = make_session(tmp_path / "pod")
+    pod_checked = controller.validate_authorization(pod_auth, pod_identity)
+    bound_deadlines = deadlines(pod_session, pod_checked)
+    with controller.lifecycle_locked(pod_session) as life:
+        life["volume_id"] = "vol-1"
+    controller.durable_touch(pod_session / "stop.requested.json")
+    pod_transport = ScriptedTransport([])
+    with test.assertRaisesRegex(controller.Refusal, "durable stop flag is present"):
+        controller.create_pod_once(
+            controller.RunPodV2(pod_transport),
+            pod_session,
+            pod_identity,
+            pod_checked,
+            bound_deadlines,
+            "private-test-key",
+        )
+    assert not pod_transport.calls
+    assert (
+        controller.lifecycle(pod_session)["pod_create_outcome"]
+        == "not-sent-window-closed"
+    )
 
 
 def case_lifecycle_lock_preserves_concurrent_fields(tmp_path: Path) -> None:
@@ -1036,6 +1120,9 @@ def case_watchdog_survives_uncertain_pod_and_volume_reconciliation(tmp_path: Pat
 
 def case_reconcile_close_command_persists_after_uncertain_tick(tmp_path: Path) -> None:
     session_dir, _, _ = make_session(tmp_path)
+    with controller.lifecycle_locked(session_dir) as life:
+        life["volume_create_attempted"] = True
+        life["volume_create_outcome"] = "unknown"
     with (
         mock.patch.object(controller, "load_api_key", return_value="private-test-key"),
         mock.patch.object(
@@ -1062,6 +1149,29 @@ def case_reconcile_close_command_persists_after_uncertain_tick(tmp_path: Path) -
             == 0
         )
     assert close_mock.call_count == 2
+
+
+def case_close_error_exits_only_when_no_paid_create_was_attempted(tmp_path: Path) -> None:
+    session_dir, _, _ = make_session(tmp_path)
+    api = controller.RunPodV2(
+        lambda _method, _route, _body: (_ for _ in ()).throw(
+            AssertionError("no-attempt close reached provider transport")
+        )
+    )
+    with (
+        mock.patch.object(
+            controller,
+            "close_resources",
+            side_effect=controller.Refusal("no recorded authorization"),
+        ) as close_mock,
+        mock.patch.object(controller.time, "sleep") as sleep_mock,
+    ):
+        assert controller.close_until_bounded(api, session_dir, poll_seconds=0.001) == 0
+    close_mock.assert_called_once()
+    sleep_mock.assert_not_called()
+    assert "close-complete-no-paid-action-was-attempted" in (
+        session_dir / "events.jsonl"
+    ).read_text()
 
 
 def case_billing_rejects_gaps_bad_metadata_and_bad_money() -> None:
@@ -1228,6 +1338,12 @@ class OfflineControllerTests(unittest.TestCase):
         with self.temporary_path() as directory:
             case_launch_gates_touch_no_provider(self, Path(directory))
 
+    def test_durable_stop_gates_all_paid_posts(self) -> None:
+        with self.temporary_path() as directory:
+            case_durable_stop_refuses_launch_and_both_paid_posts(
+                self, Path(directory)
+            )
+
     def test_lifecycle_concurrency(self) -> None:
         with self.temporary_path() as directory:
             case_lifecycle_lock_preserves_concurrent_fields(Path(directory))
@@ -1239,6 +1355,12 @@ class OfflineControllerTests(unittest.TestCase):
     def test_reconcile_close_persists(self) -> None:
         with self.temporary_path() as directory:
             case_reconcile_close_command_persists_after_uncertain_tick(Path(directory))
+
+    def test_close_without_paid_attempt_exits(self) -> None:
+        with self.temporary_path() as directory:
+            case_close_error_exits_only_when_no_paid_create_was_attempted(
+                Path(directory)
+            )
 
     def test_adversarial_billing(self) -> None:
         case_billing_rejects_gaps_bad_metadata_and_bad_money()
