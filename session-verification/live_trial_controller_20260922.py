@@ -204,6 +204,7 @@ def prepare_session(state_root: Path, now: dt.datetime | None = None) -> Path:
             "volume_create_outcome": "not-attempted",
             "volume_id": None,
             "volume_candidate_ids": [],
+            "volume_billing_anchor": None,
             "pod_create_attempted": False,
             "pod_create_outcome": "not-attempted",
             "pod_id": None,
@@ -586,7 +587,7 @@ os.umask(0o077)
 # Establish the minimum close capability before any mount, user, service, or receipt work.
 api_key=os.environ.pop('VERBATUS_RUNPOD_API_KEY',None); pod_id=os.environ.get('RUNPOD_POD_ID')
 session=os.environ.get('VERBATUS_SESSION_ID','unbound'); challenge=os.environ.get('VERBATUS_CONTROLLER_CHALLENGE')
-root=Path('/workspace/private/session-evidence')/session; runtime=Path('/run/verbatus-live')/session
+root=Path('/workspace/private/session-evidence')/session; runtime_parent=Path('/run/verbatus-live'); runtime=runtime_parent/session
 def write(path,obj,mode=0o600):
  data=(json.dumps(obj,sort_keys=True,separators=(',',':'))+'\n').encode(); path.parent.mkdir(parents=True,exist_ok=True); tmp=path.with_name('.'+path.name+'.'+str(os.getpid())+'.tmp')
  fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL,mode)
@@ -625,7 +626,9 @@ def demote(uid,gid):
  return child
 def boot():
  deadline=float(os.environ['VERBATUS_HARD_DEADLINE_EPOCH']); cleanup=float(os.environ['VERBATUS_CLEANUP_EPOCH'])
- root.mkdir(parents=True,exist_ok=True); os.chmod(root,0o700); runtime.mkdir(parents=True,exist_ok=True); os.chmod(runtime,0o711)
+ root.mkdir(parents=True,exist_ok=True); os.chown(root,0,0); os.chmod(root,0o700)
+ runtime_parent.mkdir(exist_ok=True); os.chown(runtime_parent,0,0); os.chmod(runtime_parent,0o711)
+ runtime.mkdir(exist_ok=True); os.chown(runtime,0,0); os.chmod(runtime,0o711)
  if os.geteuid()!=0: fail('deadman-not-root')
  if os.getpid()!=1: fail('deadman-not-pid1')
  if deadline-time.time()>7200 or cleanup>=deadline or cleanup<=time.time(): fail('invalid-deadline')
@@ -945,6 +948,9 @@ def create_volume_once(
                 raise Refusal("volume create refused because closure has already begun")
             life["volume_create_attempted"] = True
             life["volume_create_outcome"] = "unknown"
+            life["volume_billing_anchor"] = life.get("volume_billing_anchor") or iso(
+                utc_now()
+            )
             life["phase"] = "volume-create-pending"
     if existing_id:
         return str(existing_id)
@@ -997,7 +1003,6 @@ def create_volume_once(
             set(life.get("volume_candidate_ids", [])) | {volume_id}
         )
         life["volume_create_outcome"] = "confirmed"
-        life["volume_created_at"] = iso(utc_now())
         if not closure_started(life):
             life["phase"] = "volume-bound"
     event(session_dir, "volume-created", volume_id=volume_id)
@@ -1265,6 +1270,16 @@ def billing_verified(
         return False
     if query_start > created or query_end < requested_cutoff:
         return False
+    if (
+        query_start >= query_end
+        or query_start.minute
+        or query_start.second
+        or query_start.microsecond
+        or query_end.minute
+        or query_end.second
+        or query_end.microsecond
+    ):
+        return False
     record_starts: list[dt.datetime] = []
     record_ends: list[dt.datetime] = []
     sums = {field: Decimal("0") for field in amount_fields}
@@ -1274,6 +1289,16 @@ def billing_verified(
         try:
             record_start = parse_time(record.get("startTime"), "record start")
             record_end = parse_time(record.get("endTime"), "record end")
+            if (
+                record_start.minute
+                or record_start.second
+                or record_start.microsecond
+                or record_end.minute
+                or record_end.second
+                or record_end.microsecond
+                or record_end - record_start != dt.timedelta(hours=1)
+            ):
+                return False
             if record_start < query_start:
                 return False
             if record_end > query_end or record_end <= record_start:
@@ -1309,10 +1334,9 @@ def billing_verified(
         return False
     covered_until = intervals[0][1]
     for start, end in intervals[1:]:
-        if start > covered_until:
+        if start != covered_until:
             return False
-        if end > covered_until:
-            covered_until = end
+        covered_until = end
     return covered_until >= requested_cutoff
 
 
@@ -1520,7 +1544,7 @@ def close_resources(api: RunPodV2, session_dir: Path) -> dict[str, object]:
         volume_billing = True
         for candidate in volume_candidates:
             created_at = str(
-                life.get("volume_created_at") or life["create_window_started_at"]
+                life.get("volume_billing_anchor") or life["create_window_started_at"]
             )
             route = "billing/network-volumes?" + urllib.parse.urlencode(
                 {
@@ -1959,11 +1983,14 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 with exclusive_lock(args.session_dir / "watchdog.lock", blocking=False):
                     api_key = load_api_key()
-                    result = close_resources(RunPodV2(UrllibTransport(api_key)), args.session_dir)
+                    result = close_until_bounded(
+                        RunPodV2(UrllibTransport(api_key)),
+                        args.session_dir,
+                        poll_seconds=10.0,
+                    )
             except BlockingIOError as error:
                 raise Refusal("live watchdog still owns this session; use the durable stop flag") from error
-            print(json.dumps(result, indent=2))
-            return 0 if result["green"] else 3
+            return result
         raise AssertionError(args.command)
     except Refusal as error:
         print(f"REFUSED: {error}", file=sys.stderr)

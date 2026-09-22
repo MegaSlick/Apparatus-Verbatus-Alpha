@@ -7,6 +7,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -198,15 +201,91 @@ def case_uncertain_volume_create_is_never_reposted_and_exact_match_is_adopted(
     assert [call[0] for call in transport.calls].count("POST") == 1
 
 
+def case_volume_billing_anchor_is_durable_before_post_and_cross_hour_close(
+    tmp_path: Path,
+) -> None:
+    session_dir = controller.prepare_session(tmp_path)
+    identity = controller.session_identity(session_dir)
+    observed = controller.utc_now()
+    before_post = (observed - dt.timedelta(hours=1)).replace(
+        minute=59, second=59, microsecond=0
+    )
+    after_response = before_post + dt.timedelta(seconds=2)
+    auth = authorization(identity, now=before_post)
+    checked = controller.validate_authorization(auth, identity, now=before_post)
+    clock = [before_post]
+    with mock.patch.object(controller, "utc_now", side_effect=lambda: clock[0]):
+        deadlines(session_dir, checked)
+        row = volume(identity, checked)
+
+        def create_transport(method, route, body):
+            assert (method, route) == ("POST", "network-volumes")
+            assert body == controller.expected_volume(identity, checked)
+            assert (
+                controller.lifecycle(session_dir)["volume_billing_anchor"]
+                == controller.iso(before_post)
+            )
+            clock[0] = after_response
+            return 201, row
+
+        volume_id = controller.create_volume_once(
+            controller.RunPodV2(create_transport), session_dir, identity, checked
+        )
+    assert volume_id == "vol-1"
+    life = controller.lifecycle(session_dir)
+    assert life["volume_billing_anchor"] == controller.iso(before_post)
+
+    with controller.lifecycle_locked(session_dir) as current:
+        current["authorization_public"] = {
+            key: value for key, value in checked.items() if key != "authorization_sha256"
+        }
+        current["close_requested_at"] = controller.iso(after_response)
+        current["billing_cutoff"] = controller.iso(after_response)
+        current["volume_delete_requested_at"] = controller.iso(after_response)
+        current["volume_billing_cutoff"] = controller.iso(after_response)
+    volume_route = "billing/network-volumes?" + controller.urllib.parse.urlencode(
+        {
+            "networkVolumeId": "vol-1",
+            "startTime": controller.iso(before_post),
+            "endTime": controller.iso(after_response),
+            "bucketSize": "hour",
+        }
+    )
+    transport = ScriptedTransport(
+        [
+            ("GET", "pods?includeClusterPods=true&limit=1000", (200, pod_page([]))),
+            ("GET", "pods?includeClusterPods=true&limit=1000", (200, pod_page([]))),
+            ("GET", "network-volumes", (200, {"networkVolumes": []})),
+            ("DELETE", "network-volumes/vol-1", (204, None)),
+            ("GET", "network-volumes/vol-1", (404, None)),
+            ("GET", "network-volumes", (200, {"networkVolumes": []})),
+            (
+                "GET",
+                volume_route,
+                (
+                    200,
+                    billing(
+                        "networkVolumeId", "vol-1", before_post, after_response
+                    ),
+                ),
+            ),
+        ]
+    )
+    result = controller.close_resources(controller.RunPodV2(transport), session_dir)
+    assert result["green"] is True
+    assert not transport.answers
+
+
 def case_uncertain_pod_create_is_never_reposted_and_get_contract_is_rechecked(
     tmp_path: Path,
 ) -> None:
     session_dir, identity, auth = make_session(tmp_path)
-    bound_deadlines = deadlines(session_dir, auth)
+    checked = controller.validate_authorization(auth, identity)
+    bound_deadlines = deadlines(session_dir, checked)
     life = controller.lifecycle(session_dir)
     life["volume_id"] = "vol-1"
     controller.write_lifecycle(session_dir, life)
-    row = pod(identity, auth, "vol-1", bound_deadlines)
+    row = pod(identity, checked, "vol-1", bound_deadlines)
     transport = ScriptedTransport(
         [
             ("POST", "pods", controller.TransportUncertain("timeout")),
@@ -218,13 +297,13 @@ def case_uncertain_pod_create_is_never_reposted_and_get_contract_is_rechecked(
     api = controller.RunPodV2(transport)
     assert (
         controller.create_pod_once(
-            api, session_dir, identity, auth, bound_deadlines, "private-test-key"
+            api, session_dir, identity, checked, bound_deadlines, "private-test-key"
         )
         is None
     )
     assert (
         controller.create_pod_once(
-            api, session_dir, identity, auth, bound_deadlines, "private-test-key"
+            api, session_dir, identity, checked, bound_deadlines, "private-test-key"
         )
         == "pod-1"
     )
@@ -237,11 +316,12 @@ def case_mismatched_created_pod_is_immediately_sent_to_delete(
     test: unittest.TestCase, tmp_path: Path
 ) -> None:
     session_dir, identity, auth = make_session(tmp_path)
-    bound_deadlines = deadlines(session_dir, auth)
+    checked = controller.validate_authorization(auth, identity)
+    bound_deadlines = deadlines(session_dir, checked)
     life = controller.lifecycle(session_dir)
     life["volume_id"] = "vol-1"
     controller.write_lifecycle(session_dir, life)
-    row = pod(identity, auth, "vol-1", bound_deadlines)
+    row = pod(identity, checked, "vol-1", bound_deadlines)
     row["disk"] = 199
     transport = ScriptedTransport(
         [("POST", "pods", (201, row)), ("DELETE", "pods/pod-1", (204, None))]
@@ -251,7 +331,7 @@ def case_mismatched_created_pod_is_immediately_sent_to_delete(
             controller.RunPodV2(transport),
             session_dir,
             identity,
-            auth,
+            checked,
             bound_deadlines,
             "private-test-key",
         )
@@ -267,29 +347,27 @@ def billing(
     query_start = start.replace(minute=0, second=0, microsecond=0)
     query_end = cutoff.replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)
     if id_field == "podId":
-        amounts = {
-            "totalAmount": 0.01,
-            "gpuAmount": 0.008,
-            "cpuAmount": 0.0,
-            "diskAmount": 0.002,
-        }
+        amounts = {"totalAmount": 10, "gpuAmount": 8, "cpuAmount": 0, "diskAmount": 2}
         unique_field = "uniquePodCount"
     else:
-        amounts = {
-            "totalAmount": 0.01,
-            "standardAmount": 0.01,
-            "highPerformanceAmount": 0.0,
-        }
+        amounts = {"totalAmount": 10, "standardAmount": 10, "highPerformanceAmount": 0}
         unique_field = "uniqueNetworkVolumeCount"
-    return {
-        "records": [
+    records: list[dict[str, object]] = []
+    bucket_start = query_start
+    while bucket_start < query_end:
+        bucket_end = bucket_start + dt.timedelta(hours=1)
+        records.append(
             {
                 id_field: resource_id,
-                "startTime": controller.iso(query_start),
-                "endTime": controller.iso(query_end),
+                "startTime": controller.iso(bucket_start),
+                "endTime": controller.iso(bucket_end),
                 **amounts,
             }
-        ],
+        )
+        bucket_start = bucket_end
+    totals = {field: value * len(records) for field, value in amounts.items()}
+    return {
+        "records": records,
         "metadata": {
             "query": {
                 id_field: resource_id,
@@ -297,9 +375,9 @@ def billing(
                 "endTime": controller.iso(query_end),
                 "bucketSize": "hour",
             },
-            "recordCount": 1,
+            "recordCount": len(records),
             unique_field: 1,
-            "totals": amounts,
+            "totals": totals,
         },
     }
 
@@ -322,7 +400,7 @@ def close_transport(
     volume_route = "billing/network-volumes?" + controller.urllib.parse.urlencode(
         {
             "networkVolumeId": "vol-1",
-            "startTime": life["volume_created_at"],
+            "startTime": life["volume_billing_anchor"],
             "endTime": life["volume_billing_cutoff"],
             "bucketSize": "hour",
         }
@@ -356,7 +434,7 @@ def close_fixture(tmp_path: Path) -> tuple[Path, dt.datetime, dt.datetime]:
             "pod_id": "pod-1",
             "volume_id": "vol-1",
             "pod_created_at": controller.iso(created),
-            "volume_created_at": controller.iso(created),
+            "volume_billing_anchor": controller.iso(created),
             "close_requested_at": controller.iso(cutoff),
             "billing_cutoff": controller.iso(cutoff),
             "volume_delete_requested_at": controller.iso(cutoff),
@@ -407,7 +485,7 @@ def case_duplicate_candidates_persist_and_converge_on_later_close(tmp_path: Path
             "volume_create_attempted": True,
             "volume_create_outcome": "confirmed",
             "volume_id": "vol-1",
-            "volume_created_at": controller.iso(created),
+            "volume_billing_anchor": controller.iso(created),
         }
     )
     controller.write_lifecycle(session_dir, life)
@@ -664,6 +742,108 @@ def case_deadman_source_has_last_resort_and_persistent_delete_contract() -> None
     assert FakeTime.sleeps == 6
 
 
+def case_runtime_marker_permissions_allow_exact_traversal_but_deny_private_tree(
+    tmp_path: Path,
+) -> None:
+    source = controller.POD_DEADMAN_SOURCE
+    assert "runtime_parent=Path('/run/verbatus-live')" in source
+    assert "os.chown(runtime_parent,0,0); os.chmod(runtime_parent,0o711)" in source
+    assert "os.chown(runtime,0,0); os.chmod(runtime,0o711)" in source
+    assert "os.chown(root,0,0); os.chmod(root,0o700)" in source
+
+    def unavailable(reason: str) -> None:
+        if sys.platform.startswith("linux") and os.environ.get("GITHUB_ACTIONS") == "true":
+            raise AssertionError(
+                f"GitHub Linux must exercise the distinct-uid permission drill: {reason}"
+            )
+        raise unittest.SkipTest(f"distinct-uid permission drill unavailable: {reason}")
+
+    sudo = shutil.which("sudo")
+    if sys.platform != "linux" or sudo is None:
+        unavailable("Linux sudo is absent")
+    identity_probe = subprocess.run(
+        [sudo, "-n", "-u", "nobody", "--", sys.executable, "-c", "import os;print(os.geteuid())"],
+        capture_output=True,
+        text=True,
+    )
+    if identity_probe.returncode != 0:
+        unavailable("passwordless sudo to nobody is unavailable")
+    try:
+        worker_uid = int(identity_probe.stdout.strip())
+    except ValueError:
+        unavailable("nobody uid probe was not numeric")
+    if worker_uid in {0, os.geteuid()}:
+        unavailable("nobody did not produce a distinct non-root uid")
+
+    original_tmp_mode = tmp_path.stat().st_mode & 0o777
+    os.chmod(tmp_path, 0o711)
+    run_parent = tmp_path / "run"
+    runtime_parent = run_parent / "verbatus-live"
+    runtime = runtime_parent / "known-session"
+    runtime.mkdir(parents=True)
+    marker = runtime / "inference-enabled.json"
+    marker.write_text('{"enabled":true}\n')
+    os.chmod(run_parent, 0o711)
+    os.chmod(runtime_parent, 0o711)
+    os.chmod(runtime, 0o711)
+    os.chmod(marker, 0o644)
+    private_tree = tmp_path / "root-receipts"
+    private_tree.mkdir()
+    private_receipt = private_tree / "receipt.json"
+    private_receipt.write_text('{"private":true}\n')
+    os.chmod(private_tree, 0o700)
+    os.chmod(private_receipt, 0o600)
+    probe = """import json,os,sys
+marker,parent,session,private,receipt=sys.argv[1:]
+result={'uid':os.geteuid(),'marker':open(marker).read(),'parent_list_denied':False,'session_list_denied':False,'private_list_denied':False,'private_read_denied':False}
+try: os.listdir(parent)
+except PermissionError: result['parent_list_denied']=True
+try: os.listdir(session)
+except PermissionError: result['session_list_denied']=True
+try: os.listdir(private)
+except PermissionError: result['private_list_denied']=True
+try: open(receipt).read()
+except PermissionError: result['private_read_denied']=True
+print(json.dumps(result,sort_keys=True))
+"""
+    try:
+        completed = subprocess.run(
+            [
+                sudo,
+                "-n",
+                "-u",
+                "nobody",
+                "--",
+                sys.executable,
+                "-c",
+                probe,
+                str(marker),
+                str(runtime_parent),
+                str(runtime),
+                str(private_tree),
+                str(private_receipt),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        os.chmod(private_tree, 0o700)
+        os.chmod(run_parent, 0o700)
+        os.chmod(runtime_parent, 0o700)
+        os.chmod(runtime, 0o700)
+        os.chmod(tmp_path, original_tmp_mode)
+    result = json.loads(completed.stdout)
+    assert result == {
+        "uid": worker_uid,
+        "marker": '{"enabled":true}\n',
+        "parent_list_denied": True,
+        "session_list_denied": True,
+        "private_list_denied": True,
+        "private_read_denied": True,
+    }
+
+
 def case_deadline_is_rechecked_after_intent_and_before_each_post(
     test: unittest.TestCase, tmp_path: Path
 ) -> None:
@@ -854,6 +1034,36 @@ def case_watchdog_survives_uncertain_pod_and_volume_reconciliation(tmp_path: Pat
         close_mock.assert_called_once()
 
 
+def case_reconcile_close_command_persists_after_uncertain_tick(tmp_path: Path) -> None:
+    session_dir, _, _ = make_session(tmp_path)
+    with (
+        mock.patch.object(controller, "load_api_key", return_value="private-test-key"),
+        mock.patch.object(
+            controller,
+            "UrllibTransport",
+            return_value=lambda _method, _route, _body: (_ for _ in ()).throw(
+                AssertionError("offline command reached provider transport")
+            ),
+        ),
+        mock.patch.object(
+            controller,
+            "close_resources",
+            side_effect=[
+                controller.TransportUncertain("first close tick uncertain"),
+                {"green": True},
+            ],
+        ) as close_mock,
+        mock.patch.object(controller.time, "sleep", return_value=None),
+    ):
+        assert (
+            controller.main(
+                ["reconcile-close", "--session-dir", str(session_dir)]
+            )
+            == 0
+        )
+    assert close_mock.call_count == 2
+
+
 def case_billing_rejects_gaps_bad_metadata_and_bad_money() -> None:
     created = controller.utc_now().replace(minute=5, second=0, microsecond=0)
     cutoff = created.replace(minute=45)
@@ -866,20 +1076,29 @@ def case_billing_rejects_gaps_bad_metadata_and_bad_money() -> None:
         cutoff=controller.iso(cutoff),
     )
 
-    for mutation in ("gap", "count", "unique", "amount", "total", "components", "bucket"):
+    for mutation in (
+        "gap",
+        "count",
+        "unique",
+        "amount",
+        "total",
+        "components",
+        "bucket",
+        "duration",
+        "boundary",
+    ):
         value = json.loads(json.dumps(valid))
         if mutation == "gap":
-            query = value["metadata"]["query"]
             first = dict(value["records"][0])
             second = dict(value["records"][0])
-            first["endTime"] = controller.iso(created.replace(minute=15))
-            second["startTime"] = controller.iso(created.replace(minute=25))
-            for field in ("totalAmount", "gpuAmount", "cpuAmount", "diskAmount"):
-                first[field] = first[field] / 2
-                second[field] = second[field] / 2
+            bucket_start = created.replace(minute=0)
+            second["startTime"] = controller.iso(bucket_start + dt.timedelta(hours=2))
+            second["endTime"] = controller.iso(bucket_start + dt.timedelta(hours=3))
             value["records"] = [first, second]
             value["metadata"]["recordCount"] = 2
-            value["metadata"]["query"] = query
+            value["metadata"]["query"]["endTime"] = second["endTime"]
+            for field in ("totalAmount", "gpuAmount", "cpuAmount", "diskAmount"):
+                value["metadata"]["totals"][field] *= 2
         elif mutation == "count":
             value["metadata"]["recordCount"] = 2
         elif mutation == "unique":
@@ -889,10 +1108,26 @@ def case_billing_rejects_gaps_bad_metadata_and_bad_money() -> None:
         elif mutation == "total":
             value["metadata"]["totals"]["totalAmount"] = 99
         elif mutation == "components":
-            value["records"][0]["gpuAmount"] = 0.007
-            value["metadata"]["totals"]["gpuAmount"] = 0.007
-        else:
+            value["records"][0]["gpuAmount"] = 7
+            value["metadata"]["totals"]["gpuAmount"] = 7
+        elif mutation == "bucket":
             value["metadata"]["query"]["bucketSize"] = "day"
+        elif mutation == "duration":
+            value["records"][0]["endTime"] = controller.iso(
+                created.replace(minute=0) + dt.timedelta(hours=2)
+            )
+            value["metadata"]["query"]["endTime"] = value["records"][0]["endTime"]
+        else:
+            bucket_start = created.replace(minute=0)
+            value["records"][0]["startTime"] = controller.iso(
+                bucket_start + dt.timedelta(minutes=5)
+            )
+            value["records"][0]["endTime"] = controller.iso(
+                bucket_start + dt.timedelta(hours=1, minutes=5)
+            )
+            value["metadata"]["query"]["endTime"] = controller.iso(
+                bucket_start + dt.timedelta(hours=2)
+            )
         assert not controller.billing_verified(
             value,
             id_field="podId",
@@ -901,22 +1136,15 @@ def case_billing_rejects_gaps_bad_metadata_and_bad_money() -> None:
             cutoff=controller.iso(cutoff),
         )
 
-    overlap = json.loads(json.dumps(valid))
-    first = dict(overlap["records"][0])
-    second = dict(overlap["records"][0])
-    first["endTime"] = controller.iso(created.replace(minute=35))
-    second["startTime"] = controller.iso(created.replace(minute=25))
-    for field in ("totalAmount", "gpuAmount", "cpuAmount", "diskAmount"):
-        first[field] = first[field] / 2
-        second[field] = second[field] / 2
-    overlap["records"] = [first, second]
-    overlap["metadata"]["recordCount"] = 2
+    two_hour_cutoff = created.replace(minute=0) + dt.timedelta(hours=1, minutes=45)
+    two_hours = billing("podId", "pod-1", created, two_hour_cutoff)
+    assert len(two_hours["records"]) == 2
     assert controller.billing_verified(
-        overlap,
+        two_hours,
         id_field="podId",
         resource_id="pod-1",
         created_at=controller.iso(created),
-        cutoff=controller.iso(cutoff),
+        cutoff=controller.iso(two_hour_cutoff),
     )
 
 
@@ -940,6 +1168,12 @@ class OfflineControllerTests(unittest.TestCase):
     def test_uncertain_volume_create(self) -> None:
         with self.temporary_path() as directory:
             case_uncertain_volume_create_is_never_reposted_and_exact_match_is_adopted(
+                Path(directory)
+            )
+
+    def test_volume_billing_anchor(self) -> None:
+        with self.temporary_path() as directory:
+            case_volume_billing_anchor_is_durable_before_post_and_cross_hour_close(
                 Path(directory)
             )
 
@@ -978,6 +1212,12 @@ class OfflineControllerTests(unittest.TestCase):
     def test_deadman_source_contract(self) -> None:
         case_deadman_source_has_last_resort_and_persistent_delete_contract()
 
+    def test_runtime_marker_permissions(self) -> None:
+        with self.temporary_path() as directory:
+            case_runtime_marker_permissions_allow_exact_traversal_but_deny_private_tree(
+                Path(directory)
+            )
+
     def test_deadline_rechecks(self) -> None:
         with self.temporary_path() as directory:
             case_deadline_is_rechecked_after_intent_and_before_each_post(
@@ -995,6 +1235,10 @@ class OfflineControllerTests(unittest.TestCase):
     def test_watchdog_transport_uncertainty(self) -> None:
         with self.temporary_path() as directory:
             case_watchdog_survives_uncertain_pod_and_volume_reconciliation(Path(directory))
+
+    def test_reconcile_close_persists(self) -> None:
+        with self.temporary_path() as directory:
+            case_reconcile_close_command_persists_after_uncertain_tick(Path(directory))
 
     def test_adversarial_billing(self) -> None:
         case_billing_rejects_gaps_bad_metadata_and_bad_money()
