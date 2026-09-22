@@ -767,7 +767,7 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
         "temperature",
     }
     assert call["generation_sent"]["stop_token_ids"] == [151643]
-    assert call["generation_sent"]["seed"] == 0
+    assert call["generation_sent"]["seed"] == 7
     assert call["generation_sent"]["temperature"] == 0
     # DAI's declared ceiling (1,024) is strictly below what any shipped row
     # leaves after its image and prompt tokens, so it is always the vendor
