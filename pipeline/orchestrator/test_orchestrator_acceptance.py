@@ -1719,10 +1719,15 @@ def _perlector_dissent():
 # identical snapshot and digest -- confirmed directly, not only through this
 # suite, since F132's own rerun-idempotency guarantee is exactly what this
 # test exists to hold the whole orchestrator to.
+# PR120 changes sealed decoding/grouping policy bytes and the audit protocol
+# from v2 to v3. The full remote Python3.14 run 35765049440 observed these new
+# semantic pins with the same 100/111 file counts and 0/3 scenario exits. Keep the
+# byte-for-byte rerun assertions below: updating a cross-revision golden never
+# substitutes for proving that a second invocation leaves its own tree intact.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "46a92beca8fb46ca6d32a3294c91501a3740bc62b3677e4c9597b50988331220"
-REVIEW_RUN_TREE_DIGEST = "4da6710a2d88454be73fbe9ea12948c3fec08f160fbf6d941aae65a459c3fac0"
+HAPPY_RUN_TREE_DIGEST = "804983968d4dd3b2b1bcc1a1dd4ea09e19a16bb4f567d3eafd7dc339347ef7f3"
+REVIEW_RUN_TREE_DIGEST = "53d6d3e3a51afe1e2dcea6f0690590a7c961bfa806ea19d44a33d82bfe521226"
 
 
 def orchestrate(

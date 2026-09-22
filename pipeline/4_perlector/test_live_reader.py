@@ -26,6 +26,7 @@ from reader import FixtureReader
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
 from common.imaging import encode_grayscale_png
 from common.perlector_audit import (
@@ -1093,7 +1094,7 @@ def test_an_act_that_fits_carries_its_capacity_record_onto_the_retained_call_rec
             for written in blob_store.written
             if written.lstrip().startswith(b"{")
         )
-        if payload.get("schema") == "chair-call-record.v1"
+        if payload.get("schema") == CHAIR_CALL_RECORD_SCHEMA
     )
     capacity = call_record["capacity"]
     assert capacity["schema"] == "verbatus-request-capacity.v1"
@@ -1228,12 +1229,14 @@ def test_max_tokens_rides_generation_sent_only_when_given(tmp_path: Path) -> Non
     call_record = next(
         record
         for record in (json.loads(written) for written in blobs.written)
-        if isinstance(record, dict) and record.get("schema") == "chair-call-record.v1"
+        if isinstance(record, dict) and record.get("schema") == CHAIR_CALL_RECORD_SCHEMA
     )
     assert call_record["generation_declared"] == {}
     assert call_record["generation_sent"] == {
         "chat_template_kwargs": {"enable_thinking": False},
         "max_tokens": 256,
+        "seed": 7,
+        "temperature": 0,
     }
 
 

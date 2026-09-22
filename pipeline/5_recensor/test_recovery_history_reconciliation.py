@@ -229,10 +229,11 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     draft_path = tree.resolve(draft_relative)
     draft = json.loads(draft_path.read_text())
     draft["payload"]["semi_final_text"] = ""
-    blank_flags = [
-        {"class": flag["class"], "location": {"start": 0, "end": 0}}
-        for flag in draft["payload"]["flags"]
-    ]
+    blank_flags = []
+    for flag in draft["payload"]["flags"]:
+        collapsed = {"class": flag["class"], "location": {"start": 0, "end": 0}}
+        if collapsed not in blank_flags:
+            blank_flags.append(collapsed)
     draft["payload"]["flags"] = blank_flags
     # The witness-derived basis is bound to its flag by location, so a forgery
     # that blanks the flags and leaves the basis behind is refused for naming a

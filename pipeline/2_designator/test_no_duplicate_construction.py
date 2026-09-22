@@ -71,12 +71,12 @@ def test_deleting_the_shared_transform_builder_is_caught():
     """Prove the guard above can go red, over a patched copy held in memory."""
     source = RUN_PY.read_text()
     reintroduced = source.replace(
-        'transform = _crop_transform(act["page_ordinal"], page_record["subject_id"], bounds)',
+        'transform = _crop_transform(page_ordinal, page_record["subject_id"], final_bounds)',
         (
             'transform = {"operation": "crop", '
-            '"source_page_ordinal": act["page_ordinal"], '
+            '"source_page_ordinal": page_ordinal, '
             '"source_page_id": page_record["subject_id"], '
-            '"bounds": bounds}'
+            '"bounds": final_bounds}'
         ),
     )
     assert reintroduced != source, "the known call site to patch was not found; guard is stale"

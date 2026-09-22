@@ -903,16 +903,19 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_that_name(designated, t
     envelope could be malformed, and there is no envelope now.
     """
     run_root = fresh_tree(designated, tmp_path)
-    _world, exit_code = mark_out(
+    decoding, _digest = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
+    max_attempts = decoding["structure"]["recovery_max_attempts"]
+    world, exit_code = mark_out(
         designated,
         run_root,
         tmp_path / "world",
         [
             scripted_structure_answer(PAGE_ONE_ACTS, PAGE_WIDTH, PAGE_HEIGHT),
-            scripted_structure_refusal(outcome),
+            *(scripted_structure_refusal(outcome) for _attempt in range(max_attempts)),
         ],
     )
     assert exit_code == EXIT_HELD
+    assert len(world.endpoint.requests) == 1 + max_attempts
     statuses = by_page_ordinal(artifacts(run_root, DESIGNATOR, "structure-status"))
     assert statuses[2]["payload"]["state"] == "held"
     assert statuses[2]["payload"]["reason_code"] == f"structure-answer-{outcome}"

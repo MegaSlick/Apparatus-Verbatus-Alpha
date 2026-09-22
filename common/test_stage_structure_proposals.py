@@ -677,7 +677,10 @@ def test_an_answer_under_the_wrong_record_schema_is_refused_by_name(real_root):
     designator.seal()
     context = _open(real_root, ATTESTATORES)
 
-    with pytest.raises(FatalAccounting, match="whose schema is 'structure-answer.v0'"):
+    with pytest.raises(
+        FatalAccounting,
+        match="terminal structure answer has unsupported schema 'structure-answer.v0'",
+    ):
         expected_acts(context)
 
 

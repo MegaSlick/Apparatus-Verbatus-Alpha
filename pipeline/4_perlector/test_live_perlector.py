@@ -394,6 +394,37 @@ def _serving_factory(endpoint: FakeEndpoint, catalogue: Path, log_root: Path, lo
     return factory
 
 
+_REPROOF_RESPONSE_MARKER = "Required response object, shown with unchanged replacements:\n"
+
+
+def _unchanged_reproof_response(body: bytes | None) -> str | None:
+    """Return the exact unchanged edit envelope rendered into an audit request."""
+    if body is None:
+        return None
+    request = json.loads(body)
+    for message in request.get("messages", []):
+        content = message.get("content", [])
+        parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
+        for part in parts:
+            text = part.get("text") if isinstance(part, dict) else None
+            if isinstance(text, str) and _REPROOF_RESPONSE_MARKER in text:
+                response = text.rsplit(_REPROOF_RESPONSE_MARKER, 1)[1]
+                parsed = json.loads(response)
+                assert parsed["schema"] == perlector_audit.RESPONSE_SCHEMA
+                return response
+    return None
+
+
+class _ExactAuditEndpoint(FakeEndpoint):
+    """Serve the prompt's unchanged exact edits while scripting ordinary readings."""
+
+    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
+        response = _unchanged_reproof_response(body)
+        if method == "POST" and url.endswith("/chat/completions") and response is not None:
+            self._answers.insert(0, ScriptedAnswer(content=response, finish_reason="stop"))
+        return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
+
+
 def _run_perlector(
     live_run,
     tmp_path: Path,
@@ -413,7 +444,7 @@ def _run_perlector(
     for a real Perlector invocation of a resumed run.
     """
     root, catalogue = live_run
-    endpoint = FakeEndpoint(
+    endpoint = _ExactAuditEndpoint(
         served_model_id=SERVED_MODEL_ID,
         blob_store=_TreeBlobs(root),
         assert_retained_before_next_request=True,
@@ -699,7 +730,7 @@ def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_cont
     forged = copy.deepcopy(failure)
     forged["payload"]["failure"]["call_record_ref"] = None
     forged["self_hash"] = self_hash(forged)
-    with pytest.raises(SchemaRefusal, match="complete raw/call/request/receipt/model evidence"):
+    with pytest.raises(SchemaRefusal, match="completed engine or chair response failure"):
         perlector.validate_failed_perlectio(context, forged, forged["subject_id"])
     evidence_free_live = copy.deepcopy(failure)
     evidence_free_live["payload"]["failure"].update(

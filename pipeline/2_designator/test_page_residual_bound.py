@@ -55,14 +55,15 @@ def _load_recensor():
     return module
 
 
-def _grouping_config_with_bound(directory: Path, bound: int) -> Path:
-    """The shipped grouping policy with one field changed, and nothing else.
+def _grouping_config_with_bound(
+    directory: Path, bound: int, *, promote_all_components: bool = True
+) -> Path:
+    """The shipped grouping policy with an isolated cardinality bound.
 
     The six page-fraction thresholds are copied byte for byte, so every page in
-    these runs resolves to exactly the geometry the shipped policy resolves to
-    and the only thing that varies between two runs of this file is where the
-    residual bound sits. A test that also moved a threshold would be measuring
-    two changes and attributing them to one.
+    these runs resolve to exactly the geometry the shipped policy resolves to.
+    Cardinality tests promote every component to isolate their legacy ceiling;
+    aggregate presentation cases keep the sealed floors.
     """
     source = SHIPPED_GROUPING_CONFIG.read_text(encoding="utf-8")
     # Asserted against the literal rather than against "the text changed", so
@@ -72,22 +73,23 @@ def _grouping_config_with_bound(directory: Path, bound: int) -> Path:
         "the shipped grouping config no longer declares a bound of 2000"
     )
     edited = source.replace("max_residual_components = 2000", f"max_residual_components = {bound}")
-    # This file isolates the older cardinality boundary.  Promote every
-    # component so its assertions do not accidentally test the separate
-    # aggregate-accounting policy.
-    for declaration in (
-        "residual_aggregate_max_pixel_count = 500",
-        "residual_aggregate_max_area_px = 2000",
-    ):
-        assert declaration in edited, (
-            f"the shipped grouping config no longer declares {declaration!r}"
+    if promote_all_components:
+        # This file isolates the older cardinality boundary. Promote every
+        # component so its assertions do not accidentally test the separate
+        # aggregate-accounting policy.
+        for declaration in (
+            "residual_aggregate_max_pixel_count = 500",
+            "residual_aggregate_max_area_px = 2000",
+        ):
+            assert declaration in edited, (
+                f"the shipped grouping config no longer declares {declaration!r}"
+            )
+        edited = edited.replace(
+            "residual_aggregate_max_pixel_count = 500", "residual_aggregate_max_pixel_count = 0"
         )
-    edited = edited.replace(
-        "residual_aggregate_max_pixel_count = 500", "residual_aggregate_max_pixel_count = 0"
-    )
-    edited = edited.replace(
-        "residual_aggregate_max_area_px = 2000", "residual_aggregate_max_area_px = 0"
-    )
+        edited = edited.replace(
+            "residual_aggregate_max_area_px = 2000", "residual_aggregate_max_area_px = 0"
+        )
     path = directory / "designator_grouping.toml"
     path.write_text(edited, encoding="utf-8")
     return path
@@ -203,9 +205,19 @@ def _seal_rows(context) -> list[dict]:
     return seals[0]["payload"]["expected_acts"]
 
 
-def _pass_over_scattered_page(root: Path, monkeypatch, bound: int, page_png: bytes, ordinal: int):
+def _pass_over_scattered_page(
+    root: Path,
+    monkeypatch,
+    bound: int,
+    page_png: bytes,
+    ordinal: int,
+    *,
+    promote_all_components: bool = True,
+):
     """One whole Designator initial pass over a page carrying unclaimed scatter."""
-    grouping_config = _grouping_config_with_bound(root.parent, bound)
+    grouping_config = _grouping_config_with_bound(
+        root.parent, bound, promote_all_components=promote_all_components
+    )
     _base_run(root, grouping_config)
     designator = _load_designator()
     context = _designator_context(root, designator, grouping_config)
@@ -415,7 +427,7 @@ def test_an_a4_page_at_three_percent_scatter_is_held_as_one_item(tmp_path, monke
     page_png = encode_grayscale_png(width, height, rows)
 
     _designator, context, held = _pass_over_scattered_page(
-        tmp_path / "runs", monkeypatch, 2000, page_png, 2
+        tmp_path / "runs", monkeypatch, 2000, page_png, 2, promote_all_components=False
     )
     payload = _conservation_for(context, 2)["payload"]
 

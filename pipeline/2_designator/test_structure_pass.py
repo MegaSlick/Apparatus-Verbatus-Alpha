@@ -1272,7 +1272,13 @@ def test_legacy_structure_answer_v1_resumes_without_attempt_fields(tmp_path, mon
     envelope = json.loads(answer_path.read_text(encoding="utf-8"))
     payload = envelope["payload"]
     payload["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
-    for field in ("attempt_ordinal", "attempts", "attempt_seed", "attempt_policy"):
+    for field in (
+        "attempt_ordinal",
+        "attempts",
+        "attempt_seed",
+        "attempt_policy",
+        "presentation_ref",
+    ):
         payload.pop(field)
     envelope["self_hash"] = self_hash(envelope)
     answer_path.write_bytes(canonical_bytes(envelope))
@@ -1598,7 +1604,7 @@ def test_real_denominator_indexes_structure_attempts_and_decoding_once(monkeypat
     assert received[0][1] is received[1][1]
     assert received[0][2] is received[1][2] is sealed
     assert {page_id: rows for page_id, rows in received[0][1].items()} == {
-        page_id: [row] for page_id, row in zip(pages, attempt_rows)
+        page_id: [row] for page_id, row in zip(pages, attempt_rows, strict=True)
     }
 
 
@@ -1680,7 +1686,9 @@ def test_v3_attempt_refuses_a_digest_valid_call_with_wrong_image_or_temperature(
     else:
         expected_temperature = target["payload"]["decoding"]["temperature"]
         assert call["generation_sent"]["temperature"] == expected_temperature
-        call["generation_sent"]["temperature"] = expected_temperature + 0.25
+        # Keep the forged call inside the canonical wire vocabulary: floats
+        # are refused before the attempt verifier can test the mismatch.
+        call["generation_sent"]["temperature"] = 0 if expected_temperature != 0 else 1
     digest, blob = tree.put_blob(DESIGNATOR, canonical_bytes(call))
     forged = {
         **target["payload"],
