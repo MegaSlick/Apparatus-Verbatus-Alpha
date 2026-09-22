@@ -35,16 +35,13 @@ from pathlib import Path
 import pytest
 from _test_support import load_designator
 
-from common.contracts.errors import FatalAccounting
-from common.contracts.identities import act_bindings
-from common.contracts.identities import verify as verify_identity
 from common.contracts.stages import DESIGNATOR
 from common.imaging import encode_grayscale_png, grayscale_rows
 from common.stage import (
+    RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_WITHHELD,
     page_residual_act_key,
-    run_sealed_config_digests,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,6 +82,11 @@ def _grouping_config_with_bound(directory: Path, bound: int) -> Path:
         "the shipped grouping config no longer declares a bound of 2000"
     )
     edited = source.replace("max_residual_components = 2000", f"max_residual_components = {bound}")
+    # This file isolates the older cardinality boundary.  Promote every
+    # component so its assertions do not accidentally test the separate
+    # aggregate-accounting policy.
+    edited = edited.replace("residual_aggregate_max_pixel_count = 500", "residual_aggregate_max_pixel_count = 0")
+    edited = edited.replace("residual_aggregate_max_area_px = 2000", "residual_aggregate_max_area_px = 0")
     path = directory / "designator_grouping.toml"
     path.write_text(edited, encoding="utf-8")
     return path
@@ -262,126 +264,52 @@ def test_a_page_exactly_at_the_bound_enumerates_every_component(
     assert held is True
 
 
-def test_one_component_over_the_bound_holds_the_page_as_a_single_item(
+def test_small_residuals_are_retained_as_accounting_not_fictitious_acts(
+    tmp_path, monkeypatch
+):
+    """Every speck remains inspectable without claiming the specks are one act."""
+    source = SHIPPED_GROUPING_CONFIG.read_text(encoding="utf-8")
+    grouping_config = tmp_path / "designator_grouping.toml"
+    grouping_config.write_text(
+        source.replace("max_residual_components = 2000", "max_residual_components = 1000000"),
+        encoding="utf-8",
+    )
+    _base_run(tmp_path / "runs", grouping_config)
+    designator = _load_designator()
+    context = _designator_context(tmp_path / "runs", designator, grouping_config)
+    _substitute_page_pixels(designator, monkeypatch, 1, _scattered_page_png())
+    assert designator.initial_pass(context) is True
+
+    payload = _conservation_for(context, 1)["payload"]
+    aggregate = payload["aggregated_residual_components"]
+    assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_AGGREGATED
+    assert payload["residual_component_count"] == len(aggregate)
+    assert payload["residual_promoted_component_count"] == 0
+    assert payload["residual_aggregated_component_count"] == len(aggregate)
+    assert all({"bounds", "pixel_count"} <= set(component) for component in aggregate)
+    assert payload["residual_components"] == []
+
+    rows = _seal_rows(context)
+    assert [row for row in rows if row["act_key"].startswith("residual:1:")] == []
+    page_rows = [row for row in rows if row["act_key"] == page_residual_act_key(1)]
+    assert len(page_rows) == 1 and page_rows[0]["outcome"] == "held"
+
+
+def test_component_count_never_suppresses_individual_significant_residuals(
     tmp_path, monkeypatch, measured_scatter
 ):
-    """The same pixels, one lower bound: one page-residual hold and nothing else.
-
-    Every field of the record and of the hold is asserted here, because they
-    are the two artifacts a reviewer reads about a page whose evidence they
-    cannot open and count for themselves.
-    """
+    """A dust-count cap cannot turn significant components into one fake act."""
     bound = measured_scatter - 1
     designator, context, held = _pass_over_scattered_page(
         tmp_path / "runs", monkeypatch, bound, _scattered_page_png(), 1
     )
-    record = _conservation_for(context, 1)
-    payload = record["payload"]
-
-    assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_WITHHELD
-    # Omitted, never emptied: an empty list is the claim "this page had no
-    # unclaimed ink", which is the opposite of what happened, and every
-    # existing consumer reads the key as a list and fails loudly on its absence.
-    assert "residual_components" not in payload
+    payload = _conservation_for(context, 1)["payload"]
+    assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_COMPLETE
     assert payload["residual_component_count"] == measured_scatter
-    assert payload["max_residual_components"] == bound
-    assert payload["ink_measurable"] is True
-    assert record["outcome"] == "held"
-    # Nothing left the measurement. The exact conservation identity is still
-    # published and still exact on a page whose components are not listed.
-    assert (
-        payload["claimed_pixel_count"] + payload["residual_pixel_count"]
-        == payload["total_ink_pixel_count"]
-    )
-    assert payload["residual_pixel_count"] > 0
-    assert isinstance(payload["residual_ink_fraction_bp"], int)
-
-    holds = _page_residual_holds(context)
-    assert len(holds) == 1
-    hold = holds[0]
-    page_id = record["subject_id"]
-    page_bounds = {"x": 0, "y": 0, "w": 200, "h": 260}
-    assert hold["payload"] == {
-        "act_key": page_residual_act_key(1),
-        "page_id": page_id,
-        "page_ordinal": 1,
-        "page_bounds": page_bounds,
-        "residual_component_count": measured_scatter,
-        "max_residual_components": bound,
-        "grouping_config_sha256": hold["payload"]["grouping_config_sha256"],
-        "blocking_page_ordinal": 1,
-        "reason_code": "residual-components-over-page-bound",
-        "reason": hold["payload"]["reason"],
-    }
-    assert hold["payload"]["reason_code"] in designator.HOLD_REASON_CODES
-    # The bound is bound to the run, not merely to itself.
-    assert (
-        hold["payload"]["grouping_config_sha256"]
-        == run_sealed_config_digests(context.run)["designator-grouping"]
-    )
-    # The hold's own subject is the identity the page rectangle and the reserved
-    # class derive -- recomputed here the way the consumer recomputes it.
-    verify_identity(hold["subject_id"], "act", act_bindings(page_id, "page-residual", page_bounds))
-    assert hold["outcome"] == "held"
-    assert len(hold["inputs"]) == 1
-
     rows = _seal_rows(context)
-    page_rows = [row for row in rows if row["act_key"] == page_residual_act_key(1)]
-    assert len(page_rows) == 1
-    assert page_rows[0]["act_id"] == hold["subject_id"]
-    assert page_rows[0]["outcome"] == "held"
-    assert page_rows[0]["page_ordinal"] == 1
-    assert page_rows[0]["has_continuation"] is False
-    # No per-component act is minted for a withheld page. Minting both would
-    # account for the same unlisted ink twice.
-    assert [row for row in rows if row["act_key"].startswith("residual:1:")] == []
+    assert len([row for row in rows if row["act_key"].startswith("residual:1:")]) == measured_scatter
+    assert _page_residual_holds(context) == []
     assert held is True
-
-    # The seam this unit exists to close is producer-to-consumer, not merely
-    # this file's own reading of the fields both sides call the same names.
-    # `expected_acts` is the seal's own reader: it runs
-    # `_verify_synthetic_act_denominator` -> `_verify_minted_act_rows` ->
-    # `_verify_page_residual_act_row` (sealed-page rectangle, reserved class
-    # identity, sealed grouping digest) and
-    # `_verify_every_conservation_residual_is_accounted`, over this same run.
-    # A real withheld run must satisfy all of it, not just the payload shape
-    # asserted above.
-    from common.stage import expected_acts
-
-    acts = expected_acts(context)
-    assert any(act["act_key"] == page_residual_act_key(1) for act in acts)
-
-
-def test_the_withheld_pair_satisfies_the_consumers_own_premise_check(
-    tmp_path, monkeypatch, measured_scatter
-):
-    """The two records D writes are handed to E's verifier, not to a copy of it.
-
-    `common/stage.py::_verify_page_residual_premise` is the check that decides
-    whether a withheld page is accounted for or silently lost, and asserting
-    the fields separately above proves only that this file and that file agree
-    about what the fields are called. This runs the consumer.
-    """
-    from common import stage
-
-    bound = measured_scatter - 1
-    _designator, context, _held = _pass_over_scattered_page(
-        tmp_path / "runs", monkeypatch, bound, _scattered_page_png(), 1
-    )
-    record = _conservation_for(context, 1)
-    hold = _page_residual_holds(context)[0]
-
-    stage._verify_page_residual_premise(
-        hold["subject_id"], record["subject_id"], hold["payload"], record
-    )
-
-    # And the same check refuses the same pair with one figure moved, so the
-    # call above is not passing because nothing is examined.
-    forged = dict(hold["payload"], residual_component_count=measured_scatter + 1)
-    with pytest.raises(FatalAccounting, match="never a second figure beside it"):
-        stage._verify_page_residual_premise(
-            hold["subject_id"], record["subject_id"], forged, record
-        )
 
 
 def test_the_shipped_bound_holds_no_fixture_page(tmp_path, monkeypatch):

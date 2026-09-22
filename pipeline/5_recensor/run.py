@@ -2114,7 +2114,18 @@ def unclaimed_ink_observations(
             )
         ink_pixels = _ink_outside_cuts_in_box(evidence, bounds, covered)
         if ink_pixels >= minimum_ink_pixels:
-            requests.append({"page_ordinal": page_ordinal, "outside_ink_pixels": ink_pixels})
+            requests.append(
+                {
+                    "page_ordinal": page_ordinal,
+                    "outside_ink_pixels": ink_pixels,
+                    # The pointer is never sufficient on its own: it reaches
+                    # this retained request only after the Ink Map measured
+                    # enough ink outside every existing crop.  It then gives
+                    # the Designator exact sealed-image geometry to cut, so a
+                    # real ingress need not borrow fixture rectangles.
+                    "bounds": dict(bounds),
+                }
+            )
     return requests
 
 
@@ -2213,15 +2224,6 @@ def unresolved_observation_hold(
     """
     if not outside_ink_requests:
         return None
-    if real_route:
-        return (
-            "held-for-review",
-            "Unit 9 still confirms ink in a witness-reported pointer outside every "
-            "current cut, but bounded recovery from a real submission is not built — the "
-            "Designator's recovery pass still reads a fixture's declared rectangle — so no "
-            "fallback recrop can be cut for it; the unresolved coverage evidence is held "
-            "visibly rather than published as a request nothing downstream could answer",
-        )
     grant_state = (
         "the page's one observation-funded recovery request is already recorded"
         if page_ordinal in funded_pages
@@ -3914,7 +3916,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # operation nothing downstream can honor, because a request the
         # orchestrator can only refuse turns a graceful hold into a hard failure
         # for no gain."
-        recrop_dispatchable = not real_route
+        recrop_dispatchable = True
         # Names the recovery-*request*'s own position among this act's requests
         # -- `attempt_id(act_id, "recover", ...)`, below -- never the review's
         # identity: a review's own ordinal is a function of its content, not of
@@ -4037,6 +4039,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "testimony_content_coverage_continuation": continuation_content_coverage,
                 "perlectio_ref": reading_ref,
                 "recovery_policy": budget,
+                # Declared fixture recovery keeps its fixture geometry.  A
+                # measured real-ingress observation supplies this exact
+                # page-space rectangle, independently confirmed outside the
+                # current crop union above.
+                **(
+                    {"recovery_bounds": outside_ink_requests[0]["bounds"]}
+                    if request_origin == COVERAGE_OBSERVATION_ORIGIN
+                    else {}
+                ),
             }
             refuse_capture_preference(recovery_payload, what="a Recensor recovery request")
             request = context.publish(

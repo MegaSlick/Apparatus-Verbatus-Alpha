@@ -3532,7 +3532,7 @@ def _verify_every_conservation_residual_is_accounted(
                 page_id, payload, accounted_pages.get(page_id, [])
             )
             continue
-        if enumeration != RESIDUAL_ENUMERATION_COMPLETE:
+        if enumeration not in (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_AGGREGATED):
             raise FatalAccounting(
                 f"the conservation record for page {page_id} records its residual enumeration as "
                 f"{enumeration!r}, which is outside the closed set {RESIDUAL_ENUMERATIONS}; a "
@@ -3545,13 +3545,27 @@ def _verify_every_conservation_residual_is_accounted(
                 f"the conservation record for page {page_id} carries no residual-component list "
                 "to reconcile the denominator against"
             )
+        aggregate = payload.get("aggregated_residual_components", [])
+        if not isinstance(aggregate, list):
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} carries malformed aggregate residual "
+                "accounting; retained component geometry must be a list"
+            )
         declared_count = payload.get("residual_component_count")
-        if not _is_count(declared_count) or declared_count != len(components):
+        if not _is_count(declared_count) or declared_count != len(components) + len(aggregate):
             raise FatalAccounting(
                 f"the conservation record for page {page_id} names residual_component_count "
-                f"{declared_count!r} but its residual_components list carries {len(components)} "
-                "entries; on an enumerated page the count a reviewer is told is the count the "
-                "list itself supports, recomputed rather than believed"
+                f"{declared_count!r} but its retained component lists carry "
+                f"{len(components) + len(aggregate)} entries"
+            )
+        if enumeration == RESIDUAL_ENUMERATION_COMPLETE and aggregate:
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} calls its residual enumeration "
+                "complete while retaining aggregate components"
+            )
+        if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
+            _verify_aggregated_page_is_held_as_one_item(
+                page_id, payload, accounted_pages.get(page_id, [])
             )
         for index, component in enumerate(components):
             bounds = component.get("bounds") if isinstance(component, Mapping) else None
@@ -3571,6 +3585,25 @@ def _verify_every_conservation_residual_is_accounted(
                 )
 
 
+def _verify_aggregated_page_is_held_as_one_item(
+    page_id: str, payload: Mapping[str, Any], holds: list[Mapping[str, Any]]
+) -> None:
+    """An aggregate represents components; it never rebrands them as one act."""
+    aggregate = payload.get("aggregated_residual_components")
+    if not isinstance(aggregate, list) or not aggregate:
+        raise FatalAccounting(
+            f"page {page_id}'s aggregate residual enumeration has no retained components"
+        )
+    if len(holds) != 1:
+        raise FatalAccounting(
+            f"page {page_id}'s aggregate residual accounting needs exactly one page-residual "
+            f"hold, found {len(holds)}"
+        )
+    declared = holds[0].get("aggregated_component_count")
+    if not _is_count(declared) or declared != len(aggregate):
+        raise FatalAccounting(
+            f"page {page_id}'s page-residual hold does not retain the aggregate component count"
+        )
 def _page_residual_holds_by_page(
     holds_by_subject: dict[str, dict[str, Any]], observed: dict[str, dict[str, Any]]
 ) -> dict[str, list[Mapping[str, Any]]]:
@@ -3617,6 +3650,13 @@ def _verify_withheld_page_is_held_as_one_item(
             "unlisted ink is accounted for by the single review item that replaced it, or it is "
             "lost silently"
         )
+    aggregate = payload.get("aggregated_residual_components")
+    measured = payload.get("residual_component_count")
+    if not isinstance(aggregate, list) or not _is_count(measured) or len(aggregate) != measured:
+        raise FatalAccounting(
+            f"page {page_id}'s withheld residual accounting does not retain every component's "
+            "geometry and pixel count"
+        )
     bound = payload.get("max_residual_components")
     if not _is_count(bound):
         raise FatalAccounting(
@@ -3649,8 +3689,13 @@ def fallback_page_act_key(page_ordinal: int) -> str:
 # "this page's residuals were counted and not listed" — and a third spelling
 # appearing on one side of that distinction is how the two become one again.
 RESIDUAL_ENUMERATION_COMPLETE: Final = "complete"
+RESIDUAL_ENUMERATION_AGGREGATED: Final = "aggregate-page-held"
 RESIDUAL_ENUMERATION_WITHHELD: Final = "withheld-page-held"
-RESIDUAL_ENUMERATIONS: Final = (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_WITHHELD)
+RESIDUAL_ENUMERATIONS: Final = (
+    RESIDUAL_ENUMERATION_COMPLETE,
+    RESIDUAL_ENUMERATION_AGGREGATED,
+    RESIDUAL_ENUMERATION_WITHHELD,
+)
 
 # Why a page held in place of its residual components was held. The Designator
 # declares the closed hold vocabulary and imports this name into it, and this
@@ -4042,14 +4087,14 @@ def _verify_page_residual_premise(
             "count and the integer bound it was judged against"
         )
     enumeration = payload.get("residual_enumeration")
-    if enumeration != RESIDUAL_ENUMERATION_WITHHELD:
+    if enumeration not in (RESIDUAL_ENUMERATION_WITHHELD, RESIDUAL_ENUMERATION_AGGREGATED):
         raise FatalAccounting(
             f"act {act_id} holds page {page_id} for withheld residual enumeration, but that "
             f"page's own conservation record records its enumeration as {enumeration!r} rather "
             f"than {RESIDUAL_ENUMERATION_WITHHELD!r}; a page may not be held as one review item "
             "over a reconciliation that enumerated its components"
         )
-    # Checked only once the record has already proven it means to withhold: a
+    # Checked only once the record has already proven it means to aggregate: a
     # record that enumerated its components is refused above for that alone,
     # whatever its outcome says, and folding this check in ahead of that one
     # would report the wrong reason for the same wrong record.
@@ -4060,7 +4105,7 @@ def _verify_page_residual_premise(
             f"conservation record reports its outcome as {outcome!r} rather than 'held'; a "
             "record standing behind a held page may not still say it was proposed"
         )
-    if "residual_components" in payload:
+    if enumeration == RESIDUAL_ENUMERATION_WITHHELD and "residual_components" in payload:
         raise FatalAccounting(
             f"act {act_id} holds page {page_id} for a withheld enumeration, but that page's "
             "conservation record still carries a residual_components key; the key is omitted "
@@ -4078,13 +4123,25 @@ def _verify_page_residual_premise(
             f"conservation record measured {measured}; the count a reviewer is shown is the "
             "count the reconciliation took, never a second figure beside it"
         )
-    if measured <= bound:
+    if enumeration == RESIDUAL_ENUMERATION_WITHHELD and measured <= bound:
         raise FatalAccounting(
             f"act {act_id} holds page {page_id} against a bound of {bound} residual components, "
             f"but that page's conservation record measured {measured}, which does not exceed it; "
             "a page whose reconciliation stays within the bound owes one held act per residual, "
             "not one held page"
         )
+    if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
+        aggregate = payload.get("aggregated_residual_components")
+        aggregated_count = hold_payload.get("aggregated_component_count")
+        if (
+            not isinstance(aggregate, list)
+            or not _is_count(aggregated_count)
+            or aggregated_count != len(aggregate)
+        ):
+            raise FatalAccounting(
+                f"act {act_id} holds page {page_id} for aggregate residual accounting without "
+                "the retained component count"
+            )
 
 
 def _is_count(value: Any) -> bool:

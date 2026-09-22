@@ -127,6 +127,8 @@ def test_default_config_is_valid_toml_matching_the_loaded_shape():
         "max_residual_components",
         "max_secondary_proposals",
         "fallback_bands",
+        "residual_aggregate_max_pixel_count",
+        "residual_aggregate_max_area_px",
         "page_fraction_bp",
         "continuation",
         "absolute",
@@ -377,6 +379,8 @@ def _valid_toml() -> str:
         "max_residual_components = 2000\n"
         "max_secondary_proposals = 2000\n"
         "fallback_bands = 4\n\n"
+        "residual_aggregate_max_pixel_count = 500\n"
+        "residual_aggregate_max_area_px = 2000\n\n"
         "[coverage_audit]\n" + _VALID_COVERAGE_AUDIT + "\n"
         "[grouping.page_fraction_bp]\n" + _VALID_PAGE_FRACTION + "\n"
         "[grouping.continuation]\n" + _VALID_CONTINUATION + "\n"

@@ -94,6 +94,7 @@ from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
     PAGE_RESIDUAL_REASON_CODE,
+    RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_WITHHELD,
     SECONDARY_PROPOSER_CHAIR,
@@ -1976,6 +1977,30 @@ def _publish_residual_holds(
     return rows
 
 
+def _partition_residual_components(
+    components: list[dict], thresholds: grouping_config.GroupingThresholds
+) -> tuple[list[dict], list[dict]]:
+    """Separate individually held ink from explicitly aggregated dust.
+
+    The aggregate is an accounting representation, never an assertion that its
+    components form one act.  Both partitions retain the original component
+    records; the two sealed floors only decide whether a component needs its
+    own downstream act lifecycle.
+    """
+    promoted, aggregated = [], []
+    for component in components:
+        bounds = component["bounds"]
+        area = bounds["w"] * bounds["h"]
+        if (
+            component["pixel_count"] > thresholds.residual_aggregate_max_pixel_count
+            or area > thresholds.residual_aggregate_max_area_px
+        ):
+            promoted.append(component)
+        else:
+            aggregated.append(component)
+    return promoted, aggregated
+
+
 def _publish_page_residual_hold(
     context,
     page_id: str,
@@ -1986,6 +2011,7 @@ def _publish_page_residual_hold(
     # the same call, and a hold that swapped them would name a policy the run
     # never applied while every type check still passed.
     residual_component_count: int,
+    aggregated_component_count: int,
     max_residual_components: int,
     grouping_config_sha256: str,
     conservation_ref: dict[str, str],
@@ -2054,16 +2080,17 @@ def _publish_page_residual_hold(
         "page_ordinal": page_ordinal,
         "page_bounds": page_bounds,
         "residual_component_count": residual_component_count,
+        "aggregated_component_count": aggregated_component_count,
         "max_residual_components": max_residual_components,
         "grouping_config_sha256": grouping_config_sha256,
         "blocking_page_ordinal": page_ordinal,
         "reason_code": PAGE_RESIDUAL_REASON_CODE,
         "reason": (
             f"this page's conservation reconciled {residual_component_count} residual "
-            f"components against the sealed bound of {max_residual_components}, so the page "
-            "is held as one review item instead of that many held acts; the components were "
-            "counted, not listed, and remain recomputable from the sealed page bytes under "
-            "the sealed conservation policy"
+            f"components against the sealed policy, including {aggregated_component_count} "
+            "components retained as page-level aggregate accounting rather than fictitious "
+            "acts; every aggregate component's bounds and pixels are retained on the linked "
+            "conservation record"
         ),
     }
     _refuse_text_fields(payload)
@@ -2377,7 +2404,21 @@ def _publish_conservation_and_secondary(
     # was no threshold to enumerate against, not because a bound stopped it, and
     # holding it for over-bound scatter would name a reconciliation that never
     # ran. Its own `ink_measurable: false` is the fact that page carries.
-    withheld = measurable and component_count > max_residual_components
+    promoted, aggregated = _partition_residual_components(components, thresholds)
+    # Cardinality of dust must never erase the individual accounting of a
+    # substantial component.  The old over-cap branch replaced every component
+    # with one page hold, including marginal writing and act-sized blocks.  The
+    # aggregate is therefore only the below-floor partition; retained promoted
+    # components always receive their own held rows, however many specks share
+    # their page.
+    withheld = False
+    enumeration = (
+        RESIDUAL_ENUMERATION_WITHHELD
+        if withheld
+        else RESIDUAL_ENUMERATION_AGGREGATED
+        if aggregated
+        else RESIDUAL_ENUMERATION_COMPLETE
+    )
     conservation_payload = {
         "page_ordinal": ordinal,
         # Conservation owns an independent page scan.  Its threshold basis
@@ -2404,7 +2445,7 @@ def _publish_conservation_and_secondary(
         }
         if measurable
         else None,
-        "reason": _conservation_reason(measurable, withheld, component_count),
+        "reason": _conservation_reason(measurable, withheld or bool(aggregated), component_count),
         "total_ink_pixel_count": result["total_ink_pixel_count"],
         "claimed_pixel_count": result["claimed_pixel_count"],
         "residual_pixel_count": result["residual_pixel_count"],
@@ -2427,9 +2468,11 @@ def _publish_conservation_and_secondary(
         # force, not a measurement, so a page that stayed within it should say
         # what it stayed within.
         "max_residual_components": max_residual_components,
-        "residual_enumeration": RESIDUAL_ENUMERATION_WITHHELD
-        if withheld
-        else RESIDUAL_ENUMERATION_COMPLETE,
+        "residual_enumeration": enumeration,
+        "residual_promoted_component_count": len(promoted),
+        "residual_aggregated_component_count": len(aggregated),
+        "residual_aggregate_max_pixel_count": thresholds.residual_aggregate_max_pixel_count,
+        "residual_aggregate_max_area_px": thresholds.residual_aggregate_max_area_px,
     }
     # Present only when the interior-mode branch measured a dark distribution.
     # The two counts retain their exact sampled band/page populations and remain
@@ -2458,13 +2501,14 @@ def _publish_conservation_and_secondary(
             {"bounds": dict(component["bounds"]), "pixel_count": component["pixel_count"]}
             for component in analysis["page_spanning"]
         ]
-    if not withheld:
-        conservation_payload["residual_components"] = components
+    conservation_payload["residual_components"] = promoted
+    if aggregated:
+        conservation_payload["aggregated_residual_components"] = aggregated
     _refuse_text_fields(conservation_payload)
     published = context.publish(
         kind="conservation",
         subject_id=page_id,
-        outcome="held" if (withheld or not measurable) else "proposed",
+        outcome="held" if (withheld or aggregated or not measurable) else "proposed",
         inputs=[context.input_ref(page_record["payload"]["image_path"])],
         payload=conservation_payload,
     )
@@ -2472,25 +2516,21 @@ def _publish_conservation_and_secondary(
         context, ordinal, page_record, analysis, claimed, secondary, grouping_policy
     )
     conservation_ref = context.input_ref(published.relative_path)
-    if withheld:
-        # No per-component act is minted for a withheld page. Minting both the
-        # page and its components would account for the same unlisted ink twice,
-        # and minting the components alone is the unopenable run the bound
-        # exists to prevent.
-        rows = [
+    rows = _publish_residual_holds(context, page_id, ordinal, promoted, conservation_ref)
+    if aggregated:
+        rows.append(
             _publish_page_residual_hold(
                 context,
                 page_id,
                 ordinal,
                 {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]},
                 residual_component_count=component_count,
+                aggregated_component_count=len(aggregated),
                 max_residual_components=max_residual_components,
                 grouping_config_sha256=grouping_policy["config_sha256"],
                 conservation_ref=conservation_ref,
             )
-        ]
-    else:
-        rows = _publish_residual_holds(context, page_id, ordinal, components, conservation_ref)
+        )
     return rows, secondary_held
 
 
@@ -3443,28 +3483,39 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             "kind names a different owning stage, not a substitute crop"
         )
 
+    real_input = parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
     fixture_acts = [item for item in context.fixture["act"] if item["key"] == match[0]["act_key"]]
-    if not fixture_acts:
+    if not real_input and not fixture_acts:
         raise ContractError(
             f"recovery fixture declares no act for key {match[0]['act_key']!r}; the fixture "
             "cannot supply recovery geometry for an act it never declared"
         )
-    if len(fixture_acts) != 1:  # pragma: no cover - fixture loading already refuses duplicates
+    if not real_input and len(fixture_acts) != 1:  # pragma: no cover - fixture loading already refuses duplicates
         raise ContractError(
             f"recovery fixture declares {len(fixture_acts)} acts for key "
             f"{match[0]['act_key']!r}; recovery geometry needs one unambiguous act"
         )
-    act = fixture_acts[0]
-    recovery = [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
-    if len(recovery) != 1:
+    act = fixture_acts[0] if fixture_acts else None
+    recovery = [] if real_input else [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
+    if not real_input and len(recovery) != 1:
         raise ContractError(
             f"the fixture declares {len(recovery)} recovery regions for act {act['key']}; "
             "a recovery request must name exactly one coverage rectangle"
         )
 
     pages = sealed_pages(page_records(context))
-    bounds = _bounds_of(recovery[0])
-    page_record = pages[act["page_ordinal"]]
+    if real_input:
+        bounds = request_payload.get("recovery_bounds")
+        if not isinstance(bounds, dict):
+            raise ContractError(
+                "a real-ingress recovery request has no ink-confirmed recovery_bounds; a "
+                "Designator must never substitute fixture geometry"
+            )
+        page_ordinal = match[0]["page_ordinal"]
+    else:
+        bounds = _bounds_of(recovery[0])
+        page_ordinal = act["page_ordinal"]
+    page_record = pages[page_ordinal]
     # Checked here, before anything is computed from the rectangle, even though
     # `cut_minted_region` checks it again as the crop author's own guard over
     # every caller. The coverage refusal below is a statement about pixels, and
@@ -3477,7 +3528,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
     geometry.validate_bounds(bounds, page_w, page_h, "recovery bounds")
     # The same builder `cut_region` uses, so this duplicate check is computed
     # against the exact shape that would actually be published.
-    transform = _crop_transform(act["page_ordinal"], page_record["subject_id"], bounds)
+    transform = _crop_transform(page_ordinal, page_record["subject_id"], bounds)
     duplicate = region_id(act_id, transform)
     existing_regions = _regions_of(context, act_id)
     already_recovered = [
@@ -3507,12 +3558,12 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
     # Refused rather than accepted-and-flagged because a spent recovery budget
     # is not recoverable: the act's one recorded chance to widen its crop would
     # be gone, which is the direction GOALS 1 cares about.
-    covered = _coverage_on_page(existing_regions, act["page_ordinal"], page_record["subject_id"])
+    covered = _coverage_on_page(existing_regions, page_ordinal, page_record["subject_id"])
     if not _uncovered_area(bounds, covered):
         raise ContractError(
             f"recovery asked for {act_id} with bounds {bounds}, which recovers no page "
             f"pixel the act does not already have: every pixel of it already lies inside "
-            f"the {len(covered)} region(s) cut for it on page {act['page_ordinal']}. A "
+            f"the {len(covered)} region(s) cut for it on page {page_ordinal}. A "
             "recovery must add coverage, not recrop inside coverage it already has"
         )
     recovery_count = len(already_recovered)
@@ -3522,16 +3573,17 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             "may only answer the next recorded request"
         )
     region_ordinal = _next_region_ordinal(context, act_id)
-    cut_region(
-        context,
-        act,
-        pages[act["page_ordinal"]],
-        bounds,
-        region_ordinal,
-        act["page_ordinal"],
-        "recovery",
-        context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"]),
-    )
+    if real_input:
+        cut_minted_region(
+            context, act_id, match[0]["act_key"], page_record, bounds, region_ordinal,
+            page_ordinal, "recovery",
+            context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"]),
+        )
+    else:
+        cut_region(
+            context, act, page_record, bounds, region_ordinal, page_ordinal, "recovery",
+            context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"]),
+        )
 
 
 def _seal_artifact_id() -> str:
@@ -3579,30 +3631,6 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context, real_input = _open(args, registry_factory)
 
-    if args.operation == "recover" and real_input:
-        # `recovery_pass` reads a recrop's geometry from `context.fixture["act"]`
-        # (the fixture's own declared rectangle) because that is the only
-        # geometry the recovery contract carries today; a real submission has
-        # no fixture and this stage has no other source for a recrop's bounds.
-        # Refuse by name here rather than let the generic fixture accessor's
-        # message stand in for it.
-        #
-        # The Recensor no longer publishes a request this refusal would meet:
-        # `pipeline/5_recensor/run.py` gates the coverage-observation
-        # fallback-recrop on the ingress route and holds the act for review
-        # instead (F068/F083). This stays the backstop, and the message says so
-        # rather than leaving an operator to discover it from an exit code.
-        # Conditioned, because this branch is taken before `--act` and
-        # `--recovery-request` are read: a caller invoking `--operation recover`
-        # on a real run with no request at all must not be told a fact about a
-        # run tree this stage never looked at (GOVERNANCE 10).
-        raise ContractError(
-            "bounded recovery from a real submission is not built; a recovery still reads "
-            "the fixture's declared rectangle, which a real submission does not carry. The "
-            "Recensor holds such an act for review instead of requesting a recrop, so if "
-            "this run tree carries an outstanding real-ingress recovery request, it was "
-            "published before that gate landed and nothing here can answer it"
-        )
     if args.operation == "recover":
         if not args.act:
             raise ContractError("a recovery operation must name the act it is recovering")

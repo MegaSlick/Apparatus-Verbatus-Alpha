@@ -198,6 +198,14 @@
 [grouping]
 max_residual_components = 2000
 max_secondary_proposals = 2000
+# A residual below BOTH floors remains fully recorded on its page's aggregate
+# accounting hold rather than becoming a fictitious act.  The pixel floor sits
+# below the measured 2,061-pixel marginal annotation; the box-area floor keeps
+# a thin marginal line visible even when its ink is sparse.  These floors only
+# choose presentation/accounting granularity after conservation measures every
+# component; they never exclude ink or authorize a reading-quality reroll.
+residual_aggregate_max_pixel_count = 500
+residual_aggregate_max_area_px = 2000
 fallback_bands = 4
 
 [grouping.page_fraction_bp]

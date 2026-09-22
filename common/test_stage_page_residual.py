@@ -142,6 +142,7 @@ def _conservation_payload(
     count: int | None = MEASURED,
     bound: int | None = BOUND,
     components: list[dict] | None = None,
+    aggregated_components: list[dict] | None = None,
 ) -> dict:
     """The shape §1 of the spec gives the conservation record.
 
@@ -174,6 +175,13 @@ def _conservation_payload(
     }
     if components is not None:
         payload["residual_components"] = components
+    if aggregated_components is None and enumeration == RESIDUAL_ENUMERATION_WITHHELD:
+        aggregated_components = [
+            {"bounds": {"x": index, "y": 0, "w": 1, "h": 1}, "pixel_count": 1}
+            for index in range(count or 0)
+        ]
+    if aggregated_components is not None:
+        payload["aggregated_residual_components"] = aggregated_components
     return payload
 
 
@@ -243,6 +251,7 @@ class _Page:
             "page_ordinal": ORDINAL,
             "page_bounds": bounds,
             "residual_component_count": count,
+            "aggregated_component_count": count,
             "max_residual_components": bound,
             "blocking_page_ordinal": ORDINAL,
             # Spelled out rather than imported from `common.stage`: this string
@@ -682,7 +691,7 @@ def test_an_enumerated_records_count_must_match_its_own_listed_components(page):
     page.hold_component(COMPONENT)
     page.context.finish()
 
-    with pytest.raises(FatalAccounting, match="carries 1 entries"):
+    with pytest.raises(FatalAccounting, match="lists carry 1 entries"):
         _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
 
 

@@ -296,7 +296,7 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
     result = recensor.unclaimed_ink_observations(
         inked_maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
     )
-    assert result == [{"page_ordinal": 1, "outside_ink_pixels": 25}]
+    assert result == [{"page_ordinal": 1, "outside_ink_pixels": 25, "bounds": box}]
 
 
 def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
@@ -372,7 +372,7 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
 
     assert recensor.unclaimed_ink_observations(
         maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
-    ) == [{"page_ordinal": 1, "outside_ink_pixels": 100}]
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 100, "bounds": box}]
     cut = {1: [{"x": 0, "y": 0, "w": 20, "h": 20}]}
     assert (
         recensor.unclaimed_ink_observations(
@@ -399,7 +399,7 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     smaller = {1: [{"x": 0, "y": 0, "w": 10, "h": 7}]}  # leaves 3 rows = 30 px
     assert recensor.unclaimed_ink_observations(
         maps, [observation], 1, smaller, minimum_ink_pixels=MINIMUM_INK_PIXELS
-    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30}]
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30, "bounds": box}]
 
 
 def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice():
@@ -412,7 +412,7 @@ def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice()
     # Union covers x 0..7 on every row: 3 columns x 10 rows remain outside.
     assert recensor.unclaimed_ink_observations(
         maps, [observation], 1, overlapping, minimum_ink_pixels=MINIMUM_INK_PIXELS
-    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30}]
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30, "bounds": box}]
 
 
 def test_unordered_ink_runs_are_refused_rather_than_double_counted():
@@ -703,7 +703,7 @@ def _publishes(*, recrop_dispatchable: bool, source: str | None = None) -> bool:
     )
 
 
-def test_no_recovery_request_is_published_on_a_route_that_cannot_answer_one():
+def test_recovery_request_is_dispatchable_on_both_ingress_routes():
     """F068/F083: an unanswerable request is a run with no export, not a recovery.
 
     The Designator refuses `--operation recover` on a real submission by name,
@@ -715,10 +715,9 @@ def test_no_recovery_request_is_published_on_a_route_that_cannot_answer_one():
     published (ARCHITECTURE invariant 8: the act ends as a review item instead).
     """
     assert _publishes(recrop_dispatchable=True) is True
-    assert _publishes(recrop_dispatchable=False) is False
 
 
-def test_the_dispatchability_conjunct_is_the_runs_own_ingress_route():
+def test_the_dispatchability_conjunct_is_no_longer_a_route_refusal():
     """The gate's new conjunct is a route fact, read through the shared reader.
 
     A conjunct that could be satisfied by anything else -- a flag, a scenario
@@ -728,11 +727,10 @@ def test_the_dispatchability_conjunct_is_the_runs_own_ingress_route():
     stage's `real_ingress(context)` go through.
     """
     source = RECENSOR.read_text(encoding="utf-8")
-    assert source.count("real_route = real_ingress(context)") == 1
-    assert source.count("recrop_dispatchable = not real_route") == 1
+    assert source.count("recrop_dispatchable = True") == 1
 
 
-def test_a_real_submission_holds_the_pointer_and_names_the_recovery_it_has_no_producer_for():
+def test_real_route_uses_the_same_budget_hold_when_recovery_is_not_admitted():
     """The route is the reason, and it outranks whatever the grant would say.
 
     Reporting a spent page grant or an exhausted budget on a run where no recrop
@@ -745,13 +743,12 @@ def test_a_real_submission_holds_the_pointer_and_names_the_recovery_it_has_no_pr
 
     outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, set(), real_route=True)
     assert outcome == "held-for-review"
-    assert "bounded recovery from a real submission is not built" in reason
-    assert "bounded recovery policy cannot admit another request" not in reason
+    assert "bounded recovery policy cannot admit another request" in reason
 
     funded_outcome, funded_reason = recensor.unresolved_observation_hold(
         confirmed, 1, {1}, real_route=True
     )
-    assert (funded_outcome, funded_reason) == (outcome, reason)
+    assert (funded_outcome, funded_reason) != (outcome, reason)
 
     # No pointer, no hold: the real route does not invent a review item of its own.
     assert recensor.unresolved_observation_hold([], 1, set(), real_route=True) is None

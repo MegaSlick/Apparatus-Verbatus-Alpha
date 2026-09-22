@@ -1501,15 +1501,8 @@ def test_a_real_submission_under_the_fixture_catalogue_is_refused_by_name(
     assert not (root / RUN_ID / "2_designator").exists()
 
 
-def test_a_recovery_from_a_real_submission_is_refused_by_name(real_template, tmp_path, monkeypatch):
-    """A real ingress has no fixture, and `recovery_pass` reads a recrop's
-
-    geometry from the fixture's declared rectangle. Refuse before that read
-    is ever attempted, by this stage's own named reason, rather than let the
-    generic fixture accessor's real-submission refusal (common/stage.py)
-    stand in for it. Checked ahead of `--act`/`--recovery-request` validation
-    so this refusal fires even when neither flag is given.
-    """
+def test_a_real_recovery_requires_the_same_explicit_request_identity(real_template, tmp_path, monkeypatch):
+    """Real ingress reaches recovery validation; it is not route-refused."""
     root = tmp_path / "runs"
     shutil.copytree(real_template, root)
     monkeypatch.chdir(ROOT)
@@ -1526,7 +1519,7 @@ def test_a_recovery_from_a_real_submission_is_refused_by_name(real_template, tmp
             "recover",
         ],
     )
-    with pytest.raises(ContractError, match="bounded recovery from a real submission is not built"):
+    with pytest.raises(ContractError, match="must name the act"):
         designator.main()
     assert not (root / RUN_ID / "2_designator").exists()
 

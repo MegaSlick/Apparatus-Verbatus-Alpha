@@ -139,6 +139,8 @@ _GROUPING_COUNT_FIELDS: Final = (
     "max_residual_components",
     "max_secondary_proposals",
     "fallback_bands",
+    "residual_aggregate_max_pixel_count",
+    "residual_aggregate_max_area_px",
 )
 
 _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
@@ -552,6 +554,8 @@ class GroupingThresholds:
     max_residual_components: int
     max_secondary_proposals: int
     fallback_bands: int
+    residual_aggregate_max_pixel_count: int
+    residual_aggregate_max_area_px: int
     page_spanning_area_bp: int
 
 
@@ -593,6 +597,8 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
         max_residual_components=config["max_residual_components"],
         max_secondary_proposals=config["max_secondary_proposals"],
         fallback_bands=config["fallback_bands"],
+        residual_aggregate_max_pixel_count=config["residual_aggregate_max_pixel_count"],
+        residual_aggregate_max_area_px=config["residual_aggregate_max_area_px"],
         # A fraction of the page's own AREA, which is both dimensions at once,
         # so it passes through unresolved like the three counts above rather
         # than being turned into a pixel length by `_pad_amount`. Carried on the

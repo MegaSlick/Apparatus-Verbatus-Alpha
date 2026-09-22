@@ -270,34 +270,10 @@ def _sole_assignment(name: str) -> ast.Assign:
     return assignments[0]
 
 
-def test_what_the_dispatchability_conjunct_is_computed_from_is_the_route_only():
-    """The one admitted non-coverage conjunct is pinned here, where it is admitted.
-
-    `recrop_dispatchable` is the single name `_COVERAGE_AND_BUDGET_NAMES` lets
-    into the gate that is not a coverage or budget fact, so this file owes a
-    reader the reason it is harmless: it is the run's own ingress route and
-    nothing else. Without this, the firewall admits a name whose derivation it
-    never reads, and an edit that quietly recomputed it from a reading fact
-    would pass every assertion in this file and fail somewhere else, by a
-    message about a source-line count rather than about the firewall.
-
-    Two hops, because the gate reads the name and the name reads the route:
-    `recrop_dispatchable = not real_route` and `real_route =
-    real_ingress(context)`, the same shared reader every other stage goes
-    through. `context` carries a reading's quality nowhere in this expression --
-    it is passed whole to `real_ingress`, which answers from the run authority.
-    """
+def test_the_dispatchability_conjunct_is_a_constant_after_real_route_support():
+    """Ingress no longer suppresses a measured coverage recovery request."""
     dispatchable = _names(_sole_assignment("recrop_dispatchable").value)
-    assert dispatchable == {"real_route"}, (
-        f"recrop_dispatchable is derived from {sorted(dispatchable)}; the gate's one "
-        "non-coverage conjunct may name the run's ingress route and nothing else"
-    )
-    route = _names(_sole_assignment("real_route").value)
-    assert route == {"real_ingress", "context"}, (
-        f"real_route is derived from {sorted(route)}; it must come from the shared "
-        "`real_ingress` reader over the run authority, not from a flag, a scenario field "
-        "or anything a reading said"
-    )
+    assert dispatchable == set()
 
 
 def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
