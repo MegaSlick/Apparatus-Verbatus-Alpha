@@ -162,6 +162,9 @@ def main() -> int:
     public_key = key_path.with_suffix(".pub").read_text().strip()
     key_path.unlink()
 
+    # Pulling this image can take minutes. Bind the live deadlines only after the image is
+    # local so download time cannot manufacture an invalid-deadline boot refusal.
+    run(["docker", "pull", EXPECTED_IMAGE])
     now = dt.datetime.now(dt.timezone.utc)
     deadline = now + dt.timedelta(seconds=55)
     cleanup = now + dt.timedelta(seconds=45)
@@ -199,7 +202,6 @@ def main() -> int:
 
     evidence_root = workspace / "session-evidence" / SESSION
     try:
-        run(["docker", "pull", EXPECTED_IMAGE])
         run(command)
         end = time.monotonic() + 60
         while time.monotonic() < end:

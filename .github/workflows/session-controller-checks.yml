@@ -49,7 +49,7 @@ jobs:
       - name: Exercise the exact deadman boot path without network or provider credentials
         id: boot-drill
         run: |
-          python3 session-verification/run_deadman_boot_drill.py \
+          sudo python3 session-verification/run_deadman_boot_drill.py \
             --workspace "$RUNNER_TEMP/deadman-workspace" \
             --summary "$RUNNER_TEMP/deadman-boot-drill-summary.json"
       - name: Show safe boot result

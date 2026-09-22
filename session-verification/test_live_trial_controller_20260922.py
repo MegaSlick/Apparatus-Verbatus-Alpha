@@ -686,6 +686,9 @@ def case_deadman_source_has_last_resort_and_persistent_delete_contract() -> None
     assert "while True:" in source
     assert "except BaseException as error:" in source
     assert "range(1,5)" not in source
+    assert "safe_stdout({'event':'runtime-boot-start'" in source
+    assert "safe_stdout({'event':'runtime-refused','reason':reason})" in source
+    assert "safe_stdout({'event':'runtime-boot-exception'" in source
     assert source.index("opener.open(req,timeout=15)") < source.index(
         "best_effort_write(root/f'deadman-attempt-{attempt}.json'"
     )
@@ -703,6 +706,18 @@ def case_deadman_source_has_last_resort_and_persistent_delete_contract() -> None
         },
     ):
         exec(compile(definitions, "<pod-deadman-definitions>", "exec"), namespace)
+
+    def broken_stdout(*_args, **_kwargs):
+        raise BrokenPipeError("offline broken stdout")
+
+    namespace["print"] = broken_stdout
+    namespace["safe_stdout"]({"event": "offline-drill"})
+    try:
+        namespace["fail"]("worker-separation-unverified")
+    except RuntimeError as error:
+        assert str(error) == "worker-separation-unverified"
+    else:
+        raise AssertionError("a broken diagnostic stream suppressed the boot refusal")
 
     class StopLoop(Exception):
         pass

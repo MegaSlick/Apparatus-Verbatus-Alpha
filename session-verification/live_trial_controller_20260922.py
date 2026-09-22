@@ -618,13 +618,19 @@ def terminate_forever(reason):
   # A 204 may destroy this process at any instant. If it does not, keep issuing DELETE;
   # a transient provider outage or delayed teardown must not exhaust a retry count.
   time.sleep(30 if result['http'] in (204,404) else 10)
-def fail(reason): raise RuntimeError(reason)
+def safe_stdout(obj):
+ try: print(json.dumps(obj,sort_keys=True),flush=True)
+ except BaseException: pass
+def fail(reason):
+ safe_stdout({'event':'runtime-refused','reason':reason})
+ raise RuntimeError(reason)
 def demote(uid,gid):
  def child():
   os.setgroups([]); os.setgid(gid); os.setuid(uid)
   if ctypes.CDLL(None).prctl(38,1,0,0,0)!=0: os._exit(126)
  return child
 def boot():
+ safe_stdout({'event':'runtime-boot-start','pid':os.getpid(),'uid':os.geteuid()})
  deadline=float(os.environ['VERBATUS_HARD_DEADLINE_EPOCH']); cleanup=float(os.environ['VERBATUS_CLEANUP_EPOCH'])
  root.mkdir(parents=True,exist_ok=True); os.chown(root,0,0); os.chmod(root,0o700)
  runtime_parent.mkdir(exist_ok=True); os.chown(runtime_parent,0,0); os.chmod(runtime_parent,0o711)
@@ -688,6 +694,7 @@ print(json.dumps(result,sort_keys=True))"""
  terminate_forever('cleanup-deadline')
 try: boot()
 except BaseException as error:
+ safe_stdout({'event':'runtime-boot-exception','error_type':type(error).__name__})
  best_effort_write(root/'runtime-refusal.json',{'schema':'verbatus-pod-runtime-refusal.v1','session_id':session,'pod_id':pod_id,'reason':type(error).__name__,'at':time.time()})
  terminate_forever('unhandled-boot-or-timer-'+type(error).__name__)
 '''
