@@ -677,7 +677,10 @@ def test_an_answer_under_the_wrong_record_schema_is_refused_by_name(real_root):
     designator.seal()
     context = _open(real_root, ATTESTATORES)
 
-    with pytest.raises(FatalAccounting, match="whose schema is 'structure-answer.v0'"):
+    with pytest.raises(
+        FatalAccounting,
+        match="terminal structure answer has unsupported schema 'structure-answer.v0'",
+    ):
         expected_acts(context)
 
 
@@ -781,7 +784,7 @@ def test_a_call_record_that_is_not_a_chair_call_record_is_refused(real_root):
     designator.seal()
     context = _open(real_root, ATTESTATORES)
 
-    with pytest.raises(FatalAccounting, match="is not a 'chair-call-record.v1' record"):
+    with pytest.raises(FatalAccounting, match="without a supported chair-call-record schema"):
         expected_acts(context)
 
 
@@ -796,7 +799,7 @@ def test_a_call_record_naming_a_different_chair_is_refused(real_root):
     designator.seal()
     context = _open(real_root, ATTESTATORES)
 
-    with pytest.raises(FatalAccounting, match="is not a 'chair-call-record.v1' record"):
+    with pytest.raises(FatalAccounting, match="without a supported chair-call-record schema"):
         expected_acts(context)
 
 
@@ -814,7 +817,7 @@ def test_a_call_record_naming_a_different_decoding_digest_is_refused(real_root):
     designator.seal()
     context = _open(real_root, ATTESTATORES)
 
-    with pytest.raises(FatalAccounting, match="is not a 'chair-call-record.v1' record"):
+    with pytest.raises(FatalAccounting, match="without a supported chair-call-record schema"):
         expected_acts(context)
 
 

@@ -8,6 +8,8 @@ no-substitution boundary.
 
 from __future__ import annotations
 
+from typing import Mapping
+
 
 class ServingError(RuntimeError):
     """Base class for a concrete, non-green serving-manager observation."""
@@ -101,15 +103,63 @@ class ChairResponseRefusal(ServingError):
     earliest — ``CHAIR_RESPONSE_HTTP_ERROR`` and ``CHAIR_RESPONSE_MODEL_MISMATCH``
     were raised *before* the body was written, so a vLLM 400 explaining a
     context overflow was discarded on a card that bills by the hour. It is true
-    now: ``ChairClient.read`` retains before it checks, and both of those
-    refusals carry the retained reference in ``detail``. The non-200 also
-    carries the head of the body, because that is where the engine's own
-    account of its refusal lives; the wrong-model refusal names the blob and
-    nothing else, because a 200 from another model is a foreign reading and a
-    foreign reading's text does not travel in an exception message.
+    now: ``ChairClient.read`` retains before it checks, closes a failed call
+    record, and both refusals carry typed raw-response and call-record
+    references beside the requested model and receipt facts. The non-200 also
+    carries the head of the body in ``detail``, because that is where the
+    engine's own account of its refusal lives; the wrong-model refusal names
+    the blob and nothing else, because a 200 from another model is a foreign
+    reading and a foreign reading's text does not travel in an exception
+    message.
     """
 
-    def __init__(self, code: str, detail: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        *,
+        raw_response_ref: Mapping[str, str] | None = None,
+        call_record_ref: Mapping[str, str] | None = None,
+        request_sha256: str | None = None,
+        receipt_ref: Mapping[str, str] | None = None,
+        served_model_id: str | None = None,
+    ) -> None:
         self.code = code
         self.detail = detail
+        self.raw_response_ref = None if raw_response_ref is None else dict(raw_response_ref)
+        self.call_record_ref = None if call_record_ref is None else dict(call_record_ref)
+        self.request_sha256 = request_sha256
+        self.receipt_ref = None if receipt_ref is None else dict(receipt_ref)
+        self.served_model_id = served_model_id
         super().__init__(f"{code}: {detail}")
+
+
+class ChairTransportFailure(ServingError):
+    """A dispatched reading request produced no complete HTTP response.
+
+    The client knows the exact request bytes and serving session but cannot
+    infer whether the engine received or completed the request. The durable
+    transport-failure call record carries that uncertainty; this exception
+    carries its typed reference so a stage can publish a terminal attempt
+    without sending the same ordinal again on resume.
+    """
+
+    code = "CHAIR_TRANSPORT_FAILURE"
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        call_record_ref: Mapping[str, str],
+        request_sha256: str,
+        receipt_ref: Mapping[str, str],
+        served_model_id: str,
+    ) -> None:
+        self.detail = detail
+        self.raw_response_ref = None
+        self.call_record_ref = dict(call_record_ref)
+        self.request_sha256 = request_sha256
+        self.receipt_ref = dict(receipt_ref)
+        self.served_model_id = served_model_id
+        self.response_completion = "unknown"
+        super().__init__(f"{self.code}: {detail}")

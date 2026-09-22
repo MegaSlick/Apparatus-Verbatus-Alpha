@@ -60,9 +60,10 @@ import protocol  # noqa: E402
 import regime  # noqa: E402
 import truncation  # noqa: E402
 from dissent import departures, dissent_against, validate_dissent  # noqa: E402
-from live_reader import VLLMReader  # noqa: E402
+from live_reader import EngineSignalRefusal, VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 
+import operations.serving.errors as serving_errors  # noqa: E402
 from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -72,7 +73,7 @@ from common.contracts.approval import (  # noqa: E402
     validate_approval_record,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of  # noqa: E402
-from common.contracts.envelope import validate_input_refs  # noqa: E402
+from common.contracts.envelope import build_envelope, validate_input_refs  # noqa: E402
 from common.contracts.errors import (  # noqa: E402
     ApprovalRefusal,
     ContractError,
@@ -99,6 +100,10 @@ from common.native_witness import (  # noqa: E402
     validate_page_testimonium_payload,
     validate_presented_page_binding,
     verify_native_capture_blob,
+)
+from common.perlector_failure import (  # noqa: E402
+    PRE_PERLECTIO_ARTIFACTS,
+    validate_failed_perlectio,
 )
 from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -128,7 +133,7 @@ from operations.serving.config import (  # noqa: E402
     load_serving_recipes,
 )
 from operations.serving.errors import ChairResponseRefusal  # noqa: E402
-from operations.serving.http import UrllibHttpTransport  # noqa: E402
+from operations.serving.http import EndpointUnavailable, UrllibHttpTransport  # noqa: E402
 from operations.serving.manager import (  # noqa: E402
     MECHANICS_QUALIFICATION_PURPOSE,
     ServingManager,
@@ -139,6 +144,13 @@ from operations.serving.residency import (  # noqa: E402
     POD_RESIDENCY_LOCK_PATH,
     FileResidencyLease,
 )
+
+_CHAIR_TRANSPORT_FAILURE_TYPES: Final = (serving_errors.ChairTransportFailure,)
+_ACT_LOCAL_READING_FAILURES: Final = (
+    EngineSignalRefusal,
+    ChairResponseRefusal,
+    EndpointUnavailable,
+) + _CHAIR_TRANSPORT_FAILURE_TYPES
 
 # A sampling gate has to inspect the shared receipt directory because the sealed
 # experiment selector cannot contain the content address of the approval that
@@ -2095,13 +2107,6 @@ def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
 # published *after* that reading, and the Perlectio is the one thing all five
 # come before. A name that is wrong about two of its own entries is worse than no
 # name, because a later reader takes it at its word.
-_PRE_PERLECTIO_ARTIFACTS: Final = (
-    ("lectio-prior", "lectio-prior"),
-    (nuda.LECTIO_NUDA_KIND, "lectio-nuda"),
-    ("primed-without-prior", "primed-without-prior"),
-    ("audit-draft", "perlegere"),
-    ("audit-finding", "perlegere"),
-)
 # The two of those the audit loop writes, after the establishing reading has
 # already happened and its text is frozen into their bytes. Nothing this pass
 # can do reproduces that text from a live chair, so an attempt interrupted after
@@ -2114,18 +2119,24 @@ def _attempt_artifact_id(act_id: str, kind: str, operation: str, ordinal: int) -
     return artifact_id(PERLECTOR, kind, act_id, perlector_attempt_id(act_id, operation, ordinal))
 
 
-def _reading_already_sealed(context, act_id: str, ordinal: int) -> bool:
+def _reading_already_sealed(context, act_id: str, ordinal: int, *, act_key: str) -> bool:
     """Whether this run tree already holds this act's Perlectio at this ordinal.
 
-    Existence, not content: the question is whether asking a chair again would
-    write over an immutable record, and any Perlectio at this identity — a
-    completed reading or a not-run acknowledgement — already answers for it.
+    A completed reading or not-run acknowledgement already answers the retry
+    question by existence. An operational failure is different: its shared
+    closed evidence contract is validated before the live chair is skipped, so
+    malformed failure bytes cannot become a permanent resume bypass.
     """
     attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
     identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
-    return context.tree.resolve(
+    if not context.tree.resolve(
         context.tree.artifact_path(PERLECTOR, "perlectio", identifier)
-    ).exists()
+    ).exists():
+        return False
+    reading = context.tree.read_artifact(PERLECTOR, "perlectio", identifier)
+    if reading["outcome"] == "failed" and "failure" in reading["payload"]:
+        validate_failed_perlectio(context, reading, act_id, expected_act_key=act_key)
+    return True
 
 
 def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
@@ -2143,7 +2154,7 @@ def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
     """
     return frozenset(
         kind
-        for kind, operation in _PRE_PERLECTIO_ARTIFACTS
+        for kind, operation in PRE_PERLECTIO_ARTIFACTS
         if context.tree.has_artifact(
             PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
         )
@@ -2464,6 +2475,151 @@ def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
         )
 
 
+def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
+    """Translate only observed engine/transport failures into retained facts.
+
+    Contract and schema errors deliberately return ``None``: swallowing one of
+    those as an engine incident would make a broken producer look like a card
+    failure and permit the stage to seal over an integrity defect.
+    """
+    if isinstance(error, EngineSignalRefusal):
+        return {
+            "phase": phase,
+            "kind": "engine-signal",
+            "code": error.code,
+            "detail": error.detail,
+            "raw_response_ref": dict(error.raw_response_ref),
+            "call_record_ref": dict(error.call_record_ref),
+            "request_sha256": error.request_sha256,
+            "receipt_ref": dict(error.receipt_ref),
+            "served_model_id": error.served_model_id,
+            "response_completion": "complete",
+        }
+    if isinstance(error, ChairResponseRefusal):
+        raw_response_ref = getattr(error, "raw_response_ref", None)
+        call_record_ref = getattr(error, "call_record_ref", None)
+        receipt_ref = getattr(error, "receipt_ref", None)
+        return {
+            "phase": phase,
+            "kind": "chair-response",
+            "code": error.code,
+            "detail": error.detail,
+            "raw_response_ref": dict(raw_response_ref) if raw_response_ref is not None else None,
+            "call_record_ref": dict(call_record_ref) if call_record_ref is not None else None,
+            "request_sha256": getattr(error, "request_sha256", None),
+            "receipt_ref": dict(receipt_ref) if receipt_ref is not None else None,
+            "served_model_id": getattr(error, "served_model_id", None),
+            "response_completion": "complete",
+        }
+    if _CHAIR_TRANSPORT_FAILURE_TYPES and isinstance(error, _CHAIR_TRANSPORT_FAILURE_TYPES):
+        call_record_ref = getattr(error, "call_record_ref", None)
+        receipt_ref = getattr(error, "receipt_ref", None)
+        return {
+            "phase": phase,
+            "kind": "transport",
+            "code": error.code,
+            "detail": error.detail,
+            "raw_response_ref": None,
+            "call_record_ref": (dict(call_record_ref) if call_record_ref is not None else None),
+            "request_sha256": getattr(error, "request_sha256", None),
+            "receipt_ref": dict(receipt_ref) if receipt_ref is not None else None,
+            "served_model_id": getattr(error, "served_model_id", None),
+            "response_completion": getattr(error, "response_completion", None),
+        }
+    if isinstance(error, EndpointUnavailable):
+        return {
+            "phase": phase,
+            "kind": "transport",
+            "code": "endpoint-unavailable",
+            "detail": str(error),
+            "raw_response_ref": None,
+            "call_record_ref": None,
+            "request_sha256": None,
+            "receipt_ref": None,
+            "served_model_id": None,
+            "response_completion": "unknown",
+        }
+    return None
+
+
+def _failure_evidence_inputs(failure: Mapping[str, Any]) -> list[dict[str, str]]:
+    return [
+        dict(failure[name])
+        for name in ("raw_response_ref", "call_record_ref", "receipt_ref")
+        if failure[name] is not None
+    ]
+
+
+def _failure_from_engine_call(
+    context, engine_call: Mapping[str, Any] | None, *, detail: str
+) -> dict[str, Any]:
+    """Build the response-evidence half of a malformed re-proof failure."""
+    record = {
+        "phase": "audit-reproof",
+        "kind": "reproof-response",
+        "code": "ReproofResponseRefusal",
+        "detail": detail,
+        "raw_response_ref": None,
+        "call_record_ref": None,
+        "request_sha256": None,
+        "receipt_ref": None,
+        "served_model_id": None,
+        "response_completion": None,
+    }
+    if engine_call is None:
+        return record
+    call_ref = dict(engine_call["call_record_ref"])
+    try:
+        call = json.loads(context.tree.read_bytes(call_ref["relative_path"]))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SchemaRefusal("a re-proof's retained chair call record is not JSON") from error
+    record.update(
+        {
+            "raw_response_ref": dict(engine_call["raw_response_ref"]),
+            "call_record_ref": call_ref,
+            "request_sha256": call.get("request_sha256"),
+            "receipt_ref": call.get("receipt_ref"),
+            "served_model_id": engine_call.get("served_model_id"),
+            "response_completion": "complete",
+        }
+    )
+    return record
+
+
+def _publish_failed_perlectio(
+    context, *, act_id: str, ordinal: int, inputs: list[dict[str, str]], payload: dict[str, Any]
+) -> None:
+    """Fully validate the prospective immutable record before publishing it."""
+    attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
+    inputs = _distinct_inputs(inputs)
+    candidate = build_envelope(
+        run_id=context.tree.run_id,
+        artifact_id=artifact_id(PERLECTOR, "perlectio", act_id, attempt),
+        subject_id=act_id,
+        stage=PERLECTOR,
+        kind="perlectio",
+        outcome="failed",
+        config_digest=context.config_digest,
+        adapter_revision=context.adapter_revision,
+        inputs=inputs,
+        payload=payload,
+        attempt=attempt,
+    )
+    validate_failed_perlectio(context, candidate, act_id, expected_act_key=payload.get("act_key"))
+    context.publish(
+        kind="perlectio",
+        subject_id=act_id,
+        outcome="failed",
+        attempt=attempt,
+        inputs=inputs,
+        payload=payload,
+    )
+    identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
+    validate_failed_perlectio(
+        context, context.tree.read_artifact(PERLECTOR, "perlectio", identifier), act_id
+    )
+
+
 def _dossier_image_refs(rows: Any, *, what: str) -> list[tuple[str, str]]:
     if not isinstance(rows, list):
         raise SchemaRefusal(f"a cross-capture dossier has no {what} list")
@@ -2756,9 +2912,16 @@ def validate_reading_payload(
         }
     if protocol_sha256 is None:
         protocol_sha256 = "unsealed-test"
-    if prompt_record != prompts.prompt_evidence(
+    expected_base_prompt = prompts.prompt_evidence(
         identity, reading_dossier, protocol_config, protocol_sha256
-    ):
+    )
+    if isinstance(prompt_record, dict) and prompt_record.get("schema") == audit.AUDIT_PROMPT_SCHEMA:
+        audit.validate_audit_prompt_evidence(prompt_record)
+        if prompt_record["base_prompt"] != expected_base_prompt:
+            raise SchemaRefusal(
+                "a Perlector audit prompt does not reproduce its base prompt from the dossier"
+            )
+    elif prompt_record != expected_base_prompt:
         raise SchemaRefusal(
             "a Perlector prompt record does not reproduce from its resolved chair and dossier"
         )
@@ -2853,17 +3016,35 @@ def _validate_sealed_doubt(payload: dict, *, fields: frozenset) -> None:
         )
 
 
-def _reproof_call(reproof: dict[str, Any]) -> dict[str, Any] | None:
+def _reproof_call(
+    reproof: dict[str, Any],
+    *,
+    base_prompt: dict[str, Any],
+    base_text: str,
+    request: dict[str, Any],
+) -> dict[str, Any] | None:
     """The re-proof's retained call, in the closed shape the finding seals, or `None`."""
     engine_call = reproof.get("engine_call")
     if engine_call is None:
         return None
+    request_sha256 = reproof.get("request_sha256")
+    rendered_prompt = reproof.get("rendered_prompt")
+    if not isinstance(request_sha256, str) or not isinstance(rendered_prompt, str):
+        raise SchemaRefusal("a live re-proof retains no exact rendered prompt and request digest")
     return {
         "call_record_ref": dict(engine_call["call_record_ref"]),
         "raw_response_ref": dict(engine_call["raw_response_ref"]),
         "response_sha256": engine_call["response_sha256"],
         "finish_reason": engine_call["finish_reason"],
         "served_model_id": engine_call["served_model_id"],
+        "request_sha256": request_sha256,
+        "audit_prompt": audit.audit_prompt_evidence(
+            base_prompt=base_prompt,
+            base_text=base_text,
+            request=request,
+            request_sha256=request_sha256,
+            rendered_text=rendered_prompt,
+        ),
     }
 
 
@@ -3214,12 +3395,25 @@ def _sealed_sibling_semi_finals(
             records, f"sealed sibling Perlectio for {act_id}", operation="perlegere"
         )
         payload = reading.get("payload")
+        # Operational failures never produced Pass-B text and therefore were
+        # absent from the original frozen page comparison.  They may be skipped
+        # only after the shared failed-Perlectio validator proves their complete
+        # identity, provenance, retained evidence and phase contract; a malformed
+        # record must still abort rather than disappearing from the denominator.
+        if reading["outcome"] == "failed":
+            validate_failed_perlectio(
+                context,
+                reading,
+                act_id,
+                expected_act_key=payload.get("act_key") if isinstance(payload, dict) else None,
+            )
+            continue
         # A held/not-run sibling was absent from the original frozen Pass-B
         # collection too, so it contributes no row to a later recovery audit.
-        # ONLY that outcome skips: any other outcome whose payload lost its
-        # text is malformed evidence, and dropping it would quietly shrink the
-        # page's cross-act flag comparisons exactly like the zero-record case
-        # above.
+        # Only validated operational failures and this outcome skip. Any other
+        # outcome whose payload lost its text is malformed evidence. Dropping it
+        # would quietly shrink the page's cross-act flag comparisons exactly like
+        # the zero-record case above.
         if reading["outcome"] == "not-run":
             continue
         if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
@@ -3880,7 +4074,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             acknowledged += 1
             continue
 
-        if serving_mode == "live" and _reading_already_sealed(context, act_id, ordinal):
+        if serving_mode == "live" and _reading_already_sealed(
+            context, act_id, ordinal, act_key=act["act_key"]
+        ):
             # **A live act sealed at this ordinal is never asked again.** Fixture
             # readers are deterministic, so a resumed fixture pass recomputes the
             # same ordinal, republishes the same bytes and the store reuses them
@@ -3944,7 +4140,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 context.artifact_ref(
                     PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
                 )
-                for kind, operation in _PRE_PERLECTIO_ARTIFACTS
+                for kind, operation in PRE_PERLECTIO_ARTIFACTS
                 if kind in sealed_arms
             ]
             payload = {
@@ -4116,18 +4312,56 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
 
         # Every arm receives the complete presentation in one reader call.
-        passes = combined.run_logical_passes(
-            reader,
-            autopsia=autopsia,
-            dossier=base_dossier,
-            read_bytes=context.tree.read_bytes,
-            protocol_config=protocol_config,
-            nuda_sampled=nuda_due,
-            control_sampled=control_due,
-            draft_fed=context.draft_fed,
-            publish_prior=publish_prior,
-            sealed_prior=sealed_prior,
-        )
+        try:
+            passes = combined.run_logical_passes(
+                reader,
+                autopsia=autopsia,
+                dossier=base_dossier,
+                read_bytes=context.tree.read_bytes,
+                protocol_config=protocol_config,
+                nuda_sampled=nuda_due,
+                control_sampled=control_due,
+                draft_fed=context.draft_fed,
+                publish_prior=publish_prior,
+                sealed_prior=sealed_prior,
+            )
+        except _ACT_LOCAL_READING_FAILURES as error:
+            failure = _failure_record(error, phase="establishing")
+            assert failure is not None  # narrowed by the exception tuple above
+            failure_inputs = (
+                _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
+                + [
+                    context.artifact_ref(ATTESTATORES, "testimonium", record["artifact_id"])
+                    for record in testimonia
+                ]
+                + [attachment_view["reference"]]
+            )
+            # Arms published before the failed call are immutable evidence of
+            # this same attempt.  Naming them makes a resume and the Recensor
+            # able to inspect what completed without re-asking the chair.
+            for kind, operation in PRE_PERLECTIO_ARTIFACTS:
+                identifier = _attempt_artifact_id(act_id, kind, operation, ordinal)
+                if context.tree.has_artifact(PERLECTOR, kind, identifier):
+                    failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
+            failure_inputs.extend(_failure_evidence_inputs(failure))
+            failure_payload = {
+                "act_key": act["act_key"],
+                "attempt_ordinal": ordinal,
+                "reason": f"live Perlector {failure['kind']} failure: {failure['code']}",
+                "failure": failure,
+                "provenance": provenance_for(
+                    context, chair, attempted=True, receipt_ref=receipt_ref
+                ),
+            }
+            _publish_failed_perlectio(
+                context,
+                act_id=act_id,
+                ordinal=ordinal,
+                inputs=failure_inputs,
+                payload=failure_payload,
+            )
+            acknowledged += 1
+            continue
 
         if nuda_due:
             _publish_lectio_nuda(
@@ -4363,11 +4597,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # handed, and what every later consumer recomputes are therefore the
         # same computation over the same frozen flags rather than three
         # spellings that have to be kept agreeing.
-        reproofs = audit.reproof_plan(flags, text_length=len(final_text))
+        reproofs = audit.reproof_plan(
+            flags, text_length=len(final_text), policy_schema=audit_policy["schema"]
+        )
         request_digest: str | None = None
         changes: list[dict[str, Any]] = []
         uncertainty: list[dict[str, Any]] = []
-        reproof_change_span: tuple[int, int] | None = None
+        reproof_edits: list[dict[str, Any]] | None = None
         payload_fields = row["fields"]
         # A re-proof reading is evidence of this Perlectio whether or not it
         # changed the text: it is the second thing that looked at this act's
@@ -4375,9 +4611,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # Bound as an input in both cases; named by `payload["engine_call"]` only
         # when its text is the one published.
         reproof_inputs: list[dict[str, str]] = []
+        reproof_call_record: dict[str, Any] | None = None
         # The same predicate `validate_chain` re-derives from the frozen draft:
         # one spelling of "a re-proof request exists for this act".
         if audit.reproof_delivery_due(flags, audit_policy["round_cap"]):
+            base_prompt_record = copy.deepcopy(payload["prompt"])
+            base_prompt_text = prompts.build_prompt(
+                chair.serving_recipe, chair.role, payload["dossier"], protocol_config
+            )
             # Exactly one reader invocation for this act and audit round.  The
             # list of neutral locations is retained on the Perlectio below;
             # no flag result can reopen this page's frozen calculation.
@@ -4409,6 +4650,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 draft_ref=draft_ref,
                 semi_final_text=payload["text"],
                 flags=flags,
+                policy_schema=audit_policy["schema"],
             )
             request_digest = audit.audit_digest(audit_request)
             # The producer enforces the delivery contract itself, so the
@@ -4418,22 +4660,93 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             validate_audit_delivery(
                 payload["dossier"], pass_kind="audit-reproof", audit_request=audit_request
             )
-            reproof = reader.read(
-                payload["dossier"],
-                # The literal, not `audit.REPROOF_PASS_KIND`: every producer
-                # call site spells its pass so `test_reader.py`'s pin can read
-                # them out of this file and hold `reader.PASS_KINDS` to exactly
-                # the set run.py calls. That pin is also what makes the literal
-                # safe here -- a misspelling fails it rather than falling
-                # through to the establishing branch.
-                pass_kind="audit-reproof",
-                delivered_pixels=reproof_pixels,
-                # A copy, so a reader that mutated its input could not leave
-                # the sealed digest describing an object that no longer exists
-                # -- the exact shape of lie this seam was rebuilt to end.
-                audit_request=copy.deepcopy(audit_request),
-            )
-            final_text = reproof["text"]
+            try:
+                reproof = reader.read(
+                    payload["dossier"],
+                    pass_kind="audit-reproof",
+                    delivered_pixels=reproof_pixels,
+                    audit_request=copy.deepcopy(audit_request),
+                )
+            except _ACT_LOCAL_READING_FAILURES as error:
+                failure = _failure_record(error, phase="audit-reproof")
+                assert failure is not None
+                failure_inputs = row["inputs"] + [draft_ref]
+                for kind, operation in PRE_PERLECTIO_ARTIFACTS:
+                    identifier = _attempt_artifact_id(
+                        act_id, kind, operation, payload["attempt_ordinal"]
+                    )
+                    if context.tree.has_artifact(PERLECTOR, kind, identifier):
+                        failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
+                failure_inputs.extend(_failure_evidence_inputs(failure))
+                failure_payload = {
+                    "act_key": row["act"]["act_key"],
+                    "attempt_ordinal": payload["attempt_ordinal"],
+                    "reason": f"live Perlector {failure['kind']} failure during audit re-proof: {failure['code']}",
+                    "failure": failure,
+                    "provenance": payload["provenance"],
+                }
+                _publish_failed_perlectio(
+                    context,
+                    act_id=act_id,
+                    ordinal=payload["attempt_ordinal"],
+                    inputs=failure_inputs,
+                    payload=failure_payload,
+                )
+                continue
+            # A Pass-C reply is a set of exact, draft-anchored edits, never a
+            # second whole-act reading.  Assembly validates every original
+            # substring and all requested locations before it can affect the
+            # established text; it therefore cannot silently carry a rewrite
+            # from outside the flagged spans into this record.
+            try:
+                final_text, reproof_response = audit.assemble_reproof_response(
+                    reproof["text"], audit_request
+                )
+                # Publishing whitespace as the canonical empty reading would
+                # remove characters outside a narrow edit.  That projection is
+                # not one of the exact edits the response accounted for.
+                if _publishes_empty(final_text) and final_text not in {"", pre_audit_text}:
+                    raise audit.ReproofResponseRefusal(
+                        "an audit re-proof response becomes a whole-act empty projection outside "
+                        "its exact requested edits"
+                    )
+                reproof_edits = copy.deepcopy(reproof_response["edits"])
+                reproof_call_record = _reproof_call(
+                    reproof,
+                    base_prompt=base_prompt_record,
+                    base_text=base_prompt_text,
+                    request=audit_request,
+                )
+            except audit.ReproofResponseRefusal as error:
+                failure_inputs = (
+                    row["inputs"]
+                    + [draft_ref]
+                    + engine_call_inputs(context, reproof.get("engine_call"))
+                )
+                for kind, operation in PRE_PERLECTIO_ARTIFACTS:
+                    identifier = _attempt_artifact_id(
+                        act_id, kind, operation, payload["attempt_ordinal"]
+                    )
+                    if context.tree.has_artifact(PERLECTOR, kind, identifier):
+                        failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
+                failure_payload = {
+                    "act_key": row["act"]["act_key"],
+                    "attempt_ordinal": payload["attempt_ordinal"],
+                    "reason": "the delivered audit re-proof response could not be assembled safely",
+                    "failure": _failure_from_engine_call(
+                        context, reproof.get("engine_call"), detail=str(error)
+                    ),
+                    "provenance": payload["provenance"],
+                }
+                failure_inputs.extend(_failure_evidence_inputs(failure_payload["failure"]))
+                _publish_failed_perlectio(
+                    context,
+                    act_id=act_id,
+                    ordinal=payload["attempt_ordinal"],
+                    inputs=failure_inputs,
+                    payload=failure_payload,
+                )
+                continue
             pre_audit_text = payload["text"]
             reproof_inputs = engine_call_inputs(context, reproof.get("engine_call"))
             reproof_truncation = truncation.classify(
@@ -4443,54 +4756,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
                 stop_reason=reproof["stop_reason"],
             )
-            # The envelope a completed re-proof's own rewrite occupies, measured
-            # against the frozen semi-final before anything is published on its
-            # strength. `None` whenever there is nothing to measure: the call
-            # did not complete, or it returned the frozen text unchanged. This
-            # is computed once, here, so both the publish decision below and
-            # the sealed finding's `examination` derive from the same envelope
-            # rather than two comparisons that could drift.
-            # The text this re-proof would actually publish, not the text it
-            # returned: the projection below empties a whitespace-only reading
-            # (`_resolve_outcome`'s `no-readable-text`), and an emptied reading's
-            # envelope is the whole act rather than whatever span the raw
-            # response happened to touch. Measuring containment on the raw text
-            # and then publishing the emptied one would hand `change_record` an
-            # envelope nobody checked -- the same uncaught refusal, one branch
-            # further in.
-            projected_text = "" if _publishes_empty(final_text) else final_text
-            reproof_change_span: tuple[int, int] | None = None
-            reproof_change_contained = True
-            if projected_text != pre_audit_text:
-                span_start, span_end = audit.text_change_span(pre_audit_text, projected_text)
-                reproof_change_contained = any(
-                    audit.flag_contains_change(
-                        flag, start=span_start, end=span_end, before_length=len(pre_audit_text)
-                    )
-                    for flag in flags
-                )
-                # Sealed whenever a delivered re-proof's text departed from the
-                # frozen semi-final, whatever the instrument called the call.
-                # `examination_state` consults it only for a completed call --
-                # an `incomplete` examination is decided on the termination
-                # alone -- but the finding still needs the fact, because a
-                # sealed span beside a published semi-final is exactly how a
-                # later reader knows the re-proof's own text was refused rather
-                # than returned unchanged.
-                reproof_change_span = (span_start, span_end)
-            # Everything from here to the end of this block is provenance and
-            # projection for a re-proof whose text is the one published. It is
-            # entered on text inequality *and containment*, on purpose: a
-            # re-proof that returned the frozen text confirms Pass B's call as
-            # the producer of the published reading, and a re-proof whose
-            # rewrite escapes every flag it was sent to settle is refused
-            # outright below rather than published on any of these fields --
-            # moving `engine_call`, `truncation` and `self_revision` onto a
-            # rejected rewrite would bind the published reading to a response
-            # that was never allowed to produce it. Whether the re-proof
-            # *completed* is the separate fact `reproof_truncation` above
-            # already holds, and it is sealed whichever branch runs.
-            if final_text != payload["text"] and reproof_change_contained:
+            # assemble_reproof_response already checked every exact edit and
+            # refused escaping or contradictory replacements. This block binds
+            # the accepted text to its producing call; an unchanged result keeps
+            # Pass B's text provenance. Completion is measured separately above.
+            if final_text != payload["text"]:
                 payload["text"] = final_text
                 # The doubt report travels with the call whose text is
                 # published: a re-proof's spans are anchored to the re-proof's
@@ -4518,6 +4788,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 # produce it -- the same false provenance `truncation` and
                 # `self_revision` below were repaired for (audit finding H6).
                 payload_fields = with_engine_call(payload, reproof, payload_fields)
+                if reproof_call_record is not None:
+                    payload["prompt"] = copy.deepcopy(reproof_call_record["audit_prompt"])
                 payload["dissent"] = dissent_against(
                     final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
                 )
@@ -4614,32 +4886,20 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                         "", dissent_testimonia(row["testimonia"], row["attachment_view"])
                     )
                     payload["self_revision"] = departures("", row["prior"]["text"])
-            # After the projection, not before it: `validate_chain` recomputes
-            # the change record from the draft's semi-final against the
-            # PUBLISHED text, so the record must describe the projected text.
-            # Guarded by the same containment this block's own `if` already
-            # checked: a rewrite that escaped every flag was never published
-            # above, and asking `change_record` to re-attribute it here would
-            # raise the exact refusal this stage now handles as a rejection
-            # instead of a crash (below), not a second chance to hit it.
-            if reproof_change_contained:
-                changes = audit.change_record(pre_audit_text, final_text, flags)
-            else:
-                changes = []
+            # Record the exact validated edits; downstream validation replays
+            # them against the frozen draft and the published text.
+            changes = audit.change_records_from_edits(reproof_edits)
         # One derivation, shared with every consumer: what became of the
         # re-examination, and whether that leaves the flags unresolved. Only an
         # exhausted cap mints exhausted-cap spans; an incomplete re-proof is an
         # incomplete examination, recorded as that and routed to review by the
         # Recensor on that fact, never dressed as a span or as a truncation of a
-        # text that did in fact complete; a re-proof that completed but rewrote
-        # text outside every flag is `reproof-rejected`, never dressed as
-        # `complete` on the strength of a rewrite this stage refused to publish.
+        # text that did in fact complete. Invalid edit responses have already
+        # taken the act-local failure path and do not reach this derivation.
         examination = audit.examination_state(
             flags,
             audit_policy["round_cap"],
             reproof_truncation,
-            reproof_change_span=reproof_change_span,
-            flag_text_length=len(pre_audit_text),
         )
         unresolved = audit.unresolved_state(examination)
         if examination == audit.EXAMINATION_CAP_EXHAUSTED:
@@ -4661,18 +4921,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "unresolved": unresolved,
             "examination": examination,
             "reproof_truncation": reproof_truncation,
-            "reproof_change_span": (
-                {"start": reproof_change_span[0], "end": reproof_change_span[1]}
-                if reproof_change_span is not None
-                else None
-            ),
+            "reproof_edits": reproof_edits,
             # The retained response the termination above was measured over,
             # where the reader has an engine behind it: the fixture chamber has
             # none and seals `None`. Named on the finding because the
             # Perlectio's own `engine_call` stays Pass B's whenever the text is
             # unchanged, and a later reader must still be able to find the
             # re-proof's response and check the sealed verdict against it.
-            "reproof_call": _reproof_call(reproof) if reproof_truncation is not None else None,
+            "reproof_call": reproof_call_record if reproof_truncation is not None else None,
         }
         audit.validate_finding(
             finding_payload,

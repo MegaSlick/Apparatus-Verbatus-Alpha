@@ -35,6 +35,11 @@ from common.armarium_formats import (
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails, is_sha256
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
+from common.chandra_presentation import (
+    STRUCTURE_REQUEST_IMAGE_FIELDS,
+    STRUCTURE_REQUEST_IMAGE_KIND,
+    STRUCTURE_REQUEST_IMAGE_SCHEMA,
+)
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, verify_self_hash
 from common.contracts.envelope import build_envelope, verify_input_bytes
@@ -56,7 +61,15 @@ from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
 )
 from common.contracts.serving import (
+    CHAIR_CALL_RECORD_FIELDS,
+    CHAIR_CALL_RECORD_FIELDS_V1,
     CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_CALL_RECORD_SCHEMA_V1,
+    CHAIR_CALL_RECORD_SCHEMAS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_PROBLEM_FIELDS,
+    CHAIR_TRANSPORT_PROBLEM_SCHEMA,
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
 )
@@ -73,7 +86,11 @@ from common.contracts.stages import (
     TRIAGE_MODES,
 )
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
-from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy
+from common.decoding import (
+    DEFAULT_DECODING_CONFIG_PATH,
+    load_decoding_policy,
+    structure_recovery_policy,
+)
 from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -81,6 +98,7 @@ from common.hard_failure import (
     tally_hard_failures,
 )
 from common.imaging import dimensions
+from common.native_witness import validate_presented, validate_presented_page_binding
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
     RECOVERY_KINDS,
@@ -169,9 +187,9 @@ DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_geometry.toml"
 )
 # The grouping and reconciliation thresholds the Designator's structure pass runs
-# under: which marks join into one act, how far a chain reaches, and how many
-# residual components one page's conservation record may enumerate before the page
-# is held as a single review item. They decide what is marked out and what is held,
+# under: which marks join into one act, how far a chain reaches, and which
+# residual components receive individual held acts rather than retained page-level
+# presentation. They decide what is marked out and what is held,
 # so two runs under different thresholds produce different acts from identical
 # pixels — the same reason padding is sealed, one step earlier in the same stage.
 DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH = (
@@ -434,6 +452,16 @@ STRUCTURE_DECODING_POLICY: Final = "structure"
 # reads them back, so the two may not spell them differently.
 STRUCTURE_ANSWER_KIND: Final = "structure-answer"
 STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
+STRUCTURE_ANSWER_RECORD_SCHEMA_V2: Final = "designator-structure-answer.v2"
+STRUCTURE_ANSWER_RECORD_SCHEMA_V3: Final = "designator-structure-answer.v3"
+STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset(
+    {
+        STRUCTURE_ANSWER_RECORD_SCHEMA,
+        STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+        STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+    }
+)
+STRUCTURE_ATTEMPT_KIND: Final = "structure-attempt"
 STRUCTURE_ANSWER_PARSED: Final = "parsed"
 
 
@@ -2958,6 +2986,34 @@ def _verify_real_act_denominator(
     page_ordinals = {page_id: ordinal for ordinal, page_id in exemplar_page_ids(context).items()}
     holds_by_subject: dict[str, dict[str, Any]] = {}
     minted_rows: dict[str, dict[str, Any]] = {}
+    verified_structure_attempt_pages: set[str] = set()
+    attempts_by_page: dict[str, list[dict[str, Any]]] | None = None
+    sealed_decoding: tuple[dict[str, Any], str] | None = None
+    for answer in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ANSWER_KIND):
+        page_id = answer.get("subject_id")
+        payload = answer.get("payload")
+        if not isinstance(page_id, str) or not isinstance(payload, Mapping):
+            raise FatalAccounting("a terminal structure answer does not bind a page payload")
+        if payload.get("schema") not in STRUCTURE_ANSWER_RECORD_SCHEMAS:
+            raise FatalAccounting(
+                f"page {page_id}'s terminal structure answer has unsupported schema "
+                f"{payload.get('schema')!r}"
+            )
+        if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA and attempts_by_page is None:
+            attempts_by_page = {}
+            for attempt in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND):
+                attempt_page_id = attempt.get("subject_id")
+                if isinstance(attempt_page_id, str):
+                    attempts_by_page.setdefault(attempt_page_id, []).append(attempt)
+            sealed_decoding = load_decoding_policy(context.args.decoding_config)
+        _verify_structure_attempt_chain(
+            context,
+            payload,
+            page_id,
+            attempts_by_page=attempts_by_page,
+            sealed_decoding=sealed_decoding,
+        )
+        verified_structure_attempt_pages.add(page_id)
     observed = {act["act_id"]: act for act in acts}
     for act_id in sorted(observed):
         row = observed[act_id]
@@ -3055,6 +3111,7 @@ def _verify_real_act_denominator(
                 far_regions,
                 page_ordinals,
                 structure_call=structure_call,
+                verified_structure_attempt_pages=verified_structure_attempt_pages,
             )
             continue
         minted_rows[act_id] = row
@@ -3066,6 +3123,467 @@ def _verify_real_act_denominator(
     _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
 
 
+def _verify_structure_attempt_chain(
+    context: StageContext,
+    payload: Mapping[str, Any],
+    page_id: str,
+    *,
+    attempts_by_page: Mapping[str, list[dict[str, Any]]] | None = None,
+    sealed_decoding: tuple[Mapping[str, Any], str] | None = None,
+) -> None:
+    """Follow and reconcile every versioned terminal structure-attempt reference.
+
+    Full-denominator callers pass one manifest index and one decoding read for
+    the whole run.  Standalone callers may omit them and retain the original
+    closed, self-sufficient verification path.
+    """
+    if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
+        return
+    policy = payload.get("attempt_policy")
+    references = payload.get("attempts")
+    ordinal = payload.get("attempt_ordinal")
+    if (
+        not isinstance(policy, Mapping)
+        or set(policy) != {"max_attempts", "seed_schedule"}
+        or policy.get("seed_schedule") not in {"fixed-base", "base-plus-attempt-ordinal-minus-one"}
+        or not isinstance(policy.get("max_attempts"), int)
+        or isinstance(policy.get("max_attempts"), bool)
+        or not 1 <= policy["max_attempts"] <= 3
+        or not isinstance(ordinal, int)
+        or isinstance(ordinal, bool)
+        or not isinstance(references, list)
+        or len(references) != ordinal
+        or not 1 <= ordinal <= policy.get("max_attempts", 0)
+    ):
+        raise FatalAccounting(
+            f"page {page_id}'s terminal structure answer has no bounded exact attempt ledger"
+        )
+    if sealed_decoding is None:
+        sealed_decoding = load_decoding_policy(context.args.decoding_config)
+    decoding_policy, decoding_digest = sealed_decoding
+    decoding = payload.get("decoding")
+    if (
+        dict(policy) != structure_recovery_policy(decoding_policy)
+        or not isinstance(decoding, Mapping)
+        or decoding.get("decoding_config_sha256") != decoding_digest
+    ):
+        raise FatalAccounting(
+            f"page {page_id}'s terminal structure answer attempt policy is not the one "
+            "sealed by its decoding configuration"
+        )
+    if attempts_by_page is None:
+        stored_attempts = [
+            row
+            for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND)
+            if row.get("subject_id") == page_id
+        ]
+    else:
+        stored_attempts = list(attempts_by_page.get(page_id, []))
+    if len(stored_attempts) != ordinal:
+        raise FatalAccounting(
+            f"page {page_id}'s terminal structure answer names {ordinal} attempts but its "
+            f"stage manifest contains {len(stored_attempts)}; missing or extra history is "
+            "not a contiguous ledger"
+        )
+    attempts: list[Mapping[str, Any]] = []
+    for expected_ordinal, reference in enumerate(references, start=1):
+        try:
+            record = context.tree.read_artifact_reference(
+                dict(reference),
+                stage=DESIGNATOR,
+                kind=STRUCTURE_ATTEMPT_KIND,
+                subject_id=page_id,
+            )
+        except (SchemaRefusal, ContractError, OSError) as error:
+            raise FatalAccounting(
+                f"page {page_id}'s terminal structure answer names an invalid attempt "
+                f"reference at ordinal {expected_ordinal}: {error}"
+            ) from error
+        attempt = record.get("payload")
+        prior = references[: expected_ordinal - 1]
+        if (
+            record.get("attempt_id") != attempt_id(page_id, "structure", expected_ordinal)
+            or not isinstance(attempt, Mapping)
+            or attempt.get("schema")
+            not in {STRUCTURE_ANSWER_RECORD_SCHEMA_V2, STRUCTURE_ANSWER_RECORD_SCHEMA_V3}
+            or attempt.get("page_id") != page_id
+            or attempt.get("page_ordinal") != payload.get("page_ordinal")
+            or attempt.get("attempt_ordinal") != expected_ordinal
+            or attempt.get("attempt_policy") != policy
+            or attempt.get("attempts") != prior
+            or not isinstance(attempt.get("attempt_seed"), int)
+            or isinstance(attempt.get("attempt_seed"), bool)
+            or attempt.get("decoding") != payload.get("decoding")
+        ):
+            raise FatalAccounting(
+                f"page {page_id}'s structure attempt {expected_ordinal} does not bind its "
+                "identity, page, policy, config, and prior history"
+            )
+        if attempts:
+            if (
+                attempts[-1].get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+                and attempt.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+            ):
+                raise FatalAccounting(
+                    f"page {page_id}'s structure attempt {expected_ordinal} downgrades its "
+                    "native presentation schema"
+                )
+            expected_seed = (
+                attempts[-1]["attempt_seed"]
+                if policy["seed_schedule"] == "fixed-base"
+                else attempts[-1]["attempt_seed"] + 1
+            )
+            if attempt["attempt_seed"] != expected_seed:
+                raise FatalAccounting(
+                    f"page {page_id}'s structure attempt {expected_ordinal} violates its "
+                    "sealed seed schedule"
+                )
+        try:
+            validate_serving_provenance(
+                context,
+                dict(attempt.get("provenance", {})),
+                producer_stage=DESIGNATOR,
+                require_receipt=True,
+            )
+        except (SchemaRefusal, ContractError) as error:
+            raise FatalAccounting(
+                f"page {page_id}'s structure attempt {expected_ordinal} has invalid "
+                f"serving provenance: {error}"
+            ) from error
+        try:
+            verify_structure_attempt_call(
+                context,
+                attempt,
+                page_id,
+                attempt_inputs=record.get("inputs"),
+            )
+        except (SchemaRefusal, ContractError) as error:
+            raise FatalAccounting(
+                f"page {page_id}'s structure attempt {expected_ordinal} has invalid "
+                f"call evidence: {error}"
+            ) from error
+        attempts.append(attempt)
+    expected_terminal = dict(attempts[-1])
+    expected_terminal["attempts"] = references
+    if dict(payload) != expected_terminal:
+        raise FatalAccounting(
+            f"page {page_id}'s terminal structure answer disagrees with its last attempt"
+        )
+
+
+def _verify_structure_request_image(
+    context: StageContext,
+    payload: Mapping[str, Any],
+    page_id: str,
+    attempt_inputs: object,
+) -> dict[str, Any]:
+    """Replay one v3 Chandra request image from its unchanged sealed page."""
+    reference = payload.get("presentation_ref")
+    try:
+        record = context.tree.read_artifact_reference(
+            dict(reference),
+            stage=DESIGNATOR,
+            kind=STRUCTURE_REQUEST_IMAGE_KIND,
+            subject_id=page_id,
+        )
+    except (TypeError, ValueError, SchemaRefusal, ContractError, OSError) as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names an invalid request-image reference: "
+            f"{error}"
+        ) from error
+    evidence = record.get("payload")
+    if (
+        not isinstance(evidence, Mapping)
+        or set(evidence) != STRUCTURE_REQUEST_IMAGE_FIELDS
+        or evidence.get("schema") != STRUCTURE_REQUEST_IMAGE_SCHEMA
+        or evidence.get("page_id") != page_id
+        or evidence.get("page_ordinal") != payload.get("page_ordinal")
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} has malformed request-image evidence"
+        )
+    source_ref, page_bytes, page_size = _structure_source_page(context, payload, page_id)
+    if (
+        evidence.get("source_image_ref") != source_ref
+        or record.get("inputs") != [source_ref]
+        or attempt_inputs != [source_ref, reference]
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} does not retain its exact source and "
+            "request-image lineage"
+        )
+    presented = evidence.get("presented")
+    try:
+        presented = validate_presented(presented, page_size=page_size)
+        validate_presented_page_binding(
+            presented,
+            page_ordinal=payload["page_ordinal"],
+            page_image_path=source_ref["relative_path"],
+            page_sha256=source_ref["sha256"],
+            page_size=page_size,
+            page_bytes=page_bytes,
+        )
+    except SchemaRefusal as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} has invalid native image presentation: {error}"
+        ) from error
+    if presented["image_path"] != context.tree.blob_path(DESIGNATOR, presented["image_sha256"]):
+        raise ContractError(
+            f"structure attempt for page {page_id} does not retain its native request image "
+            "at its Designator content address"
+        )
+    try:
+        presented_bytes = context.tree.read_bytes(presented["image_path"])
+    except OSError as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} cannot read its presented image: {error}"
+        ) from error
+    if digest_bytes(presented_bytes) != presented["image_sha256"]:
+        raise ContractError(
+            f"structure attempt for page {page_id} presented-image bytes changed under their "
+            "retained digest"
+        )
+    resize = presented["transform"]["resize"]
+    capacity = payload.get("capacity")
+    images = capacity.get("images") if isinstance(capacity, Mapping) else None
+    if (
+        not isinstance(images, list)
+        or len(images) != 1
+        or not isinstance(images[0], Mapping)
+        or images[0].get("width") != resize["target_width_px"]
+        or images[0].get("height") != resize["target_height_px"]
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} capacity was not computed over the native "
+            "request image"
+        )
+    return presented
+
+
+def _structure_source_page(
+    context: StageContext,
+    payload: Mapping[str, Any],
+    page_id: str,
+) -> tuple[dict[str, str], bytes, tuple[int, int]]:
+    """Read and bind the unchanged Exemplar page behind one structure attempt."""
+    page = context.tree.read_artifact(
+        EXEMPLAR,
+        "page",
+        artifact_id(EXEMPLAR, "page", page_id),
+    )
+    page_payload = page.get("payload")
+    if not isinstance(page_payload, Mapping):
+        raise ContractError(f"structure attempt for page {page_id} has no sealed source page")
+    source_ref = {
+        "relative_path": page_payload.get("image_path"),
+        "sha256": page_payload.get("source_sha256"),
+    }
+    try:
+        page_bytes = context.tree.read_bytes(source_ref["relative_path"])
+    except (OSError, TypeError) as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} cannot read its sealed source page: {error}"
+        ) from error
+    verify_input_bytes(source_ref, page_bytes)
+    page_size = dimensions(page_bytes)
+    if page_size != (payload.get("page_w"), payload.get("page_h")):
+        raise ContractError(
+            f"structure attempt for page {page_id} maps geometry against dimensions other "
+            "than its sealed source page"
+        )
+    return source_ref, page_bytes, page_size
+
+
+def verify_structure_attempt_call(
+    context: StageContext,
+    payload: Mapping[str, Any],
+    page_id: str,
+    *,
+    attempt_inputs: object = None,
+) -> None:
+    """Bind one structure attempt to its retained response or transport call."""
+    presented = None
+    expected_image_sha256 = None
+    if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+        presented = _verify_structure_request_image(
+            context,
+            payload,
+            page_id,
+            attempt_inputs,
+        )
+        expected_image_sha256 = presented["image_sha256"]
+    elif payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V2:
+        source_ref, _page_bytes, page_size = _structure_source_page(context, payload, page_id)
+        if attempt_inputs != [source_ref]:
+            raise ContractError(
+                f"legacy v2 structure attempt for page {page_id} does not retain its exact "
+                "sealed-page input"
+            )
+        capacity = payload.get("capacity")
+        images = capacity.get("images") if isinstance(capacity, Mapping) else None
+        if (
+            not isinstance(images, list)
+            or len(images) != 1
+            or not isinstance(images[0], Mapping)
+            or images[0].get("width") != page_size[0]
+            or images[0].get("height") != page_size[1]
+        ):
+            raise ContractError(
+                f"legacy v2 structure attempt for page {page_id} capacity was not computed "
+                "over its directly presented sealed page"
+            )
+        expected_image_sha256 = source_ref["sha256"]
+    else:
+        raise ContractError(
+            f"structure attempt for page {page_id} has no supported versioned schema"
+        )
+    reference = payload.get("call_record_ref")
+    if reference is None:
+        if (
+            payload.get("reason_code") != "structure-request-too-large"
+            or payload.get("request_sha256") is not None
+            or payload.get("raw_response_ref") is not None
+            or payload.get("call_problem") is not None
+        ):
+            raise ContractError(
+                f"structure attempt for page {page_id} has no call record outside a "
+                "closed pre-wire capacity refusal"
+            )
+        return
+    call_reference = _serving_evidence_reference(reference, "structure attempt call record")
+    try:
+        raw = context.tree.read_bytes(call_reference["relative_path"])
+    except OSError as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names an unreadable call record: {error}"
+        ) from error
+    verify_input_bytes(call_reference, raw)
+    try:
+        call = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names a malformed call record"
+        ) from error
+    if not isinstance(call, Mapping):
+        raise ContractError(f"structure attempt for page {page_id} call record is not an object")
+    schema = call.get("schema")
+    expected_fields = {
+        CHAIR_CALL_RECORD_SCHEMA_V1: CHAIR_CALL_RECORD_FIELDS_V1,
+        CHAIR_CALL_RECORD_SCHEMA: CHAIR_CALL_RECORD_FIELDS,
+        CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
+    }.get(schema)
+    if expected_fields is None or set(call) != expected_fields:
+        raise ContractError(
+            f"structure attempt for page {page_id} call record has an unsupported or open schema"
+        )
+    decoding = payload.get("decoding")
+    provenance = payload.get("provenance")
+    generation_sent = call.get("generation_sent")
+    call_identity = call.get("resolved_identity")
+    provenance_revision = (
+        provenance.get("resolved_revision") if isinstance(provenance, Mapping) else None
+    )
+    if (
+        call.get("chair") != DESIGNATOR_CHAIR
+        or call.get("kind") != "chat-completions"
+        or not isinstance(decoding, Mapping)
+        or decoding.get("policy") != "structure"
+        or not isinstance(provenance, Mapping)
+        or call.get("decoding_config_sha256") != decoding.get("decoding_config_sha256")
+        or call.get("request_sha256") != payload.get("request_sha256")
+        or not isinstance(generation_sent, Mapping)
+        or generation_sent.get("seed") != payload.get("attempt_seed")
+        or generation_sent.get("temperature") != decoding.get("temperature")
+        or call.get("receipt_ref") != payload.get("receipt_ref")
+        or call.get("receipt_ref") != provenance.get("receipt_ref")
+        or call_identity != provenance.get("resolved_identity")
+        or not isinstance(call_identity, Mapping)
+        or call.get("serving_recipe") != call_identity.get("serving_recipe")
+        or not isinstance(provenance_revision, Mapping)
+        or call.get("resolved_revision") != provenance_revision.get("value")
+        or call.get("served_model_id") != payload.get("served_model_id")
+        or call.get("capacity") != payload.get("capacity")
+        or call.get("image_sha256s") != [expected_image_sha256]
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} disagrees with its retained call record"
+        )
+    if schema == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA:
+        problem = call.get("transport_problem")
+        response_fields = (
+            "raw_response_ref",
+            "response_sha256",
+            "response_status",
+            "response_model",
+            "finish_reason",
+            "usage",
+            "parse_problem",
+        )
+        if (
+            not isinstance(problem, Mapping)
+            or set(problem) != CHAIR_TRANSPORT_PROBLEM_FIELDS
+            or problem.get("schema") != CHAIR_TRANSPORT_PROBLEM_SCHEMA
+            or problem.get("code") != "ENDPOINT_UNAVAILABLE"
+            or not isinstance(problem.get("detail"), str)
+            or not isinstance(problem.get("definitively_absent"), bool)
+            or problem.get("request_delivery") != "unknown"
+            or problem.get("response_completion") != "unknown"
+            or any(call.get(field) is not None for field in response_fields)
+            or payload.get("raw_response_ref") is not None
+            or payload.get("custody_ref") is not None
+            or payload.get("custody_problem") is not None
+            or payload.get("finish_reason") is not None
+            or payload.get("call_problem") != "CHAIR_TRANSPORT_FAILURE"
+            or payload.get("reason_code") != "structure-call-unusable"
+        ):
+            raise ContractError(
+                f"structure attempt for page {page_id} has inconsistent transport-failure evidence"
+            )
+        return
+    raw_reference = _serving_evidence_reference(
+        call.get("raw_response_ref"), "structure attempt raw response"
+    )
+    custody_problem = payload.get("custody_problem")
+    if custody_problem is None:
+        payload_response_matches = payload.get("raw_response_ref") == raw_reference
+    else:
+        payload_response_matches = (
+            isinstance(custody_problem, str)
+            and bool(custody_problem)
+            and payload.get("raw_response_ref") is None
+            and payload.get("custody_ref") is None
+            and payload.get("reason_code") == "structure-response-not-retained"
+        )
+    if (
+        not payload_response_matches
+        or call.get("response_sha256") != raw_reference["sha256"]
+        or call.get("finish_reason") != payload.get("finish_reason")
+        or call.get("parse_problem") != payload.get("call_problem")
+        or (
+            call.get("parse_problem") is not None
+            and payload.get("reason_code") != "structure-call-unusable"
+        )
+        or (
+            schema == CHAIR_CALL_RECORD_SCHEMA
+            and (
+                not isinstance(call.get("response_status"), int)
+                or isinstance(call.get("response_status"), bool)
+                or not 100 <= call["response_status"] <= 599
+            )
+        )
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} disagrees with its retained response evidence"
+        )
+    try:
+        response_bytes = context.tree.read_bytes(raw_reference["relative_path"])
+    except OSError as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names an unreadable raw response: {error}"
+        ) from error
+    verify_input_bytes(raw_reference, response_bytes)
+
+
 def _verify_proposal_act_row(
     context,
     act_id: str,
@@ -3075,6 +3593,7 @@ def _verify_proposal_act_row(
     page_ordinals: dict[str, int],
     *,
     structure_call: Mapping[str, Any] | None,
+    verified_structure_attempt_pages: set[str],
 ) -> None:
     """A structural act, recomputed and then held to the answer it came from.
 
@@ -3191,11 +3710,14 @@ def _verify_proposal_act_row(
         subject_id=row["page_id"],
     )
     payload = answer.get("payload") if isinstance(answer.get("payload"), Mapping) else {}
-    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
+    if payload.get("schema") not in STRUCTURE_ANSWER_RECORD_SCHEMAS:
         raise FatalAccounting(
             f"act {act_id}'s page names a structure answer whose schema is "
-            f"{payload.get('schema')!r}, not {STRUCTURE_ANSWER_RECORD_SCHEMA!r}"
+            f"{payload.get('schema')!r}, not one of {sorted(STRUCTURE_ANSWER_RECORD_SCHEMAS)!r}"
         )
+    if row["page_id"] not in verified_structure_attempt_pages:
+        _verify_structure_attempt_chain(context, payload, row["page_id"])
+        verified_structure_attempt_pages.add(row["page_id"])
     if payload.get("parse_state") != STRUCTURE_ANSWER_PARSED:
         raise FatalAccounting(
             f"act {act_id} was minted from page {row['page_id']}'s structure answer, whose "
@@ -3258,13 +3780,13 @@ def _verify_proposal_act_row(
         ) from error
     if (
         not isinstance(call_record, Mapping)
-        or call_record.get("schema") != CHAIR_CALL_RECORD_SCHEMA
+        or call_record.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
         or call_record.get("chair") != DESIGNATOR_CHAIR
         or call_record.get("decoding_config_sha256") != structure_call["decoding_config_sha256"]
     ):
         raise FatalAccounting(
-            f"act {act_id}'s structure answer names a call record that is not a "
-            f"{CHAIR_CALL_RECORD_SCHEMA!r} record for chair {DESIGNATOR_CHAIR!r} under the "
+            f"act {act_id}'s structure answer names a call record without a supported "
+            f"chair-call-record schema for chair {DESIGNATOR_CHAIR!r} under the "
             "seal's own sealed decoding digest; a parsed answer naming a call record with no "
             "genuine reading behind it is a reading of nothing"
         )
@@ -3532,26 +4054,19 @@ def _verify_every_conservation_residual_is_accounted(
                 page_id, payload, accounted_pages.get(page_id, [])
             )
             continue
-        if enumeration != RESIDUAL_ENUMERATION_COMPLETE:
+        if enumeration not in (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_AGGREGATED):
             raise FatalAccounting(
                 f"the conservation record for page {page_id} records its residual enumeration as "
                 f"{enumeration!r}, which is outside the closed set {RESIDUAL_ENUMERATIONS}; a "
                 "consumer cannot tell a page with no unclaimed ink from one whose unclaimed ink "
                 "was counted and not listed without being told which it is"
             )
-        components = payload.get("residual_components")
-        if not isinstance(components, list):
-            raise FatalAccounting(
-                f"the conservation record for page {page_id} carries no residual-component list "
-                "to reconcile the denominator against"
-            )
-        declared_count = payload.get("residual_component_count")
-        if not _is_count(declared_count) or declared_count != len(components):
-            raise FatalAccounting(
-                f"the conservation record for page {page_id} names residual_component_count "
-                f"{declared_count!r} but its residual_components list carries {len(components)} "
-                "entries; on an enumerated page the count a reviewer is told is the count the "
-                "list itself supports, recomputed rather than believed"
+        components, aggregate = _verify_residual_component_partition(
+            context, page_id, payload, enumeration
+        )
+        if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
+            _verify_aggregated_page_is_held_as_one_item(
+                page_id, payload, accounted_pages.get(page_id, [])
             )
         for index, component in enumerate(components):
             bounds = component.get("bounds") if isinstance(component, Mapping) else None
@@ -3569,6 +4084,175 @@ def _verify_every_conservation_residual_is_accounted(
                     "ink this stage measured and no crop claimed may not leave the denominator "
                     "silently"
                 )
+
+
+def _verify_aggregated_page_is_held_as_one_item(
+    page_id: str, payload: Mapping[str, Any], holds: list[Mapping[str, Any]]
+) -> None:
+    """An aggregate represents components; it never rebrands them as one act."""
+    aggregate = payload.get("aggregated_residual_components")
+    if not isinstance(aggregate, list) or not aggregate:
+        raise FatalAccounting(
+            f"page {page_id}'s aggregate residual enumeration has no retained components"
+        )
+    if len(holds) != 1:
+        raise FatalAccounting(
+            f"page {page_id}'s aggregate residual accounting needs exactly one page-residual "
+            f"hold, found {len(holds)}"
+        )
+    declared = holds[0].get("aggregated_component_count")
+    if not _is_count(declared) or declared != len(aggregate):
+        raise FatalAccounting(
+            f"page {page_id}'s page-residual hold does not retain the aggregate component count"
+        )
+
+
+def sealed_residual_presentation_policy(context) -> dict[str, int]:
+    """Read the two aggregate floors from the exact grouping bytes this run sealed."""
+    path = Path(
+        getattr(getattr(context, "args", None), "designator_grouping_config", None)
+        or DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
+    )
+    try:
+        raw = path.read_bytes()
+        document = tomllib.loads(raw.decode("utf-8"))
+        table = document["grouping"]["residual_presentation"]
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, KeyError, TypeError) as error:
+        raise FatalAccounting(
+            "the sealed Designator grouping policy has no readable residual presentation table"
+        ) from error
+    observed_digest = digest_bytes(raw)
+    require_sealed_config(
+        run_sealed_config_digests(context.run),
+        "designator-grouping",
+        observed_digest,
+        "this context",
+    )
+    names = ("residual_aggregate_max_pixel_count", "residual_aggregate_max_area_px")
+    if set(table) != set(names) | {"provenance"} or any(
+        not isinstance(table.get(name), int) or isinstance(table.get(name), bool) or table[name] < 0
+        for name in names
+    ):
+        raise FatalAccounting(
+            "the sealed Designator residual presentation policy is not the closed pair of "
+            "non-negative integer pixel and area thresholds"
+        )
+    return {name: table[name] for name in names}
+
+
+def _verify_residual_component_partition(
+    context,
+    page_id: str,
+    payload: Mapping[str, Any],
+    enumeration: str,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Verify retained geometry, pixels, policy, and the promoted/aggregate partition."""
+    promoted = payload.get("residual_components")
+    aggregate = payload.get("aggregated_residual_components", [])
+    if not isinstance(promoted, list) or not isinstance(aggregate, list):
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} carries malformed retained component lists"
+        )
+    if enumeration == RESIDUAL_ENUMERATION_COMPLETE and aggregate:
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} calls its residual enumeration "
+            "complete while retaining aggregate components"
+        )
+    if enumeration == RESIDUAL_ENUMERATION_AGGREGATED and not aggregate:
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} calls its residual enumeration "
+            "aggregate-page-held without retaining aggregate components"
+        )
+    if enumeration == RESIDUAL_ENUMERATION_COMPLETE:
+        declared_total = payload.get("residual_component_count")
+        if not _is_count(declared_total) or declared_total != len(promoted):
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} names residual_component_count "
+                f"{declared_total!r} but lists {len(promoted)} residual components"
+            )
+        return promoted, aggregate
+    width, height = payload.get("page_width"), payload.get("page_height")
+    if not _is_count(width) or not _is_count(height) or width == 0 or height == 0:
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} has no positive page geometry"
+        )
+    policy = sealed_residual_presentation_policy(context)
+    if any(
+        not isinstance(payload.get(name), int)
+        or isinstance(payload.get(name), bool)
+        or payload.get(name) != value
+        for name, value in policy.items()
+    ):
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} does not name the exact sealed "
+            "residual presentation thresholds"
+        )
+    declared_promoted = payload.get("residual_promoted_component_count")
+    declared_aggregate = payload.get("residual_aggregated_component_count")
+    declared_total = payload.get("residual_component_count")
+    if (
+        not _is_count(declared_promoted)
+        or not _is_count(declared_aggregate)
+        or not _is_count(declared_total)
+        or declared_promoted != len(promoted)
+        or declared_aggregate != len(aggregate)
+        or declared_total != len(promoted) + len(aggregate)
+    ):
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} does not reconcile its promoted, "
+            "aggregate, and total component counts"
+        )
+    identities: set[tuple[int, int, int, int]] = set()
+    for label, rows in (("promoted", promoted), ("aggregate", aggregate)):
+        for index, component in enumerate(rows):
+            bounds = component.get("bounds") if isinstance(component, Mapping) else None
+            pixels = component.get("pixel_count") if isinstance(component, Mapping) else None
+            if (
+                not isinstance(bounds, Mapping)
+                or set(bounds) != {"x", "y", "w", "h"}
+                or any(
+                    not isinstance(bounds[k], int) or isinstance(bounds[k], bool) for k in bounds
+                )
+                or bounds["x"] < 0
+                or bounds["y"] < 0
+                or bounds["w"] <= 0
+                or bounds["h"] <= 0
+                or bounds["x"] + bounds["w"] > width
+                or bounds["y"] + bounds["h"] > height
+                or not _is_count(pixels)
+                or pixels > bounds["w"] * bounds["h"]
+            ):
+                raise FatalAccounting(
+                    f"the conservation record for page {page_id} has malformed {label} "
+                    f"component {index}"
+                )
+            identity = tuple(bounds[name] for name in ("x", "y", "w", "h"))
+            if identity in identities:
+                raise FatalAccounting(
+                    f"the conservation record for page {page_id} repeats residual component "
+                    f"identity {identity} across its partition"
+                )
+            identities.add(identity)
+            area = bounds["w"] * bounds["h"]
+            significant = (
+                pixels >= policy["residual_aggregate_max_pixel_count"]
+                or area >= policy["residual_aggregate_max_area_px"]
+            )
+            if (label == "promoted") != significant:
+                raise FatalAccounting(
+                    f"the conservation record for page {page_id} classifies {label} component "
+                    f"{index} against thresholds other than the sealed presentation policy"
+                )
+    residual_pixels = payload.get("residual_pixel_count")
+    if (
+        not _is_count(residual_pixels)
+        or sum(component["pixel_count"] for component in [*promoted, *aggregate]) != residual_pixels
+    ):
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} retained component pixels do not "
+            "equal residual_pixel_count"
+        )
+    return promoted, aggregate
 
 
 def _page_residual_holds_by_page(
@@ -3649,8 +4333,13 @@ def fallback_page_act_key(page_ordinal: int) -> str:
 # "this page's residuals were counted and not listed" — and a third spelling
 # appearing on one side of that distinction is how the two become one again.
 RESIDUAL_ENUMERATION_COMPLETE: Final = "complete"
+RESIDUAL_ENUMERATION_AGGREGATED: Final = "aggregate-page-held"
 RESIDUAL_ENUMERATION_WITHHELD: Final = "withheld-page-held"
-RESIDUAL_ENUMERATIONS: Final = (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_WITHHELD)
+RESIDUAL_ENUMERATIONS: Final = (
+    RESIDUAL_ENUMERATION_COMPLETE,
+    RESIDUAL_ENUMERATION_AGGREGATED,
+    RESIDUAL_ENUMERATION_WITHHELD,
+)
 
 # Why a page held in place of its residual components was held. The Designator
 # declares the closed hold vocabulary and imports this name into it, and this
@@ -3659,6 +4348,7 @@ RESIDUAL_ENUMERATIONS: Final = (RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERAT
 # differently -- the same reason `page_residual_act_key` is defined here and
 # recomputed there.
 PAGE_RESIDUAL_REASON_CODE: Final = "residual-components-over-page-bound"
+PAGE_RESIDUAL_AGGREGATE_REASON_CODE: Final = "residual-components-below-presentation-threshold"
 
 
 def page_residual_act_key(page_ordinal: int) -> str:
@@ -3915,11 +4605,10 @@ def _verify_page_residual_act_row(
 ) -> None:
     """The held row that stands for a whole page, checked against its own evidence.
 
-    A page-residual act says something no other minted row says: *this page's
-    reconciliation found more unclaimed components than the sealed bound allows,
-    so the page is one review item and the components are not listed*. That makes
-    it the one row whose evidence a reader cannot open and count for themselves,
-    which is exactly why none of it may be believed here.
+    A page-residual act presents one page-level residual partition. Current
+    records retain the below-threshold components in full; legacy withheld
+    records carry only their count and historical bound. The enumeration names
+    which contract applies, and neither is trusted without its premise.
 
     Five things are recomputed rather than read. The rectangle comes from the
     sealed page bytes, so a hold naming a rectangle that is not the whole page —
@@ -3927,18 +4616,11 @@ def _verify_page_residual_act_row(
     own identity is. The identity is re-derived against the reserved
     ``page-residual`` class and that rectangle. The premise is followed to the
     page's own `conservation` record through the digest-checked hop, never by
-    address, and that record has to *itself* say the count exceeded the bound the
-    hold names and that its enumeration was withheld. And the record must carry
-    no `residual_components` key at all: an empty list would mean a page with no
-    unclaimed ink, which is the opposite claim, and the key's absence is what
-    makes every existing consumer fail loudly instead of reading absence as none.
+    address, and that record has to support the exact enumeration the hold names.
 
     The bound itself is not merely internally consistent, it is bound to the run.
-    `max_residual_components` is a Designator grouping-policy parameter (SPEC_C
-    1), and this run sealed a `designator-grouping` digest for exactly that
-    policy at `open_context`. A hold naming its own bound and never naming which
-    grouping configuration it was judged against would let a Designator invent
-    any bound it liked; the hold's `grouping_config_sha256` is checked against
+    This run sealed a `designator-grouping` digest at `open_context`; the hold's
+    `grouping_config_sha256` is checked against
     `run_sealed_config_digests(context.run)["designator-grouping"]` so the bound
     is bound to the policy this run actually sealed, not merely to itself.
 
@@ -3977,22 +4659,24 @@ def _verify_page_residual_act_row(
             f"act {act_id}'s page-residual hold does not carry the page id, page ordinal, "
             "derived page-residual key, and page rectangle it must bind"
         )
+    reason_code = payload.get("reason_code")
     if (
-        payload.get("reason_code") != PAGE_RESIDUAL_REASON_CODE
+        reason_code not in (PAGE_RESIDUAL_REASON_CODE, PAGE_RESIDUAL_AGGREGATE_REASON_CODE)
         or payload.get("blocking_page_ordinal") != ordinal
     ):
         raise FatalAccounting(
             f"act {act_id}'s page-residual hold records its cause as "
             f"{payload.get('reason_code')!r} against page "
             f"{payload.get('blocking_page_ordinal')!r} rather than "
-            f"{PAGE_RESIDUAL_REASON_CODE!r} against page {ordinal}; the hold vocabulary is "
+            "a supported page-residual cause against page "
+            f"{ordinal}; the hold vocabulary is "
             "closed so that a consumer can branch on the cause without reading prose"
         )
     grouping_digest = payload.get("grouping_config_sha256")
     if not isinstance(grouping_digest, str) or not grouping_digest:
         raise FatalAccounting(
             f"act {act_id}'s page-residual hold does not name the sealed grouping "
-            "configuration digest its residual bound was judged against"
+            "configuration digest its residual presentation was judged against"
         )
     sealed_grouping_digest = run_sealed_config_digests(context.run).get("designator-grouping")
     if sealed_grouping_digest is None:
@@ -4034,22 +4718,21 @@ def _verify_page_residual_premise(
     """The conservation record's own account of why this page is held as one item."""
     payload = conservation.get("payload")
     payload = payload if isinstance(payload, Mapping) else {}
-    bound = hold_payload.get("max_residual_components")
     declared = hold_payload.get("residual_component_count")
-    if not _is_count(bound) or not _is_count(declared):
+    if not _is_count(declared):
         raise FatalAccounting(
-            f"act {act_id}'s page-residual hold does not name an integer residual component "
-            "count and the integer bound it was judged against"
+            f"act {act_id}'s page-residual hold does not name an integer residual component count"
         )
     enumeration = payload.get("residual_enumeration")
-    if enumeration != RESIDUAL_ENUMERATION_WITHHELD:
+    if enumeration not in (RESIDUAL_ENUMERATION_WITHHELD, RESIDUAL_ENUMERATION_AGGREGATED):
         raise FatalAccounting(
-            f"act {act_id} holds page {page_id} for withheld residual enumeration, but that "
+            f"act {act_id} holds page {page_id} for withheld or aggregated residual enumeration, but that "
             f"page's own conservation record records its enumeration as {enumeration!r} rather "
-            f"than {RESIDUAL_ENUMERATION_WITHHELD!r}; a page may not be held as one review item "
-            "over a reconciliation that enumerated its components"
+            f"than {RESIDUAL_ENUMERATION_WITHHELD!r} or {RESIDUAL_ENUMERATION_AGGREGATED!r}; "
+            "a page may not be held as one review item over a reconciliation that separately "
+            "presents every component"
         )
-    # Checked only once the record has already proven it means to withhold: a
+    # Checked only once the record has already proven it means to aggregate: a
     # record that enumerated its components is refused above for that alone,
     # whatever its outcome says, and folding this check in ahead of that one
     # would report the wrong reason for the same wrong record.
@@ -4060,7 +4743,7 @@ def _verify_page_residual_premise(
             f"conservation record reports its outcome as {outcome!r} rather than 'held'; a "
             "record standing behind a held page may not still say it was proposed"
         )
-    if "residual_components" in payload:
+    if enumeration == RESIDUAL_ENUMERATION_WITHHELD and "residual_components" in payload:
         raise FatalAccounting(
             f"act {act_id} holds page {page_id} for a withheld enumeration, but that page's "
             "conservation record still carries a residual_components key; the key is omitted "
@@ -4078,13 +4761,38 @@ def _verify_page_residual_premise(
             f"conservation record measured {measured}; the count a reviewer is shown is the "
             "count the reconciliation took, never a second figure beside it"
         )
-    if measured <= bound:
+    if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
+        bound = hold_payload.get("max_residual_components")
+        if not _is_count(bound):
+            raise FatalAccounting(
+                f"act {act_id}'s legacy withheld page-residual hold does not name the integer "
+                "bound it was judged against"
+            )
+        if hold_payload.get("reason_code") != PAGE_RESIDUAL_REASON_CODE:
+            raise FatalAccounting(f"act {act_id}'s legacy withheld page uses the wrong reason code")
+    else:
+        if hold_payload.get("reason_code") != PAGE_RESIDUAL_AGGREGATE_REASON_CODE:
+            raise FatalAccounting(f"act {act_id}'s aggregate page uses the wrong reason code")
+        bound = None
+    if enumeration == RESIDUAL_ENUMERATION_WITHHELD and measured <= bound:
         raise FatalAccounting(
             f"act {act_id} holds page {page_id} against a bound of {bound} residual components, "
             f"but that page's conservation record measured {measured}, which does not exceed it; "
             "a page whose reconciliation stays within the bound owes one held act per residual, "
             "not one held page"
         )
+    if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
+        aggregate = payload.get("aggregated_residual_components")
+        aggregated_count = hold_payload.get("aggregated_component_count")
+        if (
+            not isinstance(aggregate, list)
+            or not _is_count(aggregated_count)
+            or aggregated_count != len(aggregate)
+        ):
+            raise FatalAccounting(
+                f"act {act_id} holds page {page_id} for aggregate residual accounting without "
+                "the retained component count"
+            )
 
 
 def _is_count(value: Any) -> bool:

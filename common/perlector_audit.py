@@ -27,16 +27,27 @@ re-proof ran" and "a re-proof ran" are different recorded facts.
 
 from __future__ import annotations
 
+import base64
+import inspect
+import json
+import math
 from typing import Any, Final
 
 from common.contracts import uncertainty
-from common.contracts.canonical import digest_of, is_sha256
+from common.contracts.canonical import digest_bytes, digest_of, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
+from common.contracts.serving import (
+    CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_CALL_RECORD_SCHEMAS,
+    WIRE_DECIMAL_FIELDS,
+    WIRE_DECIMAL_SCHEMA,
+)
 from common.contracts.stages import PERLECTOR
 from common.corpus_register import refuse_capture_preference
 
-SCHEMA: Final = "perlector-audit.v2"
+SCHEMA: Final = "perlector-audit.v3"
+LEGACY_SCHEMA: Final = "perlector-audit.v2"
 # Every sealed policy schema this module once accepted and now refuses by name.
 # A `perlector-audit.v1` record carried no fact about whether a delivered
 # re-proof completed: `unresolved` was defined as "flags and a zero cap", so a
@@ -53,7 +64,25 @@ RETIRED_SCHEMAS: Final = frozenset({"perlector-audit.v1"})
 # record was computed under, while this names the shape of the object a reader
 # is handed. A serving path that learns to render this into prompt bytes moves
 # this label without touching the policy seal.
-REQUEST_SCHEMA: Final = "perlector-audit-request.v1"
+REQUEST_SCHEMA: Final = "perlector-audit-request.v2"
+LEGACY_REQUEST_SCHEMA: Final = "perlector-audit-request.v1"
+# A re-proof does not return a replacement act.  It returns a closed set of
+# edits anchored to the frozen draft the instrument delivered.  Keeping this
+# separate from REQUEST_SCHEMA means older retained requests remain readable;
+# a new run seals the response form it asked for in its request digest.
+RESPONSE_SCHEMA: Final = "perlector-audit-response.v1"
+AUDIT_PROMPT_SCHEMA: Final = "perlector-audit-prompt.v1"
+_AUDIT_PROMPT_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "base_prompt",
+        "request_digest",
+        "rendered_text",
+        "rendered_sha256",
+        "renderer_sha256",
+        "request_sha256",
+    }
+)
 # The pass this instrument belongs to, named on the consuming side so
 # `reader.py`'s delivery check and its closed pass vocabulary compare against
 # one spelling. The producer deliberately keeps its own literal at the call
@@ -149,7 +178,7 @@ _DRAFT_FIELDS: Final = frozenset(
         "flag_location_basis",
     }
 )
-_FINDING_FIELDS: Final = frozenset(
+_FINDING_FIELDS_V2: Final = frozenset(
     {
         "act_key",
         "attempt_ordinal",
@@ -174,6 +203,7 @@ _FINDING_FIELDS: Final = frozenset(
         "reproof_change_span",
     }
 )
+_FINDING_FIELDS_V3: Final = (_FINDING_FIELDS_V2 - {"reproof_change_span"}) | {"reproof_edits"}
 _PERLECTIO_AUDIT_FIELDS: Final = frozenset(
     {
         "draft_ref",
@@ -195,6 +225,20 @@ _AUDIT_REQUEST_FIELDS: Final = frozenset(
 )
 
 
+class ReproofResponseRefusal(SchemaRefusal):
+    """A delivered re-proof reply cannot be assembled into an act safely."""
+
+
+def _closed_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Keep JSON object spelling closed by refusing repeated member names."""
+    value: dict[str, Any] = {}
+    for name, member in pairs:
+        if name in value:
+            raise ReproofResponseRefusal(f"an audit re-proof response repeats JSON member {name!r}")
+        value[name] = member
+    return value
+
+
 # Module scope so tests can assert against the same closed list the runtime
 # screen uses. The screen below is unreachable over today's fixed literal, and
 # that is its job: it fires on every call the moment an editor softens the
@@ -210,7 +254,7 @@ FORBIDDEN_PROMPT_FRAGMENTS: Final = (
 )
 
 
-def neutral_prompt(*, start: int, end: int, text_length: int) -> str:
+def neutral_prompt(*, start: int, end: int, text_length: int, policy_schema: str = SCHEMA) -> str:
     if not 0 <= start <= end <= text_length:
         raise SchemaRefusal("an audit re-proof location lies outside the delivered text")
     prompt = (
@@ -218,13 +262,130 @@ def neutral_prompt(*, start: int, end: int, text_length: int) -> str:
         f"[{start}, {end}) of the delivered act. Report only what the ink supports there; "
         "if it supports the existing text, record confirmed unchanged."
     )
+    if policy_schema == SCHEMA:
+        prompt += (
+            " Reply only as JSON with schema `perlector-audit-response.v1` and one ordered edit "
+            "for every requested location; each edit repeats its exact original text and gives its replacement."
+        )
+    elif policy_schema != LEGACY_SCHEMA:
+        raise SchemaRefusal("an audit re-proof prompt names an unknown policy schema")
     lowered = prompt.lower()
     if any(fragment in lowered for fragment in FORBIDDEN_PROMPT_FRAGMENTS):
         raise SchemaRefusal("the audit re-proof prompt is not neutral")
     return prompt
 
 
-def reproof_plan(flags: list[dict[str, Any]], *, text_length: int) -> list[dict[str, Any]]:
+def render_reproof_instruction(request: dict[str, Any]) -> str:
+    """Render the complete live instruction for one frozen exact-edit request."""
+    value = validate_audit_request(request)
+    if value["schema"] != REQUEST_SCHEMA:
+        raise SchemaRefusal("a legacy audit request has no exact-edit response instrument")
+    examples = [
+        {
+            "class": row["class"],
+            "location": dict(row["location"]),
+            "original": value["semi_final_text"][row["location"]["start"] : row["location"]["end"]],
+            "replacement": value["semi_final_text"][
+                row["location"]["start"] : row["location"]["end"]
+            ],
+        }
+        for row in value["reproofs"]
+    ]
+    return "\n".join(
+        [
+            "AUDIT RE-PROOF INSTRUMENT (this governs the response format).",
+            "Re-examine only the requested character locations against the ink.",
+            "Offsets are zero-based Python Unicode code-point offsets into the frozen text; "
+            "do not normalize, count UTF-8 bytes, or change any text outside those locations.",
+            "Return exactly one edit for every requested row, in the same order. Repeat its "
+            "class, exact location, and exact original substring. Put the ink-supported text "
+            "in replacement. If unchanged, replacement must equal original.",
+            "Reply with only one JSON object. It must have exactly schema and edits; each edit "
+            "must have exactly class, location, original, and replacement.",
+            "Frozen semi-final text (JSON string):",
+            json.dumps(value["semi_final_text"], ensure_ascii=False),
+            "Required response object, shown with unchanged replacements:",
+            json.dumps(
+                {"schema": RESPONSE_SCHEMA, "edits": examples},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        ]
+    )
+
+
+# Bind only the renderer and its two protocol labels. Unrelated validator edits
+# must not invalidate retained readings. This is the first published prompt
+# evidence revision; a future renderer change needs an explicit legacy renderer
+# path, not automatic acceptance of a digest whose prompt we cannot reproduce.
+AUDIT_PROMPT_RENDERER_SHA256: Final = digest_of(
+    {
+        "source": inspect.getsource(render_reproof_instruction),
+        "request_schema": REQUEST_SCHEMA,
+        "response_schema": RESPONSE_SCHEMA,
+    }
+)
+
+
+def audit_prompt_evidence(
+    *,
+    base_prompt: dict[str, Any],
+    base_text: str,
+    request: dict[str, Any],
+    request_sha256: str,
+    rendered_text: str,
+) -> dict[str, Any]:
+    """Seal the exact complete prompt rendered for one live audit request."""
+    expected = "\n".join((base_text, render_reproof_instruction(request)))
+    if rendered_text != expected:
+        raise SchemaRefusal("a live re-proof did not retain the exact audit prompt it rendered")
+    value = {
+        "schema": AUDIT_PROMPT_SCHEMA,
+        "base_prompt": dict(base_prompt),
+        "request_digest": audit_digest(request),
+        "rendered_text": rendered_text,
+        "rendered_sha256": digest_bytes(rendered_text.encode("utf-8")),
+        "renderer_sha256": AUDIT_PROMPT_RENDERER_SHA256,
+        "request_sha256": request_sha256,
+    }
+    return validate_audit_prompt_evidence(value, request=request)
+
+
+def validate_audit_prompt_evidence(
+    payload: Any, *, request: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    value = _closed(payload, _AUDIT_PROMPT_FIELDS, "audit prompt evidence")
+    if value["schema"] != AUDIT_PROMPT_SCHEMA or not isinstance(value["base_prompt"], dict):
+        raise SchemaRefusal("an audit prompt evidence record has the wrong schema or base prompt")
+    if any(
+        not is_sha256(value[field])
+        for field in ("request_digest", "rendered_sha256", "renderer_sha256", "request_sha256")
+    ):
+        raise SchemaRefusal("an audit prompt evidence record has a malformed digest")
+    if value["renderer_sha256"] != AUDIT_PROMPT_RENDERER_SHA256:
+        raise SchemaRefusal("an audit prompt evidence record names another renderer revision")
+    rendered = value["rendered_text"]
+    if (
+        not isinstance(rendered, str)
+        or digest_bytes(rendered.encode("utf-8")) != value["rendered_sha256"]
+    ):
+        raise SchemaRefusal("an audit prompt evidence record disagrees with its rendered text")
+    if request is not None:
+        instruction = render_reproof_instruction(request)
+        suffix = "\n" + instruction
+        if not rendered.endswith(suffix):
+            raise SchemaRefusal("an audit prompt omits its exact frozen re-proof instruction")
+        base_text = rendered[: -len(suffix)]
+        if value["request_digest"] != audit_digest(request) or digest_bytes(
+            base_text.encode("utf-8")
+        ) != value["base_prompt"].get("rendered_sha256"):
+            raise SchemaRefusal("an audit prompt disagrees with its base prompt or frozen request")
+    return value
+
+
+def reproof_plan(
+    flags: list[dict[str, Any]], *, text_length: int, policy_schema: str = SCHEMA
+) -> list[dict[str, Any]]:
     """One neutral, location-only re-proof per frozen flag, in the flags' own order.
 
     The single definition of what Pass C intends to ask. Three callers need it:
@@ -247,6 +408,7 @@ def reproof_plan(flags: list[dict[str, Any]], *, text_length: int) -> list[dict[
                 start=flag["location"]["start"],
                 end=flag["location"]["end"],
                 text_length=text_length,
+                policy_schema=policy_schema,
             ),
         }
         for flag in flags
@@ -275,7 +437,9 @@ def _location(value: Any, *, text_length: int | None, label: str) -> dict[str, i
     return value
 
 
-def _validate_reproof_rows(rows: list[Any], *, text_length: int | None, subject: str) -> None:
+def _validate_reproof_rows(
+    rows: list[Any], *, text_length: int | None, subject: str, policy_schema: str | None = None
+) -> None:
     """The neutrality screen, applied identically wherever a re-proof row appears.
 
     `text_length=None` is the pre-read pass's contract: shape and location
@@ -305,11 +469,33 @@ def _validate_reproof_rows(rows: list[Any], *, text_length: int | None, subject:
         location = _location(
             reproof["location"], text_length=text_length, label=f"{subject} re-proof"
         )
-        if reproof["prompt"] != neutral_prompt(
-            start=location["start"],
-            end=location["end"],
-            text_length=text_length if text_length is not None else location["end"],
-        ):
+        prompt_length = text_length if text_length is not None else location["end"]
+        allowed = (
+            {
+                neutral_prompt(
+                    start=location["start"],
+                    end=location["end"],
+                    text_length=prompt_length,
+                    policy_schema=policy_schema,
+                )
+            }
+            if policy_schema is not None
+            else {
+                neutral_prompt(
+                    start=location["start"],
+                    end=location["end"],
+                    text_length=prompt_length,
+                    policy_schema=SCHEMA,
+                ),
+                neutral_prompt(
+                    start=location["start"],
+                    end=location["end"],
+                    text_length=prompt_length,
+                    policy_schema=LEGACY_SCHEMA,
+                ),
+            }
+        )
+        if reproof["prompt"] not in allowed:
             raise SchemaRefusal(f"a {subject} re-proof is not a neutral location-only prompt")
 
 
@@ -572,9 +758,10 @@ def validate_truncation_record(
     return value
 
 
-_REPROOF_CALL_FIELDS: Final = frozenset(
+_LEGACY_REPROOF_CALL_FIELDS: Final = frozenset(
     {"call_record_ref", "raw_response_ref", "response_sha256", "finish_reason", "served_model_id"}
 )
+_REPROOF_CALL_FIELDS: Final = _LEGACY_REPROOF_CALL_FIELDS | {"request_sha256", "audit_prompt"}
 # The engine's finish reason and the instrument's declared stop word are one
 # fact in two vocabularies (`pipeline/4_perlector/live_reader.py::_mapped_stop_reason`,
 # `common/contracts/serving.py`): `stop` -> "stop", `length` -> "length", nothing
@@ -583,7 +770,9 @@ _REPROOF_CALL_FIELDS: Final = frozenset(
 _FINISH_REASON_TO_STOP_WORD: Final = {"stop": "stop", "length": "length", None: None}
 
 
-def validate_reproof_call(value: Any, *, label: str) -> dict[str, Any] | None:
+def validate_reproof_call(
+    value: Any, *, label: str, policy_schema: str = SCHEMA
+) -> dict[str, Any] | None:
     """The retained response the sealed re-proof termination was measured over.
 
     `None` where the reader has no engine behind it (the fixture chamber) or
@@ -595,7 +784,10 @@ def validate_reproof_call(value: Any, *, label: str) -> dict[str, Any] | None:
     """
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != _REPROOF_CALL_FIELDS:
+    expected_fields = (
+        _REPROOF_CALL_FIELDS if policy_schema == SCHEMA else _LEGACY_REPROOF_CALL_FIELDS
+    )
+    if not isinstance(value, dict) or set(value) != expected_fields:
         raise SchemaRefusal(f"{label} is not the closed retained-call record")
     validate_input_refs([value["call_record_ref"]])
     validate_input_refs([value["raw_response_ref"]])
@@ -622,6 +814,12 @@ def validate_reproof_call(value: Any, *, label: str) -> dict[str, Any] | None:
         )
     if not isinstance(value["served_model_id"], str) or not value["served_model_id"]:
         raise SchemaRefusal(f"{label} names no served model")
+    if policy_schema == SCHEMA:
+        if not is_sha256(value["request_sha256"]):
+            raise SchemaRefusal(f"{label} names no request digest")
+        validate_audit_prompt_evidence(value["audit_prompt"])
+        if value["audit_prompt"]["request_sha256"] != value["request_sha256"]:
+            raise SchemaRefusal(f"{label}'s audit prompt names another chair request")
     return value
 
 
@@ -641,6 +839,136 @@ def _refuse_call_verdict_disagreement(call: dict[str, Any], termination: dict[st
         )
 
 
+def _validate_live_reproof_request(
+    tree: Any,
+    reading: dict[str, Any],
+    call_evidence: dict[str, Any],
+    request: dict[str, Any],
+) -> None:
+    """Rebuild the exact Perlector request body that carried the audit prompt."""
+    prompt = validate_audit_prompt_evidence(call_evidence["audit_prompt"], request=request)
+    if call_evidence["request_sha256"] != prompt["request_sha256"]:
+        raise SchemaRefusal("an audit re-proof call and prompt name different requests")
+    for name in ("call_record_ref", "raw_response_ref"):
+        if call_evidence[name] not in reading.get("inputs", []):
+            raise SchemaRefusal(f"an audit re-proof does not bind its {name} as a direct input")
+    call_bytes = tree.read_bytes(call_evidence["call_record_ref"]["relative_path"])
+    if digest_bytes(call_bytes) != call_evidence["call_record_ref"]["sha256"]:
+        raise SchemaRefusal("an audit re-proof call record reference disagrees with its bytes")
+    try:
+        call = json.loads(call_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SchemaRefusal("an audit re-proof call record is not JSON") from error
+    raw_bytes = tree.read_bytes(call_evidence["raw_response_ref"]["relative_path"])
+    if digest_bytes(raw_bytes) != call_evidence["raw_response_ref"]["sha256"]:
+        raise SchemaRefusal("an audit re-proof raw response reference disagrees with its bytes")
+    if (
+        not isinstance(call, dict)
+        or call.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
+        or call.get("request_sha256") != prompt["request_sha256"]
+        or call.get("raw_response_ref") != call_evidence["raw_response_ref"]
+        or call.get("served_model_id") != call_evidence["served_model_id"]
+        or call.get("parse_problem") is not None
+        or call.get("response_model") != call_evidence["served_model_id"]
+        or (call.get("schema") == CHAIR_CALL_RECORD_SCHEMA and call.get("response_status") != 200)
+    ):
+        raise SchemaRefusal("an audit re-proof prompt is not bound to its successful chair call")
+    dossier = reading["payload"].get("dossier")
+    autopsia = dossier.get("cross_capture_autopsia") if isinstance(dossier, dict) else None
+    views = autopsia.get("views") if isinstance(autopsia, dict) else None
+    if not isinstance(views, list) or any(
+        not isinstance(view, dict)
+        or not isinstance(view.get("page_render_refs"), list)
+        or not isinstance(view.get("region_refs"), list)
+        for view in views
+    ):
+        raise SchemaRefusal("an audit re-proof has no atomic presentation to rebuild its request")
+    page_refs = [ref for view in views for ref in view.get("page_render_refs", [])]
+    region_refs = [ref for view in views for ref in view.get("region_refs", [])]
+
+    def image_part(reference: dict[str, str]) -> dict[str, Any]:
+        data = tree.read_bytes(reference["relative_path"])
+        if digest_bytes(data) != reference["sha256"]:
+            raise SchemaRefusal("an audit re-proof image reference disagrees with its bytes")
+        return {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64," + base64.b64encode(data).decode("ascii")},
+        }
+
+    content = [image_part(ref) for ref in page_refs]
+    content.append({"type": "text", "text": prompt["rendered_text"]})
+    content.extend(image_part(ref) for ref in region_refs)
+    image_sha256s = [ref["sha256"] for ref in page_refs + region_refs]
+    receipt = tree.read_run_receipt(call["receipt_ref"])
+    body = _rebuild_chair_request_bytes(
+        recorded_generation=call.get("generation_sent"),
+        messages=[{"role": "user", "content": content}],
+        model_id=call["served_model_id"],
+        seed=receipt["seed"],
+    )
+    if call.get("image_sha256s") != image_sha256s or digest_bytes(body) != prompt["request_sha256"]:
+        raise SchemaRefusal("an audit re-proof prompt does not reproduce its retained request")
+
+
+def _decode_recorded_generation(value: Any) -> Any:
+    """Restore the JSON-native generation values retained by ChairClient.
+
+    Call records replace native floats with their exact shortest wire decimal
+    because canonical artifacts reject floats.  Request validation must undo
+    that transcription before rebuilding the HTTP bytes; serializing the tag
+    itself proves a different request and rejects every legitimate float.
+    """
+    if isinstance(value, dict):
+        if set(value) == WIRE_DECIMAL_FIELDS and value.get("schema") == WIRE_DECIMAL_SCHEMA:
+            decimal = value.get("decimal")
+            if not isinstance(decimal, str):
+                raise SchemaRefusal("an audit re-proof call has a malformed wire decimal")
+            try:
+                decoded = float(decimal)
+            except ValueError as error:
+                raise SchemaRefusal(
+                    "an audit re-proof call has a malformed wire decimal"
+                ) from error
+            if not math.isfinite(decoded) or json.dumps(decoded) != decimal:
+                raise SchemaRefusal("an audit re-proof call has a non-canonical wire decimal")
+            return decoded
+        return {key: _decode_recorded_generation(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_recorded_generation(item) for item in value]
+    return value
+
+
+def _rebuild_chair_request_bytes(
+    *, recorded_generation: Any, messages: list[dict[str, Any]], model_id: str, seed: int
+) -> bytes:
+    """Rebuild the exact compact, sorted JSON bytes ChairClient sent."""
+    if not isinstance(recorded_generation, dict):
+        raise SchemaRefusal("an audit re-proof call has no recorded generation object")
+    generation = _decode_recorded_generation(recorded_generation)
+    retained_temperature = generation.pop("temperature", 0)
+    retained_seed = generation.pop("seed", seed)
+    if type(retained_temperature) is not int or retained_temperature != 0:
+        raise SchemaRefusal("an audit re-proof call retained another temperature")
+    if type(retained_seed) is not int or retained_seed != seed:
+        raise SchemaRefusal("an audit re-proof call retained another seed")
+    if set(generation) & {"model", "stream", "n"}:
+        raise SchemaRefusal("an audit re-proof call puts a manager-owned field in generation_sent")
+    body = {
+        **generation,
+        "messages": messages,
+        "model": model_id,
+        "stream": False,
+        "temperature": 0,
+        "seed": seed,
+    }
+    try:
+        return json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    except (TypeError, ValueError, RecursionError) as error:
+        raise SchemaRefusal("an audit re-proof call cannot reproduce its wire request") from error
+
+
 def audit_request(
     *,
     act_key: str,
@@ -648,6 +976,7 @@ def audit_request(
     draft_ref: dict[str, str],
     semi_final_text: str,
     flags: list[dict[str, Any]],
+    policy_schema: str = SCHEMA,
 ) -> dict[str, Any]:
     """The closed instrument Pass C hands the reader, built from the frozen draft.
 
@@ -665,12 +994,14 @@ def audit_request(
     through this validator first.
     """
     request = {
-        "schema": REQUEST_SCHEMA,
+        "schema": REQUEST_SCHEMA if policy_schema == SCHEMA else LEGACY_REQUEST_SCHEMA,
         "act_key": act_key,
         "attempt_ordinal": attempt_ordinal,
         "draft_ref": dict(draft_ref),
         "semi_final_text": semi_final_text,
-        "reproofs": reproof_plan(flags, text_length=len(semi_final_text)),
+        "reproofs": reproof_plan(
+            flags, text_length=len(semi_final_text), policy_schema=policy_schema
+        ),
     }
     return validate_audit_request(request)
 
@@ -684,7 +1015,11 @@ def validate_audit_request(payload: Any) -> dict[str, Any]:
     request exists to end.
     """
     value = _closed(payload, _AUDIT_REQUEST_FIELDS, "audit request")
-    if value["schema"] != REQUEST_SCHEMA:
+    if value["schema"] == REQUEST_SCHEMA:
+        policy_schema = SCHEMA
+    elif value["schema"] == LEGACY_REQUEST_SCHEMA:
+        policy_schema = LEGACY_SCHEMA
+    else:
         raise SchemaRefusal("an audit request does not declare the audit-request schema")
     if not isinstance(value["act_key"], str) or not value["act_key"]:
         raise SchemaRefusal("an audit request has no act identity")
@@ -712,9 +1047,197 @@ def validate_audit_request(payload: Any) -> dict[str, Any]:
             "re-examine nothing would seal a measurement nobody could have made"
         )
     _validate_reproof_rows(
-        value["reproofs"], text_length=len(value["semi_final_text"]), subject="audit request"
+        value["reproofs"],
+        text_length=len(value["semi_final_text"]),
+        subject="audit request",
+        policy_schema=policy_schema,
     )
     return value
+
+
+def reproof_response_from_text(request: dict[str, Any], proposed_text: str) -> str:
+    """Render a fixture re-proof as the same exact-edit reply a live chair owes.
+
+    Fixture declarations predate the edit protocol and name a proposed full
+    reading.  This adapter does not make that legacy convenience permissive:
+    it can encode it only when its one change envelope fits one flagged span.
+    An escaping fixture proposal is deliberately rendered with its escaping
+    span so :func:`assemble_reproof_response` rejects it just as a live reply
+    would.  Python string offsets are Unicode code-point offsets throughout;
+    no byte slicing or normalization is introduced between the frozen draft
+    and the assembled text.
+    """
+    request = validate_audit_request(request)
+    before = request["semi_final_text"]
+    rows = [
+        {
+            "class": row["class"],
+            "location": dict(row["location"]),
+            "original": before[row["location"]["start"] : row["location"]["end"]],
+            "replacement": before[row["location"]["start"] : row["location"]["end"]],
+        }
+        for row in request["reproofs"]
+    ]
+    if proposed_text != before:
+        start, end = text_change_span(before, proposed_text)
+        matching = next(
+            (
+                row
+                for row in rows
+                if row["location"]["start"] <= start and end <= row["location"]["end"]
+            ),
+            None,
+        )
+        if matching is None:
+            # Preserve the model's proposed span verbatim for the refusal
+            # record; do not coerce it into the nearest flagged location.
+            matching = rows[0]
+            matching["location"] = {"start": start, "end": end}
+            matching["original"] = before[start:end]
+        else:
+            location = matching["location"]
+            # `end` indexes the frozen text.  The proposed text's matching
+            # suffix starts at this translated boundary, so an insertion or
+            # deletion inside a flagged span cannot make us slice it at a
+            # stale offset.
+            proposed_end = len(proposed_text) - (len(before) - end)
+            matching["replacement"] = (
+                before[location["start"] : start]
+                + proposed_text[start:proposed_end]
+                + before[end : location["end"]]
+            )
+    return json.dumps(
+        {"schema": RESPONSE_SCHEMA, "edits": rows}, ensure_ascii=False, sort_keys=True
+    )
+
+
+def assemble_reproof_response(
+    raw_response: str, request: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Validate an exact-edit reply and splice it into the frozen draft.
+
+    Every requested location must be answered in its delivered order, with the
+    exact source substring repeated.  Changed locations may not overlap: an
+    overlapping pair has no deterministic composition order and is held rather
+    than guessed.  The function returns both the assembled act and the parsed
+    proposal so callers can retain the proposed/original evidence beside the
+    frozen audit draft.
+    """
+    request = validate_audit_request(request)
+    if request["schema"] != REQUEST_SCHEMA:
+        raise ReproofResponseRefusal(
+            "an audit re-proof edit response cannot be applied to a legacy request; resume under "
+            "one sealed audit version or hold the act rather than mixing response contracts"
+        )
+    if not isinstance(raw_response, str):
+        raise ReproofResponseRefusal("an audit re-proof response is not text")
+    try:
+        response = json.loads(raw_response, object_pairs_hook=_closed_json_object)
+    except json.JSONDecodeError as error:
+        raise ReproofResponseRefusal("an audit re-proof response is not valid JSON") from error
+    if not isinstance(response, dict) or set(response) != {"schema", "edits"}:
+        raise ReproofResponseRefusal("an audit re-proof response is not its closed schema")
+    if response["schema"] != RESPONSE_SCHEMA or not isinstance(response["edits"], list):
+        raise ReproofResponseRefusal("an audit re-proof response names an unknown schema or edits")
+    expected = request["reproofs"]
+    if len(response["edits"]) != len(expected):
+        raise ReproofResponseRefusal(
+            "an audit re-proof response does not answer every flagged span"
+        )
+    assembled = assemble_reproof_edits(
+        response["edits"], before=request["semi_final_text"], planned=expected
+    )
+    return assembled, response
+
+
+def assemble_reproof_edits(
+    response_edits: Any, *, before: str, planned: list[dict[str, Any]]
+) -> str:
+    """Validate and deterministically splice already-parsed exact edits."""
+    if not isinstance(response_edits, list) or len(response_edits) != len(planned):
+        raise ReproofResponseRefusal(
+            "an audit re-proof response does not answer every flagged span"
+        )
+    edits_by_location: dict[tuple[int, int], dict[str, Any]] = {}
+    answers_by_location: dict[tuple[int, int], str] = {}
+    for proposed, expected in zip(response_edits, planned, strict=True):
+        if not isinstance(proposed, dict) or set(proposed) != {
+            "class",
+            "location",
+            "original",
+            "replacement",
+        }:
+            raise ReproofResponseRefusal("an audit re-proof edit is not its closed schema")
+        if proposed["class"] != expected["class"]:
+            raise ReproofResponseRefusal("an audit re-proof edit names the wrong flagged class")
+        location = proposed["location"]
+        if (
+            not isinstance(location, dict)
+            or set(location) != {"start", "end"}
+            or not isinstance(location["start"], int)
+            or isinstance(location["start"], bool)
+            or not isinstance(location["end"], int)
+            or isinstance(location["end"], bool)
+            or not 0 <= location["start"] <= location["end"] <= len(before)
+        ):
+            raise ReproofResponseRefusal("an audit re-proof edit has invalid character bounds")
+        if location != expected["location"]:
+            raise ReproofResponseRefusal(
+                "an audit re-proof edit does not repeat its exact requested location"
+            )
+        start, end = location["start"], location["end"]
+        if not isinstance(proposed["original"], str) or not isinstance(
+            proposed["replacement"], str
+        ):
+            raise ReproofResponseRefusal(
+                "an audit re-proof edit has non-text original or replacement"
+            )
+        if proposed["original"] != before[start:end]:
+            raise ReproofResponseRefusal(
+                "an audit re-proof edit does not repeat the exact frozen text"
+            )
+        key = (start, end)
+        prior_answer = answers_by_location.setdefault(key, proposed["replacement"])
+        if prior_answer != proposed["replacement"]:
+            raise ReproofResponseRefusal(
+                "an audit re-proof response gives contradictory answers for one exact span"
+            )
+        if proposed["replacement"] != proposed["original"]:
+            edits_by_location.setdefault(
+                key,
+                {
+                    "start": start,
+                    "end": end,
+                    "replacement": proposed["replacement"],
+                },
+            )
+    edits = list(edits_by_location.values())
+    edits.sort(key=lambda row: (row["start"], row["end"]))
+    for previous, current in zip(edits, edits[1:], strict=False):
+        if current["start"] < previous["end"]:
+            raise ReproofResponseRefusal(
+                "an audit re-proof response proposes overlapping changed spans"
+            )
+    pieces: list[str] = []
+    cursor = 0
+    for edit in edits:
+        pieces.extend((before[cursor : edit["start"]], edit["replacement"]))
+        cursor = edit["end"]
+    pieces.append(before[cursor:])
+    return "".join(pieces)
+
+
+def change_records_from_edits(edits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One audit change record for each changed anchored response edit."""
+    return [
+        {
+            "start": edit["location"]["start"],
+            "end": edit["location"]["end"],
+            "triggering_flag_class": edit["class"],
+        }
+        for edit in edits
+        if edit["replacement"] != edit["original"]
+    ]
 
 
 def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
@@ -754,7 +1277,8 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
             "new run. The old bytes are evidence and stay as written"
         )
     if (
-        value["policy"]["schema"] != SCHEMA
+        type(value["policy"]["schema"]) is not str
+        or value["policy"]["schema"] not in {SCHEMA, LEGACY_SCHEMA}
         or not is_sha256(value["policy"]["sha256"])
         or not isinstance(value["policy"]["approval_ref"], str)
     ):
@@ -767,6 +1291,13 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
         if not isinstance(flag["class"], str) or flag["class"] not in FLAG_CLASSES:
             raise SchemaRefusal("an audit flag has an unknown class or malformed location")
         _location(flag["location"], text_length=text_length, label="audit flag")
+    if value["policy"]["schema"] == SCHEMA:
+        identities = [
+            (flag["class"], flag["location"]["start"], flag["location"]["end"])
+            for flag in value["flags"]
+        ]
+        if len(identities) != len(set(identities)):
+            raise SchemaRefusal("an audit record repeats an identical flag")
 
 
 def validate_draft(payload: Any) -> dict[str, Any]:
@@ -836,7 +1367,16 @@ def validate_finding(
     flag_text: str | None = None,
     length_floor_characters_per_page: int | None = None,
 ) -> dict[str, Any]:
-    value = _closed(payload, _FINDING_FIELDS, "audit finding")
+    policy_schema = (
+        payload.get("policy", {}).get("schema")
+        if isinstance(payload, dict) and isinstance(payload.get("policy"), dict)
+        else None
+    )
+    value = _closed(
+        payload,
+        _FINDING_FIELDS_V3 if policy_schema == SCHEMA else _FINDING_FIELDS_V2,
+        "audit finding",
+    )
     refuse_capture_preference(value, what="an audit finding")
     if not isinstance(text, str):
         raise SchemaRefusal("an audit finding was validated without its final text")
@@ -873,21 +1413,61 @@ def validate_finding(
         if span["start"] == span["end"] or span["reason"] != AUDIT_CAP_EXHAUSTED:
             raise SchemaRefusal("an audit uncertainty span has no exhausted-cap reason or width")
     flag_text_length = len(flag_text) if flag_text is not None else len(text)
-    span = value["reproof_change_span"]
-    if span is not None:
-        _location(
-            span, text_length=flag_text_length, label="an audit finding's reproof change span"
-        )
-        reproof_change_span = (span["start"], span["end"])
-    else:
+    if policy_schema == SCHEMA:
         reproof_change_span = None
-    examination = examination_state(
-        value["flags"],
-        value["round_cap"],
-        value["reproof_truncation"],
-        reproof_change_span=reproof_change_span,
-        flag_text_length=flag_text_length,
-    )
+        edits = value["reproof_edits"]
+        delivered = value["reproof_truncation"] is not None
+        if delivered != (edits is not None):
+            raise SchemaRefusal(
+                "an audit finding carries exact re-proof edits exactly when a re-proof was delivered"
+            )
+        if edits is not None:
+            if flag_text is None:
+                raise SchemaRefusal(
+                    "an audit finding's exact re-proof edits require the frozen semi-final text"
+                )
+            planned = reproof_plan(value["flags"], text_length=len(flag_text), policy_schema=SCHEMA)
+            try:
+                assembled = assemble_reproof_edits(edits, before=flag_text, planned=planned)
+            except ReproofResponseRefusal as error:
+                raise SchemaRefusal(
+                    f"an audit finding has invalid exact re-proof edits: {error}"
+                ) from error
+            projected = "" if assembled.strip() == "" else assembled
+            if projected != text:
+                raise SchemaRefusal(
+                    "an audit finding's exact re-proof edits do not assemble to its published text"
+                )
+            if value["change_record"] != change_records_from_edits(edits):
+                raise SchemaRefusal(
+                    "an audit finding's change records do not account for each changed exact edit"
+                )
+        else:
+            if value["change_record"]:
+                raise SchemaRefusal("an audit finding without a re-proof carries a change record")
+            if flag_text is not None and text != flag_text:
+                raise SchemaRefusal(
+                    "an audit finding without a re-proof does not preserve the frozen semi-final text"
+                )
+        examination = examination_state(
+            value["flags"], value["round_cap"], value["reproof_truncation"]
+        )
+    else:
+        span = value["reproof_change_span"]
+        if span is not None:
+            _location(
+                span, text_length=flag_text_length, label="an audit finding's reproof change span"
+            )
+            reproof_change_span = (span["start"], span["end"])
+        else:
+            reproof_change_span = None
+        examination = examination_state(
+            value["flags"],
+            value["round_cap"],
+            value["reproof_truncation"],
+            reproof_change_span=reproof_change_span,
+            flag_text_length=flag_text_length,
+        )
     if value["reproof_truncation"] is not None:
         # `text` is the re-proof's own returned text, which is what the
         # termination record was measured over
@@ -904,14 +1484,23 @@ def validate_finding(
         # wrong. `text=None` is the documented "the caller does not hold it"
         # case, never a silent skip -- and a re-proof that returned the frozen
         # text unchanged seals no span, so it keeps the binding in full.
-        refused = reproof_change_span is not None and flag_text is not None and text == flag_text
+        refused = (
+            policy_schema == LEGACY_SCHEMA
+            and reproof_change_span is not None
+            and flag_text is not None
+            and text == flag_text
+        )
         validate_truncation_record(
             value["reproof_truncation"],
             label="an audit finding's re-proof termination",
             text=None if refused else text,
             length_floor_characters_per_page=length_floor_characters_per_page,
         )
-    validate_reproof_call(value["reproof_call"], label="an audit finding's re-proof call")
+    validate_reproof_call(
+        value["reproof_call"],
+        label="an audit finding's re-proof call",
+        policy_schema=policy_schema,
+    )
     if value["reproof_call"] is not None and value["reproof_truncation"] is None:
         raise SchemaRefusal(
             "an audit finding names a re-proof call although no re-proof was delivered"
@@ -942,11 +1531,15 @@ def validate_finding(
     # call: a cut-off re-proof can depart from the semi-final too, and the fact
     # that it did is what tells a later reader its text was refused rather than
     # returned as found.
-    if reproof_change_span is not None and value["reproof_truncation"] is None:
+    if (
+        policy_schema == LEGACY_SCHEMA
+        and reproof_change_span is not None
+        and value["reproof_truncation"] is None
+    ):
         raise SchemaRefusal(
             "an audit finding's reproof change span exists only when a re-proof was delivered"
         )
-    if examination == EXAMINATION_REPROOF_REJECTED:
+    if policy_schema == LEGACY_SCHEMA and examination == EXAMINATION_REPROOF_REJECTED:
         if reproof_change_span is None:
             raise SchemaRefusal(
                 "an audit finding claims a rejected re-proof without the change span that "
@@ -1228,9 +1821,16 @@ def validate_chain(
         "attempt_ordinal"
     ] != payload.get("attempt_ordinal"):
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit identity")
-    expected_changes = change_record(
-        draft_payload["semi_final_text"], payload["text"], draft_payload["flags"]
-    )
+    if draft_payload["policy"]["schema"] == SCHEMA:
+        expected_changes = (
+            change_records_from_edits(finding_payload["reproof_edits"])
+            if finding_payload["reproof_edits"] is not None
+            else []
+        )
+    else:
+        expected_changes = change_record(
+            draft_payload["semi_final_text"], payload["text"], draft_payload["flags"]
+        )
     if finding_payload["change_record"] != expected_changes:
         raise SchemaRefusal(f"reading of {act_id} disagrees with its exact audit change record")
     if record["finding_digest"] != audit_digest(finding_payload):
@@ -1251,8 +1851,11 @@ def validate_chain(
         "finding_ref"
     ] not in reading.get("inputs", []):
         raise SchemaRefusal(f"reading of {act_id} does not bind both audit artifacts as inputs")
+    policy_schema = draft_payload["policy"]["schema"]
     expected_reproofs = reproof_plan(
-        draft_payload["flags"], text_length=len(draft_payload["semi_final_text"])
+        draft_payload["flags"],
+        text_length=len(draft_payload["semi_final_text"]),
+        policy_schema=policy_schema,
     )
     if record["reproofs"] != expected_reproofs:
         raise SchemaRefusal(f"reading of {act_id} does not retain exactly its frozen re-proof plan")
@@ -1270,12 +1873,24 @@ def validate_chain(
             draft_ref=record["draft_ref"],
             semi_final_text=draft_payload["semi_final_text"],
             flags=draft_payload["flags"],
+            policy_schema=policy_schema,
         )
         if record["request_digest"] != audit_digest(expected_request):
             raise SchemaRefusal(
                 f"reading of {act_id} does not name the exact audit request its frozen "
                 "re-proof plan renders"
             )
+        if policy_schema == SCHEMA and finding_payload["reproof_call"] is not None:
+            _validate_live_reproof_request(
+                tree, reading, finding_payload["reproof_call"], expected_request
+            )
+            if (
+                finding_payload["change_record"]
+                and payload.get("prompt") != finding_payload["reproof_call"]["audit_prompt"]
+            ):
+                raise SchemaRefusal(
+                    f"reading of {act_id} publishes re-proof text beside another call's prompt"
+                )
     elif record["request_digest"] is not None:
         raise SchemaRefusal(
             f"reading of {act_id} names a delivered audit request although its frozen plan "

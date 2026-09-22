@@ -543,7 +543,10 @@ def test_faint_ink_outside_primary_proposals_withholds_complete_exit(tmp_path, m
         row for row in _payloads(context, "conservation") if row["page_ordinal"] == 2
     )
     assert reconciliation["residual_pixel_count"] == 1
-    assert reconciliation["residual_components"] == [
+    # A one-pixel faint residual is retained in the page-level accounting
+    # aggregate, rather than being presented as a fictitious individual act.
+    assert reconciliation["residual_components"] == []
+    assert reconciliation["aggregated_residual_components"] == [
         {
             "bounds": {"x": 5, "y": 200, "w": 1, "h": 1},
             "pixel_count": 1,

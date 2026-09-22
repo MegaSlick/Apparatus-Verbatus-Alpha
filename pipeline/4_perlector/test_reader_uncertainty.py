@@ -442,7 +442,7 @@ def test_a_cut_off_reproof_keeps_pass_bs_doubtless_assessment_with_pass_bs_text(
 
 
 _EXHAUSTED_CAP_CONFIG = (
-    'schema = "perlector-audit.v2"\n'
+    'schema = "perlector-audit.v3"\n'
     "default_round_cap = 1\n"
     "absolute_round_cap = 2\n"
     "round_cap = 0\n"

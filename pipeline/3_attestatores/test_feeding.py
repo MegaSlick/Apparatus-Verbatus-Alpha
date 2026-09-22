@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import time
 from pathlib import Path
@@ -20,12 +21,14 @@ from feeding import (
     SingleChairResidency,
     churro_generation,
     dai_generation,
+    dai_generation_accounting,
     dai_model_view,
     dai_prompt,
     detect_repetition,
     execute_stage_major_schedule,
     retain_model_view,
     stage_major_schedule,
+    validate_dai_generation_accounting,
     validate_dai_model_view,
     validate_dai_text,
 )
@@ -898,6 +901,39 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
     assert view["uncertainty_tokens_preserved"] == ["[UNCERTAIN]", "[CROSSED_OUT]"]
     assert view["prompts"]["system"] == _ref("models/dai/system.txt")
     assert set(view["prompts"]["system"]) == {"relative_path", "sha256"}
+
+
+def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_readable():
+    kwargs = {
+        "source_image_ref": _ref("designator/crops/a.png"),
+        "model_image_ref": _ref("attestatores/model-views/a.jpg", "b" * 64),
+        "width_px": 3_000,
+        "height_px": 1_001,
+        "system_prompt_ref": _ref("models/dai/system.txt"),
+        "query_prompt_ref": _ref("models/dai/query.txt"),
+        "generation_config_ref": _ref("models/dai/generation_config.json"),
+    }
+    legacy = dai_model_view(**kwargs)
+    assert legacy["adapter"] == "dai-atr.v1"
+    assert validate_dai_model_view(legacy) is legacy
+
+    ledger = dai_generation_accounting("auto")
+    current = dai_model_view(**kwargs, generation_accounting=ledger)
+    assert current["adapter"] == "dai-atr.v2"
+    assert current["generation_accounting"] == ledger
+    assert ledger["vendor_keys_intentionally_overridden"] == ["do_sample", "temperature"]
+    carried_generation = dai_generation()
+    assert ledger["vendor_temperature_decimal"] == json.dumps(carried_generation["temperature"])
+    assert ledger["vendor_do_sample"] is carried_generation["do_sample"]
+    assert ledger["governed_temperature"] == 0
+    assert validate_dai_generation_accounting(ledger) is ledger
+    assert validate_dai_model_view(current) is current
+
+    forged = {**ledger, "governed_temperature": 1}
+    with pytest.raises(SchemaRefusal, match="generation accounting differs"):
+        validate_dai_generation_accounting(forged)
+    with pytest.raises(SchemaRefusal, match="generation_config='auto'"):
+        dai_generation_accounting("vllm")
 
 
 def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():

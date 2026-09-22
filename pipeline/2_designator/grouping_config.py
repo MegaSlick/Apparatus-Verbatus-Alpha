@@ -131,14 +131,18 @@ _PAGE_AREA_BP_FIELDS: Final = ("page_spanning_area_bp",)
 # the refusal site, not have to already know it.
 _FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
 
-# The bare counts. None of the three is a length, so none has a page dimension
-# to be a fraction of and none belongs in `absolute`, which holds pixel
-# lengths: a band count is a cardinality, and the two bounds are ceilings on
-# how many separate review items one page may contribute.
+# The bare counts. None is a length, so none has a page dimension to be a
+# fraction of. `max_residual_components` remains readable solely for legacy
+# withheld records; the current producer uses `residual_presentation` below.
 _GROUPING_COUNT_FIELDS: Final = (
     "max_residual_components",
     "max_secondary_proposals",
     "fallback_bands",
+)
+
+_RESIDUAL_PRESENTATION_FIELDS: Final = (
+    "residual_aggregate_max_pixel_count",
+    "residual_aggregate_max_area_px",
 )
 
 _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
@@ -147,6 +151,7 @@ _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
     "absolute",
     "page_area_bp",
     "background",
+    "residual_presentation",
     "provenance",
 )
 
@@ -242,6 +247,7 @@ def load_grouping_config(
     )
     continuation = _load_continuation(grouping.get("continuation"))
     page_area_bp = _load_page_area_bp(grouping.get("page_area_bp"))
+    residual_presentation = _load_residual_presentation(grouping.get("residual_presentation"))
     # Validated, not applied: see `_TOP_LEVEL_TABLES`. The provenance block is
     # checked here and only here, which is the same asymmetry
     # `[grouping.background]` already carries -- the Designator refuses a run
@@ -270,6 +276,8 @@ def load_grouping_config(
     return {
         "config_sha256": digest_bytes(data),
         **counts,
+        **{name: residual_presentation[name] for name in _RESIDUAL_PRESENTATION_FIELDS},
+        "residual_presentation": residual_presentation,
         "page_fraction_bp": page_fraction_bp,
         "continuation": continuation,
         "coverage_audit": coverage_audit,
@@ -278,6 +286,38 @@ def load_grouping_config(
         "background": background,
         "provenance": provenance,
     }
+
+
+def _load_residual_presentation(table: Any) -> dict[str, Any]:
+    """Read the conservative, explicitly uncalibrated review granularity policy."""
+    if not isinstance(table, dict):
+        raise ContractError(
+            "the grouping configuration has no [grouping.residual_presentation] table"
+        )
+    expected = set(_RESIDUAL_PRESENTATION_FIELDS) | {"provenance"}
+    unexpected = sorted(set(table) - expected)
+    if unexpected:
+        raise ContractError(
+            "the grouping configuration's [grouping.residual_presentation] carries "
+            f"unknown field(s) {unexpected}; an unread policy field cannot be applied"
+        )
+    missing = sorted(expected - set(table))
+    if missing:
+        raise ContractError(
+            "the grouping configuration's [grouping.residual_presentation] is missing "
+            f"field(s) {missing}"
+        )
+    values = {name: table[name] for name in _RESIDUAL_PRESENTATION_FIELDS}
+    invalid = [name for name, value in values.items() if not _is_plain_int(value) or value < 0]
+    if invalid:
+        raise ContractError(
+            "the grouping configuration's [grouping.residual_presentation] has invalid "
+            f"non-negative integer field(s) {invalid}"
+        )
+    values["provenance"] = _load_provenance(
+        table.get("provenance"), "[grouping.residual_presentation.provenance]"
+    )
+    return values
 
 
 def _load_closed_int_table(table: Any, fields: tuple[str, ...], what: str) -> dict[str, int]:
@@ -552,6 +592,8 @@ class GroupingThresholds:
     max_residual_components: int
     max_secondary_proposals: int
     fallback_bands: int
+    residual_aggregate_max_pixel_count: int
+    residual_aggregate_max_area_px: int
     page_spanning_area_bp: int
 
 
@@ -593,6 +635,8 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
         max_residual_components=config["max_residual_components"],
         max_secondary_proposals=config["max_secondary_proposals"],
         fallback_bands=config["fallback_bands"],
+        residual_aggregate_max_pixel_count=config["residual_aggregate_max_pixel_count"],
+        residual_aggregate_max_area_px=config["residual_aggregate_max_area_px"],
         # A fraction of the page's own AREA, which is both dimensions at once,
         # so it passes through unresolved like the three counts above rather
         # than being turned into a pixel length by `_pad_amount`. Carried on the

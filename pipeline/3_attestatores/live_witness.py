@@ -268,6 +268,7 @@ class ActChairRequest:
     presented: Mapping[str, Any]
     prompt: Mapping[str, Any]
     capacity: Mapping[str, Any]
+    generation_accounting: Mapping[str, Any] | None
 
 
 def _data_uri(image_bytes: bytes) -> str:
@@ -465,14 +466,22 @@ def act_chair_request(
         {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
     )
     generation_declared = feeding.dai_generation()
+    # Existing sealed fixture/live-test profiles still name the historical
+    # ``vllm`` posture. Their already-valid dai-atr.v1 model view remains the
+    # truthful legacy shape. The production profiles are ``auto`` and get the
+    # versioned closed ledger that accounts for that different engine policy.
+    generation_accounting = (
+        feeding.dai_generation_accounting("auto") if profile.generation_config == "auto" else None
+    )
     generation_sent = {
         key: generation_declared[key]
         for key in _DAI_GENERATION_SENT_KEYS
         if key in generation_declared
     }
     generation_sent.update(generation_bound_sent(_ADAPTER_CHAIRS["dai.v1"], capacity))
-    # The second EOS id the engine never reads off the model's own file
-    # (`feeding.dai_wire_stop_token_ids`).
+    # The second EOS id is also explicit on the request under the row's auto
+    # posture, so the retained call record carries the stop independently of
+    # whether engine-side generation-config resolution is later observed.
     generation_sent.update(feeding.dai_wire_stop_token_ids())
     request = ChairRequest(
         kind="chat-completions",
@@ -482,7 +491,13 @@ def act_chair_request(
         generation_sent=generation_sent,
         capacity=capacity,
     )
-    return ActChairRequest(request=request, presented=presented, prompt=prompt, capacity=capacity)
+    return ActChairRequest(
+        request=request,
+        presented=presented,
+        prompt=prompt,
+        capacity=capacity,
+        generation_accounting=generation_accounting,
+    )
 
 
 def generation_bound_sent(chair: str, capacity: Mapping[str, Any]) -> dict[str, Any]:
@@ -785,6 +800,7 @@ def _dai_model_view(
     presented: Mapping[str, Any],
     prompt: Mapping[str, Any],
     generation_declared: Mapping[str, Any],
+    generation_accounting: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build DAI's closed model view (`feeding.dai_model_view`) for this act.
 
@@ -824,6 +840,9 @@ def _dai_model_view(
         query_prompt_ref=_blob_ref(context, prompt["user"].encode("utf-8")),
         generation_config_ref=_blob_ref(
             context, json.dumps(dict(generation_declared), sort_keys=True).encode("utf-8")
+        ),
+        generation_accounting=(
+            None if generation_accounting is None else dict(generation_accounting)
         ),
     )
 
@@ -866,6 +885,7 @@ def live_attempt_from_response(
     prompt: Mapping[str, Any],
     generation_declared: Mapping[str, Any],
     parser: str,
+    generation_accounting: Mapping[str, Any] | None = None,
 ) -> LiveAttempt:
     """Derive one act-scoped chair's `LiveAttempt` from its retained response.
 
@@ -893,7 +913,14 @@ def live_attempt_from_response(
         return _malformed_response_attempt(response, adapter=adapter)
 
     transport_stop_reason, completed, cut_off = _finish_reason_facts(response)
-    view = _dai_model_view(context, presentation, presented, prompt, generation_declared)
+    view = _dai_model_view(
+        context,
+        presentation,
+        presented,
+        prompt,
+        generation_declared,
+        generation_accounting,
+    )
     capture = adapter.retain(
         context.tree,
         view=view,

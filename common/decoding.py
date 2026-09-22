@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import tomllib
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Mapping
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
@@ -74,20 +74,35 @@ def _validate_decoding_policy(policy: Any) -> None:
         raise ContractError("decoding configuration is not a table")
     if set(policy) != {"schema", "reading_of_record", "variance_experiment", "structure"}:
         raise ContractError("decoding configuration has the wrong closed schema")
-    if policy["schema"] != "decoding.v1":
+    if policy["schema"] not in {"decoding.v1", "decoding.v2"}:
         raise ContractError("decoding configuration has an unsupported schema")
     record = policy["reading_of_record"]
     variance = policy["variance_experiment"]
     structure = policy["structure"]
+    expected_structure_fields = (
+        {"temperature"}
+        if policy["schema"] == "decoding.v1"
+        else {"temperature", "recovery_seed_schedule", "recovery_max_attempts"}
+    )
     if (
         not isinstance(structure, dict)
-        or set(structure) != {"temperature"}
+        or set(structure) != expected_structure_fields
         or isinstance(structure["temperature"], bool)
         or not isinstance(structure["temperature"], (int, float))
         or not math.isfinite(structure["temperature"])
         or structure["temperature"] < 0
     ):
         raise ContractError("decoding structure must declare one finite, non-negative temperature")
+    if policy["schema"] == "decoding.v2" and (
+        structure["recovery_seed_schedule"] != "base-plus-attempt-ordinal-minus-one"
+        or not isinstance(structure["recovery_max_attempts"], int)
+        or isinstance(structure["recovery_max_attempts"], bool)
+        or not 1 <= structure["recovery_max_attempts"] <= 3
+    ):
+        raise ContractError(
+            "decoding structure recovery must declare the supported seed schedule and "
+            "an integer maximum in 1..3"
+        )
     if (
         not isinstance(record, dict)
         or set(record) != {"temperature"}
@@ -119,6 +134,24 @@ def variance_experiment_id(policy: dict[str, Any]) -> str:
     _validate_decoding_policy(policy)
     variance = policy["variance_experiment"]
     return derive("variance-experiment", variance)
+
+
+def structure_recovery_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the sealed structure recovery policy, including legacy v1 semantics.
+
+    ``decoding.v1`` predates structure recovery and therefore permits exactly
+    one request at the serving row's base seed.  New runs use ``v2``, where
+    both the attempt ceiling and deterministic seed schedule are explicit in
+    the bytes sealed into the run.
+    """
+    _validate_decoding_policy(policy)
+    if policy["schema"] == "decoding.v1":
+        return {"max_attempts": 1, "seed_schedule": "fixed-base"}
+    structure = policy["structure"]
+    return {
+        "max_attempts": structure["recovery_max_attempts"],
+        "seed_schedule": structure["recovery_seed_schedule"],
+    }
 
 
 def variance_pass_attempt_id(policy: dict[str, Any], pass_ordinal: int) -> str:

@@ -48,6 +48,7 @@ from common import chandra_layout  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA  # noqa: E402
 from common.contracts.stages import ATTESTATORES  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.request_capacity import (  # noqa: E402
@@ -762,8 +763,12 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
         "top_p",
         "max_tokens",
         "stop_token_ids",
+        "seed",
+        "temperature",
     }
     assert call["generation_sent"]["stop_token_ids"] == [151643]
+    assert call["generation_sent"]["seed"] == 7
+    assert call["generation_sent"]["temperature"] == 0
     # DAI's declared ceiling (1,024) is strictly below what any shipped row
     # leaves after its image and prompt tokens, so it is always the vendor
     # bound that binds here, exactly -- never merely an upper bound on it.
@@ -1149,7 +1154,7 @@ def test_every_live_act_record_names_the_serving_moment_and_the_call_that_produc
     assert payload["native_capture"]["transport_stop_reason"] == "stop"
 
     call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
-    assert call["schema"] == "chair-call-record.v1"
+    assert call["schema"] == CHAIR_CALL_RECORD_SCHEMA
     assert call["chair"] == "attestator_3"
     # Verbatim, and never defaulted: the engine's own word travels into the
     # request record whatever this stage later makes of it.

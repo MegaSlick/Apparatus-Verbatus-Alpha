@@ -36,6 +36,9 @@ jobs:
       # v6.1.0; full commit pin prevents a mutable tag changing executed code.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          # Remote verification must name the candidate itself. The composing
+          # session verifies that it contains freshly fetched main before merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # The ingress check examines every reachable commit so that deleting a
           # leaked credential in a later commit cannot turn the check green.
           fetch-depth: 0
@@ -113,6 +116,7 @@ jobs:
       # Keep this pin identical to the checkout used by the check job.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: The cleanroom is empty
         # git's own failure must not read as an empty tray: capture ls-files

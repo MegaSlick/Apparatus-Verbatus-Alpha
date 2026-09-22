@@ -12,8 +12,12 @@ SERVING_CONFIG_INPUTS_FIELDS: Final = frozenset(
     {"schema", "serving_recipes_sha256", "pod_placement_sha256"}
 )
 
-CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v1"
-CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
+CHAIR_CALL_RECORD_SCHEMA_V1: Final = "chair-call-record.v1"
+CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v2"
+CHAIR_CALL_RECORD_SCHEMAS: Final = frozenset(
+    {CHAIR_CALL_RECORD_SCHEMA_V1, CHAIR_CALL_RECORD_SCHEMA}
+)
+CHAIR_CALL_RECORD_FIELDS_V1: Final = frozenset(
     {
         "schema",
         "chair",
@@ -43,6 +47,23 @@ CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
         # the arithmetic a real run refused or admitted on is reachable from
         # each of them without a second reference.
         "capacity",
+    }
+)
+CHAIR_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS_V1 | frozenset({"response_status"})
+
+CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chair-transport-failure.v1"
+CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
+    {"transport_problem"}
+)
+CHAIR_TRANSPORT_PROBLEM_SCHEMA: Final = "chair-transport-problem.v1"
+CHAIR_TRANSPORT_PROBLEM_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "code",
+        "detail",
+        "definitively_absent",
+        "request_delivery",
+        "response_completion",
     }
 )
 

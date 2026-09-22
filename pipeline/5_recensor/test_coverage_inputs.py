@@ -8,10 +8,15 @@ from types import SimpleNamespace
 import pytest
 
 import common.stage as STAGE_MODULE
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.identities import attempt_id
 from common.native_witness import partition_disagreement
-from common.stage import RESIDUAL_ENUMERATION_COMPLETE, RESIDUAL_ENUMERATION_WITHHELD
+from common.stage import (
+    RESIDUAL_ENUMERATION_AGGREGATED,
+    RESIDUAL_ENUMERATION_COMPLETE,
+    RESIDUAL_ENUMERATION_WITHHELD,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -243,6 +248,46 @@ def _component(*, bounds=None, pixel_count=12):
     }
 
 
+def _aggregate_conservation(*, promoted=None, aggregate=None, residual=None):
+    promoted = promoted or [_component(bounds={"x": 1, "y": 1, "w": 25, "h": 20}, pixel_count=500)]
+    aggregate = aggregate or [_component(bounds={"x": 40, "y": 40, "w": 5, "h": 5}, pixel_count=23)]
+    residual = (
+        sum(component["pixel_count"] for component in [*promoted, *aggregate])
+        if residual is None
+        else residual
+    )
+    record = _conservation(
+        "conservation-aggregate",
+        components=promoted,
+        counts=(residual, 0, residual),
+        enumeration=RESIDUAL_ENUMERATION_AGGREGATED,
+        declared_count=len(promoted) + len(aggregate),
+    )
+    record["payload"].update(
+        {
+            "page_width": 50,
+            "page_height": 50,
+            "aggregated_residual_components": aggregate,
+            "residual_promoted_component_count": len(promoted),
+            "residual_aggregated_component_count": len(aggregate),
+            "residual_aggregate_max_pixel_count": 500,
+            "residual_aggregate_max_area_px": 2000,
+        }
+    )
+    record["subject_id"] = "pg_0000000000000001"
+    return record
+
+
+def _aggregate_context(record):
+    config = ROOT / "config/designator_grouping.toml"
+    context = _context(record)
+    context.args = SimpleNamespace(designator_grouping_config=str(config))
+    context.run = {
+        "sealed_config_digests": {"designator-grouping": digest_bytes(config.read_bytes())}
+    }
+    return context
+
+
 def _attachment(context, *, end, testimonium_id="page-witness-1"):
     # `attempt_id`/`attempt_ordinal` are not decoration: `current_act_attachments`
     # derives "current" through `latest_attempt`, which refuses a record whose
@@ -432,7 +477,10 @@ def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding
         {
             "kind": "unrouted-observation",
             "testimonium_id": "page-witness-1",
-            "ordinal": 0,
+            "observation_ordinal": 0,
+            "testimonium_ref": context.artifact_ref(
+                RUN.ATTESTATORES, "page-testimonium", "page-witness-1"
+            ),
             "source_page_id": "page-1",
             "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
             "overlap_rule": {"rule": "positive-area", "status": "unmeasured"},
@@ -1480,7 +1528,7 @@ def test_geometry_coverage_accepts_a_matching_residual_partition(monkeypatch):
             # bound was in force on this page and is named; nothing was withheld
             # and there is nothing to say about it.
             "residual_enumeration": RESIDUAL_ENUMERATION_COMPLETE,
-            "max_residual_components": 2000,
+            "max_residual_components": None,
             "page_residual_act_count": 0,
             "reason": None,
         }
@@ -1514,13 +1562,7 @@ def test_every_geometry_coverage_shape_carries_the_same_keys(monkeypatch):
     assert complete["reason"] is None and withheld["reason"] is not None
 
 
-def test_an_enumerated_record_naming_no_integer_bound_is_refused(monkeypatch):
-    """The bound is on every record, so a record without one is not reconcilable.
-
-    The withheld branch has always held its record to an integer bound; the
-    enumerated branch now publishes that bound in its own finding, and a value
-    published to a reviewer is checked rather than passed through.
-    """
+def test_an_enumerated_record_does_not_present_the_legacy_withheld_bound(monkeypatch):
     context = _context(_conservation("conservation-1", components=[_component()], bound=None))
     monkeypatch.setattr(
         RUN,
@@ -1528,8 +1570,7 @@ def test_an_enumerated_record_naming_no_integer_bound_is_refused(monkeypatch):
         lambda unused: [{"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"}],
     )
 
-    with pytest.raises(FatalAccounting, match="no integer max_residual_components"):
-        RUN.geometry_coverage_inputs(context)
+    assert RUN.geometry_coverage_inputs(context)[1]["max_residual_components"] is None
 
 
 def test_geometry_coverage_refuses_a_divergent_residual_partition(monkeypatch):
@@ -1718,6 +1759,97 @@ def test_geometry_coverage_refuses_a_count_the_component_list_does_not_support(m
     )
 
     with pytest.raises(FatalAccounting, match="names residual_component_count 7 but lists 1"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_aggregate_geometry_consumes_both_partitions_and_exact_seal_identities(monkeypatch):
+    context = _aggregate_context(_aggregate_conservation())
+    page_id = "pg_0000000000000001"
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [
+            {
+                "act_key": "residual:1:0",
+                "act_id": RUN.derive_act_id(
+                    page_id, "residual", {"x": 1, "y": 1, "w": 25, "h": 20}
+                ),
+                "page_ordinal": 1,
+                "outcome": "held",
+            },
+            {
+                **_page_residual_act(),
+                "act_id": RUN.derive_act_id(
+                    page_id, "page-residual", {"x": 0, "y": 0, "w": 50, "h": 50}
+                ),
+            },
+        ],
+    )
+
+    finding = RUN.geometry_coverage_inputs(context)[1]
+
+    assert finding["residual_enumeration"] == RESIDUAL_ENUMERATION_AGGREGATED
+    assert finding["residual_component_count"] == 2
+    assert finding["residual_act_count"] == 1
+    assert finding["page_residual_act_count"] == 1
+
+    honest_acts = RUN.expected_acts(context)
+    for index in (0, 1):
+        forged_acts = [dict(act) for act in honest_acts]
+        forged_acts[index]["act_id"] = "act_wrong_identity"
+        monkeypatch.setattr(RUN, "expected_acts", lambda unused, rows=forged_acts: rows)
+        with pytest.raises(FatalAccounting):
+            RUN.geometry_coverage_inputs(context)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        lambda payload: payload.__setitem__("residual_component_count", 1),
+        lambda payload: payload.update({"residual_pixel_count": 522, "total_ink_pixel_count": 522}),
+        lambda payload: payload.__setitem__("residual_aggregate_max_pixel_count", 501),
+        lambda payload: payload["aggregated_residual_components"][0].__setitem__(
+            "pixel_count", 500
+        ),
+        lambda payload: payload["aggregated_residual_components"][0].__setitem__(
+            "bounds", dict(payload["residual_components"][0]["bounds"])
+        ),
+    ],
+    ids=[
+        "combined-count",
+        "combined-pixels",
+        "sealed-threshold",
+        "hidden-significant",
+        "identity-overlap",
+    ],
+)
+def test_aggregate_geometry_refuses_tampered_accounting(monkeypatch, tamper):
+    record = _aggregate_conservation()
+    tamper(record["payload"])
+    context = _aggregate_context(record)
+    page_id = "pg_0000000000000001"
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [
+            {
+                "act_key": "residual:1:0",
+                "act_id": RUN.derive_act_id(
+                    page_id, "residual", {"x": 1, "y": 1, "w": 25, "h": 20}
+                ),
+                "page_ordinal": 1,
+                "outcome": "held",
+            },
+            {
+                **_page_residual_act(),
+                "act_id": RUN.derive_act_id(
+                    page_id, "page-residual", {"x": 0, "y": 0, "w": 50, "h": 50}
+                ),
+            },
+        ],
+    )
+
+    with pytest.raises(FatalAccounting):
         RUN.geometry_coverage_inputs(context)
 
 

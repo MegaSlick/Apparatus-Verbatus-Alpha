@@ -17,7 +17,8 @@ import reader as reader_module
 
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import ARMARIUM, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
+from common.perlector_audit import LEGACY_SCHEMA
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -528,7 +529,9 @@ def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_pa
             assert reproof["prompt"] == (
                 f"Re-examine the ink at character location [{start}, {end}) of the "
                 "delivered act. Report only what the ink supports there; "
-                "if it supports the existing text, record confirmed unchanged."
+                "if it supports the existing text, record confirmed unchanged. Reply only as JSON with "
+                "schema `perlector-audit-response.v1` and one ordered edit for every requested location; "
+                "each edit repeats its exact original text and gives its replacement."
             )
 
         # Delivered == sealed, exactly: the plan, the frozen draft it indexes
@@ -676,6 +679,68 @@ def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp
         audit.validate_chain(tree, undelivered, final["subject_id"])
 
 
+def test_a_sealed_v2_chain_remains_validatable_without_reinterpreting_its_request(tmp_path):
+    """Existing v2 evidence keeps its old prompt/request digest during inspection."""
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    final = copy.deepcopy(_records(tree, "perlectio")[0])
+    draft = copy.deepcopy(
+        next(
+            record
+            for record in _records(tree, "audit-draft")
+            if record["subject_id"] == final["subject_id"]
+        )
+    )
+    finding = copy.deepcopy(
+        next(
+            record
+            for record in _records(tree, "audit-finding")
+            if record["subject_id"] == final["subject_id"]
+        )
+    )
+
+    for record in (draft["payload"], finding["payload"]):
+        record["policy"]["schema"] = LEGACY_SCHEMA
+    finding["payload"].pop("reproof_edits")
+    finding["payload"]["reproof_change_span"] = (
+        dict(
+            zip(
+                ("start", "end"),
+                audit.text_change_span(
+                    draft["payload"]["semi_final_text"], final["payload"]["text"]
+                ),
+                strict=True,
+            )
+        )
+        if draft["payload"]["semi_final_text"] != final["payload"]["text"]
+        else None
+    )
+    audit_record = final["payload"]["audit"]
+    audit_record["reproofs"] = audit.reproof_plan(
+        draft["payload"]["flags"],
+        text_length=len(draft["payload"]["semi_final_text"]),
+        policy_schema=LEGACY_SCHEMA,
+    )
+    legacy_request = audit.audit_request(
+        act_key=draft["payload"]["act_key"],
+        attempt_ordinal=draft["payload"]["attempt_ordinal"],
+        draft_ref=audit_record["draft_ref"],
+        semi_final_text=draft["payload"]["semi_final_text"],
+        flags=draft["payload"]["flags"],
+        policy_schema=LEGACY_SCHEMA,
+    )
+    audit_record["request_digest"] = audit.audit_digest(legacy_request)
+    audit_record["finding_digest"] = audit.audit_digest(finding["payload"])
+
+    class LegacyTree:
+        def read_artifact_reference(self, _reference, *, stage, kind, subject_id):
+            assert stage == PERLECTOR and subject_id == final["subject_id"]
+            return draft if kind == "audit-draft" else finding
+
+    audit.validate_chain(LegacyTree(), final, final["subject_id"])
+
+
 def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tmp_path):
     """`reproofs` alone could not tell a plan that ran from one that never could.
 
@@ -688,7 +753,7 @@ def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tm
     """
     exhausted = tmp_path / "exhausted.toml"
     exhausted.write_text(
-        'schema = "perlector-audit.v2"\n'
+        'schema = "perlector-audit.v3"\n'
         "default_round_cap = 1\n"
         "absolute_round_cap = 2\n"
         "round_cap = 0\n"
@@ -1095,6 +1160,22 @@ def test_change_record_refuses_a_change_extending_past_the_flag_end():
         audit.change_record("abcd", "aXYZ", flags)
 
 
+def test_identical_testimony_flags_are_deduped_before_the_reproof_plan():
+    frozen = [
+        {
+            "act_id": "a1",
+            "page_id": "p1",
+            "order": 1,
+            "geometry_order": (1, 0),
+            "text": "alpha beta",
+            "testimonia": ["alpha zeta", "alpha zeta"],
+            "within_crop": True,
+        }
+    ]
+    flags = audit.flags_once_per_page(frozen)["a1"]
+    assert flags == [{"class": "testimony-diff", "location": {"start": 6, "end": 7}}]
+
+
 def test_unhashable_audit_classes_are_named_schema_refusals():
     """Resealed JSON arrays cannot escape class allowlists as raw TypeError."""
     policy = {"schema": audit.SCHEMA, "sha256": "0" * 64, "approval_ref": ""}
@@ -1127,7 +1208,14 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
             "examination": "complete",
             "reproof_truncation": _COMPLETE_TRUNCATION,
             "reproof_call": None,
-            "reproof_change_span": {"start": 0, "end": 1},
+            "reproof_edits": [
+                {
+                    "class": "testimony-diff",
+                    "location": {"start": 0, "end": 1},
+                    "original": "x",
+                    "replacement": "y",
+                }
+            ],
         }
     )
     with pytest.raises(SchemaRefusal, match="unknown triggering flag class"):
@@ -1181,7 +1269,7 @@ def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(
     """A sealed cap of 2 with Tyrel's reference would be recorded but never run."""
     approved = tmp_path / "approved.toml"
     approved.write_text(
-        'schema = "perlector-audit.v2"\n'
+        'schema = "perlector-audit.v3"\n'
         "default_round_cap = 1\n"
         "absolute_round_cap = 2\n"
         "round_cap = 2\n"
@@ -1189,6 +1277,19 @@ def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(
     )
     with pytest.raises(ContractError, match="exactly one span-scoped audit re-proof"):
         audit.load(approved)
+
+
+def test_a_legacy_v2_declaration_cannot_start_a_new_exact_edit_execution(tmp_path):
+    legacy = tmp_path / "legacy.toml"
+    legacy.write_text(
+        f'schema = "{LEGACY_SCHEMA}"\n'
+        "default_round_cap = 1\n"
+        "absolute_round_cap = 1\n"
+        "round_cap = 1\n"
+        'approval_ref = ""\n'
+    )
+    with pytest.raises(ContractError, match="sealed artifacts.*remain readable"):
+        audit.load(legacy)
 
 
 def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
@@ -1265,14 +1366,14 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
 def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path):
     raised = tmp_path / "raised.toml"
     raised.write_text(
-        'schema = "perlector-audit.v2"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'
+        'schema = "perlector-audit.v3"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'
     )
     with pytest.raises(ContractError, match="Tyrel's approval reference"):
         audit.load(raised)
 
     exhausted = tmp_path / "exhausted.toml"
     exhausted.write_text(
-        'schema = "perlector-audit.v2"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 0\napproval_ref = ""\n'
+        'schema = "perlector-audit.v3"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 0\napproval_ref = ""\n'
     )
     result = _run(tmp_path / "exhausted-runs", "--perlector-audit-config", str(exhausted))
     assert result.returncode == 3, result.stderr
@@ -1304,7 +1405,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
             "page_ids": ["p1"],
             "round_cap": 0,
             "policy": {
-                "schema": "perlector-audit.v2",
+                "schema": "perlector-audit.v3",
                 "sha256": "0" * 64,
                 "approval_ref": "",
             },
@@ -1315,7 +1416,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
             "examination": "cap-exhausted",
             "reproof_truncation": None,
             "reproof_call": None,
-            "reproof_change_span": None,
+            "reproof_edits": None,
         },
         text="abc",
         flag_text="abc",
@@ -1332,7 +1433,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
                 "page_ids": ["p1"],
                 "round_cap": 0,
                 "policy": {
-                    "schema": "perlector-audit.v2",
+                    "schema": "perlector-audit.v3",
                     "sha256": "0" * 64,
                     "approval_ref": "",
                 },
@@ -1343,7 +1444,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
                 "examination": "cap-exhausted",
                 "reproof_truncation": None,
                 "reproof_call": None,
-                "reproof_change_span": None,
+                "reproof_edits": None,
             },
             text="abc",
             flag_text="abc",
@@ -1581,7 +1682,11 @@ def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
     )
     drifted_finding = copy.deepcopy(finding)
     drifted_finding["payload"]["page_ids"] = ["pg_drifted"]
-    audit.validate_finding(drifted_finding["payload"], text=final["payload"]["text"])
+    audit.validate_finding(
+        drifted_finding["payload"],
+        text=final["payload"]["text"],
+        flag_text=draft["payload"]["semi_final_text"],
+    )
 
     class DriftedTree:
         def read_artifact_reference(self, _reference, *, stage, kind, subject_id):
@@ -1941,20 +2046,13 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
 
 
 @pytest.mark.parametrize(
-    ("stop_reason", "expected_examination"),
+    "stop_reason",
     [
-        # The call completed and then overran its scope: the rejection state.
-        ("stop", "reproof-rejected"),
-        # The call was cut off AND overran its scope. The termination decides
-        # the examination -- an unfinished re-examination settles nothing
-        # whatever its text did -- but the rewrite is refused just the same,
-        # and the run must still survive it.
-        ("length", "incomplete"),
+        "stop",
+        "length",
     ],
 )
-def test_an_escaping_reproof_is_refused_whatever_ended_its_call(
-    tmp_path, monkeypatch, stop_reason, expected_examination
-):
+def test_a_wrong_location_reproof_becomes_an_act_local_failure(tmp_path, monkeypatch, stop_reason):
     """An escape is refused on the escape, not on why the call stopped."""
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
@@ -1975,7 +2073,13 @@ def test_an_escaping_reproof_is_refused_whatever_ended_its_call(
             )
             if pass_kind == "audit-reproof":
                 reproofed.append(dossier["act_key"])
-                return {**result, "text": "Zz " + result["text"], "stop_reason": stop_reason}
+                reply = json.loads(result["text"])
+                # A syntactically complete edit with the wrong location is not
+                # the response the frozen request authorized.
+                reply["edits"][0]["location"] = {"start": 0, "end": 1}
+                reply["edits"][0]["original"] = audit_request["semi_final_text"][0:1]
+                reply["edits"][0]["replacement"] = "Z"
+                return {**result, "text": json.dumps(reply), "stop_reason": stop_reason}
             return result
 
     monkeypatch.setattr(perlector, "FixtureReader", EscapingReader)
@@ -1997,37 +2101,64 @@ def test_an_escaping_reproof_is_refused_whatever_ended_its_call(
     assert reproofed
 
     tree = RunTree(root, "r")
-    frozen = {
-        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
-        for record in _records(tree, "audit-draft")
-    }
-    findings = {
-        record["payload"]["act_key"]: record["payload"]
-        for record in _records(tree, "audit-finding")
+    failures = {
+        record["payload"]["act_key"]: record
+        for record in _records(tree, "perlectio")
+        if record["outcome"] == "failed"
     }
     for act_key in reproofed:
-        assert findings[act_key]["examination"] == expected_examination
-        assert findings[act_key]["unresolved"] is True
-        # The departure is sealed either way: it is what says the re-proof's
-        # own text was refused rather than returned unchanged.
-        assert findings[act_key]["reproof_change_span"] is not None
-    for final in _records(tree, "perlectio"):
-        act_key = final["payload"]["act_key"]
-        if act_key in reproofed:
-            assert final["payload"]["text"] == frozen[act_key]
-            audit.validate_chain(tree, final, final["subject_id"])
+        failure = failures[act_key]
+        assert failure["payload"]["failure"]["kind"] == "reproof-response"
+        assert failure["payload"]["failure"]["phase"] == "audit-reproof"
+        assert "exact requested location" in failure["payload"]["failure"]["detail"]
+        assert any("audit-draft" in ref["relative_path"] for ref in failure["inputs"])
 
 
-def test_a_whitespace_reproof_that_erases_the_act_is_refused_not_crashed(tmp_path, monkeypatch):
-    """A re-proof returning only whitespace publishes an empty reading.
+def test_a_malformed_reproof_reply_becomes_a_retained_failed_act(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    _chain_through_attestatores(root, "audit-change")
+    perlector = _perlector()
+    declared = perlector.FixtureReader
 
-    That projection (`_resolve_outcome`'s `no-readable-text`) widens the change
-    envelope to the whole act, which no narrow flag covers. Containment is
-    therefore measured over the text the projection would publish, not over the
-    whitespace the reader returned — otherwise `change_record` is handed an
-    envelope nobody checked and the refusal leaves `main` exactly as it did
-    before any of this (found by two independent reviews of the first fix).
-    """
+    class MalformedReader:
+        def __init__(self, fixture, fixture_scenario):
+            self._inner = declared(fixture, fixture_scenario)
+
+        def read(self, dossier, *, pass_kind, delivered_pixels=None, audit_request=None):
+            result = self._inner.read(
+                dossier,
+                pass_kind=pass_kind,
+                delivered_pixels=delivered_pixels,
+                audit_request=audit_request,
+            )
+            return {**result, "text": "not-json"} if pass_kind == "audit-reproof" else result
+
+    monkeypatch.setattr(perlector, "FixtureReader", MalformedReader)
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "audit-change",
+        ],
+    )
+    assert perlector.main() == 0
+    failures = [
+        record
+        for record in _records(RunTree(root, "r"), "perlectio")
+        if record["outcome"] == "failed"
+    ]
+    assert failures
+    assert all(record["payload"]["failure"]["kind"] == "reproof-response" for record in failures)
+
+
+def test_a_non_json_whitespace_reproof_becomes_an_act_local_failure(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
     perlector = _perlector()
@@ -2069,24 +2200,12 @@ def test_a_whitespace_reproof_that_erases_the_act_is_refused_not_crashed(tmp_pat
     assert reproofed
 
     tree = RunTree(root, "r")
-    frozen = {
-        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
-        for record in _records(tree, "audit-draft")
-    }
-    for final in _records(tree, "perlectio"):
-        act_key = final["payload"]["act_key"]
-        if act_key not in reproofed:
-            continue
-        # The erasure reached outside every flag, so it was refused: the
-        # establishing reading stands rather than an empty one.
-        assert final["payload"]["text"] == frozen[act_key]
-        assert final["payload"]["audit"]["unresolved"] is True
-        audit.validate_chain(tree, final, final["subject_id"])
+    failures = [record for record in _records(tree, "perlectio") if record["outcome"] == "failed"]
+    assert {record["payload"]["act_key"] for record in failures} == set(reproofed)
+    assert all(record["payload"]["failure"]["phase"] == "audit-reproof" for record in failures)
 
 
-def test_a_reproof_that_escapes_its_flag_holds_its_act_without_killing_the_run(
-    tmp_path, monkeypatch
-):
+def test_failed_reproof_flows_to_held_review_and_partial_export(tmp_path, monkeypatch):
     """The stage-level regression for the failure a real A100 produced.
 
     A live re-proof completed its call (`stop`, not cut off) and rewrote text
@@ -2145,38 +2264,16 @@ def test_a_reproof_that_escapes_its_flag_holds_its_act_without_killing_the_run(
     assert reproofed, "the scenario must deliver at least one re-proof"
 
     tree = RunTree(root, "r")
-    findings = {
-        record["payload"]["act_key"]: record["payload"]
-        for record in _records(tree, "audit-finding")
+    failures = {
+        record["payload"]["act_key"]: record
+        for record in _records(tree, "perlectio")
+        if record["outcome"] == "failed"
     }
-    frozen = {
-        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
-        for record in _records(tree, "audit-draft")
-    }
-    # Every re-proofed act sealed a finding: the rejection is recorded, not a
-    # gap where a finding should have been.
-    assert set(reproofed) <= set(findings)
+    assert set(reproofed) <= set(failures)
     for act_key in reproofed:
-        finding = findings[act_key]
-        assert finding["examination"] == "reproof-rejected"
-        assert finding["unresolved"] is True
-        # Nothing was published on the strength of the rejected rewrite.
-        assert finding["change_record"] == []
-        assert finding["reproof_change_span"] is not None
-        # The re-proof's own termination is still sealed -- the call happened,
-        # and its evidence is retained whatever became of its text.
-        assert finding["reproof_truncation"]["classification"] == "complete"
-
-    for final in _records(tree, "perlectio"):
-        act_key = final["payload"]["act_key"]
-        if act_key not in reproofed:
-            continue
-        # The establishing reading stands; the rewrite never reached the page.
-        assert final["payload"]["text"] == frozen[act_key]
-        assert not final["payload"]["text"].startswith("Zz ")
-        assert final["payload"]["audit"]["examination"] == "reproof-rejected"
-        assert final["payload"]["audit"]["unresolved"] is True
-        audit.validate_chain(tree, final, final["subject_id"])
+        failure = failures[act_key]
+        assert failure["payload"]["failure"]["kind"] == "reproof-response"
+        assert "text" not in failure["payload"] and "audit" not in failure["payload"]
 
     # And the hold is what the downstream stages actually report.
     for stage, expected_exit in (("recensor", 3), ("archetypus", 0), ("armarium", 3)):
@@ -2184,9 +2281,12 @@ def test_a_reproof_that_escapes_its_flag_holds_its_act_without_killing_the_run(
         assert remainder.returncode == expected_exit, (stage, remainder.stderr)
     export = _export(tree)
     assert export["aggregate"]["status"] == "partial"
+    established = {record["subject_id"] for record in _records(tree, "archetypus", ARCHETYPUS)}
     held = {act["act_key"]: act for act in export["non_delivered"]}
     for act_key in reproofed:
         assert held[act_key]["category"] == "held-for-review"
+        assert act_key not in {act["act_key"] for act in export["delivered"]}
+        assert failures[act_key]["subject_id"] not in established
 
 
 # The three-character reading every `_finding` unit test validates against, and
@@ -2219,7 +2319,7 @@ def _finding(**overrides) -> dict:
         "attempt_ordinal": 1,
         "page_ids": ["p1"],
         "round_cap": 1,
-        "policy": {"schema": audit.SCHEMA, "sha256": "0" * 64, "approval_ref": ""},
+        "policy": {"schema": "perlector-audit.v2", "sha256": "0" * 64, "approval_ref": ""},
         "flags": [{"class": "testimony-diff", "location": {"start": 0, "end": 3}}],
         "change_record": [],
         "uncertain_spans": [],
@@ -2402,7 +2502,7 @@ def test_a_v1_audit_record_is_refused_by_name_and_never_read_forward():
             }
         )
     assert audit.RETIRED_SCHEMAS == frozenset({"perlector-audit.v1"})
-    assert audit.SCHEMA == "perlector-audit.v2"
+    assert audit.SCHEMA == "perlector-audit.v3"
 
 
 # --- The independent review of candidate 0934c057: forged terminations and delivery facts

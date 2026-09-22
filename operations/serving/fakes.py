@@ -74,6 +74,7 @@ class ScriptedAnswer:
     model: str | None = None
     status: int = 200
     body: bytes | None = None
+    transport_failure: str | None = None
 
 
 class FakeBlobStore:
@@ -235,6 +236,8 @@ class FakeEndpoint:
                 )
         self.requests.append(decoded)
         answer = self._answers.pop(0)
+        if answer.transport_failure is not None:
+            raise EndpointUnavailable(answer.transport_failure)
         if answer.body is not None:
             body = answer.body
         else:

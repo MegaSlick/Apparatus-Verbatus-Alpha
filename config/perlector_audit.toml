@@ -7,12 +7,12 @@
 # declares how far the cap may ever be raised once that pass is built; no
 # configuration can exceed it, and no stage has a runtime switch for either value.
 #
-# v2 seals, beside every audit finding, what became of the re-proof itself:
+# v3 seals, beside every audit finding, what became of the re-proof itself:
 # whether one was due, whether the cap allowed it, and whether the delivered call
 # completed. A v1 record could not say, and a re-proof cut off by its engine that
 # returned the frozen text unchanged was sealed as resolved. Consumers refuse a
 # v1 record by name; nothing reads it forward.
-schema = "perlector-audit.v2"
+schema = "perlector-audit.v3"
 default_round_cap = 1
 absolute_round_cap = 2
 round_cap = 1

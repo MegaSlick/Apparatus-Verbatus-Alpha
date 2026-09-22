@@ -229,10 +229,11 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     draft_path = tree.resolve(draft_relative)
     draft = json.loads(draft_path.read_text())
     draft["payload"]["semi_final_text"] = ""
-    blank_flags = [
-        {"class": flag["class"], "location": {"start": 0, "end": 0}}
-        for flag in draft["payload"]["flags"]
-    ]
+    blank_flags = []
+    for flag in draft["payload"]["flags"]:
+        collapsed = {"class": flag["class"], "location": {"start": 0, "end": 0}}
+        if collapsed not in blank_flags:
+            blank_flags.append(collapsed)
     draft["payload"]["flags"] = blank_flags
     # The witness-derived basis is bound to its flag by location, so a forgery
     # that blanks the flags and leaves the basis behind is refused for naming a
@@ -264,6 +265,11 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     # genuinely-blank re-proof would have recorded.
     termination = finding["payload"].get("reproof_truncation")
     if termination is not None:
+        # Exact edits must be forged against the same blank frozen text and
+        # collapsed flags as the draft, rather than retaining the old spans.
+        finding["payload"]["reproof_edits"] = [
+            {**flag, "original": "", "replacement": ""} for flag in blank_flags
+        ]
         measure = termination["measure"]
         measure["characters"] = 0
         termination["signals"]["length_suspicious"] = length_signal(
@@ -273,7 +279,7 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
             floor=measure["length_floor_characters_per_page"],
         )
         termination["classification"] = truncation_classification(termination["signals"])
-    validate_finding(finding["payload"], text="")
+    validate_finding(finding["payload"], text="", flag_text="")
     finding["self_hash"] = self_hash(finding)
     validate_envelope(finding)
     finding_bytes = canonical_bytes(finding)

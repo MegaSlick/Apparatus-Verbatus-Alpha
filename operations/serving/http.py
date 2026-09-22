@@ -247,7 +247,12 @@ def require_exact_model_id(response: HttpResponse, expected: str) -> tuple[str, 
 
 
 def request_body(
-    payload: Mapping[str, object], *, model_id: str, seed: int, deterministic: bool
+    payload: Mapping[str, object],
+    *,
+    model_id: str,
+    seed: int,
+    deterministic: bool,
+    temperature: int | float | None = None,
 ) -> bytes:
     """Render one request without allowing callers to lie about its target model."""
 
@@ -269,6 +274,18 @@ def request_body(
             if supplied is not None and supplied != expected:
                 raise ServingConfigurationError(
                     f"deterministic probe {field}={supplied!r}, expected {expected!r}"
+                )
+            value[field] = expected
+    elif temperature is not None:
+        # A structural pass is permitted to use its separately sealed
+        # posture.  It still sends the serving profile's seed: sampling without
+        # the seed that actually governed it would leave the retained request
+        # unable to reproduce the observed variation.
+        for field, expected in (("temperature", temperature), ("seed", seed)):
+            supplied = value.get(field)
+            if supplied is not None and supplied != expected:
+                raise ServingConfigurationError(
+                    f"request {field}={supplied!r}, expected the sealed value {expected!r}"
                 )
             value[field] = expected
     # Render first, then check the decoded *rendered* snapshot -- never the

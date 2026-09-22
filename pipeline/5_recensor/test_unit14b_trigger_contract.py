@@ -296,7 +296,7 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
     result = recensor.unclaimed_ink_observations(
         inked_maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
     )
-    assert result == [{"page_ordinal": 1, "outside_ink_pixels": 25}]
+    assert result == [{"page_ordinal": 1, "outside_ink_pixels": 25, "bounds": box}]
 
 
 def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
@@ -358,6 +358,26 @@ def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice()
     )
 
 
+def test_a_partly_out_of_page_observation_publishes_only_canonical_geometry():
+    recensor = _recensor()
+    page = {"x": 0, "y": 0, "w": 40, "h": 40}
+    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(40, 40, [page])}))
+    observation = {
+        "kind": "unrouted-observation",
+        "bounds": {"x": -4, "y": 0, "w": 10, "h": 5},
+    }
+
+    assert recensor.unclaimed_ink_observations(
+        maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    ) == [
+        {
+            "page_ordinal": 1,
+            "outside_ink_pixels": 30,
+            "bounds": {"x": 0, "y": 0, "w": 6, "h": 5},
+        }
+    ]
+
+
 def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     """The live mask includes recovery crops, not only original proposals.
 
@@ -372,7 +392,7 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
 
     assert recensor.unclaimed_ink_observations(
         maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
-    ) == [{"page_ordinal": 1, "outside_ink_pixels": 100}]
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 100, "bounds": box}]
     cut = {1: [{"x": 0, "y": 0, "w": 20, "h": 20}]}
     assert (
         recensor.unclaimed_ink_observations(
@@ -399,7 +419,7 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     smaller = {1: [{"x": 0, "y": 0, "w": 10, "h": 7}]}  # leaves 3 rows = 30 px
     assert recensor.unclaimed_ink_observations(
         maps, [observation], 1, smaller, minimum_ink_pixels=MINIMUM_INK_PIXELS
-    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30}]
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30, "bounds": box}]
 
 
 def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice():
@@ -412,7 +432,7 @@ def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice()
     # Union covers x 0..7 on every row: 3 columns x 10 rows remain outside.
     assert recensor.unclaimed_ink_observations(
         maps, [observation], 1, overlapping, minimum_ink_pixels=MINIMUM_INK_PIXELS
-    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30}]
+    ) == [{"page_ordinal": 1, "outside_ink_pixels": 30, "bounds": box}]
 
 
 def test_unordered_ink_runs_are_refused_rather_than_double_counted():
@@ -629,15 +649,13 @@ def test_a_second_request_is_replaced_by_a_loud_hold_not_an_acceptance():
     """The one-grant bound preserves the unresolved pointer as a live hold."""
     recensor = _recensor()
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
-    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, {1}, real_route=False)
+    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, {1})
     assert outcome == "held-for-review"
     assert "one observation-funded recovery request is already recorded" in reason
-    exhausted_outcome, exhausted_reason = recensor.unresolved_observation_hold(
-        confirmed, 1, set(), real_route=False
-    )
+    exhausted_outcome, exhausted_reason = recensor.unresolved_observation_hold(confirmed, 1, set())
     assert exhausted_outcome == "held-for-review"
     assert "bounded recovery policy cannot admit another request" in exhausted_reason
-    assert recensor.unresolved_observation_hold([], 1, {1}, real_route=False) is None
+    assert recensor.unresolved_observation_hold([], 1, {1}) is None
 
     source = RECENSOR.read_text(encoding="utf-8")
     assert source.count("observation_hold = unresolved_observation_hold(") == 1
@@ -684,7 +702,7 @@ def _live_publication_gate(source: str | None = None):
     return compile(ast.Expression(guards[0].test), str(RECENSOR), "eval")
 
 
-def _publishes(*, recrop_dispatchable: bool, source: str | None = None) -> bool:
+def _publishes(*, source: str | None = None) -> bool:
     """Evaluate the live gate with every coverage and budget conjunct satisfied."""
     return bool(
         eval(  # noqa: S307 -- compile input is this checked-in module's one conditional.
@@ -693,7 +711,6 @@ def _publishes(*, recrop_dispatchable: bool, source: str | None = None) -> bool:
             {
                 "continuation_shortfall": False,
                 "wants_recovery": True,
-                "recrop_dispatchable": recrop_dispatchable,
                 "used_fallback": 0,
                 "allowed_fallback": 1,
                 "used_total": 0,
@@ -703,36 +720,18 @@ def _publishes(*, recrop_dispatchable: bool, source: str | None = None) -> bool:
     )
 
 
-def test_no_recovery_request_is_published_on_a_route_that_cannot_answer_one():
-    """F068/F083: an unanswerable request is a run with no export, not a recovery.
-
-    The Designator refuses `--operation recover` on a real submission by name,
-    the orchestrator turns that exit 2 into a run abort, and the Armarium then
-    refuses the outstanding request -- so a request published on the real route
-    strands every act already read, with no sequence of stage invocations that
-    reaches an export. With every coverage and budget conjunct satisfied, the
-    route alone decides, and on the route that cannot cut a recrop nothing is
-    published (ARCHITECTURE invariant 8: the act ends as a review item instead).
-    """
-    assert _publishes(recrop_dispatchable=True) is True
-    assert _publishes(recrop_dispatchable=False) is False
+def test_measured_recovery_request_is_admitted_by_coverage_and_budget():
+    """Measured coverage and bounded budget admit a supported recrop request."""
+    assert _publishes() is True
 
 
-def test_the_dispatchability_conjunct_is_the_runs_own_ingress_route():
-    """The gate's new conjunct is a route fact, read through the shared reader.
-
-    A conjunct that could be satisfied by anything else -- a flag, a scenario
-    field, a stage-local default -- would pass the test above while leaving the
-    real route publishing requests. So the live source is required to derive it
-    from `real_ingress`, the same reader `declared_scenario` and every other
-    stage's `real_ingress(context)` go through.
-    """
+def test_recovery_gate_has_no_ingress_dispatchability_switch():
+    """Measured coverage and budgets, not ingress, decide request admission."""
     source = RECENSOR.read_text(encoding="utf-8")
-    assert source.count("real_route = real_ingress(context)") == 1
-    assert source.count("recrop_dispatchable = not real_route") == 1
+    assert "recrop_dispatchable" not in source
 
 
-def test_a_real_submission_holds_the_pointer_and_names_the_recovery_it_has_no_producer_for():
+def test_real_route_uses_the_same_budget_hold_when_recovery_is_not_admitted():
     """The route is the reason, and it outranks whatever the grant would say.
 
     Reporting a spent page grant or an exhausted budget on a run where no recrop
@@ -743,31 +742,23 @@ def test_a_real_submission_holds_the_pointer_and_names_the_recovery_it_has_no_pr
     recensor = _recensor()
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
 
-    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, set(), real_route=True)
+    outcome, reason = recensor.unresolved_observation_hold(confirmed, 1, set())
     assert outcome == "held-for-review"
-    assert "bounded recovery from a real submission is not built" in reason
-    assert "bounded recovery policy cannot admit another request" not in reason
+    assert "bounded recovery policy cannot admit another request" in reason
 
-    funded_outcome, funded_reason = recensor.unresolved_observation_hold(
-        confirmed, 1, {1}, real_route=True
-    )
-    assert (funded_outcome, funded_reason) == (outcome, reason)
+    funded_outcome, funded_reason = recensor.unresolved_observation_hold(confirmed, 1, {1})
+    assert funded_outcome == "held-for-review"
+    assert "one observation-funded recovery request is already recorded" in funded_reason
 
     # No pointer, no hold: the real route does not invent a review item of its own.
-    assert recensor.unresolved_observation_hold([], 1, set(), real_route=True) is None
+    assert recensor.unresolved_observation_hold([], 1, set()) is None
 
 
-def test_the_observation_hold_refuses_to_answer_without_being_told_the_route():
-    """`real_route` is keyword-only and required, so no caller can forget it.
-
-    A defaulted parameter would let a new call site publish the grant sentence
-    over a real submission -- the exact wrong-fault report the test above pins
-    against -- and would do it silently.
-    """
+def test_observation_hold_has_no_ingress_parameter():
+    """The shared grant state is identical for fixture and real measured routes."""
     recensor = _recensor()
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
-    with pytest.raises(TypeError, match="real_route"):
-        recensor.unresolved_observation_hold(confirmed, 1, set())
+    assert recensor.unresolved_observation_hold(confirmed, 1, set())[0] == "held-for-review"
 
 
 def test_a_recovery_request_with_no_recorded_origin_is_refused():

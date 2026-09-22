@@ -248,7 +248,7 @@ def test_the_frames_pixels_are_still_counted_and_now_appear_as_residual(framed_p
     assert residual == 7_788
     assert claimed == total - 7_788
     assert payload["residual_component_count"] >= 1
-    assert payload["residual_component_count"] <= payload["max_residual_components"]
+    assert "max_residual_components" not in payload
     assert held is True, "unclaimed ink withholds a complete exit"
 
 

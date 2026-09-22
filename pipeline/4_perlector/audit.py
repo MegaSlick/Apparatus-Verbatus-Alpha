@@ -25,6 +25,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.perlector_audit import (  # noqa: F401  (re-export)
+    AUDIT_PROMPT_SCHEMA,
     DECLARED_STOP_WORDS,
     EXAMINATION_CAP_EXHAUSTED,
     EXAMINATION_COMPLETE,
@@ -33,23 +34,30 @@ from common.perlector_audit import (  # noqa: F401  (re-export)
     EXAMINATION_REPROOF_REJECTED,
     EXAMINATION_STATES,
     FLAG_CLASSES,
+    LEGACY_SCHEMA,
     REPROOF_PASS_KIND,
     REQUEST_SCHEMA,
     RETIRED_SCHEMAS,
     SCHEMA,
     TRUNCATION_COMPLETE,
     WITNESS_DERIVED_LOCATION_CLASSES,
+    ReproofResponseRefusal,
+    assemble_reproof_response,
     audit_digest,
+    audit_prompt_evidence,
     audit_request,
     change_record,
+    change_records_from_edits,
     examination_state,
     flag_contains_change,
     neutral_prompt,
     reproof_delivery_due,
     reproof_plan,
+    reproof_response_from_text,
     text_change_span,
     truncation_classification,
     unresolved_state,
+    validate_audit_prompt_evidence,
     validate_audit_request,
     validate_chain,
     validate_draft,
@@ -81,6 +89,12 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
             f"the Perlector audit declaration names {policy['schema']!r}, a retired schema that "
             "could not record whether a delivered re-proof completed; declare "
             f"{SCHEMA!r}. A run sealed under the old declaration is re-read under the current one"
+        )
+    if isinstance(policy, dict) and policy.get("schema") == LEGACY_SCHEMA:
+        raise ContractError(
+            f"the Perlector audit declaration names legacy schema {LEGACY_SCHEMA!r}; sealed "
+            "artifacts under that schema remain readable, but a new execution must declare "
+            f"{SCHEMA!r} so its exact-edit request matches the current reader"
         )
     if (
         not isinstance(policy, dict)
@@ -247,10 +261,16 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
                 continue
             seen.add(key)
             output[act_id].append(flag)
-    return {
-        act_id: sorted(flags, key=lambda row: (row["location"]["start"], row["class"]))
-        for act_id, flags in output.items()
-    }
+    canonical: dict[str, list[dict[str, Any]]] = {}
+    for act_id, flags in output.items():
+        distinct: dict[tuple[str, int, int], dict[str, Any]] = {}
+        for flag in flags:
+            key = (flag["class"], flag["location"]["start"], flag["location"]["end"])
+            distinct.setdefault(key, flag)
+        canonical[act_id] = sorted(
+            distinct.values(), key=lambda row: (row["location"]["start"], row["class"])
+        )
+    return canonical
 
 
 def policy_record(policy: dict[str, Any], sha256: str) -> dict[str, str]:

@@ -16,6 +16,7 @@ never a fallback in either direction (GOVERNANCE 3 / hard rule 8).
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Callable, Mapping, Protocol
@@ -25,6 +26,10 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_PROBLEM_FIELDS,
+    CHAIR_TRANSPORT_PROBLEM_SCHEMA,
     WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
@@ -33,10 +38,17 @@ from .config import FixtureProfile, ServingProfile, ServingRecipes, UnsupportedP
 from .errors import (
     ChairRequestRefusal,
     ChairResponseRefusal,
+    ChairTransportFailure,
     ServingConfigurationError,
     ServingError,
 )
-from .http import HttpResponse, chat_image_bytes_all, parse_openai_reading, request_body
+from .http import (
+    EndpointUnavailable,
+    HttpResponse,
+    chat_image_bytes_all,
+    parse_openai_reading,
+    request_body,
+)
 from .manager import AdapterCalibration, ServiceHandle, ServingManager
 
 # Never on the wire: these are the manager's/decoding policy's to set, not an
@@ -290,6 +302,7 @@ class ChairRequest:
     generation_declared: Mapping[str, object]
     generation_sent: Mapping[str, object]
     capacity: Mapping[str, object] | None = None
+    structure_recovery_seed: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
@@ -300,6 +313,15 @@ class ChairRequest:
             self, "generation_declared", MappingProxyType(dict(self.generation_declared))
         )
         object.__setattr__(self, "generation_sent", MappingProxyType(dict(self.generation_sent)))
+        if self.structure_recovery_seed is not None and (
+            not isinstance(self.structure_recovery_seed, int)
+            or isinstance(self.structure_recovery_seed, bool)
+            or self.structure_recovery_seed < 0
+        ):
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "a Designator structure recovery seed must be a non-negative integer",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,10 +356,8 @@ class ChairClient:
 
     ``read_receipt`` is the tree's own receipt reader (production:
     ``context.tree.read_run_receipt``); the client never reads run-tree bytes
-    itself. ``record_temperature`` is checked once, at construction: this
-    client only ever records the sealed reading-of-record temperature (0), so
-    a caller that would build it against another policy is refused before any
-    chair starts, not silently coerced.
+    itself. ``record_temperature`` is checked once, at construction and sent
+    on each request under the same manager-owned rule as the seed.
     """
 
     def __init__(
@@ -348,16 +368,19 @@ class ChairClient:
         tier: str,
         retain: RetainBytes,
         decoding_config_sha256: str,
-        record_temperature: int,
+        record_temperature: int | float,
         read_receipt: Callable[[Mapping[str, str]], Mapping[str, object]],
         adapter_calibration: AdapterCalibration | None = None,
     ) -> None:
-        if record_temperature != 0:
+        if (
+            isinstance(record_temperature, bool)
+            or not isinstance(record_temperature, (int, float))
+            or not math.isfinite(record_temperature)
+            or record_temperature < 0
+        ):
             raise ServingConfigurationError(
-                "ChairClient only ever records the sealed reading-of-record "
-                f"temperature 0; the caller supplied record_temperature={record_temperature!r}. "
-                "config/decoding.toml pins reading_of_record.temperature = 0; a caller "
-                "that disagrees must refuse here, never be silently recorded as 0."
+                "ChairClient requires a finite, non-negative sealed temperature; "
+                f"the caller supplied record_temperature={record_temperature!r}"
             )
         if not is_sha256(decoding_config_sha256):
             raise ServingConfigurationError(
@@ -433,10 +456,12 @@ class ChairClient:
         """Issue exactly one reading request. Never retries, never re-samples.
 
         Order matches the contract exactly: request shape and image-digest
-        refusals happen before anything is built or sent; the raw response is
-        retained before its content is parsed; a content/choices problem is
-        recorded, never raised, because a malformed body from a witness or
-        reader is retained evidence (``parse_problem``), not a stage abort.
+        refusals happen before anything is built or sent. Once dispatch is
+        attempted, a transport failure retains the exact request facts and
+        explicit response uncertainty. A received raw response is retained
+        before its content is parsed; a content/choices problem is recorded,
+        never raised, because a malformed body from a witness or reader is
+        retained evidence (``parse_problem``), not a stage abort.
         """
 
         handle = self.handle
@@ -452,16 +477,89 @@ class ChairClient:
         _refuse_generation_that_cannot_be_recorded_as_sent(
             generation_declared, request.generation_declared, "generation_declared"
         )
+        if (
+            request.structure_recovery_seed is not None
+            and self._identity.role != "designator_structure"
+        ):
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "only the Designator structure chair may override the manager seed for "
+                "bounded structural coverage recovery",
+            )
+        actual_seed = (
+            handle.profile.seed
+            if request.structure_recovery_seed is None
+            else request.structure_recovery_seed
+        )
+        actual_generation_sent = {
+            **request.generation_sent,
+            "temperature": self._record_temperature,
+            "seed": actual_seed,
+        }
         body = request_body(
             {**request.generation_sent, "messages": list(request.messages)},
             model_id=handle.profile.served_model_id,
-            seed=handle.profile.seed,
-            deterministic=True,
+            seed=actual_seed,
+            deterministic=self._record_temperature == 0,
+            temperature=self._record_temperature,
         )
         request_sha256 = digest_bytes(body)
-        response = handle.request_reading(
-            request.kind, body, handle.profile.request_timeout_seconds
-        )
+        try:
+            response = handle.request_reading(
+                request.kind, body, handle.profile.request_timeout_seconds
+            )
+        except EndpointUnavailable as error:
+            transport_problem = {
+                "schema": CHAIR_TRANSPORT_PROBLEM_SCHEMA,
+                "code": "ENDPOINT_UNAVAILABLE",
+                "detail": str(error),
+                "definitively_absent": error.definitively_absent,
+                "request_delivery": "unknown",
+                "response_completion": "unknown",
+            }
+            if set(transport_problem) != CHAIR_TRANSPORT_PROBLEM_FIELDS:
+                raise AssertionError(  # pragma: no cover - closed by construction
+                    "chair transport problem built the wrong field set"
+                ) from error
+            failure_record = {
+                "schema": CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+                "chair": self._identity.role,
+                "resolved_identity": self._identity.to_record(),
+                "resolved_revision": self._identity.receipt_revision,
+                "serving_recipe": self._identity.serving_recipe,
+                "served_model_id": handle.profile.served_model_id,
+                "receipt_ref": dict(handle.receipt_reference),
+                "launch_audit_ref": dict(handle.audit_reference),
+                "decoding_config_sha256": self._decoding_config_sha256,
+                "kind": request.kind,
+                "request_sha256": request_sha256,
+                "image_sha256s": list(request.image_sha256s),
+                "generation_sent": _recorded_generation(actual_generation_sent),
+                "generation_declared": generation_declared,
+                "raw_response_ref": None,
+                "response_sha256": None,
+                "response_status": None,
+                "response_model": None,
+                "finish_reason": None,
+                "usage": None,
+                "parse_problem": None,
+                "capacity": (
+                    _plain_capacity(request.capacity) if request.capacity is not None else None
+                ),
+                "transport_problem": transport_problem,
+            }
+            if set(failure_record) != CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS:
+                raise AssertionError(  # pragma: no cover - closed by construction
+                    f"{CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA} built the wrong field set"
+                ) from error
+            call_record_ref = self._retain(canonical_bytes(failure_record))
+            raise ChairTransportFailure(
+                str(error),
+                call_record_ref=call_record_ref,
+                request_sha256=request_sha256,
+                receipt_ref=handle.receipt_reference,
+                served_model_id=handle.profile.served_model_id,
+            ) from error
         # Retention comes first, and it comes first for the one artefact a
         # rented card exists to produce: when vLLM refuses a request it says
         # *why* in the body of a non-200, and that sentence -- "this model's
@@ -475,39 +573,47 @@ class ChairClient:
         # that the bytes exist afterwards, by their own digest, so the refusal
         # can name them and a reader can see what actually arrived.
         raw_response_ref = self._retain(response.body)
-        _refuse_bytes_from_the_wrong_source(
-            response,
-            expected_model_id=handle.profile.served_model_id,
-            raw_response_ref=raw_response_ref,
-        )
+        early_refusal: ChairResponseRefusal | None = None
+        try:
+            _refuse_bytes_from_the_wrong_source(
+                response,
+                expected_model_id=handle.profile.served_model_id,
+                raw_response_ref=raw_response_ref,
+            )
+        except ChairResponseRefusal as error:
+            early_refusal = error
 
         content: str | None
         finish_reason: str | None = None
         usage: Mapping[str, int] | None = None
         parse_problem: str | None = None
-        try:
-            result = parse_openai_reading(
-                response, kind=request.kind, expected_model_id=handle.profile.served_model_id
-            )
-        except ChairResponseRefusal as error:
+        if early_refusal is not None:
             content = None
-            parse_problem = error.code
-            if (
-                parse_problem == "CHAIR_RESPONSE_MODEL_MISMATCH"
-                and _peek_model(response.body) is None
-            ):
-                # `_refuse_bytes_from_the_wrong_source` already let this body
-                # through retention because it names no model at all — that is
-                # a malformed body, not evidence of a foreign source, and the
-                # parser's own comparison (`payload.get("model") !=
-                # expected_model_id`) cannot tell the two apart. Recorded
-                # verbatim, "model mismatch" would assert a foreign-model
-                # observation that was never made (GOVERNANCE 10).
-                parse_problem = "CHAIR_RESPONSE_INVALID"
+            parse_problem = early_refusal.code
         else:
-            content = result.outputs[0]
-            finish_reason = result.finish_reasons[0]
-            usage = result.usage
+            try:
+                result = parse_openai_reading(
+                    response, kind=request.kind, expected_model_id=handle.profile.served_model_id
+                )
+            except ChairResponseRefusal as error:
+                content = None
+                parse_problem = error.code
+                if (
+                    parse_problem == "CHAIR_RESPONSE_MODEL_MISMATCH"
+                    and _peek_model(response.body) is None
+                ):
+                    # `_refuse_bytes_from_the_wrong_source` already let this body
+                    # through retention because it names no model at all — that is
+                    # a malformed body, not evidence of a foreign source, and the
+                    # parser's own comparison (`payload.get("model") !=
+                    # expected_model_id`) cannot tell the two apart. Recorded
+                    # verbatim, "model mismatch" would assert a foreign-model
+                    # observation that was never made (GOVERNANCE 10).
+                    parse_problem = "CHAIR_RESPONSE_INVALID"
+            else:
+                content = result.outputs[0]
+                finish_reason = result.finish_reasons[0]
+                usage = result.usage
 
         record = {
             "schema": CHAIR_CALL_RECORD_SCHEMA,
@@ -522,10 +628,11 @@ class ChairClient:
             "kind": request.kind,
             "request_sha256": request_sha256,
             "image_sha256s": list(request.image_sha256s),
-            "generation_sent": generation_sent,
+            "generation_sent": _recorded_generation(actual_generation_sent),
             "generation_declared": generation_declared,
             "raw_response_ref": dict(raw_response_ref),
             "response_sha256": raw_response_ref["sha256"],
+            "response_status": response.status,
             "response_model": _peek_model(response.body),
             "finish_reason": finish_reason,
             "usage": dict(usage) if usage is not None else None,
@@ -537,9 +644,20 @@ class ChairClient:
         }
         if set(record) != CHAIR_CALL_RECORD_FIELDS:
             raise AssertionError(  # pragma: no cover - closed by construction above
-                f"chair-call-record.v1 built the wrong field set: {sorted(record)}"
+                f"{CHAIR_CALL_RECORD_SCHEMA} built the wrong field set: {sorted(record)}"
             )
         call_record_ref = self._retain(canonical_bytes(record))
+
+        if early_refusal is not None:
+            raise ChairResponseRefusal(
+                early_refusal.code,
+                early_refusal.detail,
+                raw_response_ref=raw_response_ref,
+                call_record_ref=call_record_ref,
+                request_sha256=request_sha256,
+                receipt_ref=handle.receipt_reference,
+                served_model_id=handle.profile.served_model_id,
+            ) from early_refusal
 
         return ChairResponse(
             chair=self._identity.role,
@@ -670,6 +788,7 @@ def _refuse_bytes_from_the_wrong_source(
             "CHAIR_RESPONSE_HTTP_ERROR",
             f"reading response returned HTTP {response.status}; its body is retained at "
             f"{dict(raw_response_ref)!r} and begins {_body_preview(response.body)}",
+            raw_response_ref=raw_response_ref,
         )
     model = _peek_model(response.body)
     if model is not None and model != expected_model_id:
@@ -679,6 +798,7 @@ def _refuse_bytes_from_the_wrong_source(
             f"{len(response.body)} bytes are retained at {dict(raw_response_ref)!r} and are "
             "not quoted here: a reading from another model is not this chair's evidence and "
             "does not travel in a refusal message",
+            raw_response_ref=raw_response_ref,
         )
 
 

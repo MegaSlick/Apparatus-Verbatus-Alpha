@@ -1,22 +1,15 @@
-"""The page-residual act class, and the consumer verifier that recomputes it.
+"""The page-residual act class and its consumer-side reconciliation.
 
-A page whose conservation reconciles more unclaimed components than the sealed
-bound allows is held as **one** review item rather than as that many held acts,
-and its components are then counted rather than listed. That is a real cost —
-the per-component rectangles leave the artifact — so every part of the claim is
-checked here against something other than the producer's word: the page
-rectangle against the sealed page bytes, the identity against the reserved
-``page-residual`` class, and the premise against the page's own `conservation`
-record, reached through the digest-checked input hop rather than by address.
+Current aggregate records retain every component and use one page review item
+for the below-threshold partition. Historical withheld records intentionally
+carry only count and bound. Both shapes are checked against sealed page bytes,
+their reserved identities, and the exact conservation premise.
 
 The run trees are real to the Exemplar's own seal — the Door and the Exemplar
 run as programs over the synthetic fixture — and the Designator's records are
 then hand-built on top. That split is deliberate. `verify_sealed_page_pixels` is
 the whole reason the rectangle cannot be forged, so a stubbed page would prove
-nothing; the Designator's own publication of these records is unit D's, and on
-this branch its `run.py` does not yet resolve its grouping configuration at all.
-Hand-building the records is therefore not a shortcut around a producer, it is
-the only way to hold the *consumer* to its contract before the producer exists.
+nothing. Designator records are hand-built here to exercise consumer refusals.
 """
 
 from __future__ import annotations
@@ -35,6 +28,7 @@ from common.contracts.stages import DESIGNATOR, EXEMPLAR
 from common.imaging import dimensions
 from common.runtree.store import RunTree
 from common.stage import (
+    RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_WITHHELD,
     StageContext,
@@ -142,6 +136,7 @@ def _conservation_payload(
     count: int | None = MEASURED,
     bound: int | None = BOUND,
     components: list[dict] | None = None,
+    aggregated_components: list[dict] | None = None,
 ) -> dict:
     """The shape §1 of the spec gives the conservation record.
 
@@ -174,6 +169,8 @@ def _conservation_payload(
     }
     if components is not None:
         payload["residual_components"] = components
+    if aggregated_components is not None:
+        payload["aggregated_residual_components"] = aggregated_components
     return payload
 
 
@@ -243,6 +240,7 @@ class _Page:
             "page_ordinal": ORDINAL,
             "page_bounds": bounds,
             "residual_component_count": count,
+            "aggregated_component_count": count,
             "max_residual_components": bound,
             "blocking_page_ordinal": ORDINAL,
             # Spelled out rather than imported from `common.stage`: this string
@@ -311,6 +309,7 @@ def page(sealed) -> _Page:
 
 
 COMPONENT = {"x": 3, "y": 4, "w": 2, "h": 2}
+AGGREGATE_PROMOTED = {"x": 3, "y": 4, "w": 25, "h": 20}
 
 
 # --- the page a withheld record earns -------------------------------------------
@@ -325,6 +324,83 @@ def test_a_withheld_page_held_as_one_item_verifies(page):
 
     assert act == derive_act_id(page.page_id, "page-residual", page.rectangle)
     assert page.rows[act]["act_key"] == "page-residual:1"
+
+
+def test_legacy_withheld_shape_needs_no_retained_aggregate_geometry(page):
+    """Historical withheld records remain readable in their original shape."""
+    payload = _conservation_payload()
+    assert "residual_components" not in payload
+    assert "aggregated_residual_components" not in payload
+    page.publish_conservation(payload)
+    page.hold_page()
+
+    page.verify()
+
+
+def _aggregate_payload() -> dict:
+    promoted = {
+        "bounds": AGGREGATE_PROMOTED,
+        "pixel_count": 500,
+        "review_priority": "high",
+    }
+    dust = {
+        "bounds": {"x": 40, "y": 40, "w": 25, "h": 20},
+        "pixel_count": 1,
+        "review_priority": "normal",
+    }
+    payload = _conservation_payload(
+        enumeration=RESIDUAL_ENUMERATION_AGGREGATED,
+        count=2,
+        components=[promoted],
+        aggregated_components=[dust],
+    )
+    payload.update(
+        {
+            "total_ink_pixel_count": 501,
+            "residual_pixel_count": 501,
+            "page_width": 200,
+            "page_height": 260,
+            "residual_promoted_component_count": 1,
+            "residual_aggregated_component_count": 1,
+            "residual_aggregate_max_pixel_count": 500,
+            "residual_aggregate_max_area_px": 2000,
+        }
+    )
+    return payload
+
+
+def test_aggregate_partition_and_both_held_identities_verify(page):
+    page.publish_conservation(_aggregate_payload())
+    page.hold_component(AGGREGATE_PROMOTED)
+    page.hold_page(
+        count=2,
+        extra={
+            "aggregated_component_count": 1,
+            "reason_code": "residual-components-below-presentation-threshold",
+        },
+    )
+
+    page.verify()
+
+
+def test_aggregate_cannot_hide_a_component_at_the_promotion_floor(page):
+    payload = _aggregate_payload()
+    payload["aggregated_residual_components"][0]["pixel_count"] = 500
+    payload["total_ink_pixel_count"] = 1000
+    payload["residual_pixel_count"] = 1000
+    page.publish_conservation(payload)
+    page.hold_component(AGGREGATE_PROMOTED)
+    page.hold_page(
+        count=2,
+        extra={
+            "aggregated_component_count": 1,
+            "reason_code": "residual-components-below-presentation-threshold",
+        },
+    )
+    page.context.finish()
+
+    with pytest.raises(FatalAccounting, match="classifies aggregate component"):
+        _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
 
 
 def test_a_withheld_record_with_no_page_residual_row_is_refused(page):
@@ -452,7 +528,7 @@ def test_a_hold_naming_a_boolean_bound_is_refused_against_its_records_integer(pa
     act = page.hold_page(bound=True, count=2)
 
     page.context.finish()
-    with pytest.raises(FatalAccounting, match="does not name an integer residual component"):
+    with pytest.raises(FatalAccounting, match="does not name the integer bound"):
         _verify_minted_act_rows(page.context, {act: page.rows[act]})
     with pytest.raises(FatalAccounting, match="must name one policy, as one integer"):
         _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
@@ -661,7 +737,7 @@ def test_an_enumerated_record_with_no_component_list_is_still_refused(page):
     page.publish_conservation(payload, outcome="proposed")
     page.context.finish()
 
-    with pytest.raises(FatalAccounting, match="carries no residual-component list"):
+    with pytest.raises(FatalAccounting, match="malformed retained component lists"):
         _verify_every_conservation_residual_is_accounted(page.context, {})
 
 
@@ -682,7 +758,7 @@ def test_an_enumerated_records_count_must_match_its_own_listed_components(page):
     page.hold_component(COMPONENT)
     page.context.finish()
 
-    with pytest.raises(FatalAccounting, match="carries 1 entries"):
+    with pytest.raises(FatalAccounting, match="lists 1 residual components"):
         _verify_every_conservation_residual_is_accounted(page.context, dict(page.rows))
 
 

@@ -223,6 +223,7 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
     # never has to run `adapter.present` a second time for this same act.
     assert act_request.presented == presentation
     assert act_request.prompt == feeding.dai_prompt()
+    assert act_request.generation_accounting == feeding.dai_generation_accounting("auto")
 
     declared = feeding.dai_generation()
     assert request.generation_declared == declared
@@ -326,26 +327,21 @@ def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends()
         if "max_tokens" in sent:
             assert prompt + sent["max_tokens"] < row.max_model_len, row.tier
         else:
-            # Every shipped row is smaller than the declared bound today, so
-            # this branch, not the one above, is the one that actually runs.
-            # Stated rather than left implicit: a row raised past
-            # `CHURRO_OUTPUT_TOKENS` must reach the branch above, or this test
-            # would keep passing while checking nothing at all.
+            # The smaller rows remain below the declared bound. Stated rather
+            # than left implicit: a row raised past `CHURRO_OUTPUT_TOKENS`
+            # must reach the branch above.
             assert CHURRO_OUTPUT_TOKENS >= row.max_model_len, row.tier
 
 
-def test_the_old_flat_bound_would_have_been_refused_by_every_sealed_churro_row():
-    """The counterfactual: what this seam used to send, against the same rows."""
+def test_the_old_flat_bound_is_refused_by_smaller_churro_rows_and_fits_80gb():
+    """The old flat ceiling remains visible beside the corrected 80 GB row."""
 
     rows = _sealed_churro_rows()
     over = [row.tier for row in rows if CHURRO_OUTPUT_TOKENS >= row.max_model_len]
-    assert over == [row.tier for row in rows]
-    # Raised from 2,048/4,096/8,192 by the capacity unit so a whole page fits;
-    # U15 (Tyrel, 2026-09-06) sets it to 8,192 at every tier now that Churro's
-    # own trained geometry (401,408 / 4,014,080 px) is what every row states,
-    # not a per-tier ladder -- still far under the 20,000 Churro's own paper
-    # allows for an answer.
-    assert [row.max_model_len for row in rows] == [8192, 8192, 8192]
+    assert over == ["generic-24gb", "generic-48gb"]
+    # The smaller tiers retain the disclosed 8,192-token constraint. The 80 GB
+    # row alone admits the full vendor answer budget at 32,768.
+    assert [row.max_model_len for row in rows] == [8192, 8192, 32768]
 
 
 def _stand_in_row(max_model_len, chair="attestator_3"):
@@ -1092,7 +1088,8 @@ def test_a_prompt_too_long_400_is_retained_refused_by_name_and_not_a_length_stop
     # And no reading was derived from it: the refusal is raised, so
     # `live_attempt_from_response` is never reached and no capture exists to
     # be mistaken for a truncated one.
-    assert len(blob_store) == 1
+    assert len(blob_store) == 2
+    assert error.value.call_record_ref is not None
 
 
 def _stub_adapter(*, retain_result: dict[str, Any], prompt: dict[str, Any] | None = None) -> Any:

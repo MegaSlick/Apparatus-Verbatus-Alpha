@@ -86,18 +86,17 @@ for _stage_directory in (ATTESTATORES_DIR, PERLECTOR_DIR):
     if str(_stage_directory) not in sys.path:
         sys.path.insert(0, str(_stage_directory))
 
-from live_reader import EngineSignalRefusal  # noqa: E402
-
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ANCHOR_LINE_RUN_FLOOR,
     ArmariumCategory,
     witness_coverage,
 )
-from common.contracts.serving import STOP_REASON_UNREPORTED  # noqa: E402
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA, STOP_REASON_UNREPORTED  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.native_witness import reported_geometry_overlaps  # noqa: E402
+from common.perlector_audit import RESPONSE_SCHEMA as AUDIT_RESPONSE_SCHEMA  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import EXIT_COMPLETE, EXIT_HELD, verify_final_seal  # noqa: E402
 from operations.serving.client import ChairClient  # noqa: E402
@@ -522,6 +521,27 @@ class RecordingEndpoint(FakeEndpoint):
         return response
 
 
+_REPROOF_RESPONSE_MARKER = "Required response object, shown with unchanged replacements:\n"
+
+
+def _unchanged_reproof_response(body: bytes | None) -> str | None:
+    """Extract the unchanged exact-edit envelope from a rendered audit prompt."""
+    if body is None:
+        return None
+    request = json.loads(body)
+    for message in request.get("messages", []):
+        content = message.get("content", [])
+        parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
+        for part in parts:
+            text = part.get("text") if isinstance(part, dict) else None
+            if isinstance(text, str) and _REPROOF_RESPONSE_MARKER in text:
+                response = text.rsplit(_REPROOF_RESPONSE_MARKER, 1)[1]
+                parsed = json.loads(response)
+                assert parsed["schema"] == AUDIT_RESPONSE_SCHEMA
+                return response
+    return None
+
+
 class VaryingReadingEndpoint(RecordingEndpoint):
     """A reader endpoint whose answer content is derived from the pixels it was sent.
 
@@ -530,8 +550,9 @@ class VaryingReadingEndpoint(RecordingEndpoint):
     canonical one: sixty identical replies make every response blob
     identical too. Hashing the images the request actually carries into the
     content instead ties each answer to the act whose pixels asked for it,
-    while answering the same for the Pass A / Pass B / re-proof calls of that
-    one act.
+    while answering the same for the Pass A / Pass B calls of that one act.
+    Audit re-proof calls instead return the exact unchanged edit envelope the
+    production renderer included in that request.
 
     **Why the delivered images and not the whole body.** Pass A and Pass B do
     render the same request, but the audit re-proof does not: it appends every
@@ -542,8 +563,8 @@ class VaryingReadingEndpoint(RecordingEndpoint):
     testimony-diff flag only when the witness text happens to end in the same
     character as the reading -- so the pass would refuse, or not, on a
     coincidence between a witness constant and a hash. The delivered pixels are
-    the act's own bytes and are identical across its three passes, which is the
-    property this endpoint needed all along.
+    the act's own bytes and are identical across its ordinary reading passes,
+    which is the property this endpoint needed all along.
     """
 
     def __init__(self, *, finish_reason: Any, **keywords: Any) -> None:
@@ -556,6 +577,7 @@ class VaryingReadingEndpoint(RecordingEndpoint):
             and url.endswith("/chat/completions")
             and self._readiness_probe_answered
         ):
+            reproof_response = _unchanged_reproof_response(body)
             images = chat_image_bytes_all(json.loads(body)) if body is not None else []
             digest = hashlib.sha256(b"".join(images)).hexdigest()[:12] if images else "no-pixels"
             # Bracketed, not bare: a bare hex digest ends in "a" one time in
@@ -570,9 +592,14 @@ class VaryingReadingEndpoint(RecordingEndpoint):
             # roll on every run. "]" is not a character any scripted witness
             # body ends with, so the coincidence this constant final
             # character could still produce is structural, not random.
-            content = f"{READING} [{digest}]"
-            assert content.startswith(READING)
-            self.script(ScriptedAnswer(content=content, finish_reason=self._finish_reason))
+            content = reproof_response or f"{READING} [{digest}]"
+            assert reproof_response is not None or content.startswith(READING)
+            self.script(
+                ScriptedAnswer(
+                    content=content,
+                    finish_reason="stop" if reproof_response is not None else self._finish_reason,
+                )
+            )
         return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
 
 
@@ -901,7 +928,7 @@ def test_the_whole_live_roster_answered_through_its_own_scope(live_seam):
             "chair was ever asked; a live pass may not publish a declared answer"
         )
         call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
-        assert call["schema"] == "chair-call-record.v1"
+        assert call["schema"] == CHAIR_CALL_RECORD_SCHEMA
         assert call["chair"] == chair
         # The witness half of "every reading names the exact bytes its engine
         # sent": chain record -> adapter output -> wire content -> served
@@ -1425,7 +1452,7 @@ def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held
         == EXIT_COMPLETE
     )
     readings = published_readings(run_root)
-    assert readings
+    assert len(readings) == 2
     for record in readings:
         assert record["outcome"] == "truncated"
         assert record["payload"]["truncation"]["classification"] == "unknown"
@@ -1433,21 +1460,18 @@ def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held
         assert record["payload"]["engine_call"]["finish_reason"] is None
 
 
-def test_an_engine_word_this_pipeline_never_measured_stops_the_pass_publishing_nothing(
+def test_an_engine_word_this_pipeline_never_measured_fails_each_act_with_retained_evidence(
     designated, witnessed, tmp_path
 ):
     """`"abort"` is neither a completion nor a cut-off, so it is refused by name.
 
-    Nothing is lost by stopping: the client retained the response before it
-    parsed it, so the bytes that stopped the pass are on disk under their own
-    digest. Nothing is published for the act, because a Perlectio has no
-    `failed` shape and minting one here would invent a record kind this seam
-    does not own.
+    Nothing is lost: each refusal is retained and published on that act, then
+    the pass continues so later acts keep their own outcomes and evidence.
     """
     run_root = tmp_path / "runs"
     shutil.copytree(witnessed.run_root, run_root)
     reader = ReaderWorld(designated.catalogue, tmp_path / "reader", finish_reason="abort")
-    with pytest.raises(EngineSignalRefusal, match="abort"):
+    assert (
         run_in_process(
             perlector,
             run_root,
@@ -1455,7 +1479,22 @@ def test_an_engine_word_this_pipeline_never_measured_stops_the_pass_publishing_n
             placement_tier=TIER,
             serving_factory=reader.factory,
         )
-    assert published_readings(run_root) == []
+        == EXIT_COMPLETE
+    )
+    readings = published_readings(run_root)
+    assert len(readings) == 2
+    tree = RunTree(run_root, RUN_ID)
+    for record in readings:
+        assert record["outcome"] == "failed"
+        failure = record["payload"]["failure"]
+        assert failure["kind"] == "engine-signal"
+        assert failure["code"] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
+        assert failure["response_completion"] == "complete"
+        assert failure["raw_response_ref"] in record["inputs"]
+        assert failure["call_record_ref"] in record["inputs"]
+        assert "text" not in record["payload"]
+        raw = tree.read_bytes(failure["raw_response_ref"]["relative_path"])
+        assert raw in reader.endpoint.served
     blobs = run_root / RUN_ID / "4_perlector" / "blobs" / "sha256"
     retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
     assert any(b'"abort"' in body for body in retained), "the refusing response was not retained"
@@ -1464,8 +1503,10 @@ def test_an_engine_word_this_pipeline_never_measured_stops_the_pass_publishing_n
     # response bytes the endpoint served, by their own digest, so this proves
     # the response itself was retained before it was parsed -- not only that
     # a record describing it was.
-    served = reader.endpoint.served[-1]
-    assert (blobs / hashlib.sha256(served).hexdigest()).read_bytes() == served
+    assert all(
+        (blobs / record["payload"]["failure"]["raw_response_ref"]["sha256"]).exists()
+        for record in readings
+    )
 
 
 # ============================ the fixture path, unmoved =======================

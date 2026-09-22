@@ -25,10 +25,17 @@ from reader import FixtureReader
 
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
 from common.imaging import encode_grayscale_png
-from common.perlector_audit import audit_request as build_audit_request
+from common.perlector_audit import (
+    _rebuild_chair_request_bytes,
+    render_reproof_instruction,
+)
+from common.perlector_audit import (
+    audit_request as build_audit_request,
+)
 from common.request_capacity import (
     PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS,
     PERLECTOR_PROMPT_OVERHEAD_TOKENS,
@@ -58,6 +65,7 @@ from operations.serving.fakes import (
     ScriptedAnswer,
     scripted_prompt_too_long,
 )
+from operations.serving.http import request_body
 from operations.serving.manager import ServingManager
 from operations.serving.residency import FileResidencyLease
 
@@ -1086,7 +1094,7 @@ def test_an_act_that_fits_carries_its_capacity_record_onto_the_retained_call_rec
             for written in blob_store.written
             if written.lstrip().startswith(b"{")
         )
-        if payload.get("schema") == "chair-call-record.v1"
+        if payload.get("schema") == CHAIR_CALL_RECORD_SCHEMA
     )
     capacity = call_record["capacity"]
     assert capacity["schema"] == "verbatus-request-capacity.v1"
@@ -1147,7 +1155,7 @@ def test_a_prompt_too_long_400_is_retained_refused_by_name_and_not_a_length_stop
 # --- audit re-proof: delivered instrument appended verbatim ------------------
 
 
-def test_audit_reproof_appends_every_reproof_prompt_verbatim_after_the_rendered_prompt(
+def test_audit_reproof_appends_the_complete_exact_edit_instrument(
     tmp_path: Path,
 ) -> None:
     client, endpoint, _blobs, chair = _built(tmp_path)
@@ -1178,16 +1186,12 @@ def test_audit_reproof_appends_every_reproof_prompt_verbatim_after_the_rendered_
     sent_text = next(
         part["text"] for part in posted["messages"][0]["content"] if part.get("type") == "text"
     )
-    expected = "\n".join([rendered, *(row["prompt"] for row in request["reproofs"])])
+    expected = "\n".join([rendered, render_reproof_instruction(request)])
     assert sent_text == expected
-    # Verbatim and nothing else: exactly the rendered prompt plus the
-    # delivered reproof prompts, in the request's own order.
     assert sent_text.startswith(rendered)
-    assert sent_text.count(request["reproofs"][0]["prompt"]) == 1
-    assert sent_text.count(request["reproofs"][1]["prompt"]) == 1
-    assert sent_text.index(request["reproofs"][0]["prompt"]) < sent_text.index(
-        request["reproofs"][1]["prompt"]
-    )
+    assert json.dumps(semi_final_text, ensure_ascii=False) in sent_text
+    assert "zero-based Python Unicode code-point offsets" in sent_text
+    assert all(field in sent_text for field in ("class", "location", "original", "replacement"))
 
 
 def test_audit_reproof_with_no_delivered_request_refuses_exactly_as_the_fixture_reader_does(
@@ -1225,12 +1229,14 @@ def test_max_tokens_rides_generation_sent_only_when_given(tmp_path: Path) -> Non
     call_record = next(
         record
         for record in (json.loads(written) for written in blobs.written)
-        if isinstance(record, dict) and record.get("schema") == "chair-call-record.v1"
+        if isinstance(record, dict) and record.get("schema") == CHAIR_CALL_RECORD_SCHEMA
     )
     assert call_record["generation_declared"] == {}
     assert call_record["generation_sent"] == {
         "chat_template_kwargs": {"enable_thinking": False},
         "max_tokens": 256,
+        "seed": 7,
+        "temperature": 0,
     }
 
 
@@ -1246,6 +1252,56 @@ def test_no_max_tokens_still_selects_perlector_direct_response_mode(tmp_path: Pa
         )
     assert "max_tokens" not in endpoint.requests[0]
     assert endpoint.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_retained_float_generation_rebuilds_exact_wire_bytes_and_exposes_tampering() -> None:
+    messages = [{"role": "user", "content": "prompt"}]
+    expected = request_body(
+        {"top_p": 0.001, "messages": messages},
+        model_id=SERVED_MODEL_ID,
+        seed=17,
+        deterministic=True,
+    )
+    recorded = {
+        "top_p": {"schema": "wire-decimal.v1", "decimal": "0.001"},
+        "temperature": 0,
+        "seed": 17,
+    }
+    assert (
+        _rebuild_chair_request_bytes(
+            recorded_generation=recorded,
+            messages=messages,
+            model_id=SERVED_MODEL_ID,
+            seed=17,
+        )
+        == expected
+    )
+    assert (
+        _rebuild_chair_request_bytes(
+            recorded_generation={
+                **recorded,
+                "top_p": {"schema": "wire-decimal.v1", "decimal": "0.002"},
+            },
+            messages=messages,
+            model_id=SERVED_MODEL_ID,
+            seed=17,
+        )
+        != expected
+    )
+    with pytest.raises(SchemaRefusal, match="another seed"):
+        _rebuild_chair_request_bytes(
+            recorded_generation={**recorded, "seed": 18},
+            messages=messages,
+            model_id=SERVED_MODEL_ID,
+            seed=17,
+        )
+    with pytest.raises(SchemaRefusal, match="another temperature"):
+        _rebuild_chair_request_bytes(
+            recorded_generation={**recorded, "temperature": 1},
+            messages=messages,
+            model_id=SERVED_MODEL_ID,
+            seed=17,
+        )
 
 
 # --- FixtureReader carries no engine, so it must never publish engine_call ----
@@ -1362,7 +1418,7 @@ def test_the_audit_reproof_pass_sends_the_same_base_prompt_plus_its_delivered_in
     )
     with client:
         endpoint.script(ScriptedAnswer(content="confirmed unchanged", finish_reason="stop"))
-        _reader(client, chair).read(
+        result = _reader(client, chair).read(
             dossier,
             pass_kind="audit-reproof",
             delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
@@ -1375,5 +1431,10 @@ def test_the_audit_reproof_pass_sends_the_same_base_prompt_plus_its_delivered_in
     sealed_dossier = dossier | {"dossier_digest": "d" * 64}
     evidence = prompts.prompt_evidence(chair, sealed_dossier, None)
     rendered = prompts.build_prompt(chair.serving_recipe, chair.role, dossier, None)
-    assert sent_text == "\n".join([rendered, request["reproofs"][0]["prompt"]])
+    assert sent_text == "\n".join([rendered, render_reproof_instruction(request)])
     assert digest_bytes(rendered.encode("utf-8")) == evidence["rendered_sha256"]
+    assert result["rendered_prompt"] == sent_text
+    posted_bytes = json.dumps(
+        posted, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    assert result["request_sha256"] == digest_bytes(posted_bytes)
