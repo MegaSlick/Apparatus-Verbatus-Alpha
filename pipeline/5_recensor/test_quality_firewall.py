@@ -48,10 +48,9 @@ RECENSOR_SOURCES = sorted(
     path for path in RECENSOR_DIRECTORY.rglob("*.py") if not path.name.startswith("test_")
 )
 
-# Every name the recovery gate is allowed to consult. All of them are coverage
-# and budget facts, or -- in the one case below -- a fact about the run's ingress
-# route. None of them can be derived from what a reading SAID, which is the
-# firewall this file exists to hold.
+# Every name the recovery gate is allowed to consult is a coverage or budget
+# fact. None can be derived from what a reading said, which is the firewall this
+# file exists to hold.
 _COVERAGE_AND_BUDGET_NAMES = {
     "continuation_shortfall",
     "wants_recovery",
@@ -59,14 +58,6 @@ _COVERAGE_AND_BUDGET_NAMES = {
     "allowed_fallback",
     "used_total",
     "budget",
-    # `recrop_dispatchable` is `not real_ingress(context)`, read off the run
-    # authority: whether anything downstream can cut a recrop at all on this
-    # route (F068/F083). It is neither coverage nor budget, and it is admitted
-    # here deliberately, because a gate that may not ask whether its request can
-    # be answered publishes requests that abort the run instead of holding the
-    # act. It carries nothing a reading said and nothing a witness reported, so
-    # the `_QUALITY_NAMES` half of this firewall is untouched by its presence.
-    "recrop_dispatchable",
 }
 
 # Names in this stage that carry a reading's quality rather than its coverage.
@@ -191,11 +182,10 @@ def test_the_recovery_gate_consults_coverage_and_budget_and_nothing_else():
     # `_enclosing_ifs` that found the wrong node(s) would pass silently. The gate
     # is known to consult these two, and saying so is what stops this passing
     # vacuously.
-    assert {"wants_recovery", "continuation_shortfall", "recrop_dispatchable"} <= consulted, (
+    assert {"wants_recovery", "continuation_shortfall"} <= consulted, (
         f"the conditional(s) found guarding the recovery request consult {sorted(consulted)}, "
-        "which is not the coverage gate; this test located the wrong node, or the gate no "
-        "longer asks whether the request it is about to publish can be answered at all "
-        "(F068/F083: an unanswerable request aborts the run instead of holding the act)"
+        "which is not the coverage gate; this test located the wrong node, or the coverage "
+        "admission condition no longer guards request publication"
     )
     assert consulted <= _COVERAGE_AND_BUDGET_NAMES, (
         f"the recovery gate consults {sorted(consulted - _COVERAGE_AND_BUDGET_NAMES)}, which is "
@@ -270,10 +260,13 @@ def _sole_assignment(name: str) -> ast.Assign:
     return assignments[0]
 
 
-def test_the_dispatchability_conjunct_is_a_constant_after_real_route_support():
-    """Ingress no longer suppresses a measured coverage recovery request."""
-    dispatchable = _names(_sole_assignment("recrop_dispatchable").value)
-    assert dispatchable == set()
+def test_the_recovery_gate_has_no_route_based_dispatchability_conjunct():
+    """A real measured recovery cannot be suppressed by a route-only switch."""
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "recrop_dispatchable"
+        for _, tree in _modules()
+        for node in ast.walk(tree)
+    )
 
 
 def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():

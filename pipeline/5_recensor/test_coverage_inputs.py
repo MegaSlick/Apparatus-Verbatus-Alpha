@@ -1806,7 +1806,7 @@ def test_aggregate_geometry_consumes_both_partitions_and_exact_seal_identities(m
     "tamper",
     [
         lambda payload: payload.__setitem__("residual_component_count", 1),
-        lambda payload: payload.__setitem__("residual_pixel_count", 522),
+        lambda payload: payload.update({"residual_pixel_count": 522, "total_ink_pixel_count": 522}),
         lambda payload: payload.__setitem__("residual_aggregate_max_pixel_count", 501),
         lambda payload: payload["aggregated_residual_components"][0].__setitem__(
             "pixel_count", 500

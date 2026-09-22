@@ -75,6 +75,13 @@ def _grouping_config_with_bound(directory: Path, bound: int) -> Path:
     # This file isolates the older cardinality boundary.  Promote every
     # component so its assertions do not accidentally test the separate
     # aggregate-accounting policy.
+    for declaration in (
+        "residual_aggregate_max_pixel_count = 500",
+        "residual_aggregate_max_area_px = 2000",
+    ):
+        assert declaration in edited, (
+            f"the shipped grouping config no longer declares {declaration!r}"
+        )
     edited = edited.replace(
         "residual_aggregate_max_pixel_count = 500", "residual_aggregate_max_pixel_count = 0"
     )

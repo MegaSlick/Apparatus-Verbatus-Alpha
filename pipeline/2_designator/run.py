@@ -103,7 +103,6 @@ from common.stage import (  # noqa: E402
     PAGE_RESIDUAL_AGGREGATE_REASON_CODE,
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
-    RESIDUAL_ENUMERATION_WITHHELD,
     SECONDARY_PROPOSER_CHAIR,
     STRUCTURE_ANSWER_KIND,
     STRUCTURE_ANSWER_RECORD_SCHEMA,
@@ -2416,14 +2415,9 @@ def _publish_conservation_and_secondary(
     # aggregate is therefore only the below-floor partition; retained promoted
     # components always receive their own held rows, however many specks share
     # their page.
-    withheld = False
-    enumeration = (
-        RESIDUAL_ENUMERATION_WITHHELD
-        if withheld
-        else RESIDUAL_ENUMERATION_AGGREGATED
-        if aggregated
-        else RESIDUAL_ENUMERATION_COMPLETE
-    )
+    # The withheld-page spelling remains consumer-only compatibility for
+    # historical artifacts; this producer emits only its two live partitions.
+    enumeration = RESIDUAL_ENUMERATION_AGGREGATED if aggregated else RESIDUAL_ENUMERATION_COMPLETE
     conservation_payload = {
         "page_ordinal": ordinal,
         # Conservation owns an independent page scan.  Its threshold basis
@@ -2450,7 +2444,7 @@ def _publish_conservation_and_secondary(
         }
         if measurable
         else None,
-        "reason": _conservation_reason(measurable, withheld or bool(aggregated), component_count),
+        "reason": _conservation_reason(measurable, bool(aggregated), component_count),
         "total_ink_pixel_count": result["total_ink_pixel_count"],
         "claimed_pixel_count": result["claimed_pixel_count"],
         "residual_pixel_count": result["residual_pixel_count"],
@@ -2508,7 +2502,7 @@ def _publish_conservation_and_secondary(
     published = context.publish(
         kind="conservation",
         subject_id=page_id,
-        outcome="held" if (withheld or aggregated or not measurable) else "proposed",
+        outcome="held" if (aggregated or not measurable) else "proposed",
         inputs=[context.input_ref(page_record["payload"]["image_path"])],
         payload=conservation_payload,
     )

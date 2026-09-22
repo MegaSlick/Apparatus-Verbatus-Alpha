@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import time
 from pathlib import Path
@@ -921,7 +922,9 @@ def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_reada
     assert current["adapter"] == "dai-atr.v2"
     assert current["generation_accounting"] == ledger
     assert ledger["vendor_keys_intentionally_overridden"] == ["do_sample", "temperature"]
-    assert ledger["vendor_temperature_decimal"] == "0.1"
+    carried_generation = dai_generation()
+    assert ledger["vendor_temperature_decimal"] == json.dumps(carried_generation["temperature"])
+    assert ledger["vendor_do_sample"] is carried_generation["do_sample"]
     assert ledger["governed_temperature"] == 0
     assert validate_dai_generation_accounting(ledger) is ledger
     assert validate_dai_model_view(current) is current

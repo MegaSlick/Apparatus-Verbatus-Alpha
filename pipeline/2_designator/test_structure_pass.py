@@ -1514,6 +1514,15 @@ def test_structure_attempt_consumer_refuses_missing_forged_or_out_of_order_histo
                 raise SchemaRefusal("missing attempt") from error
 
     terminal = {**second, "attempts": [first_ref, second_ref]}
+    context = SimpleNamespace(tree=FakeTree(), args=SimpleNamespace(decoding_config="unused"))
+    # Positive control: every damage case starts from this accepted exact chain.
+    stage_contract._verify_structure_attempt_chain(context, terminal, page_id)
+    expected = {
+        "missing": "no bounded exact attempt ledger",
+        "forged": "does not bind its identity",
+        "out-of-order": "does not bind its identity",
+        "extra": "stage manifest contains 3",
+    }[damage]
     if damage == "missing":
         terminal["attempts"] = [first_ref]
     elif damage == "forged":
@@ -1536,12 +1545,61 @@ def test_structure_attempt_consumer_refuses_missing_forged_or_out_of_order_histo
                 },
             }
 
-    with pytest.raises(FatalAccounting, match="attempt"):
-        stage_contract._verify_structure_attempt_chain(
-            SimpleNamespace(tree=FakeTree(), args=SimpleNamespace(decoding_config="unused")),
-            terminal,
-            page_id,
-        )
+    with pytest.raises(FatalAccounting, match=expected):
+        stage_contract._verify_structure_attempt_chain(context, terminal, page_id)
+
+
+def test_real_denominator_indexes_structure_attempts_and_decoding_once(monkeypatch):
+    pages = ["page_" + "1" * 16, "page_" + "2" * 16]
+    answers = [
+        {"subject_id": page_id, "payload": {"schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2}}
+        for page_id in pages
+    ]
+    attempt_rows = [{"subject_id": page_id, "payload": {}} for page_id in pages]
+    calls = {"answers": 0, "attempts": 0, "decoding": 0}
+
+    def stage_records(_tree, _stage, kind):
+        if kind == STRUCTURE_ANSWER_KIND:
+            calls["answers"] += 1
+            return answers
+        if kind == stage_contract.STRUCTURE_ATTEMPT_KIND:
+            calls["attempts"] += 1
+            return attempt_rows
+        raise AssertionError(f"unexpected stage-record kind {kind!r}")
+
+    sealed = ({"structure": {}}, "d" * 64)
+
+    def load_decoding(_path):
+        calls["decoding"] += 1
+        return sealed
+
+    received = []
+
+    def verify_chain(_context, _payload, page_id, *, attempts_by_page, sealed_decoding):
+        received.append((page_id, attempts_by_page, sealed_decoding))
+
+    monkeypatch.setattr(stage_contract, "_stage_records", stage_records)
+    monkeypatch.setattr(stage_contract, "load_decoding_policy", load_decoding)
+    monkeypatch.setattr(stage_contract, "_verify_structure_attempt_chain", verify_chain)
+    monkeypatch.setattr(stage_contract, "_designator_records_by_subject", lambda *_args: {})
+    monkeypatch.setattr(stage_contract, "exemplar_page_ids", lambda _context: {})
+    monkeypatch.setattr(stage_contract, "_verify_minted_act_rows", lambda *_args, **_kw: None)
+    monkeypatch.setattr(
+        stage_contract,
+        "_verify_every_conservation_residual_is_accounted",
+        lambda *_args, **_kw: None,
+    )
+
+    context = SimpleNamespace(tree=object(), args=SimpleNamespace(decoding_config="unused"))
+    stage_contract._verify_real_act_denominator(context, [], {})
+
+    assert calls == {"answers": 1, "attempts": 1, "decoding": 1}
+    assert [item[0] for item in received] == pages
+    assert received[0][1] is received[1][1]
+    assert received[0][2] is received[1][2] is sealed
+    assert {page_id: rows for page_id, rows in received[0][1].items()} == {
+        page_id: [row] for page_id, row in zip(pages, attempt_rows)
+    }
 
 
 @pytest.mark.parametrize("case", ["prior-retry", "held", "fallback"])

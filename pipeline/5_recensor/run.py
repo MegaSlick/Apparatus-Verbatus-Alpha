@@ -2258,18 +2258,11 @@ def unresolved_observation_hold(
     outside_ink_requests: list,
     page_ordinal: int,
     funded_pages: set[int],
-    *,
-    real_route: bool,
 ) -> tuple[str, str] | None:
     """Keep a still-confirmed pointer visible when no request can be published.
 
-    Three reasons a request cannot be published, told apart because an operator
-    acts on them differently.  The route is asked first: on a real submission no
-    fallback recrop can be cut at all, whatever the page's grant or the act's
-    budget would otherwise have allowed, so naming a spent budget there would
-    report the wrong fault (GOVERNANCE 10).  `real_route` is required rather than
-    defaulted -- a caller that forgot it would publish the grant sentence over a
-    run whose recovery does not exist (F068/F083).
+    A supported measured recrop exists on either ingress, so this only reports
+    the recorded grant or budget reason that actually prevented publication.
     """
     if not outside_ink_requests:
         return None
@@ -3887,12 +3880,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # The declared scenario on the fixture route; nothing on a real submission.
     # `hold_acts` and `recover_acts` are the two things read from it, below.
     scenario = declared_scenario(context)
-    # The same route, read as its own fact rather than inferred from `scenario
-    # is None`. `declared_scenario` is defined in terms of this reader, so the
-    # two cannot disagree; what they mean differs, and only one of them belongs
-    # in the recovery gate. This one answers "can anything downstream cut a
-    # recrop for this run at all" (F068/F083), not "did a fixture declare one".
-    real_route = real_ingress(context)
     floor = context.witness_floor
 
     # This pass must precede publication.  `latest_attempt` refuses duplicate
@@ -4116,14 +4103,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             or (bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)
         ) and used_total == 0
         observation_hold = unresolved_observation_hold(
-            outside_ink_requests, act["page_ordinal"], funded_pages, real_route=real_route
+            outside_ink_requests, act["page_ordinal"], funded_pages
         )
         # A measured recovery request is now dispatchable on either ingress:
         # real ingress carries exact Testimonium and Ink Map references plus
         # canonical page-space bounds, all remeasured by the Designator.  The
         # unsupported operation remains page-level reread, which is not
         # substituted with a crop.
-        recrop_dispatchable = True
         # Names the recovery-*request*'s own position among this act's requests
         # -- `attempt_id(act_id, "recover", ...)`, below -- never the review's
         # identity: a review's own ordinal is a function of its content, not of
@@ -4141,12 +4127,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # the Unit 14B ink observation and bounded grants do. The survey
             # covers the current proposal, not the unclaimed ink outside it.
             and wants_recovery
-            # Not a budget: the budget says how many recrops this act may spend,
-            # this says whether one can be cut at all on this run's ingress
-            # route. Refused here rather than downstream so the act ends as a
-            # visible review item and the Armarium can still export partial
-            # (ARCHITECTURE invariant 8, GOVERNANCE 2 and 11).
-            and recrop_dispatchable
             and used_fallback < allowed_fallback
             and used_total < budget["allowed"]
             and used_total < budget["absolute_cap"]

@@ -1279,6 +1279,19 @@ def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(
         audit.load(approved)
 
 
+def test_a_legacy_v2_declaration_cannot_start_a_new_exact_edit_execution(tmp_path):
+    legacy = tmp_path / "legacy.toml"
+    legacy.write_text(
+        f'schema = "{LEGACY_SCHEMA}"\n'
+        "default_round_cap = 1\n"
+        "absolute_round_cap = 1\n"
+        "round_cap = 1\n"
+        'approval_ref = ""\n'
+    )
+    with pytest.raises(ContractError, match="sealed artifacts.*remain readable"):
+        audit.load(legacy)
+
+
 def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
     """The last derived field that still described the pre-audit reading.
 

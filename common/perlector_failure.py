@@ -14,6 +14,17 @@ from common.contracts.canonical import is_sha256
 from common.contracts.envelope import validate_envelope, validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id, perlector_attempt_id
+from common.contracts.serving import (
+    CHAIR_CALL_RECORD_FIELDS,
+    CHAIR_CALL_RECORD_FIELDS_V1,
+    CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_CALL_RECORD_SCHEMA_V1,
+    CHAIR_CALL_RECORD_SCHEMAS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_PROBLEM_FIELDS,
+    CHAIR_TRANSPORT_PROBLEM_SCHEMA,
+)
 from common.contracts.stages import PERLECTOR
 
 PRE_PERLECTIO_ARTIFACTS: Final = (
@@ -43,46 +54,7 @@ _FAILURE_FIELDS: Final = frozenset(
 )
 _KINDS: Final = frozenset({"engine-signal", "chair-response", "transport", "reproof-response"})
 _PHASES: Final = frozenset({"establishing", "audit-reproof"})
-_CALL_RECORD_SCHEMAS: Final = frozenset(
-    {"chair-call-record.v1", "chair-call-record.v2", "chair-transport-failure.v1"}
-)
-_CALL_RECORD_V1_FIELDS: Final = frozenset(
-    {
-        "schema",
-        "chair",
-        "resolved_identity",
-        "resolved_revision",
-        "serving_recipe",
-        "served_model_id",
-        "receipt_ref",
-        "launch_audit_ref",
-        "decoding_config_sha256",
-        "kind",
-        "request_sha256",
-        "image_sha256s",
-        "generation_sent",
-        "generation_declared",
-        "raw_response_ref",
-        "response_sha256",
-        "response_model",
-        "finish_reason",
-        "usage",
-        "parse_problem",
-        "capacity",
-    }
-)
-_CALL_RECORD_V2_FIELDS: Final = _CALL_RECORD_V1_FIELDS | {"response_status"}
-_TRANSPORT_RECORD_FIELDS: Final = _CALL_RECORD_V2_FIELDS | {"transport_problem"}
-_TRANSPORT_PROBLEM_FIELDS: Final = frozenset(
-    {
-        "schema",
-        "code",
-        "detail",
-        "definitively_absent",
-        "request_delivery",
-        "response_completion",
-    }
-)
+_CALL_RECORD_SCHEMAS: Final = CHAIR_CALL_RECORD_SCHEMAS | {CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA}
 
 
 def _closed(value: Mapping[str, Any], fields: frozenset[str], label: str) -> None:
@@ -257,9 +229,9 @@ def validate_failed_perlectio(
         ):
             raise SchemaRefusal("a failed Perlectio names an unsupported chair call record")
         expected_fields = {
-            "chair-call-record.v1": _CALL_RECORD_V1_FIELDS,
-            "chair-call-record.v2": _CALL_RECORD_V2_FIELDS,
-            "chair-transport-failure.v1": _TRANSPORT_RECORD_FIELDS,
+            CHAIR_CALL_RECORD_SCHEMA_V1: CHAIR_CALL_RECORD_FIELDS_V1,
+            CHAIR_CALL_RECORD_SCHEMA: CHAIR_CALL_RECORD_FIELDS,
+            CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
         }[call["schema"]]
         if set(call) != expected_fields:
             raise SchemaRefusal("a failed Perlectio chair call record is not its closed schema")
@@ -275,15 +247,18 @@ def validate_failed_perlectio(
             raise SchemaRefusal("a failed Perlectio chair call has malformed request facts")
         validate_input_refs([call["launch_audit_ref"]])
         _verify_ref(context, call["launch_audit_ref"], "serving launch audit")
-        if failure["kind"] == "transport" and call["schema"] != "chair-transport-failure.v1":
+        if (
+            failure["kind"] == "transport"
+            and call["schema"] != CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA
+        ):
             raise SchemaRefusal(
                 "a retained transport failure does not name its transport failure record"
             )
-        if call["schema"] == "chair-call-record.v2" and (
+        if call["schema"] == CHAIR_CALL_RECORD_SCHEMA and (
             type(call["response_status"]) is not int or not 100 <= call["response_status"] <= 599
         ):
             raise SchemaRefusal("a failed Perlectio chair call has no HTTP response status")
-        if call["schema"] == "chair-transport-failure.v1":
+        if call["schema"] == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA:
             if failure["kind"] != "transport":
                 raise SchemaRefusal(
                     "a non-transport failed Perlectio names a transport failure record"
@@ -302,10 +277,10 @@ def validate_failed_perlectio(
             ):
                 raise SchemaRefusal("a transport failure record invents a completed response fact")
             problem = call["transport_problem"]
-            if not isinstance(problem, dict) or set(problem) != _TRANSPORT_PROBLEM_FIELDS:
+            if not isinstance(problem, dict) or set(problem) != CHAIR_TRANSPORT_PROBLEM_FIELDS:
                 raise SchemaRefusal("a failed Perlectio transport problem is not its closed schema")
             if (
-                problem["schema"] != "chair-transport-problem.v1"
+                problem["schema"] != CHAIR_TRANSPORT_PROBLEM_SCHEMA
                 or problem["code"] != "ENDPOINT_UNAVAILABLE"
                 or not isinstance(problem["detail"], str)
                 or type(problem["definitively_absent"]) is not bool
@@ -375,7 +350,7 @@ def validate_failed_perlectio(
             call.get("parse_problem") is not None
             or call.get("finish_reason") not in {"stop", "length", None}
             or call.get("response_model") != failure["served_model_id"]
-            or (call["schema"] == "chair-call-record.v2" and call["response_status"] != 200)
+            or (call["schema"] == CHAIR_CALL_RECORD_SCHEMA and call["response_status"] != 200)
         ):
             raise SchemaRefusal(
                 "an exact-edit re-proof failure does not name a successful parse-clean chair call"

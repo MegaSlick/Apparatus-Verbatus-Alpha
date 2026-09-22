@@ -90,6 +90,12 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
             "could not record whether a delivered re-proof completed; declare "
             f"{SCHEMA!r}. A run sealed under the old declaration is re-read under the current one"
         )
+    if isinstance(policy, dict) and policy.get("schema") == LEGACY_SCHEMA:
+        raise ContractError(
+            f"the Perlector audit declaration names legacy schema {LEGACY_SCHEMA!r}; sealed "
+            "artifacts under that schema remain readable, but a new execution must declare "
+            f"{SCHEMA!r} so its exact-edit request matches the current reader"
+        )
     if (
         not isinstance(policy, dict)
         or set(policy) != _CONFIG_FIELDS

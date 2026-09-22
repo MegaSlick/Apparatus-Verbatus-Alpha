@@ -12,10 +12,13 @@ witness-derived flag is still contained) and its boundary (any wider gap, or
 a gap against a non-witness-derived flag, still refuses).
 """
 
+import importlib.util
 import json
+from pathlib import Path
 
 import pytest
 
+from common import perlector_audit
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.perlector_audit import (
@@ -423,3 +426,37 @@ def test_change_record_attributes_to_the_narrowest_containing_flag():
 
 def test_change_record_returns_nothing_for_identical_text():
     assert change_record("same", "same", [_flag("testimony-diff", 0, 4)]) == []
+
+
+@pytest.mark.parametrize("change_renderer", [False, True])
+def test_renderer_identity_survives_unrelated_module_edits(tmp_path, change_renderer):
+    request = _request("alpha βeta")
+    base_text = "base prompt"
+    evidence = audit_prompt_evidence(
+        base_prompt={"rendered_sha256": digest_bytes(base_text.encode("utf-8"))},
+        base_text=base_text,
+        request=request,
+        request_sha256="c" * 64,
+        rendered_text="\n".join((base_text, render_reproof_instruction(request))),
+    )
+    assert validate_audit_prompt_evidence(evidence, request=request) == evidence
+    source = Path(perlector_audit.__file__).read_text()
+    if change_renderer:
+        original = "Re-examine only the requested character locations against the ink."
+        assert source.count(original) == 1
+        source = source.replace(original, "Re-examine the requested locations against the ink.")
+    else:
+        source += "\n# An unrelated maintenance edit outside the renderer.\n"
+    changed_path = tmp_path / "changed_perlector_audit.py"
+    changed_path.write_text(source)
+    spec = importlib.util.spec_from_file_location("changed_perlector_audit", changed_path)
+    assert spec is not None and spec.loader is not None
+    changed = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(changed)
+    if change_renderer:
+        assert changed.AUDIT_PROMPT_RENDERER_SHA256 != evidence["renderer_sha256"]
+        with pytest.raises(SchemaRefusal, match="another renderer revision"):
+            changed.validate_audit_prompt_evidence(evidence, request=request)
+    else:
+        assert changed.AUDIT_PROMPT_RENDERER_SHA256 == evidence["renderer_sha256"]
+        assert changed.validate_audit_prompt_evidence(evidence, request=request) == evidence

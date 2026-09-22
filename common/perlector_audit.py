@@ -28,16 +28,21 @@ re-proof ran" and "a re-proof ran" are different recorded facts.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import math
-from pathlib import Path
 from typing import Any, Final
 
 from common.contracts import uncertainty
 from common.contracts.canonical import digest_bytes, digest_of, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
-from common.contracts.serving import WIRE_DECIMAL_FIELDS, WIRE_DECIMAL_SCHEMA
+from common.contracts.serving import (
+    CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_CALL_RECORD_SCHEMAS,
+    WIRE_DECIMAL_FIELDS,
+    WIRE_DECIMAL_SCHEMA,
+)
 from common.contracts.stages import PERLECTOR
 from common.corpus_register import refuse_capture_preference
 
@@ -67,7 +72,6 @@ LEGACY_REQUEST_SCHEMA: Final = "perlector-audit-request.v1"
 # a new run seals the response form it asked for in its request digest.
 RESPONSE_SCHEMA: Final = "perlector-audit-response.v1"
 AUDIT_PROMPT_SCHEMA: Final = "perlector-audit-prompt.v1"
-AUDIT_PROMPT_RENDERER_SHA256: Final = digest_bytes(Path(__file__).resolve().read_bytes())
 _AUDIT_PROMPT_FIELDS: Final = frozenset(
     {
         "schema",
@@ -308,6 +312,19 @@ def render_reproof_instruction(request: dict[str, Any]) -> str:
             ),
         ]
     )
+
+
+# Bind only the renderer and its two protocol labels. Unrelated validator edits
+# must not invalidate retained readings. This is the first published prompt
+# evidence revision; a future renderer change needs an explicit legacy renderer
+# path, not automatic acceptance of a digest whose prompt we cannot reproduce.
+AUDIT_PROMPT_RENDERER_SHA256: Final = digest_of(
+    {
+        "source": inspect.getsource(render_reproof_instruction),
+        "request_schema": REQUEST_SCHEMA,
+        "response_schema": RESPONSE_SCHEMA,
+    }
+)
 
 
 def audit_prompt_evidence(
@@ -847,13 +864,13 @@ def _validate_live_reproof_request(
         raise SchemaRefusal("an audit re-proof raw response reference disagrees with its bytes")
     if (
         not isinstance(call, dict)
-        or call.get("schema") not in {"chair-call-record.v1", "chair-call-record.v2"}
+        or call.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
         or call.get("request_sha256") != prompt["request_sha256"]
         or call.get("raw_response_ref") != call_evidence["raw_response_ref"]
         or call.get("served_model_id") != call_evidence["served_model_id"]
         or call.get("parse_problem") is not None
         or call.get("response_model") != call_evidence["served_model_id"]
-        or (call.get("schema") == "chair-call-record.v2" and call.get("response_status") != 200)
+        or (call.get("schema") == CHAIR_CALL_RECORD_SCHEMA and call.get("response_status") != 200)
     ):
         raise SchemaRefusal("an audit re-proof prompt is not bound to its successful chair call")
     dossier = reading["payload"].get("dossier")
@@ -884,7 +901,7 @@ def _validate_live_reproof_request(
     image_sha256s = [ref["sha256"] for ref in page_refs + region_refs]
     receipt = tree.read_run_receipt(call["receipt_ref"])
     body = _rebuild_chair_request_bytes(
-        recorded_generation=call["generation_sent"],
+        recorded_generation=call.get("generation_sent"),
         messages=[{"role": "user", "content": content}],
         model_id=call["served_model_id"],
         seed=receipt["seed"],

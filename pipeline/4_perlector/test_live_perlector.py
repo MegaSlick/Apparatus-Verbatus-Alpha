@@ -30,10 +30,11 @@ from typing import Any
 import dissent
 import pytest
 
+from common import perlector_audit
 from common.chairs.models import ChairIdentity
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import build_approval_record
-from common.contracts.canonical import digest_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
@@ -561,6 +562,51 @@ def test_a_live_pass_reads_through_the_chair_and_binds_the_call_it_read_from(
         receipt = tree.read_run_receipt(payload["provenance"]["receipt_ref"])
         assert receipt["engine"] == "vllm"
         assert receipt["chair"] == "perlector"
+
+
+def test_live_reproof_call_missing_generation_is_a_schema_refusal(live_run, tmp_path, monkeypatch):
+    root, _catalogue = live_run
+    _endpoint, exit_code = _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+    )
+    assert exit_code == 0
+    tree = RunTree(root, "r")
+    for reading in _published_readings(root):
+        finding_ref = reading["payload"]["audit"]["finding_ref"]
+        finding = json.loads(tree.read_bytes(finding_ref["relative_path"]))
+        call_evidence = finding["payload"]["reproof_call"]
+        if call_evidence is not None:
+            break
+    else:
+        raise AssertionError("the live builder produced no re-proof call")
+
+    original_call_ref = call_evidence["call_record_ref"]
+    call = json.loads(tree.read_bytes(original_call_ref["relative_path"]))
+    call.pop("generation_sent")
+    malformed_bytes = canonical_bytes(call)
+    _digest, retained = tree.put_blob(PERLECTOR, malformed_bytes)
+    malformed_ref = {
+        "relative_path": retained.relative_path,
+        "sha256": digest_bytes(malformed_bytes),
+    }
+    malformed_evidence = {**call_evidence, "call_record_ref": malformed_ref}
+    reading = copy.deepcopy(reading)
+    reading["inputs"] = [
+        malformed_ref if reference == original_call_ref else reference
+        for reference in reading["inputs"]
+    ]
+    draft_ref = reading["payload"]["audit"]["draft_ref"]
+    draft = json.loads(tree.read_bytes(draft_ref["relative_path"]))["payload"]
+    request = perlector_audit.audit_request(
+        act_key=draft["act_key"],
+        attempt_ordinal=draft["attempt_ordinal"],
+        draft_ref=draft_ref,
+        semi_final_text=draft["semi_final_text"],
+        flags=draft["flags"],
+        policy_schema=draft["policy"]["schema"],
+    )
+    with pytest.raises(SchemaRefusal, match="no recorded generation object"):
+        perlector_audit._validate_live_reproof_request(tree, reading, malformed_evidence, request)
 
 
 def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
@@ -1100,6 +1146,50 @@ def test_a_non_200_from_the_engine_becomes_a_retained_act_failure_and_continues(
     assert any(b"maximum context length" in body for body in retained), (
         "the refusing body was not retained"
     )
+
+
+def test_recovery_skips_only_a_validated_operational_failure_sibling(
+    live_run, tmp_path, monkeypatch
+):
+    root, catalogue = live_run
+    refusal = scripted_prompt_too_long(
+        max_model_len=2048, requested_tokens=4125, prompt_tokens=3909, completion_tokens=216
+    )
+    _endpoint, exit_code = _run_perlector(
+        live_run,
+        tmp_path,
+        monkeypatch,
+        refusal,
+        ScriptedAnswer(content=READING, finish_reason="stop"),
+    )
+    assert exit_code == 0
+    records = list(_perlectiones(root).values())
+    failed = next(record for record in records if record["outcome"] == "failed")
+    successful = next(record for record in records if record["outcome"] != "failed")
+    current = [
+        {"act_id": successful["subject_id"], "page_id": page_id}
+        for page_id in sorted(
+            {region["source_page_id"] for region in successful["payload"]["basis"]["regions"]}
+        )
+    ]
+    expected = [{"act_id": record["subject_id"]} for record in records]
+    context = _page_context(root, catalogue, monkeypatch)
+
+    assert perlector._sealed_sibling_semi_finals(context, current, expected=expected) == []
+
+    read_artifact = context.tree.read_artifact
+
+    def malformed_failure(stage, kind, artifact_id):
+        record = read_artifact(stage, kind, artifact_id)
+        if record["subject_id"] == failed["subject_id"]:
+            record = copy.deepcopy(record)
+            record["payload"]["failure"].pop("kind")
+            record["self_hash"] = self_hash(record)
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact", malformed_failure)
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
+        perlector._sealed_sibling_semi_finals(context, current, expected=expected)
 
 
 def test_a_transport_timeout_fails_one_act_and_continues_to_the_next(

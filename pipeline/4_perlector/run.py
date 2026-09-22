@@ -145,11 +145,7 @@ from operations.serving.residency import (  # noqa: E402
     FileResidencyLease,
 )
 
-_CHAIR_TRANSPORT_FAILURE_TYPES: Final = tuple(
-    failure_type
-    for failure_type in (getattr(serving_errors, "ChairTransportFailure", None),)
-    if isinstance(failure_type, type)
-)
+_CHAIR_TRANSPORT_FAILURE_TYPES: Final = (serving_errors.ChairTransportFailure,)
 _ACT_LOCAL_READING_FAILURES: Final = (
     EngineSignalRefusal,
     ChairResponseRefusal,
@@ -3399,12 +3395,25 @@ def _sealed_sibling_semi_finals(
             records, f"sealed sibling Perlectio for {act_id}", operation="perlegere"
         )
         payload = reading.get("payload")
+        # Operational failures never produced Pass-B text and therefore were
+        # absent from the original frozen page comparison.  They may be skipped
+        # only after the shared failed-Perlectio validator proves their complete
+        # identity, provenance, retained evidence and phase contract; a malformed
+        # record must still abort rather than disappearing from the denominator.
+        if reading["outcome"] == "failed":
+            validate_failed_perlectio(
+                context,
+                reading,
+                act_id,
+                expected_act_key=payload.get("act_key") if isinstance(payload, dict) else None,
+            )
+            continue
         # A held/not-run sibling was absent from the original frozen Pass-B
         # collection too, so it contributes no row to a later recovery audit.
-        # ONLY that outcome skips: any other outcome whose payload lost its
-        # text is malformed evidence, and dropping it would quietly shrink the
-        # page's cross-act flag comparisons exactly like the zero-record case
-        # above.
+        # Only validated operational failures and this outcome skip. Any other
+        # outcome whose payload lost its text is malformed evidence. Dropping it
+        # would quietly shrink the page's cross-act flag comparisons exactly like
+        # the zero-record case above.
         if reading["outcome"] == "not-run":
             continue
         if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):

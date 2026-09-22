@@ -2987,6 +2987,8 @@ def _verify_real_act_denominator(
     holds_by_subject: dict[str, dict[str, Any]] = {}
     minted_rows: dict[str, dict[str, Any]] = {}
     verified_structure_attempt_pages: set[str] = set()
+    attempts_by_page: dict[str, list[dict[str, Any]]] | None = None
+    sealed_decoding: tuple[dict[str, Any], str] | None = None
     for answer in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ANSWER_KIND):
         page_id = answer.get("subject_id")
         payload = answer.get("payload")
@@ -2997,7 +2999,20 @@ def _verify_real_act_denominator(
                 f"page {page_id}'s terminal structure answer has unsupported schema "
                 f"{payload.get('schema')!r}"
             )
-        _verify_structure_attempt_chain(context, payload, page_id)
+        if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA and attempts_by_page is None:
+            attempts_by_page = {}
+            for attempt in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND):
+                attempt_page_id = attempt.get("subject_id")
+                if isinstance(attempt_page_id, str):
+                    attempts_by_page.setdefault(attempt_page_id, []).append(attempt)
+            sealed_decoding = load_decoding_policy(context.args.decoding_config)
+        _verify_structure_attempt_chain(
+            context,
+            payload,
+            page_id,
+            attempts_by_page=attempts_by_page,
+            sealed_decoding=sealed_decoding,
+        )
         verified_structure_attempt_pages.add(page_id)
     observed = {act["act_id"]: act for act in acts}
     for act_id in sorted(observed):
@@ -3109,9 +3124,19 @@ def _verify_real_act_denominator(
 
 
 def _verify_structure_attempt_chain(
-    context: StageContext, payload: Mapping[str, Any], page_id: str
+    context: StageContext,
+    payload: Mapping[str, Any],
+    page_id: str,
+    *,
+    attempts_by_page: Mapping[str, list[dict[str, Any]]] | None = None,
+    sealed_decoding: tuple[Mapping[str, Any], str] | None = None,
 ) -> None:
-    """Follow and reconcile every versioned terminal structure-attempt reference."""
+    """Follow and reconcile every versioned terminal structure-attempt reference.
+
+    Full-denominator callers pass one manifest index and one decoding read for
+    the whole run.  Standalone callers may omit them and retain the original
+    closed, self-sufficient verification path.
+    """
     if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
         return
     policy = payload.get("attempt_policy")
@@ -3133,7 +3158,9 @@ def _verify_structure_attempt_chain(
         raise FatalAccounting(
             f"page {page_id}'s terminal structure answer has no bounded exact attempt ledger"
         )
-    decoding_policy, decoding_digest = load_decoding_policy(context.args.decoding_config)
+    if sealed_decoding is None:
+        sealed_decoding = load_decoding_policy(context.args.decoding_config)
+    decoding_policy, decoding_digest = sealed_decoding
     decoding = payload.get("decoding")
     if (
         dict(policy) != structure_recovery_policy(decoding_policy)
@@ -3144,11 +3171,14 @@ def _verify_structure_attempt_chain(
             f"page {page_id}'s terminal structure answer attempt policy is not the one "
             "sealed by its decoding configuration"
         )
-    stored_attempts = [
-        row
-        for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND)
-        if row.get("subject_id") == page_id
-    ]
+    if attempts_by_page is None:
+        stored_attempts = [
+            row
+            for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND)
+            if row.get("subject_id") == page_id
+        ]
+    else:
+        stored_attempts = list(attempts_by_page.get(page_id, []))
     if len(stored_attempts) != ordinal:
         raise FatalAccounting(
             f"page {page_id}'s terminal structure answer names {ordinal} attempts but its "

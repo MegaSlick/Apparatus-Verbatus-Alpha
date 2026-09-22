@@ -9,6 +9,7 @@ complete when it reaches this module.  In particular, repetition is inspected
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Iterable
@@ -360,6 +361,7 @@ def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
     """
     if generation_config != "auto":
         raise SchemaRefusal("DAI native generation accounting requires generation_config='auto'")
+    vendor_generation = dai_generation()
     deliberately_not_sent = {
         "bos_token_id": "delegated to the engine's pinned model snapshot under auto",
         "pad_token_id": "delegated to the engine's pinned model snapshot under auto",
@@ -368,12 +370,15 @@ def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
             "also sent explicitly as stop_token_ids"
         ),
         "do_sample": "intentionally superseded by the governed temperature-zero request",
-        "temperature": "vendor 0.1 is intentionally superseded by governed temperature zero",
+        "temperature": (
+            f"vendor {json.dumps(vendor_generation['temperature'])} is intentionally "
+            "superseded by governed temperature zero"
+        ),
         "transformers_version": "vendor metadata, not an OpenAI request field",
     }
     assert_generation_config_key_coverage(
         chair="attestator_2",
-        vendor_generation_config=dai_generation(),
+        vendor_generation_config=vendor_generation,
         sent_keys=("repetition_penalty", "top_k", "top_p"),
         deliberately_not_sent=deliberately_not_sent,
     )
@@ -389,8 +394,10 @@ def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
         "vendor_keys_intentionally_overridden": ["do_sample", "temperature"],
         "vendor_metadata_keys": ["transformers_version"],
         "governed_temperature": 0,
-        "vendor_temperature_decimal": "0.1",
-        "vendor_do_sample": True,
+        # The canonical writer refuses floats, so retain the carried value's
+        # shortest JSON decimal rather than a second hand-copied float.
+        "vendor_temperature_decimal": json.dumps(vendor_generation["temperature"]),
+        "vendor_do_sample": vendor_generation["do_sample"],
         "explicit_secondary_eos_token_ids": dai_wire_stop_token_ids()["stop_token_ids"],
         "seed_source": "sealed-serving-profile",
     }
