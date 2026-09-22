@@ -8,6 +8,8 @@ no-substitution boundary.
 
 from __future__ import annotations
 
+from typing import Mapping
+
 
 class ServingError(RuntimeError):
     """Base class for a concrete, non-green serving-manager observation."""
@@ -109,7 +111,16 @@ class ChairResponseRefusal(ServingError):
     foreign reading's text does not travel in an exception message.
     """
 
-    def __init__(self, code: str, detail: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        *,
+        raw_response_ref: Mapping[str, str] | None = None,
+        call_record_ref: Mapping[str, str] | None = None,
+    ) -> None:
         self.code = code
         self.detail = detail
+        self.raw_response_ref = None if raw_response_ref is None else dict(raw_response_ref)
+        self.call_record_ref = None if call_record_ref is None else dict(call_record_ref)
         super().__init__(f"{code}: {detail}")

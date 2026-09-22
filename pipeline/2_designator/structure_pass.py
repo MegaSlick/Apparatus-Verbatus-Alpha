@@ -361,28 +361,8 @@ def structure_serving_mode(context: Any, args: Any) -> tuple[str, ChairIdentity]
 
 
 def executable_temperature(policy: Mapping[str, Any]) -> int | float:
-    """The sealed `[structure]` temperature, refused if the seam cannot execute it.
-
-    `operations/serving/client.py` records the reading-of-record temperature
-    and refuses construction under any other, and `request_body` puts 0 on the
-    wire for every reading. Until that seam carries a per-call temperature, a
-    sealed `[structure]` value other than 0 is a posture this pass would record
-    without executing -- GOVERNANCE 10's confusion of a claim with a
-    measurement -- so it is refused here, before any chair starts, by name.
-    The refusal is the one honest way to make a non-zero setting visible
-    rather than a silent zero on every call record.
-    """
-    temperature = policy["structure"]["temperature"]
-    if temperature != 0:
-        raise ContractError(
-            f"config/decoding.toml [structure] declares temperature {temperature!r}, but the "
-            "live reading seam (operations/serving/client.py) records and sends the "
-            "reading-of-record temperature 0 only; a structure pass at that value cannot be "
-            "executed as sealed, and running at 0 under a record that says otherwise would be "
-            "a posture reported rather than executed. Seal 0, or widen the seam to carry the "
-            "structure temperature per call"
-        )
-    return temperature
+    """Return the sealed structure posture the serving seam sends verbatim."""
+    return policy["structure"]["temperature"]
 
 
 def structure_engine_call(decoding_config_sha256: str) -> dict[str, str]:
@@ -544,7 +524,11 @@ def page_capacity(profile: Any, page_w: int, page_h: int) -> dict[str, Any]:
 
 
 def page_request(
-    page_bytes: bytes, source_sha256: str, *, capacity: Mapping[str, Any] | None = None
+    page_bytes: bytes,
+    source_sha256: str,
+    *,
+    temperature: int | float,
+    capacity: Mapping[str, Any] | None = None,
 ) -> ChairRequest:
     """One whole-page structure request: the sealed prompt plus the sealed page.
 
@@ -1250,7 +1234,9 @@ def ask_page(
             decoding_config_sha256=decoding_config_sha256,
             provenance=provenance,
         )
-    request = page_request(page_bytes, payload["source_sha256"], capacity=capacity)
+    request = page_request(
+        page_bytes, payload["source_sha256"], temperature=temperature, capacity=capacity
+    )
     try:
         response: ChairResponse = client.read(request)
     except (ServingError, EndpointUnavailable) as error:

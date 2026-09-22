@@ -550,7 +550,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         # Thinking mode closed, whichever of the two shipped chat templates the
         # engine resolves (`common/chair_wire.py`).
         assert request["chat_template_kwargs"] == {"enable_thinking": False}
-        assert request["temperature"] == 0
+        assert request["temperature"] == 1
     tree = RunTree(root, RUN_ID)
 
     answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
@@ -570,7 +570,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         ]
         assert payload["findings"] == []
         assert payload["decoding"]["policy"] == "structure"
-        assert payload["decoding"]["temperature"] == 0
+        assert payload["decoding"]["temperature"] == 1
         assert payload["prompt_version"] == "verbatus-structure-prompt.v3"
         # Every block the answer carried became a proposal, so the record's own
         # denominator reconciles with nothing left over.
@@ -1506,11 +1506,10 @@ def test_a_recovery_from_a_real_submission_is_refused_by_name(real_template, tmp
     assert not (root / RUN_ID / "2_designator").exists()
 
 
-def test_a_non_zero_sealed_structure_temperature_is_refused_before_any_chair_starts(
+def test_a_non_zero_sealed_structure_temperature_is_admitted_for_the_serving_seam(
     tmp_path, monkeypatch
 ):
-    """The seam executes 0 only; a sealed value it cannot carry is a named refusal,
-    never a silent zero on every call record."""
+    """The serving seam owns and sends the sealed structural posture."""
     catalogue = _live_catalogue(tmp_path)
     decoding = tmp_path / "decoding.toml"
     decoding.write_text(
@@ -1524,17 +1523,7 @@ def test_a_non_zero_sealed_structure_temperature_is_refused_before_any_chair_sta
     root = tmp_path / "runs"
     _chain(root, catalogue, "--decoding-config", str(decoding))
 
-    def factory(context, chair, tier):  # pragma: no cover - must never be reached
-        raise AssertionError("a chair was started under a temperature the seam cannot execute")
-
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        _argv(root, catalogue, "--placement-tier", TIER, "--decoding-config", str(decoding)),
-    )
-    with pytest.raises(ContractError, match="cannot be executed as sealed"):
-        designator.main(serving_factory=factory)
+    assert designator.structure_pass.executable_temperature(policy) == 0.7
     assert not (root / RUN_ID / "2_designator" / "artifacts").exists()
 
 

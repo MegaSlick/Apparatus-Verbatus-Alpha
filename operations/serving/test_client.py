@@ -244,9 +244,21 @@ def _request(**overrides: object) -> ChairRequest:
 # --- construction refuses a policy that is not the sealed 0 ------------------
 
 
-def test_construction_refuses_a_nonzero_record_temperature(tmp_path: Path) -> None:
+def test_construction_refuses_an_invalid_record_temperature(tmp_path: Path) -> None:
     with pytest.raises(ServingConfigurationError):
-        _built(tmp_path, record_temperature=1)
+        _built(tmp_path, record_temperature=-1)
+
+
+def test_a_nonzero_sealed_temperature_and_seed_are_sent_and_retained(tmp_path: Path) -> None:
+    client, endpoint, blob_store, _ = _built(tmp_path, record_temperature=0.2)
+    with client:
+        endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
+        response = client.read(_request())
+    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
+    assert endpoint.requests[0]["temperature"] == 0.2
+    assert endpoint.requests[0]["seed"] == 7
+    assert record["generation_sent"]["temperature"] == {"schema": "wire-decimal.v1", "decimal": "0.2"}
+    assert record["generation_sent"]["seed"] == 7
 
 
 # --- pre-send refusals: nothing is built or sent ------------------------------
@@ -673,7 +685,7 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert record["kind"] == "chat-completions"
     assert record["request_sha256"] == response.request_sha256
     assert record["image_sha256s"] == []
-    assert record["generation_sent"] == {}
+    assert record["generation_sent"] == {"temperature": 0, "seed": 7}
     assert record["generation_declared"] == {"top_k": 1}
     assert record["raw_response_ref"] == dict(response.raw_response_ref)
     assert record["response_sha256"] == response.response_sha256
