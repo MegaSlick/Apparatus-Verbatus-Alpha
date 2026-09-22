@@ -11,10 +11,12 @@ closes.
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from _test_support import load_designator
 
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR
 from common.stage import EXIT_COMPLETE, EXIT_FATAL, EXIT_HELD
@@ -136,6 +138,137 @@ def test_an_unrecognized_operation_refuses_rather_than_running_initial_pass(tmp_
 
 def _load_designator():
     return load_designator("designator_recovery_under_test")
+
+
+class _EvidenceTree:
+    def __init__(self, testimony, ink_map, regions=()):
+        self.testimony = testimony
+        self.ink_map = ink_map
+        self.regions = list(regions)
+
+    def read_artifact_reference(self, reference, *, stage, kind, subject_id):
+        record = self.testimony if kind == "page-testimonium" else self.ink_map
+        assert record["stage"] == stage and record["kind"] == kind
+        assert record["subject_id"] == subject_id
+        assert reference["relative_path"].endswith(record["artifact_id"] + ".json")
+        return record
+
+    def build_manifest(self, stage):
+        return {
+            "artifacts": [
+                {"kind": "region", "artifact_id": row["artifact_id"]} for row in self.regions
+            ]
+        }
+
+    def read_artifact(self, stage, kind, artifact_id):
+        return next(row for row in self.regions if row["artifact_id"] == artifact_id)
+
+
+def _coverage_evidence_case():
+    testimony_ref = {
+        "relative_path": "stages/3_attestatores/page-testimonium/testimony-1.json",
+        "sha256": "1" * 64,
+    }
+    ink_map_ref = {
+        "relative_path": "stages/1_ink_map/ink-map/ink-map-1.json",
+        "sha256": "2" * 64,
+    }
+    bounds = {"x": 0, "y": 0, "w": 5, "h": 5}
+    testimony = {
+        "artifact_id": "testimony-1",
+        "stage": "attestatores",
+        "kind": "page-testimonium",
+        "subject_id": "page-1",
+        "payload": {
+            "page_ordinal": 1,
+            "observed": [{"ordinal": 0, "bounds": bounds, "bounds_source": "native", "span": None}],
+        },
+    }
+    rows = [[[0, 5]] if y < 5 else [] for y in range(10)]
+    ink_map = {
+        "artifact_id": "ink-map-1",
+        "stage": "ink-map",
+        "kind": "ink-map",
+        "subject_id": "page-1",
+        "payload": {
+            "page_ordinal": 1,
+            "edge_findings": {
+                "schema": "ink-runs.v2",
+                "width": 10,
+                "height": 10,
+                "rows": rows,
+            },
+        },
+    }
+    config = ROOT / "config/designator_grouping.toml"
+    context = SimpleNamespace(
+        tree=_EvidenceTree(testimony, ink_map),
+        args=SimpleNamespace(designator_grouping_config=str(config)),
+        run={"sealed_config_digests": {"designator-grouping": digest_bytes(config.read_bytes())}},
+    )
+    context.require_sealed_config = lambda name, digest: (
+        None
+        if context.run["sealed_config_digests"].get(name) == digest
+        else (_ for _ in ()).throw(ContractError("config drift"))
+    )
+    request_payload = {
+        "origin": "coverage-observation",
+        "recovery_bounds": bounds,
+        "coverage_observation": {
+            "testimonium_ref": testimony_ref,
+            "testimonium_id": "testimony-1",
+            "observation_ordinal": 0,
+            "bounds": bounds,
+        },
+        "ink_map_ref": ink_map_ref,
+        "outside_ink_pixels": 25,
+        "minimum_ink_pixels": 24,
+    }
+    return context, {"inputs": [testimony_ref, ink_map_ref]}, request_payload
+
+
+def test_real_recovery_recomputes_exact_digest_linked_ink_evidence():
+    designator = _load_designator()
+    context, request, payload = _coverage_evidence_case()
+
+    designator._verify_coverage_recovery_evidence(
+        context, request, payload, {"page_ordinal": 1}, "page-1", 1, 10, 10
+    )
+
+
+@pytest.mark.parametrize(
+    "tamper", ["ink-count", "observation-bounds", "ink-map-ref", "blank-map", "prior-cover"]
+)
+def test_real_recovery_refuses_tampered_coverage_evidence(tamper):
+    designator = _load_designator()
+    context, request, payload = _coverage_evidence_case()
+    if tamper == "ink-count":
+        payload["outside_ink_pixels"] = 24
+    elif tamper == "observation-bounds":
+        payload["coverage_observation"]["bounds"] = {"x": 0, "y": 0, "w": 4, "h": 5}
+    else:
+        if tamper == "ink-map-ref":
+            payload["ink_map_ref"] = {"relative_path": "forged.json", "sha256": "3" * 64}
+        elif tamper == "blank-map":
+            context.tree.ink_map["payload"]["edge_findings"]["rows"] = [[] for _ in range(10)]
+        else:
+            context.tree.regions.append(
+                {
+                    "artifact_id": "prior-region",
+                    "payload": {
+                        "transform": {
+                            "source_page_ordinal": 1,
+                            "source_page_id": "page-1",
+                            "bounds": payload["recovery_bounds"],
+                        }
+                    },
+                }
+            )
+
+    with pytest.raises(ContractError):
+        designator._verify_coverage_recovery_evidence(
+            context, request, payload, {"page_ordinal": 1}, "page-1", 1, 10, 10
+        )
 
 
 def _designator_context(designator, root: Path):
@@ -287,9 +420,8 @@ def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_pat
     assert recovery_regions == [], "a refused out-of-page recovery must cut no region"
 
 
-def test_recovery_of_an_act_missing_from_the_fixture_is_a_named_refusal(tmp_path):
-    """The seal is the contract, but this fixture implementation still needs a
-    declared rectangle source; absence there must not escape as StopIteration."""
+def test_recovery_resolves_the_act_through_the_verified_denominator(tmp_path):
+    """A mutated fixture is refused while re-verifying the seal, before any cut."""
     root = tmp_path / "runs"
     for program in (
         "pipeline/1_exemplar/door.py",
@@ -321,7 +453,7 @@ def test_recovery_of_an_act_missing_from_the_fixture_is_a_named_refusal(tmp_path
     context = _designator_context(designator, root)
     context.fixture["act"] = [row for row in context.fixture["act"] if row["key"] != "a1"]
 
-    with pytest.raises(ContractError, match="fixture declares no act for key 'a1'"):
+    with pytest.raises(ContractError, match="extends the denominator beyond the fixture"):
         designator.recovery_pass(context, review["subject_id"], request_id)
     context.finish()
 

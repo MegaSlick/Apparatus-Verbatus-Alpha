@@ -358,6 +358,26 @@ def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice()
     )
 
 
+def test_a_partly_out_of_page_observation_publishes_only_canonical_geometry():
+    recensor = _recensor()
+    page = {"x": 0, "y": 0, "w": 40, "h": 40}
+    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(40, 40, [page])}))
+    observation = {
+        "kind": "unrouted-observation",
+        "bounds": {"x": -4, "y": 0, "w": 10, "h": 5},
+    }
+
+    assert recensor.unclaimed_ink_observations(
+        maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
+    ) == [
+        {
+            "page_ordinal": 1,
+            "outside_ink_pixels": 30,
+            "bounds": {"x": 0, "y": 0, "w": 6, "h": 5},
+        }
+    ]
+
+
 def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     """The live mask includes recovery crops, not only original proposals.
 

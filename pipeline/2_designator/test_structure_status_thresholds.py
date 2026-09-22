@@ -114,9 +114,10 @@ def test_each_status_publishes_the_thresholds_and_dimensions_its_page_ran_at(tmp
             "review_priority_min_dimension_px": expected.review_priority_min_dimension_px,
             "fallback_overlap_px": expected.fallback_overlap_px,
             "gap_tolerance_px": expected.gap_tolerance_px,
-            "max_residual_components": expected.max_residual_components,
             "max_secondary_proposals": expected.max_secondary_proposals,
             "fallback_bands": expected.fallback_bands,
+            "residual_aggregate_max_pixel_count": expected.residual_aggregate_max_pixel_count,
+            "residual_aggregate_max_area_px": expected.residual_aggregate_max_area_px,
             "page_spanning_area_bp": expected.page_spanning_area_bp,
         }
         # Integers only. A float in a canonical payload is a determinism defect,
@@ -281,9 +282,10 @@ def test_two_pages_of_different_size_each_publish_their_own_numbers():
         "review_priority_min_dimension_px": small.review_priority_min_dimension_px,
         "fallback_overlap_px": small.fallback_overlap_px,
         "gap_tolerance_px": small.gap_tolerance_px,
-        "max_residual_components": small.max_residual_components,
         "max_secondary_proposals": small.max_secondary_proposals,
         "fallback_bands": small.fallback_bands,
+        "residual_aggregate_max_pixel_count": small.residual_aggregate_max_pixel_count,
+        "residual_aggregate_max_area_px": small.residual_aggregate_max_area_px,
         "page_spanning_area_bp": small.page_spanning_area_bp,
     }
     assert large_page["resolved_thresholds"] == {
@@ -295,9 +297,10 @@ def test_two_pages_of_different_size_each_publish_their_own_numbers():
         "review_priority_min_dimension_px": large.review_priority_min_dimension_px,
         "fallback_overlap_px": large.fallback_overlap_px,
         "gap_tolerance_px": large.gap_tolerance_px,
-        "max_residual_components": large.max_residual_components,
         "max_secondary_proposals": large.max_secondary_proposals,
         "fallback_bands": large.fallback_bands,
+        "residual_aggregate_max_pixel_count": large.residual_aggregate_max_pixel_count,
+        "residual_aggregate_max_area_px": large.residual_aggregate_max_area_px,
         "page_spanning_area_bp": large.page_spanning_area_bp,
     }
     assert small_page["resolved_thresholds"] != large_page["resolved_thresholds"]

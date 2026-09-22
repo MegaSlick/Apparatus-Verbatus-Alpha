@@ -45,6 +45,7 @@ from common.contracts.errors import (  # noqa: E402
     IncompatibleReuse,
     SchemaRefusal,
 )
+from common.contracts.identities import act_id as derive_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ATTACHMENT_BASES,
@@ -106,6 +107,7 @@ from common.residual_ink import (  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_WITHHELD,
     RESIDUAL_ENUMERATIONS,
@@ -122,6 +124,7 @@ from common.stage import (  # noqa: E402
     require_current_witness_basis,
     run_stage,
     scenario_for,
+    sealed_residual_presentation_policy,
     stage_manifest,
     stage_parser,
 )
@@ -1937,7 +1940,12 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
                 "witness pointers from damaged evidence. Restore the sealed Ink Map artifact "
                 "or restart the run before rerunning the Recensor."
             ) from error
-        maps[ordinal] = evidence
+        retained_evidence = dict(evidence)
+        if hasattr(context, "artifact_ref"):
+            retained_evidence["_ink_map_ref"] = context.artifact_ref(
+                INK_MAP, "ink-map", record["artifact_id"]
+            )
+        maps[ordinal] = retained_evidence
     return maps
 
 
@@ -2101,9 +2109,15 @@ def unclaimed_ink_observations(
         # stage with a bare KeyError -- an unnamed crash in place of the named
         # refusal this gate exists to give, for the one malformed shape that
         # actually reaches the arithmetic.
-        if not isinstance(bounds, dict) or any(
-            key not in bounds or not isinstance(bounds[key], int) or isinstance(bounds[key], bool)
-            for key in ("x", "y", "w", "h")
+        if (
+            not isinstance(bounds, dict)
+            or set(bounds) != {"x", "y", "w", "h"}
+            or any(
+                key not in bounds
+                or not isinstance(bounds[key], int)
+                or isinstance(bounds[key], bool)
+                for key in ("x", "y", "w", "h")
+            )
         ):
             raise FatalAccounting(
                 f"page {page_ordinal} has a retained unclaimed witness observation with no "
@@ -2112,20 +2126,41 @@ def unclaimed_ink_observations(
                 "the page's sealed Testimonium evidence or restart the run before rerunning the "
                 "Recensor."
             )
-        ink_pixels = _ink_outside_cuts_in_box(evidence, bounds, covered)
-        if ink_pixels >= minimum_ink_pixels:
-            requests.append(
-                {
-                    "page_ordinal": page_ordinal,
-                    "outside_ink_pixels": ink_pixels,
-                    # The pointer is never sufficient on its own: it reaches
-                    # this retained request only after the Ink Map measured
-                    # enough ink outside every existing crop.  It then gives
-                    # the Designator exact sealed-image geometry to cut, so a
-                    # real ingress need not borrow fixture rectangles.
-                    "bounds": dict(bounds),
-                }
+        if bounds["w"] <= 0 or bounds["h"] <= 0:
+            raise FatalAccounting(
+                f"page {page_ordinal} has a retained unclaimed witness observation with a "
+                "non-positive rectangle"
             )
+        canonical_bounds = {
+            "x": max(0, bounds["x"]),
+            "y": max(0, bounds["y"]),
+            "w": max(0, min(evidence["width"], bounds["x"] + bounds["w"]) - max(0, bounds["x"])),
+            "h": max(0, min(evidence["height"], bounds["y"] + bounds["h"]) - max(0, bounds["y"])),
+        }
+        if canonical_bounds["w"] == 0 or canonical_bounds["h"] == 0:
+            continue
+        ink_pixels = _ink_outside_cuts_in_box(evidence, canonical_bounds, covered)
+        if ink_pixels >= minimum_ink_pixels:
+            request = {
+                "page_ordinal": page_ordinal,
+                "outside_ink_pixels": ink_pixels,
+                # The pointer is never sufficient on its own: it reaches
+                # this retained request only after the Ink Map measured
+                # enough ink outside every existing crop.  It then gives
+                # the Designator exact sealed-image geometry to cut, so a
+                # real ingress need not borrow fixture rectangles.
+                "bounds": canonical_bounds,
+            }
+            for name in (
+                "testimonium_ref",
+                "testimonium_id",
+                "observation_ordinal",
+            ):
+                if name in observation:
+                    request[name] = observation[name]
+            if "_ink_map_ref" in evidence:
+                request["ink_map_ref"] = evidence["_ink_map_ref"]
+            requests.append(request)
     return requests
 
 
@@ -2332,6 +2367,19 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
                 ordinal, payload, measurable, pixel_counts, residual_keys, page_residual_keys
             )
             continue
+        if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
+            findings[ordinal] = _aggregate_page_conservation(
+                context,
+                ordinal,
+                payload,
+                measurable,
+                pixel_counts,
+                residual_keys,
+                page_residual_keys,
+                acts,
+                record["subject_id"],
+            )
+            continue
         page_residual_act_count = page_residual_keys.count(page_residual_act_key(ordinal))
         if page_residual_act_count > 0:
             raise FatalAccounting(
@@ -2400,20 +2448,12 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             raise FatalAccounting(
                 f"unmeasured Designator conservation page {ordinal} minted residual acts"
             )
-        bound = payload.get("max_residual_components")
-        if not isinstance(bound, int) or isinstance(bound, bool) or bound < 0:
-            raise FatalAccounting(
-                f"Designator conservation page {ordinal} names no integer "
-                "max_residual_components; every record carries the bound that was in force, "
-                "crossed or not, and a page cannot be reconciled against a policy it does not "
-                "name"
-            )
         findings[ordinal] = {
             "ink_measurable": measurable,
             "residual_component_count": len(components),
             "residual_act_count": len(actual),
             "residual_enumeration": RESIDUAL_ENUMERATION_COMPLETE,
-            "max_residual_components": bound,
+            "max_residual_components": None,
             # Zero, and checked rather than assumed: the refusal above is what
             # proves an enumerated page carries no page-residual item.
             "page_residual_act_count": page_residual_act_count,
@@ -2433,6 +2473,162 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             "but have no conservation records"
         )
     return findings
+
+
+def _aggregate_page_conservation(
+    context,
+    ordinal: int,
+    payload: dict,
+    measurable: bool,
+    pixel_counts: dict,
+    residual_keys: set,
+    page_residual_keys: list,
+    acts: list[dict],
+    page_id: str,
+) -> dict:
+    """Reconcile both retained partitions and their exact held-act identities."""
+    if not measurable:
+        raise FatalAccounting(
+            f"unmeasured Designator conservation page {ordinal} cannot aggregate components"
+        )
+    promoted = payload.get("residual_components")
+    aggregate = payload.get("aggregated_residual_components")
+    if not isinstance(promoted, list) or not isinstance(aggregate, list) or not aggregate:
+        raise FatalAccounting(
+            f"aggregate Designator conservation page {ordinal} has no complete retained partition"
+        )
+    width, height = payload.get("page_width"), payload.get("page_height")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        for value in (width, height)
+    ):
+        raise FatalAccounting(
+            f"aggregate Designator conservation page {ordinal} has no positive page geometry"
+        )
+    policy = sealed_residual_presentation_policy(context)
+    if any(
+        not isinstance(payload.get(name), int)
+        or isinstance(payload.get(name), bool)
+        or payload.get(name) != value
+        for name, value in policy.items()
+    ):
+        raise FatalAccounting(
+            f"aggregate Designator conservation page {ordinal} does not carry the exact sealed "
+            "presentation thresholds"
+        )
+    declared_counts = (
+        payload.get("residual_promoted_component_count"),
+        payload.get("residual_aggregated_component_count"),
+        payload.get("residual_component_count"),
+    )
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in declared_counts
+    ) or declared_counts != (len(promoted), len(aggregate), len(promoted) + len(aggregate)):
+        raise FatalAccounting(
+            f"aggregate Designator conservation page {ordinal} does not reconcile its combined "
+            "component counts"
+        )
+    identities = set()
+    for label, components in (("promoted", promoted), ("aggregate", aggregate)):
+        for index, component in enumerate(components):
+            bounds = component.get("bounds") if isinstance(component, dict) else None
+            pixels = component.get("pixel_count") if isinstance(component, dict) else None
+            if (
+                not isinstance(bounds, dict)
+                or set(bounds) != {"x", "y", "w", "h"}
+                or any(
+                    not isinstance(bounds[name], int) or isinstance(bounds[name], bool)
+                    for name in ("x", "y", "w", "h")
+                )
+                or bounds["x"] < 0
+                or bounds["y"] < 0
+                or bounds["w"] <= 0
+                or bounds["h"] <= 0
+                or bounds["x"] + bounds["w"] > width
+                or bounds["y"] + bounds["h"] > height
+                or not isinstance(pixels, int)
+                or isinstance(pixels, bool)
+                or pixels < 0
+                or pixels > bounds["w"] * bounds["h"]
+            ):
+                raise FatalAccounting(
+                    f"aggregate Designator conservation page {ordinal} {label} component "
+                    f"{index} is malformed"
+                )
+            identity = tuple(bounds[name] for name in ("x", "y", "w", "h"))
+            if identity in identities:
+                raise FatalAccounting(
+                    f"aggregate Designator conservation page {ordinal} repeats component "
+                    f"identity {identity} across its partition"
+                )
+            identities.add(identity)
+            significant = (
+                pixels >= policy["residual_aggregate_max_pixel_count"]
+                or bounds["w"] * bounds["h"] >= policy["residual_aggregate_max_area_px"]
+            )
+            if (label == "promoted") != significant:
+                raise FatalAccounting(
+                    f"aggregate Designator conservation page {ordinal} puts {label} component "
+                    f"{index} on the wrong side of the sealed presentation threshold"
+                )
+    _, _, residual = _require_reconciled_pixels(ordinal, pixel_counts)
+    if sum(component["pixel_count"] for component in [*promoted, *aggregate]) != residual:
+        raise FatalAccounting(
+            f"aggregate Designator conservation page {ordinal} combined component pixels do "
+            "not equal residual_pixel_count"
+        )
+    actual = {key for key in residual_keys if key.startswith(f"residual:{ordinal}:")}
+    expected = {f"residual:{ordinal}:{index}" for index in range(len(promoted))}
+    if actual != expected:
+        raise FatalAccounting(
+            f"aggregate Designator conservation page {ordinal} promoted held-act identities "
+            "diverge from the retained promoted partition"
+        )
+    actual_promoted_identities = {
+        (act["act_key"], act["act_id"])
+        for act in acts
+        if act["act_key"].startswith(f"residual:{ordinal}:")
+    }
+    expected_promoted_identities = {
+        (
+            f"residual:{ordinal}:{index}",
+            derive_act_id(page_id, "residual", component["bounds"]),
+        )
+        for index, component in enumerate(promoted)
+    }
+    if actual_promoted_identities != expected_promoted_identities:
+        raise FatalAccounting(
+            f"aggregate Designator conservation page {ordinal} promoted act identities do "
+            "not derive from the retained component geometry"
+        )
+    held_as_one = page_residual_keys.count(page_residual_act_key(ordinal))
+    if held_as_one != 1:
+        raise FatalAccounting(
+            f"aggregate Designator conservation page {ordinal} is accounted for by "
+            f"{held_as_one} page-residual acts rather than exactly one"
+        )
+    page_rows = [act for act in acts if act["act_key"] == page_residual_act_key(ordinal)]
+    expected_page_id = derive_act_id(
+        page_id, "page-residual", {"x": 0, "y": 0, "w": width, "h": height}
+    )
+    if len(page_rows) != 1 or page_rows[0]["act_id"] != expected_page_id:
+        raise FatalAccounting(
+            f"aggregate Designator conservation page {ordinal} page-hold identity does not "
+            "derive from its exact page geometry"
+        )
+    return {
+        "ink_measurable": True,
+        "residual_component_count": len(promoted) + len(aggregate),
+        "residual_act_count": len(actual),
+        "residual_enumeration": RESIDUAL_ENUMERATION_AGGREGATED,
+        "max_residual_components": None,
+        "page_residual_act_count": held_as_one,
+        "reason": (
+            f"{len(promoted)} significant residual components remain individual held acts; "
+            f"{len(aggregate)} below-threshold components remain retained on one page hold"
+        ),
+    }
 
 
 def _withheld_page_conservation(
@@ -2913,6 +3109,12 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ordinal,
                 {"by_chair": {}, "shortfall": False},
             )
+            testimonium_ref = context.artifact_ref(
+                ATTESTATORES, "page-testimonium", record["artifact_id"]
+            )
+            for observation in unclaimed:
+                observation["testimonium_ref"] = testimonium_ref
+                observation["observation_ordinal"] = observation.pop("ordinal")
             finding.setdefault("unclaimed_observations", []).extend(copy.deepcopy(unclaimed))
             # An observation outside every proposal is a retained coverage
             # finding, not evidence that the page's *reported text* fell
@@ -4044,7 +4246,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # page-space rectangle, independently confirmed outside the
                 # current crop union above.
                 **(
-                    {"recovery_bounds": outside_ink_requests[0]["bounds"]}
+                    {
+                        "recovery_bounds": outside_ink_requests[0]["bounds"],
+                        "coverage_observation": {
+                            "testimonium_ref": outside_ink_requests[0]["testimonium_ref"],
+                            "testimonium_id": outside_ink_requests[0]["testimonium_id"],
+                            "observation_ordinal": outside_ink_requests[0]["observation_ordinal"],
+                            "bounds": outside_ink_requests[0]["bounds"],
+                        },
+                        "ink_map_ref": outside_ink_requests[0]["ink_map_ref"],
+                        "outside_ink_pixels": outside_ink_requests[0]["outside_ink_pixels"],
+                        "minimum_ink_pixels": minimum_ink_pixels,
+                    }
                     if request_origin == COVERAGE_OBSERVATION_ORIGIN
                     else {}
                 ),
@@ -4055,7 +4268,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 subject_id=act_id,
                 outcome="recovery-requested",
                 attempt=attempt_id(act_id, "recover", request_ordinal),
-                inputs=[reading_ref],
+                inputs=[reading_ref]
+                + (
+                    [
+                        outside_ink_requests[0]["testimonium_ref"],
+                        outside_ink_requests[0]["ink_map_ref"],
+                    ]
+                    if request_origin == COVERAGE_OBSERVATION_ORIGIN
+                    else []
+                ),
                 payload=recovery_payload,
             )
             # Spent where the request is actually published, not where

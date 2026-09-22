@@ -169,9 +169,9 @@ DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_geometry.toml"
 )
 # The grouping and reconciliation thresholds the Designator's structure pass runs
-# under: which marks join into one act, how far a chain reaches, and how many
-# residual components one page's conservation record may enumerate before the page
-# is held as a single review item. They decide what is marked out and what is held,
+# under: which marks join into one act, how far a chain reaches, and which
+# residual components receive individual held acts rather than retained page-level
+# presentation. They decide what is marked out and what is held,
 # so two runs under different thresholds produce different acts from identical
 # pixels — the same reason padding is sealed, one step earlier in the same stage.
 DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH = (
@@ -3539,30 +3539,9 @@ def _verify_every_conservation_residual_is_accounted(
                 "consumer cannot tell a page with no unclaimed ink from one whose unclaimed ink "
                 "was counted and not listed without being told which it is"
             )
-        components = payload.get("residual_components")
-        if not isinstance(components, list):
-            raise FatalAccounting(
-                f"the conservation record for page {page_id} carries no residual-component list "
-                "to reconcile the denominator against"
-            )
-        aggregate = payload.get("aggregated_residual_components", [])
-        if not isinstance(aggregate, list):
-            raise FatalAccounting(
-                f"the conservation record for page {page_id} carries malformed aggregate residual "
-                "accounting; retained component geometry must be a list"
-            )
-        declared_count = payload.get("residual_component_count")
-        if not _is_count(declared_count) or declared_count != len(components) + len(aggregate):
-            raise FatalAccounting(
-                f"the conservation record for page {page_id} names residual_component_count "
-                f"{declared_count!r} but its retained component lists carry "
-                f"{len(components) + len(aggregate)} entries"
-            )
-        if enumeration == RESIDUAL_ENUMERATION_COMPLETE and aggregate:
-            raise FatalAccounting(
-                f"the conservation record for page {page_id} calls its residual enumeration "
-                "complete while retaining aggregate components"
-            )
+        components, aggregate = _verify_residual_component_partition(
+            context, page_id, payload, enumeration
+        )
         if enumeration == RESIDUAL_ENUMERATION_AGGREGATED:
             _verify_aggregated_page_is_held_as_one_item(
                 page_id, payload, accounted_pages.get(page_id, [])
@@ -3604,6 +3583,154 @@ def _verify_aggregated_page_is_held_as_one_item(
         raise FatalAccounting(
             f"page {page_id}'s page-residual hold does not retain the aggregate component count"
         )
+
+
+def sealed_residual_presentation_policy(context) -> dict[str, int]:
+    """Read the two aggregate floors from the exact grouping bytes this run sealed."""
+    path = Path(
+        getattr(getattr(context, "args", None), "designator_grouping_config", None)
+        or DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
+    )
+    try:
+        raw = path.read_bytes()
+        document = tomllib.loads(raw.decode("utf-8"))
+        table = document["grouping"]["residual_presentation"]
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, KeyError, TypeError) as error:
+        raise FatalAccounting(
+            "the sealed Designator grouping policy has no readable residual presentation table"
+        ) from error
+    observed_digest = digest_bytes(raw)
+    require_sealed_config(
+        run_sealed_config_digests(context.run),
+        "designator-grouping",
+        observed_digest,
+        "this context",
+    )
+    names = ("residual_aggregate_max_pixel_count", "residual_aggregate_max_area_px")
+    if set(table) != set(names) | {"provenance"} or any(
+        not isinstance(table.get(name), int) or isinstance(table.get(name), bool) or table[name] < 0
+        for name in names
+    ):
+        raise FatalAccounting(
+            "the sealed Designator residual presentation policy is not the closed pair of "
+            "non-negative integer pixel and area thresholds"
+        )
+    return {name: table[name] for name in names}
+
+
+def _verify_residual_component_partition(
+    context,
+    page_id: str,
+    payload: Mapping[str, Any],
+    enumeration: str,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Verify retained geometry, pixels, policy, and the promoted/aggregate partition."""
+    promoted = payload.get("residual_components")
+    aggregate = payload.get("aggregated_residual_components", [])
+    if not isinstance(promoted, list) or not isinstance(aggregate, list):
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} carries malformed retained component lists"
+        )
+    if enumeration == RESIDUAL_ENUMERATION_COMPLETE and aggregate:
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} calls its residual enumeration "
+            "complete while retaining aggregate components"
+        )
+    if enumeration == RESIDUAL_ENUMERATION_AGGREGATED and not aggregate:
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} calls its residual enumeration "
+            "aggregate-page-held without retaining aggregate components"
+        )
+    if enumeration == RESIDUAL_ENUMERATION_COMPLETE:
+        declared_total = payload.get("residual_component_count")
+        if not _is_count(declared_total) or declared_total != len(promoted):
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} names residual_component_count "
+                f"{declared_total!r} but lists {len(promoted)} residual components"
+            )
+        return promoted, aggregate
+    width, height = payload.get("page_width"), payload.get("page_height")
+    if not _is_count(width) or not _is_count(height) or width == 0 or height == 0:
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} has no positive page geometry"
+        )
+    policy = sealed_residual_presentation_policy(context)
+    if any(
+        not isinstance(payload.get(name), int)
+        or isinstance(payload.get(name), bool)
+        or payload.get(name) != value
+        for name, value in policy.items()
+    ):
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} does not name the exact sealed "
+            "residual presentation thresholds"
+        )
+    declared_promoted = payload.get("residual_promoted_component_count")
+    declared_aggregate = payload.get("residual_aggregated_component_count")
+    declared_total = payload.get("residual_component_count")
+    if (
+        not _is_count(declared_promoted)
+        or not _is_count(declared_aggregate)
+        or not _is_count(declared_total)
+        or declared_promoted != len(promoted)
+        or declared_aggregate != len(aggregate)
+        or declared_total != len(promoted) + len(aggregate)
+    ):
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} does not reconcile its promoted, "
+            "aggregate, and total component counts"
+        )
+    identities: set[tuple[int, int, int, int]] = set()
+    for label, rows in (("promoted", promoted), ("aggregate", aggregate)):
+        for index, component in enumerate(rows):
+            bounds = component.get("bounds") if isinstance(component, Mapping) else None
+            pixels = component.get("pixel_count") if isinstance(component, Mapping) else None
+            if (
+                not isinstance(bounds, Mapping)
+                or set(bounds) != {"x", "y", "w", "h"}
+                or any(
+                    not isinstance(bounds[k], int) or isinstance(bounds[k], bool) for k in bounds
+                )
+                or bounds["x"] < 0
+                or bounds["y"] < 0
+                or bounds["w"] <= 0
+                or bounds["h"] <= 0
+                or bounds["x"] + bounds["w"] > width
+                or bounds["y"] + bounds["h"] > height
+                or not _is_count(pixels)
+                or pixels > bounds["w"] * bounds["h"]
+            ):
+                raise FatalAccounting(
+                    f"the conservation record for page {page_id} has malformed {label} "
+                    f"component {index}"
+                )
+            identity = tuple(bounds[name] for name in ("x", "y", "w", "h"))
+            if identity in identities:
+                raise FatalAccounting(
+                    f"the conservation record for page {page_id} repeats residual component "
+                    f"identity {identity} across its partition"
+                )
+            identities.add(identity)
+            area = bounds["w"] * bounds["h"]
+            significant = (
+                pixels >= policy["residual_aggregate_max_pixel_count"]
+                or area >= policy["residual_aggregate_max_area_px"]
+            )
+            if (label == "promoted") != significant:
+                raise FatalAccounting(
+                    f"the conservation record for page {page_id} classifies {label} component "
+                    f"{index} against thresholds other than the sealed presentation policy"
+                )
+    residual_pixels = payload.get("residual_pixel_count")
+    if (
+        not _is_count(residual_pixels)
+        or sum(component["pixel_count"] for component in [*promoted, *aggregate]) != residual_pixels
+    ):
+        raise FatalAccounting(
+            f"the conservation record for page {page_id} retained component pixels do not "
+            "equal residual_pixel_count"
+        )
+    return promoted, aggregate
 
 
 def _page_residual_holds_by_page(
@@ -3652,13 +3779,6 @@ def _verify_withheld_page_is_held_as_one_item(
             "unlisted ink is accounted for by the single review item that replaced it, or it is "
             "lost silently"
         )
-    aggregate = payload.get("aggregated_residual_components")
-    measured = payload.get("residual_component_count")
-    if not isinstance(aggregate, list) or not _is_count(measured) or len(aggregate) != measured:
-        raise FatalAccounting(
-            f"page {page_id}'s withheld residual accounting does not retain every component's "
-            "geometry and pixel count"
-        )
     bound = payload.get("max_residual_components")
     if not _is_count(bound):
         raise FatalAccounting(
@@ -3706,6 +3826,7 @@ RESIDUAL_ENUMERATIONS: Final = (
 # differently -- the same reason `page_residual_act_key` is defined here and
 # recomputed there.
 PAGE_RESIDUAL_REASON_CODE: Final = "residual-components-over-page-bound"
+PAGE_RESIDUAL_AGGREGATE_REASON_CODE: Final = "residual-components-below-presentation-threshold"
 
 
 def page_residual_act_key(page_ordinal: int) -> str:
@@ -3962,11 +4083,10 @@ def _verify_page_residual_act_row(
 ) -> None:
     """The held row that stands for a whole page, checked against its own evidence.
 
-    A page-residual act says something no other minted row says: *this page's
-    reconciliation found more unclaimed components than the sealed bound allows,
-    so the page is one review item and the components are not listed*. That makes
-    it the one row whose evidence a reader cannot open and count for themselves,
-    which is exactly why none of it may be believed here.
+    A page-residual act presents one page-level residual partition. Current
+    records retain the below-threshold components in full; legacy withheld
+    records carry only their count and historical bound. The enumeration names
+    which contract applies, and neither is trusted without its premise.
 
     Five things are recomputed rather than read. The rectangle comes from the
     sealed page bytes, so a hold naming a rectangle that is not the whole page —
@@ -3974,18 +4094,11 @@ def _verify_page_residual_act_row(
     own identity is. The identity is re-derived against the reserved
     ``page-residual`` class and that rectangle. The premise is followed to the
     page's own `conservation` record through the digest-checked hop, never by
-    address, and that record has to *itself* say the count exceeded the bound the
-    hold names and that its enumeration was withheld. And the record must carry
-    no `residual_components` key at all: an empty list would mean a page with no
-    unclaimed ink, which is the opposite claim, and the key's absence is what
-    makes every existing consumer fail loudly instead of reading absence as none.
+    address, and that record has to support the exact enumeration the hold names.
 
     The bound itself is not merely internally consistent, it is bound to the run.
-    `max_residual_components` is a Designator grouping-policy parameter (SPEC_C
-    1), and this run sealed a `designator-grouping` digest for exactly that
-    policy at `open_context`. A hold naming its own bound and never naming which
-    grouping configuration it was judged against would let a Designator invent
-    any bound it liked; the hold's `grouping_config_sha256` is checked against
+    This run sealed a `designator-grouping` digest at `open_context`; the hold's
+    `grouping_config_sha256` is checked against
     `run_sealed_config_digests(context.run)["designator-grouping"]` so the bound
     is bound to the policy this run actually sealed, not merely to itself.
 
@@ -4024,22 +4137,24 @@ def _verify_page_residual_act_row(
             f"act {act_id}'s page-residual hold does not carry the page id, page ordinal, "
             "derived page-residual key, and page rectangle it must bind"
         )
+    reason_code = payload.get("reason_code")
     if (
-        payload.get("reason_code") != PAGE_RESIDUAL_REASON_CODE
+        reason_code not in (PAGE_RESIDUAL_REASON_CODE, PAGE_RESIDUAL_AGGREGATE_REASON_CODE)
         or payload.get("blocking_page_ordinal") != ordinal
     ):
         raise FatalAccounting(
             f"act {act_id}'s page-residual hold records its cause as "
             f"{payload.get('reason_code')!r} against page "
             f"{payload.get('blocking_page_ordinal')!r} rather than "
-            f"{PAGE_RESIDUAL_REASON_CODE!r} against page {ordinal}; the hold vocabulary is "
+            "a supported page-residual cause against page "
+            f"{ordinal}; the hold vocabulary is "
             "closed so that a consumer can branch on the cause without reading prose"
         )
     grouping_digest = payload.get("grouping_config_sha256")
     if not isinstance(grouping_digest, str) or not grouping_digest:
         raise FatalAccounting(
             f"act {act_id}'s page-residual hold does not name the sealed grouping "
-            "configuration digest its residual bound was judged against"
+            "configuration digest its residual presentation was judged against"
         )
     sealed_grouping_digest = run_sealed_config_digests(context.run).get("designator-grouping")
     if sealed_grouping_digest is None:
@@ -4081,12 +4196,10 @@ def _verify_page_residual_premise(
     """The conservation record's own account of why this page is held as one item."""
     payload = conservation.get("payload")
     payload = payload if isinstance(payload, Mapping) else {}
-    bound = hold_payload.get("max_residual_components")
     declared = hold_payload.get("residual_component_count")
-    if not _is_count(bound) or not _is_count(declared):
+    if not _is_count(declared):
         raise FatalAccounting(
-            f"act {act_id}'s page-residual hold does not name an integer residual component "
-            "count and the integer bound it was judged against"
+            f"act {act_id}'s page-residual hold does not name an integer residual component count"
         )
     enumeration = payload.get("residual_enumeration")
     if enumeration not in (RESIDUAL_ENUMERATION_WITHHELD, RESIDUAL_ENUMERATION_AGGREGATED):
@@ -4125,6 +4238,19 @@ def _verify_page_residual_premise(
             f"conservation record measured {measured}; the count a reviewer is shown is the "
             "count the reconciliation took, never a second figure beside it"
         )
+    if enumeration == RESIDUAL_ENUMERATION_WITHHELD:
+        bound = hold_payload.get("max_residual_components")
+        if not _is_count(bound):
+            raise FatalAccounting(
+                f"act {act_id}'s legacy withheld page-residual hold does not name the integer "
+                "bound it was judged against"
+            )
+        if hold_payload.get("reason_code") != PAGE_RESIDUAL_REASON_CODE:
+            raise FatalAccounting(f"act {act_id}'s legacy withheld page uses the wrong reason code")
+    else:
+        if hold_payload.get("reason_code") != PAGE_RESIDUAL_AGGREGATE_REASON_CODE:
+            raise FatalAccounting(f"act {act_id}'s aggregate page uses the wrong reason code")
+        bound = None
     if enumeration == RESIDUAL_ENUMERATION_WITHHELD and measured <= bound:
         raise FatalAccounting(
             f"act {act_id} holds page {page_id} against a bound of {bound} residual components, "

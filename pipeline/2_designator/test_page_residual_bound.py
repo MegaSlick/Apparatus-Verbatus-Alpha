@@ -1,33 +1,15 @@
-"""A page reconciling past the sealed residual bound becomes one review item.
+"""Residual presentation preserves components without inventing acts.
 
-The regression these tests stand for is measured, not hypothetical: this
-build's own handoff records a synthetic A4 page at 300 dpi with 3% scattered
-ink reconciling to roughly sixty thousand residual components, each of which
-the Designator minted as its own held act, its own hold record and its own
-proposal-seal row. `operations/operator/review.py` refuses to open a run past
-`MAX_REVIEW_ITEMS`, by name, so one such page makes *every* page's findings
-unreadable on the only surface a person uses. `max_residual_components` is the
-sealed line between "one held act per residual" and "one held page".
-
-What is under test here is the whole of that decision as the Designator takes
-it, on a real Door-and-Exemplar run, over real pixels:
-
-* the boundary itself, from both sides, against a count this file *measures*
-  rather than predicts -- a page at exactly the bound enumerates every
-  component and mints one held act each, and the same pixels one component
-  over the bound mint one page-residual hold and no per-component act at all;
-* the fixture pages, which no bound may hold: the shipped policy's 2000 is
-  orders of magnitude above anything they reconcile to, and a change that
-  started holding them would be a change to what a green fixture run means;
-* the minted hold's every field, checked against the identity it must derive
-  from and against the conservation record it must have been judged against --
-  through `common/stage.py`'s own consumer, not through a second reading of it
-  written here.
+Significant components become individual held acts. Components below both
+sealed presentation floors retain exact geometry and pixels on a page-level
+aggregate hold. The legacy component ceiling is varied here only to prove it no
+longer changes current producer behavior.
 
 The A4 case itself is the last test in the file, marked `full`: an 8.7
 megapixel pure-Python structure scan does not belong in the everyday leg.
 """
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -40,7 +22,6 @@ from common.imaging import encode_grayscale_png, grayscale_rows
 from common.stage import (
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
-    RESIDUAL_ENUMERATION_WITHHELD,
     page_residual_act_key,
 )
 
@@ -63,6 +44,15 @@ _SCATTER_INK = 40
 
 def _load_designator():
     return load_designator("designator_page_residual_bound_under_test")
+
+
+def _load_recensor():
+    path = ROOT / "pipeline/5_recensor/run.py"
+    spec = importlib.util.spec_from_file_location("recensor_aggregate_handoff", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def _grouping_config_with_bound(directory: Path, bound: int) -> Path:
@@ -256,7 +246,7 @@ def test_a_page_exactly_at_the_bound_enumerates_every_component(
     assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_COMPLETE
     assert payload["residual_component_count"] == measured_scatter
     assert len(payload["residual_components"]) == measured_scatter
-    assert payload["max_residual_components"] == measured_scatter
+    assert "max_residual_components" not in payload
     assert _conservation_for(context, 1)["outcome"] == "proposed"
     assert _page_residual_holds(context) == []
 
@@ -295,6 +285,31 @@ def test_small_residuals_are_retained_as_accounting_not_fictitious_acts(tmp_path
     assert [row for row in rows if row["act_key"].startswith("residual:1:")] == []
     page_rows = [row for row in rows if row["act_key"] == page_residual_act_key(1)]
     assert len(page_rows) == 1 and page_rows[0]["outcome"] == "held"
+
+    # The real consumer reads the producer's complete tree. This is the seam
+    # that previously rejected every aggregate page as an illegal page hold.
+    finding = _load_recensor().geometry_coverage_inputs(context)[1]
+    assert finding["residual_enumeration"] == RESIDUAL_ENUMERATION_AGGREGATED
+    assert finding["residual_component_count"] == len(aggregate)
+    assert finding["page_residual_act_count"] == 1
+
+
+def test_residual_at_either_presentation_threshold_is_promoted():
+    designator = _load_designator()
+    policy = designator.grouping_config.load_grouping_config(SHIPPED_GROUPING_CONFIG)
+    thresholds = designator.grouping_config.resolve_thresholds(policy, 200, 260)
+    pixel_equal = {"bounds": {"x": 0, "y": 0, "w": 1, "h": 1}, "pixel_count": 500}
+    area_equal = {
+        "bounds": {"x": 0, "y": 0, "w": 40, "h": 50},
+        "pixel_count": 1,
+    }
+
+    promoted, aggregated = designator._partition_residual_components(
+        [pixel_equal, area_equal], thresholds
+    )
+
+    assert promoted == [pixel_equal, area_equal]
+    assert aggregated == []
 
 
 def test_component_count_never_suppresses_individual_significant_residuals(
@@ -339,8 +354,7 @@ def test_the_shipped_bound_holds_no_fixture_page(tmp_path, monkeypatch):
         payload = record["payload"]
         assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_COMPLETE
         assert payload["residual_component_count"] == len(payload["residual_components"])
-        assert payload["residual_component_count"] <= payload["max_residual_components"]
-        assert payload["max_residual_components"] == 2000
+        assert "max_residual_components" not in payload
     assert [row for row in _seal_rows(context) if row["act_key"].startswith("page-residual:")] == []
 
 
@@ -398,10 +412,11 @@ def test_an_a4_page_at_three_percent_scatter_is_held_as_one_item(tmp_path, monke
     )
     payload = _conservation_for(context, 2)["payload"]
 
-    assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_WITHHELD
-    assert "residual_components" not in payload
+    assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_AGGREGATED
     assert payload["residual_component_count"] > 2000
-    assert payload["max_residual_components"] == 2000
+    assert payload["residual_component_count"] == (
+        len(payload["residual_components"]) + len(payload["aggregated_residual_components"])
+    )
     holds = [hold for hold in _page_residual_holds(context) if hold["payload"]["page_ordinal"] == 2]
     assert len(holds) == 1
     # The whole point: one seal row, not tens of thousands.

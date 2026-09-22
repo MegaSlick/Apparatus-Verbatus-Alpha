@@ -80,7 +80,13 @@ from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noq
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import act_id as derive_minted_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
-from common.contracts.stages import DESIGNATOR, EXEMPLAR, RECENSOR  # noqa: E402
+from common.contracts.stages import (  # noqa: E402
+    ATTESTATORES,
+    DESIGNATOR,
+    EXEMPLAR,
+    INK_MAP,
+    RECENSOR,
+)
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
@@ -93,7 +99,7 @@ from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
     EXIT_HELD,
-    PAGE_RESIDUAL_REASON_CODE,
+    PAGE_RESIDUAL_AGGREGATE_REASON_CODE,
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATION_WITHHELD,
@@ -103,6 +109,7 @@ from common.stage import (  # noqa: E402
     _stage_records,
     continuation_for,
     current_recovery_request,
+    expected_acts,
     fallback_page_act_key,
     fixture_serving_details,
     open_stage_context,
@@ -169,13 +176,9 @@ HOLD_REASON_CODES = frozenset(
         "structure-pass-held",
         # The act's continuation page sealed, but its structure pass could not.
         "structure-pass-held-on-continuation",
-        # The page sealed and its ink was measured, but its reconciliation found
-        # more unclaimed components than the sealed grouping policy allows to be
-        # minted separately, so the page itself is held as one review item. The
-        # name is about the reconciliation, never about the paper: nothing here
-        # says the page is speckled, foxed, or bad, only that this many
-        # components were counted against this bound.
-        PAGE_RESIDUAL_REASON_CODE,
+        # Below-threshold residuals remain individually retained on the linked
+        # conservation record while one page hold presents that partition.
+        PAGE_RESIDUAL_AGGREGATE_REASON_CODE,
     }
 )
 
@@ -1238,12 +1241,9 @@ def publish_structure_status(
     and no threshold is computed here that `_analyze_page` did not already
     resolve for this page.
 
-    The whole of `GroupingThresholds` is published rather than a chosen subset.
-    `max_residual_components` is a count rather than a pixel threshold, but it
-    is part of what this page ran under, and a subset boundary would be a second
-    judgment about which of one dataclass's fields matter -- kept in step with
-    the dataclass instead, so a field added there cannot silently stop being
-    recorded.
+    Every active member of `GroupingThresholds` is published. The sole omitted
+    member, `max_residual_components`, is retained in the loader for historical
+    withheld-record compatibility and is not an input to this producer.
 
     Returns each page's own published status reference, because the
     page-fallback act minted below has to name the record that independently
@@ -1314,7 +1314,13 @@ def publish_structure_status(
                 "page_width": analysis["width"] if analysis else None,
                 "page_height": analysis["height"] if analysis else None,
                 "resolved_thresholds": (
-                    dataclasses.asdict(analysis["thresholds"]) if analysis else None
+                    {
+                        name: value
+                        for name, value in dataclasses.asdict(analysis["thresholds"]).items()
+                        if name != "max_residual_components"
+                    }
+                    if analysis
+                    else None
                 ),
                 "provenance": (
                     provenance
@@ -1998,8 +2004,8 @@ def _partition_residual_components(
         bounds = component["bounds"]
         area = bounds["w"] * bounds["h"]
         if (
-            component["pixel_count"] > thresholds.residual_aggregate_max_pixel_count
-            or area > thresholds.residual_aggregate_max_area_px
+            component["pixel_count"] >= thresholds.residual_aggregate_max_pixel_count
+            or area >= thresholds.residual_aggregate_max_area_px
         ):
             promoted.append(component)
         else:
@@ -2013,60 +2019,16 @@ def _publish_page_residual_hold(
     page_ordinal: int,
     page_bounds: dict,
     *,
-    # Keyword-only from here: the count and the bound are both plain integers on
-    # the same call, and a hold that swapped them would name a policy the run
-    # never applied while every type check still passed.
     residual_component_count: int,
     aggregated_component_count: int,
-    max_residual_components: int,
     grouping_config_sha256: str,
     conservation_ref: dict[str, str],
 ) -> dict:
-    """Hold a whole page as one review item in place of its residual components.
+    """Hold the below-threshold residual partition as one page review item.
 
-    The alternative this replaces is not "enumerate them anyway"; it is a run
-    the only surface a person reads refuses to open. `operations/operator/review.py`
-    caps the console at `MAX_REVIEW_ITEMS` and refuses the run by name past it,
-    so one page reconciling tens of thousands of unclaimed components makes the
-    *whole* run unreadable — every other page's findings included. One held
-    page is worse than N held acts for a page with three of them and better
-    than N held acts for a page with sixty thousand, and
-    `max_residual_components` is the sealed line between the two.
-
-    **The bound is per page, and the console's ceiling is per run.** What this
-    buys is that no single page can make a run unopenable on its own; it is not
-    a guarantee that the run stays under `MAX_REVIEW_ITEMS`, and nothing here
-    claims one. Thirty pages each just inside the bound still carry the run past
-    the console's 50,000 items, and this stage cannot honestly refuse them for
-    it: the queue an operator opens is assembled in the Armarium's export from
-    every stage's review items, so a total counted here would be a fraction of
-    the run's presented as the whole of it — a claim past what is measured
-    (GOVERNANCE 10). The run-wide ceiling stays where it is enforced, at the
-    console, refused by name against the queue it actually reads rather than by
-    exhaustion. `HANDOFF.md` carries this as a named remainder rather than as a
-    thing this bound does.
-
-    **Nothing leaves the measurement.** `residual_pixel_count` on this page's
-    conservation record is the same integer it would have been, the exact
-    identity `claimed + residual == total` is still published, and the count of
-    components is on both this hold and that record. What is not carried is the
-    per-component rectangle list, which stays recomputable from the sealed page
-    bytes and the sealed conservation policy — the same reasoning the pipeline
-    already applies to the exact image a model was shown. That is a judgment
-    with a cost, not a free one, and the cost is named here so nobody has to
-    infer it: on a held page a reviewer cannot open this artifact and read off
-    where the unclaimed ink was.
-
-    **The reason code names the reconciliation, never the paper.** A page here
-    is not "too speckled" and not "bad"; its conservation reconciled N
-    components against a bound of M. If the structure pass is what is wrong —
-    and on a real register today it very likely is — then a run where every page
-    carries one of these is the legible first-run signal that says so, which is
-    a finding delivered on run one rather than run ten. `HANDOFF.md` carries
-    the retirement condition in full: if a real structural Designator lands and
-    real pages still trip this bound, the bound is measuring the wrong thing and
-    must be revisited rather than raised. A threshold with no stated falsifier
-    is how an instrument becomes furniture.
+    Every component remains on the conservation record with exact geometry and
+    pixels. The hold changes presentation cardinality only; it never merges the
+    components into one act and never removes them from accounting.
 
     Exactly one input, and it is this page's own `conservation` record. That
     record is the independent premise — it is what says the count exceeded the
@@ -2087,10 +2049,9 @@ def _publish_page_residual_hold(
         "page_bounds": page_bounds,
         "residual_component_count": residual_component_count,
         "aggregated_component_count": aggregated_component_count,
-        "max_residual_components": max_residual_components,
         "grouping_config_sha256": grouping_config_sha256,
         "blocking_page_ordinal": page_ordinal,
-        "reason_code": PAGE_RESIDUAL_REASON_CODE,
+        "reason_code": PAGE_RESIDUAL_AGGREGATE_REASON_CODE,
         "reason": (
             f"this page's conservation reconciled {residual_component_count} residual "
             f"components against the sealed policy, including {aggregated_component_count} "
@@ -2354,14 +2315,11 @@ def _publish_conservation_and_secondary(
     (`_publish_page_fallback`); what is refused is the claim to have measured
     them.
 
-    **The bound is applied here, at the publication boundary, and never inside
-    `conservation.reconcile`.** That module's own docstring states the rule the
-    separation exists for — the instrument may not constrain what it measures —
-    so `reconcile` keeps returning the complete truth including all sixty
-    thousand components, and the *policy* decision about how many of them become
-    separate review items is taken after it has spoken. A pre-check would be
-    worse still: it would have to estimate the count without labelling, and an
-    estimate published as a bound is the defect this exists to close.
+    **Presentation is decided after measurement.** `conservation.reconcile`
+    returns every component. Components at either sealed presentation floor
+    become individual held acts; those below both floors remain individually
+    retained here and share one page-level review item. No component is dropped
+    or merged into a fictitious act.
 
     **What ran is on the record that ran it.** `page_width`, `page_height` and
     `reconciliation_thresholds` say what geometry this reconciliation executed
@@ -2374,13 +2332,9 @@ def _publish_conservation_and_secondary(
     actually given are published, and they are null on an unmeasurable page,
     where no reconciliation ran to have executed under anything.
 
-    `residual_enumeration` says which of the two happened, on every record, as a
-    closed value. It is the field that lets a consumer tell "this page had no
-    unclaimed ink" from "this page's unclaimed ink was counted and not listed" —
-    two states an absent or empty `residual_components` cannot distinguish, and
-    reading one as the other is a page of lost ink reported as a clean one. On a
-    withheld page the key is *omitted* rather than emptied, so every consumer
-    that reads it as a list fails loudly instead of reading absence as none.
+    `residual_enumeration` distinguishes a wholly promoted partition from one
+    carrying a retained aggregate. Historical `withheld-page-held` remains a
+    consumer-only compatibility shape and is never emitted here.
     """
     thresholds = analysis["thresholds"]
     measurable = analysis["background"] is not None
@@ -2405,7 +2359,6 @@ def _publish_conservation_and_secondary(
     page_id = page_record["subject_id"]
     components = result["residual_components"]
     component_count = len(components)
-    max_residual_components = thresholds.max_residual_components
     # An unmeasured page never withholds. It enumerated nothing because there
     # was no threshold to enumerate against, not because a bound stopped it, and
     # holding it for over-bound scatter would name a reconciliation that never
@@ -2469,11 +2422,6 @@ def _publish_conservation_and_secondary(
         else _residual_ink_fraction_bp(
             result["residual_pixel_count"], result["total_ink_pixel_count"]
         ),
-        # The sealed bound this page was judged against, published on every
-        # record rather than only on the held ones: it is the policy that was in
-        # force, not a measurement, so a page that stayed within it should say
-        # what it stayed within.
-        "max_residual_components": max_residual_components,
         "residual_enumeration": enumeration,
         "residual_promoted_component_count": len(promoted),
         "residual_aggregated_component_count": len(aggregated),
@@ -2532,7 +2480,6 @@ def _publish_conservation_and_secondary(
                 {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]},
                 residual_component_count=component_count,
                 aggregated_component_count=len(aggregated),
-                max_residual_components=max_residual_components,
                 grouping_config_sha256=grouping_policy["config_sha256"],
                 conservation_ref=conservation_ref,
             )
@@ -2540,7 +2487,7 @@ def _publish_conservation_and_secondary(
     return rows, secondary_held
 
 
-def _conservation_reason(measurable: bool, withheld: bool, component_count: int) -> str | None:
+def _conservation_reason(measurable: bool, aggregated: bool, component_count: int) -> str | None:
     """The one sentence a reviewer reads about why this record is not ordinary.
 
     Three states, one field, because they are mutually exclusive and a reader
@@ -2554,13 +2501,12 @@ def _conservation_reason(measurable: bool, withheld: bool, component_count: int)
             "separate ink from paper and its ink was not measured; a count taken at a "
             "substituted divider would be a guess reported as a measurement"
         )
-    if withheld:
+    if aggregated:
         return (
             f"this page's ink was measured in full and reconciled to {component_count} "
-            "residual components, more than the sealed grouping policy allows one page to "
-            "enumerate, so the components were counted and not listed and the page is held "
-            "as a single review item; no ink left the accounting and the per-component "
-            "rectangles remain recomputable from the sealed page bytes"
+            "residual components; components below both sealed presentation thresholds are "
+            "retained with exact geometry and pixels on this record and represented by one "
+            "page review item, while significant components remain individual held acts"
         )
     return None
 
@@ -3447,14 +3393,195 @@ def _refuse_duplicate_proposal_bounds(context) -> None:
         seen[key] = act["key"]
 
 
+def _all_cut_bounds_on_page(context, page_ordinal: int, page_id: str) -> list[dict]:
+    """Every proposal or recovery rectangle already cut on one sealed page."""
+    records = []
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        records.append(record)
+    return _coverage_on_page(records, page_ordinal, page_id)
+
+
+def _ink_outside_cut_union(evidence: dict, bounds: dict, covered: list[dict]) -> int:
+    """Recompute ink in a requested rectangle outside the prior crop union."""
+    width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
+    if (
+        evidence.get("schema") != "ink-runs.v2"
+        or set(evidence) != {"schema", "width", "height", "rows"}
+        or not isinstance(width, int)
+        or isinstance(width, bool)
+        or width <= 0
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+        or height <= 0
+        or not isinstance(rows, list)
+        or len(rows) != height
+    ):
+        raise ContractError("the recovery request's Ink Map evidence is malformed")
+    total = 0
+    for y in range(bounds["y"], bounds["y"] + bounds["h"]):
+        row = rows[y]
+        if not isinstance(row, list):
+            raise ContractError("the recovery request's Ink Map evidence has a malformed row")
+        previous_end = 0
+        ink_spans = []
+        for run in row:
+            if (
+                not isinstance(run, list)
+                or len(run) != 2
+                or any(not isinstance(value, int) or isinstance(value, bool) for value in run)
+            ):
+                raise ContractError("the recovery request's Ink Map evidence has a malformed run")
+            start, length = run
+            end = start + length
+            if start < previous_end or length <= 0 or end > width:
+                raise ContractError(
+                    "the recovery request's Ink Map evidence has unordered or invalid runs"
+                )
+            previous_end = end
+            start, end = max(start, bounds["x"]), min(end, bounds["x"] + bounds["w"])
+            if start < end:
+                ink_spans.append((start, end))
+        cuts = sorted(
+            (max(bounds["x"], cut["x"]), min(bounds["x"] + bounds["w"], cut["x"] + cut["w"]))
+            for cut in covered
+            if cut["y"] <= y < cut["y"] + cut["h"]
+        )
+        merged = []
+        for start, end in cuts:
+            if start >= end:
+                continue
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        for start, end in ink_spans:
+            cursor = start
+            for cut_start, cut_end in merged:
+                if cut_end <= cursor:
+                    continue
+                if cut_start >= end:
+                    break
+                total += max(0, min(cut_start, end) - cursor)
+                cursor = max(cursor, cut_end)
+            total += max(0, end - cursor)
+    return total
+
+
+def _verify_coverage_recovery_evidence(
+    context,
+    request: dict,
+    request_payload: dict,
+    expected_act: dict,
+    page_id: str,
+    page_ordinal: int,
+    page_width: int,
+    page_height: int,
+) -> None:
+    """Follow and remeasure the exact Testimonium and Ink Map authorization."""
+    observation = request_payload.get("coverage_observation")
+    bounds = request_payload.get("recovery_bounds")
+    ink_map_ref = request_payload.get("ink_map_ref")
+    inputs = request.get("inputs")
+    if (
+        request_payload.get("origin") != "coverage-observation"
+        or not isinstance(observation, dict)
+        or set(observation)
+        != {"testimonium_ref", "testimonium_id", "observation_ordinal", "bounds"}
+        or observation.get("bounds") != bounds
+        or not isinstance(inputs, list)
+        or observation.get("testimonium_ref") not in inputs
+        or not isinstance(ink_map_ref, dict)
+        or ink_map_ref not in inputs
+    ):
+        raise ContractError(
+            "a real recovery request does not bind exact Testimonium and Ink Map evidence"
+        )
+    testimonium = context.tree.read_artifact_reference(
+        observation["testimonium_ref"],
+        stage=ATTESTATORES,
+        kind="page-testimonium",
+        subject_id=page_id,
+    )
+    ordinal = observation.get("observation_ordinal")
+    rows = testimonium.get("payload", {}).get("observed")
+    source_rows = (
+        [row for row in rows if isinstance(row, dict) and row.get("ordinal") == ordinal]
+        if isinstance(rows, list)
+        else []
+    )
+    if (
+        testimonium.get("artifact_id") != observation.get("testimonium_id")
+        or testimonium.get("payload", {}).get("page_ordinal") != page_ordinal
+        or not isinstance(ordinal, int)
+        or isinstance(ordinal, bool)
+        or len(source_rows) != 1
+        or source_rows[0].get("bounds_source") not in {"native", "derived"}
+    ):
+        raise ContractError(
+            "a real recovery request does not resolve to one reported coverage observation"
+        )
+    source = source_rows[0].get("bounds")
+    if (
+        not isinstance(source, dict)
+        or set(source) != {"x", "y", "w", "h"}
+        or any(
+            not isinstance(source[name], int) or isinstance(source[name], bool)
+            for name in ("x", "y", "w", "h")
+        )
+        or source["w"] <= 0
+        or source["h"] <= 0
+    ):
+        raise ContractError("the bound coverage observation has malformed geometry")
+    canonical = {
+        "x": max(0, source["x"]),
+        "y": max(0, source["y"]),
+        "w": max(0, min(page_width, source["x"] + source["w"]) - max(0, source["x"])),
+        "h": max(0, min(page_height, source["y"] + source["h"]) - max(0, source["y"])),
+    }
+    if canonical != bounds or canonical["w"] <= 0 or canonical["h"] <= 0:
+        raise ContractError(
+            "the requested recovery geometry is not the canonical on-page observation rectangle"
+        )
+    ink_map = context.tree.read_artifact_reference(
+        ink_map_ref, stage=INK_MAP, kind="ink-map", subject_id=page_id
+    )
+    ink_payload = ink_map.get("payload")
+    evidence = ink_payload.get("edge_findings") if isinstance(ink_payload, dict) else None
+    if (
+        not isinstance(evidence, dict)
+        or ink_payload.get("page_ordinal") != page_ordinal
+        or evidence.get("width") != page_width
+        or evidence.get("height") != page_height
+    ):
+        raise ContractError("the recovery request's Ink Map does not bind this sealed page")
+    grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
+    minimum = grouping_policy["coverage_audit"]["minimum_ink_pixels"]
+    covered = _all_cut_bounds_on_page(context, page_ordinal, page_id)
+    measured = _ink_outside_cut_union(evidence, bounds, covered)
+    if (
+        request_payload.get("minimum_ink_pixels") != minimum
+        or request_payload.get("outside_ink_pixels") != measured
+        or measured < minimum
+        or expected_act.get("page_ordinal") != page_ordinal
+    ):
+        raise ContractError(
+            "the recovery request's claimed outside ink does not recompute from its sealed evidence"
+        )
+
+
 def recovery_pass(context, act_id: str, request_id: str) -> None:
     """Cut one replacement region for one act, at the Recensor's request.
 
     The Recensor asked; the Designator cuts. Keeping the ownership straight is
     what stops the recovery loop from growing a second author for crops.
     """
-    seal = context.tree.read_artifact(DESIGNATOR, "proposal-seal", _seal_artifact_id())
-    match = [item for item in seal["payload"]["expected_acts"] if item["act_id"] == act_id]
+    # Resolve through the shared consumer. This verifies the seal self-hash,
+    # denominator, and every minted residual premise before any crop is cut.
+    match = [item for item in expected_acts(context) if item["act_id"] == act_id]
     if not match:
         raise ContractError(f"recovery asked for {act_id}, which the proposal seal does not name")
     if match[0].get("outcome") != "proposed":
@@ -3554,6 +3681,17 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
     # recovery is bounded and rare, and the read re-verifies the sealed digest.
     page_w, page_h = dimensions(_read_checked_page_bytes(context, page_record))
     geometry.validate_bounds(bounds, page_w, page_h, "recovery bounds")
+    if real_input:
+        _verify_coverage_recovery_evidence(
+            context,
+            request,
+            request_payload,
+            match[0],
+            page_record["subject_id"],
+            page_ordinal,
+            page_w,
+            page_h,
+        )
     # The same builder `cut_region` uses, so this duplicate check is computed
     # against the exact shape that would actually be published.
     transform = _crop_transform(page_ordinal, page_record["subject_id"], bounds)
