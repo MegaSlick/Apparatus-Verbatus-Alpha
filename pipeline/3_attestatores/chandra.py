@@ -87,10 +87,11 @@ import feeding
 from common import chandra_layout
 from common.chandra_presentation import (
     PRESENT_COLOUR_MODE as SHARED_PRESENT_COLOUR_MODE,
-    PRESENT_OPERATION as SHARED_PRESENT_OPERATION,
-    presented_transform,
-    render_page,
 )
+from common.chandra_presentation import (
+    PRESENT_OPERATION as SHARED_PRESENT_OPERATION,
+)
+from common.chandra_presentation import presented_transform, render_page
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
 from common.imaging import dimensions

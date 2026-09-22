@@ -16,6 +16,7 @@ import json
 
 import pytest
 
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.perlector_audit import (
     LEGACY_REQUEST_SCHEMA,
@@ -23,10 +24,12 @@ from common.perlector_audit import (
     ReproofResponseRefusal,
     assemble_reproof_response,
     audit_request,
+    audit_prompt_evidence,
     change_record,
     change_records_from_edits,
     render_reproof_instruction,
     text_change_span,
+    validate_audit_prompt_evidence,
 )
 
 
@@ -124,7 +127,7 @@ def test_two_disjoint_exact_edits_assemble_and_keep_one_change_record_each():
     ]
 
 
-def test_duplicate_changed_zero_width_insertions_are_refused():
+def test_colocated_cross_class_insertions_are_applied_once_and_keep_both_findings():
     request = audit_request(
         act_key="a1",
         attempt_ordinal=1,
@@ -144,7 +147,75 @@ def test_duplicate_changed_zero_width_insertions_are_refused():
         }
         for row in request["reproofs"]
     ]
-    with pytest.raises(ReproofResponseRefusal, match="overlapping changed spans"):
+    assembled, response = assemble_reproof_response(
+        json.dumps({"schema": "perlector-audit-response.v1", "edits": edits}), request
+    )
+    assert assembled == "aXb"
+    assert change_records_from_edits(response["edits"]) == [
+        {"start": 1, "end": 1, "triggering_flag_class": "testimony-diff"},
+        {"start": 1, "end": 1, "triggering_flag_class": "repetition"},
+    ]
+
+
+@pytest.mark.parametrize("second_replacement", ["", "Y"])
+def test_colocated_cross_class_insertions_refuse_disagreeing_answers(second_replacement):
+    request = audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
+        semi_final_text="ab",
+        flags=[
+            {"class": "testimony-diff", "location": {"start": 1, "end": 1}},
+            {"class": "repetition", "location": {"start": 1, "end": 1}},
+        ],
+    )
+    edits = [
+        {
+            "class": "testimony-diff",
+            "location": {"start": 1, "end": 1},
+            "original": "",
+            "replacement": "X",
+        },
+        {
+            "class": "repetition",
+            "location": {"start": 1, "end": 1},
+            "original": "",
+            "replacement": second_replacement,
+        },
+    ]
+    with pytest.raises(ReproofResponseRefusal, match="contradictory answers"):
+        assemble_reproof_response(
+            json.dumps({"schema": "perlector-audit-response.v1", "edits": edits}), request
+        )
+
+
+def test_colocated_cross_class_nonzero_corrections_are_applied_once():
+    request = audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
+        semi_final_text="alpha beta",
+        flags=[
+            {"class": "testimony-diff", "location": {"start": 6, "end": 10}},
+            {"class": "repetition", "location": {"start": 6, "end": 10}},
+        ],
+    )
+    edits = [
+        {
+            "class": row["class"],
+            "location": row["location"],
+            "original": "beta",
+            "replacement": "bêta",
+        }
+        for row in request["reproofs"]
+    ]
+    assembled, _response = assemble_reproof_response(
+        json.dumps({"schema": "perlector-audit-response.v1", "edits": edits}), request
+    )
+    assert assembled == "alpha bêta"
+
+    edits[1]["replacement"] = "beta"
+    with pytest.raises(ReproofResponseRefusal, match="contradictory answers"):
         assemble_reproof_response(
             json.dumps({"schema": "perlector-audit-response.v1", "edits": edits}), request
         )
@@ -158,6 +229,26 @@ def test_live_instruction_contains_frozen_text_closed_shape_and_unicode_offset_r
     assert "exactly schema and edits" in instruction
     assert all(field in instruction for field in ("class", "location", "original", "replacement"))
     assert "replacement must equal original" in instruction
+
+
+def test_audit_prompt_evidence_binds_the_full_rendered_instruction_and_request():
+    request = _request("alpha βeta")
+    base_text = "base prompt"
+    base_prompt = {"rendered_sha256": digest_bytes(base_text.encode("utf-8"))}
+    rendered = "\n".join((base_text, render_reproof_instruction(request)))
+    evidence = audit_prompt_evidence(
+        base_prompt=base_prompt,
+        base_text=base_text,
+        request=request,
+        request_sha256="c" * 64,
+        rendered_text=rendered,
+    )
+    assert validate_audit_prompt_evidence(evidence, request=request) == evidence
+    with pytest.raises(SchemaRefusal, match="omits its exact frozen"):
+        validate_audit_prompt_evidence(
+            {**evidence, "rendered_text": "x", "rendered_sha256": digest_bytes(b"x")},
+            request=request,
+        )
 
 
 def test_reproof_rejects_a_partial_reply_before_any_text_is_assembled():

@@ -520,7 +520,7 @@ class ChairClient:
             if set(transport_problem) != CHAIR_TRANSPORT_PROBLEM_FIELDS:
                 raise AssertionError(  # pragma: no cover - closed by construction
                     "chair transport problem built the wrong field set"
-                )
+                ) from error
             failure_record = {
                 "schema": CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
                 "chair": self._identity.role,
@@ -544,16 +544,14 @@ class ChairClient:
                 "usage": None,
                 "parse_problem": None,
                 "capacity": (
-                    _plain_capacity(request.capacity)
-                    if request.capacity is not None
-                    else None
+                    _plain_capacity(request.capacity) if request.capacity is not None else None
                 ),
                 "transport_problem": transport_problem,
             }
             if set(failure_record) != CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS:
                 raise AssertionError(  # pragma: no cover - closed by construction
                     f"{CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA} built the wrong field set"
-                )
+                ) from error
             call_record_ref = self._retain(canonical_bytes(failure_record))
             raise ChairTransportFailure(
                 str(error),

@@ -508,13 +508,9 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
             payload, _STRUCTURE_ANSWER_V1_FIELDS, "legacy structure-answer payload"
         )
     elif schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V2:
-        record = _closed_object(
-            payload, _STRUCTURE_ANSWER_V2_FIELDS, "v2 structure-answer payload"
-        )
+        record = _closed_object(payload, _STRUCTURE_ANSWER_V2_FIELDS, "v2 structure-answer payload")
     elif schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
-        record = _closed_object(
-            payload, _STRUCTURE_ANSWER_V3_FIELDS, "v3 structure-answer payload"
-        )
+        record = _closed_object(payload, _STRUCTURE_ANSWER_V3_FIELDS, "v3 structure-answer payload")
         _closed_object(
             record["presentation_ref"],
             _STRUCTURE_ATTEMPT_REFERENCE_FIELDS,

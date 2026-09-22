@@ -29,9 +29,7 @@ STRUCTURE_REQUEST_IMAGE_FIELDS: Final = frozenset(
 )
 
 
-def render_page(
-    page_bytes: bytes, bounds: Mapping[str, int]
-) -> tuple[bytes, tuple[int, int]]:
+def render_page(page_bytes: bytes, bounds: Mapping[str, int]) -> tuple[bytes, tuple[int, int]]:
     """Return the exact RGB/grid-28 PNG Chandra's pipeline presents."""
     source_width, source_height = bounds["w"], bounds["h"]
     target = scale_to_fit_chandra(source_width, source_height)

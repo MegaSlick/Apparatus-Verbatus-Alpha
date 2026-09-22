@@ -1363,7 +1363,7 @@ def test_the_audit_reproof_pass_sends_the_same_base_prompt_plus_its_delivered_in
     )
     with client:
         endpoint.script(ScriptedAnswer(content="confirmed unchanged", finish_reason="stop"))
-        _reader(client, chair).read(
+        result = _reader(client, chair).read(
             dossier,
             pass_kind="audit-reproof",
             delivered_pixels=_delivered_pixels(region_image=region_image, page_image=page_image),
@@ -1378,3 +1378,5 @@ def test_the_audit_reproof_pass_sends_the_same_base_prompt_plus_its_delivered_in
     rendered = prompts.build_prompt(chair.serving_recipe, chair.role, dossier, None)
     assert sent_text == "\n".join([rendered, render_reproof_instruction(request)])
     assert digest_bytes(rendered.encode("utf-8")) == evidence["rendered_sha256"]
+    assert result["rendered_prompt"] == sent_text
+    assert result["request_sha256"]

@@ -530,16 +530,14 @@ def prepare_page_request_image(
     verify_input_bytes(source_ref, page_bytes)
     if dimensions(page_bytes) != (page_w, page_h):
         raise ContractError(
-            f"the Designator analysis for page {page_id} does not match its sealed pixel "
-            "dimensions"
+            f"the Designator analysis for page {page_id} does not match its sealed pixel dimensions"
         )
     bounds = {"x": 0, "y": 0, "w": page_w, "h": page_h}
     try:
         model_image, target = render_page(page_bytes, bounds)
     except ValueError as error:
         raise SchemaRefusal(
-            "the Designator cannot reproduce Chandra's RGB scale_to_fit request image: "
-            f"{error}"
+            f"the Designator cannot reproduce Chandra's RGB scale_to_fit request image: {error}"
         ) from error
     image_sha256, image_blob = context.tree.put_blob(DESIGNATOR, model_image)
     presented = {
@@ -1382,7 +1380,6 @@ def ask_page(
     and every other page keeps its answer.
     """
     page_id = page_record["subject_id"]
-    payload = page_record["payload"]
     page_w, page_h = analysis["width"], analysis["height"]
     # Derive and retain the native image first, then decide capacity over the
     # exact pixels that would go on the wire. A request that exceeds
@@ -1443,10 +1440,7 @@ def ask_page(
             and error.request_sha256 is not None
             and error.receipt_ref is not None
             and error.served_model_id is not None
-            and (
-                isinstance(error, ChairTransportFailure)
-                or error.raw_response_ref is not None
-            )
+            and (isinstance(error, ChairTransportFailure) or error.raw_response_ref is not None)
         ):
             return _failed_call_page_answer(
                 page_id=page_id,

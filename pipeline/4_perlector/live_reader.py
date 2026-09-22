@@ -112,7 +112,8 @@ class EngineSignalRefusal(ContractError):
 
     def __init__(
         self,
-        message: str,
+        code: str,
+        detail: str,
         *,
         raw_response_ref: Mapping[str, str],
         call_record_ref: Mapping[str, str],
@@ -120,12 +121,14 @@ class EngineSignalRefusal(ContractError):
         receipt_ref: Mapping[str, str],
         served_model_id: str,
     ) -> None:
+        self.code = code
+        self.detail = detail
         self.raw_response_ref = dict(raw_response_ref)
         self.call_record_ref = dict(call_record_ref)
         self.request_sha256 = request_sha256
         self.receipt_ref = dict(receipt_ref)
         self.served_model_id = served_model_id
-        super().__init__(message)
+        super().__init__(f"{code}: {detail}")
 
 
 def _data_uri(image_bytes: bytes) -> str:
@@ -147,6 +150,7 @@ def _mapped_stop_reason(finish_reason: str | None, *, act_key: object, response:
     if finish_reason in ENGINE_STOP_CUT_OFF:
         return "length"
     raise EngineSignalRefusal(
+        "ENGINE_FINISH_REASON_UNRECOGNIZED",
         f"act {act_key!r} received an engine stop reason {finish_reason!r} this seam does "
         "not recognize (neither a completion nor a length cutoff); the raw response bytes "
         f"are retained at {dict(response.raw_response_ref)!r}",
@@ -405,6 +409,7 @@ class VLLMReader:
 
         if response.parse_problem is not None:
             raise EngineSignalRefusal(
+                response.parse_problem,
                 f"the reading response for act {dossier.get('act_key')!r} is not a reading "
                 f"({response.parse_problem}); the raw response bytes are retained at "
                 f"{dict(response.raw_response_ref)!r}",
@@ -442,4 +447,7 @@ class VLLMReader:
             "finish_reason": response.finish_reason,
             "served_model_id": response.served_model_id,
         }
+        if instrument is not None:
+            result["rendered_prompt"] = text
+            result["request_sha256"] = response.request_sha256
         return result

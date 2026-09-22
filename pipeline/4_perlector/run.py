@@ -55,7 +55,6 @@ import combined  # noqa: E402
 import dossier as dossier_module  # noqa: E402
 import logical_reading  # noqa: E402
 import nuda  # noqa: E402
-import operations.serving.errors as serving_errors  # noqa: E402
 import prompts  # noqa: E402
 import protocol  # noqa: E402
 import regime  # noqa: E402
@@ -64,6 +63,7 @@ from dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from live_reader import EngineSignalRefusal, VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 
+import operations.serving.errors as serving_errors  # noqa: E402
 from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -73,7 +73,7 @@ from common.contracts.approval import (  # noqa: E402
     validate_approval_record,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of  # noqa: E402
-from common.contracts.envelope import validate_input_refs  # noqa: E402
+from common.contracts.envelope import build_envelope, validate_input_refs  # noqa: E402
 from common.contracts.errors import (  # noqa: E402
     ApprovalRefusal,
     ContractError,
@@ -103,7 +103,6 @@ from common.native_witness import (  # noqa: E402
 )
 from common.perlector_failure import (  # noqa: E402
     PRE_PERLECTIO_ARTIFACTS,
-    validate_failed_payload,
     validate_failed_perlectio,
 )
 from common.runtree.store import RECEIPTS_DIR  # noqa: E402
@@ -2491,8 +2490,8 @@ def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
         return {
             "phase": phase,
             "kind": "engine-signal",
-            "code": type(error).__name__,
-            "detail": str(error),
+            "code": error.code,
+            "detail": error.detail,
             "raw_response_ref": dict(error.raw_response_ref),
             "call_record_ref": dict(error.call_record_ref),
             "request_sha256": error.request_sha256,
@@ -2525,9 +2524,7 @@ def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
             "code": error.code,
             "detail": error.detail,
             "raw_response_ref": None,
-            "call_record_ref": (
-                dict(call_record_ref) if call_record_ref is not None else None
-            ),
+            "call_record_ref": (dict(call_record_ref) if call_record_ref is not None else None),
             "request_sha256": getattr(error, "request_sha256", None),
             "receipt_ref": dict(receipt_ref) if receipt_ref is not None else None,
             "served_model_id": getattr(error, "served_model_id", None),
@@ -2596,15 +2593,29 @@ def _failure_from_engine_call(
 def _publish_failed_perlectio(
     context, *, act_id: str, ordinal: int, inputs: list[dict[str, str]], payload: dict[str, Any]
 ) -> None:
-    """Publish only after local shape checks, then verify the shared full contract."""
-    validate_failed_payload(payload)
+    """Fully validate the prospective immutable record before publishing it."""
     attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
+    inputs = _distinct_inputs(inputs)
+    candidate = build_envelope(
+        run_id=context.tree.run_id,
+        artifact_id=artifact_id(PERLECTOR, "perlectio", act_id, attempt),
+        subject_id=act_id,
+        stage=PERLECTOR,
+        kind="perlectio",
+        outcome="failed",
+        config_digest=context.config_digest,
+        adapter_revision=context.adapter_revision,
+        inputs=inputs,
+        payload=payload,
+        attempt=attempt,
+    )
+    validate_failed_perlectio(context, candidate, act_id, expected_act_key=payload.get("act_key"))
     context.publish(
         kind="perlectio",
         subject_id=act_id,
         outcome="failed",
         attempt=attempt,
-        inputs=_distinct_inputs(inputs),
+        inputs=inputs,
         payload=payload,
     )
     identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
@@ -2905,9 +2916,16 @@ def validate_reading_payload(
         }
     if protocol_sha256 is None:
         protocol_sha256 = "unsealed-test"
-    if prompt_record != prompts.prompt_evidence(
+    expected_base_prompt = prompts.prompt_evidence(
         identity, reading_dossier, protocol_config, protocol_sha256
-    ):
+    )
+    if isinstance(prompt_record, dict) and prompt_record.get("schema") == audit.AUDIT_PROMPT_SCHEMA:
+        audit.validate_audit_prompt_evidence(prompt_record)
+        if prompt_record["base_prompt"] != expected_base_prompt:
+            raise SchemaRefusal(
+                "a Perlector audit prompt does not reproduce its base prompt from the dossier"
+            )
+    elif prompt_record != expected_base_prompt:
         raise SchemaRefusal(
             "a Perlector prompt record does not reproduce from its resolved chair and dossier"
         )
@@ -3002,17 +3020,35 @@ def _validate_sealed_doubt(payload: dict, *, fields: frozenset) -> None:
         )
 
 
-def _reproof_call(reproof: dict[str, Any]) -> dict[str, Any] | None:
+def _reproof_call(
+    reproof: dict[str, Any],
+    *,
+    base_prompt: dict[str, Any],
+    base_text: str,
+    request: dict[str, Any],
+) -> dict[str, Any] | None:
     """The re-proof's retained call, in the closed shape the finding seals, or `None`."""
     engine_call = reproof.get("engine_call")
     if engine_call is None:
         return None
+    request_sha256 = reproof.get("request_sha256")
+    rendered_prompt = reproof.get("rendered_prompt")
+    if not isinstance(request_sha256, str) or not isinstance(rendered_prompt, str):
+        raise SchemaRefusal("a live re-proof retains no exact rendered prompt and request digest")
     return {
         "call_record_ref": dict(engine_call["call_record_ref"]),
         "raw_response_ref": dict(engine_call["raw_response_ref"]),
         "response_sha256": engine_call["response_sha256"],
         "finish_reason": engine_call["finish_reason"],
         "served_model_id": engine_call["served_model_id"],
+        "request_sha256": request_sha256,
+        "audit_prompt": audit.audit_prompt_evidence(
+            base_prompt=base_prompt,
+            base_text=base_text,
+            request=request,
+            request_sha256=request_sha256,
+            rendered_text=rendered_prompt,
+        ),
     }
 
 
@@ -4535,6 +4571,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # and the finding's `flag_text_length` measure against, whether or not
         # a re-proof ever runs.
         pre_audit_text = payload["text"]
+        base_prompt_record = copy.deepcopy(payload["prompt"])
+        base_prompt_text = prompts.build_prompt(
+            chair.serving_recipe, chair.role, payload["dossier"], protocol_config
+        )
         # The truncation instrument's verdict on the re-proof call itself, or
         # `None` while no re-proof has been delivered. Measured over the
         # re-proof's own text and stop word, *before* that text is compared with
@@ -4566,6 +4606,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # Bound as an input in both cases; named by `payload["engine_call"]` only
         # when its text is the one published.
         reproof_inputs: list[dict[str, str]] = []
+        reproof_call_record: dict[str, Any] | None = None
         # The same predicate `validate_chain` re-derives from the frozen draft:
         # one spelling of "a re-proof request exists for this act".
         if audit.reproof_delivery_due(flags, audit_policy["round_cap"]):
@@ -4661,6 +4702,12 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                         "its exact requested edits"
                     )
                 reproof_edits = copy.deepcopy(reproof_response["edits"])
+                reproof_call_record = _reproof_call(
+                    reproof,
+                    base_prompt=base_prompt_record,
+                    base_text=base_prompt_text,
+                    request=audit_request,
+                )
             except audit.ReproofResponseRefusal as error:
                 failure_inputs = (
                     row["inputs"]
@@ -4755,6 +4802,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 # produce it -- the same false provenance `truncation` and
                 # `self_revision` below were repaired for (audit finding H6).
                 payload_fields = with_engine_call(payload, reproof, payload_fields)
+                if reproof_call_record is not None:
+                    payload["prompt"] = copy.deepcopy(reproof_call_record["audit_prompt"])
                 payload["dissent"] = dissent_against(
                     final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
                 )
@@ -4900,7 +4949,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # Perlectio's own `engine_call` stays Pass B's whenever the text is
             # unchanged, and a later reader must still be able to find the
             # re-proof's response and check the sealed verdict against it.
-            "reproof_call": _reproof_call(reproof) if reproof_truncation is not None else None,
+            "reproof_call": reproof_call_record if reproof_truncation is not None else None,
         }
         audit.validate_finding(
             finding_payload,

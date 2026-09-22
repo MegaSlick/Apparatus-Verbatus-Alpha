@@ -73,9 +73,7 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
     )
     assert CHAIR_CALL_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS_V1 | {"response_status"}
     assert CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA == "chair-transport-failure.v1"
-    assert CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS | {
-        "transport_problem"
-    }
+    assert CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS | {"transport_problem"}
     assert CHAIR_TRANSPORT_PROBLEM_SCHEMA == "chair-transport-problem.v1"
     assert CHAIR_TRANSPORT_PROBLEM_FIELDS == {
         "schema",

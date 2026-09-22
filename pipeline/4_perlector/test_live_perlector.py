@@ -646,6 +646,7 @@ def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_cont
     assert failures
     failure = failures[0]
     assert failure["payload"]["failure"]["kind"] == "engine-signal"
+    assert failure["payload"]["failure"]["code"] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
     assert failure["payload"]["failure"]["response_completion"] == "complete"
     assert failure["payload"]["failure"]["raw_response_ref"] in failure["inputs"]
     context = _page_context(root, catalogue, monkeypatch)
@@ -654,6 +655,25 @@ def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_cont
     forged["self_hash"] = self_hash(forged)
     with pytest.raises(SchemaRefusal, match="complete raw/call/request/receipt/model evidence"):
         perlector.validate_failed_perlectio(context, forged, forged["subject_id"])
+    evidence_free_live = copy.deepcopy(failure)
+    evidence_free_live["payload"]["failure"].update(
+        {
+            "phase": "audit-reproof",
+            "kind": "reproof-response",
+            "code": "ReproofResponseRefusal",
+            "raw_response_ref": None,
+            "call_record_ref": None,
+            "request_sha256": None,
+            "receipt_ref": None,
+            "served_model_id": None,
+            "response_completion": None,
+        }
+    )
+    evidence_free_live["self_hash"] = self_hash(evidence_free_live)
+    with pytest.raises(SchemaRefusal, match="live re-proof failure omits"):
+        perlector.validate_failed_perlectio(
+            context, evidence_free_live, evidence_free_live["subject_id"]
+        )
     assert endpoint.requests
     resumed, resumed_exit = _run_perlector(
         live_run,
@@ -682,12 +702,37 @@ def test_a_body_that_is_not_a_reading_becomes_a_retained_act_failure(
     for record in failures:
         failure = record["payload"]["failure"]
         assert failure["kind"] == "engine-signal"
+        assert failure["code"] == "CHAIR_RESPONSE_INVALID"
         assert failure["phase"] == "establishing"
         assert failure["response_completion"] == "complete"
         assert "text" not in record["payload"] and "audit" not in record["payload"]
         for field in ("raw_response_ref", "call_record_ref", "receipt_ref"):
             assert failure[field] in record["inputs"]
         assert failure["request_sha256"] and failure["served_model_id"]
+
+
+def test_an_invalid_failed_record_is_refused_before_immutable_publication(
+    live_run, tmp_path, monkeypatch
+):
+    original = perlector._failure_record
+
+    def corrupt_call_reference(error, *, phase):
+        failure = original(error, phase=phase)
+        assert failure is not None and failure["call_record_ref"] is not None
+        failure["call_record_ref"]["sha256"] = "0" * 64
+        return failure
+
+    monkeypatch.setattr(perlector, "_failure_record", corrupt_call_reference)
+    with pytest.raises(SchemaRefusal, match="does not match retained bytes"):
+        _run_perlector(
+            live_run,
+            tmp_path,
+            monkeypatch,
+            ScriptedAnswer(content=READING, finish_reason="abort"),
+        )
+    assert not [
+        record for record in _published_readings(live_run[0]) if record["outcome"] == "failed"
+    ]
 
 
 def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
@@ -1084,11 +1129,14 @@ def test_a_transport_timeout_fails_one_act_and_continues_to_the_next(
         record["outcome"] == "failed" and record["payload"]["failure"]["kind"] == "transport"
         for record in records.values()
     )
-    assert next(
-        record["payload"]["failure"]["response_completion"]
-        for record in records.values()
-        if record["outcome"] == "failed"
-    ) == "unknown"
+    assert (
+        next(
+            record["payload"]["failure"]["response_completion"]
+            for record in records.values()
+            if record["outcome"] == "failed"
+        )
+        == "unknown"
+    )
     assert endpoint.requests, "the later act was not sent to the chair"
 
 

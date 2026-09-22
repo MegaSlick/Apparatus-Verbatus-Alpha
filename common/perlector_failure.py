@@ -115,6 +115,8 @@ def validate_failed_payload(payload: Any) -> dict[str, Any]:
         raise SchemaRefusal("a failed Perlectio names an unknown failure phase")
     if not isinstance(failure["kind"], str) or failure["kind"] not in _KINDS:
         raise SchemaRefusal("a failed Perlectio names an unknown failure kind")
+    if failure["kind"] == "reproof-response" and failure["phase"] != "audit-reproof":
+        raise SchemaRefusal("a malformed re-proof response is not bound to the audit phase")
     if (
         not isinstance(failure["code"], str)
         or not failure["code"]
@@ -142,9 +144,8 @@ def validate_failed_payload(payload: Any) -> dict[str, Any]:
             "a completed engine or chair response failure has no retained response evidence"
         )
     if failure["kind"] == "transport":
-        retained_transport = (
-            failure["raw_response_ref"] is None
-            and all(item is not None for item in evidence[1:])
+        retained_transport = failure["raw_response_ref"] is None and all(
+            item is not None for item in evidence[1:]
         )
         if completion != "unknown" or (any(present) and not retained_transport):
             raise SchemaRefusal(
@@ -214,10 +215,24 @@ def validate_failed_perlectio(
     identity = validate_serving_provenance(
         context, payload["provenance"], producer_stage=PERLECTOR, require_receipt=True
     )
+    serving_receipt = context.tree.read_run_receipt(payload["provenance"]["receipt_ref"])
+    fixture_serving = (
+        serving_receipt.get("endpoint") == "fixture://offline-chair-runner"
+        and serving_receipt.get("engine_version") == "fixture-v0"
+        and serving_receipt.get("dtype") == "fixture"
+    )
     validate_input_refs(envelope["inputs"])
     for reference in envelope["inputs"]:
         _verify_ref(context, reference, "direct input")
     failure = payload["failure"]
+    if (
+        failure["kind"] == "reproof-response"
+        and failure["response_completion"] is None
+        and not fixture_serving
+    ):
+        raise SchemaRefusal(
+            "a live re-proof failure omits the completed response evidence its receipt requires"
+        )
     if failure["receipt_ref"] is not None and failure["receipt_ref"] != payload["provenance"].get(
         "receipt_ref"
     ):
@@ -285,14 +300,10 @@ def validate_failed_perlectio(
                     "parse_problem",
                 )
             ):
-                raise SchemaRefusal(
-                    "a transport failure record invents a completed response fact"
-                )
+                raise SchemaRefusal("a transport failure record invents a completed response fact")
             problem = call["transport_problem"]
             if not isinstance(problem, dict) or set(problem) != _TRANSPORT_PROBLEM_FIELDS:
-                raise SchemaRefusal(
-                    "a failed Perlectio transport problem is not its closed schema"
-                )
+                raise SchemaRefusal("a failed Perlectio transport problem is not its closed schema")
             if (
                 problem["schema"] != "chair-transport-problem.v1"
                 or problem["code"] != "ENDPOINT_UNAVAILABLE"
@@ -330,15 +341,44 @@ def validate_failed_perlectio(
         if not is_sha256(call.get("decoding_config_sha256")):
             raise SchemaRefusal("a failed Perlectio chair call has no decoding-policy digest")
         context.require_sealed_config("decoding", call["decoding_config_sha256"])
-        if failure["raw_response_ref"] is not None and call.get(
-            "response_sha256"
-        ) != failure["raw_response_ref"]["sha256"]:
+        if (
+            failure["raw_response_ref"] is not None
+            and call.get("response_sha256") != failure["raw_response_ref"]["sha256"]
+        ):
             raise SchemaRefusal(
                 "a failed Perlectio chair call response digest disagrees with its raw response"
             )
         if failure["kind"] == "chair-response" and call.get("parse_problem") != failure["code"]:
             raise SchemaRefusal(
                 "a failed Perlectio chair refusal code disagrees with its call record"
+            )
+        if failure["kind"] == "engine-signal":
+            parse_problem = call.get("parse_problem")
+            finish_reason = call.get("finish_reason")
+            parse_failure = (
+                isinstance(parse_problem, str)
+                and parse_problem
+                and failure["code"] == parse_problem
+            )
+            finish_failure = (
+                parse_problem is None
+                and isinstance(finish_reason, str)
+                and finish_reason not in {"stop", "length"}
+                and failure["code"] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
+            )
+            if not (parse_failure or finish_failure):
+                raise SchemaRefusal(
+                    "a failed Perlectio engine-signal record does not exhibit its parse or "
+                    "finish problem"
+                )
+        if failure["kind"] == "reproof-response" and (
+            call.get("parse_problem") is not None
+            or call.get("finish_reason") not in {"stop", "length", None}
+            or call.get("response_model") != failure["served_model_id"]
+            or (call["schema"] == "chair-call-record.v2" and call["response_status"] != 200)
+        ):
+            raise SchemaRefusal(
+                "an exact-edit re-proof failure does not name a successful parse-clean chair call"
             )
 
     existing: set[str] = set()

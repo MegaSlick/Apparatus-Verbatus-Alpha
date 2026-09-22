@@ -570,9 +570,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert request["chat_template_kwargs"] == {"enable_thinking": False}
         assert request["temperature"] == 1
     tree = RunTree(root, RUN_ID)
-    request_images = _by_page_ordinal(
-        _artifacts(root, DESIGNATOR, STRUCTURE_REQUEST_IMAGE_KIND)
-    )
+    request_images = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_REQUEST_IMAGE_KIND))
     assert set(request_images) == {1, 2}
 
     answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
@@ -621,9 +619,9 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert (resize["target_width_px"], resize["target_height_px"]) == (196, 252)
         assert payload["capacity"]["images"][0]["width"] == 196
         assert payload["capacity"]["images"][0]["height"] == 252
-        request_url = endpoint.requests[ordinal - 1]["messages"][0]["content"][0][
-            "image_url"
-        ]["url"]
+        request_url = endpoint.requests[ordinal - 1]["messages"][0]["content"][0]["image_url"][
+            "url"
+        ]
         request_bytes = base64.b64decode(request_url.partition(",")[2])
         assert dimensions(request_bytes) == (196, 252)
         assert digest_bytes(request_bytes) == evidence["presented"]["image_sha256"]
@@ -1328,9 +1326,7 @@ def test_structure_answer_v2_resume_keeps_its_direct_page_presentation(
             )
 
     tree = RunTree(root, RUN_ID)
-    answer_row = _by_page_ordinal(
-        _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
-    )[1]
+    answer_row = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[1]
     attempt_row = next(
         row
         for row in _artifacts(root, DESIGNATOR, "structure-attempt")
@@ -1571,9 +1567,7 @@ def test_shared_attempt_call_verifier_refuses_a_digest_valid_call_from_another_a
         ]
     else:
         answers = [_blank_page_answer(), _answer(PAGE_TWO_ACTS)]
-    _endpoint, _exit_code = _run_designator(
-        root, catalogue, tmp_path, monkeypatch, answers
-    )
+    _endpoint, _exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, answers)
     attempts = _artifacts(root, DESIGNATOR, "structure-attempt")
     if case == "prior-retry":
         same_page = sorted(
@@ -1598,8 +1592,9 @@ def test_shared_attempt_call_verifier_refuses_a_digest_valid_call_from_another_a
         )
 
 
-def test_v3_attempt_refuses_a_call_that_names_the_original_instead_of_presented_image(
-    live_run, tmp_path, monkeypatch
+@pytest.mark.parametrize("mismatch", ["image", "temperature"])
+def test_v3_attempt_refuses_a_digest_valid_call_with_wrong_image_or_temperature(
+    live_run, tmp_path, monkeypatch, mismatch
 ):
     root, catalogue = live_run
     _endpoint, exit_code = _run_designator(
@@ -1612,18 +1607,27 @@ def test_v3_attempt_refuses_a_call_that_names_the_original_instead_of_presented_
     assert exit_code == EXIT_COMPLETE
     target = _by_page_ordinal(_artifacts(root, DESIGNATOR, "structure-attempt"))[1]
     tree = RunTree(root, RUN_ID)
-    call = json.loads(
-        tree.read_bytes(target["payload"]["call_record_ref"]["relative_path"])
+    call = json.loads(tree.read_bytes(target["payload"]["call_record_ref"]["relative_path"]))
+    context = _open(root, catalogue, ATTESTATORES, "--placement-tier", TIER)
+    stage_contract.verify_structure_attempt_call(
+        context,
+        target["payload"],
+        target["subject_id"],
+        attempt_inputs=target["inputs"],
     )
-    source_ref = target["inputs"][0]
-    assert call["image_sha256s"] != [source_ref["sha256"]]
-    call["image_sha256s"] = [source_ref["sha256"]]
+    if mismatch == "image":
+        source_ref = target["inputs"][0]
+        assert call["image_sha256s"] != [source_ref["sha256"]]
+        call["image_sha256s"] = [source_ref["sha256"]]
+    else:
+        expected_temperature = target["payload"]["decoding"]["temperature"]
+        assert call["generation_sent"]["temperature"] == expected_temperature
+        call["generation_sent"]["temperature"] = expected_temperature + 0.25
     digest, blob = tree.put_blob(DESIGNATOR, canonical_bytes(call))
     forged = {
         **target["payload"],
         "call_record_ref": {"relative_path": blob.relative_path, "sha256": digest},
     }
-    context = _open(root, catalogue, ATTESTATORES, "--placement-tier", TIER)
     with pytest.raises(ContractError, match="disagrees with its retained call record"):
         stage_contract.verify_structure_attempt_call(
             context,
@@ -1662,12 +1666,10 @@ def test_downstream_consumer_verifies_every_attempt_including_nonproposal_pages(
         answers = [_blank_page_answer(), _answer(PAGE_TWO_ACTS)]
         target_ordinal = 1
         expected_verifications = 1
-    _endpoint, _exit_code = _run_designator(
-        root, catalogue, tmp_path, monkeypatch, answers
-    )
-    target_page = _by_page_ordinal(
-        _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
-    )[target_ordinal]["subject_id"]
+    _endpoint, _exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, answers)
+    target_page = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[
+        target_ordinal
+    ]["subject_id"]
     verified: list[str] = []
     original = stage_contract.verify_structure_attempt_call
 
@@ -2149,9 +2151,7 @@ def test_a_transport_timeout_is_retained_once_and_resume_never_resends_it(
                 ],
             )
     attempts_before = _artifacts(root, DESIGNATOR, "structure-attempt")
-    timeout_attempts = [
-        row for row in attempts_before if row["payload"]["page_ordinal"] == 2
-    ]
+    timeout_attempts = [row for row in attempts_before if row["payload"]["page_ordinal"] == 2]
     assert len(timeout_attempts) == 1
     attempt = timeout_attempts[0]["payload"]
     assert attempt["reason_code"] == structure_pass.HELD_CALL_UNUSABLE
@@ -2168,9 +2168,7 @@ def test_a_transport_timeout_is_retained_once_and_resume_never_resends_it(
     assert exit_code == EXIT_HELD
     assert resumed.requests == []
     assert _artifacts(root, DESIGNATOR, "structure-attempt") == attempts_before
-    terminal = _by_page_ordinal(
-        _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
-    )[2]["payload"]
+    terminal = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
     assert terminal["call_record_ref"] == attempt["call_record_ref"]
     assert terminal["attempt_ordinal"] == len(terminal["attempts"]) == 1
     expected_acts(_open(root, catalogue, ATTESTATORES, "--placement-tier", TIER))

@@ -3295,12 +3295,9 @@ def _verify_structure_request_image(
         )
     except SchemaRefusal as error:
         raise ContractError(
-            f"structure attempt for page {page_id} has invalid native image presentation: "
-            f"{error}"
+            f"structure attempt for page {page_id} has invalid native image presentation: {error}"
         ) from error
-    if presented["image_path"] != context.tree.blob_path(
-        DESIGNATOR, presented["image_sha256"]
-    ):
+    if presented["image_path"] != context.tree.blob_path(DESIGNATOR, presented["image_sha256"]):
         raise ContractError(
             f"structure attempt for page {page_id} does not retain its native request image "
             "at its Designator content address"
@@ -3438,9 +3435,7 @@ def verify_structure_attempt_call(
             f"structure attempt for page {page_id} names a malformed call record"
         ) from error
     if not isinstance(call, Mapping):
-        raise ContractError(
-            f"structure attempt for page {page_id} call record is not an object"
-        )
+        raise ContractError(f"structure attempt for page {page_id} call record is not an object")
     schema = call.get("schema")
     expected_fields = {
         CHAIR_CALL_RECORD_SCHEMA_V1: CHAIR_CALL_RECORD_FIELDS_V1,
@@ -3468,6 +3463,7 @@ def verify_structure_attempt_call(
         or call.get("request_sha256") != payload.get("request_sha256")
         or not isinstance(generation_sent, Mapping)
         or generation_sent.get("seed") != payload.get("attempt_seed")
+        or generation_sent.get("temperature") != decoding.get("temperature")
         or call.get("receipt_ref") != payload.get("receipt_ref")
         or call.get("receipt_ref") != provenance.get("receipt_ref")
         or call_identity != provenance.get("resolved_identity")
@@ -3511,8 +3507,7 @@ def verify_structure_attempt_call(
             or payload.get("reason_code") != "structure-call-unusable"
         ):
             raise ContractError(
-                f"structure attempt for page {page_id} has inconsistent "
-                "transport-failure evidence"
+                f"structure attempt for page {page_id} has inconsistent transport-failure evidence"
             )
         return
     raw_reference = _serving_evidence_reference(
