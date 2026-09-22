@@ -162,8 +162,9 @@
 # Perlector rows 1800s — both UNMEASURED planning values, not a claim that any
 # reading has ever been timed on real silicon.
 #
-# `startup_timeout_seconds` IS 300 ON EVERY ROW AND THAT IS A PLACEHOLDER, NOT
-# A SIZE (hostile review F057).  It is the whole budget
+# `startup_timeout_seconds` IS 300 ON EVERY ROW EXCEPT THE OBSERVED
+# `designator_structure` / `generic-80gb-plus` DIAGNOSTIC EXCEPTION, AND 300 IS A
+# PLACEHOLDER, NOT A SIZE (hostile review F057).  It is the whole budget
 # `operations/serving/manager.py::_wait_until_ready` allows from process launch
 # to a healthy endpoint, an exact `/v1/models` id match and a completed
 # inference probe; on expiry the chair is killed, PREFLIGHT goes red and the
@@ -180,17 +181,18 @@
 #                                + graph capture and engine warm-up
 #                                + margin
 #
-# Only one of those terms is measured in this tree (the Perlector's 51.7 GiB);
+# Only one of those terms is quantified in this tree (the Perlector's 51.7 GiB);
 # the volume read rate is exactly what the first authorized boot can measure,
 # and the capture and warm-up terms are what the first real chair start
-# reports.  **These values are deliberately left at 300 until then.**  Raising
-# them now would replace a number nobody measured with another number nobody
-# measured, and the row's value is sealed into the run's configuration digest,
-# so a guessed change is indistinguishable in the record from a measured one.
-# What has changed instead is the refusal: a watchdog expiry now says whether
-# the engine was *still loading* or whether the port was simply *refusing*, and
-# carries the launch-log tail that shows which — so the first red is readable
-# and Tyrel can set each row from a measurement rather than from a guess.
+# reports.  **The unmeasured rows deliberately remain at 300 until then.**
+# The one exception records its own evidence beside the row: its 300-second
+# cold startup timed out while still progressing, and an isolated 600-second
+# retry completed only with a warm cache.  That permits this row-specific
+# watchdog allowance; it does not qualify a 600-second cold start.  A watchdog
+# expiry says whether the engine was *still loading* or whether the port was
+# simply *refusing*, and carries the launch-log tail that shows which — so the
+# next red is readable and Tyrel can set each remaining row from a measurement
+# rather than from a guess.
 schema = "serving-recipes.v1"
 
 # Chandra fills the Designator structure chair and Attestator 1.  They have
@@ -284,7 +286,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder: weight bytes / volume read rate + graph capture (see the header)
+startup_timeout_seconds = 600  # OBSERVED diagnostic evidence: cold 300s timed out while progressing; isolated 600s retry completed warm-cache, not cold-start qualification (see header)
 poll_interval_seconds = 2
 request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
@@ -362,7 +364,7 @@ served_model_id = "attestator-1-chandra"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 18000
+max_model_len = 20480
 max_num_seqs = 4
 max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.88"
