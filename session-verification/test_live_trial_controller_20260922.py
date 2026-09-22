@@ -8,8 +8,11 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 from typing import Any, Mapping
 import unittest
+from unittest import mock
 
 MODULE_PATH = Path(
     os.environ.get(
@@ -122,6 +125,18 @@ def pod_page(rows: list[dict[str, object]], *, next_cursor: str | None = None) -
     }
 
 
+def case_outbound_request_explicitly_binds_entrypoint_and_cmd(tmp_path: Path) -> None:
+    session_dir, identity, auth = make_session(tmp_path)
+    bound_deadlines = deadlines(session_dir, auth)
+    request = controller.pod_request(
+        identity, auth, "vol-1", bound_deadlines, "private-test-key"
+    )
+    encoded = json.loads(request["args"])
+    args, entrypoint, cmd = controller.pod_command()
+    assert request["args"] == args
+    assert encoded == {"entrypoint": entrypoint, "cmd": cmd}
+
+
 def case_authorization_is_exact_session_closed_and_explicit_about_above_target(
     test: unittest.TestCase, tmp_path: Path
 ) -> None:
@@ -137,6 +152,11 @@ def case_authorization_is_exact_session_closed_and_explicit_about_above_target(
     auth["unreviewed"] = True
     with test.assertRaisesRegex(controller.Refusal, "closed shape"):
         controller.validate_authorization(auth, identity)
+
+    future = authorization(identity)
+    future["authorized_at"] = controller.iso(controller.utc_now() + dt.timedelta(minutes=5))
+    with test.assertRaisesRegex(controller.Refusal, "not currently valid"):
+        controller.validate_authorization(future, identity)
 
 
 def case_pod_inventory_walks_every_page_and_includes_cluster_pods() -> None:
@@ -162,6 +182,7 @@ def case_uncertain_volume_create_is_never_reposted_and_exact_match_is_adopted(
     tmp_path: Path,
 ) -> None:
     session_dir, identity, auth = make_session(tmp_path)
+    deadlines(session_dir, auth)
     row = volume(identity, auth)
     transport = ScriptedTransport(
         [
@@ -245,13 +266,28 @@ def billing(
 ) -> dict[str, object]:
     query_start = start.replace(minute=0, second=0, microsecond=0)
     query_end = cutoff.replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)
+    if id_field == "podId":
+        amounts = {
+            "totalAmount": 0.01,
+            "gpuAmount": 0.008,
+            "cpuAmount": 0.0,
+            "diskAmount": 0.002,
+        }
+        unique_field = "uniquePodCount"
+    else:
+        amounts = {
+            "totalAmount": 0.01,
+            "standardAmount": 0.01,
+            "highPerformanceAmount": 0.0,
+        }
+        unique_field = "uniqueNetworkVolumeCount"
     return {
         "records": [
             {
                 id_field: resource_id,
                 "startTime": controller.iso(query_start),
                 "endTime": controller.iso(query_end),
-                "totalAmount": 0.01,
+                **amounts,
             }
         ],
         "metadata": {
@@ -262,6 +298,8 @@ def billing(
                 "bucketSize": "hour",
             },
             "recordCount": 1,
+            unique_field: 1,
+            "totals": amounts,
         },
     }
 
@@ -291,10 +329,12 @@ def close_transport(
     )
     return ScriptedTransport(
         [
+            ("GET", "pods?includeClusterPods=true&limit=1000", (200, pod_page([]))),
             ("DELETE", "pods/pod-1", (204, None)),
             ("GET", "pods/pod-1", (404, None)),
             ("GET", "pods?includeClusterPods=true&limit=1000", (200, pod_page([]))),
             ("GET", pod_route, (200, pod_billing)),
+            ("GET", "network-volumes", (200, {"networkVolumes": []})),
             ("DELETE", "network-volumes/vol-1", (204, None)),
             ("GET", "network-volumes/vol-1", (404, None)),
             ("GET", "network-volumes", (200, {"networkVolumes": []})),
@@ -353,6 +393,97 @@ def case_empty_billing_is_lag_not_zero_or_verified(tmp_path: Path) -> None:
     assert result["status"] == "close-unverified"
 
 
+def case_duplicate_candidates_persist_and_converge_on_later_close(tmp_path: Path) -> None:
+    session_dir, identity, auth = make_session(tmp_path)
+    checked = controller.validate_authorization(auth, identity)
+    created = controller.utc_now() - dt.timedelta(minutes=5)
+    life = controller.lifecycle(session_dir)
+    controller.record_deadlines(life, checked, created)
+    life.update(
+        {
+            "authorization_public": {k: v for k, v in checked.items() if k != "authorization_sha256"},
+            "pod_create_attempted": True,
+            "pod_create_outcome": "unknown",
+            "volume_create_attempted": True,
+            "volume_create_outcome": "confirmed",
+            "volume_id": "vol-1",
+            "volume_created_at": controller.iso(created),
+        }
+    )
+    controller.write_lifecycle(session_dir, life)
+    rows = [
+        {"id": "pod-1", "name": identity["pod_name"], "createdAt": controller.iso(created)},
+        {"id": "pod-2", "name": identity["pod_name"], "createdAt": controller.iso(created)},
+    ]
+    first = ScriptedTransport(
+        [
+            ("GET", "pods?includeClusterPods=true&limit=1000", (200, pod_page(rows))),
+            ("DELETE", "pods/pod-1", (204, None)),
+            ("GET", "pods/pod-1", (200, {"id": "pod-1"})),
+            ("DELETE", "pods/pod-2", (204, None)),
+            ("GET", "pods/pod-2", (200, {"id": "pod-2"})),
+            ("GET", "pods?includeClusterPods=true&limit=1000", (200, pod_page(rows))),
+        ]
+    )
+    assert controller.close_resources(controller.RunPodV2(first), session_dir)["green"] is False
+    saved = controller.lifecycle(session_dir)
+    assert saved["pod_candidate_ids"] == ["pod-1", "pod-2"]
+
+    cutoff = saved["billing_cutoff"]
+    with controller.lifecycle_locked(session_dir) as current:
+        current["volume_delete_requested_at"] = cutoff
+        current["volume_billing_cutoff"] = cutoff
+    pod_route_1 = "billing/pods?" + controller.urllib.parse.urlencode(
+        {
+            "podId": "pod-1",
+            "startTime": controller.iso(created),
+            "endTime": cutoff,
+            "bucketSize": "hour",
+        }
+    )
+    pod_route_2 = "billing/pods?" + controller.urllib.parse.urlencode(
+        {
+            "podId": "pod-2",
+            "startTime": controller.iso(created),
+            "endTime": cutoff,
+            "bucketSize": "hour",
+        }
+    )
+    volume_route = "billing/network-volumes?" + controller.urllib.parse.urlencode(
+        {
+            "networkVolumeId": "vol-1",
+            "startTime": controller.iso(created),
+            "endTime": cutoff,
+            "bucketSize": "hour",
+        }
+    )
+    cutoff_time = controller.parse_time(cutoff, "cutoff")
+    second = ScriptedTransport(
+        [
+            ("GET", "pods?includeClusterPods=true&limit=1000", (200, pod_page([]))),
+            ("DELETE", "pods/pod-1", (204, None)),
+            ("GET", "pods/pod-1", (404, None)),
+            ("DELETE", "pods/pod-2", (204, None)),
+            ("GET", "pods/pod-2", (404, None)),
+            ("GET", "pods?includeClusterPods=true&limit=1000", (200, pod_page([]))),
+            ("GET", pod_route_1, (200, billing("podId", "pod-1", created, cutoff_time))),
+            ("GET", pod_route_2, (200, billing("podId", "pod-2", created, cutoff_time))),
+            ("GET", "network-volumes", (200, {"networkVolumes": []})),
+            ("DELETE", "network-volumes/vol-1", (204, None)),
+            ("GET", "network-volumes/vol-1", (404, None)),
+            ("GET", "network-volumes", (200, {"networkVolumes": []})),
+            (
+                "GET",
+                volume_route,
+                (200, billing("networkVolumeId", "vol-1", created, cutoff_time)),
+            ),
+        ]
+    )
+    result = controller.close_resources(controller.RunPodV2(second), session_dir)
+    assert result["green"] is True
+    assert result["pod_candidate_ids"] == ["pod-1", "pod-2"]
+
+
 def case_unknown_create_with_no_exact_name_match_never_reads_as_absent(tmp_path: Path) -> None:
     session_dir, identity, auth = make_session(tmp_path)
     checked = controller.validate_authorization(auth, identity)
@@ -375,7 +506,12 @@ def case_unknown_create_with_no_exact_name_match_never_reads_as_absent(tmp_path:
                 "GET",
                 "pods?includeClusterPods=true&limit=1000",
                 (200, pod_page([])),
-            )
+            ),
+            (
+                "GET",
+                "pods?includeClusterPods=true&limit=1000",
+                (200, pod_page([])),
+            ),
         ]
     )
     result = controller.close_resources(controller.RunPodV2(transport), session_dir)
@@ -418,11 +554,370 @@ def case_runtime_ack_binds_pid1_deadline_worker_probe_and_receipt_digest(
     output = tmp_path / "controller-ack.json"
     ack = controller.record_runtime_ack(session_dir, receipt_path, output)
     assert ack["runtime_receipt_sha256"] == controller.sha256_bytes(receipt_path.read_bytes())
+    prepared = controller.lifecycle(session_dir)
+    assert prepared["runtime_ack_prepared"] is True
+    assert prepared["runtime_ack_consumed_by_pod"] is False
+
+    pod_ack_path = tmp_path / "pod-acknowledged.json"
+    pod_ack_path.write_bytes(
+        controller.canonical_bytes(
+            {
+                "schema": "verbatus-pod-controller-acknowledgement.v1",
+                "session_id": identity["session_id"],
+                "pod_id": "pod-1",
+                "controller_challenge": identity["controller_challenge"],
+                "hard_deadline_epoch": bound_deadlines["hard_deadline_epoch"],
+                "runtime_receipt_sha256": ack["runtime_receipt_sha256"],
+                "acknowledged_at": controller.utc_now().timestamp(),
+            }
+        )
+    )
+    bad_pod_ack = json.loads(pod_ack_path.read_text())
+    bad_pod_ack["runtime_receipt_sha256"] = "0" * 64
+    bad_pod_ack_path = tmp_path / "bad-pod-acknowledged.json"
+    bad_pod_ack_path.write_bytes(controller.canonical_bytes(bad_pod_ack))
+    with test.assertRaisesRegex(controller.Refusal, "does not prove consumption"):
+        controller.record_pod_acknowledgement(session_dir, bad_pod_ack_path)
+    assert controller.lifecycle(session_dir)["runtime_ack_consumed_by_pod"] is False
+    controller.record_pod_acknowledgement(session_dir, pod_ack_path)
+    assert controller.lifecycle(session_dir)["runtime_ack_consumed_by_pod"] is True
+    controller.record_runtime_ack(
+        session_dir, receipt_path, tmp_path / "second-controller-ack.json"
+    )
+    assert controller.lifecycle(session_dir)["runtime_ack_consumed_by_pod"] is True
 
     receipt["worker_probe"]["proc1_environ_denied"] = False
     receipt_path.write_bytes(controller.canonical_bytes(receipt))
     with test.assertRaisesRegex(controller.Refusal, "worker separation"):
         controller.record_runtime_ack(session_dir, receipt_path, tmp_path / "bad-ack.json")
+
+    with test.assertRaisesRegex(controller.Refusal, "cannot read runtime receipt"):
+        controller.record_runtime_ack(
+            session_dir, tmp_path / "missing-receipt.json", tmp_path / "missing-ack.json"
+        )
+
+
+def case_deadman_source_has_last_resort_and_persistent_delete_contract() -> None:
+    source = controller.POD_DEADMAN_SOURCE
+    compile(source, "<pod-deadman>", "exec")
+    assert "api_key=os.environ.pop('VERBATUS_RUNPOD_API_KEY',None)" in source
+    assert "def best_effort_write" in source
+    assert "def terminate_forever" in source
+    assert "while True:" in source
+    assert "except BaseException as error:" in source
+    assert "range(1,5)" not in source
+    assert source.index("opener.open(req,timeout=15)") < source.index(
+        "best_effort_write(root/f'deadman-attempt-{attempt}.json'"
+    )
+
+    # Load definitions without invoking boot, then prove evidence-write failures and a
+    # provider outage lasting beyond the old four-attempt limit do not end the loop.
+    definitions = source.rsplit("try: boot()", 1)[0]
+    namespace: dict[str, object] = {}
+    with mock.patch.dict(
+        os.environ,
+        {
+            "VERBATUS_RUNPOD_API_KEY": "private-test-key",
+            "RUNPOD_POD_ID": "pod-1",
+            "VERBATUS_SESSION_ID": "offline-deadman-test",
+        },
+    ):
+        exec(compile(definitions, "<pod-deadman-definitions>", "exec"), namespace)
+
+    class StopLoop(Exception):
+        pass
+
+    class FakeTime:
+        sleeps = 0
+
+        @staticmethod
+        def time() -> float:
+            return 1.0
+
+        @classmethod
+        def sleep(cls, _seconds: float) -> None:
+            cls.sleeps += 1
+            if cls.sleeps >= 6:
+                raise StopLoop
+
+    class FailingOpener:
+        @staticmethod
+        def open(*_args, **_kwargs):
+            raise OSError("offline transport failure")
+
+    namespace["time"] = FakeTime
+    namespace["write"] = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        OSError("offline receipt failure")
+    )
+    urllib_module = namespace["urllib"]
+    original_build_opener = urllib_module.request.build_opener
+    urllib_module.request.build_opener = lambda *_args, **_kwargs: FailingOpener()
+    try:
+        try:
+            namespace["terminate_forever"]("offline-failure-drill")
+        except StopLoop:
+            pass
+        else:
+            raise AssertionError("deadman retry drill did not remain active")
+    finally:
+        urllib_module.request.build_opener = original_build_opener
+    assert FakeTime.sleeps == 6
+
+
+def case_deadline_is_rechecked_after_intent_and_before_each_post(
+    test: unittest.TestCase, tmp_path: Path
+) -> None:
+    session_dir, identity, auth = make_session(tmp_path / "volume")
+    checked = controller.validate_authorization(auth, identity)
+    life = controller.lifecycle(session_dir)
+    controller.record_deadlines(life, checked, controller.utc_now() - dt.timedelta(hours=3))
+    controller.write_lifecycle(session_dir, life)
+    volume_transport = ScriptedTransport([])
+    with test.assertRaisesRegex(controller.Refusal, "work window has closed"):
+        controller.create_volume_once(
+            controller.RunPodV2(volume_transport), session_dir, identity, checked
+        )
+    assert not volume_transport.calls
+    assert controller.lifecycle(session_dir)["volume_create_attempted"] is True
+    assert (
+        controller.lifecycle(session_dir)["volume_create_outcome"]
+        == "not-sent-window-closed"
+    )
+
+    pod_session, pod_identity, pod_auth = make_session(tmp_path / "pod")
+    pod_checked = controller.validate_authorization(pod_auth, pod_identity)
+    pod_life = controller.lifecycle(pod_session)
+    controller.record_deadlines(
+        pod_life, pod_checked, controller.utc_now() - dt.timedelta(hours=3)
+    )
+    pod_life["volume_id"] = "vol-1"
+    controller.write_lifecycle(pod_session, pod_life)
+    pod_transport = ScriptedTransport([])
+    with test.assertRaisesRegex(controller.Refusal, "work window has closed"):
+        controller.create_pod_once(
+            controller.RunPodV2(pod_transport),
+            pod_session,
+            pod_identity,
+            pod_checked,
+            {
+                "hard_deadline_epoch": pod_life["hard_deadline_epoch"],
+                "cleanup_epoch": pod_life["cleanup_epoch"],
+            },
+            "private-test-key",
+        )
+    assert not pod_transport.calls
+    assert controller.lifecycle(pod_session)["pod_create_attempted"] is True
+    assert (
+        controller.lifecycle(pod_session)["pod_create_outcome"]
+        == "not-sent-window-closed"
+    )
+
+
+def case_launch_gates_touch_no_provider(test: unittest.TestCase, tmp_path: Path) -> None:
+    for variant in ("absent", "stale", "unlocked"):
+        session_dir, identity, auth = make_session(tmp_path / variant)
+        if variant != "absent":
+            heartbeat = controller.utc_now()
+            if variant == "stale":
+                heartbeat -= dt.timedelta(minutes=5)
+            controller.durable_write(
+                session_dir / "watchdog-ready.json",
+                {
+                    "session_id": identity["session_id"],
+                    "pid": os.getpid(),
+                    "heartbeat_at": controller.iso(heartbeat),
+                    "lock_owned": True,
+                },
+            )
+        transport = ScriptedTransport([])
+        with test.assertRaises(controller.Refusal):
+            controller.launch(
+                controller.RunPodV2(transport), session_dir, auth, "private-test-key"
+            )
+        assert not transport.calls
+
+    session_dir, identity, auth = make_session(tmp_path / "changed-auth")
+    life = controller.lifecycle(session_dir)
+    controller.record_deadlines(life, auth, controller.utc_now())
+    life["authorization_sha256"] = "different"
+    controller.write_lifecycle(session_dir, life)
+    transport = ScriptedTransport([])
+    with mock.patch.object(controller, "verify_watchdog_prearmed", return_value=None):
+        with test.assertRaisesRegex(controller.Refusal, "exact original authorization"):
+            controller.launch(
+                controller.RunPodV2(transport), session_dir, auth, "private-test-key"
+            )
+    assert not transport.calls
+
+    with mock.patch.object(controller, "launch") as launch_mock:
+        code = controller.main(
+            [
+                "launch",
+                "--session-dir",
+                str(session_dir),
+                "--authorization",
+                str(tmp_path / "does-not-need-to-exist.json"),
+                "--execute-exact-session",
+                "wrong-session",
+                "--i-understand-this-creates-billable-resources",
+            ]
+        )
+    assert code == 2
+    launch_mock.assert_not_called()
+
+
+def case_lifecycle_lock_preserves_concurrent_fields(tmp_path: Path) -> None:
+    session_dir, _, auth = make_session(tmp_path)
+    bound_deadlines = deadlines(session_dir, auth)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def first() -> None:
+        with controller.lifecycle_locked(session_dir) as life:
+            life["pod_id"] = "pod-concurrent"
+            entered.set()
+            release.wait(timeout=5)
+
+    def second() -> None:
+        with controller.lifecycle_locked(session_dir) as life:
+            life["volume_id"] = "volume-concurrent"
+
+    first_thread = threading.Thread(target=first)
+    second_thread = threading.Thread(target=second)
+    first_thread.start()
+    assert entered.wait(timeout=5)
+    second_thread.start()
+    time.sleep(0.02)
+    release.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+    assert not first_thread.is_alive() and not second_thread.is_alive()
+    life = controller.lifecycle(session_dir)
+    assert life["pod_id"] == "pod-concurrent"
+    assert life["volume_id"] == "volume-concurrent"
+    assert life["pod_create_attempted"] is False
+    assert life["volume_create_attempted"] is False
+    assert life["hard_deadline_epoch"] == bound_deadlines["hard_deadline_epoch"]
+    assert life["cleanup_epoch"] == bound_deadlines["cleanup_epoch"]
+
+    with controller.exclusive_lock(session_dir / "lifecycle.lock", blocking=False):
+        with mock.patch.object(controller, "LIFECYCLE_LOCK_TIMEOUT_SECONDS", 0):
+            try:
+                with controller.lifecycle_locked(session_dir):
+                    raise AssertionError("contended lifecycle lock unexpectedly opened")
+            except controller.Refusal as error:
+                assert "timed out acquiring" in str(error)
+            else:
+                raise AssertionError("contended lifecycle lock did not fail closed")
+
+
+def case_watchdog_survives_uncertain_pod_and_volume_reconciliation(tmp_path: Path) -> None:
+    for resource in ("pod", "volume"):
+        session_dir, identity, auth = make_session(tmp_path / resource)
+        checked = controller.validate_authorization(auth, identity)
+        life = controller.lifecycle(session_dir)
+        controller.record_deadlines(life, checked, controller.utc_now())
+        life["authorization_public"] = {
+            key: value for key, value in checked.items() if key != "authorization_sha256"
+        }
+        if resource == "pod":
+            life.update(
+                {
+                    "volume_id": "vol-1",
+                    "pod_create_attempted": True,
+                    "pod_create_outcome": "unknown",
+                }
+            )
+            route = "pods?includeClusterPods=true&limit=1000"
+        else:
+            life.update(
+                {
+                    "volume_create_attempted": True,
+                    "volume_create_outcome": "unknown",
+                }
+            )
+            route = "network-volumes"
+        controller.write_lifecycle(session_dir, life)
+        transport = ScriptedTransport(
+            [("GET", route, controller.TransportUncertain("timeout"))]
+        )
+        with (
+            mock.patch.object(controller, "load_api_key", return_value="private-test-key"),
+            mock.patch.object(controller, "close_until_bounded", return_value=7) as close_mock,
+        ):
+            assert (
+                controller.watch_loop(
+                    controller.RunPodV2(transport), session_dir, poll_seconds=0.001
+                )
+                == 7
+            )
+        close_mock.assert_called_once()
+
+
+def case_billing_rejects_gaps_bad_metadata_and_bad_money() -> None:
+    created = controller.utc_now().replace(minute=5, second=0, microsecond=0)
+    cutoff = created.replace(minute=45)
+    valid = billing("podId", "pod-1", created, cutoff)
+    assert controller.billing_verified(
+        valid,
+        id_field="podId",
+        resource_id="pod-1",
+        created_at=controller.iso(created),
+        cutoff=controller.iso(cutoff),
+    )
+
+    for mutation in ("gap", "count", "unique", "amount", "total", "components", "bucket"):
+        value = json.loads(json.dumps(valid))
+        if mutation == "gap":
+            query = value["metadata"]["query"]
+            first = dict(value["records"][0])
+            second = dict(value["records"][0])
+            first["endTime"] = controller.iso(created.replace(minute=15))
+            second["startTime"] = controller.iso(created.replace(minute=25))
+            for field in ("totalAmount", "gpuAmount", "cpuAmount", "diskAmount"):
+                first[field] = first[field] / 2
+                second[field] = second[field] / 2
+            value["records"] = [first, second]
+            value["metadata"]["recordCount"] = 2
+            value["metadata"]["query"] = query
+        elif mutation == "count":
+            value["metadata"]["recordCount"] = 2
+        elif mutation == "unique":
+            value["metadata"]["uniquePodCount"] = 2
+        elif mutation == "amount":
+            del value["records"][0]["diskAmount"]
+        elif mutation == "total":
+            value["metadata"]["totals"]["totalAmount"] = 99
+        elif mutation == "components":
+            value["records"][0]["gpuAmount"] = 0.007
+            value["metadata"]["totals"]["gpuAmount"] = 0.007
+        else:
+            value["metadata"]["query"]["bucketSize"] = "day"
+        assert not controller.billing_verified(
+            value,
+            id_field="podId",
+            resource_id="pod-1",
+            created_at=controller.iso(created),
+            cutoff=controller.iso(cutoff),
+        )
+
+    overlap = json.loads(json.dumps(valid))
+    first = dict(overlap["records"][0])
+    second = dict(overlap["records"][0])
+    first["endTime"] = controller.iso(created.replace(minute=35))
+    second["startTime"] = controller.iso(created.replace(minute=25))
+    for field in ("totalAmount", "gpuAmount", "cpuAmount", "diskAmount"):
+        first[field] = first[field] / 2
+        second[field] = second[field] / 2
+    overlap["records"] = [first, second]
+    overlap["metadata"]["recordCount"] = 2
+    assert controller.billing_verified(
+        overlap,
+        id_field="podId",
+        resource_id="pod-1",
+        created_at=controller.iso(created),
+        cutoff=controller.iso(cutoff),
+    )
 
 
 class OfflineControllerTests(unittest.TestCase):
@@ -434,6 +929,10 @@ class OfflineControllerTests(unittest.TestCase):
             case_authorization_is_exact_session_closed_and_explicit_about_above_target(
                 self, Path(directory)
             )
+
+    def test_outbound_entrypoint_and_cmd(self) -> None:
+        with self.temporary_path() as directory:
+            case_outbound_request_explicitly_binds_entrypoint_and_cmd(Path(directory))
 
     def test_paginated_inventory(self) -> None:
         case_pod_inventory_walks_every_page_and_includes_cluster_pods()
@@ -462,6 +961,10 @@ class OfflineControllerTests(unittest.TestCase):
         with self.temporary_path() as directory:
             case_empty_billing_is_lag_not_zero_or_verified(Path(directory))
 
+    def test_duplicate_candidate_convergence(self) -> None:
+        with self.temporary_path() as directory:
+            case_duplicate_candidates_persist_and_converge_on_later_close(Path(directory))
+
     def test_unknown_create_is_not_absence(self) -> None:
         with self.temporary_path() as directory:
             case_unknown_create_with_no_exact_name_match_never_reads_as_absent(Path(directory))
@@ -471,6 +974,30 @@ class OfflineControllerTests(unittest.TestCase):
             case_runtime_ack_binds_pid1_deadline_worker_probe_and_receipt_digest(
                 self, Path(directory)
             )
+
+    def test_deadman_source_contract(self) -> None:
+        case_deadman_source_has_last_resort_and_persistent_delete_contract()
+
+    def test_deadline_rechecks(self) -> None:
+        with self.temporary_path() as directory:
+            case_deadline_is_rechecked_after_intent_and_before_each_post(
+                self, Path(directory)
+            )
+
+    def test_launch_gates_make_no_provider_call(self) -> None:
+        with self.temporary_path() as directory:
+            case_launch_gates_touch_no_provider(self, Path(directory))
+
+    def test_lifecycle_concurrency(self) -> None:
+        with self.temporary_path() as directory:
+            case_lifecycle_lock_preserves_concurrent_fields(Path(directory))
+
+    def test_watchdog_transport_uncertainty(self) -> None:
+        with self.temporary_path() as directory:
+            case_watchdog_survives_uncertain_pod_and_volume_reconciliation(Path(directory))
+
+    def test_adversarial_billing(self) -> None:
+        case_billing_rejects_gaps_bad_metadata_and_bad_money()
 
 
 if __name__ == "__main__":

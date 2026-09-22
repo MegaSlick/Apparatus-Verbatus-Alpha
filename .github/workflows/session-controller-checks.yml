@@ -11,13 +11,23 @@ jobs:
   offline:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.14']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
-          python-version: '3.14'
+          python-version: ${{ matrix.python-version }}
+      - name: Repository ingress
+        shell: bash
+        run: |
+          printf '%s\0' "$GITHUB_REF" |
+            python3 .githooks/check_ingress.py --ref-fields
+          python3 .githooks/check_ingress.py --history HEAD
       - name: Offline lifecycle tests without provider credentials
         run: python session-verification/test_live_trial_controller_20260922.py

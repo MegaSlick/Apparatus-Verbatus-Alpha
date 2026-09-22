@@ -47,6 +47,7 @@ MAX_TOTAL_SECONDS = 2 * 60 * 60
 WATCHDOG_READY_MAX_AGE_SECONDS = 30
 PROVISIONING_TIMEOUT_SECONDS = 20 * 60
 POST_DELETE_BILLING_WAIT_SECONDS = 30 * 60
+LIFECYCLE_LOCK_TIMEOUT_SECONDS = 5
 SCHEMA_SESSION = "verbatus-runpod-live-session.v1"
 SCHEMA_AUTHORIZATION = "verbatus-runpod-live-authorization.v1"
 SCHEMA_RUNTIME_RECEIPT = "verbatus-pod-runtime-receipt.v1"
@@ -202,11 +203,15 @@ def prepare_session(state_root: Path, now: dt.datetime | None = None) -> Path:
             "volume_create_attempted": False,
             "volume_create_outcome": "not-attempted",
             "volume_id": None,
+            "volume_candidate_ids": [],
             "pod_create_attempted": False,
             "pod_create_outcome": "not-attempted",
             "pod_id": None,
+            "pod_candidate_ids": [],
+            "pod_candidate_created_at": {},
             "pod_ever_observed": False,
-            "runtime_acknowledged": False,
+            "runtime_ack_prepared": False,
+            "runtime_ack_consumed_by_pod": False,
             "close_requested_at": None,
             "volume_delete_requested_at": None,
             "close_verification": None,
@@ -230,6 +235,37 @@ def lifecycle(session_dir: Path) -> dict[str, Any]:
 
 def write_lifecycle(session_dir: Path, value: Mapping[str, object]) -> None:
     durable_write(session_dir / "lifecycle.json", dict(value))
+
+
+@contextlib.contextmanager
+def lifecycle_locked(session_dir: Path) -> Iterator[dict[str, Any]]:
+    """Serialize one short lifecycle read-modify-write without spanning provider I/O."""
+
+    lock_path = session_dir / "lifecycle.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    deadline = time.monotonic() + LIFECYCLE_LOCK_TIMEOUT_SECONDS
+    try:
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as error:
+                if time.monotonic() >= deadline:
+                    raise Refusal("timed out acquiring the lifecycle state lock") from error
+                time.sleep(0.05)
+        value = lifecycle(session_dir)
+        yield value
+        write_lifecycle(session_dir, value)
+    finally:
+        os.close(descriptor)
+
+
+def closure_started(value: Mapping[str, object]) -> bool:
+    return bool(
+        value.get("close_requested_at")
+        or value.get("phase") in {"close-unverified", "closed-verified"}
+    )
 
 
 AUTHORIZATION_FIELDS = {
@@ -286,7 +322,7 @@ def validate_authorization(
         raise Refusal("authorization action is not the one supported action")
     authorized_at = parse_time(authorization["authorized_at"], "authorized_at")
     expires_at = parse_time(authorization["expires_at"], "expires_at")
-    if authorized_at > now + dt.timedelta(seconds=30) or not authorized_at <= now < expires_at:
+    if not authorized_at <= now < expires_at:
         raise Refusal("authorization is not currently valid")
     if expires_at - authorized_at > dt.timedelta(hours=1):
         raise Refusal("authorization validity window exceeds one hour")
@@ -544,52 +580,61 @@ def validate_volume(
 
 
 POD_DEADMAN_SOURCE = r'''
-import ctypes,datetime as dt,hashlib,json,os,pwd,signal,subprocess,time,urllib.error,urllib.parse,urllib.request
+import ctypes,hashlib,json,os,pwd,subprocess,time,urllib.error,urllib.parse,urllib.request
 from pathlib import Path
 os.umask(0o077)
-session=os.environ['VERBATUS_SESSION_ID']; challenge=os.environ['VERBATUS_CONTROLLER_CHALLENGE']
-deadline=float(os.environ['VERBATUS_HARD_DEADLINE_EPOCH']); cleanup=float(os.environ['VERBATUS_CLEANUP_EPOCH'])
-api_key=os.environ.pop('VERBATUS_RUNPOD_API_KEY'); pod_id=os.environ['RUNPOD_POD_ID']
-root=Path('/workspace/private/session-evidence')/session; root.mkdir(parents=True,exist_ok=True); os.chmod(root,0o700)
-runtime=Path('/run/verbatus-live')/session; runtime.mkdir(parents=True,exist_ok=True); os.chmod(runtime,0o711)
+# Establish the minimum close capability before any mount, user, service, or receipt work.
+api_key=os.environ.pop('VERBATUS_RUNPOD_API_KEY',None); pod_id=os.environ.get('RUNPOD_POD_ID')
+session=os.environ.get('VERBATUS_SESSION_ID','unbound'); challenge=os.environ.get('VERBATUS_CONTROLLER_CHALLENGE')
+root=Path('/workspace/private/session-evidence')/session; runtime=Path('/run/verbatus-live')/session
 def write(path,obj,mode=0o600):
- data=(json.dumps(obj,sort_keys=True,separators=(',',':'))+'\n').encode(); tmp=path.with_name('.'+path.name+'.tmp')
+ data=(json.dumps(obj,sort_keys=True,separators=(',',':'))+'\n').encode(); path.parent.mkdir(parents=True,exist_ok=True); tmp=path.with_name('.'+path.name+'.'+str(os.getpid())+'.tmp')
  fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL,mode)
  try: os.write(fd,data); os.fsync(fd)
  finally: os.close(fd)
  os.replace(tmp,path); os.chmod(path,mode); d=os.open(path.parent,os.O_RDONLY|getattr(os,'O_DIRECTORY',0)); os.fsync(d); os.close(d)
  return data
-def refuse(reason):
- write(root/'runtime-refusal.json',{'schema':'verbatus-pod-runtime-refusal.v1','session_id':session,'pod_id':pod_id,'reason':reason,'at':time.time()})
- terminate('boot-refusal:'+reason)
+def best_effort_write(path,obj,mode=0o600):
+ try: return write(path,obj,mode)
+ except BaseException: return None
+def terminate_forever(reason):
+ attempt=0
+ while True:
+  attempt+=1; result={'attempt':attempt,'at':time.time(),'http':None,'error':None,'reason':reason}
+  try:
+   if not isinstance(api_key,str) or not api_key or not isinstance(pod_id,str) or not pod_id: raise RuntimeError('delete-capability-missing')
+   opener=urllib.request.build_opener(type('NoRedirect',(urllib.request.HTTPRedirectHandler,),{'redirect_request':lambda self,*a,**k:None})())
+   req=urllib.request.Request('https://api.runpod.io/v2/pods/'+urllib.parse.quote(pod_id,safe=''),headers={'Authorization':'Bearer '+api_key,'User-Agent':'verbatus-readiness/1.0'},method='DELETE')
+   with opener.open(req,timeout=15) as response: result['http']=response.status
+  except urllib.error.HTTPError as error:
+   result['http']=error.code
+   try: error.close()
+   except BaseException: pass
+  except BaseException as error: result['error']=type(error).__name__
+  # Evidence must never stand between the deadman and DELETE.
+  best_effort_write(root/f'deadman-attempt-{attempt}.json',result)
+  best_effort_write(root/'deadman-terminating.json',{'schema':'verbatus-pod-deadman-termination.v1','session_id':session,'pod_id':pod_id,'reason':reason,'requested_cutoff':time.time(),'last_attempt':attempt,'last_http':result['http']})
+  # A 204 may destroy this process at any instant. If it does not, keep issuing DELETE;
+  # a transient provider outage or delayed teardown must not exhaust a retry count.
+  time.sleep(30 if result['http'] in (204,404) else 10)
+def fail(reason): raise RuntimeError(reason)
 def demote(uid,gid):
  def child():
   os.setgroups([]); os.setgid(gid); os.setuid(uid)
   if ctypes.CDLL(None).prctl(38,1,0,0,0)!=0: os._exit(126)
  return child
-def terminate(reason):
- write(root/'deadman-terminating.json',{'schema':'verbatus-pod-deadman-termination.v1','session_id':session,'pod_id':pod_id,'reason':reason,'requested_cutoff':time.time()})
- opener=urllib.request.build_opener(type('NoRedirect',(urllib.request.HTTPRedirectHandler,),{'redirect_request':lambda self,*a,**k:None})())
- for attempt in range(1,5):
-  result={'attempt':attempt,'at':time.time(),'http':None,'error':None}
-  try:
-   req=urllib.request.Request('https://api.runpod.io/v2/pods/'+urllib.parse.quote(pod_id,safe=''),headers={'Authorization':'Bearer '+api_key,'User-Agent':'verbatus-readiness/1.0'},method='DELETE')
-   with opener.open(req,timeout=15) as response: result['http']=response.status
-  except urllib.error.HTTPError as error: result['http']=error.code
-  except Exception as error: result['error']=type(error).__name__
-  write(root/f'deadman-attempt-{attempt}.json',result)
-  if result['http'] in (204,404): break
-  time.sleep(10)
- time.sleep(30); raise SystemExit(3)
-if os.geteuid()!=0: refuse('deadman-not-root')
-if os.getpid()!=1: refuse('deadman-not-pid1')
-if deadline-time.time()>7200 or cleanup>=deadline or cleanup<=time.time(): refuse('invalid-deadline')
-try: worker=pwd.getpwnam('verbatus-worker')
-except KeyError:
- result=subprocess.run(['/usr/sbin/useradd','--system','--create-home','--shell','/bin/bash','verbatus-worker'],env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin'},capture_output=True)
- if result.returncode: refuse('worker-user-creation-failed')
- worker=pwd.getpwnam('verbatus-worker')
-launcher="""#!/usr/bin/python3
+def boot():
+ deadline=float(os.environ['VERBATUS_HARD_DEADLINE_EPOCH']); cleanup=float(os.environ['VERBATUS_CLEANUP_EPOCH'])
+ root.mkdir(parents=True,exist_ok=True); os.chmod(root,0o700); runtime.mkdir(parents=True,exist_ok=True); os.chmod(runtime,0o711)
+ if os.geteuid()!=0: fail('deadman-not-root')
+ if os.getpid()!=1: fail('deadman-not-pid1')
+ if deadline-time.time()>7200 or cleanup>=deadline or cleanup<=time.time(): fail('invalid-deadline')
+ try: worker=pwd.getpwnam('verbatus-worker')
+ except KeyError:
+  result=subprocess.run(['/usr/sbin/useradd','--system','--create-home','--shell','/bin/bash','verbatus-worker'],env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin'},capture_output=True)
+  if result.returncode: fail('worker-user-creation-failed')
+  worker=pwd.getpwnam('verbatus-worker')
+ launcher="""#!/usr/bin/python3
 import ctypes,json,os,sys
 from pathlib import Path
 session=os.environ.get("VERBATUS_SESSION_ID","")
@@ -602,8 +647,8 @@ for key in tuple(os.environ):
  if any(marker in key for marker in ("API_KEY","TOKEN","SECRET","CONTROLLER_CHALLENGE")): os.environ.pop(key,None)
 os.execvpe(sys.argv[1],sys.argv[1:],os.environ)
 """
-launcher_path=Path('/usr/local/bin/verbatus-worker-exec'); launcher_path.write_text(launcher); os.chown(launcher_path,0,0); os.chmod(launcher_path,0o755)
-probe=r"""import json,os,shutil,subprocess
+ launcher_path=Path('/usr/local/bin/verbatus-worker-exec'); launcher_path.write_text(launcher); os.chown(launcher_path,0,0); os.chmod(launcher_path,0o755)
+ probe=r"""import json,os,shutil,subprocess
 result={'uid':os.geteuid(),'gid':os.getegid(),'provider_env_absent':all(not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE')) for k in os.environ),'proc1_environ_denied':False,'root_receipt_denied':False,'sudo_unavailable':False,'cap_eff_zero':False,'no_new_privs':False}
 try: open('/proc/1/environ','rb').read(1)
 except OSError: result['proc1_environ_denied']=True
@@ -614,38 +659,43 @@ for line in open('/proc/self/status'):
  if line.startswith('CapEff:'): result['cap_eff_zero']=int(line.split()[1],16)==0
  if line.startswith('NoNewPrivs:'): result['no_new_privs']=line.split()[1]=='1'
 print(json.dumps(result,sort_keys=True))"""
-child_env={k:v for k,v in os.environ.items() if not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE'))}; child_env['VERBATUS_ROOT_RECEIPT_DIR']=str(root)
-probe_run=subprocess.run(['python3','-c',probe],env=child_env,capture_output=True,text=True,preexec_fn=demote(worker.pw_uid,worker.pw_gid),timeout=20)
-try: probe_result=json.loads(probe_run.stdout)
-except Exception: refuse('worker-probe-unreadable')
-required=('provider_env_absent','proc1_environ_denied','root_receipt_denied','sudo_unavailable','cap_eff_zero','no_new_privs')
-if probe_run.returncode or probe_result.get('uid')==0 or not all(probe_result.get(k) is True for k in required): refuse('worker-separation-unverified')
-service_env={k:v for k,v in os.environ.items() if k!='VERBATUS_ROOT_RECEIPT_DIR' and not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE'))}
-service=subprocess.Popen(['/start.sh'],env=service_env)
-time.sleep(5)
-if service.poll() is not None: refuse('default-start-service-exited')
-receipt={'schema':'verbatus-pod-runtime-receipt.v1','session_id':session,'pod_id':pod_id,'controller_challenge':challenge,'hard_deadline_epoch':deadline,'cleanup_epoch':cleanup,'pid':os.getpid(),'uid':os.geteuid(),'default_start_pid':service.pid,'worker_uid':worker.pw_uid,'worker_gid':worker.pw_gid,'worker_probe':probe_result,'provider_key_removed_before_start':True,'runtime_verified':True,'observed_at':time.time()}
-receipt_bytes=write(root/'runtime-receipt.json',receipt)
-receipt_sha=hashlib.sha256(receipt_bytes).hexdigest(); ack_path=root/'controller-ack.json'; enabled=False
-while time.time()<cleanup:
- if (root/'STOP').exists(): terminate('durable-stop-flag')
- if service.poll() is not None: terminate('default-start-service-exited')
- if not enabled and ack_path.exists():
-  try: ack=json.loads(ack_path.read_text())
-  except Exception: terminate('controller-ack-unreadable')
-  expected={'schema':'verbatus-controller-ack.v1','session_id':session,'pod_id':pod_id,'controller_challenge':challenge,'hard_deadline_epoch':deadline,'runtime_receipt_sha256':receipt_sha}
-  if any(ack.get(k)!=v for k,v in expected.items()): terminate('controller-ack-mismatch')
-  write(runtime/'inference-enabled.json',{'session_id':session,'pod_id':pod_id,'runtime_receipt_sha256':receipt_sha},0o644)
-  write(root/'controller-acknowledged.json',{'schema':'verbatus-pod-controller-acknowledgement.v1','session_id':session,'pod_id':pod_id,'acknowledged_at':time.time(),'runtime_receipt_sha256':receipt_sha})
-  enabled=True
- time.sleep(min(5,max(0,cleanup-time.time())))
-terminate('cleanup-deadline')
+ child_env={k:v for k,v in os.environ.items() if not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE'))}; child_env['VERBATUS_ROOT_RECEIPT_DIR']=str(root)
+ probe_run=subprocess.run(['python3','-c',probe],env=child_env,capture_output=True,text=True,preexec_fn=demote(worker.pw_uid,worker.pw_gid),timeout=20)
+ try: probe_result=json.loads(probe_run.stdout)
+ except Exception: fail('worker-probe-unreadable')
+ required=('provider_env_absent','proc1_environ_denied','root_receipt_denied','sudo_unavailable','cap_eff_zero','no_new_privs')
+ if probe_run.returncode or probe_result.get('uid')==0 or not all(probe_result.get(k) is True for k in required): fail('worker-separation-unverified')
+ service_env={k:v for k,v in os.environ.items() if k!='VERBATUS_ROOT_RECEIPT_DIR' and not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE'))}
+ service=subprocess.Popen(['/start.sh'],env=service_env); time.sleep(5)
+ if service.poll() is not None: fail('default-start-service-exited')
+ receipt={'schema':'verbatus-pod-runtime-receipt.v1','session_id':session,'pod_id':pod_id,'controller_challenge':challenge,'hard_deadline_epoch':deadline,'cleanup_epoch':cleanup,'pid':os.getpid(),'uid':os.geteuid(),'default_start_pid':service.pid,'worker_uid':worker.pw_uid,'worker_gid':worker.pw_gid,'worker_probe':probe_result,'provider_key_removed_before_start':True,'runtime_verified':True,'observed_at':time.time()}
+ receipt_bytes=write(root/'runtime-receipt.json',receipt); receipt_sha=hashlib.sha256(receipt_bytes).hexdigest(); ack_path=root/'controller-ack.json'; enabled=False
+ while time.time()<cleanup:
+  if (root/'STOP').exists(): terminate_forever('durable-stop-flag')
+  if service.poll() is not None: terminate_forever('default-start-service-exited')
+  if not enabled and ack_path.exists():
+   try: ack=json.loads(ack_path.read_text())
+   except Exception: fail('controller-ack-unreadable')
+   expected={'schema':'verbatus-controller-ack.v1','session_id':session,'pod_id':pod_id,'controller_challenge':challenge,'hard_deadline_epoch':deadline,'runtime_receipt_sha256':receipt_sha}
+   if any(ack.get(k)!=v for k,v in expected.items()): fail('controller-ack-mismatch')
+   write(runtime/'inference-enabled.json',{'session_id':session,'pod_id':pod_id,'runtime_receipt_sha256':receipt_sha},0o644)
+   write(root/'controller-acknowledged.json',{'schema':'verbatus-pod-controller-acknowledgement.v1','session_id':session,'pod_id':pod_id,'controller_challenge':challenge,'hard_deadline_epoch':deadline,'acknowledged_at':time.time(),'runtime_receipt_sha256':receipt_sha})
+   enabled=True
+  time.sleep(min(5,max(0,cleanup-time.time())))
+ terminate_forever('cleanup-deadline')
+try: boot()
+except BaseException as error:
+ best_effort_write(root/'runtime-refusal.json',{'schema':'verbatus-pod-runtime-refusal.v1','session_id':session,'pod_id':pod_id,'reason':type(error).__name__,'at':time.time()})
+ terminate_forever('unhandled-boot-or-timer-'+type(error).__name__)
 '''
 
 
 def pod_command() -> tuple[str, list[str], list[str]]:
     cmd = ["python3", "-u", "-c", POD_DEADMAN_SOURCE]
-    args = json.dumps({"cmd": cmd}, separators=(",", ":"))
+    args = json.dumps(
+        {"entrypoint": PINNED_ENTRYPOINT, "cmd": cmd},
+        separators=(",", ":"),
+    )
     return args, PINNED_ENTRYPOINT, cmd
 
 
@@ -732,6 +782,9 @@ def validate_pod(
     status = pod.get("status")
     if status not in {"PROVISIONING", "STARTING", "RUNNING"}:
         raise Refusal(f"pod response status {status!r} is not a live startup status")
+    created_at = parse_time(pod.get("createdAt"), "pod response createdAt")
+    if created_at > utc_now() + dt.timedelta(seconds=30):
+        raise Refusal("pod response createdAt is implausibly future-dated")
     returned_env = pod.get("env")
     expected_env = pod_environment(identity, deadlines, api_key)
     if not isinstance(returned_env, dict) or any(returned_env.get(k) != v for k, v in expected_env.items()):
@@ -761,6 +814,37 @@ def record_deadlines(life: dict[str, Any], authorization: Mapping[str, object], 
             "billing_reconcile_until": iso(hard + dt.timedelta(seconds=POST_DELETE_BILLING_WAIT_SECONDS)),
         }
     )
+
+
+def assert_paid_create_window(
+    session_dir: Path,
+    authorization: Mapping[str, object],
+    action: str,
+    *,
+    now: dt.datetime | None = None,
+) -> None:
+    """Recheck authorization and useful runtime immediately before a paid POST."""
+
+    now = now or utc_now()
+    life = lifecycle(session_dir)
+    expires = parse_time(authorization["expires_at"], "authorization expiry")
+    inference_cutoff = parse_time(life.get("inference_cutoff"), "inference cutoff")
+    cleanup_at = parse_time(life.get("cleanup_at"), "cleanup deadline")
+    hard_deadline = parse_time(life.get("hard_deadline"), "hard deadline")
+    if life.get("close_requested_at") or life.get("phase") in {
+        "closed-verified",
+        "close-unverified",
+    }:
+        raise Refusal(f"{action} refused because closure has already begun")
+    if now >= expires:
+        raise Refusal(f"{action} refused because the exact-session authorization expired")
+    if now >= inference_cutoff or now >= cleanup_at or now >= hard_deadline:
+        raise Refusal(f"{action} refused because the session work window has closed")
+    if now + dt.timedelta(seconds=PROVISIONING_TIMEOUT_SECONDS) >= inference_cutoff:
+        raise Refusal(
+            f"{action} refused because insufficient bounded time remains for boot before "
+            "the inference cutoff and reserved retrieval/cleanup margins"
+        )
 
 
 def verify_watchdog_prearmed(session_dir: Path, now: dt.datetime | None = None) -> None:
@@ -805,7 +889,6 @@ def reconcile_volume(
     identity: Mapping[str, object],
     authorization: Mapping[str, object],
 ) -> str | None:
-    life = lifecycle(session_dir)
     matches = exact_named(api.list_volumes(), identity["volume_name"])
     if len(matches) == 1:
         volume_id = validate_volume(matches[0], identity, authorization)
@@ -813,23 +896,37 @@ def reconcile_volume(
         if exact is None:
             raise Refusal("named volume vanished before exact GET validation")
         validate_volume(exact, identity, authorization)
-        life["volume_id"] = volume_id
-        life["volume_create_outcome"] = "confirmed"
-        life["phase"] = "volume-bound"
-        write_lifecycle(session_dir, life)
+        with lifecycle_locked(session_dir) as life:
+            life["volume_id"] = volume_id
+            life["volume_candidate_ids"] = sorted(
+                set(life.get("volume_candidate_ids", [])) | {volume_id}
+            )
+            life["volume_create_outcome"] = "confirmed"
+            if not closure_started(life):
+                life["phase"] = "volume-bound"
         event(session_dir, "volume-adopted-after-reconciliation", volume_id=volume_id)
         return volume_id
     if not matches:
         event(session_dir, "volume-create-outcome-still-uncertain", exact_name_matches=0)
         return None
     event(session_dir, "duplicate-exact-volume-matches", count=len(matches))
+    candidate_ids = sorted(
+        {
+            str(row["id"])
+            for row in matches
+            if isinstance(row.get("id"), str) and row.get("id")
+        }
+    )
+    with lifecycle_locked(session_dir) as life:
+        life["volume_candidate_ids"] = sorted(
+            set(life.get("volume_candidate_ids", [])) | set(candidate_ids)
+        )
+        life["phase"] = "close-unverified"
     for row in matches:
         volume_id = row.get("id")
         if isinstance(volume_id, str) and volume_id:
             status = api.delete_volume(volume_id)
             event(session_dir, "duplicate-volume-delete-requested", volume_id=volume_id, http=status)
-    life["phase"] = "close-unverified"
-    write_lifecycle(session_dir, life)
     raise Refusal("multiple exact-name volumes existed; deletion was requested for every identifiable match")
 
 
@@ -839,17 +936,32 @@ def create_volume_once(
     identity: Mapping[str, object],
     authorization: Mapping[str, object],
 ) -> str | None:
-    life = lifecycle(session_dir)
-    if life.get("volume_id"):
-        return str(life["volume_id"])
-    if life.get("volume_create_attempted"):
+    with lifecycle_locked(session_dir) as life:
+        existing_id = life.get("volume_id")
+        attempted = bool(life.get("volume_create_attempted"))
+        previous_outcome = life.get("volume_create_outcome")
+        if not existing_id and not attempted:
+            if closure_started(life):
+                raise Refusal("volume create refused because closure has already begun")
+            life["volume_create_attempted"] = True
+            life["volume_create_outcome"] = "unknown"
+            life["phase"] = "volume-create-pending"
+    if existing_id:
+        return str(existing_id)
+    if attempted:
+        if previous_outcome == "not-sent-window-closed":
+            return None
         return reconcile_volume(api, session_dir, identity, authorization)
-    life["volume_create_attempted"] = True
-    life["volume_create_outcome"] = "unknown"
-    life["phase"] = "volume-create-pending"
-    write_lifecycle(session_dir, life)
     body = expected_volume(identity, authorization)
     event(session_dir, "volume-create-intent-recorded", volume_name=identity["volume_name"])
+    try:
+        assert_paid_create_window(session_dir, authorization, "volume create")
+    except Refusal:
+        with lifecycle_locked(session_dir) as life:
+            life["volume_create_outcome"] = "not-sent-window-closed"
+            if not closure_started(life):
+                life["phase"] = "volume-create-refused-window-closed"
+        raise
     try:
         status, value = api.request("POST", "network-volumes", body)
     except TransportUncertain:
@@ -858,10 +970,10 @@ def create_volume_once(
     if status != 201 or not isinstance(value, dict):
         event(session_dir, "volume-create-not-confirmed", http=status)
         if 400 <= status < 500:
-            life = lifecycle(session_dir)
-            life["volume_create_outcome"] = "rejected"
-            life["phase"] = "volume-create-rejected"
-            write_lifecycle(session_dir, life)
+            with lifecycle_locked(session_dir) as life:
+                life["volume_create_outcome"] = "rejected"
+                if not closure_started(life):
+                    life["phase"] = "volume-create-rejected"
             return None
         return reconcile_volume(api, session_dir, identity, authorization)
     try:
@@ -869,20 +981,25 @@ def create_volume_once(
     except Refusal:
         possible_id = value.get("id")
         if isinstance(possible_id, str) and possible_id:
-            life = lifecycle(session_dir)
-            life["volume_id"] = possible_id
-            life["volume_create_outcome"] = "response-invalid"
-            life["phase"] = "invalid-volume-closing"
-            write_lifecycle(session_dir, life)
+            with lifecycle_locked(session_dir) as life:
+                life["volume_id"] = possible_id
+                life["volume_candidate_ids"] = sorted(
+                    set(life.get("volume_candidate_ids", [])) | {possible_id}
+                )
+                life["volume_create_outcome"] = "response-invalid"
+                life["phase"] = "invalid-volume-closing"
             delete_status = api.delete_volume(possible_id)
             event(session_dir, "invalid-volume-response-delete-requested", volume_id=possible_id, http=delete_status)
         raise
-    life = lifecycle(session_dir)
-    life["volume_id"] = volume_id
-    life["volume_create_outcome"] = "confirmed"
-    life["volume_created_at"] = iso(utc_now())
-    life["phase"] = "volume-bound"
-    write_lifecycle(session_dir, life)
+    with lifecycle_locked(session_dir) as life:
+        life["volume_id"] = volume_id
+        life["volume_candidate_ids"] = sorted(
+            set(life.get("volume_candidate_ids", [])) | {volume_id}
+        )
+        life["volume_create_outcome"] = "confirmed"
+        life["volume_created_at"] = iso(utc_now())
+        if not closure_started(life):
+            life["phase"] = "volume-bound"
     event(session_dir, "volume-created", volume_id=volume_id)
     return volume_id
 
@@ -903,24 +1020,50 @@ def reconcile_pod(
         if exact is None:
             raise Refusal("named pod vanished before exact GET validation")
         validate_pod(exact, identity, authorization, str(life["volume_id"]), deadlines, api_key)
-        life["pod_id"] = pod_id
-        life["pod_ever_observed"] = True
-        life["pod_create_outcome"] = "confirmed"
-        life["phase"] = "pod-bound-awaiting-runtime-ack"
-        write_lifecycle(session_dir, life)
+        with lifecycle_locked(session_dir) as current:
+            current["pod_id"] = pod_id
+            current["pod_candidate_ids"] = sorted(
+                set(current.get("pod_candidate_ids", [])) | {pod_id}
+            )
+            created = matches[0].get("createdAt")
+            if isinstance(created, str):
+                candidate_times = dict(current.get("pod_candidate_created_at", {}))
+                candidate_times[pod_id] = created
+                current["pod_candidate_created_at"] = candidate_times
+                current["pod_created_at"] = created
+            current["pod_ever_observed"] = True
+            current["pod_create_outcome"] = "confirmed"
+            if not closure_started(current):
+                current["phase"] = "pod-bound-awaiting-runtime-ack"
         event(session_dir, "pod-adopted-after-reconciliation", pod_id=pod_id)
         return pod_id
     if not matches:
         event(session_dir, "pod-create-outcome-still-uncertain", exact_name_matches=0)
         return None
     event(session_dir, "duplicate-exact-pod-matches", count=len(matches))
+    candidate_ids = sorted(
+        {
+            str(row["id"])
+            for row in matches
+            if isinstance(row.get("id"), str) and row.get("id")
+        }
+    )
+    with lifecycle_locked(session_dir) as current:
+        current["pod_candidate_ids"] = sorted(
+            set(current.get("pod_candidate_ids", [])) | set(candidate_ids)
+        )
+        candidate_times = dict(current.get("pod_candidate_created_at", {}))
+        for row in matches:
+            if isinstance(row.get("id"), str) and isinstance(row.get("createdAt"), str):
+                candidate_times[row["id"]] = row["createdAt"]
+        current["pod_candidate_created_at"] = candidate_times
+        current["pod_ever_observed"] = bool(candidate_ids) or current.get("pod_ever_observed")
+        current["phase"] = "close-unverified"
     for row in matches:
         pod_id = row.get("id")
         if isinstance(pod_id, str) and pod_id:
             status = api.delete_pod(pod_id)
             event(session_dir, "duplicate-pod-delete-requested", pod_id=pod_id, http=status)
-    life["phase"] = "close-unverified"
-    write_lifecycle(session_dir, life)
     raise Refusal("multiple exact-name pods existed; deletion was requested for every identifiable match")
 
 
@@ -932,21 +1075,38 @@ def create_pod_once(
     deadlines: Mapping[str, object],
     api_key: str,
 ) -> str | None:
-    life = lifecycle(session_dir)
-    if life.get("pod_id"):
-        return str(life["pod_id"])
-    if life.get("pod_create_attempted"):
+    with lifecycle_locked(session_dir) as life:
+        existing_id = life.get("pod_id")
+        attempted = bool(life.get("pod_create_attempted"))
+        previous_outcome = life.get("pod_create_outcome")
+        volume_id = life.get("volume_id")
+        if not existing_id and not attempted:
+            if closure_started(life):
+                raise Refusal("pod create refused because closure has already begun")
+            if not isinstance(volume_id, str) or not volume_id:
+                raise Refusal("pod create cannot begin before an exact volume is bound")
+            life["pod_create_attempted"] = True
+            life["pod_create_outcome"] = "unknown"
+            life["phase"] = "pod-create-pending"
+    if existing_id:
+        return str(existing_id)
+    if attempted:
+        if previous_outcome == "not-sent-window-closed":
+            return None
         return reconcile_pod(api, session_dir, identity, authorization, deadlines, api_key)
-    volume_id = life.get("volume_id")
     if not isinstance(volume_id, str) or not volume_id:
         raise Refusal("pod create cannot begin before an exact volume is bound")
     request = pod_request(identity, authorization, volume_id, deadlines, api_key)
     write_public_launch_evidence(session_dir, identity, authorization, request)
-    life["pod_create_attempted"] = True
-    life["pod_create_outcome"] = "unknown"
-    life["phase"] = "pod-create-pending"
-    write_lifecycle(session_dir, life)
     event(session_dir, "pod-create-intent-recorded", pod_name=identity["pod_name"])
+    try:
+        assert_paid_create_window(session_dir, authorization, "pod create")
+    except Refusal:
+        with lifecycle_locked(session_dir) as life:
+            life["pod_create_outcome"] = "not-sent-window-closed"
+            if not closure_started(life):
+                life["phase"] = "pod-create-refused-window-closed"
+        raise
     try:
         status, value = api.request("POST", "pods", request)
     except TransportUncertain:
@@ -955,10 +1115,10 @@ def create_pod_once(
     if status != 201 or not isinstance(value, dict):
         event(session_dir, "pod-create-not-confirmed", http=status)
         if 400 <= status < 500:
-            life = lifecycle(session_dir)
-            life["pod_create_outcome"] = "rejected"
-            life["phase"] = "pod-create-rejected"
-            write_lifecycle(session_dir, life)
+            with lifecycle_locked(session_dir) as life:
+                life["pod_create_outcome"] = "rejected"
+                if not closure_started(life):
+                    life["phase"] = "pod-create-rejected"
             return None
         return reconcile_pod(api, session_dir, identity, authorization, deadlines, api_key)
     try:
@@ -966,22 +1126,31 @@ def create_pod_once(
     except Refusal:
         possible_id = value.get("id")
         if isinstance(possible_id, str) and possible_id:
-            life = lifecycle(session_dir)
-            life["pod_id"] = possible_id
-            life["pod_ever_observed"] = True
-            life["pod_create_outcome"] = "response-invalid"
-            life["phase"] = "invalid-pod-closing"
-            write_lifecycle(session_dir, life)
+            with lifecycle_locked(session_dir) as life:
+                life["pod_id"] = possible_id
+                life["pod_candidate_ids"] = sorted(
+                    set(life.get("pod_candidate_ids", [])) | {possible_id}
+                )
+                life["pod_ever_observed"] = True
+                life["pod_create_outcome"] = "response-invalid"
+                life["phase"] = "invalid-pod-closing"
             delete_status = api.delete_pod(possible_id)
             event(session_dir, "invalid-pod-response-delete-requested", pod_id=possible_id, http=delete_status)
         raise
-    life = lifecycle(session_dir)
-    life["pod_id"] = pod_id
-    life["pod_ever_observed"] = True
-    life["pod_create_outcome"] = "confirmed"
-    life["pod_created_at"] = value.get("createdAt")
-    life["phase"] = "pod-bound-awaiting-runtime-ack"
-    write_lifecycle(session_dir, life)
+    with lifecycle_locked(session_dir) as life:
+        life["pod_id"] = pod_id
+        life["pod_candidate_ids"] = sorted(
+            set(life.get("pod_candidate_ids", [])) | {pod_id}
+        )
+        if isinstance(value.get("createdAt"), str):
+            candidate_times = dict(life.get("pod_candidate_created_at", {}))
+            candidate_times[pod_id] = value["createdAt"]
+            life["pod_candidate_created_at"] = candidate_times
+        life["pod_ever_observed"] = True
+        life["pod_create_outcome"] = "confirmed"
+        life["pod_created_at"] = value.get("createdAt")
+        if not closure_started(life):
+            life["phase"] = "pod-bound-awaiting-runtime-ack"
     event(session_dir, "pod-created", pod_id=pod_id, status=value.get("status"))
     return pod_id
 
@@ -1023,18 +1192,17 @@ def launch(
     identity = session_identity(session_dir)
     checked = validate_authorization(authorization, identity)
     verify_watchdog_prearmed(session_dir)
-    life = lifecycle(session_dir)
-    if life.get("phase") in {"closed-verified", "close-unverified"}:
-        raise Refusal("session is already in a terminal close phase")
-    if not life.get("create_window_started_at"):
-        record_deadlines(life, checked, utc_now())
-        life["authorization_sha256"] = checked["authorization_sha256"]
-        life["authorization_public"] = {
-            key: value for key, value in checked.items() if key != "authorization_sha256"
-        }
-        write_lifecycle(session_dir, life)
-    elif life.get("authorization_sha256") != checked["authorization_sha256"]:
-        raise Refusal("resuming a session requires the exact original authorization bytes")
+    with lifecycle_locked(session_dir) as life:
+        if life.get("phase") in {"closed-verified", "close-unverified"}:
+            raise Refusal("session is already in a terminal close phase")
+        if not life.get("create_window_started_at"):
+            record_deadlines(life, checked, utc_now())
+            life["authorization_sha256"] = checked["authorization_sha256"]
+            life["authorization_public"] = {
+                key: value for key, value in checked.items() if key != "authorization_sha256"
+            }
+        elif life.get("authorization_sha256") != checked["authorization_sha256"]:
+            raise Refusal("resuming a session requires the exact original authorization bytes")
     verify_catalog_quote(api, checked)
     volume_id = create_volume_once(api, session_dir, identity, checked)
     if volume_id is None:
@@ -1069,7 +1237,24 @@ def billing_verified(
         return False
     metadata = value.get("metadata")
     query = metadata.get("query") if isinstance(metadata, dict) else None
-    if not isinstance(query, dict) or query.get(id_field) != resource_id:
+    if id_field == "podId":
+        amount_fields = ("totalAmount", "gpuAmount", "cpuAmount", "diskAmount")
+        unique_field = "uniquePodCount"
+    elif id_field == "networkVolumeId":
+        amount_fields = ("totalAmount", "standardAmount", "highPerformanceAmount")
+        unique_field = "uniqueNetworkVolumeCount"
+    else:
+        return False
+    if (
+        not isinstance(query, dict)
+        or query.get(id_field) != resource_id
+        or query.get("bucketSize") != "hour"
+        or isinstance(metadata.get("recordCount"), bool)
+        or metadata.get("recordCount") != len(value["records"])
+        or isinstance(metadata.get(unique_field), bool)
+        or metadata.get(unique_field) != 1
+        or not isinstance(metadata.get("totals"), dict)
+    ):
         return False
     try:
         query_start = parse_time(query.get("startTime"), "billing query start")
@@ -1082,6 +1267,7 @@ def billing_verified(
         return False
     record_starts: list[dt.datetime] = []
     record_ends: list[dt.datetime] = []
+    sums = {field: Decimal("0") for field in amount_fields}
     for record in value["records"]:
         if not isinstance(record, dict) or record.get(id_field) != resource_id:
             return False
@@ -1094,9 +1280,40 @@ def billing_verified(
                 return False
             record_starts.append(record_start)
             record_ends.append(record_end)
+            amounts = {
+                field: decimal(record.get(field), f"billing record {field}")
+                for field in amount_fields
+            }
+            if amounts["totalAmount"] != sum(amounts[field] for field in amount_fields[1:]):
+                return False
+            for field, amount in amounts.items():
+                sums[field] += amount
         except Refusal:
             return False
-    return min(record_starts) <= created and max(record_ends) >= requested_cutoff
+    totals = metadata["totals"]
+    try:
+        total_amounts = {
+            field: decimal(totals.get(field), f"billing totals {field}")
+            for field in amount_fields
+        }
+        if any(total_amounts[field] != sums[field] for field in amount_fields):
+            return False
+        if total_amounts["totalAmount"] != sum(
+            total_amounts[field] for field in amount_fields[1:]
+        ):
+            return False
+    except Refusal:
+        return False
+    intervals = sorted(zip(record_starts, record_ends, strict=True))
+    if intervals[0][0] > created:
+        return False
+    covered_until = intervals[0][1]
+    for start, end in intervals[1:]:
+        if start > covered_until:
+            return False
+        if end > covered_until:
+            covered_until = end
+    return covered_until >= requested_cutoff
 
 
 def verify_pod_absent(api: RunPodV2, pod_id: str) -> bool:
@@ -1114,189 +1331,231 @@ def verify_volume_absent(api: RunPodV2, volume_id: str) -> bool:
 
 
 def close_resources(api: RunPodV2, session_dir: Path) -> dict[str, object]:
+    identity = session_identity(session_dir)
+    with lifecycle_locked(session_dir) as life:
+        authorization = life.get("authorization_public")
+        if not isinstance(authorization, dict):
+            raise Refusal("cannot close without the session's recorded authorization")
+        close_requested_at = life.get("close_requested_at") or iso(utc_now())
+        life["close_requested_at"] = close_requested_at
+        cutoff = life.get("billing_cutoff") or iso(
+            parse_time(close_requested_at, "close request time")
+            + dt.timedelta(seconds=int(authorization["billing_cutoff_margin_seconds"]))
+        )
+        life["billing_cutoff"] = cutoff
     life = lifecycle(session_dir)
-    authorization = life.get("authorization_public")
-    if not isinstance(authorization, dict):
-        raise Refusal("cannot close without the session's recorded authorization")
-    pod_id = life.get("pod_id")
-    volume_id = life.get("volume_id")
-    close_requested_at = life.get("close_requested_at") or iso(utc_now())
-    life["close_requested_at"] = close_requested_at
-    cutoff = life.get("billing_cutoff") or iso(
-        parse_time(close_requested_at, "close request time")
-        + dt.timedelta(seconds=int(authorization["billing_cutoff_margin_seconds"]))
-    )
-    life["billing_cutoff"] = cutoff
-    write_lifecycle(session_dir, life)
 
-    ambiguous_pod_ids: list[str] = []
-    pod_create_uncertainty = bool(
-        pod_id is None
-        and life.get("pod_create_attempted")
-        and life.get("pod_create_outcome") != "rejected"
-    )
-    if pod_create_uncertainty:
-        try:
-            matches = exact_named(api.list_pods(), session_identity(session_dir)["pod_name"])
-        except (Refusal, TransportUncertain):
-            matches = []
-        if len(matches) == 1 and isinstance(matches[0].get("id"), str):
-            pod_id = matches[0]["id"]
-            life["pod_id"] = pod_id
-            life["pod_ever_observed"] = True
-            life["pod_created_at"] = matches[0].get("createdAt") or life.get(
-                "create_window_started_at"
+    pod_inventory: list[dict[str, Any]] | None
+    try:
+        pod_inventory = api.list_pods()
+    except (Refusal, TransportUncertain):
+        pod_inventory = None
+    if pod_inventory is not None:
+        matches = exact_named(pod_inventory, identity["pod_name"])
+        discovered = {
+            str(row["id"])
+            for row in matches
+            if isinstance(row.get("id"), str) and row.get("id")
+        }
+        with lifecycle_locked(session_dir) as current:
+            current["pod_candidate_ids"] = sorted(
+                set(current.get("pod_candidate_ids", [])) | discovered
             )
-            write_lifecycle(session_dir, life)
-            pod_create_uncertainty = False
-        elif len(matches) > 1:
-            ambiguous_pod_ids = [
-                str(row["id"])
-                for row in matches
-                if isinstance(row.get("id"), str) and row.get("id")
-            ]
-            for candidate in ambiguous_pod_ids:
-                try:
-                    status = api.delete_pod(candidate)
-                except TransportUncertain:
-                    status = 0
-                event(
-                    session_dir,
-                    "ambiguous-pod-delete-requested",
-                    pod_id=candidate,
-                    http=status,
-                )
-    pod_absent = pod_id is None and not pod_create_uncertainty and not ambiguous_pod_ids
-    pod_billing = pod_absent
-    pod_delete_http: int | None = None
-    if isinstance(pod_id, str) and pod_id:
+            candidate_times = dict(current.get("pod_candidate_created_at", {}))
+            for row in matches:
+                if isinstance(row.get("id"), str) and isinstance(row.get("createdAt"), str):
+                    candidate_times[row["id"]] = row["createdAt"]
+            current["pod_candidate_created_at"] = candidate_times
+            current["pod_ever_observed"] = bool(discovered) or current.get("pod_ever_observed")
+    life = lifecycle(session_dir)
+    pod_candidates = sorted(
+        set(life.get("pod_candidate_ids", []))
+        | ({str(life["pod_id"])} if isinstance(life.get("pod_id"), str) else set())
+    )
+    pod_delete_http: dict[str, int] = {}
+    pod_get_absent: dict[str, bool] = {}
+    for candidate in pod_candidates:
         try:
-            pod_delete_http = api.delete_pod(pod_id)
+            status = api.delete_pod(candidate)
         except TransportUncertain:
-            pod_delete_http = 0
-        event(session_dir, "pod-delete-requested", pod_id=pod_id, http=pod_delete_http)
+            status = 0
+        pod_delete_http[candidate] = status
+        event(session_dir, "pod-delete-requested", pod_id=candidate, http=status)
         try:
-            pod_absent = verify_pod_absent(api, pod_id)
+            exact_status, _ = api.get_pod(candidate)
+            pod_get_absent[candidate] = exact_status == 404
         except (Refusal, TransportUncertain):
-            pod_absent = False
-        if pod_absent:
+            pod_get_absent[candidate] = False
+    try:
+        final_pod_inventory = api.list_pods()
+    except (Refusal, TransportUncertain):
+        final_pod_inventory = None
+    pod_list_absent = bool(
+        final_pod_inventory is not None
+        and not exact_named(final_pod_inventory, identity["pod_name"])
+        and all(row.get("id") not in pod_candidates for row in final_pod_inventory)
+    )
+    pod_unknown_without_id = bool(
+        life.get("pod_create_attempted")
+        and life.get("pod_create_outcome") not in {"rejected", "not-sent-window-closed"}
+        and not pod_candidates
+    )
+    pod_absent = bool(
+        not pod_unknown_without_id
+        and all(pod_get_absent.values())
+        and (pod_list_absent if pod_candidates else not life.get("pod_create_attempted"))
+    )
+    if life.get("pod_create_outcome") in {"rejected", "not-sent-window-closed"} and not pod_candidates:
+        pod_absent = True
+    pod_billing = pod_absent and not pod_candidates
+    if pod_absent and pod_candidates:
+        pod_billing = True
+        created_by_id = dict(life.get("pod_candidate_created_at", {}))
+        for candidate in pod_candidates:
+            created_at = str(
+                created_by_id.get(candidate)
+                or life.get("pod_created_at")
+                or life["create_window_started_at"]
+            )
             route = "billing/pods?" + urllib.parse.urlencode(
                 {
-                    "podId": pod_id,
-                    "startTime": life.get("pod_created_at") or life["create_window_started_at"],
+                    "podId": candidate,
+                    "startTime": created_at,
                     "endTime": cutoff,
                     "bucketSize": "hour",
                 }
             )
             try:
                 status, value = api.request("GET", route)
-                pod_billing = status == 200 and billing_verified(
+                verified = status == 200 and billing_verified(
                     value,
                     id_field="podId",
-                    resource_id=pod_id,
-                    created_at=str(
-                        life.get("pod_created_at") or life["create_window_started_at"]
-                    ),
+                    resource_id=candidate,
+                    created_at=created_at,
                     cutoff=str(cutoff),
                 )
             except (Refusal, TransportUncertain):
-                pod_billing = False
+                verified = False
+            pod_billing = pod_billing and verified
 
-    ambiguous_volume_ids: list[str] = []
-    volume_create_uncertainty = bool(
-        volume_id is None
-        and life.get("volume_create_attempted")
-        and life.get("volume_create_outcome") != "rejected"
+    volume_cutoff = life.get("volume_billing_cutoff")
+    volume_candidates = sorted(
+        set(life.get("volume_candidate_ids", []))
+        | ({str(life["volume_id"])} if isinstance(life.get("volume_id"), str) else set())
     )
-    if pod_absent and volume_create_uncertainty:
+    volume_delete_http: dict[str, int] = {}
+    volume_get_absent: dict[str, bool] = {}
+    volume_inventory: list[dict[str, Any]] | None = None
+    if pod_absent:
         try:
-            matches = exact_named(api.list_volumes(), session_identity(session_dir)["volume_name"])
+            volume_inventory = api.list_volumes()
         except (Refusal, TransportUncertain):
-            matches = []
-        if len(matches) == 1 and isinstance(matches[0].get("id"), str):
-            volume_id = matches[0]["id"]
-            life = lifecycle(session_dir)
-            life["volume_id"] = volume_id
-            life["volume_created_at"] = life.get("volume_created_at") or life.get(
-                "create_window_started_at"
-            )
-            write_lifecycle(session_dir, life)
-            volume_create_uncertainty = False
-        elif len(matches) > 1:
-            ambiguous_volume_ids = [
+            volume_inventory = None
+        if volume_inventory is not None:
+            matches = exact_named(volume_inventory, identity["volume_name"])
+            discovered = {
                 str(row["id"])
                 for row in matches
                 if isinstance(row.get("id"), str) and row.get("id")
-            ]
-            for candidate in ambiguous_volume_ids:
-                try:
-                    status = api.delete_volume(candidate)
-                except TransportUncertain:
-                    status = 0
-                event(
-                    session_dir,
-                    "ambiguous-volume-delete-requested",
-                    volume_id=candidate,
-                    http=status,
+            }
+            with lifecycle_locked(session_dir) as current:
+                current["volume_candidate_ids"] = sorted(
+                    set(current.get("volume_candidate_ids", [])) | discovered
                 )
-    volume_absent = volume_id is None and not volume_create_uncertainty and not ambiguous_volume_ids
-    volume_billing = volume_absent
-    volume_delete_http: int | None = None
-    if pod_absent and isinstance(volume_id, str) and volume_id:
-        life = lifecycle(session_dir)
-        volume_delete_requested_at = life.get("volume_delete_requested_at") or iso(utc_now())
-        life["volume_delete_requested_at"] = volume_delete_requested_at
-        volume_cutoff = life.get("volume_billing_cutoff") or iso(
-            parse_time(volume_delete_requested_at, "volume delete request time")
-            + dt.timedelta(seconds=int(authorization["billing_cutoff_margin_seconds"]))
-        )
-        life["volume_billing_cutoff"] = volume_cutoff
-        write_lifecycle(session_dir, life)
+            volume_candidates = sorted(set(volume_candidates) | discovered)
+        with lifecycle_locked(session_dir) as current:
+            volume_delete_requested_at = current.get("volume_delete_requested_at") or iso(
+                utc_now()
+            )
+            current["volume_delete_requested_at"] = volume_delete_requested_at
+            volume_cutoff = current.get("volume_billing_cutoff") or iso(
+                parse_time(volume_delete_requested_at, "volume delete request time")
+                + dt.timedelta(
+                    seconds=int(authorization["billing_cutoff_margin_seconds"])
+                )
+            )
+            current["volume_billing_cutoff"] = volume_cutoff
+        for candidate in volume_candidates:
+            try:
+                status = api.delete_volume(candidate)
+            except TransportUncertain:
+                status = 0
+            volume_delete_http[candidate] = status
+            event(session_dir, "volume-delete-requested", volume_id=candidate, http=status)
+            try:
+                exact_status, _ = api.get_volume(candidate)
+                volume_get_absent[candidate] = exact_status == 404
+            except (Refusal, TransportUncertain):
+                volume_get_absent[candidate] = False
         try:
-            volume_delete_http = api.delete_volume(volume_id)
-        except TransportUncertain:
-            volume_delete_http = 0
-        event(session_dir, "volume-delete-requested", volume_id=volume_id, http=volume_delete_http)
-        try:
-            volume_absent = verify_volume_absent(api, volume_id)
+            final_volume_inventory = api.list_volumes()
         except (Refusal, TransportUncertain):
-            volume_absent = False
-        if volume_absent:
+            final_volume_inventory = None
+    else:
+        final_volume_inventory = volume_inventory
+    volume_list_absent = bool(
+        final_volume_inventory is not None
+        and not exact_named(final_volume_inventory, identity["volume_name"])
+        and all(row.get("id") not in volume_candidates for row in final_volume_inventory)
+    )
+    volume_unknown_without_id = bool(
+        life.get("volume_create_attempted")
+        and life.get("volume_create_outcome") not in {"rejected", "not-sent-window-closed"}
+        and not volume_candidates
+    )
+    volume_absent = bool(
+        pod_absent
+        and not volume_unknown_without_id
+        and all(volume_get_absent.values())
+        and (volume_list_absent if volume_candidates else not life.get("volume_create_attempted"))
+    )
+    if (
+        pod_absent
+        and life.get("volume_create_outcome") in {"rejected", "not-sent-window-closed"}
+        and not volume_candidates
+    ):
+        volume_absent = True
+    volume_billing = volume_absent and not volume_candidates
+    if volume_absent and volume_candidates and isinstance(volume_cutoff, str):
+        volume_billing = True
+        for candidate in volume_candidates:
+            created_at = str(
+                life.get("volume_created_at") or life["create_window_started_at"]
+            )
             route = "billing/network-volumes?" + urllib.parse.urlencode(
                 {
-                    "networkVolumeId": volume_id,
-                    "startTime": life.get("volume_created_at") or life["create_window_started_at"],
+                    "networkVolumeId": candidate,
+                    "startTime": created_at,
                     "endTime": volume_cutoff,
                     "bucketSize": "hour",
                 }
             )
             try:
                 status, value = api.request("GET", route)
-                volume_billing = status == 200 and billing_verified(
+                verified = status == 200 and billing_verified(
                     value,
                     id_field="networkVolumeId",
-                    resource_id=volume_id,
-                    created_at=str(
-                        life.get("volume_created_at") or life["create_window_started_at"]
-                    ),
-                    cutoff=str(volume_cutoff),
+                    resource_id=candidate,
+                    created_at=created_at,
+                    cutoff=volume_cutoff,
                 )
             except (Refusal, TransportUncertain):
-                volume_billing = False
+                verified = False
+            volume_billing = volume_billing and verified
     green = pod_absent and pod_billing and volume_absent and volume_billing
     result = {
         "schema": "verbatus-runpod-close-verification.v1",
         "session_id": session_dir.name,
-        "pod_id": pod_id,
-        "volume_id": volume_id,
+        "pod_id": life.get("pod_id"),
+        "volume_id": life.get("volume_id"),
+        "pod_candidate_ids": pod_candidates,
+        "volume_candidate_ids": volume_candidates,
         "pod_delete_http": pod_delete_http,
-        "pod_create_outcome_uncertain": pod_create_uncertainty,
-        "ambiguous_pod_ids_closed_but_unverified": ambiguous_pod_ids,
+        "pod_create_outcome_uncertain": pod_unknown_without_id,
         "pod_get_404_and_full_list_absent": pod_absent,
         "pod_billing_nonempty_exact_through_cutoff": pod_billing,
         "volume_delete_http": volume_delete_http,
-        "volume_create_outcome_uncertain": volume_create_uncertainty,
-        "ambiguous_volume_ids_closed_but_unverified": ambiguous_volume_ids,
+        "volume_create_outcome_uncertain": volume_unknown_without_id,
         "volume_get_404_and_list_absent": volume_absent,
         "volume_billing_nonempty_exact_through_cutoff": volume_billing,
         "requested_cutoff": cutoff,
@@ -1306,10 +1565,9 @@ def close_resources(api: RunPodV2, session_dir: Path) -> dict[str, object]:
         "observed_at": iso(utc_now()),
     }
     durable_write(session_dir / "close-verification.json", result)
-    life = lifecycle(session_dir)
-    life["close_verification"] = result
-    life["phase"] = result["status"]
-    write_lifecycle(session_dir, life)
+    with lifecycle_locked(session_dir) as current:
+        current["close_verification"] = result
+        current["phase"] = result["status"]
     event(session_dir, result["status"], pod_absent=pod_absent, volume_absent=volume_absent, billing_verified=pod_billing and volume_billing)
     return result
 
@@ -1317,7 +1575,12 @@ def close_resources(api: RunPodV2, session_dir: Path) -> dict[str, object]:
 def record_runtime_ack(session_dir: Path, receipt_path: Path, output_path: Path) -> dict[str, object]:
     identity = session_identity(session_dir)
     life = lifecycle(session_dir)
-    receipt_bytes = receipt_path.read_bytes()
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+    except OSError as error:
+        raise Refusal(
+            f"cannot read runtime receipt at {receipt_path}: {type(error).__name__}"
+        ) from error
     try:
         receipt = json.loads(receipt_bytes)
     except json.JSONDecodeError as error:
@@ -1359,12 +1622,73 @@ def record_runtime_ack(session_dir: Path, receipt_path: Path, output_path: Path)
         "instruction": "upload as controller-ack.json beside the pod runtime receipt",
     }
     durable_write(output_path, ack, exclusive=not output_path.exists())
-    life["runtime_acknowledged"] = True
-    life["runtime_receipt_sha256"] = ack["runtime_receipt_sha256"]
-    life["phase"] = "runtime-ack-prepared-awaiting-pod-acknowledgement"
-    write_lifecycle(session_dir, life)
+    with lifecycle_locked(session_dir) as current:
+        if (
+            current.get("pod_id") != receipt.get("pod_id")
+            or current.get("hard_deadline_epoch") != receipt.get("hard_deadline_epoch")
+            or current.get("cleanup_epoch") != receipt.get("cleanup_epoch")
+        ):
+            raise Refusal("lifecycle changed while the runtime receipt was being validated")
+        previous_digest = current.get("runtime_receipt_sha256")
+        if current.get("runtime_ack_consumed_by_pod") is True and previous_digest != ack[
+            "runtime_receipt_sha256"
+        ]:
+            raise Refusal("a different runtime receipt was already consumed by the pod")
+        current["runtime_ack_prepared"] = True
+        current["runtime_receipt_sha256"] = ack["runtime_receipt_sha256"]
+        if not closure_started(current):
+            current["phase"] = "runtime-ack-prepared-awaiting-pod-acknowledgement"
     event(session_dir, "runtime-receipt-accepted", pod_id=life["pod_id"])
     return ack
+
+
+def record_pod_acknowledgement(session_dir: Path, acknowledgement_path: Path) -> dict[str, object]:
+    """Prove the pod consumed the prepared ack; only this unlocks useful runtime."""
+
+    identity = session_identity(session_dir)
+    life = lifecycle(session_dir)
+    try:
+        raw = acknowledgement_path.read_bytes()
+    except OSError as error:
+        raise Refusal(
+            f"cannot read pod acknowledgement at {acknowledgement_path}: {type(error).__name__}"
+        ) from error
+    try:
+        acknowledgement = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise Refusal("pod acknowledgement is not valid JSON") from error
+    expected = {
+        "schema": "verbatus-pod-controller-acknowledgement.v1",
+        "session_id": identity["session_id"],
+        "pod_id": life.get("pod_id"),
+        "controller_challenge": identity["controller_challenge"],
+        "hard_deadline_epoch": life.get("hard_deadline_epoch"),
+        "runtime_receipt_sha256": life.get("runtime_receipt_sha256"),
+    }
+    if not isinstance(acknowledgement, dict) or any(
+        acknowledgement.get(key) != value for key, value in expected.items()
+    ):
+        raise Refusal(
+            "pod acknowledgement does not prove consumption for this session, pod, "
+            "runtime receipt, and deadline"
+        )
+    acknowledged_at = acknowledgement.get("acknowledged_at")
+    if isinstance(acknowledged_at, bool) or not isinstance(acknowledged_at, (int, float)):
+        raise Refusal("pod acknowledgement lacks its numeric observation time")
+    with lifecycle_locked(session_dir) as current:
+        if current.get("runtime_ack_prepared") is not True:
+            raise Refusal("pod acknowledgement arrived before a host ack was prepared")
+        if any(
+            acknowledgement.get(key) != current.get(key)
+            for key in ("pod_id", "hard_deadline_epoch", "runtime_receipt_sha256")
+        ):
+            raise Refusal("lifecycle changed while the pod acknowledgement was being validated")
+        current["runtime_ack_consumed_by_pod"] = True
+        current["pod_acknowledgement_sha256"] = sha256_bytes(raw)
+        if not closure_started(current):
+            current["phase"] = "runtime-verified-for-inference"
+    event(session_dir, "pod-ack-consumption-proven", pod_id=life.get("pod_id"))
+    return acknowledgement
 
 
 def close_until_bounded(api: RunPodV2, session_dir: Path, *, poll_seconds: float) -> int:
@@ -1373,19 +1697,21 @@ def close_until_bounded(api: RunPodV2, session_dir: Path, *, poll_seconds: float
     while True:
         try:
             result = close_resources(api, session_dir)
-        except (Refusal, TransportUncertain) as error:
-            event(session_dir, "close-attempt-unverified", error_type=type(error).__name__)
+        except BaseException as error:
+            with contextlib.suppress(BaseException):
+                event(session_dir, "close-attempt-unverified", error_type=type(error).__name__)
             result = None
-        durable_write(
-            session_dir / "watchdog-ready.json",
-            {
-                "session_id": session_dir.name,
-                "pid": os.getpid(),
-                "heartbeat_at": iso(utc_now()),
-                "lock_owned": True,
-                "closing": True,
-            },
-        )
+        with contextlib.suppress(BaseException):
+            durable_write(
+                session_dir / "watchdog-ready.json",
+                {
+                    "session_id": session_dir.name,
+                    "pid": os.getpid(),
+                    "heartbeat_at": iso(utc_now()),
+                    "lock_owned": True,
+                    "closing": True,
+                },
+            )
         if isinstance(result, dict) and result.get("green") is True:
             return 0
         if isinstance(result, dict):
@@ -1404,7 +1730,76 @@ def close_until_bounded(api: RunPodV2, session_dir: Path, *, poll_seconds: float
                 return 3
         # If a pod or volume may remain, do not let the host backstop silently stop
         # trying merely because the planned two-hour work window has ended.
-        time.sleep(poll_seconds)
+        try:
+            time.sleep(poll_seconds)
+        except BaseException:
+            # Once a paid action may exist, an interrupt requests closure; it does not
+            # make the only host closer disappear.
+            continue
+
+
+def _watch_tick(
+    api: RunPodV2,
+    session_dir: Path,
+    identity: Mapping[str, object],
+    *,
+    started: float,
+    poll_seconds: float,
+) -> int | None:
+    durable_write(
+        session_dir / "watchdog-ready.json",
+        {
+            "session_id": identity["session_id"],
+            "pid": os.getpid(),
+            "heartbeat_at": iso(utc_now()),
+            "lock_owned": True,
+        },
+    )
+    life = lifecycle(session_dir)
+    if (session_dir / "stop.requested.json").exists():
+        return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
+    if life.get("cleanup_at") and utc_now() >= parse_time(life["cleanup_at"], "cleanup deadline"):
+        return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
+    if (
+        life.get("pod_create_attempted")
+        and life.get("pod_create_outcome") not in {"rejected", "not-sent-window-closed"}
+        and not life.get("pod_id")
+    ):
+        authorization = life.get("authorization_public")
+        if isinstance(authorization, dict):
+            deadlines = {
+                "hard_deadline_epoch": life["hard_deadline_epoch"],
+                "cleanup_epoch": life["cleanup_epoch"],
+            }
+            reconcile_pod(
+                api, session_dir, identity, authorization, deadlines, load_api_key()
+            )
+    if (
+        life.get("volume_create_attempted")
+        and life.get("volume_create_outcome") not in {"rejected", "not-sent-window-closed"}
+        and not life.get("volume_id")
+    ):
+        authorization = life.get("authorization_public")
+        if isinstance(authorization, dict):
+            reconcile_volume(api, session_dir, identity, authorization)
+    pod_id = life.get("pod_id")
+    if isinstance(pod_id, str) and pod_id:
+        status, pod = api.get_pod(pod_id)
+        if status == 404 or (
+            pod is not None and pod.get("status") in {"ERROR", "EXITED", "TERMINATED"}
+        ):
+            return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
+        if (
+            not life.get("runtime_ack_consumed_by_pod")
+            and life.get("pod_created_at")
+            and utc_now() - parse_time(life["pod_created_at"], "pod createdAt")
+            > dt.timedelta(seconds=PROVISIONING_TIMEOUT_SECONDS)
+        ):
+            return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
+    if not life.get("create_window_started_at") and time.monotonic() - started > 15 * 60:
+        event(session_dir, "watchdog-expired-before-launch")
+        return 2
+    return None
 
 
 def watch_loop(api: RunPodV2, session_dir: Path, *, poll_seconds: float = 10.0) -> int:
@@ -1412,71 +1807,32 @@ def watch_loop(api: RunPodV2, session_dir: Path, *, poll_seconds: float = 10.0) 
     with exclusive_lock(session_dir / "watchdog.lock", blocking=False):
         started = time.monotonic()
         while True:
-            durable_write(
-                session_dir / "watchdog-ready.json",
-                {
-                    "session_id": identity["session_id"],
-                    "pid": os.getpid(),
-                    "heartbeat_at": iso(utc_now()),
-                    "lock_owned": True,
-                },
-            )
-            life = lifecycle(session_dir)
-            if (session_dir / "stop.requested.json").exists():
-                return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
-            if life.get("cleanup_at") and utc_now() >= parse_time(life["cleanup_at"], "cleanup deadline"):
-                return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
-            if (
-                life.get("pod_create_attempted")
-                and life.get("pod_create_outcome") != "rejected"
-                and not life.get("pod_id")
-            ):
-                authorization = life.get("authorization_public")
-                if isinstance(authorization, dict):
-                    deadlines = {
-                        "hard_deadline_epoch": life["hard_deadline_epoch"],
-                        "cleanup_epoch": life["cleanup_epoch"],
-                    }
-                    try:
-                        reconcile_pod(api, session_dir, identity, authorization, deadlines, load_api_key())
-                    except Refusal:
-                        return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
-            if (
-                life.get("volume_create_attempted")
-                and life.get("volume_create_outcome") != "rejected"
-                and not life.get("volume_id")
-            ):
-                authorization = life.get("authorization_public")
-                if isinstance(authorization, dict):
-                    try:
-                        reconcile_volume(api, session_dir, identity, authorization)
-                    except Refusal:
-                        return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
-            pod_id = life.get("pod_id")
-            if isinstance(pod_id, str) and pod_id:
-                try:
-                    status, pod = api.get_pod(pod_id)
-                except (Refusal, TransportUncertain) as error:
+            try:
+                outcome = _watch_tick(
+                    api,
+                    session_dir,
+                    identity,
+                    started=started,
+                    poll_seconds=poll_seconds,
+                )
+            except BaseException as error:
+                with contextlib.suppress(BaseException):
                     event(
                         session_dir,
-                        "pod-status-unverified",
-                        pod_id=pod_id,
+                        "watchdog-tick-unverified",
                         error_type=type(error).__name__,
                     )
-                    time.sleep(poll_seconds)
-                    continue
-                if status == 404 or (pod is not None and pod.get("status") in {"ERROR", "EXITED", "TERMINATED"}):
-                    return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
-                if (
-                    not life.get("runtime_acknowledged")
-                    and life.get("pod_created_at")
-                    and utc_now() - parse_time(life["pod_created_at"], "pod createdAt")
-                    > dt.timedelta(seconds=PROVISIONING_TIMEOUT_SECONDS)
-                ):
-                    return close_until_bounded(api, session_dir, poll_seconds=poll_seconds)
-            if not life.get("create_window_started_at") and time.monotonic() - started > 15 * 60:
-                event(session_dir, "watchdog-expired-before-launch")
-                return 2
+                with contextlib.suppress(BaseException):
+                    life = lifecycle(session_dir)
+                    if life.get("pod_create_attempted") or life.get("volume_create_attempted"):
+                        return close_until_bounded(
+                            api, session_dir, poll_seconds=poll_seconds
+                        )
+                if isinstance(error, KeyboardInterrupt):
+                    raise
+                outcome = None
+            if outcome is not None:
+                return outcome
             time.sleep(poll_seconds)
 
 
@@ -1533,6 +1889,11 @@ def build_parser() -> argparse.ArgumentParser:
     ack.add_argument("--session-dir", type=Path, required=True)
     ack.add_argument("--receipt", type=Path, required=True)
     ack.add_argument("--output", type=Path, required=True)
+    pod_ack = sub.add_parser(
+        "pod-ack", help="validate the retrieved proof that the pod consumed its controller ack"
+    )
+    pod_ack.add_argument("--session-dir", type=Path, required=True)
+    pod_ack.add_argument("--acknowledgement", type=Path, required=True)
     stop = sub.add_parser("stop", help="durably ask the prearmed watchdog to close and clean up")
     stop.add_argument("--session-dir", type=Path, required=True)
     reconcile = sub.add_parser("reconcile-close", help="take over only if watchdog is absent, then close")
@@ -1564,6 +1925,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "runtime-ack":
             ack = record_runtime_ack(args.session_dir, args.receipt, args.output)
             print(json.dumps({k: v for k, v in ack.items() if k != "controller_challenge"}, indent=2))
+            return 0
+        if args.command == "pod-ack":
+            acknowledgement = record_pod_acknowledgement(
+                args.session_dir, args.acknowledgement
+            )
+            print(
+                json.dumps(
+                    {
+                        "session_id": acknowledgement["session_id"],
+                        "pod_id": acknowledgement["pod_id"],
+                        "runtime_ack_consumed_by_pod": True,
+                    },
+                    indent=2,
+                )
+            )
             return 0
         if args.command == "launch":
             identity = session_identity(args.session_dir)
