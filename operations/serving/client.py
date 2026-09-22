@@ -291,6 +291,7 @@ class ChairRequest:
     generation_declared: Mapping[str, object]
     generation_sent: Mapping[str, object]
     capacity: Mapping[str, object] | None = None
+    structure_recovery_seed: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
@@ -301,6 +302,15 @@ class ChairRequest:
             self, "generation_declared", MappingProxyType(dict(self.generation_declared))
         )
         object.__setattr__(self, "generation_sent", MappingProxyType(dict(self.generation_sent)))
+        if self.structure_recovery_seed is not None and (
+            not isinstance(self.structure_recovery_seed, int)
+            or isinstance(self.structure_recovery_seed, bool)
+            or self.structure_recovery_seed < 0
+        ):
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "a Designator structure recovery seed must be a non-negative integer",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,15 +464,29 @@ class ChairClient:
         _refuse_generation_that_cannot_be_recorded_as_sent(
             generation_declared, request.generation_declared, "generation_declared"
         )
+        if (
+            request.structure_recovery_seed is not None
+            and self._identity.role != "designator_structure"
+        ):
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "only the Designator structure chair may override the manager seed for "
+                "bounded structural coverage recovery",
+            )
+        actual_seed = (
+            handle.profile.seed
+            if request.structure_recovery_seed is None
+            else request.structure_recovery_seed
+        )
         actual_generation_sent = {
             **request.generation_sent,
             "temperature": self._record_temperature,
-            "seed": handle.profile.seed,
+            "seed": actual_seed,
         }
         body = request_body(
             {**request.generation_sent, "messages": list(request.messages)},
             model_id=handle.profile.served_model_id,
-            seed=handle.profile.seed,
+            seed=actual_seed,
             deterministic=self._record_temperature == 0,
             temperature=self._record_temperature,
         )
@@ -483,39 +507,47 @@ class ChairClient:
         # that the bytes exist afterwards, by their own digest, so the refusal
         # can name them and a reader can see what actually arrived.
         raw_response_ref = self._retain(response.body)
-        _refuse_bytes_from_the_wrong_source(
-            response,
-            expected_model_id=handle.profile.served_model_id,
-            raw_response_ref=raw_response_ref,
-        )
+        early_refusal: ChairResponseRefusal | None = None
+        try:
+            _refuse_bytes_from_the_wrong_source(
+                response,
+                expected_model_id=handle.profile.served_model_id,
+                raw_response_ref=raw_response_ref,
+            )
+        except ChairResponseRefusal as error:
+            early_refusal = error
 
         content: str | None
         finish_reason: str | None = None
         usage: Mapping[str, int] | None = None
         parse_problem: str | None = None
-        try:
-            result = parse_openai_reading(
-                response, kind=request.kind, expected_model_id=handle.profile.served_model_id
-            )
-        except ChairResponseRefusal as error:
+        if early_refusal is not None:
             content = None
-            parse_problem = error.code
-            if (
-                parse_problem == "CHAIR_RESPONSE_MODEL_MISMATCH"
-                and _peek_model(response.body) is None
-            ):
-                # `_refuse_bytes_from_the_wrong_source` already let this body
-                # through retention because it names no model at all — that is
-                # a malformed body, not evidence of a foreign source, and the
-                # parser's own comparison (`payload.get("model") !=
-                # expected_model_id`) cannot tell the two apart. Recorded
-                # verbatim, "model mismatch" would assert a foreign-model
-                # observation that was never made (GOVERNANCE 10).
-                parse_problem = "CHAIR_RESPONSE_INVALID"
+            parse_problem = early_refusal.code
         else:
-            content = result.outputs[0]
-            finish_reason = result.finish_reasons[0]
-            usage = result.usage
+            try:
+                result = parse_openai_reading(
+                    response, kind=request.kind, expected_model_id=handle.profile.served_model_id
+                )
+            except ChairResponseRefusal as error:
+                content = None
+                parse_problem = error.code
+                if (
+                    parse_problem == "CHAIR_RESPONSE_MODEL_MISMATCH"
+                    and _peek_model(response.body) is None
+                ):
+                    # `_refuse_bytes_from_the_wrong_source` already let this body
+                    # through retention because it names no model at all — that is
+                    # a malformed body, not evidence of a foreign source, and the
+                    # parser's own comparison (`payload.get("model") !=
+                    # expected_model_id`) cannot tell the two apart. Recorded
+                    # verbatim, "model mismatch" would assert a foreign-model
+                    # observation that was never made (GOVERNANCE 10).
+                    parse_problem = "CHAIR_RESPONSE_INVALID"
+            else:
+                content = result.outputs[0]
+                finish_reason = result.finish_reasons[0]
+                usage = result.usage
 
         record = {
             "schema": CHAIR_CALL_RECORD_SCHEMA,
@@ -534,6 +566,7 @@ class ChairClient:
             "generation_declared": generation_declared,
             "raw_response_ref": dict(raw_response_ref),
             "response_sha256": raw_response_ref["sha256"],
+            "response_status": response.status,
             "response_model": _peek_model(response.body),
             "finish_reason": finish_reason,
             "usage": dict(usage) if usage is not None else None,
@@ -545,9 +578,20 @@ class ChairClient:
         }
         if set(record) != CHAIR_CALL_RECORD_FIELDS:
             raise AssertionError(  # pragma: no cover - closed by construction above
-                f"chair-call-record.v1 built the wrong field set: {sorted(record)}"
+                f"{CHAIR_CALL_RECORD_SCHEMA} built the wrong field set: {sorted(record)}"
             )
         call_record_ref = self._retain(canonical_bytes(record))
+
+        if early_refusal is not None:
+            raise ChairResponseRefusal(
+                early_refusal.code,
+                early_refusal.detail,
+                raw_response_ref=raw_response_ref,
+                call_record_ref=call_record_ref,
+                request_sha256=request_sha256,
+                receipt_ref=handle.receipt_reference,
+                served_model_id=handle.profile.served_model_id,
+            ) from early_refusal
 
         return ChairResponse(
             chair=self._identity.role,

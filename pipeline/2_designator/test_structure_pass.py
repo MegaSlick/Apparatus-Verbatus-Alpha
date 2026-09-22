@@ -29,10 +29,11 @@ from typing import Any
 import pytest
 from _test_support import load_designator
 
+import common.stage as stage_contract
 from common import chandra_layout, structure_answer
 from common.chairs.registry import ChairRegistry
-from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_bindings
 from common.contracts.identities import verify as verify_identity
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
@@ -46,6 +47,7 @@ from common.stage import (
     EXIT_HELD,
     STRUCTURE_ANSWER_KIND,
     STRUCTURE_ANSWER_RECORD_SCHEMA,
+    STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
     expected_acts,
     load_fixture,
     open_stage_context,
@@ -365,7 +367,11 @@ def _run_designator(
         endpoint, catalogue, tmp_path / "logs", tmp_path / "pod-gpu.lock", decoding
     )
     monkeypatch.chdir(ROOT)
-    monkeypatch.setattr(sys, "argv", _argv(root, catalogue, *argv))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _argv(root, catalogue, *argv, "--decoding-config", str(decoding)),
+    )
     return endpoint, designator.main(serving_factory=factory)
 
 
@@ -557,7 +563,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     assert set(answers) == {1, 2}
     for ordinal, expected in ((1, PAGE_ONE_ACTS), (2, PAGE_TWO_ACTS)):
         payload = answers[ordinal]["payload"]
-        assert payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA
+        assert payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
         assert payload["parse_state"] == "parsed"
         assert payload["parse_outcome"] is None
         assert payload["disposition"] == "detected"
@@ -1093,8 +1099,268 @@ def test_an_invalid_structure_answer_gets_one_bounded_coverage_retry(
         == _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["subject_id"]
     ]
     assert len(attempts) == 2
+    attempts.sort(key=lambda row: row["payload"]["attempt_ordinal"])
+    assert [request["seed"] for request in endpoint.requests] == [0, 0, 1]
+    assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 1]
+    assert len({row["payload"]["request_sha256"] for row in attempts}) == 2
+    assert attempts[0]["payload"]["attempts"] == []
     final = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
     assert final["attempt_ordinal"] == 2 and len(final["attempts"]) == 2
+    assert attempts[1]["payload"]["attempts"] == final["attempts"][:1]
+
+
+def test_resume_keeps_the_published_attempt_and_uses_its_next_deterministic_seed(
+    live_run, tmp_path, monkeypatch
+):
+    root, catalogue = live_run
+    original = designator._recoverable_structure_outcome
+
+    def interrupt_after_first_refusal(answer):
+        if answer.reason_code == "structure-answer-no-layout-blocks":
+            raise RuntimeError("interrupted after first refused attempt")
+        return original(answer)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            designator,
+            "_recoverable_structure_outcome",
+            interrupt_after_first_refusal,
+        )
+        with pytest.raises(RuntimeError, match="first refused attempt"):
+            _run_designator(
+                root,
+                catalogue,
+                tmp_path,
+                patcher,
+                [_answer(PAGE_ONE_ACTS), scripted_structure_refusal("no-layout-blocks")],
+            )
+
+    before = [
+        row
+        for row in _artifacts(root, DESIGNATOR, "structure-attempt")
+        if row["payload"]["page_ordinal"] == 2
+    ]
+    assert len(before) == 1
+    endpoint, exit_code = _run_designator(
+        root, catalogue, tmp_path, monkeypatch, [_answer(PAGE_TWO_ACTS)]
+    )
+    assert exit_code == EXIT_COMPLETE
+    assert [request["seed"] for request in endpoint.requests] == [1]
+    attempts = [
+        row
+        for row in _artifacts(root, DESIGNATOR, "structure-attempt")
+        if row["payload"]["page_ordinal"] == 2
+    ]
+    attempts.sort(key=lambda row: row["payload"]["attempt_ordinal"])
+    assert attempts[0] == before[0]
+    assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 1]
+
+
+def test_resume_terminalizes_a_retained_nonretryable_attempt_without_starting_a_chair(
+    live_run, tmp_path, monkeypatch
+):
+    root, catalogue = live_run
+    original = designator._publish_structure_answer
+
+    def interrupt_after_page_two(context, page_record, answer):
+        if answer.ordinal == 2:
+            raise RuntimeError("interrupted after immutable attempt")
+        return original(context, page_record, answer)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(designator, "_publish_structure_answer", interrupt_after_page_two)
+        with pytest.raises(RuntimeError, match="interrupted after immutable attempt"):
+            _run_designator(
+                root,
+                catalogue,
+                tmp_path,
+                patcher,
+                [_answer(PAGE_ONE_ACTS), _answer(PAGE_TWO_ACTS, finish_reason="length")],
+            )
+
+    attempts_before = _artifacts(root, DESIGNATOR, "structure-attempt")
+    endpoint, exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, [])
+    assert exit_code == EXIT_HELD
+    assert endpoint.requests == []
+    assert _artifacts(root, DESIGNATOR, "structure-attempt") == attempts_before
+    final = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
+    assert final["attempt_ordinal"] == len(final["attempts"]) == 1
+
+
+def test_legacy_structure_answer_v1_resumes_without_attempt_fields(tmp_path, monkeypatch):
+    catalogue = _live_catalogue(tmp_path)
+    decoding = tmp_path / "legacy-decoding.toml"
+    decoding.write_text(
+        'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+        '[variance_experiment]\nlabel = "variance.v1"\nseed = 20260820\npasses = 2\n'
+        "[structure]\ntemperature = 1\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "legacy-runs"
+    _chain(root, catalogue, "--decoding-config", str(decoding))
+    original = designator._publish_structure_answer
+
+    def interrupt_after_legacy_source(context, page_record, answer):
+        reference = original(context, page_record, answer)
+        if answer.ordinal == 1:
+            raise RuntimeError("convert completed page to legacy fixture")
+        return reference
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(designator, "_publish_structure_answer", interrupt_after_legacy_source)
+        with pytest.raises(RuntimeError, match="legacy fixture"):
+            _run_designator(
+                root,
+                catalogue,
+                tmp_path,
+                patcher,
+                [_answer(PAGE_ONE_ACTS)],
+                decoding=decoding,
+            )
+
+    tree = RunTree(root, RUN_ID)
+    answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
+    answer_row = answers[1]
+    attempt_row = next(
+        row
+        for row in _artifacts(root, DESIGNATOR, "structure-attempt")
+        if row["subject_id"] == answer_row["subject_id"]
+    )
+    answer_path = tree.resolve(
+        tree.artifact_path(DESIGNATOR, STRUCTURE_ANSWER_KIND, answer_row["artifact_id"])
+    )
+    envelope = json.loads(answer_path.read_text(encoding="utf-8"))
+    payload = envelope["payload"]
+    payload["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
+    for field in ("attempt_ordinal", "attempts", "attempt_seed", "attempt_policy"):
+        payload.pop(field)
+    envelope["self_hash"] = self_hash(envelope)
+    answer_path.write_bytes(canonical_bytes(envelope))
+
+    tree.resolve(
+        tree.artifact_path(DESIGNATOR, "structure-attempt", attempt_row["artifact_id"])
+    ).unlink()
+
+    endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [_answer(PAGE_TWO_ACTS)],
+        decoding=decoding,
+    )
+    assert exit_code == EXIT_COMPLETE
+    assert len(endpoint.requests) == 1
+    resumed = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
+    assert resumed[1]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA
+    assert "attempts" not in resumed[1]["payload"]
+    assert resumed[2]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+    assert resumed[2]["payload"]["attempt_policy"] == {
+        "max_attempts": 1,
+        "seed_schedule": "fixed-base",
+    }
+
+
+@pytest.mark.parametrize("damage", ["missing", "forged", "out-of-order", "extra"])
+def test_structure_attempt_consumer_refuses_missing_forged_or_out_of_order_history(
+    damage, monkeypatch
+):
+    monkeypatch.setattr(stage_contract, "validate_serving_provenance", lambda *_args, **_kw: None)
+    monkeypatch.setattr(
+        stage_contract,
+        "load_decoding_policy",
+        lambda _path: (
+            {
+                "schema": "decoding.v2",
+                "reading_of_record": {"temperature": 0},
+                "variance_experiment": {"label": "v", "seed": 1, "passes": 2},
+                "structure": {
+                    "temperature": 1,
+                    "recovery_seed_schedule": "base-plus-attempt-ordinal-minus-one",
+                    "recovery_max_attempts": 3,
+                },
+            },
+            "d" * 64,
+        ),
+    )
+    page_id = "page_" + "1" * 16
+    policy = {
+        "max_attempts": 3,
+        "seed_schedule": "base-plus-attempt-ordinal-minus-one",
+    }
+    decoding = {
+        "policy": "structure",
+        "temperature": 1,
+        "decoding_config_sha256": "d" * 64,
+    }
+    first_ref = {"relative_path": "2_designator/a1.json", "sha256": "1" * 64}
+    second_ref = {"relative_path": "2_designator/a2.json", "sha256": "2" * 64}
+    first = {
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+        "page_id": page_id,
+        "page_ordinal": 1,
+        "attempt_ordinal": 1,
+        "attempt_seed": 7,
+        "attempt_policy": policy,
+        "attempts": [],
+        "decoding": decoding,
+    }
+    second = {
+        **first,
+        "attempt_ordinal": 2,
+        "attempt_seed": 8,
+        "attempts": [first_ref],
+    }
+    rows = {
+        first_ref["relative_path"]: {
+            "attempt_id": designator.attempt_id(page_id, "structure", 1),
+            "subject_id": page_id,
+            "payload": first,
+        },
+        second_ref["relative_path"]: {
+            "attempt_id": designator.attempt_id(page_id, "structure", 2),
+            "subject_id": page_id,
+            "payload": second,
+        },
+    }
+    monkeypatch.setattr(stage_contract, "_stage_records", lambda *_args: list(rows.values()))
+
+    class FakeTree:
+        def read_artifact_reference(self, reference, **_expected):
+            try:
+                return rows[reference["relative_path"]]
+            except KeyError as error:
+                raise SchemaRefusal("missing attempt") from error
+
+    terminal = {**second, "attempts": [first_ref, second_ref]}
+    if damage == "missing":
+        terminal["attempts"] = [first_ref]
+    elif damage == "forged":
+        rows[second_ref["relative_path"]] = {
+            **rows[second_ref["relative_path"]],
+            "attempt_id": designator.attempt_id("page_" + "2" * 16, "structure", 2),
+        }
+    else:
+        if damage == "out-of-order":
+            terminal["attempts"] = [second_ref, first_ref]
+        else:
+            rows["2_designator/a3.json"] = {
+                "attempt_id": designator.attempt_id(page_id, "structure", 3),
+                "subject_id": page_id,
+                "payload": {
+                    **second,
+                    "attempt_ordinal": 3,
+                    "attempt_seed": 9,
+                    "attempts": [first_ref, second_ref],
+                },
+            }
+
+    with pytest.raises(FatalAccounting, match="attempt"):
+        stage_contract._verify_structure_attempt_chain(
+            SimpleNamespace(tree=FakeTree(), args=SimpleNamespace(decoding_config="unused")),
+            terminal,
+            page_id,
+        )
 
 
 @pytest.mark.parametrize("outcome", ["no-layout-blocks", "blocks-not-at-top-level"])
@@ -1140,6 +1406,21 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
     # neither list can be carrying a block the other one lost.
     assert payload["block_count"] == 0
     assert payload["blocks_without_proposal"] == []
+    attempts = [
+        row
+        for row in _artifacts(root, DESIGNATOR, "structure-attempt")
+        if row["subject_id"] == answers[2]["subject_id"]
+    ]
+    attempts.sort(key=lambda row: row["payload"]["attempt_ordinal"])
+    assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 1, 2]
+    assert [row["payload"]["attempt_ordinal"] for row in attempts] == [1, 2, 3]
+    assert payload["attempt_ordinal"] == len(payload["attempts"]) == 3
+    last_reference = payload["attempts"][-1]
+    tree = RunTree(root, RUN_ID)
+    assert (
+        digest_bytes(tree.read_bytes(last_reference["relative_path"])) == last_reference["sha256"]
+    )
+    assert attempts[-1]["payload"] == {**payload, "attempts": payload["attempts"][:-1]}
 
 
 def test_a_truncated_body_holds_as_cut_off_even_though_the_grammar_reads_it(
@@ -1446,10 +1727,9 @@ def test_a_prompt_too_long_400_is_refused_by_name_and_never_read_as_a_cut_off(
     the page as `structure-answer-cut-off`, asserting that a chair answered and
     was cut off when no chair answered at all.
 
-    The pass refuses the run rather than holding the page, which is the
-    contract for a serving refusal here (a transport failure is not one page's
-    outcome), and the engine's own sentence survives -- retained by the client
-    before the refusal, and quoted in the refusal itself.
+    The paid response becomes one immutable, terminal held attempt. It is not
+    retried: HTTP and source-integrity failures are evidence to retain, not
+    structural coverage variants to sample around.
     """
 
     root, catalogue = live_run
@@ -1459,29 +1739,64 @@ def test_a_prompt_too_long_400_is_refused_by_name_and_never_read_as_a_cut_off(
         prompt_tokens=2044,
         completion_tokens=1575,
     )
-    with pytest.raises(ContractError) as error:
-        _run_designator(
-            root,
-            catalogue,
-            tmp_path,
-            monkeypatch,
-            [_answer(PAGE_ONE_ACTS), refusal],
-        )
-    message = str(error.value)
-    assert "HTTP 400" in message
-    assert "maximum context length is 2048" in message
-    # Not a hold, and specifically not a cut-off hold: the refused page has no
-    # record. Page 1's answer is a different page's fact and survives, because
-    # each answer is published as it arrives -- the 400 costs page 2's reading,
-    # never the reading this run already paid for on page 1 (GOVERNANCE 2).
-    assert sorted(_by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))) == [1]
-    assert "cut-off" not in message
+    endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [_answer(PAGE_ONE_ACTS), refusal],
+    )
+    assert exit_code == EXIT_HELD
+    assert len(endpoint.requests) == 2
+    answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
+    payload = answers[2]["payload"]
+    assert payload["reason_code"] == structure_pass.HELD_CALL_UNUSABLE
+    assert payload["call_problem"] == "CHAIR_RESPONSE_HTTP_ERROR"
+    assert payload["finish_reason"] is None
+    assert payload["attempt_ordinal"] == len(payload["attempts"]) == 1
+    assert payload["call_record_ref"] is not None
+    assert payload["raw_response_ref"] is not None
     # The bytes reached disk before the refusal was raised: the engine's own
     # account of why it refused is the artefact a rented card exists to
     # produce, and it used to be discarded here.
     tree = RunTree(root, RUN_ID)
     retained = tree.read_bytes(tree.blob_path(DESIGNATOR, digest_bytes(refusal.body)))
     assert b"maximum context length is 2048" in retained
+    call_record = json.loads(tree.read_bytes(payload["call_record_ref"]["relative_path"]))
+    assert call_record["response_status"] == 400
+    assert call_record["parse_problem"] == "CHAIR_RESPONSE_HTTP_ERROR"
+
+
+def test_a_wrong_model_response_is_one_terminal_attempt_with_observed_model_retained(
+    live_run, tmp_path, monkeypatch
+):
+    root, catalogue = live_run
+    endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [
+            _answer(PAGE_ONE_ACTS),
+            ScriptedAnswer(
+                content="a foreign reading that cannot become structure",
+                finish_reason="stop",
+                model="foreign-model",
+            ),
+        ],
+    )
+    assert exit_code == EXIT_HELD
+    assert len(endpoint.requests) == 2
+    payload = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
+    assert payload["reason_code"] == structure_pass.HELD_CALL_UNUSABLE
+    assert payload["call_problem"] == "CHAIR_RESPONSE_MODEL_MISMATCH"
+    assert payload["attempt_ordinal"] == len(payload["attempts"]) == 1
+    tree = RunTree(root, RUN_ID)
+    call_record = json.loads(tree.read_bytes(payload["call_record_ref"]["relative_path"]))
+    assert call_record["response_status"] == 200
+    assert call_record["served_model_id"] == SERVED_MODEL_ID
+    assert call_record["response_model"] == "foreign-model"
+    assert call_record["parse_problem"] == "CHAIR_RESPONSE_MODEL_MISMATCH"
 
 
 # --- the refusals before any chair starts ---------------------------------------------
@@ -1655,14 +1970,13 @@ def _minimal_answer_record() -> dict[str, Any]:
     second list of the set would drift from the one the validator uses and
     start proving something else.
     """
-    record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_FIELDS)
+    record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_V1_FIELDS)
+    record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
     record["acts"] = []
     record["blocks_without_proposal"] = []
     record["findings"] = []
     record["decoding"] = dict.fromkeys(designator._STRUCTURE_ANSWER_DECODING_FIELDS)
     record["vendor"] = dict.fromkeys(designator._STRUCTURE_ANSWER_VENDOR_FIELDS)
-    record["attempt_ordinal"] = 1
-    record["attempts"] = []
     return record
 
 
@@ -1682,6 +1996,7 @@ def _capacity_row(**overrides: Any) -> SimpleNamespace:
         "patch_size": 16,
         "merge_size": 2,
         "served_model_id": "designator-structure",
+        "seed": 0,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -1743,7 +2058,7 @@ def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent()
     for field in ("call_record_ref", "raw_response_ref", "custody_ref", "request_sha256"):
         assert answer.record[field] is None
     # And the record is publishable exactly as any other answer is.
-    designator._validate_structure_answer_payload(answer.record)
+    designator._validate_structure_answer_payload(answer.record, terminal=False)
 
 
 def test_the_same_page_is_admitted_once_the_row_states_a_larger_context():

@@ -103,12 +103,14 @@ class ChairResponseRefusal(ServingError):
     earliest — ``CHAIR_RESPONSE_HTTP_ERROR`` and ``CHAIR_RESPONSE_MODEL_MISMATCH``
     were raised *before* the body was written, so a vLLM 400 explaining a
     context overflow was discarded on a card that bills by the hour. It is true
-    now: ``ChairClient.read`` retains before it checks, and both of those
-    refusals carry the retained reference in ``detail``. The non-200 also
-    carries the head of the body, because that is where the engine's own
-    account of its refusal lives; the wrong-model refusal names the blob and
-    nothing else, because a 200 from another model is a foreign reading and a
-    foreign reading's text does not travel in an exception message.
+    now: ``ChairClient.read`` retains before it checks, closes a failed call
+    record, and both refusals carry typed raw-response and call-record
+    references beside the requested model and receipt facts. The non-200 also
+    carries the head of the body in ``detail``, because that is where the
+    engine's own account of its refusal lives; the wrong-model refusal names
+    the blob and nothing else, because a 200 from another model is a foreign
+    reading and a foreign reading's text does not travel in an exception
+    message.
     """
 
     def __init__(
@@ -118,9 +120,15 @@ class ChairResponseRefusal(ServingError):
         *,
         raw_response_ref: Mapping[str, str] | None = None,
         call_record_ref: Mapping[str, str] | None = None,
+        request_sha256: str | None = None,
+        receipt_ref: Mapping[str, str] | None = None,
+        served_model_id: str | None = None,
     ) -> None:
         self.code = code
         self.detail = detail
         self.raw_response_ref = None if raw_response_ref is None else dict(raw_response_ref)
         self.call_record_ref = None if call_record_ref is None else dict(call_record_ref)
+        self.request_sha256 = request_sha256
+        self.receipt_ref = None if receipt_ref is None else dict(receipt_ref)
+        self.served_model_id = served_model_id
         super().__init__(f"{code}: {detail}")

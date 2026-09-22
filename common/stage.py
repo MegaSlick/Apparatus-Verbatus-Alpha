@@ -56,7 +56,7 @@ from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
 )
 from common.contracts.serving import (
-    CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_CALL_RECORD_SCHEMAS,
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
 )
@@ -73,7 +73,11 @@ from common.contracts.stages import (
     TRIAGE_MODES,
 )
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
-from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy
+from common.decoding import (
+    DEFAULT_DECODING_CONFIG_PATH,
+    load_decoding_policy,
+    structure_recovery_policy,
+)
 from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -434,6 +438,11 @@ STRUCTURE_DECODING_POLICY: Final = "structure"
 # reads them back, so the two may not spell them differently.
 STRUCTURE_ANSWER_KIND: Final = "structure-answer"
 STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
+STRUCTURE_ANSWER_RECORD_SCHEMA_V2: Final = "designator-structure-answer.v2"
+STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset(
+    {STRUCTURE_ANSWER_RECORD_SCHEMA, STRUCTURE_ANSWER_RECORD_SCHEMA_V2}
+)
+STRUCTURE_ATTEMPT_KIND: Final = "structure-attempt"
 STRUCTURE_ANSWER_PARSED: Final = "parsed"
 
 
@@ -2958,6 +2967,7 @@ def _verify_real_act_denominator(
     page_ordinals = {page_id: ordinal for ordinal, page_id in exemplar_page_ids(context).items()}
     holds_by_subject: dict[str, dict[str, Any]] = {}
     minted_rows: dict[str, dict[str, Any]] = {}
+    verified_structure_attempt_pages: set[str] = set()
     observed = {act["act_id"]: act for act in acts}
     for act_id in sorted(observed):
         row = observed[act_id]
@@ -3055,6 +3065,7 @@ def _verify_real_act_denominator(
                 far_regions,
                 page_ordinals,
                 structure_call=structure_call,
+                verified_structure_attempt_pages=verified_structure_attempt_pages,
             )
             continue
         minted_rows[act_id] = row
@@ -3066,6 +3077,118 @@ def _verify_real_act_denominator(
     _verify_every_conservation_residual_is_accounted(context, observed, holds_by_subject)
 
 
+def _verify_structure_attempt_chain(
+    context: StageContext, payload: Mapping[str, Any], page_id: str
+) -> None:
+    """Follow and reconcile every v2 terminal structure-attempt reference."""
+    if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
+        return
+    policy = payload.get("attempt_policy")
+    references = payload.get("attempts")
+    ordinal = payload.get("attempt_ordinal")
+    if (
+        not isinstance(policy, Mapping)
+        or set(policy) != {"max_attempts", "seed_schedule"}
+        or policy.get("seed_schedule") not in {"fixed-base", "base-plus-attempt-ordinal-minus-one"}
+        or not isinstance(policy.get("max_attempts"), int)
+        or isinstance(policy.get("max_attempts"), bool)
+        or not 1 <= policy["max_attempts"] <= 3
+        or not isinstance(ordinal, int)
+        or isinstance(ordinal, bool)
+        or not isinstance(references, list)
+        or len(references) != ordinal
+        or not 1 <= ordinal <= policy.get("max_attempts", 0)
+    ):
+        raise FatalAccounting(
+            f"page {page_id}'s terminal structure answer has no bounded exact attempt ledger"
+        )
+    decoding_policy, decoding_digest = load_decoding_policy(context.args.decoding_config)
+    decoding = payload.get("decoding")
+    if (
+        dict(policy) != structure_recovery_policy(decoding_policy)
+        or not isinstance(decoding, Mapping)
+        or decoding.get("decoding_config_sha256") != decoding_digest
+    ):
+        raise FatalAccounting(
+            f"page {page_id}'s terminal structure answer attempt policy is not the one "
+            "sealed by its decoding configuration"
+        )
+    stored_attempts = [
+        row
+        for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND)
+        if row.get("subject_id") == page_id
+    ]
+    if len(stored_attempts) != ordinal:
+        raise FatalAccounting(
+            f"page {page_id}'s terminal structure answer names {ordinal} attempts but its "
+            f"stage manifest contains {len(stored_attempts)}; missing or extra history is "
+            "not a contiguous ledger"
+        )
+    attempts: list[Mapping[str, Any]] = []
+    for expected_ordinal, reference in enumerate(references, start=1):
+        try:
+            record = context.tree.read_artifact_reference(
+                dict(reference),
+                stage=DESIGNATOR,
+                kind=STRUCTURE_ATTEMPT_KIND,
+                subject_id=page_id,
+            )
+        except (SchemaRefusal, ContractError, OSError) as error:
+            raise FatalAccounting(
+                f"page {page_id}'s terminal structure answer names an invalid attempt "
+                f"reference at ordinal {expected_ordinal}: {error}"
+            ) from error
+        attempt = record.get("payload")
+        prior = references[: expected_ordinal - 1]
+        if (
+            record.get("attempt_id") != attempt_id(page_id, "structure", expected_ordinal)
+            or not isinstance(attempt, Mapping)
+            or attempt.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+            or attempt.get("page_id") != page_id
+            or attempt.get("page_ordinal") != payload.get("page_ordinal")
+            or attempt.get("attempt_ordinal") != expected_ordinal
+            or attempt.get("attempt_policy") != policy
+            or attempt.get("attempts") != prior
+            or not isinstance(attempt.get("attempt_seed"), int)
+            or isinstance(attempt.get("attempt_seed"), bool)
+            or attempt.get("decoding") != payload.get("decoding")
+        ):
+            raise FatalAccounting(
+                f"page {page_id}'s structure attempt {expected_ordinal} does not bind its "
+                "identity, page, policy, config, and prior history"
+            )
+        if attempts:
+            expected_seed = (
+                attempts[-1]["attempt_seed"]
+                if policy["seed_schedule"] == "fixed-base"
+                else attempts[-1]["attempt_seed"] + 1
+            )
+            if attempt["attempt_seed"] != expected_seed:
+                raise FatalAccounting(
+                    f"page {page_id}'s structure attempt {expected_ordinal} violates its "
+                    "sealed seed schedule"
+                )
+        try:
+            validate_serving_provenance(
+                context,
+                dict(attempt.get("provenance", {})),
+                producer_stage=DESIGNATOR,
+                require_receipt=True,
+            )
+        except (SchemaRefusal, ContractError) as error:
+            raise FatalAccounting(
+                f"page {page_id}'s structure attempt {expected_ordinal} has invalid "
+                f"serving provenance: {error}"
+            ) from error
+        attempts.append(attempt)
+    expected_terminal = dict(attempts[-1])
+    expected_terminal["attempts"] = references
+    if dict(payload) != expected_terminal:
+        raise FatalAccounting(
+            f"page {page_id}'s terminal structure answer disagrees with its last attempt"
+        )
+
+
 def _verify_proposal_act_row(
     context,
     act_id: str,
@@ -3075,6 +3198,7 @@ def _verify_proposal_act_row(
     page_ordinals: dict[str, int],
     *,
     structure_call: Mapping[str, Any] | None,
+    verified_structure_attempt_pages: set[str],
 ) -> None:
     """A structural act, recomputed and then held to the answer it came from.
 
@@ -3191,11 +3315,14 @@ def _verify_proposal_act_row(
         subject_id=row["page_id"],
     )
     payload = answer.get("payload") if isinstance(answer.get("payload"), Mapping) else {}
-    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
+    if payload.get("schema") not in STRUCTURE_ANSWER_RECORD_SCHEMAS:
         raise FatalAccounting(
             f"act {act_id}'s page names a structure answer whose schema is "
-            f"{payload.get('schema')!r}, not {STRUCTURE_ANSWER_RECORD_SCHEMA!r}"
+            f"{payload.get('schema')!r}, not one of {sorted(STRUCTURE_ANSWER_RECORD_SCHEMAS)!r}"
         )
+    if row["page_id"] not in verified_structure_attempt_pages:
+        _verify_structure_attempt_chain(context, payload, row["page_id"])
+        verified_structure_attempt_pages.add(row["page_id"])
     if payload.get("parse_state") != STRUCTURE_ANSWER_PARSED:
         raise FatalAccounting(
             f"act {act_id} was minted from page {row['page_id']}'s structure answer, whose "
@@ -3258,13 +3385,13 @@ def _verify_proposal_act_row(
         ) from error
     if (
         not isinstance(call_record, Mapping)
-        or call_record.get("schema") != CHAIR_CALL_RECORD_SCHEMA
+        or call_record.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
         or call_record.get("chair") != DESIGNATOR_CHAIR
         or call_record.get("decoding_config_sha256") != structure_call["decoding_config_sha256"]
     ):
         raise FatalAccounting(
-            f"act {act_id}'s structure answer names a call record that is not a "
-            f"{CHAIR_CALL_RECORD_SCHEMA!r} record for chair {DESIGNATOR_CHAIR!r} under the "
+            f"act {act_id}'s structure answer names a call record without a supported "
+            f"chair-call-record schema for chair {DESIGNATOR_CHAIR!r} under the "
             "seal's own sealed decoding digest; a parsed answer naming a call record with no "
             "genuine reading behind it is a reading of nothing"
         )

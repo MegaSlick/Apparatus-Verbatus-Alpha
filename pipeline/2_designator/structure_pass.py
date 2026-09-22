@@ -70,11 +70,12 @@ proposed", and that claim is true in both cases.
 section and never under `reading_of_record` (Tyrel, 2026-09-02): the
 Attestatores keep the fixed posture; this pass may vary, sealed and recorded.
 The value is read from the bytes the run sealed, rechecked by digest, and
-recorded on every page's structure-answer record. What the live reading seam
-can execute today is temperature 0 only (`operations/serving/client.py`
-records the reading-of-record temperature and puts 0 on the wire), so
-`executable_temperature` refuses any other sealed value by name rather than
-running at 0 while the record says otherwise (GOVERNANCE 10).
+recorded on every page's structure-answer record and sent verbatim by the live
+reading seam. Coverage recovery keeps that temperature fixed and follows the
+same sealed section's bounded seed schedule: the first request uses the serving
+profile's base seed and each permitted later attempt advances it by ordinal.
+This is the pipeline's explicit recovery policy, not a claim that it copies
+Chandra's native retry ladder.
 
 **No picker.** The chair proposes rectangles; the ink scan corroborates them
 (`model_evidence_blocks`) and never overrides them; nothing here ranks,
@@ -113,7 +114,7 @@ from common.stage import (
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     DESIGNATOR_CHAIR,
     STRUCTURE_ANSWER_PARSED,
-    STRUCTURE_ANSWER_RECORD_SCHEMA,
+    STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
     STRUCTURE_CALL_KIND,
     STRUCTURE_CALL_SCHEMA,
     STRUCTURE_DECODING_POLICY,
@@ -121,7 +122,7 @@ from common.stage import (
 )
 from operations.serving.client import ChairClient, ChairRequest, ChairResponse, serving_mode_for
 from operations.serving.config import ServingConfigInputs, ServingRecipes, load_serving_recipes
-from operations.serving.errors import ServingError
+from operations.serving.errors import ChairResponseRefusal, ServingError
 from operations.serving.http import EndpointUnavailable, UrllibHttpTransport
 from operations.serving.manager import (
     MECHANICS_QUALIFICATION_PURPOSE,
@@ -528,6 +529,7 @@ def page_request(
     source_sha256: str,
     *,
     temperature: int | float,
+    structure_recovery_seed: int | None = None,
     capacity: Mapping[str, Any] | None = None,
 ) -> ChairRequest:
     """One whole-page structure request: the sealed prompt plus the sealed page.
@@ -590,6 +592,7 @@ def page_request(
             **chandra_wire_fields(),
         },
         capacity=capacity,
+        structure_recovery_seed=structure_recovery_seed,
     )
 
 
@@ -1046,6 +1049,9 @@ def _refused_page_answer(
     temperature: int | float,
     decoding_config_sha256: str,
     provenance: Mapping[str, Any],
+    attempt_ordinal: int,
+    attempt_seed: int,
+    attempt_policy: Mapping[str, Any],
 ) -> "PageAnswer":
     """The record for a page whose request never went on the wire.
 
@@ -1058,7 +1064,7 @@ def _refused_page_answer(
     """
 
     record = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
         "page_id": page_id,
         "page_ordinal": ordinal,
         "page_w": page_w,
@@ -1095,14 +1101,85 @@ def _refused_page_answer(
         },
         "provenance": dict(provenance),
         "capacity": dict(capacity),
-        "attempt_ordinal": 1,
+        "attempt_ordinal": attempt_ordinal,
         "attempts": [],
+        "attempt_seed": attempt_seed,
+        "attempt_policy": dict(attempt_policy),
     }
     return PageAnswer(
         ordinal=ordinal,
         page_id=page_id,
         disposition=DISPOSITION_HELD,
         reason_code=HELD_REQUEST_TOO_LARGE,
+        mint=(),
+        record=record,
+    )
+
+
+def _failed_response_page_answer(
+    *,
+    page_id: str,
+    ordinal: int,
+    page_w: int,
+    page_h: int,
+    capacity: Mapping[str, Any],
+    temperature: int | float,
+    decoding_config_sha256: str,
+    provenance: Mapping[str, Any],
+    attempt_ordinal: int,
+    attempt_seed: int,
+    attempt_policy: Mapping[str, Any],
+    refusal: ChairResponseRefusal,
+) -> "PageAnswer":
+    """Retain one paid HTTP/wrong-model response as a terminal held attempt."""
+    record = {
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+        "page_id": page_id,
+        "page_ordinal": ordinal,
+        "page_w": page_w,
+        "page_h": page_h,
+        "prompt_version": structure_prompt.STRUCTURE_PROMPT_VERSION,
+        "prompt_sha256": structure_prompt.prompt_sha256(),
+        "answer_schema": structure_prompt.STRUCTURE_ANSWER_GRAMMAR,
+        "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
+        "vendor": structure_prompt.vendor_identity(),
+        "call_record_ref": dict(refusal.call_record_ref),
+        "raw_response_ref": dict(refusal.raw_response_ref),
+        "custody_ref": None,
+        "custody_problem": None,
+        "receipt_ref": dict(refusal.receipt_ref),
+        "request_sha256": refusal.request_sha256,
+        "finish_reason": None,
+        "served_model_id": refusal.served_model_id,
+        "call_problem": refusal.code,
+        "parse_state": STRUCTURE_ANSWER_REFUSED,
+        "parse_outcome": None,
+        "disposition": DISPOSITION_HELD,
+        "reason_code": HELD_CALL_UNUSABLE,
+        "block_count": 0,
+        "act_count": 0,
+        "acts": [],
+        "blocks_without_proposal": [],
+        "findings": [],
+        "quantization": structure_answer.QUANTIZATION_RULE,
+        "page_text_rule": structure_answer.PAGE_TEXT_RULE,
+        "decoding": {
+            "policy": STRUCTURE_DECODING_POLICY,
+            "temperature": temperature,
+            "decoding_config_sha256": decoding_config_sha256,
+        },
+        "provenance": dict(provenance),
+        "capacity": dict(capacity),
+        "attempt_ordinal": attempt_ordinal,
+        "attempts": [],
+        "attempt_seed": attempt_seed,
+        "attempt_policy": dict(attempt_policy),
+    }
+    return PageAnswer(
+        ordinal=ordinal,
+        page_id=page_id,
+        disposition=DISPOSITION_HELD,
+        reason_code=HELD_CALL_UNUSABLE,
         mint=(),
         record=record,
     )
@@ -1190,6 +1267,8 @@ def ask_page(
     temperature: int | float,
     decoding_config_sha256: str,
     provenance: Mapping[str, Any],
+    attempt_ordinal: int = 1,
+    attempt_policy: Mapping[str, Any] | None = None,
 ) -> PageAnswer:
     """Ask the chair about one sealed page and decide what the answer does to it.
 
@@ -1223,6 +1302,21 @@ def ask_page(
     # reading, so it is held here instead -- on this laptop, for free, with the
     # arithmetic published (GOVERNANCE 2: the refusal is visible, and it names
     # numbers rather than a guess).
+    if attempt_policy is None:
+        attempt_policy = {"max_attempts": 1, "seed_schedule": "fixed-base"}
+    if (
+        not isinstance(attempt_ordinal, int)
+        or isinstance(attempt_ordinal, bool)
+        or not 1 <= attempt_ordinal <= attempt_policy.get("max_attempts", 0)
+    ):
+        raise ContractError("structure attempt ordinal must be a positive integer")
+    schedule = attempt_policy.get("seed_schedule")
+    if schedule == "fixed-base":
+        attempt_seed = client.handle.profile.seed
+    elif schedule == "base-plus-attempt-ordinal-minus-one":
+        attempt_seed = client.handle.profile.seed + attempt_ordinal - 1
+    else:
+        raise ContractError(f"unsupported structure recovery seed schedule {schedule!r}")
     capacity = page_capacity(client.handle.profile, page_w, page_h)
     if not capacity["fits"]:
         return _refused_page_answer(
@@ -1235,12 +1329,44 @@ def ask_page(
             temperature=temperature,
             decoding_config_sha256=decoding_config_sha256,
             provenance=provenance,
+            attempt_ordinal=attempt_ordinal,
+            attempt_seed=attempt_seed,
+            attempt_policy=attempt_policy,
         )
     request = page_request(
-        page_bytes, payload["source_sha256"], temperature=temperature, capacity=capacity
+        page_bytes,
+        payload["source_sha256"],
+        temperature=temperature,
+        capacity=capacity,
+        structure_recovery_seed=attempt_seed if attempt_ordinal > 1 else None,
     )
     try:
         response: ChairResponse = client.read(request)
+    except ChairResponseRefusal as error:
+        if (
+            error.raw_response_ref is not None
+            and error.call_record_ref is not None
+            and error.request_sha256 is not None
+            and error.receipt_ref is not None
+            and error.served_model_id is not None
+        ):
+            return _failed_response_page_answer(
+                page_id=page_id,
+                ordinal=ordinal,
+                page_w=page_w,
+                page_h=page_h,
+                capacity=capacity,
+                temperature=temperature,
+                decoding_config_sha256=decoding_config_sha256,
+                provenance=provenance,
+                attempt_ordinal=attempt_ordinal,
+                attempt_seed=attempt_seed,
+                attempt_policy=attempt_policy,
+                refusal=error,
+            )
+        raise ContractError(
+            f"the structure chair refused page {ordinal} without a durable call record: {error}"
+        ) from error
     except (ServingError, EndpointUnavailable) as error:
         raise ContractError(
             f"the structure chair could not be asked about page {ordinal}: {error}; nothing was "
@@ -1344,7 +1470,7 @@ def ask_page(
             "a block that is in neither list has been lost"
         )
     record = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
         "page_id": page_id,
         "page_ordinal": ordinal,
         "page_w": page_w,
@@ -1411,8 +1537,10 @@ def ask_page(
         # `run.py` assigns this when it publishes the received answer as an
         # immutable structure attempt, then carries the references on the
         # once-only terminal page record.
-        "attempt_ordinal": 1,
+        "attempt_ordinal": attempt_ordinal,
         "attempts": [],
+        "attempt_seed": attempt_seed,
+        "attempt_policy": dict(attempt_policy),
     }
     return PageAnswer(
         ordinal=ordinal,

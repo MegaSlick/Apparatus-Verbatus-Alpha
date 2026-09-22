@@ -1388,7 +1388,7 @@ def validate_retained_response_blob(
     """Re-read one retained blob so a missing or changed one cannot pass a tally.
 
     ``field`` names which reference is being re-read. A live Testimonium carries
-    two of them -- the response bytes and the `chair-call-record.v1` blob -- and
+    two of them -- the response bytes and the current `chair-call-record.v2` blob -- and
     a tally that re-hashed only the first would leave the request half of the
     serving moment as a reference nothing checks.
     """
@@ -2183,7 +2183,7 @@ class Attempt(NamedTuple):
     # Live-only, and appended so every existing constructor -- positional or
     # keyword -- keeps writing exactly the record it wrote before (the fixture
     # pass must stay byte-identical). `native_capture` is the adapter's own
-    # retained model view; `serving_call_ref` names the `chair-call-record.v1`
+    # retained model view; `serving_call_ref` names the `chair-call-record.v2`
     # blob the client wrote for the one request this attempt came from.
     native_capture: dict[str, Any] | None = None
     serving_call_ref: dict[str, str] | None = None
@@ -5105,7 +5105,7 @@ def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> Non
     string by name). The check runs on `transport_stop_reason` alone, so it
     also catches an unmeasured word on a response `ChairClient` could not parse
     into a reading at all: a wire body no adapter parsed still names its engine
-    word verbatim inside the retained `chair-call-record.v1` blob, and a word
+    word verbatim inside the retained chair-call-record blob, and a word
     this pipeline has never measured a meaning for is exactly as unpublishable
     there as on a parsed capture.
 
@@ -5246,6 +5246,7 @@ def _serve_act_unit(
         prompt=built.prompt,
         generation_declared=built.request.generation_declared,
         parser="text",
+        generation_accounting=built.generation_accounting,
     )
     transport_stop_reason = (
         response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED

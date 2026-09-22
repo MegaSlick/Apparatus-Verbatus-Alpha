@@ -94,7 +94,7 @@ from common.contracts.outcomes import (  # noqa: E402
     ArmariumCategory,
     witness_coverage,
 )
-from common.contracts.serving import STOP_REASON_UNREPORTED  # noqa: E402
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA, STOP_REASON_UNREPORTED  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.native_witness import reported_geometry_overlaps  # noqa: E402
@@ -901,7 +901,7 @@ def test_the_whole_live_roster_answered_through_its_own_scope(live_seam):
             "chair was ever asked; a live pass may not publish a declared answer"
         )
         call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
-        assert call["schema"] == "chair-call-record.v1"
+        assert call["schema"] == CHAIR_CALL_RECORD_SCHEMA
         assert call["chair"] == chair
         # The witness half of "every reading names the exact bytes its engine
         # sent": chain record -> adapter output -> wire content -> served

@@ -264,6 +264,26 @@ def test_a_nonzero_sealed_temperature_and_seed_are_sent_and_retained(tmp_path: P
     assert record["generation_sent"]["seed"] == 7
 
 
+def test_only_the_structure_chair_can_use_the_bounded_recovery_seed(tmp_path: Path) -> None:
+    client, endpoint, blob_store, _ = _built(tmp_path)
+    with client:
+        with pytest.raises(ChairRequestRefusal, match="only the Designator structure chair"):
+            client.read(_request(structure_recovery_seed=8))
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+
+def test_structure_recovery_seed_is_sent_and_retained_as_the_actual_seed(tmp_path: Path) -> None:
+    chair = _identity(role="designator_structure")
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair)
+    with client:
+        endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
+        response = client.read(_request(structure_recovery_seed=8))
+    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
+    assert endpoint.requests[0]["seed"] == 8
+    assert record["generation_sent"]["seed"] == 8
+
+
 # --- pre-send refusals: nothing is built or sent ------------------------------
 
 
@@ -449,12 +469,22 @@ def test_response_model_mismatch_refuses_with_the_body_retained_and_named(
         with pytest.raises(ChairResponseRefusal) as excinfo:
             client.read(_request())
         assert excinfo.value.code == "CHAIR_RESPONSE_MODEL_MISMATCH"
-    assert len(blob_store) == 1
+    assert len(blob_store) == 2
     assert b"someone-elses-model" in blob_store.written[0]
     assert digest_bytes(blob_store.written[0]) in excinfo.value.detail
     assert "someone-elses-model" in excinfo.value.detail
     assert "A READING NO CHAIR HERE ASKED FOR" not in excinfo.value.detail
     assert str(len(blob_store.written[0])) in excinfo.value.detail
+    call_record = json.loads(blob_store.written[1])
+    assert call_record["parse_problem"] == "CHAIR_RESPONSE_MODEL_MISMATCH"
+    assert call_record["response_status"] == 200
+    assert call_record["served_model_id"] == "served-alias"
+    assert call_record["response_model"] == "someone-elses-model"
+    assert excinfo.value.raw_response_ref == call_record["raw_response_ref"]
+    assert excinfo.value.call_record_ref["sha256"] == digest_bytes(blob_store.written[1])
+    assert excinfo.value.request_sha256 == call_record["request_sha256"]
+    assert excinfo.value.receipt_ref == call_record["receipt_ref"]
+    assert excinfo.value.served_model_id == call_record["served_model_id"]
 
 
 def test_a_non_200_body_is_retained_before_the_refusal_and_quoted_in_it(
@@ -479,11 +509,18 @@ def test_a_non_200_body_is_retained_before_the_refusal_and_quoted_in_it(
         with pytest.raises(ChairResponseRefusal) as excinfo:
             client.read(_request())
         assert excinfo.value.code == "CHAIR_RESPONSE_HTTP_ERROR"
-    assert blob_store.written == [body]
+    assert blob_store.written[0] == body
+    assert len(blob_store.written) == 2
     assert blob_store.has(digest_bytes(body))
     assert "HTTP 400" in excinfo.value.detail
     assert "maximum context length is 2048" in excinfo.value.detail
     assert digest_bytes(body) in excinfo.value.detail
+    call_record = json.loads(blob_store.written[1])
+    assert call_record["parse_problem"] == "CHAIR_RESPONSE_HTTP_ERROR"
+    assert call_record["response_status"] == 400
+    assert call_record["response_model"] is None
+    assert excinfo.value.raw_response_ref == call_record["raw_response_ref"]
+    assert excinfo.value.call_record_ref["sha256"] == digest_bytes(blob_store.written[1])
 
 
 def test_a_long_refused_body_is_retained_whole_and_previewed_short(tmp_path: Path) -> None:
@@ -495,7 +532,8 @@ def test_a_long_refused_body_is_retained_whole_and_previewed_short(tmp_path: Pat
         endpoint.script(ScriptedAnswer(status=502, body=body))
         with pytest.raises(ChairResponseRefusal) as excinfo:
             client.read(_request())
-    assert blob_store.written == [body]
+    assert blob_store.written[0] == body
+    assert len(blob_store.written) == 2
     assert len(excinfo.value.detail) < 1000
     assert f"first 512 of {len(body)} bytes" in excinfo.value.detail
 
@@ -692,6 +730,7 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert record["generation_declared"] == {"top_k": 1}
     assert record["raw_response_ref"] == dict(response.raw_response_ref)
     assert record["response_sha256"] == response.response_sha256
+    assert record["response_status"] == 200
     assert record["finish_reason"] == "stop"
     assert record["usage"] == {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
     assert response.usage == record["usage"]

@@ -12,8 +12,12 @@ SERVING_CONFIG_INPUTS_FIELDS: Final = frozenset(
     {"schema", "serving_recipes_sha256", "pod_placement_sha256"}
 )
 
-CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v1"
-CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
+CHAIR_CALL_RECORD_SCHEMA_V1: Final = "chair-call-record.v1"
+CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v2"
+CHAIR_CALL_RECORD_SCHEMAS: Final = frozenset(
+    {CHAIR_CALL_RECORD_SCHEMA_V1, CHAIR_CALL_RECORD_SCHEMA}
+)
+CHAIR_CALL_RECORD_FIELDS_V1: Final = frozenset(
     {
         "schema",
         "chair",
@@ -45,6 +49,7 @@ CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
         "capacity",
     }
 )
+CHAIR_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS_V1 | frozenset({"response_status"})
 
 # The engine's own stop-reason vocabulary, split by what it means for a
 # reading: `ENGINE_STOP_COMPLETE` is the engine's word for "the model chose to

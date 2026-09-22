@@ -7,7 +7,10 @@ from pathlib import Path
 
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
+    CHAIR_CALL_RECORD_FIELDS_V1,
     CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_CALL_RECORD_SCHEMA_V1,
+    CHAIR_CALL_RECORD_SCHEMAS,
     ENGINE_STOP_COMPLETE,
     ENGINE_STOP_CUT_OFF,
     SERVING_CONFIG_INPUTS_FIELDS,
@@ -33,7 +36,11 @@ def test_serving_config_serializer_and_validators_share_one_contract() -> None:
 
 def test_chair_call_record_field_set_is_closed_and_exact() -> None:
     assert isinstance(CHAIR_CALL_RECORD_FIELDS, frozenset)
-    assert CHAIR_CALL_RECORD_SCHEMA == "chair-call-record.v1"
+    assert CHAIR_CALL_RECORD_SCHEMA == "chair-call-record.v2"
+    assert CHAIR_CALL_RECORD_SCHEMA_V1 == "chair-call-record.v1"
+    assert CHAIR_CALL_RECORD_SCHEMAS == frozenset(
+        {CHAIR_CALL_RECORD_SCHEMA_V1, CHAIR_CALL_RECORD_SCHEMA}
+    )
     assert CHAIR_CALL_RECORD_FIELDS == frozenset(
         {
             "schema",
@@ -52,6 +59,7 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
             "generation_declared",
             "raw_response_ref",
             "response_sha256",
+            "response_status",
             "response_model",
             "finish_reason",
             "usage",
@@ -59,6 +67,7 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
             "capacity",
         }
     )
+    assert CHAIR_CALL_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS_V1 | {"response_status"}
 
 
 def test_the_two_engine_stop_vocabularies_are_frozensets_with_exact_members() -> None:

@@ -7,6 +7,7 @@ import pytest
 from common.contracts.errors import ContractError
 from common.decoding import (
     load_decoding_policy,
+    structure_recovery_policy,
     variance_experiment_id,
     variance_pass_artifact_id,
     variance_pass_attempt_id,
@@ -21,11 +22,32 @@ def test_shipped_decoding_policy_declares_a_zero_temperature_record_and_variance
         "seed": 20260820,
         "passes": 2,
     }
-    # The structure pass's own section (Tyrel, 2026-09-02). Shipped at 0 because
-    # the live reading seam executes 0 only; the loader itself admits any
-    # finite, non-negative value so the sealed file can vary when the seam can.
-    assert policy["structure"] == {"temperature": 0}
+    assert policy["schema"] == "decoding.v2"
+    assert policy["structure"] == {
+        "temperature": 1,
+        "recovery_seed_schedule": "base-plus-attempt-ordinal-minus-one",
+        "recovery_max_attempts": 3,
+    }
+    assert structure_recovery_policy(policy) == {
+        "max_attempts": 3,
+        "seed_schedule": "base-plus-attempt-ordinal-minus-one",
+    }
     assert len(digest) == 64
+
+
+def test_legacy_decoding_v1_preserves_one_fixed_base_attempt(tmp_path: Path):
+    path = tmp_path / "legacy.toml"
+    path.write_text(
+        'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
+        '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
+        "[structure]\ntemperature = 0\n",
+        encoding="utf-8",
+    )
+    policy, _digest = load_decoding_policy(path)
+    assert structure_recovery_policy(policy) == {
+        "max_attempts": 1,
+        "seed_schedule": "fixed-base",
+    }
 
 
 _STRUCTURE = "[structure]\ntemperature = 0\n"

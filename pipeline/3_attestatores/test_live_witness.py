@@ -223,6 +223,7 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
     # never has to run `adapter.present` a second time for this same act.
     assert act_request.presented == presentation
     assert act_request.prompt == feeding.dai_prompt()
+    assert act_request.generation_accounting == feeding.dai_generation_accounting("auto")
 
     declared = feeding.dai_generation()
     assert request.generation_declared == declared
@@ -1092,7 +1093,8 @@ def test_a_prompt_too_long_400_is_retained_refused_by_name_and_not_a_length_stop
     # And no reading was derived from it: the refusal is raised, so
     # `live_attempt_from_response` is never reached and no capture exists to
     # be mistaken for a truncated one.
-    assert len(blob_store) == 1
+    assert len(blob_store) == 2
+    assert error.value.call_record_ref is not None
 
 
 def _stub_adapter(*, retain_result: dict[str, Any], prompt: dict[str, Any] | None = None) -> Any:

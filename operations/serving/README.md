@@ -398,18 +398,20 @@ each, recorded here rather than left for a reader to discover by grep:
   first (`cleanroom/README.md`'s procedure), one vendor at a time.
 - `assert_generation_config_key_coverage(...)` — refuses a vendor
   `generation_config.json` key that is neither sent on the wire nor named,
-  with a reason, as deliberately withheld. **Not wired.** Only one chair's
-  vendor file is carried at all (`attestator_2`/DAI,
-  `pipeline/3_attestatores/feeding.py`), so wiring today would cover one
-  chair in four; and that chair's own serving rows are now
-  `generation_config = "auto"` (`config/serving_recipes_real.toml`), which
-  the wire-sending reasoning in `feeding.py` was written against `"vllm"`
-  for — the two have drifted, and under `auto` vLLM may read the vendor's
-  file itself rather than what this package explicitly sends. Wiring the
-  check before that drift is resolved would stamp a stale account of the
-  wire as a passing assertion. Every real serving row is still
-  `preflight_state = "unproven"`, so nothing already stamped `proven` rests
-  on either of these two gaps.
+  with a reason, as deliberately withheld. It is wired only for the one chair
+  whose complete vendor file is carried (`attestator_2`/DAI). DAI's retained
+  `dai-atr.v2` model view records the split under its actual
+  `generation_config = "auto"` posture: `repetition_penalty`, `top_k`, and
+  `top_p` are also sent verbatim; token ids are delegated to the pinned
+  snapshot under `auto` (with the secondary EOS redundantly explicit); vendor
+  `temperature = 0.1` and `do_sample = true` are intentionally superseded by
+  the governed temperature-zero reading; and `transformers_version` is
+  metadata. The token-id fields are recorded as delegated to the engine's
+  pinned snapshot under `auto`, not as observed application. This is an account
+  of configuration and request construction, not proof that the live engine
+  applied every resolved default. The launch
+  audit's linked `generation_config_digest` is the observation point for the
+  file vLLM actually read.
 
 ## Pod seam
 
@@ -564,10 +566,11 @@ own image and prompt cost)`, with the row term expressed by sending no field**
 the row's remainder would risk an HTTP 400 the engine's own count would not,
 while the declared bound, sent only where it is strictly smaller, is what stops
 a chair generating far past the length its own publisher runs it at. Alongside
-it travel the few decoding values `generation_config = "vllm"` makes the engine
-discard: `repetition_penalty` for Churro, `stop_token_ids` for DAI's second EOS
-id, `chat_template_kwargs` for both Chandra chairs. All of them ride
-`generation_sent`, so the retained `chair-call-record.v1` says exactly what went
+it travel the few decoding values the request must make explicit:
+`repetition_penalty` for Churro, a redundant `stop_token_ids` for DAI's second
+EOS id under its `"auto"` posture, and `chat_template_kwargs` for both Chandra
+chairs. All of them ride
+`generation_sent`, so the retained `chair-call-record.v2` says exactly what went
 out.
 
 `ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request,
@@ -575,25 +578,25 @@ in this order: refuse an unbuildable request (a `kind` other than
 `chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`,
 `seed`, or `n` — those are the manager's and the decoding policy's alone; an
 image whose digest does not match the claimed `image_sha256s`, exactly and in
-order) before anything is built or sent; build the body deterministically
-(`request_body(..., deterministic=True)` forces temperature 0 and the
-profile's seed — this is why the client refuses at construction unless its
-caller's `record_temperature` is already 0, so a policy that disagrees is a
-named refusal, not a silent override); POST through
+order) before anything is built or sent; build the body with the sealed
+decoding temperature and the profile's seed (except for the Designator
+structure chair's bounded, sealed recovery-seed override); POST through
 `ServiceHandle.request_reading`; **retain the raw response through the caller's
 `retain` callable, before anything is checked** — when vLLM refuses a request it
 says why in the body of a non-200, and that sentence is the artefact a rented
 card exists to produce, so it reaches disk before any refusal can discard it
 (this used to run the other way round, and the refusal's own docstring claimed
-otherwise); then refuse if the response is non-200 or names another model, with
-the retained reference and the head of the body in the refusal's `detail` —
-retention is not attribution, and bytes from the wrong source still never become
-a reading; only then parse content — a content/choices problem becomes
+otherwise); classify a non-200 or wrong-model response without attributing its
+content; write a closed `chair-call-record.v2`, including the HTTP status and
+separate requested and observed model fields; and only then raise that refusal
+with both retained references. A valid-source response proceeds to content
+parsing — a content/choices problem becomes
 `parse_problem` on the returned `ChairResponse`, never a raised exception,
 because a malformed body from a witness or reader is retained evidence, not a
-stage abort; and finally write one `chair-call-record.v1` blob (the closed
+stage abort; and then writes one `chair-call-record.v2` blob (the closed
 field set in `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`, canonical
-bytes) before returning. A body that names no model at all is retained and
+bytes) before returning. Consumers continue to accept sealed v1 call records;
+v2 adds only the observed HTTP status. A body that names no model at all is retained and
 parsed the same as any other malformed body, but `parse_openai_reading`'s own
 comparison (`payload.get("model") != expected_model_id`) cannot distinguish
 "no model was named" from "the wrong model was named" — both come back as
@@ -608,7 +611,7 @@ computes nor checks it.** `ChairRequest.capacity` is the caller's own
 answer budget fit the sealed row it is about to be sent to. Only the caller
 knows which prompt and which answer shape a call is, so the arithmetic belongs
 to the stage; what belongs here is carrying it. `read` copies it onto the
-`chair-call-record.v1` blob — `null` where the caller states none, as the
+`chair-call-record.v2` blob — `null` where the caller states none, as the
 readiness probe and `smoke.py` do — so every stage that keeps a reading can
 reach the arithmetic that admitted it through the call record it already names,
 without a second reference.
@@ -678,7 +681,7 @@ request until the *exact* raw bytes it served for the previous reading — its
 own sha256, checked through `FakeBlobStore.has`, not merely the store's
 overall size — are already on disk in the shared `FakeBlobStore`. A count
 alone is satisfied by any retention order, since the client also writes one
-`chair-call-record.v1` blob per read; naming the digest is what actually
+`chair-call-record.v2` blob per read; naming the digest is what actually
 pins retain-before-parse from outside the client, without reading its
 source. The strongest proof of that ordering, though, lives in
 `test_client.py`: a test that monkeypatches `parse_openai_reading` itself to

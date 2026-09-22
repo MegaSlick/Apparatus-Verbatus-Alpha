@@ -35,6 +35,7 @@ from common.native_witness import (
     parse_churro_response,
 )
 from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
+from operations.serving.preflight import assert_generation_config_key_coverage
 
 DAI_MAX_WIDTH_PX = 1_500
 # `DAI_MAX_HEIGHT_PX` (4096, "no model source") retired with the vendor
@@ -269,21 +270,19 @@ DAI_TOKENIZER_EOS_TOKEN_ID: Final = 151645
 
 
 def dai_wire_stop_token_ids() -> dict[str, list[int]]:
-    """DAI's second EOS id, which ``generation_config = "vllm"`` never reads.
+    """DAI's second EOS id, sent explicitly as well as resolved under ``auto``.
 
     Derived from the carried ``generation_config.json`` (:func:`dai_generation`,
     under its own digest), never re-typed: its ``eos_token_id`` is
-    ``[151645, 151643]``, and vLLM takes only the first from the tokenizer's
-    ``eos_token``. The second, ``<|endoftext|>``, is dropped with the rest of
-    the model's file when the row pins ``generation_config = "vllm"``, so a
-    response that ends on it would not stop -- and with the answer budget then
-    running to the row's context, that is length billed by the hour rather than
-    a reading.
+    ``[151645, 151643]``. The current serving rows use ``generation_config =
+    "auto"``, so the pinned file should resolve both ids. The secondary id is
+    still sent explicitly and retained on the call record: this is redundant
+    request evidence, not a claim that the engine actually applied its
+    snapshot before a live observation proves that.
 
-    Only the ids vLLM does not already have are sent. Adding the primary EOS
-    back would be a no-op in principle and a change to the one stop that is
-    already working in practice, which is not a trade this seam makes on an
-    unobserved engine.
+    Adding the primary EOS back would be a no-op in principle and a change to
+    the one tokenizer stop that is already working in practice, which is not a
+    trade this seam makes on an unobserved engine.
     """
 
     declared = dai_generation()["eos_token_id"]
@@ -349,6 +348,63 @@ def dai_generation() -> dict[str, Any]:
     }
 
 
+def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
+    """Account for every carried DAI key under the resolved serving posture.
+
+    This is an account of request construction, not a claim that a live engine
+    applied every vendor default. ``auto`` directs the engine to the pinned
+    vendor file at launch; the chair-call record separately proves the
+    request's explicit fields, including manager-owned temperature zero and
+    seed.
+    """
+    if generation_config != "auto":
+        raise SchemaRefusal("DAI native generation accounting requires generation_config='auto'")
+    deliberately_not_sent = {
+        "bos_token_id": "delegated to the engine's pinned model snapshot under auto",
+        "pad_token_id": "delegated to the engine's pinned model snapshot under auto",
+        "eos_token_id": (
+            "delegated to the pinned generation config under auto; the secondary id is "
+            "also sent explicitly as stop_token_ids"
+        ),
+        "do_sample": "intentionally superseded by the governed temperature-zero request",
+        "temperature": "vendor 0.1 is intentionally superseded by governed temperature zero",
+        "transformers_version": "vendor metadata, not an OpenAI request field",
+    }
+    assert_generation_config_key_coverage(
+        chair="attestator_2",
+        vendor_generation_config=dai_generation(),
+        sent_keys=("repetition_penalty", "top_k", "top_p"),
+        deliberately_not_sent=deliberately_not_sent,
+    )
+    return {
+        "schema": "dai-generation-accounting.v1",
+        "engine_generation_config": "auto",
+        "vendor_keys_sent_verbatim": ["repetition_penalty", "top_k", "top_p"],
+        "vendor_keys_delegated_to_engine_auto": [
+            "bos_token_id",
+            "eos_token_id",
+            "pad_token_id",
+        ],
+        "vendor_keys_intentionally_overridden": ["do_sample", "temperature"],
+        "vendor_metadata_keys": ["transformers_version"],
+        "governed_temperature": 0,
+        "vendor_temperature_decimal": "0.1",
+        "vendor_do_sample": True,
+        "explicit_secondary_eos_token_ids": dai_wire_stop_token_ids()["stop_token_ids"],
+        "seed_source": "sealed-serving-profile",
+    }
+
+
+def validate_dai_generation_accounting(value: Any) -> dict[str, Any]:
+    """Close the retained DAI generation ledger against the carried vendor view."""
+    expected = dai_generation_accounting("auto")
+    if not isinstance(value, dict) or value != expected:
+        raise SchemaRefusal(
+            "DAI model view generation accounting differs from the closed auto-policy ledger"
+        )
+    return value
+
+
 def validate_dai_text(raw: bytes) -> str:
     """Decode DAI's text response exactly; uncertainty markers are not normalized.
 
@@ -373,6 +429,7 @@ def dai_model_view(
     system_prompt_ref: dict[str, str],
     query_prompt_ref: dict[str, str],
     generation_config_ref: dict[str, str],
+    generation_accounting: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build DAI's crop view, referencing carried prompt/config bytes by manifest.
 
@@ -415,7 +472,7 @@ def dai_model_view(
         raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
     limits = _dai_image_limits()
     view = {
-        "adapter": "dai-atr.v1",
+        "adapter": "dai-atr.v1" if generation_accounting is None else "dai-atr.v2",
         "source_image_ref": source_image_ref,
         "model_image_ref": model_image_ref,
         "transform": {
@@ -433,6 +490,9 @@ def dai_model_view(
         "generation_config_ref": generation_config_ref,
         "uncertainty_tokens_preserved": list(_UNCERTAINTY_TOKENS),
     }
+    if generation_accounting is not None:
+        validate_dai_generation_accounting(generation_accounting)
+        view["generation_accounting"] = generation_accounting
     return validate_dai_model_view(view)
 
 
@@ -468,8 +528,14 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
         "generation_config_ref",
         "uncertainty_tokens_preserved",
     }
-    if not isinstance(value, dict) or set(value) != fields or value["adapter"] != "dai-atr.v1":
+    if not isinstance(value, dict) or value.get("adapter") not in {"dai-atr.v1", "dai-atr.v2"}:
         raise SchemaRefusal("DAI model view is not its closed adapter schema")
+    if value["adapter"] == "dai-atr.v2":
+        fields.add("generation_accounting")
+    if set(value) != fields:
+        raise SchemaRefusal("DAI model view is not its closed adapter schema")
+    if value["adapter"] == "dai-atr.v2":
+        validate_dai_generation_accounting(value["generation_accounting"])
 
     for name, reference in (
         ("source image", value["source_image_ref"]),
