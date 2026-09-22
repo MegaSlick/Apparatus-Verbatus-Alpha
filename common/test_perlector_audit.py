@@ -24,6 +24,8 @@ from common.perlector_audit import (
     assemble_reproof_response,
     audit_request,
     change_record,
+    change_records_from_edits,
+    render_reproof_instruction,
     text_change_span,
 )
 
@@ -68,7 +70,7 @@ def test_reproof_edits_assemble_only_from_exact_unicode_anchored_originals():
                 "original": "alpha",
                 "replacement": "omega",
             },
-            "changed text outside every flagged location",
+            "exact requested location",
         ),
         (
             {
@@ -83,13 +85,79 @@ def test_reproof_edits_assemble_only_from_exact_unicode_anchored_originals():
 )
 def test_reproof_rejects_wrong_scope_or_original_without_fuzzy_assembly(edit, match):
     raw = json.dumps({"schema": "perlector-audit-response.v1", "edits": [edit]})
-    if match == "changed text outside every flagged location":
-        assembled, _response = assemble_reproof_response(raw, _request())
-        with pytest.raises(SchemaRefusal, match=match):
-            change_record(_request()["semi_final_text"], assembled, _request()["reproofs"])
-    else:
-        with pytest.raises(ReproofResponseRefusal, match=match):
-            assemble_reproof_response(raw, _request())
+    with pytest.raises(ReproofResponseRefusal, match=match):
+        assemble_reproof_response(raw, _request())
+
+
+def test_two_disjoint_exact_edits_assemble_and_keep_one_change_record_each():
+    request = audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
+        semi_final_text="alpha beta gamma",
+        flags=[
+            {"class": "testimony-diff", "location": {"start": 0, "end": 5}},
+            {"class": "repetition", "location": {"start": 11, "end": 16}},
+        ],
+    )
+    edits = [
+        {
+            "class": "testimony-diff",
+            "location": {"start": 0, "end": 5},
+            "original": "alpha",
+            "replacement": "ALPHA",
+        },
+        {
+            "class": "repetition",
+            "location": {"start": 11, "end": 16},
+            "original": "gamma",
+            "replacement": "GAMMA",
+        },
+    ]
+    assembled, response = assemble_reproof_response(
+        json.dumps({"schema": "perlector-audit-response.v1", "edits": edits}), request
+    )
+    assert assembled == "ALPHA beta GAMMA"
+    assert change_records_from_edits(response["edits"]) == [
+        {"start": 0, "end": 5, "triggering_flag_class": "testimony-diff"},
+        {"start": 11, "end": 16, "triggering_flag_class": "repetition"},
+    ]
+
+
+def test_duplicate_changed_zero_width_insertions_are_refused():
+    request = audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
+        semi_final_text="ab",
+        flags=[
+            {"class": "testimony-diff", "location": {"start": 1, "end": 1}},
+            {"class": "repetition", "location": {"start": 1, "end": 1}},
+        ],
+    )
+    edits = [
+        {
+            "class": row["class"],
+            "location": row["location"],
+            "original": "",
+            "replacement": "X",
+        }
+        for row in request["reproofs"]
+    ]
+    with pytest.raises(ReproofResponseRefusal, match="overlapping changed spans"):
+        assemble_reproof_response(
+            json.dumps({"schema": "perlector-audit-response.v1", "edits": edits}), request
+        )
+
+
+def test_live_instruction_contains_frozen_text_closed_shape_and_unicode_offset_rule():
+    request = _request("alpha βeta")
+    instruction = render_reproof_instruction(request)
+    assert json.dumps(request["semi_final_text"], ensure_ascii=False) in instruction
+    assert "zero-based Python Unicode code-point offsets" in instruction
+    assert "exactly schema and edits" in instruction
+    assert all(field in instruction for field in ("class", "location", "original", "replacement"))
+    assert "replacement must equal original" in instruction
 
 
 def test_reproof_rejects_a_partial_reply_before_any_text_is_assembled():
@@ -118,6 +186,22 @@ def test_reproof_rejects_a_partial_reply_before_any_text_is_assembled():
     )
     with pytest.raises(ReproofResponseRefusal, match="does not answer every flagged span"):
         assemble_reproof_response(raw, request)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"schema":"perlector-audit-response.v1","schema":"other","edits":[]}',
+        (
+            '{"schema":"perlector-audit-response.v1","edits":['
+            '{"class":"testimony-diff","location":{"start":6,"end":10},'
+            '"original":"βeta","original":"beta","replacement":"beta"}]}'
+        ),
+    ],
+)
+def test_reproof_rejects_duplicate_json_members(raw):
+    with pytest.raises(ReproofResponseRefusal, match="repeats JSON member"):
+        assemble_reproof_response(raw, _request())
 
 
 def test_legacy_v2_request_stays_validatable_but_cannot_mix_with_a_v3_edit_reply():

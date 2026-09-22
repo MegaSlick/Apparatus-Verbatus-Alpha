@@ -71,6 +71,7 @@ from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
+from common.perlector_audit import render_reproof_instruction
 from common.request_capacity import (
     act_answer_budget,
     dense_page_answer_budget,
@@ -109,8 +110,21 @@ class EngineSignalRefusal(ContractError):
     can be traced back to exactly the evidence that stopped it.
     """
 
-    def __init__(self, message: str, *, raw_response_ref: Mapping[str, str]) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_response_ref: Mapping[str, str],
+        call_record_ref: Mapping[str, str],
+        request_sha256: str,
+        receipt_ref: Mapping[str, str],
+        served_model_id: str,
+    ) -> None:
         self.raw_response_ref = dict(raw_response_ref)
+        self.call_record_ref = dict(call_record_ref)
+        self.request_sha256 = request_sha256
+        self.receipt_ref = dict(receipt_ref)
+        self.served_model_id = served_model_id
         super().__init__(message)
 
 
@@ -122,9 +136,7 @@ def _image_content_blocks(images: list[bytes]) -> list[dict[str, Any]]:
     return [{"type": "image_url", "image_url": {"url": _data_uri(image)}} for image in images]
 
 
-def _mapped_stop_reason(
-    finish_reason: str | None, *, act_key: object, raw_response_ref: Mapping[str, str]
-) -> str | None:
+def _mapped_stop_reason(finish_reason: str | None, *, act_key: object, response: Any) -> str | None:
     """The engine's own word, translated into the reader-protocol's closed
     vocabulary (``truncation.py``'s own ``"stop"``/``"length"``/``None``), or
     a named refusal for anything else."""
@@ -137,8 +149,12 @@ def _mapped_stop_reason(
     raise EngineSignalRefusal(
         f"act {act_key!r} received an engine stop reason {finish_reason!r} this seam does "
         "not recognize (neither a completion nor a length cutoff); the raw response bytes "
-        f"are retained at {dict(raw_response_ref)!r}",
-        raw_response_ref=raw_response_ref,
+        f"are retained at {dict(response.raw_response_ref)!r}",
+        raw_response_ref=response.raw_response_ref,
+        call_record_ref=response.call_record_ref,
+        request_sha256=response.request_sha256,
+        receipt_ref=response.receipt_ref,
+        served_model_id=response.served_model_id,
     )
 
 
@@ -243,7 +259,7 @@ class VLLMReader:
             # Delivered instrument, not a label (`reader.py`'s own docstring):
             # every reproof prompt the request actually carries, verbatim and
             # in order, and nothing else appended beside them.
-            text = "\n".join([text, *(reproof["prompt"] for reproof in instrument["reproofs"])])
+            text = "\n".join([text, render_reproof_instruction(instrument)])
 
         if delivered_pixels is None:
             raise ContractError(
@@ -393,12 +409,16 @@ class VLLMReader:
                 f"({response.parse_problem}); the raw response bytes are retained at "
                 f"{dict(response.raw_response_ref)!r}",
                 raw_response_ref=response.raw_response_ref,
+                call_record_ref=response.call_record_ref,
+                request_sha256=response.request_sha256,
+                receipt_ref=response.receipt_ref,
+                served_model_id=response.served_model_id,
             )
 
         stop_reason = _mapped_stop_reason(
             response.finish_reason,
             act_key=dossier.get("act_key"),
-            raw_response_ref=response.raw_response_ref,
+            response=response,
         )
         # The pinned instruction asks the engine for the text and nothing else,
         # so this reader has no channel through which a doubt could arrive, and

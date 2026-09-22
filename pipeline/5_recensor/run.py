@@ -88,6 +88,7 @@ from common.perlector_audit import (  # noqa: E402
     unresolved_state,
     validate_chain,
 )
+from common.perlector_failure import validate_failed_perlectio  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
 from common.recovery import (  # noqa: E402
     FALLBACK_RECROP,
@@ -159,7 +160,9 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
-def audit_state(context, reading: dict, act_id: str) -> dict | None:
+def audit_state(
+    context, reading: dict, act_id: str, *, expected_act_key: str | None = None
+) -> dict | None:
     """Verify the two R5b artifacts behind a Perlectio's audit claim.
 
     The Perlectio's self-hash only proves that somebody sealed its references;
@@ -176,9 +179,12 @@ def audit_state(context, reading: dict, act_id: str) -> dict | None:
     outcome further down. Demanding a chain here turned the absent-chair hold
     this stage is built to report into a traceback about missing final text,
     which is exactly the trap the `basis_regions` guard below is named for.
-    Every attempted outcome (`read`, `truncated`, `no-readable-text`, `failed`)
-    publishes the pair and is verified; a forged `not-run` buys nothing, because
-    that class is held rather than accepted.
+    Completed attempted outcomes (`read`, `truncated`, `no-readable-text`) publish
+    the pair and are verified. An operational `failed` outcome instead carries
+    the shared closed failure evidence and is verified through that contract; a
+    historical full-reading shape carrying the same outcome remains an audit
+    chain. A forged `not-run` buys nothing, because that class is held rather
+    than accepted.
 
     `None`, not `False`: this act has no audit at all — the same fact a
     Designator-held act's review records. `False` means audited, with its
@@ -196,6 +202,14 @@ def audit_state(context, reading: dict, act_id: str) -> dict | None:
     resolved because its text matched).
     """
     if reading["outcome"] == "not-run":
+        return None
+    # Operational failures carry no text or audit chain.  Validate their full
+    # retained evidence before routing them to review.  A historical/test
+    # attempted outcome named ``failed`` with the ordinary completed-reading
+    # payload is still read by the pre-existing audit contract; only the new
+    # closed shape is interpreted as an operational failure.
+    if reading["outcome"] == "failed" and "failure" in reading["payload"]:
+        validate_failed_perlectio(context, reading, act_id, expected_act_key=expected_act_key)
         return None
     chain = validate_chain(context.tree, reading, act_id)
     return {
@@ -3714,7 +3728,7 @@ def preflight_review_evidence(context, budget: dict) -> None:
             f"the current reading of {act_id}",
         )
         context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
-        audit_state(context, latest, act_id)
+        audit_state(context, latest, act_id, expected_act_key=act["act_key"])
         if classify(PERLECTOR, latest["outcome"]) is OutcomeClass.COMPLETED:
             for region in _reconcile_reading_regions(latest, state["regions"], act_id):
                 context.input_ref(region["image_path"])
@@ -4009,7 +4023,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # exact reading Recensor assessed.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
-        audit_facts = audit_state(context, latest, act_id)
+        audit_facts = audit_state(context, latest, act_id, expected_act_key=act["act_key"])
         audit_unresolved = None if audit_facts is None else audit_facts["unresolved"]
         audit_examination = None if audit_facts is None else audit_facts["examination"]
         audit_reproof_truncation = (

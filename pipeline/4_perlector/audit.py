@@ -33,6 +33,7 @@ from common.perlector_audit import (  # noqa: F401  (re-export)
     EXAMINATION_REPROOF_REJECTED,
     EXAMINATION_STATES,
     FLAG_CLASSES,
+    LEGACY_SCHEMA,
     REPROOF_PASS_KIND,
     REQUEST_SCHEMA,
     RETIRED_SCHEMAS,
@@ -44,6 +45,7 @@ from common.perlector_audit import (  # noqa: F401  (re-export)
     audit_digest,
     audit_request,
     change_record,
+    change_records_from_edits,
     examination_state,
     flag_contains_change,
     neutral_prompt,
@@ -250,10 +252,16 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
                 continue
             seen.add(key)
             output[act_id].append(flag)
-    return {
-        act_id: sorted(flags, key=lambda row: (row["location"]["start"], row["class"]))
-        for act_id, flags in output.items()
-    }
+    canonical: dict[str, list[dict[str, Any]]] = {}
+    for act_id, flags in output.items():
+        distinct: dict[tuple[str, int, int], dict[str, Any]] = {}
+        for flag in flags:
+            key = (flag["class"], flag["location"]["start"], flag["location"]["end"])
+            distinct.setdefault(key, flag)
+        canonical[act_id] = sorted(
+            distinct.values(), key=lambda row: (row["location"]["start"], row["class"])
+        )
+    return canonical
 
 
 def policy_record(policy: dict[str, Any], sha256: str) -> dict[str, str]:

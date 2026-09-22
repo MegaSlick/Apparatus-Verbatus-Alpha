@@ -29,7 +29,6 @@ from typing import Any
 
 import dissent
 import pytest
-from live_reader import EngineSignalRefusal
 
 from common.chairs.models import ChairIdentity
 from common.chairs.registry import ChairRegistry
@@ -534,7 +533,7 @@ def test_an_absent_chair_resolves_to_fixture_without_consulting_the_catalogue():
 def test_a_live_pass_reads_through_the_chair_and_binds_the_call_it_read_from(
     live_run, tmp_path, monkeypatch
 ):
-    root, _catalogue = live_run
+    root, catalogue = live_run
     endpoint, exit_code = _run_perlector(
         live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
     )
@@ -573,7 +572,7 @@ def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
     sample, or a re-ask on a disappointing answer would all show up here as more
     requests than the pass has arms.
     """
-    root, _catalogue = live_run
+    root, catalogue = live_run
     endpoint, _exit = _run_perlector(
         live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
     )
@@ -638,7 +637,7 @@ def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_cont
     evidence rather than aborting every later act.  A future invocation sees
     the immutable failed Perlectio and does not ask the chair for it again.
     """
-    root, _catalogue = live_run
+    root, catalogue = live_run
     endpoint, exit_code = _run_perlector(
         live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="abort")
     )
@@ -647,7 +646,14 @@ def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_cont
     assert failures
     failure = failures[0]
     assert failure["payload"]["failure"]["kind"] == "engine-signal"
+    assert failure["payload"]["failure"]["response_completion"] == "complete"
     assert failure["payload"]["failure"]["raw_response_ref"] in failure["inputs"]
+    context = _page_context(root, catalogue, monkeypatch)
+    forged = copy.deepcopy(failure)
+    forged["payload"]["failure"]["call_record_ref"] = None
+    forged["self_hash"] = self_hash(forged)
+    with pytest.raises(SchemaRefusal, match="complete raw/call/request/receipt/model evidence"):
+        perlector.validate_failed_perlectio(context, forged, forged["subject_id"])
     assert endpoint.requests
     resumed, resumed_exit = _run_perlector(
         live_run,
@@ -662,20 +668,26 @@ def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_cont
     assert any(b'"abort"' in body for body in retained), "the refusing response was not retained"
 
 
-def test_a_body_that_is_not_a_reading_stops_the_pass_rather_than_being_published(
+def test_a_body_that_is_not_a_reading_becomes_a_retained_act_failure(
     live_run, tmp_path, monkeypatch
 ):
-    """A malformed body is retained evidence, never a Perlectio.
-
-    The witness path turns one into a `failed` Testimonium; a reading has no
-    such shape, so the honest outcome here is a loud stop over retained bytes.
-    """
+    """A malformed completed response is retained and held act-locally."""
     root, _catalogue = live_run
-    with pytest.raises(EngineSignalRefusal, match="CHAIR_RESPONSE_"):
-        _run_perlector(
-            live_run, tmp_path, monkeypatch, ScriptedAnswer(body=b"{ this is not a reading")
-        )
-    assert _published_readings(root) == []
+    _endpoint, exit_code = _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(body=b"{ this is not a reading")
+    )
+    assert exit_code == 0
+    failures = [record for record in _published_readings(root) if record["outcome"] == "failed"]
+    assert failures
+    for record in failures:
+        failure = record["payload"]["failure"]
+        assert failure["kind"] == "engine-signal"
+        assert failure["phase"] == "establishing"
+        assert failure["response_completion"] == "complete"
+        assert "text" not in record["payload"] and "audit" not in record["payload"]
+        for field in ("raw_response_ref", "call_record_ref", "receipt_ref"):
+            assert failure[field] in record["inputs"]
+        assert failure["request_sha256"] and failure["served_model_id"]
 
 
 def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
@@ -1035,6 +1047,9 @@ def test_a_non_200_from_the_engine_becomes_a_retained_act_failure_and_continues(
     assert failures
     assert failures[0]["payload"]["failure"]["kind"] == "chair-response"
     assert failures[0]["payload"]["failure"]["code"] == "CHAIR_RESPONSE_HTTP_ERROR"
+    assert failures[0]["payload"]["failure"]["response_completion"] == "complete"
+    for field in ("raw_response_ref", "call_record_ref", "receipt_ref"):
+        assert failures[0]["payload"]["failure"][field] in failures[0]["inputs"]
     blobs = root / "r" / "4_perlector" / "blobs" / "sha256"
     retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
     assert any(b"maximum context length" in body for body in retained), (
@@ -1069,7 +1084,47 @@ def test_a_transport_timeout_fails_one_act_and_continues_to_the_next(
         record["outcome"] == "failed" and record["payload"]["failure"]["kind"] == "transport"
         for record in records.values()
     )
+    assert next(
+        record["payload"]["failure"]["response_completion"]
+        for record in records.values()
+        if record["outcome"] == "failed"
+    ) == "unknown"
     assert endpoint.requests, "the later act was not sent to the chair"
+
+
+def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
+    """A dispatched request's uncertain outcome keeps its closed call evidence."""
+    failure_type = getattr(perlector.serving_errors, "ChairTransportFailure", None)
+    if failure_type is None:
+        pytest.skip("the serving transport-failure contract is integrated separately")
+    call_ref = {
+        "relative_path": "r/operations/serving/calls/transport.json",
+        "sha256": "a" * 64,
+    }
+    receipt_ref = {
+        "relative_path": "r/operations/serving/receipts/receipt.json",
+        "sha256": "b" * 64,
+    }
+    error = failure_type(
+        "timed out after request dispatch",
+        call_record_ref=call_ref,
+        request_sha256="c" * 64,
+        receipt_ref=receipt_ref,
+        served_model_id="perlector-under-test",
+    )
+
+    assert perlector._failure_record(error, phase="audit-reproof") == {
+        "phase": "audit-reproof",
+        "kind": "transport",
+        "code": "CHAIR_TRANSPORT_FAILURE",
+        "detail": "timed out after request dispatch",
+        "raw_response_ref": None,
+        "call_record_ref": call_ref,
+        "request_sha256": "c" * 64,
+        "receipt_ref": receipt_ref,
+        "served_model_id": "perlector-under-test",
+        "response_completion": "unknown",
+    }
 
 
 def test_a_live_pass_refuses_a_fixture_declared_reading_failure(

@@ -28,7 +28,12 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
 from common.imaging import encode_grayscale_png
-from common.perlector_audit import audit_request as build_audit_request
+from common.perlector_audit import (
+    audit_request as build_audit_request,
+)
+from common.perlector_audit import (
+    render_reproof_instruction,
+)
 from common.request_capacity import (
     PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS,
     PERLECTOR_PROMPT_OVERHEAD_TOKENS,
@@ -1147,7 +1152,7 @@ def test_a_prompt_too_long_400_is_retained_refused_by_name_and_not_a_length_stop
 # --- audit re-proof: delivered instrument appended verbatim ------------------
 
 
-def test_audit_reproof_appends_every_reproof_prompt_verbatim_after_the_rendered_prompt(
+def test_audit_reproof_appends_the_complete_exact_edit_instrument(
     tmp_path: Path,
 ) -> None:
     client, endpoint, _blobs, chair = _built(tmp_path)
@@ -1178,16 +1183,12 @@ def test_audit_reproof_appends_every_reproof_prompt_verbatim_after_the_rendered_
     sent_text = next(
         part["text"] for part in posted["messages"][0]["content"] if part.get("type") == "text"
     )
-    expected = "\n".join([rendered, *(row["prompt"] for row in request["reproofs"])])
+    expected = "\n".join([rendered, render_reproof_instruction(request)])
     assert sent_text == expected
-    # Verbatim and nothing else: exactly the rendered prompt plus the
-    # delivered reproof prompts, in the request's own order.
     assert sent_text.startswith(rendered)
-    assert sent_text.count(request["reproofs"][0]["prompt"]) == 1
-    assert sent_text.count(request["reproofs"][1]["prompt"]) == 1
-    assert sent_text.index(request["reproofs"][0]["prompt"]) < sent_text.index(
-        request["reproofs"][1]["prompt"]
-    )
+    assert json.dumps(semi_final_text, ensure_ascii=False) in sent_text
+    assert "zero-based Python Unicode code-point offsets" in sent_text
+    assert all(field in sent_text for field in ("class", "location", "original", "replacement"))
 
 
 def test_audit_reproof_with_no_delivered_request_refuses_exactly_as_the_fixture_reader_does(
@@ -1375,5 +1376,5 @@ def test_the_audit_reproof_pass_sends_the_same_base_prompt_plus_its_delivered_in
     sealed_dossier = dossier | {"dossier_digest": "d" * 64}
     evidence = prompts.prompt_evidence(chair, sealed_dossier, None)
     rendered = prompts.build_prompt(chair.serving_recipe, chair.role, dossier, None)
-    assert sent_text == "\n".join([rendered, request["reproofs"][0]["prompt"]])
+    assert sent_text == "\n".join([rendered, render_reproof_instruction(request)])
     assert digest_bytes(rendered.encode("utf-8")) == evidence["rendered_sha256"]

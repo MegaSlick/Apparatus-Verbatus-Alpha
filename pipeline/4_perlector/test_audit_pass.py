@@ -17,7 +17,7 @@ import reader as reader_module
 
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import ARMARIUM, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.perlector_audit import LEGACY_SCHEMA
 from common.runtree.store import RunTree
 
@@ -702,6 +702,20 @@ def test_a_sealed_v2_chain_remains_validatable_without_reinterpreting_its_reques
 
     for record in (draft["payload"], finding["payload"]):
         record["policy"]["schema"] = LEGACY_SCHEMA
+    finding["payload"].pop("reproof_edits")
+    finding["payload"]["reproof_change_span"] = (
+        dict(
+            zip(
+                ("start", "end"),
+                audit.text_change_span(
+                    draft["payload"]["semi_final_text"], final["payload"]["text"]
+                ),
+                strict=True,
+            )
+        )
+        if draft["payload"]["semi_final_text"] != final["payload"]["text"]
+        else None
+    )
     audit_record = final["payload"]["audit"]
     audit_record["reproofs"] = audit.reproof_plan(
         draft["payload"]["flags"],
@@ -1146,6 +1160,22 @@ def test_change_record_refuses_a_change_extending_past_the_flag_end():
         audit.change_record("abcd", "aXYZ", flags)
 
 
+def test_identical_testimony_flags_are_deduped_before_the_reproof_plan():
+    frozen = [
+        {
+            "act_id": "a1",
+            "page_id": "p1",
+            "order": 1,
+            "geometry_order": (1, 0),
+            "text": "alpha beta",
+            "testimonia": ["alpha zeta", "alpha zeta"],
+            "within_crop": True,
+        }
+    ]
+    flags = audit.flags_once_per_page(frozen)["a1"]
+    assert flags == [{"class": "testimony-diff", "location": {"start": 6, "end": 7}}]
+
+
 def test_unhashable_audit_classes_are_named_schema_refusals():
     """Resealed JSON arrays cannot escape class allowlists as raw TypeError."""
     policy = {"schema": audit.SCHEMA, "sha256": "0" * 64, "approval_ref": ""}
@@ -1178,7 +1208,14 @@ def test_unhashable_audit_classes_are_named_schema_refusals():
             "examination": "complete",
             "reproof_truncation": _COMPLETE_TRUNCATION,
             "reproof_call": None,
-            "reproof_change_span": {"start": 0, "end": 1},
+            "reproof_edits": [
+                {
+                    "class": "testimony-diff",
+                    "location": {"start": 0, "end": 1},
+                    "original": "x",
+                    "replacement": "y",
+                }
+            ],
         }
     )
     with pytest.raises(SchemaRefusal, match="unknown triggering flag class"):
@@ -1366,7 +1403,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
             "examination": "cap-exhausted",
             "reproof_truncation": None,
             "reproof_call": None,
-            "reproof_change_span": None,
+            "reproof_edits": None,
         },
         text="abc",
         flag_text="abc",
@@ -1394,7 +1431,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
                 "examination": "cap-exhausted",
                 "reproof_truncation": None,
                 "reproof_call": None,
-                "reproof_change_span": None,
+                "reproof_edits": None,
             },
             text="abc",
             flag_text="abc",
@@ -1632,7 +1669,11 @@ def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
     )
     drifted_finding = copy.deepcopy(finding)
     drifted_finding["payload"]["page_ids"] = ["pg_drifted"]
-    audit.validate_finding(drifted_finding["payload"], text=final["payload"]["text"])
+    audit.validate_finding(
+        drifted_finding["payload"],
+        text=final["payload"]["text"],
+        flag_text=draft["payload"]["semi_final_text"],
+    )
 
     class DriftedTree:
         def read_artifact_reference(self, _reference, *, stage, kind, subject_id):
@@ -1992,20 +2033,13 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
 
 
 @pytest.mark.parametrize(
-    ("stop_reason", "expected_examination"),
+    "stop_reason",
     [
-        # The call completed and then overran its scope: the rejection state.
-        ("stop", "reproof-rejected"),
-        # The call was cut off AND overran its scope. The termination decides
-        # the examination -- an unfinished re-examination settles nothing
-        # whatever its text did -- but the rewrite is refused just the same,
-        # and the run must still survive it.
-        ("length", "incomplete"),
+        "stop",
+        "length",
     ],
 )
-def test_an_escaping_reproof_is_refused_whatever_ended_its_call(
-    tmp_path, monkeypatch, stop_reason, expected_examination
-):
+def test_a_wrong_location_reproof_becomes_an_act_local_failure(tmp_path, monkeypatch, stop_reason):
     """An escape is refused on the escape, not on why the call stopped."""
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
@@ -2027,11 +2061,8 @@ def test_an_escaping_reproof_is_refused_whatever_ended_its_call(
             if pass_kind == "audit-reproof":
                 reproofed.append(dossier["act_key"])
                 reply = json.loads(result["text"])
-                # A syntactically complete edit reply that changes a real
-                # draft span outside the delivered flag.  The v3 assembler
-                # preserves the proposal; the audit layer then rejects its
-                # scope as `reproof-rejected` rather than treating malformed
-                # JSON as an ordinary text rewrite.
+                # A syntactically complete edit with the wrong location is not
+                # the response the frozen request authorized.
                 reply["edits"][0]["location"] = {"start": 0, "end": 1}
                 reply["edits"][0]["original"] = audit_request["semi_final_text"][0:1]
                 reply["edits"][0]["replacement"] = "Z"
@@ -2057,25 +2088,17 @@ def test_an_escaping_reproof_is_refused_whatever_ended_its_call(
     assert reproofed
 
     tree = RunTree(root, "r")
-    frozen = {
-        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
-        for record in _records(tree, "audit-draft")
-    }
-    findings = {
-        record["payload"]["act_key"]: record["payload"]
-        for record in _records(tree, "audit-finding")
+    failures = {
+        record["payload"]["act_key"]: record
+        for record in _records(tree, "perlectio")
+        if record["outcome"] == "failed"
     }
     for act_key in reproofed:
-        assert findings[act_key]["examination"] == expected_examination
-        assert findings[act_key]["unresolved"] is True
-        # The departure is sealed either way: it is what says the re-proof's
-        # own text was refused rather than returned unchanged.
-        assert findings[act_key]["reproof_change_span"] is not None
-    for final in _records(tree, "perlectio"):
-        act_key = final["payload"]["act_key"]
-        if act_key in reproofed:
-            assert final["payload"]["text"] == frozen[act_key]
-            audit.validate_chain(tree, final, final["subject_id"])
+        failure = failures[act_key]
+        assert failure["payload"]["failure"]["kind"] == "reproof-response"
+        assert failure["payload"]["failure"]["phase"] == "audit-reproof"
+        assert "exact requested location" in failure["payload"]["failure"]["detail"]
+        assert any("audit-draft" in ref["relative_path"] for ref in failure["inputs"])
 
 
 def test_a_malformed_reproof_reply_becomes_a_retained_failed_act(tmp_path, monkeypatch):
@@ -2122,16 +2145,7 @@ def test_a_malformed_reproof_reply_becomes_a_retained_failed_act(tmp_path, monke
     assert all(record["payload"]["failure"]["kind"] == "reproof-response" for record in failures)
 
 
-def test_a_whitespace_reproof_that_erases_the_act_is_refused_not_crashed(tmp_path, monkeypatch):
-    """A re-proof returning only whitespace publishes an empty reading.
-
-    That projection (`_resolve_outcome`'s `no-readable-text`) widens the change
-    envelope to the whole act, which no narrow flag covers. Containment is
-    therefore measured over the text the projection would publish, not over the
-    whitespace the reader returned — otherwise `change_record` is handed an
-    envelope nobody checked and the refusal leaves `main` exactly as it did
-    before any of this (found by two independent reviews of the first fix).
-    """
+def test_a_non_json_whitespace_reproof_becomes_an_act_local_failure(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
     perlector = _perlector()
@@ -2173,24 +2187,12 @@ def test_a_whitespace_reproof_that_erases_the_act_is_refused_not_crashed(tmp_pat
     assert reproofed
 
     tree = RunTree(root, "r")
-    frozen = {
-        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
-        for record in _records(tree, "audit-draft")
-    }
-    for final in _records(tree, "perlectio"):
-        act_key = final["payload"]["act_key"]
-        if act_key not in reproofed:
-            continue
-        # The erasure reached outside every flag, so it was refused: the
-        # establishing reading stands rather than an empty one.
-        assert final["payload"]["text"] == frozen[act_key]
-        assert final["payload"]["audit"]["unresolved"] is True
-        audit.validate_chain(tree, final, final["subject_id"])
+    failures = [record for record in _records(tree, "perlectio") if record["outcome"] == "failed"]
+    assert {record["payload"]["act_key"] for record in failures} == set(reproofed)
+    assert all(record["payload"]["failure"]["phase"] == "audit-reproof" for record in failures)
 
 
-def test_a_reproof_that_escapes_its_flag_holds_its_act_without_killing_the_run(
-    tmp_path, monkeypatch
-):
+def test_failed_reproof_flows_to_held_review_and_partial_export(tmp_path, monkeypatch):
     """The stage-level regression for the failure a real A100 produced.
 
     A live re-proof completed its call (`stop`, not cut off) and rewrote text
@@ -2249,38 +2251,16 @@ def test_a_reproof_that_escapes_its_flag_holds_its_act_without_killing_the_run(
     assert reproofed, "the scenario must deliver at least one re-proof"
 
     tree = RunTree(root, "r")
-    findings = {
-        record["payload"]["act_key"]: record["payload"]
-        for record in _records(tree, "audit-finding")
+    failures = {
+        record["payload"]["act_key"]: record
+        for record in _records(tree, "perlectio")
+        if record["outcome"] == "failed"
     }
-    frozen = {
-        record["payload"]["act_key"]: record["payload"]["semi_final_text"]
-        for record in _records(tree, "audit-draft")
-    }
-    # Every re-proofed act sealed a finding: the rejection is recorded, not a
-    # gap where a finding should have been.
-    assert set(reproofed) <= set(findings)
+    assert set(reproofed) <= set(failures)
     for act_key in reproofed:
-        finding = findings[act_key]
-        assert finding["examination"] == "reproof-rejected"
-        assert finding["unresolved"] is True
-        # Nothing was published on the strength of the rejected rewrite.
-        assert finding["change_record"] == []
-        assert finding["reproof_change_span"] is not None
-        # The re-proof's own termination is still sealed -- the call happened,
-        # and its evidence is retained whatever became of its text.
-        assert finding["reproof_truncation"]["classification"] == "complete"
-
-    for final in _records(tree, "perlectio"):
-        act_key = final["payload"]["act_key"]
-        if act_key not in reproofed:
-            continue
-        # The establishing reading stands; the rewrite never reached the page.
-        assert final["payload"]["text"] == frozen[act_key]
-        assert not final["payload"]["text"].startswith("Zz ")
-        assert final["payload"]["audit"]["examination"] == "reproof-rejected"
-        assert final["payload"]["audit"]["unresolved"] is True
-        audit.validate_chain(tree, final, final["subject_id"])
+        failure = failures[act_key]
+        assert failure["payload"]["failure"]["kind"] == "reproof-response"
+        assert "text" not in failure["payload"] and "audit" not in failure["payload"]
 
     # And the hold is what the downstream stages actually report.
     for stage, expected_exit in (("recensor", 3), ("archetypus", 0), ("armarium", 3)):
@@ -2288,9 +2268,12 @@ def test_a_reproof_that_escapes_its_flag_holds_its_act_without_killing_the_run(
         assert remainder.returncode == expected_exit, (stage, remainder.stderr)
     export = _export(tree)
     assert export["aggregate"]["status"] == "partial"
+    established = {record["subject_id"] for record in _records(tree, "archetypus", ARCHETYPUS)}
     held = {act["act_key"]: act for act in export["non_delivered"]}
     for act_key in reproofed:
         assert held[act_key]["category"] == "held-for-review"
+        assert act_key not in {act["act_key"] for act in export["delivered"]}
+        assert failures[act_key]["subject_id"] not in established
 
 
 # The three-character reading every `_finding` unit test validates against, and
@@ -2323,7 +2306,7 @@ def _finding(**overrides) -> dict:
         "attempt_ordinal": 1,
         "page_ids": ["p1"],
         "round_cap": 1,
-        "policy": {"schema": audit.SCHEMA, "sha256": "0" * 64, "approval_ref": ""},
+        "policy": {"schema": "perlector-audit.v2", "sha256": "0" * 64, "approval_ref": ""},
         "flags": [{"class": "testimony-diff", "location": {"start": 0, "end": 3}}],
         "change_record": [],
         "uncertain_spans": [],
