@@ -4696,10 +4696,11 @@ def _verify_page_residual_premise(
     enumeration = payload.get("residual_enumeration")
     if enumeration not in (RESIDUAL_ENUMERATION_WITHHELD, RESIDUAL_ENUMERATION_AGGREGATED):
         raise FatalAccounting(
-            f"act {act_id} holds page {page_id} for withheld residual enumeration, but that "
+            f"act {act_id} holds page {page_id} for withheld or aggregated residual enumeration, but that "
             f"page's own conservation record records its enumeration as {enumeration!r} rather "
-            f"than {RESIDUAL_ENUMERATION_WITHHELD!r}; a page may not be held as one review item "
-            "over a reconciliation that enumerated its components"
+            f"than {RESIDUAL_ENUMERATION_WITHHELD!r} or {RESIDUAL_ENUMERATION_AGGREGATED!r}; "
+            "a page may not be held as one review item over a reconciliation that separately "
+            "presents every component"
         )
     # Checked only once the record has already proven it means to aggregate: a
     # record that enumerated its components is refused above for that alone,

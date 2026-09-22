@@ -768,7 +768,8 @@ def test_real_route_uses_the_same_budget_hold_when_recovery_is_not_admitted():
     funded_outcome, funded_reason = recensor.unresolved_observation_hold(
         confirmed, 1, {1}, real_route=True
     )
-    assert (funded_outcome, funded_reason) != (outcome, reason)
+    assert funded_outcome == "held-for-review"
+    assert "one observation-funded recovery request is already recorded" in funded_reason
 
     # No pointer, no hold: the real route does not invent a review item of its own.
     assert recensor.unresolved_observation_hold([], 1, set(), real_route=True) is None

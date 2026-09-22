@@ -25,14 +25,15 @@ from reader import FixtureReader
 
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.cross_capture_autopsia import atomic_delivered_pixels, build_autopsia
 from common.imaging import encode_grayscale_png
 from common.perlector_audit import (
-    audit_request as build_audit_request,
+    _rebuild_chair_request_bytes,
+    render_reproof_instruction,
 )
 from common.perlector_audit import (
-    render_reproof_instruction,
+    audit_request as build_audit_request,
 )
 from common.request_capacity import (
     PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS,
@@ -63,6 +64,7 @@ from operations.serving.fakes import (
     ScriptedAnswer,
     scripted_prompt_too_long,
 )
+from operations.serving.http import request_body
 from operations.serving.manager import ServingManager
 from operations.serving.residency import FileResidencyLease
 
@@ -1249,6 +1251,56 @@ def test_no_max_tokens_still_selects_perlector_direct_response_mode(tmp_path: Pa
     assert endpoint.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
+def test_retained_float_generation_rebuilds_exact_wire_bytes_and_exposes_tampering() -> None:
+    messages = [{"role": "user", "content": "prompt"}]
+    expected = request_body(
+        {"top_p": 0.001, "messages": messages},
+        model_id=SERVED_MODEL_ID,
+        seed=17,
+        deterministic=True,
+    )
+    recorded = {
+        "top_p": {"schema": "wire-decimal.v1", "decimal": "0.001"},
+        "temperature": 0,
+        "seed": 17,
+    }
+    assert (
+        _rebuild_chair_request_bytes(
+            recorded_generation=recorded,
+            messages=messages,
+            model_id=SERVED_MODEL_ID,
+            seed=17,
+        )
+        == expected
+    )
+    assert (
+        _rebuild_chair_request_bytes(
+            recorded_generation={
+                **recorded,
+                "top_p": {"schema": "wire-decimal.v1", "decimal": "0.002"},
+            },
+            messages=messages,
+            model_id=SERVED_MODEL_ID,
+            seed=17,
+        )
+        != expected
+    )
+    with pytest.raises(SchemaRefusal, match="another seed"):
+        _rebuild_chair_request_bytes(
+            recorded_generation={**recorded, "seed": 18},
+            messages=messages,
+            model_id=SERVED_MODEL_ID,
+            seed=17,
+        )
+    with pytest.raises(SchemaRefusal, match="another temperature"):
+        _rebuild_chair_request_bytes(
+            recorded_generation={**recorded, "temperature": 1},
+            messages=messages,
+            model_id=SERVED_MODEL_ID,
+            seed=17,
+        )
+
+
 # --- FixtureReader carries no engine, so it must never publish engine_call ----
 
 
@@ -1379,4 +1431,7 @@ def test_the_audit_reproof_pass_sends_the_same_base_prompt_plus_its_delivered_in
     assert sent_text == "\n".join([rendered, render_reproof_instruction(request)])
     assert digest_bytes(rendered.encode("utf-8")) == evidence["rendered_sha256"]
     assert result["rendered_prompt"] == sent_text
-    assert result["request_sha256"]
+    posted_bytes = json.dumps(
+        posted, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    assert result["request_sha256"] == digest_bytes(posted_bytes)

@@ -2077,12 +2077,12 @@ def _publish_page_residual_hold(
     components into one act and never removes them from accounting.
 
     Exactly one input, and it is this page's own `conservation` record. That
-    record is the independent premise — it is what says the count exceeded the
-    bound — exactly as `structure-status` is the premise for a page-fallback
+    record is the independent premise — it records the components below both
+    presentation floors — exactly as `structure-status` is the premise for a page-fallback
     act, so no second artifact is minted to say what one already says.
     `common/stage.py::_verify_page_residual_act_row` recomputes every field
     below rather than reading it: the page rectangle from the sealed page
-    bytes, the identity from the reserved class and that rectangle, the bound
+    bytes, the identity from the reserved class and that rectangle, the floors
     against the run's own sealed `designator-grouping` digest, and the count
     against the conservation record reached through the digest-checked hop.
     """
@@ -3785,7 +3785,14 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
         )
 
     real_input = parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
-    fixture_acts = [item for item in context.fixture["act"] if item["key"] == match[0]["act_key"]]
+    # `StageContext.fixture` is deliberately unavailable on REAL_INGRESS.
+    # Real recrops carry their measured page-space geometry on the exact
+    # Recensor request; only fixture ingress resolves a declared fixture act.
+    fixture_acts = (
+        []
+        if real_input
+        else [item for item in context.fixture["act"] if item["key"] == match[0]["act_key"]]
+    )
     if not real_input and not fixture_acts:
         raise ContractError(
             f"recovery fixture declares no act for key {match[0]['act_key']!r}; the fixture "

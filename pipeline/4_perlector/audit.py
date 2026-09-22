@@ -25,6 +25,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.perlector_audit import (  # noqa: F401  (re-export)
+    AUDIT_PROMPT_SCHEMA,
     DECLARED_STOP_WORDS,
     EXAMINATION_CAP_EXHAUSTED,
     EXAMINATION_COMPLETE,
@@ -33,7 +34,6 @@ from common.perlector_audit import (  # noqa: F401  (re-export)
     EXAMINATION_REPROOF_REJECTED,
     EXAMINATION_STATES,
     FLAG_CLASSES,
-    AUDIT_PROMPT_SCHEMA,
     LEGACY_SCHEMA,
     REPROOF_PASS_KIND,
     REQUEST_SCHEMA,
@@ -57,8 +57,8 @@ from common.perlector_audit import (  # noqa: F401  (re-export)
     text_change_span,
     truncation_classification,
     unresolved_state,
-    validate_audit_request,
     validate_audit_prompt_evidence,
+    validate_audit_request,
     validate_chain,
     validate_draft,
     validate_finding,

@@ -4331,9 +4331,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # this same attempt.  Naming them makes a resume and the Recensor
             # able to inspect what completed without re-asking the chair.
             for kind, operation in PRE_PERLECTIO_ARTIFACTS:
-                artifact_id = _attempt_artifact_id(act_id, kind, operation, ordinal)
-                if context.tree.has_artifact(PERLECTOR, kind, artifact_id):
-                    failure_inputs.append(context.artifact_ref(PERLECTOR, kind, artifact_id))
+                identifier = _attempt_artifact_id(act_id, kind, operation, ordinal)
+                if context.tree.has_artifact(PERLECTOR, kind, identifier):
+                    failure_inputs.append(context.artifact_ref(PERLECTOR, kind, identifier))
             failure_inputs.extend(_failure_evidence_inputs(failure))
             failure_payload = {
                 "act_key": act["act_key"],
@@ -4571,10 +4571,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # and the finding's `flag_text_length` measure against, whether or not
         # a re-proof ever runs.
         pre_audit_text = payload["text"]
-        base_prompt_record = copy.deepcopy(payload["prompt"])
-        base_prompt_text = prompts.build_prompt(
-            chair.serving_recipe, chair.role, payload["dossier"], protocol_config
-        )
         # The truncation instrument's verdict on the re-proof call itself, or
         # `None` while no re-proof has been delivered. Measured over the
         # re-proof's own text and stop word, *before* that text is compared with
@@ -4610,6 +4606,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # The same predicate `validate_chain` re-derives from the frozen draft:
         # one spelling of "a re-proof request exists for this act".
         if audit.reproof_delivery_due(flags, audit_policy["round_cap"]):
+            base_prompt_record = copy.deepcopy(payload["prompt"])
+            base_prompt_text = prompts.build_prompt(
+                chair.serving_recipe, chair.role, payload["dossier"], protocol_config
+            )
             # Exactly one reader invocation for this act and audit round.  The
             # list of neutral locations is retained on the Perlectio below;
             # no flag result can reopen this page's frozen calculation.
@@ -4747,33 +4747,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
                 stop_reason=reproof["stop_reason"],
             )
-            # The envelope a completed re-proof's own rewrite occupies, measured
-            # against the frozen semi-final before anything is published on its
-            # strength. `None` whenever there is nothing to measure: the call
-            # did not complete, or it returned the frozen text unchanged. This
-            # is computed once, here, so both the publish decision below and
-            # the sealed finding's `examination` derive from the same envelope
-            # rather than two comparisons that could drift.
-            # The text this re-proof would actually publish, not the text it
-            # returned: the projection below empties a whitespace-only reading
-            # (`_resolve_outcome`'s `no-readable-text`), and an emptied reading's
-            # envelope is the whole act rather than whatever span the raw
-            # response happened to touch. Measuring containment on the raw text
-            # and then publishing the emptied one would hand `change_record` an
-            # envelope nobody checked -- the same uncaught refusal, one branch
-            # further in.
-            # Everything from here to the end of this block is provenance and
-            # projection for a re-proof whose text is the one published. It is
-            # entered on text inequality *and containment*, on purpose: a
-            # re-proof that returned the frozen text confirms Pass B's call as
-            # the producer of the published reading, and a re-proof whose
-            # rewrite escapes every flag it was sent to settle is refused
-            # outright below rather than published on any of these fields --
-            # moving `engine_call`, `truncation` and `self_revision` onto a
-            # rejected rewrite would bind the published reading to a response
-            # that was never allowed to produce it. Whether the re-proof
-            # *completed* is the separate fact `reproof_truncation` above
-            # already holds, and it is sealed whichever branch runs.
+            # assemble_reproof_response already checked every exact edit and
+            # refused escaping or contradictory replacements. This block binds
+            # the accepted text to its producing call; an unchanged result keeps
+            # Pass B's text provenance. Completion is measured separately above.
             if final_text != payload["text"]:
                 payload["text"] = final_text
                 # The doubt report travels with the call whose text is
@@ -4900,23 +4877,16 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                         "", dissent_testimonia(row["testimonia"], row["attachment_view"])
                     )
                     payload["self_revision"] = departures("", row["prior"]["text"])
-            # After the projection, not before it: `validate_chain` recomputes
-            # the change record from the draft's semi-final against the
-            # PUBLISHED text, so the record must describe the projected text.
-            # Guarded by the same containment this block's own `if` already
-            # checked: a rewrite that escaped every flag was never published
-            # above, and asking `change_record` to re-attribute it here would
-            # raise the exact refusal this stage now handles as a rejection
-            # instead of a crash (below), not a second chance to hit it.
+            # Record the exact validated edits; downstream validation replays
+            # them against the frozen draft and the published text.
             changes = audit.change_records_from_edits(reproof_edits)
         # One derivation, shared with every consumer: what became of the
         # re-examination, and whether that leaves the flags unresolved. Only an
         # exhausted cap mints exhausted-cap spans; an incomplete re-proof is an
         # incomplete examination, recorded as that and routed to review by the
         # Recensor on that fact, never dressed as a span or as a truncation of a
-        # text that did in fact complete; a re-proof that completed but rewrote
-        # text outside every flag is `reproof-rejected`, never dressed as
-        # `complete` on the strength of a rewrite this stage refused to publish.
+        # text that did in fact complete. Invalid edit responses have already
+        # taken the act-local failure path and do not reach this derivation.
         examination = audit.examination_state(
             flags,
             audit_policy["round_cap"],

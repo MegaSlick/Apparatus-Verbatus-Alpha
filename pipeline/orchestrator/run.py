@@ -1032,21 +1032,15 @@ def report_halt(args, tally: dict) -> None:
             print(f"  - {kind}: {subjects}")
 
 
-def undispatchable_recovery_reason(recovery_kind: str, *, real_route: bool) -> str | None:
+def undispatchable_recovery_reason(
+    recovery_kind: str, *, real_route: bool, request_payload: dict | None = None
+) -> str | None:
     """Why this orchestrator cannot answer one outstanding request, or `None`.
 
-    Only the recrop operation has a real implementation today, and on a real
-    submission not even that: `pipeline/2_designator/run.py` refuses
-    `--operation recover` by name, because a recovery still reads the fixture's
-    declared rectangle. Refusing any other kind loudly is what naming the kind
-    exists to stop — a silent conflation with a substitute crop — and naming the
-    real route here is what stops the same refusal reaching an operator as a bare
-    `pipeline/2_designator/run.py exited 2` with the cause a stage away
-    (findings F068/F083).
-
-    The Recensor no longer publishes a real-ingress request, so this branch is a
-    backstop over trees written before that gate landed. It is still checked,
-    because a bound nobody checks is not a bound.
+    A real fallback recrop is dispatchable only when the retained request has
+    the measured-coverage shape the Designator can independently verify. Older
+    real requests that only name fixture-era geometry remain visibly refused;
+    no route substitutes a crop for an unsupported request.
     """
     if recovery_kind != FALLBACK_RECROP:
         return (
@@ -1054,18 +1048,26 @@ def undispatchable_recovery_reason(recovery_kind: str, *, real_route: bool) -> s
             f"for; only {FALLBACK_RECROP!r} (a Designator recrop) is implemented today, and "
             "the page-level reread belongs to the Perlector, which has not built it"
         )
-    if real_route:
+    if real_route and not (
+        isinstance(request_payload, dict)
+        and request_payload.get("origin") == "coverage-observation"
+        and isinstance(request_payload.get("recovery_bounds"), dict)
+        and set(request_payload["recovery_bounds"]) == {"x", "y", "w", "h"}
+        and all(
+            isinstance(request_payload["recovery_bounds"][name], int)
+            and not isinstance(request_payload["recovery_bounds"][name], bool)
+            and request_payload["recovery_bounds"][name] >= 0
+            for name in ("x", "y", "w", "h")
+        )
+        and request_payload["recovery_bounds"]["w"] > 0
+        and request_payload["recovery_bounds"]["h"] > 0
+        and isinstance(request_payload.get("coverage_observation"), dict)
+        and isinstance(request_payload.get("ink_map_ref"), dict)
+    ):
         return (
-            "is a fallback recrop on a real submission, which the Designator refuses by name: "
-            "a recovery still reads the fixture's declared rectangle, which a real submission "
-            "does not carry. This request predates the gate that now withholds it. Nothing "
-            "supersedes it in this run tree: the Designator will not cut the recrop, and the "
-            "Recensor holds the act without republishing while the request is outstanding, so "
-            "no sequence of stage invocations reaches an export here and this run ends with "
-            "none. Its coverage evidence stays readable in the request artifact and the "
-            "Recensor review beside it; a fresh run of the same submission from the Door does "
-            "not reach this state, because the Recensor now holds such an act for review "
-            "instead of publishing a request"
+            "is a legacy fixture-only fallback recrop on a real submission: it lacks the "
+            "measured recovery bounds, coverage observation, or Ink Map reference required "
+            "for the Designator to verify and cut a real-image recrop"
         )
     return None
 
@@ -1165,7 +1167,13 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
         # requests it could not answer rather than only that one existed.
         refused = []
         for act_id, request_id, recovery_kind in outstanding:
-            reason = undispatchable_recovery_reason(recovery_kind, real_route=real_route)
+            payload = None
+            if real_route:
+                request = tree.read_artifact(RECENSOR, "recovery-request", request_id)
+                payload = request.get("payload")
+            reason = undispatchable_recovery_reason(
+                recovery_kind, real_route=real_route, request_payload=payload
+            )
             if reason is not None:
                 refused.append((act_id, request_id, recovery_kind, reason))
         if refused:

@@ -236,6 +236,69 @@ def test_real_recovery_recomputes_exact_digest_linked_ink_evidence():
     )
 
 
+def test_real_recovery_reaches_the_crop_without_reading_fixture(monkeypatch):
+    """The real recovery route must not touch the fixture-only accessor."""
+    designator = _load_designator()
+    act_id = "real-act"
+    bounds = {"x": 0, "y": 0, "w": 5, "h": 5}
+
+    class _RealContext:
+        run = {"ingress": {"mode": "real"}}
+        recovery_policy = {"config_sha256": "r" * 64}
+        tree = object()
+
+        @property
+        def fixture(self):
+            raise AssertionError("real recovery read fixture")
+
+        def require_sealed_config(self, *_args):
+            return None
+
+        def artifact_ref(self, *_args):
+            return {"relative_path": "request.json", "sha256": "a" * 64}
+
+    context = _RealContext()
+    request = {
+        "artifact_id": "request",
+        "payload": {
+            "act_key": "real-key",
+            "attempt_ordinal": 1,
+            "recovery_kind": "fallback-recrop",
+            "recovery_bounds": bounds,
+            "budget_used": 0,
+        },
+    }
+    page = {"subject_id": "page-1", "payload": {"image_path": "page.png"}}
+    monkeypatch.setattr(
+        designator,
+        "expected_acts",
+        lambda _context: [
+            {
+                "act_id": act_id,
+                "act_key": "real-key",
+                "outcome": "proposed",
+                "page_ordinal": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(designator, "current_recovery_request", lambda *_args, **_kwargs: request)
+    monkeypatch.setattr(designator, "sealed_pages", lambda _records: {1: page})
+    monkeypatch.setattr(designator, "page_records", lambda _context: [])
+    monkeypatch.setattr(designator, "_read_checked_page_bytes", lambda *_args: b"page")
+    monkeypatch.setattr(designator, "dimensions", lambda _bytes: (10, 10))
+    monkeypatch.setattr(designator.geometry, "validate_bounds", lambda *_args: None)
+    monkeypatch.setattr(designator, "_verify_coverage_recovery_evidence", lambda *_args: None)
+    monkeypatch.setattr(designator, "_regions_of", lambda *_args: [])
+    monkeypatch.setattr(designator, "_coverage_on_page", lambda *_args: [])
+    monkeypatch.setattr(designator, "_uncovered_area", lambda *_args: 1)
+    monkeypatch.setattr(designator, "_next_region_ordinal", lambda *_args: 1)
+    cut = []
+    monkeypatch.setattr(designator, "cut_minted_region", lambda *args: cut.append(args))
+
+    designator.recovery_pass(context, act_id, "request")
+    assert cut and cut[0][1:3] == (act_id, "real-key")
+
+
 @pytest.mark.parametrize(
     "tamper", ["ink-count", "observation-bounds", "ink-map-ref", "blank-map", "prior-cover"]
 )

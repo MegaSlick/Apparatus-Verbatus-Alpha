@@ -1793,6 +1793,14 @@ def test_aggregate_geometry_consumes_both_partitions_and_exact_seal_identities(m
     assert finding["residual_act_count"] == 1
     assert finding["page_residual_act_count"] == 1
 
+    honest_acts = RUN.expected_acts(context)
+    for index in (0, 1):
+        forged_acts = [dict(act) for act in honest_acts]
+        forged_acts[index]["act_id"] = "act_wrong_identity"
+        monkeypatch.setattr(RUN, "expected_acts", lambda unused, rows=forged_acts: rows)
+        with pytest.raises(FatalAccounting):
+            RUN.geometry_coverage_inputs(context)
+
 
 @pytest.mark.parametrize(
     "tamper",

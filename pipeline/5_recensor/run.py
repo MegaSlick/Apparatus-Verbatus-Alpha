@@ -4118,20 +4118,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         observation_hold = unresolved_observation_hold(
             outside_ink_requests, act["page_ordinal"], funded_pages, real_route=real_route
         )
-        # Whether a published `fallback-recrop` could actually be answered. On a
-        # real submission it cannot: `pipeline/2_designator/run.py` refuses
-        # `--operation recover` by name because a recovery still reads the
-        # fixture's declared rectangle, the orchestrator turns that exit 2 into a
-        # run abort, and the Armarium then refuses the outstanding request -- so a
-        # request published here is a run with no export by any sequence of stage
-        # invocations (F068/F083). This is not a fact about the reading or its
-        # coverage, and it does not change what the act WANTS: it decides only
-        # whether the want becomes a request or the loud hold below. It is the
-        # same rule this stage already applies to `page-level-reread`, stated in
-        # the comment inside the branch below: "this stage does not request an
-        # operation nothing downstream can honor, because a request the
-        # orchestrator can only refuse turns a graceful hold into a hard failure
-        # for no gain."
+        # A measured recovery request is now dispatchable on either ingress:
+        # real ingress carries exact Testimonium and Ink Map references plus
+        # canonical page-space bounds, all remeasured by the Designator.  The
+        # unsupported operation remains page-level reread, which is not
+        # substituted with a crop.
         recrop_dispatchable = True
         # Names the recovery-*request*'s own position among this act's requests
         # -- `attempt_id(act_id, "recover", ...)`, below -- never the review's
@@ -4174,6 +4165,22 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 declared=declared_recovery(scenario, act_key),
                 outside_ink_requests=outside_ink_requests,
             )
+            if request_origin == COVERAGE_OBSERVATION_ORIGIN:
+                observation = outside_ink_requests[0]
+                required = (
+                    "testimonium_ref",
+                    "testimonium_id",
+                    "observation_ordinal",
+                    "ink_map_ref",
+                )
+                if any(name not in observation for name in required) or not isinstance(
+                    observation.get("ink_map_ref"), dict
+                ):
+                    raise FatalAccounting(
+                        "an ink-confirmed recovery observation has no retained Ink Map and "
+                        "Testimonium references; refusing before publishing a request the "
+                        "Designator cannot independently verify"
+                    )
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
                 # A shape guard, and it cannot fire on the production path
                 # today -- said plainly here rather than left to be discovered,

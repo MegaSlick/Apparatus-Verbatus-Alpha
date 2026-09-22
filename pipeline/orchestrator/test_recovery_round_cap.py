@@ -18,7 +18,10 @@ SEALED_RECOVERY_SHA = "1" * 64
 
 
 def _sealed_run_tree(
-    sealed_recovery_sha: str = SEALED_RECOVERY_SHA, *, ingress: dict | None = None
+    sealed_recovery_sha: str = SEALED_RECOVERY_SHA,
+    *,
+    ingress: dict | None = None,
+    recovery_payload: dict | None = None,
 ):
     """A minimal run tree whose authority names the sealed recovery policy.
 
@@ -33,6 +36,11 @@ def _sealed_run_tree(
             if ingress is not None:
                 run["ingress"] = ingress
             return run
+
+        def read_artifact(self, _stage, _kind, _artifact_id):
+            if recovery_payload is None:
+                raise AssertionError("fixture route must not read a recovery artifact")
+            return {"payload": recovery_payload}
 
     return lambda *_args: _Tree()
 
@@ -167,6 +175,37 @@ def test_a_recovery_checkpoint_waits_for_each_owner_stage_batch(monkeypatch):
     assert checkpoints == ["designator", "perlector", "recensor"]
 
 
+def test_a_measured_real_recovery_dispatches_each_owner_stage(monkeypatch):
+    """A real measured request passes the retained payload into the screen."""
+    orchestrator = _load_orchestrator()
+    calls = []
+    payload = {
+        "origin": "coverage-observation",
+        "recovery_bounds": {"x": 1, "y": 2, "w": 3, "h": 4},
+        "coverage_observation": {"bounds": {"x": 1, "y": 2, "w": 3, "h": 4}},
+        "ink_map_ref": {"relative_path": "ink.json", "sha256": "a" * 64},
+    }
+    outstanding = iter(([("act_1", "request_1", "fallback-recrop")], []))
+    monkeypatch.setattr(
+        orchestrator,
+        "RunTree",
+        _sealed_run_tree(ingress=real_ingress_record(), recovery_payload=payload),
+    )
+    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
+    monkeypatch.setattr(orchestrator, "pending_recoveries", lambda *_args: next(outstanding))
+    monkeypatch.setattr(
+        orchestrator, "invoke", lambda program, _args, **extra: calls.append((program, extra))
+    )
+    monkeypatch.setattr(orchestrator, "checkpoint", lambda *_args: None)
+    args = SimpleNamespace(run_root="unused", run_id="unused", recovery_config="unused")
+    assert orchestrator.drive_recovery(args, hard_failure_policy={}) is None
+    assert [program for program, _extra in calls] == [
+        orchestrator.STAGE_PROGRAMS["designator"],
+        orchestrator.STAGE_PROGRAMS["perlector"],
+        orchestrator.STAGE_PROGRAMS["recensor"],
+    ]
+
+
 def test_a_breached_checkpoint_ends_the_recovery_round_where_it_was_found(monkeypatch):
     """The tally travels back to `main`, and the rest of the round is not run.
 
@@ -206,23 +245,23 @@ def test_a_breached_checkpoint_ends_the_recovery_round_where_it_was_found(monkey
     ]
 
 
-def test_a_real_ingress_recrop_is_refused_by_name_and_recorded_before_anything_is_invoked(
+def test_a_legacy_real_ingress_recrop_is_refused_and_recorded_before_anything_is_invoked(
     monkeypatch, capsys
 ):
     """F068/F083: the cause is named here, not discovered from a stage's exit code.
 
-    The Designator refuses `--operation recover` on a real submission, and
-    dispatching it anyway surfaced to an operator as
-    `ContractError: pipeline/2_designator/run.py exited 2` — a true statement
-    with the reason a stage away. The Recensor no longer publishes such a
-    request, so this is the backstop over a tree written before that gate landed:
-    it refuses before any subprocess starts, and it records every refused act so
-    the run says what it could not answer rather than only that something failed
-    (GOVERNANCE 2).
+    A fixture-era request has no measured bounds or retained Ink Map evidence,
+    so the orchestrator refuses it before invoking any owner stage. The retained
+    request remains visible rather than being silently treated as a modern real
+    recrop.
     """
     orchestrator = _load_orchestrator()
     calls = []
-    monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree(ingress=real_ingress_record()))
+    monkeypatch.setattr(
+        orchestrator,
+        "RunTree",
+        _sealed_run_tree(ingress=real_ingress_record(), recovery_payload={"origin": "legacy"}),
+    )
     monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
     monkeypatch.setattr(
         orchestrator,
@@ -238,7 +277,7 @@ def test_a_real_ingress_recrop_is_refused_by_name_and_recorded_before_anything_i
     monkeypatch.setattr(orchestrator, "checkpoint", lambda *_args: None)
 
     args = SimpleNamespace(run_root="unused", run_id="real-ingress-recovery", recovery_config="x")
-    with pytest.raises(ContractError, match="fallback recrop on a real submission"):
+    with pytest.raises(ContractError, match="legacy fixture-only"):
         orchestrator.drive_recovery(args, hard_failure_policy={})
 
     assert calls == []
@@ -275,6 +314,26 @@ def test_the_dispatch_screen_answers_each_cause_by_its_own_name():
     assert "no dispatch for" in orchestrator.undispatchable_recovery_reason(
         "page-level-reread", real_route=True
     )
+
+
+def test_real_measured_recrop_is_dispatchable_but_legacy_real_request_is_refused():
+    orchestrator = _load_orchestrator()
+    measured = {
+        "origin": "coverage-observation",
+        "recovery_bounds": {"x": 1, "y": 2, "w": 3, "h": 4},
+        "coverage_observation": {"bounds": {"x": 1, "y": 2, "w": 3, "h": 4}},
+        "ink_map_ref": {"relative_path": "ink-map.json", "sha256": "a" * 64},
+    }
+    assert (
+        orchestrator.undispatchable_recovery_reason(
+            "fallback-recrop", real_route=True, request_payload=measured
+        )
+        is None
+    )
+    legacy = orchestrator.undispatchable_recovery_reason(
+        "fallback-recrop", real_route=True, request_payload={"origin": "coverage-observation"}
+    )
+    assert "legacy fixture-only" in legacy
 
 
 if __name__ == "__main__":

@@ -1143,8 +1143,7 @@ def test_a_transport_timeout_fails_one_act_and_continues_to_the_next(
 def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
     """A dispatched request's uncertain outcome keeps its closed call evidence."""
     failure_type = getattr(perlector.serving_errors, "ChairTransportFailure", None)
-    if failure_type is None:
-        pytest.skip("the serving transport-failure contract is integrated separately")
+    assert failure_type is not None, "the serving transport-failure contract is required"
     call_ref = {
         "relative_path": "r/operations/serving/calls/transport.json",
         "sha256": "a" * 64,

@@ -29,13 +29,15 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 from pathlib import Path
 from typing import Any, Final
 
 from common.contracts import uncertainty
-from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
+from common.contracts.canonical import digest_bytes, digest_of, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
+from common.contracts.serving import WIRE_DECIMAL_FIELDS, WIRE_DECIMAL_SCHEMA
 from common.contracts.stages import PERLECTOR
 from common.corpus_register import refuse_capture_preference
 
@@ -881,19 +883,73 @@ def _validate_live_reproof_request(
     content.extend(image_part(ref) for ref in region_refs)
     image_sha256s = [ref["sha256"] for ref in page_refs + region_refs]
     receipt = tree.read_run_receipt(call["receipt_ref"])
+    body = _rebuild_chair_request_bytes(
+        recorded_generation=call["generation_sent"],
+        messages=[{"role": "user", "content": content}],
+        model_id=call["served_model_id"],
+        seed=receipt["seed"],
+    )
+    if call.get("image_sha256s") != image_sha256s or digest_bytes(body) != prompt["request_sha256"]:
+        raise SchemaRefusal("an audit re-proof prompt does not reproduce its retained request")
+
+
+def _decode_recorded_generation(value: Any) -> Any:
+    """Restore the JSON-native generation values retained by ChairClient.
+
+    Call records replace native floats with their exact shortest wire decimal
+    because canonical artifacts reject floats.  Request validation must undo
+    that transcription before rebuilding the HTTP bytes; serializing the tag
+    itself proves a different request and rejects every legitimate float.
+    """
+    if isinstance(value, dict):
+        if set(value) == WIRE_DECIMAL_FIELDS and value.get("schema") == WIRE_DECIMAL_SCHEMA:
+            decimal = value.get("decimal")
+            if not isinstance(decimal, str):
+                raise SchemaRefusal("an audit re-proof call has a malformed wire decimal")
+            try:
+                decoded = float(decimal)
+            except ValueError as error:
+                raise SchemaRefusal(
+                    "an audit re-proof call has a malformed wire decimal"
+                ) from error
+            if not math.isfinite(decoded) or json.dumps(decoded) != decimal:
+                raise SchemaRefusal("an audit re-proof call has a non-canonical wire decimal")
+            return decoded
+        return {key: _decode_recorded_generation(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_recorded_generation(item) for item in value]
+    return value
+
+
+def _rebuild_chair_request_bytes(
+    *, recorded_generation: Any, messages: list[dict[str, Any]], model_id: str, seed: int
+) -> bytes:
+    """Rebuild the exact compact, sorted JSON bytes ChairClient sent."""
+    if not isinstance(recorded_generation, dict):
+        raise SchemaRefusal("an audit re-proof call has no recorded generation object")
+    generation = _decode_recorded_generation(recorded_generation)
+    retained_temperature = generation.pop("temperature", 0)
+    retained_seed = generation.pop("seed", seed)
+    if type(retained_temperature) is not int or retained_temperature != 0:
+        raise SchemaRefusal("an audit re-proof call retained another temperature")
+    if type(retained_seed) is not int or retained_seed != seed:
+        raise SchemaRefusal("an audit re-proof call retained another seed")
+    if set(generation) & {"model", "stream", "n"}:
+        raise SchemaRefusal("an audit re-proof call puts a manager-owned field in generation_sent")
     body = {
-        **call["generation_sent"],
-        "messages": [{"role": "user", "content": content}],
-        "model": call["served_model_id"],
+        **generation,
+        "messages": messages,
+        "model": model_id,
         "stream": False,
         "temperature": 0,
-        "seed": receipt["seed"],
+        "seed": seed,
     }
-    if (
-        call.get("image_sha256s") != image_sha256s
-        or digest_bytes(canonical_bytes(body)) != prompt["request_sha256"]
-    ):
-        raise SchemaRefusal("an audit re-proof prompt does not reproduce its retained request")
+    try:
+        return json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    except (TypeError, ValueError, RecursionError) as error:
+        raise SchemaRefusal("an audit re-proof call cannot reproduce its wire request") from error
 
 
 def audit_request(
