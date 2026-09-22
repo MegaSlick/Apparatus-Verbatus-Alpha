@@ -689,6 +689,8 @@ def case_deadman_source_has_last_resort_and_persistent_delete_contract() -> None
     assert "safe_stdout({'event':'runtime-boot-start'" in source
     assert "safe_stdout({'event':'runtime-refused','reason':reason})" in source
     assert "safe_stdout({'event':'runtime-boot-exception'" in source
+    assert "if len(data)>1024: return" in source
+    assert "os.O_WRONLY|os.O_NONBLOCK|os.O_CLOEXEC" in source
     assert source.index("opener.open(req,timeout=15)") < source.index(
         "best_effort_write(root/f'deadman-attempt-{attempt}.json'"
     )
@@ -718,6 +720,33 @@ def case_deadman_source_has_last_resort_and_persistent_delete_contract() -> None
         assert str(error) == "worker-separation-unverified"
     else:
         raise AssertionError("a broken diagnostic stream suppressed the boot refusal")
+
+    # A full stdout pipe must neither delay cleanup nor make the inherited descriptor
+    # nonblocking for /start.sh. Opening /proc/self/fd/1 creates a separate open-file
+    # description whose O_NONBLOCK flag dies with the diagnostic write.
+    pipe_read, pipe_write = os.pipe()
+    saved_stdout = os.dup(1)
+    elapsed = None
+    try:
+        os.set_blocking(pipe_write, False)
+        while True:
+            try:
+                os.write(pipe_write, b"x" * 4096)
+            except BlockingIOError:
+                break
+        os.set_blocking(pipe_write, True)
+        os.dup2(pipe_write, 1)
+        assert os.get_blocking(1) is True
+        started = time.monotonic()
+        namespace["safe_stdout"]({"event": "runtime-refused", "reason": "worker-separation-unverified"})
+        elapsed = time.monotonic() - started
+        assert os.get_blocking(1) is True
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.close(saved_stdout)
+        os.close(pipe_write)
+        os.close(pipe_read)
+    assert elapsed is not None and elapsed < 0.5
 
     class StopLoop(Exception):
         pass

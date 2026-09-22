@@ -619,8 +619,17 @@ def terminate_forever(reason):
   # a transient provider outage or delayed teardown must not exhaust a retry count.
   time.sleep(30 if result['http'] in (204,404) else 10)
 def safe_stdout(obj):
- try: print(json.dumps(obj,sort_keys=True),flush=True)
+ fd=None
+ try:
+  data=(json.dumps(obj,sort_keys=True,separators=(',',':'))+'\n').encode()
+  if len(data)>1024: return
+  fd=os.open('/proc/self/fd/1',os.O_WRONLY|os.O_NONBLOCK|os.O_CLOEXEC)
+  os.write(fd,data)
  except BaseException: pass
+ finally:
+  if fd is not None:
+   try: os.close(fd)
+   except BaseException: pass
 def fail(reason):
  safe_stdout({'event':'runtime-refused','reason':reason})
  raise RuntimeError(reason)
