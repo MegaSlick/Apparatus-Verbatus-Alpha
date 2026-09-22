@@ -247,7 +247,11 @@ def require_exact_model_id(response: HttpResponse, expected: str) -> tuple[str, 
 
 
 def request_body(
-    payload: Mapping[str, object], *, model_id: str, seed: int, deterministic: bool,
+    payload: Mapping[str, object],
+    *,
+    model_id: str,
+    seed: int,
+    deterministic: bool,
     temperature: int | float | None = None,
 ) -> bytes:
     """Render one request without allowing callers to lie about its target model."""

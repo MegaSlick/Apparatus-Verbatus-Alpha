@@ -85,8 +85,12 @@ def _grouping_config_with_bound(directory: Path, bound: int) -> Path:
     # This file isolates the older cardinality boundary.  Promote every
     # component so its assertions do not accidentally test the separate
     # aggregate-accounting policy.
-    edited = edited.replace("residual_aggregate_max_pixel_count = 500", "residual_aggregate_max_pixel_count = 0")
-    edited = edited.replace("residual_aggregate_max_area_px = 2000", "residual_aggregate_max_area_px = 0")
+    edited = edited.replace(
+        "residual_aggregate_max_pixel_count = 500", "residual_aggregate_max_pixel_count = 0"
+    )
+    edited = edited.replace(
+        "residual_aggregate_max_area_px = 2000", "residual_aggregate_max_area_px = 0"
+    )
     path = directory / "designator_grouping.toml"
     path.write_text(edited, encoding="utf-8")
     return path
@@ -264,9 +268,7 @@ def test_a_page_exactly_at_the_bound_enumerates_every_component(
     assert held is True
 
 
-def test_small_residuals_are_retained_as_accounting_not_fictitious_acts(
-    tmp_path, monkeypatch
-):
+def test_small_residuals_are_retained_as_accounting_not_fictitious_acts(tmp_path, monkeypatch):
     """Every speck remains inspectable without claiming the specks are one act."""
     source = SHIPPED_GROUPING_CONFIG.read_text(encoding="utf-8")
     grouping_config = tmp_path / "designator_grouping.toml"
@@ -307,7 +309,9 @@ def test_component_count_never_suppresses_individual_significant_residuals(
     assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_COMPLETE
     assert payload["residual_component_count"] == measured_scatter
     rows = _seal_rows(context)
-    assert len([row for row in rows if row["act_key"].startswith("residual:1:")]) == measured_scatter
+    assert (
+        len([row for row in rows if row["act_key"].startswith("residual:1:")]) == measured_scatter
+    )
     assert _page_residual_holds(context) == []
     assert held is True
 

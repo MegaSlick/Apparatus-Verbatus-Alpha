@@ -1069,20 +1069,28 @@ def test_a_cut_off_answer_holds_the_page_even_though_it_parsed(live_run, tmp_pat
     assert len(endpoint.requests) == 2
 
 
-def test_an_invalid_structure_answer_gets_one_bounded_coverage_retry(live_run, tmp_path, monkeypatch):
+def test_an_invalid_structure_answer_gets_one_bounded_coverage_retry(
+    live_run, tmp_path, monkeypatch
+):
     root, catalogue = live_run
     endpoint, exit_code = _run_designator(
         root,
         catalogue,
         tmp_path,
         monkeypatch,
-        [_answer(PAGE_ONE_ACTS), scripted_structure_refusal("no-layout-blocks"), _answer(PAGE_TWO_ACTS)],
+        [
+            _answer(PAGE_ONE_ACTS),
+            scripted_structure_refusal("no-layout-blocks"),
+            _answer(PAGE_TWO_ACTS),
+        ],
     )
     assert exit_code == EXIT_COMPLETE
     assert len(endpoint.requests) == 3
     attempts = [
-        row for row in _artifacts(root, DESIGNATOR, "structure-attempt")
-        if row["subject_id"] == _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["subject_id"]
+        row
+        for row in _artifacts(root, DESIGNATOR, "structure-attempt")
+        if row["subject_id"]
+        == _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["subject_id"]
     ]
     assert len(attempts) == 2
     final = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
@@ -1501,7 +1509,9 @@ def test_a_real_submission_under_the_fixture_catalogue_is_refused_by_name(
     assert not (root / RUN_ID / "2_designator").exists()
 
 
-def test_a_real_recovery_requires_the_same_explicit_request_identity(real_template, tmp_path, monkeypatch):
+def test_a_real_recovery_requires_the_same_explicit_request_identity(
+    real_template, tmp_path, monkeypatch
+):
     """Real ingress reaches recovery validation; it is not route-refused."""
     root = tmp_path / "runs"
     shutil.copytree(real_template, root)

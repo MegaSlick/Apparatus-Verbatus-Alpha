@@ -454,8 +454,11 @@ class ChairClient:
         _refuse_generation_that_cannot_be_recorded_as_sent(
             generation_declared, request.generation_declared, "generation_declared"
         )
-        actual_generation_sent = {**request.generation_sent, "temperature": self._record_temperature,
-                                  "seed": handle.profile.seed}
+        actual_generation_sent = {
+            **request.generation_sent,
+            "temperature": self._record_temperature,
+            "seed": handle.profile.seed,
+        }
         body = request_body(
             {**request.generation_sent, "messages": list(request.messages)},
             model_id=handle.profile.served_model_id,

@@ -3604,6 +3604,8 @@ def _verify_aggregated_page_is_held_as_one_item(
         raise FatalAccounting(
             f"page {page_id}'s page-residual hold does not retain the aggregate component count"
         )
+
+
 def _page_residual_holds_by_page(
     holds_by_subject: dict[str, dict[str, Any]], observed: dict[str, dict[str, Any]]
 ) -> dict[str, list[Mapping[str, Any]]]:

@@ -257,7 +257,10 @@ def test_a_nonzero_sealed_temperature_and_seed_are_sent_and_retained(tmp_path: P
     record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
     assert endpoint.requests[0]["temperature"] == 0.2
     assert endpoint.requests[0]["seed"] == 7
-    assert record["generation_sent"]["temperature"] == {"schema": "wire-decimal.v1", "decimal": "0.2"}
+    assert record["generation_sent"]["temperature"] == {
+        "schema": "wire-decimal.v1",
+        "decimal": "0.2",
+    }
     assert record["generation_sent"]["seed"] == 7
 
 

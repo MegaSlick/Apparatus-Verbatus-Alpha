@@ -495,13 +495,19 @@ def _validate_structure_answer_payload(payload: object) -> None:
     )
     _closed_object(record["vendor"], _STRUCTURE_ANSWER_VENDOR_FIELDS, "structure-answer vendor")
     ordinal = record["attempt_ordinal"]
-    if not isinstance(ordinal, int) or isinstance(ordinal, bool) or not 1 <= ordinal <= MAX_STRUCTURE_ATTEMPTS:
+    if (
+        not isinstance(ordinal, int)
+        or isinstance(ordinal, bool)
+        or not 1 <= ordinal <= MAX_STRUCTURE_ATTEMPTS
+    ):
         raise ContractError("a Designator structure attempt ordinal is outside the bounded range")
     attempts = record["attempts"]
     if not isinstance(attempts, list) or len(attempts) > MAX_STRUCTURE_ATTEMPTS:
         raise ContractError("a Designator structure answer has an unbounded attempt history")
     for reference in attempts:
-        _closed_object(reference, _STRUCTURE_ATTEMPT_REFERENCE_FIELDS, "structure attempt reference")
+        _closed_object(
+            reference, _STRUCTURE_ATTEMPT_REFERENCE_FIELDS, "structure attempt reference"
+        )
     acts = record["acts"]
     if not isinstance(acts, list):
         raise ContractError("a Designator structure-answer payload carries no act list")
@@ -3074,7 +3080,9 @@ def _recoverable_structure_outcome(answer: structure_pass.PageAnswer) -> bool:
     }
 
 
-def _publish_structure_attempt(context, page_record: dict, answer: structure_pass.PageAnswer, ordinal: int) -> dict[str, str]:
+def _publish_structure_attempt(
+    context, page_record: dict, answer: structure_pass.PageAnswer, ordinal: int
+) -> dict[str, str]:
     """Persist one received answer before recovery can decide what comes next."""
     answer.record["attempt_ordinal"] = ordinal
     answer.record["attempts"] = []
@@ -3090,21 +3098,33 @@ def _publish_structure_attempt(context, page_record: dict, answer: structure_pas
     return context.input_ref(published.relative_path)
 
 
-def _published_structure_attempts(context, page_id: str) -> list[tuple[structure_pass.PageAnswer, dict[str, str]]]:
+def _published_structure_attempts(
+    context, page_id: str
+) -> list[tuple[structure_pass.PageAnswer, dict[str, str]]]:
     """Read a contiguous immutable attempt history for an interrupted page."""
-    rows = [row for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND) if row["subject_id"] == page_id]
+    rows = [
+        row
+        for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND)
+        if row["subject_id"] == page_id
+    ]
     rows.sort(key=lambda row: row["payload"].get("attempt_ordinal", 0))
     result: list[tuple[structure_pass.PageAnswer, dict[str, str]]] = []
     for ordinal, row in enumerate(rows, start=1):
         payload = row["payload"]
         _validate_structure_answer_payload(payload)
-        if payload["attempt_ordinal"] != ordinal or row["attempt_id"] != attempt_id(page_id, "structure", ordinal):
-            raise ContractError(f"structure attempts for page {page_id} are not a contiguous sealed history")
+        if payload["attempt_ordinal"] != ordinal or row["attempt_id"] != attempt_id(
+            page_id, "structure", ordinal
+        ):
+            raise ContractError(
+                f"structure attempts for page {page_id} are not a contiguous sealed history"
+            )
         result.append(
             (
                 structure_pass.sealed_page_answer(payload),
                 context.input_ref(
-                    context.tree.artifact_path(DESIGNATOR, STRUCTURE_ATTEMPT_KIND, row["artifact_id"])
+                    context.tree.artifact_path(
+                        DESIGNATOR, STRUCTURE_ATTEMPT_KIND, row["artifact_id"]
+                    )
                 ),
             )
         )
@@ -3236,7 +3256,9 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
                     history.append(
                         (
                             answer,
-                            _publish_structure_attempt(context, page_record, answer, len(history) + 1),
+                            _publish_structure_attempt(
+                                context, page_record, answer, len(history) + 1
+                            ),
                         )
                     )
                 answer = history[-1][0]
@@ -3490,13 +3512,19 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             f"recovery fixture declares no act for key {match[0]['act_key']!r}; the fixture "
             "cannot supply recovery geometry for an act it never declared"
         )
-    if not real_input and len(fixture_acts) != 1:  # pragma: no cover - fixture loading already refuses duplicates
+    if (
+        not real_input and len(fixture_acts) != 1
+    ):  # pragma: no cover - fixture loading already refuses duplicates
         raise ContractError(
             f"recovery fixture declares {len(fixture_acts)} acts for key "
             f"{match[0]['act_key']!r}; recovery geometry needs one unambiguous act"
         )
     act = fixture_acts[0] if fixture_acts else None
-    recovery = [] if real_input else [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
+    recovery = (
+        []
+        if real_input
+        else [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
+    )
     if not real_input and len(recovery) != 1:
         raise ContractError(
             f"the fixture declares {len(recovery)} recovery regions for act {act['key']}; "
@@ -3575,13 +3603,25 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
     region_ordinal = _next_region_ordinal(context, act_id)
     if real_input:
         cut_minted_region(
-            context, act_id, match[0]["act_key"], page_record, bounds, region_ordinal,
-            page_ordinal, "recovery",
+            context,
+            act_id,
+            match[0]["act_key"],
+            page_record,
+            bounds,
+            region_ordinal,
+            page_ordinal,
+            "recovery",
             context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"]),
         )
     else:
         cut_region(
-            context, act, page_record, bounds, region_ordinal, page_ordinal, "recovery",
+            context,
+            act,
+            page_record,
+            bounds,
+            region_ordinal,
+            page_ordinal,
+            "recovery",
             context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"]),
         )
 
