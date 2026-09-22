@@ -52,7 +52,6 @@ sealed into a run but read by nobody is a closed window that nothing shuts.
 """
 
 import dataclasses
-import json
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -82,7 +81,6 @@ from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noq
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import act_id as derive_minted_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
-from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMAS  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ATTESTATORES,
     DESIGNATOR,
@@ -110,6 +108,7 @@ from common.stage import (  # noqa: E402
     STRUCTURE_ANSWER_KIND,
     STRUCTURE_ANSWER_RECORD_SCHEMA,
     STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
     StageContext,
     _stage_records,
     continuation_for,
@@ -122,6 +121,7 @@ from common.stage import (  # noqa: E402
     run_stage,
     stage_parser,
     validate_serving_provenance,
+    verify_structure_attempt_call,
 )
 
 # A whole-page structure call may be retried only to recover from a structural
@@ -413,9 +413,10 @@ _STRUCTURE_ANSWER_V1_FIELDS = frozenset(
         "capacity",
     }
 )
-_STRUCTURE_ANSWER_FIELDS = _STRUCTURE_ANSWER_V1_FIELDS | frozenset(
+_STRUCTURE_ANSWER_V2_FIELDS = _STRUCTURE_ANSWER_V1_FIELDS | frozenset(
     {"attempt_ordinal", "attempts", "attempt_seed", "attempt_policy"}
 )
+_STRUCTURE_ANSWER_V3_FIELDS = _STRUCTURE_ANSWER_V2_FIELDS | frozenset({"presentation_ref"})
 # Geometry, and both of the chair's free strings only as a digest and a length.
 # `label` and `text` are absent from this set on purpose: the day either name
 # reappears in the record, this refuses. `label_vocabulary` is not that name
@@ -507,14 +508,25 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
             payload, _STRUCTURE_ANSWER_V1_FIELDS, "legacy structure-answer payload"
         )
     elif schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V2:
-        record = _closed_object(payload, _STRUCTURE_ANSWER_FIELDS, "structure-answer payload")
+        record = _closed_object(
+            payload, _STRUCTURE_ANSWER_V2_FIELDS, "v2 structure-answer payload"
+        )
+    elif schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+        record = _closed_object(
+            payload, _STRUCTURE_ANSWER_V3_FIELDS, "v3 structure-answer payload"
+        )
+        _closed_object(
+            record["presentation_ref"],
+            _STRUCTURE_ATTEMPT_REFERENCE_FIELDS,
+            "structure presentation reference",
+        )
     else:
         raise ContractError(f"a Designator structure answer has unsupported schema {schema!r}")
     _closed_object(
         record["decoding"], _STRUCTURE_ANSWER_DECODING_FIELDS, "structure-answer decoding block"
     )
     _closed_object(record["vendor"], _STRUCTURE_ANSWER_VENDOR_FIELDS, "structure-answer vendor")
-    if schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V2:
+    if schema in {STRUCTURE_ANSWER_RECORD_SCHEMA_V2, STRUCTURE_ANSWER_RECORD_SCHEMA_V3}:
         policy = _closed_object(
             record["attempt_policy"],
             _STRUCTURE_ATTEMPT_POLICY_FIELDS,
@@ -3075,11 +3087,14 @@ def _publish_structure_answer(
 ) -> dict[str, str]:
     """Publish one page's answer the moment it arrives, and return its reference."""
     _validate_structure_answer_payload(answer.record, terminal=True)
+    inputs = [context.input_ref(page_record["payload"]["image_path"])]
+    if answer.record["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+        inputs.append(dict(answer.record["presentation_ref"]))
     published = context.publish(
         kind=STRUCTURE_ANSWER_KIND,
         subject_id=answer.page_id,
         outcome="held" if answer.disposition == structure_pass.DISPOSITION_HELD else "proposed",
-        inputs=[context.input_ref(page_record["payload"]["image_path"])],
+        inputs=inputs,
         payload=answer.record,
     )
     return context.input_ref(published.relative_path)
@@ -3103,54 +3118,18 @@ def _publish_structure_attempt(
     answer.record["attempt_ordinal"] = ordinal
     answer.record["attempts"] = list(prior_references)
     _validate_structure_answer_payload(answer.record, terminal=False)
+    inputs = [context.input_ref(page_record["payload"]["image_path"])]
+    if answer.record["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+        inputs.append(dict(answer.record["presentation_ref"]))
     published = context.publish(
         kind=STRUCTURE_ATTEMPT_KIND,
         subject_id=answer.page_id,
         outcome="held" if answer.disposition == structure_pass.DISPOSITION_HELD else "proposed",
         attempt=attempt_id(answer.page_id, "structure", ordinal),
-        inputs=[context.input_ref(page_record["payload"]["image_path"])],
+        inputs=inputs,
         payload=answer.record,
     )
     return context.input_ref(published.relative_path)
-
-
-def _validate_structure_attempt_call(context, payload: dict, page_id: str) -> None:
-    """Bind an attempt's claimed seed/request to its retained chair-call record."""
-    reference = payload["call_record_ref"]
-    if reference is None:
-        if payload["reason_code"] != structure_pass.HELD_REQUEST_TOO_LARGE:
-            raise ContractError(
-                f"structure attempt for page {page_id} has no call record outside a "
-                "pre-wire capacity refusal"
-            )
-        return
-    _closed_object(reference, _STRUCTURE_ATTEMPT_REFERENCE_FIELDS, "call record reference")
-    try:
-        raw = context.tree.read_bytes(reference["relative_path"])
-    except OSError as error:
-        raise ContractError(
-            f"structure attempt for page {page_id} names an unreadable call record: {error}"
-        ) from error
-    if digest_bytes(raw) != reference["sha256"]:
-        raise ContractError(f"structure attempt for page {page_id} has a changed call record")
-    try:
-        call = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
-        raise ContractError(
-            f"structure attempt for page {page_id} names a malformed call record"
-        ) from error
-    if (
-        not isinstance(call, dict)
-        or call.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
-        or call.get("chair") != DESIGNATOR_CHAIR
-        or call.get("decoding_config_sha256") != payload["decoding"]["decoding_config_sha256"]
-        or call.get("request_sha256") != payload["request_sha256"]
-        or call.get("generation_sent", {}).get("seed") != payload["attempt_seed"]
-        or call.get("receipt_ref") != payload["receipt_ref"]
-    ):
-        raise ContractError(
-            f"structure attempt for page {page_id} disagrees with its retained call record"
-        )
 
 
 def _published_structure_attempts(
@@ -3187,6 +3166,14 @@ def _published_structure_attempts(
                 f"structure attempts for page {page_id} are not a contiguous sealed history"
             )
         if result:
+            if (
+                result[-1][0].record["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+                and payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+            ):
+                raise ContractError(
+                    f"structure attempts for page {page_id} downgrade their native "
+                    "presentation schema"
+                )
             prior_seed = result[-1][0].record["attempt_seed"]
             expected_seed = (
                 prior_seed if attempt_policy["seed_schedule"] == "fixed-base" else prior_seed + 1
@@ -3198,7 +3185,12 @@ def _published_structure_attempts(
         validate_serving_provenance(
             context, payload["provenance"], producer_stage=DESIGNATOR, require_receipt=True
         )
-        _validate_structure_attempt_call(context, payload, page_id)
+        verify_structure_attempt_call(
+            context,
+            payload,
+            page_id,
+            attempt_inputs=row.get("inputs"),
+        )
         result.append(
             (
                 structure_pass.sealed_page_answer(payload),

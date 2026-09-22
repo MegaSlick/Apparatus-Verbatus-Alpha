@@ -51,6 +51,22 @@ CHAIR_CALL_RECORD_FIELDS_V1: Final = frozenset(
 )
 CHAIR_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS_V1 | frozenset({"response_status"})
 
+CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chair-transport-failure.v1"
+CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
+    {"transport_problem"}
+)
+CHAIR_TRANSPORT_PROBLEM_SCHEMA: Final = "chair-transport-problem.v1"
+CHAIR_TRANSPORT_PROBLEM_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "code",
+        "detail",
+        "definitively_absent",
+        "request_delivery",
+        "response_completion",
+    }
+)
+
 # The engine's own stop-reason vocabulary, split by what it means for a
 # reading: `ENGINE_STOP_COMPLETE` is the engine's word for "the model chose to
 # stop"; `ENGINE_STOP_CUT_OFF` is its word for "a length bound ended

@@ -85,33 +85,24 @@ from typing import Any, Final, Mapping
 import feeding
 
 from common import chandra_layout
+from common.chandra_presentation import (
+    PRESENT_COLOUR_MODE as SHARED_PRESENT_COLOUR_MODE,
+    PRESENT_OPERATION as SHARED_PRESENT_OPERATION,
+    presented_transform,
+    render_page,
+)
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
-from common.imaging import convert_png_to_rgb, crop_png, dimensions, resize_png_lanczos
-from common.imaging_ports import scale_to_fit_chandra
+from common.imaging import dimensions
 from common.native_witness import validate_presented
 
 QUANTIZATION_RULE = "chandra.v1.floor-min-ceil-max.sealed-page-pixels"
 FIXTURE_RESPONSE_SCHEMA = "fixture-chandra-response.v1"
 
-#: The vendor preprocessing this adapter records over its own presented pixels.
-#: The name is `common/native_witness.py`'s, where the operation is admitted,
-#: its rounding rule declared (`grid-28`) and its replay from sealed page bytes
-#: implemented; spelled once here so the writer and the vocabulary cannot drift.
-PRESENT_OPERATION: Final = "chandra-scale-to-fit.v1"
-#: The vendor's own conversion to three 8-bit colour samples, performed here and
-#: recorded, because the vendor performs it before its model sees a pixel.
-#: `scale_to_fit` itself converts nothing, but nothing ever reaches it
-#: unconverted: `chandra/input.py::load_image` opens every image file as
-#: `Image.open(filepath).convert("RGB")` and the PDF path renders
-#: `.to_pil().convert("RGB")`, so every image handed to
-#: `chandra/model/vllm.py`'s `scale_to_fit(item.image)` is already RGB. Left to
-#: the engine's own `do_convert_rgb` the conversion would still happen --
-#: server-side, on a grayscale blob, unrecorded -- and the exact image the chair
-#: saw would no longer re-derive from the Exemplar plus the recorded transforms
-#: (ARCHITECTURE invariant 3). `present` runs it, before the resize, where the
-#: vendor runs it; see there for why the order is not a detail.
-PRESENT_COLOUR_MODE: Final = "rgb"
+# Re-export the shared operation, colour mode, and transform builder because
+# `witness_adapters.validate_adapter_presentation` reads them from this adapter.
+PRESENT_OPERATION: Final = SHARED_PRESENT_OPERATION
+PRESENT_COLOUR_MODE: Final = SHARED_PRESENT_COLOUR_MODE
 # One ceiling per fact, declared beside the grammar that also enforces it and
 # re-exported here because the fixture placeholder's own reader below has to
 # apply the same finite intake to bytes crossing the same boundary.
@@ -365,12 +356,10 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     # `crop_png` alone would expose a bare ValueError at this boundary.
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(transform["bounds"])
-    source_width, source_height = bounds["w"], bounds["h"]
-    target_width, target_height = scale_to_fit_chandra(source_width, source_height)
     try:
-        # Before the resize, where `load_image` performs it. See the docstring:
-        # on an alpha-bearing page the other order is measurably other pixels.
-        converted = convert_png_to_rgb(crop_png(page_bytes, bounds))
+        # The shared helper keeps this chair and the Designator's other Chandra
+        # call on the same RGB-before-resize pixels.
+        model_image, target = render_page(page_bytes, bounds)
     except ValueError as error:
         # `load_image`'s own conversion, named at this boundary rather than
         # raised through it. `convert_png_to_rgb` refuses an image mode a sealed
@@ -382,7 +371,6 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
             f"Chandra's presented page cannot be converted to RGB, which the vendor's own "
             f"loader performs on every image before scale_to_fit sees it: {error}"
         ) from error
-    model_image = resize_png_lanczos(converted, target_width, target_height)
     digest, published = context.tree.put_blob(ATTESTATORES, model_image)
     return {
         "kind": "adapter-crop",
@@ -394,41 +382,8 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
             page_id,
             transform["source_page_ordinal"],
             bounds,
-            (target_width, target_height),
+            target,
         ),
-    }
-
-
-def presented_transform(
-    page_id: str,
-    page_ordinal: int,
-    bounds: dict[str, int],
-    target: tuple[int, int],
-) -> dict[str, Any]:
-    """The one transform this adapter writes, so the re-deriver reads it here.
-
-    `witness_adapters.validate_adapter_presentation` has to state what this
-    adapter could have produced without running it. Two hand-written copies of
-    one recipe agree only for as long as both are edited together, which is the
-    failure `_validate_resize_recipe` already names for the vendor's own trim
-    loop; there is nothing to gain by repeating it, so the writer and the
-    re-deriver call this.
-    """
-
-    return {
-        "operation": PRESENT_OPERATION,
-        "source_page_id": page_id,
-        "source_page_ordinal": page_ordinal,
-        "bounds": dict(bounds),
-        "colour_mode": PRESENT_COLOUR_MODE,
-        "resize": {
-            "resampler": "pillow-lanczos",
-            "dimension_rounding": "grid-28",
-            "source_width_px": bounds["w"],
-            "source_height_px": bounds["h"],
-            "target_width_px": target[0],
-            "target_height_px": target[1],
-        },
     }
 
 

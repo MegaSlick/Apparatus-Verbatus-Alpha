@@ -132,3 +132,34 @@ class ChairResponseRefusal(ServingError):
         self.receipt_ref = None if receipt_ref is None else dict(receipt_ref)
         self.served_model_id = served_model_id
         super().__init__(f"{code}: {detail}")
+
+
+class ChairTransportFailure(ServingError):
+    """A dispatched reading request produced no complete HTTP response.
+
+    The client knows the exact request bytes and serving session but cannot
+    infer whether the engine received or completed the request. The durable
+    transport-failure call record carries that uncertainty; this exception
+    carries its typed reference so a stage can publish a terminal attempt
+    without sending the same ordinal again on resume.
+    """
+
+    code = "CHAIR_TRANSPORT_FAILURE"
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        call_record_ref: Mapping[str, str],
+        request_sha256: str,
+        receipt_ref: Mapping[str, str],
+        served_model_id: str,
+    ) -> None:
+        self.detail = detail
+        self.raw_response_ref = None
+        self.call_record_ref = dict(call_record_ref)
+        self.request_sha256 = request_sha256
+        self.receipt_ref = dict(receipt_ref)
+        self.served_model_id = served_model_id
+        self.response_completion = "unknown"
+        super().__init__(f"{self.code}: {detail}")

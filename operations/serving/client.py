@@ -26,6 +26,10 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_PROBLEM_FIELDS,
+    CHAIR_TRANSPORT_PROBLEM_SCHEMA,
     WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
@@ -34,10 +38,17 @@ from .config import FixtureProfile, ServingProfile, ServingRecipes, UnsupportedP
 from .errors import (
     ChairRequestRefusal,
     ChairResponseRefusal,
+    ChairTransportFailure,
     ServingConfigurationError,
     ServingError,
 )
-from .http import HttpResponse, chat_image_bytes_all, parse_openai_reading, request_body
+from .http import (
+    EndpointUnavailable,
+    HttpResponse,
+    chat_image_bytes_all,
+    parse_openai_reading,
+    request_body,
+)
 from .manager import AdapterCalibration, ServiceHandle, ServingManager
 
 # Never on the wire: these are the manager's/decoding policy's to set, not an
@@ -445,10 +456,12 @@ class ChairClient:
         """Issue exactly one reading request. Never retries, never re-samples.
 
         Order matches the contract exactly: request shape and image-digest
-        refusals happen before anything is built or sent; the raw response is
-        retained before its content is parsed; a content/choices problem is
-        recorded, never raised, because a malformed body from a witness or
-        reader is retained evidence (``parse_problem``), not a stage abort.
+        refusals happen before anything is built or sent. Once dispatch is
+        attempted, a transport failure retains the exact request facts and
+        explicit response uncertainty. A received raw response is retained
+        before its content is parsed; a content/choices problem is recorded,
+        never raised, because a malformed body from a witness or reader is
+        retained evidence (``parse_problem``), not a stage abort.
         """
 
         handle = self.handle
@@ -491,9 +504,64 @@ class ChairClient:
             temperature=self._record_temperature,
         )
         request_sha256 = digest_bytes(body)
-        response = handle.request_reading(
-            request.kind, body, handle.profile.request_timeout_seconds
-        )
+        try:
+            response = handle.request_reading(
+                request.kind, body, handle.profile.request_timeout_seconds
+            )
+        except EndpointUnavailable as error:
+            transport_problem = {
+                "schema": CHAIR_TRANSPORT_PROBLEM_SCHEMA,
+                "code": "ENDPOINT_UNAVAILABLE",
+                "detail": str(error),
+                "definitively_absent": error.definitively_absent,
+                "request_delivery": "unknown",
+                "response_completion": "unknown",
+            }
+            if set(transport_problem) != CHAIR_TRANSPORT_PROBLEM_FIELDS:
+                raise AssertionError(  # pragma: no cover - closed by construction
+                    "chair transport problem built the wrong field set"
+                )
+            failure_record = {
+                "schema": CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+                "chair": self._identity.role,
+                "resolved_identity": self._identity.to_record(),
+                "resolved_revision": self._identity.receipt_revision,
+                "serving_recipe": self._identity.serving_recipe,
+                "served_model_id": handle.profile.served_model_id,
+                "receipt_ref": dict(handle.receipt_reference),
+                "launch_audit_ref": dict(handle.audit_reference),
+                "decoding_config_sha256": self._decoding_config_sha256,
+                "kind": request.kind,
+                "request_sha256": request_sha256,
+                "image_sha256s": list(request.image_sha256s),
+                "generation_sent": _recorded_generation(actual_generation_sent),
+                "generation_declared": generation_declared,
+                "raw_response_ref": None,
+                "response_sha256": None,
+                "response_status": None,
+                "response_model": None,
+                "finish_reason": None,
+                "usage": None,
+                "parse_problem": None,
+                "capacity": (
+                    _plain_capacity(request.capacity)
+                    if request.capacity is not None
+                    else None
+                ),
+                "transport_problem": transport_problem,
+            }
+            if set(failure_record) != CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS:
+                raise AssertionError(  # pragma: no cover - closed by construction
+                    f"{CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA} built the wrong field set"
+                )
+            call_record_ref = self._retain(canonical_bytes(failure_record))
+            raise ChairTransportFailure(
+                str(error),
+                call_record_ref=call_record_ref,
+                request_sha256=request_sha256,
+                receipt_ref=handle.receipt_reference,
+                served_model_id=handle.profile.served_model_id,
+            ) from error
         # Retention comes first, and it comes first for the one artefact a
         # rented card exists to produce: when vLLM refuses a request it says
         # *why* in the body of a non-200, and that sentence -- "this model's

@@ -98,12 +98,21 @@ from common import chandra_layout, structure_answer
 from common.chair_wire import chandra_wire_fields
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.chandra_custody import retain_chandra_response
+from common.chandra_presentation import (
+    STRUCTURE_REQUEST_IMAGE_FIELDS,
+    STRUCTURE_REQUEST_IMAGE_KIND,
+    STRUCTURE_REQUEST_IMAGE_SCHEMA,
+    presented_transform,
+    render_page,
+)
 from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.envelope import verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.contracts.stages import DESIGNATOR
 from common.decoding import load_decoding_policy
-from common.imaging import Bounds
+from common.imaging import Bounds, dimensions
+from common.native_witness import validate_presented, validate_presented_page_binding
 from common.request_capacity import (
     dense_page_answer_budget,
     request_fits,
@@ -114,7 +123,7 @@ from common.stage import (
     DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     DESIGNATOR_CHAIR,
     STRUCTURE_ANSWER_PARSED,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
     STRUCTURE_CALL_KIND,
     STRUCTURE_CALL_SCHEMA,
     STRUCTURE_DECODING_POLICY,
@@ -122,7 +131,7 @@ from common.stage import (
 )
 from operations.serving.client import ChairClient, ChairRequest, ChairResponse, serving_mode_for
 from operations.serving.config import ServingConfigInputs, ServingRecipes, load_serving_recipes
-from operations.serving.errors import ChairResponseRefusal, ServingError
+from operations.serving.errors import ChairResponseRefusal, ChairTransportFailure, ServingError
 from operations.serving.http import EndpointUnavailable, UrllibHttpTransport
 from operations.serving.manager import (
     MECHANICS_QUALIFICATION_PURPOSE,
@@ -472,9 +481,9 @@ def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) ->
         tier=tier,
         retain=lambda data: retain_chair_bytes(context, data),
         decoding_config_sha256=decoding_sha256,
-        # The seam's own contract: it records 0 and refuses anything else.
-        # `executable_temperature` has already refused a sealed value the seam
-        # cannot carry, so this is the sealed value, not a substitute for it.
+        # `executable_temperature` has already checked the structure policy;
+        # retain that sealed value exactly rather than substituting a serving
+        # default for it.
         record_temperature=executable_temperature(policy),
         read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
     )
@@ -503,14 +512,83 @@ def structure_prompt_tokens() -> int:
     )
 
 
-def page_capacity(profile: Any, page_w: int, page_h: int) -> dict[str, Any]:
+def prepare_page_request_image(
+    context: Any,
+    page_record: Mapping[str, Any],
+    page_bytes: bytes,
+    page_w: int,
+    page_h: int,
+) -> tuple[bytes, dict[str, Any], dict[str, str]]:
+    """Publish Chandra's native request image while preserving its sealed source."""
+    page_id = page_record["subject_id"]
+    payload = page_record["payload"]
+    page_ordinal = payload["ordinal"]
+    source_ref = {
+        "relative_path": payload["image_path"],
+        "sha256": payload["source_sha256"],
+    }
+    verify_input_bytes(source_ref, page_bytes)
+    if dimensions(page_bytes) != (page_w, page_h):
+        raise ContractError(
+            f"the Designator analysis for page {page_id} does not match its sealed pixel "
+            "dimensions"
+        )
+    bounds = {"x": 0, "y": 0, "w": page_w, "h": page_h}
+    try:
+        model_image, target = render_page(page_bytes, bounds)
+    except ValueError as error:
+        raise SchemaRefusal(
+            "the Designator cannot reproduce Chandra's RGB scale_to_fit request image: "
+            f"{error}"
+        ) from error
+    image_sha256, image_blob = context.tree.put_blob(DESIGNATOR, model_image)
+    presented = {
+        "kind": "adapter-crop",
+        "source_page_id": page_id,
+        "source_page_ordinal": page_ordinal,
+        "image_path": image_blob.relative_path,
+        "image_sha256": image_sha256,
+        "transform": presented_transform(page_id, page_ordinal, bounds, target),
+    }
+    validate_presented(presented, page_size=(page_w, page_h))
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=page_ordinal,
+        page_image_path=payload["image_path"],
+        page_sha256=payload["source_sha256"],
+        page_size=(page_w, page_h),
+        page_bytes=page_bytes,
+    )
+    evidence = {
+        "schema": STRUCTURE_REQUEST_IMAGE_SCHEMA,
+        "page_id": page_id,
+        "page_ordinal": page_ordinal,
+        "source_image_ref": source_ref,
+        "presented": presented,
+    }
+    if set(evidence) != STRUCTURE_REQUEST_IMAGE_FIELDS:
+        raise AssertionError(  # pragma: no cover - closed by construction
+            f"{STRUCTURE_REQUEST_IMAGE_SCHEMA} built the wrong field set"
+        )
+    published = context.publish(
+        kind=STRUCTURE_REQUEST_IMAGE_KIND,
+        subject_id=page_id,
+        outcome="proposed",
+        inputs=[source_ref],
+        payload=evidence,
+    )
+    return model_image, presented, context.input_ref(published.relative_path)
+
+
+def page_capacity(profile: Any, image_w: int, image_h: int) -> dict[str, Any]:
     """Whether one whole-page structure request fits the sealed serving row.
 
-    The page is the only image this request carries, and it goes at its sealed
-    size: this pass never resizes what it shows the chair.  The answer budget
-    is the measured cost of an answer in this chair's own declared response
-    shape over a dense (800-word, six-block) page -- a row that cannot hold that
-    cannot mark out a real register page, whatever it does with a sparse one.
+    Chandra's native RGB/grid-28 presentation is the only image this request
+    carries, so admission is computed over the exact pixels put on the wire.
+    The answer budget is the measured cost of an answer in this chair's own
+    declared response shape over a dense (800-word, six-block) page -- a row
+    that cannot hold that cannot mark out a real register page, whatever it
+    does with a sparse one.
     Both terms moved with the vendor grammar and both were re-measured for it:
     the prompt from 325 to 593 tokens and the dense answer from 1,575 to 1,645
     (`common/request_capacity.py` carries the arithmetic and the harness).
@@ -518,25 +596,24 @@ def page_capacity(profile: Any, page_w: int, page_h: int) -> dict[str, Any]:
 
     return request_fits(
         profile,
-        [(page_w, page_h)],
+        [(image_w, image_h)],
         structure_prompt_tokens(),
         dense_page_answer_budget(DESIGNATOR_CHAIR),
     )
 
 
 def page_request(
-    page_bytes: bytes,
-    source_sha256: str,
+    image_bytes: bytes,
+    image_sha256: str,
     *,
     temperature: int | float,
     structure_recovery_seed: int | None = None,
     capacity: Mapping[str, Any] | None = None,
 ) -> ChairRequest:
-    """One whole-page structure request: the sealed prompt plus the sealed page.
+    """One whole-page structure request with Chandra's native presented PNG.
 
-    The image digest claimed beside the request is the Exemplar's own
-    `source_sha256`, so the client's digest check binds the request to the
-    sealed page rather than to whatever bytes happened to be read.
+    The digest is the retained native presentation's own digest. Its separate
+    transformation artifact binds those bytes back to the unchanged sealed page.
 
     ``capacity`` is the record this request was admitted on; the client copies
     it onto the retained call record so a run's receipts carry the arithmetic.
@@ -567,7 +644,7 @@ def page_request(
             # *texts* (`common/request_capacity.py`), and an image part carries
             # none.
             "content": [
-                {"type": "image_url", "image_url": {"url": _data_uri(page_bytes)}},
+                {"type": "image_url", "image_url": {"url": _data_uri(image_bytes)}},
                 {"type": "text", "text": user["content"]},
             ],
         },
@@ -575,7 +652,7 @@ def page_request(
     return ChairRequest(
         kind=STRUCTURE_CALL_KIND,
         messages=messages,
-        image_sha256s=(source_sha256,),
+        image_sha256s=(image_sha256,),
         # Empty, and no longer because there is nothing to declare: the vendor
         # does declare a generation bound, `chandra/settings.py`'s
         # `MAX_OUTPUT_TOKENS = 12384`, which `sendable_max_tokens` already
@@ -1052,6 +1129,7 @@ def _refused_page_answer(
     attempt_ordinal: int,
     attempt_seed: int,
     attempt_policy: Mapping[str, Any],
+    presentation_ref: Mapping[str, str],
 ) -> "PageAnswer":
     """The record for a page whose request never went on the wire.
 
@@ -1064,7 +1142,7 @@ def _refused_page_answer(
     """
 
     record = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
         "page_id": page_id,
         "page_ordinal": ordinal,
         "page_w": page_w,
@@ -1105,6 +1183,7 @@ def _refused_page_answer(
         "attempts": [],
         "attempt_seed": attempt_seed,
         "attempt_policy": dict(attempt_policy),
+        "presentation_ref": dict(presentation_ref),
     }
     return PageAnswer(
         ordinal=ordinal,
@@ -1116,7 +1195,7 @@ def _refused_page_answer(
     )
 
 
-def _failed_response_page_answer(
+def _failed_call_page_answer(
     *,
     page_id: str,
     ordinal: int,
@@ -1129,11 +1208,12 @@ def _failed_response_page_answer(
     attempt_ordinal: int,
     attempt_seed: int,
     attempt_policy: Mapping[str, Any],
-    refusal: ChairResponseRefusal,
+    presentation_ref: Mapping[str, str],
+    refusal: ChairResponseRefusal | ChairTransportFailure,
 ) -> "PageAnswer":
-    """Retain one paid HTTP/wrong-model response as a terminal held attempt."""
+    """Retain one failed dispatched call as a terminal held attempt."""
     record = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
         "page_id": page_id,
         "page_ordinal": ordinal,
         "page_w": page_w,
@@ -1144,7 +1224,9 @@ def _failed_response_page_answer(
         "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
         "vendor": structure_prompt.vendor_identity(),
         "call_record_ref": dict(refusal.call_record_ref),
-        "raw_response_ref": dict(refusal.raw_response_ref),
+        "raw_response_ref": (
+            None if refusal.raw_response_ref is None else dict(refusal.raw_response_ref)
+        ),
         "custody_ref": None,
         "custody_problem": None,
         "receipt_ref": dict(refusal.receipt_ref),
@@ -1174,6 +1256,7 @@ def _failed_response_page_answer(
         "attempts": [],
         "attempt_seed": attempt_seed,
         "attempt_policy": dict(attempt_policy),
+        "presentation_ref": dict(presentation_ref),
     }
     return PageAnswer(
         ordinal=ordinal,
@@ -1272,36 +1355,39 @@ def ask_page(
 ) -> PageAnswer:
     """Ask the chair about one sealed page and decide what the answer does to it.
 
-    In the order the contract fixes: the request's *capacity* against the
-    sealed serving row is computed first, and a page whose image tokens plus
-    this prompt plus a real answer cannot fit the row's `max_model_len` is held
-    under `HELD_REQUEST_TOO_LARGE` with nothing built and nothing sent -- the
+    In the order the contract fixes: Chandra's native request image is derived
+    and retained, then the request's *capacity* against the sealed serving row
+    is computed from those exact pixels. A page whose image tokens plus this
+    prompt plus a real answer cannot fit the row's `max_model_len` is held
+    under `HELD_REQUEST_TOO_LARGE` with no request body built or sent -- the
     engine's answer to such a request is HTTP 400 and no reading, so it is
     refused here rather than on a card that bills by the hour. Then the request
-    is built and sent through the client (which retains the raw bytes and the call record before parsing);
-    the response is bound under custody to the chair's receipt
+    is built and sent through the client, which retains either the response
+    bytes or explicit response uncertainty together with the call record; a
+    received response is then bound under custody to the chair's receipt
     (`common/chandra_custody.py`'s one-receipt binding, published on the record
     as `custody_ref`); then the answer is
     parsed with the closed contract and dispatched through SPEC_D §1.4's table.
 
-    Two refusals with two different scopes. A serving or transport refusal
-    propagates as this stage's own fatal refusal with nothing published for the
-    page: no answer arrived, so there is nothing to publish. A **custody**
-    refusal is one page's outcome, not the run's: the bytes arrived and were
-    retained, and what could not be established is the binding that proves
-    which call they came from, so the page is held under
-    `HELD_RESPONSE_NOT_RETAINED` with its record published, and every other
-    page keeps its answer.
+    Three refusal scopes remain distinct. A transport failure after dispatch
+    has no response bytes, but the client retains the exact request facts and
+    explicit completion uncertainty; it becomes one terminal held attempt so
+    resume cannot duplicate a possibly completed inference. An HTTP or source
+    refusal likewise carries its retained response and call record into one
+    terminal held attempt. A pre-client serving failure still aborts because no
+    request fact exists to publish. A **custody** refusal is one page's outcome,
+    not the run's: the bytes arrived and were retained, and what could not be
+    established is the binding that proves which call they came from, so the
+    page is held under `HELD_RESPONSE_NOT_RETAINED` with its record published,
+    and every other page keeps its answer.
     """
     page_id = page_record["subject_id"]
     payload = page_record["payload"]
     page_w, page_h = analysis["width"], analysis["height"]
-    # Before anything is built or sent: does this page's request fit the sealed
-    # row at all? A page whose image tokens plus this prompt plus a real answer
-    # exceed `max_model_len` is refused by the engine with HTTP 400 and no
-    # reading, so it is held here instead -- on this laptop, for free, with the
-    # arithmetic published (GOVERNANCE 2: the refusal is visible, and it names
-    # numbers rather than a guess).
+    # Derive and retain the native image first, then decide capacity over the
+    # exact pixels that would go on the wire. A request that exceeds
+    # `max_model_len` is held before its body is built or sent, with the
+    # presentation and arithmetic both available for replay.
     if attempt_policy is None:
         attempt_policy = {"max_attempts": 1, "seed_schedule": "fixed-base"}
     if (
@@ -1317,7 +1403,15 @@ def ask_page(
         attempt_seed = client.handle.profile.seed + attempt_ordinal - 1
     else:
         raise ContractError(f"unsupported structure recovery seed schedule {schedule!r}")
-    capacity = page_capacity(client.handle.profile, page_w, page_h)
+    request_image, presented, presentation_ref = prepare_page_request_image(
+        context, page_record, page_bytes, page_w, page_h
+    )
+    resize = presented["transform"]["resize"]
+    capacity = page_capacity(
+        client.handle.profile,
+        resize["target_width_px"],
+        resize["target_height_px"],
+    )
     if not capacity["fits"]:
         return _refused_page_answer(
             client,
@@ -1332,25 +1426,29 @@ def ask_page(
             attempt_ordinal=attempt_ordinal,
             attempt_seed=attempt_seed,
             attempt_policy=attempt_policy,
+            presentation_ref=presentation_ref,
         )
     request = page_request(
-        page_bytes,
-        payload["source_sha256"],
+        request_image,
+        presented["image_sha256"],
         temperature=temperature,
         capacity=capacity,
         structure_recovery_seed=attempt_seed if attempt_ordinal > 1 else None,
     )
     try:
         response: ChairResponse = client.read(request)
-    except ChairResponseRefusal as error:
+    except (ChairResponseRefusal, ChairTransportFailure) as error:
         if (
-            error.raw_response_ref is not None
-            and error.call_record_ref is not None
+            error.call_record_ref is not None
             and error.request_sha256 is not None
             and error.receipt_ref is not None
             and error.served_model_id is not None
+            and (
+                isinstance(error, ChairTransportFailure)
+                or error.raw_response_ref is not None
+            )
         ):
-            return _failed_response_page_answer(
+            return _failed_call_page_answer(
                 page_id=page_id,
                 ordinal=ordinal,
                 page_w=page_w,
@@ -1362,6 +1460,7 @@ def ask_page(
                 attempt_ordinal=attempt_ordinal,
                 attempt_seed=attempt_seed,
                 attempt_policy=attempt_policy,
+                presentation_ref=presentation_ref,
                 refusal=error,
             )
         raise ContractError(
@@ -1470,7 +1569,7 @@ def ask_page(
             "a block that is in neither list has been lost"
         )
     record = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
         "page_id": page_id,
         "page_ordinal": ordinal,
         "page_w": page_w,
@@ -1541,6 +1640,7 @@ def ask_page(
         "attempts": [],
         "attempt_seed": attempt_seed,
         "attempt_policy": dict(attempt_policy),
+        "presentation_ref": dict(presentation_ref),
     }
     return PageAnswer(
         ordinal=ordinal,

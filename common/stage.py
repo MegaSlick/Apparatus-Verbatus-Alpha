@@ -35,6 +35,11 @@ from common.armarium_formats import (
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails, is_sha256
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
+from common.chandra_presentation import (
+    STRUCTURE_REQUEST_IMAGE_FIELDS,
+    STRUCTURE_REQUEST_IMAGE_KIND,
+    STRUCTURE_REQUEST_IMAGE_SCHEMA,
+)
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, verify_self_hash
 from common.contracts.envelope import build_envelope, verify_input_bytes
@@ -56,7 +61,15 @@ from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
 )
 from common.contracts.serving import (
+    CHAIR_CALL_RECORD_FIELDS,
+    CHAIR_CALL_RECORD_FIELDS_V1,
+    CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_CALL_RECORD_SCHEMA_V1,
     CHAIR_CALL_RECORD_SCHEMAS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_PROBLEM_FIELDS,
+    CHAIR_TRANSPORT_PROBLEM_SCHEMA,
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
 )
@@ -85,6 +98,7 @@ from common.hard_failure import (
     tally_hard_failures,
 )
 from common.imaging import dimensions
+from common.native_witness import validate_presented, validate_presented_page_binding
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
     RECOVERY_KINDS,
@@ -439,8 +453,13 @@ STRUCTURE_DECODING_POLICY: Final = "structure"
 STRUCTURE_ANSWER_KIND: Final = "structure-answer"
 STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
 STRUCTURE_ANSWER_RECORD_SCHEMA_V2: Final = "designator-structure-answer.v2"
+STRUCTURE_ANSWER_RECORD_SCHEMA_V3: Final = "designator-structure-answer.v3"
 STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset(
-    {STRUCTURE_ANSWER_RECORD_SCHEMA, STRUCTURE_ANSWER_RECORD_SCHEMA_V2}
+    {
+        STRUCTURE_ANSWER_RECORD_SCHEMA,
+        STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+        STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+    }
 )
 STRUCTURE_ATTEMPT_KIND: Final = "structure-attempt"
 STRUCTURE_ANSWER_PARSED: Final = "parsed"
@@ -2968,6 +2987,18 @@ def _verify_real_act_denominator(
     holds_by_subject: dict[str, dict[str, Any]] = {}
     minted_rows: dict[str, dict[str, Any]] = {}
     verified_structure_attempt_pages: set[str] = set()
+    for answer in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ANSWER_KIND):
+        page_id = answer.get("subject_id")
+        payload = answer.get("payload")
+        if not isinstance(page_id, str) or not isinstance(payload, Mapping):
+            raise FatalAccounting("a terminal structure answer does not bind a page payload")
+        if payload.get("schema") not in STRUCTURE_ANSWER_RECORD_SCHEMAS:
+            raise FatalAccounting(
+                f"page {page_id}'s terminal structure answer has unsupported schema "
+                f"{payload.get('schema')!r}"
+            )
+        _verify_structure_attempt_chain(context, payload, page_id)
+        verified_structure_attempt_pages.add(page_id)
     observed = {act["act_id"]: act for act in acts}
     for act_id in sorted(observed):
         row = observed[act_id]
@@ -3080,7 +3111,7 @@ def _verify_real_act_denominator(
 def _verify_structure_attempt_chain(
     context: StageContext, payload: Mapping[str, Any], page_id: str
 ) -> None:
-    """Follow and reconcile every v2 terminal structure-attempt reference."""
+    """Follow and reconcile every versioned terminal structure-attempt reference."""
     if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
         return
     policy = payload.get("attempt_policy")
@@ -3143,7 +3174,8 @@ def _verify_structure_attempt_chain(
         if (
             record.get("attempt_id") != attempt_id(page_id, "structure", expected_ordinal)
             or not isinstance(attempt, Mapping)
-            or attempt.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+            or attempt.get("schema")
+            not in {STRUCTURE_ANSWER_RECORD_SCHEMA_V2, STRUCTURE_ANSWER_RECORD_SCHEMA_V3}
             or attempt.get("page_id") != page_id
             or attempt.get("page_ordinal") != payload.get("page_ordinal")
             or attempt.get("attempt_ordinal") != expected_ordinal
@@ -3158,6 +3190,14 @@ def _verify_structure_attempt_chain(
                 "identity, page, policy, config, and prior history"
             )
         if attempts:
+            if (
+                attempts[-1].get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+                and attempt.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+            ):
+                raise FatalAccounting(
+                    f"page {page_id}'s structure attempt {expected_ordinal} downgrades its "
+                    "native presentation schema"
+                )
             expected_seed = (
                 attempts[-1]["attempt_seed"]
                 if policy["seed_schedule"] == "fixed-base"
@@ -3180,6 +3220,18 @@ def _verify_structure_attempt_chain(
                 f"page {page_id}'s structure attempt {expected_ordinal} has invalid "
                 f"serving provenance: {error}"
             ) from error
+        try:
+            verify_structure_attempt_call(
+                context,
+                attempt,
+                page_id,
+                attempt_inputs=record.get("inputs"),
+            )
+        except (SchemaRefusal, ContractError) as error:
+            raise FatalAccounting(
+                f"page {page_id}'s structure attempt {expected_ordinal} has invalid "
+                f"call evidence: {error}"
+            ) from error
         attempts.append(attempt)
     expected_terminal = dict(attempts[-1])
     expected_terminal["attempts"] = references
@@ -3187,6 +3239,324 @@ def _verify_structure_attempt_chain(
         raise FatalAccounting(
             f"page {page_id}'s terminal structure answer disagrees with its last attempt"
         )
+
+
+def _verify_structure_request_image(
+    context: StageContext,
+    payload: Mapping[str, Any],
+    page_id: str,
+    attempt_inputs: object,
+) -> dict[str, Any]:
+    """Replay one v3 Chandra request image from its unchanged sealed page."""
+    reference = payload.get("presentation_ref")
+    try:
+        record = context.tree.read_artifact_reference(
+            dict(reference),
+            stage=DESIGNATOR,
+            kind=STRUCTURE_REQUEST_IMAGE_KIND,
+            subject_id=page_id,
+        )
+    except (TypeError, ValueError, SchemaRefusal, ContractError, OSError) as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names an invalid request-image reference: "
+            f"{error}"
+        ) from error
+    evidence = record.get("payload")
+    if (
+        not isinstance(evidence, Mapping)
+        or set(evidence) != STRUCTURE_REQUEST_IMAGE_FIELDS
+        or evidence.get("schema") != STRUCTURE_REQUEST_IMAGE_SCHEMA
+        or evidence.get("page_id") != page_id
+        or evidence.get("page_ordinal") != payload.get("page_ordinal")
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} has malformed request-image evidence"
+        )
+    source_ref, page_bytes, page_size = _structure_source_page(context, payload, page_id)
+    if (
+        evidence.get("source_image_ref") != source_ref
+        or record.get("inputs") != [source_ref]
+        or attempt_inputs != [source_ref, reference]
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} does not retain its exact source and "
+            "request-image lineage"
+        )
+    presented = evidence.get("presented")
+    try:
+        presented = validate_presented(presented, page_size=page_size)
+        validate_presented_page_binding(
+            presented,
+            page_ordinal=payload["page_ordinal"],
+            page_image_path=source_ref["relative_path"],
+            page_sha256=source_ref["sha256"],
+            page_size=page_size,
+            page_bytes=page_bytes,
+        )
+    except SchemaRefusal as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} has invalid native image presentation: "
+            f"{error}"
+        ) from error
+    if presented["image_path"] != context.tree.blob_path(
+        DESIGNATOR, presented["image_sha256"]
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} does not retain its native request image "
+            "at its Designator content address"
+        )
+    try:
+        presented_bytes = context.tree.read_bytes(presented["image_path"])
+    except OSError as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} cannot read its presented image: {error}"
+        ) from error
+    if digest_bytes(presented_bytes) != presented["image_sha256"]:
+        raise ContractError(
+            f"structure attempt for page {page_id} presented-image bytes changed under their "
+            "retained digest"
+        )
+    resize = presented["transform"]["resize"]
+    capacity = payload.get("capacity")
+    images = capacity.get("images") if isinstance(capacity, Mapping) else None
+    if (
+        not isinstance(images, list)
+        or len(images) != 1
+        or not isinstance(images[0], Mapping)
+        or images[0].get("width") != resize["target_width_px"]
+        or images[0].get("height") != resize["target_height_px"]
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} capacity was not computed over the native "
+            "request image"
+        )
+    return presented
+
+
+def _structure_source_page(
+    context: StageContext,
+    payload: Mapping[str, Any],
+    page_id: str,
+) -> tuple[dict[str, str], bytes, tuple[int, int]]:
+    """Read and bind the unchanged Exemplar page behind one structure attempt."""
+    page = context.tree.read_artifact(
+        EXEMPLAR,
+        "page",
+        artifact_id(EXEMPLAR, "page", page_id),
+    )
+    page_payload = page.get("payload")
+    if not isinstance(page_payload, Mapping):
+        raise ContractError(f"structure attempt for page {page_id} has no sealed source page")
+    source_ref = {
+        "relative_path": page_payload.get("image_path"),
+        "sha256": page_payload.get("source_sha256"),
+    }
+    try:
+        page_bytes = context.tree.read_bytes(source_ref["relative_path"])
+    except (OSError, TypeError) as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} cannot read its sealed source page: {error}"
+        ) from error
+    verify_input_bytes(source_ref, page_bytes)
+    page_size = dimensions(page_bytes)
+    if page_size != (payload.get("page_w"), payload.get("page_h")):
+        raise ContractError(
+            f"structure attempt for page {page_id} maps geometry against dimensions other "
+            "than its sealed source page"
+        )
+    return source_ref, page_bytes, page_size
+
+
+def verify_structure_attempt_call(
+    context: StageContext,
+    payload: Mapping[str, Any],
+    page_id: str,
+    *,
+    attempt_inputs: object = None,
+) -> None:
+    """Bind one structure attempt to its retained response or transport call."""
+    presented = None
+    expected_image_sha256 = None
+    if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+        presented = _verify_structure_request_image(
+            context,
+            payload,
+            page_id,
+            attempt_inputs,
+        )
+        expected_image_sha256 = presented["image_sha256"]
+    elif payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA_V2:
+        source_ref, _page_bytes, page_size = _structure_source_page(context, payload, page_id)
+        if attempt_inputs != [source_ref]:
+            raise ContractError(
+                f"legacy v2 structure attempt for page {page_id} does not retain its exact "
+                "sealed-page input"
+            )
+        capacity = payload.get("capacity")
+        images = capacity.get("images") if isinstance(capacity, Mapping) else None
+        if (
+            not isinstance(images, list)
+            or len(images) != 1
+            or not isinstance(images[0], Mapping)
+            or images[0].get("width") != page_size[0]
+            or images[0].get("height") != page_size[1]
+        ):
+            raise ContractError(
+                f"legacy v2 structure attempt for page {page_id} capacity was not computed "
+                "over its directly presented sealed page"
+            )
+        expected_image_sha256 = source_ref["sha256"]
+    else:
+        raise ContractError(
+            f"structure attempt for page {page_id} has no supported versioned schema"
+        )
+    reference = payload.get("call_record_ref")
+    if reference is None:
+        if (
+            payload.get("reason_code") != "structure-request-too-large"
+            or payload.get("request_sha256") is not None
+            or payload.get("raw_response_ref") is not None
+            or payload.get("call_problem") is not None
+        ):
+            raise ContractError(
+                f"structure attempt for page {page_id} has no call record outside a "
+                "closed pre-wire capacity refusal"
+            )
+        return
+    call_reference = _serving_evidence_reference(reference, "structure attempt call record")
+    try:
+        raw = context.tree.read_bytes(call_reference["relative_path"])
+    except OSError as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names an unreadable call record: {error}"
+        ) from error
+    verify_input_bytes(call_reference, raw)
+    try:
+        call = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names a malformed call record"
+        ) from error
+    if not isinstance(call, Mapping):
+        raise ContractError(
+            f"structure attempt for page {page_id} call record is not an object"
+        )
+    schema = call.get("schema")
+    expected_fields = {
+        CHAIR_CALL_RECORD_SCHEMA_V1: CHAIR_CALL_RECORD_FIELDS_V1,
+        CHAIR_CALL_RECORD_SCHEMA: CHAIR_CALL_RECORD_FIELDS,
+        CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
+    }.get(schema)
+    if expected_fields is None or set(call) != expected_fields:
+        raise ContractError(
+            f"structure attempt for page {page_id} call record has an unsupported or open schema"
+        )
+    decoding = payload.get("decoding")
+    provenance = payload.get("provenance")
+    generation_sent = call.get("generation_sent")
+    call_identity = call.get("resolved_identity")
+    provenance_revision = (
+        provenance.get("resolved_revision") if isinstance(provenance, Mapping) else None
+    )
+    if (
+        call.get("chair") != DESIGNATOR_CHAIR
+        or call.get("kind") != "chat-completions"
+        or not isinstance(decoding, Mapping)
+        or decoding.get("policy") != "structure"
+        or not isinstance(provenance, Mapping)
+        or call.get("decoding_config_sha256") != decoding.get("decoding_config_sha256")
+        or call.get("request_sha256") != payload.get("request_sha256")
+        or not isinstance(generation_sent, Mapping)
+        or generation_sent.get("seed") != payload.get("attempt_seed")
+        or call.get("receipt_ref") != payload.get("receipt_ref")
+        or call.get("receipt_ref") != provenance.get("receipt_ref")
+        or call_identity != provenance.get("resolved_identity")
+        or not isinstance(call_identity, Mapping)
+        or call.get("serving_recipe") != call_identity.get("serving_recipe")
+        or not isinstance(provenance_revision, Mapping)
+        or call.get("resolved_revision") != provenance_revision.get("value")
+        or call.get("served_model_id") != payload.get("served_model_id")
+        or call.get("capacity") != payload.get("capacity")
+        or call.get("image_sha256s") != [expected_image_sha256]
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} disagrees with its retained call record"
+        )
+    if schema == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA:
+        problem = call.get("transport_problem")
+        response_fields = (
+            "raw_response_ref",
+            "response_sha256",
+            "response_status",
+            "response_model",
+            "finish_reason",
+            "usage",
+            "parse_problem",
+        )
+        if (
+            not isinstance(problem, Mapping)
+            or set(problem) != CHAIR_TRANSPORT_PROBLEM_FIELDS
+            or problem.get("schema") != CHAIR_TRANSPORT_PROBLEM_SCHEMA
+            or problem.get("code") != "ENDPOINT_UNAVAILABLE"
+            or not isinstance(problem.get("detail"), str)
+            or not isinstance(problem.get("definitively_absent"), bool)
+            or problem.get("request_delivery") != "unknown"
+            or problem.get("response_completion") != "unknown"
+            or any(call.get(field) is not None for field in response_fields)
+            or payload.get("raw_response_ref") is not None
+            or payload.get("custody_ref") is not None
+            or payload.get("custody_problem") is not None
+            or payload.get("finish_reason") is not None
+            or payload.get("call_problem") != "CHAIR_TRANSPORT_FAILURE"
+            or payload.get("reason_code") != "structure-call-unusable"
+        ):
+            raise ContractError(
+                f"structure attempt for page {page_id} has inconsistent "
+                "transport-failure evidence"
+            )
+        return
+    raw_reference = _serving_evidence_reference(
+        call.get("raw_response_ref"), "structure attempt raw response"
+    )
+    custody_problem = payload.get("custody_problem")
+    if custody_problem is None:
+        payload_response_matches = payload.get("raw_response_ref") == raw_reference
+    else:
+        payload_response_matches = (
+            isinstance(custody_problem, str)
+            and bool(custody_problem)
+            and payload.get("raw_response_ref") is None
+            and payload.get("custody_ref") is None
+            and payload.get("reason_code") == "structure-response-not-retained"
+        )
+    if (
+        not payload_response_matches
+        or call.get("response_sha256") != raw_reference["sha256"]
+        or call.get("finish_reason") != payload.get("finish_reason")
+        or call.get("parse_problem") != payload.get("call_problem")
+        or (
+            call.get("parse_problem") is not None
+            and payload.get("reason_code") != "structure-call-unusable"
+        )
+        or (
+            schema == CHAIR_CALL_RECORD_SCHEMA
+            and (
+                not isinstance(call.get("response_status"), int)
+                or isinstance(call.get("response_status"), bool)
+                or not 100 <= call["response_status"] <= 599
+            )
+        )
+    ):
+        raise ContractError(
+            f"structure attempt for page {page_id} disagrees with its retained response evidence"
+        )
+    try:
+        response_bytes = context.tree.read_bytes(raw_reference["relative_path"])
+    except OSError as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names an unreadable raw response: {error}"
+        ) from error
+    verify_input_bytes(raw_reference, response_bytes)
 
 
 def _verify_proposal_act_row(

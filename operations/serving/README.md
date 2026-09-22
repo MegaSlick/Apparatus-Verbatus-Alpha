@@ -605,6 +605,15 @@ comparison (`payload.get("model") != expected_model_id`) cannot distinguish
 the recorded `parse_problem` never asserts a foreign-source observation that
 was never made (GOVERNANCE 10).
 
+If that POST raises before a complete HTTP response is available, the client
+retains `chair-transport-failure.v1` instead. It carries the same exact request,
+identity, receipt, decoding, generation, and capacity facts as a call record;
+all response-derived fields are explicitly null, and its closed transport
+problem records request delivery and response completion as `unknown`. No raw
+response or partial-token claim is invented. The typed
+`ChairTransportFailure` names that record so a stage can retain one terminal
+attempt rather than repeat a request whose engine-side completion is unknown.
+
 **The capacity record travels with the request, and the client neither
 computes nor checks it.** `ChairRequest.capacity` is the caller's own
 `common.request_capacity` record: whether this request's images, prompt and

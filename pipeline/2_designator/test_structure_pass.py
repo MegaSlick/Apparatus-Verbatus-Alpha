@@ -18,6 +18,7 @@ one would. Every other chair keeps its fixture row.
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import subprocess
@@ -32,14 +33,23 @@ from _test_support import load_designator
 import common.stage as stage_contract
 from common import chandra_layout, structure_answer
 from common.chairs.registry import ChairRegistry
+from common.chandra_presentation import (
+    STRUCTURE_REQUEST_IMAGE_KIND,
+    STRUCTURE_REQUEST_IMAGE_SCHEMA,
+)
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_bindings
 from common.contracts.identities import verify as verify_identity
-from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
+from common.contracts.serving import (
+    CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+)
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
 from common.decoding import load_decoding_policy
 from common.fixture_identity import page_identity
+from common.imaging import dimensions
+from common.imaging_ports import scale_to_fit_chandra
 from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 from common.runtree.store import RECEIPTS_DIR, RunTree
 from common.stage import (
@@ -48,6 +58,7 @@ from common.stage import (
     STRUCTURE_ANSWER_KIND,
     STRUCTURE_ANSWER_RECORD_SCHEMA,
     STRUCTURE_ANSWER_RECORD_SCHEMA_V2,
+    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
     expected_acts,
     load_fixture,
     open_stage_context,
@@ -73,6 +84,7 @@ from operations.serving.fakes import (
     structure_blank_page_body,
     structure_layout_block,
 )
+from operations.serving.http import request_body
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import FileResidencyLease
 from operations.submit import gate, submit
@@ -535,8 +547,8 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
 
     assert exit_code == EXIT_COMPLETE
     # One whole-page call per sealed page: one `user` turn and no system turn
-    # (v2, matching Chandra's own inference code), the sealed page bytes as the
-    # one image, no generation knobs of the stage's own.
+    # (v2, matching Chandra's own inference code), the native RGB/grid-28 image
+    # as the one image, and no generation knobs of the stage's own.
     assert len(endpoint.requests) == 2
     for request in endpoint.requests:
         messages = request["messages"]
@@ -558,12 +570,16 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert request["chat_template_kwargs"] == {"enable_thinking": False}
         assert request["temperature"] == 1
     tree = RunTree(root, RUN_ID)
+    request_images = _by_page_ordinal(
+        _artifacts(root, DESIGNATOR, STRUCTURE_REQUEST_IMAGE_KIND)
+    )
+    assert set(request_images) == {1, 2}
 
     answers = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
     assert set(answers) == {1, 2}
     for ordinal, expected in ((1, PAGE_ONE_ACTS), (2, PAGE_TWO_ACTS)):
         payload = answers[ordinal]["payload"]
-        assert payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+        assert payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
         assert payload["parse_state"] == "parsed"
         assert payload["parse_outcome"] is None
         assert payload["disposition"] == "detected"
@@ -586,6 +602,31 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert payload["text_view"] == "chandra-layout-text.v1"
         assert payload["vendor"]["repository"] == "github.com/datalab-to/chandra"
         assert payload["vendor"]["commit"] == "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
+        presentation = tree.read_artifact_reference(
+            payload["presentation_ref"],
+            stage=DESIGNATOR,
+            kind=STRUCTURE_REQUEST_IMAGE_KIND,
+            subject_id=payload["page_id"],
+        )
+        evidence = presentation["payload"]
+        assert evidence["schema"] == STRUCTURE_REQUEST_IMAGE_SCHEMA
+        assert evidence["source_image_ref"]["sha256"] != evidence["presented"]["image_sha256"]
+        assert evidence["presented"]["transform"]["bounds"] == {
+            "x": 0,
+            "y": 0,
+            "w": 200,
+            "h": 260,
+        }
+        resize = evidence["presented"]["transform"]["resize"]
+        assert (resize["target_width_px"], resize["target_height_px"]) == (196, 252)
+        assert payload["capacity"]["images"][0]["width"] == 196
+        assert payload["capacity"]["images"][0]["height"] == 252
+        request_url = endpoint.requests[ordinal - 1]["messages"][0]["content"][0][
+            "image_url"
+        ]["url"]
+        request_bytes = base64.b64decode(request_url.partition(",")[2])
+        assert dimensions(request_bytes) == (196, 252)
+        assert digest_bytes(request_bytes) == evidence["presented"]["image_sha256"]
         # These fixtures declare no `data-label`, so the vendor parser's own
         # `block` default is what the vocabulary field carries, `label_declared`
         # is false, and the digest and length stay null -- "the chair offered no
@@ -606,6 +647,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert (
             call_record["decoding_config_sha256"] == payload["decoding"]["decoding_config_sha256"]
         )
+        assert call_record["image_sha256s"] == [evidence["presented"]["image_sha256"]]
         # Response-as-arrival: the retained blob is the exact wire body.
         assert (
             json.loads(tree.read_bytes(payload["raw_response_ref"]["relative_path"]))["model"]
@@ -1254,11 +1296,149 @@ def test_legacy_structure_answer_v1_resumes_without_attempt_fields(tmp_path, mon
     resumed = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
     assert resumed[1]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA
     assert "attempts" not in resumed[1]["payload"]
-    assert resumed[2]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+    assert resumed[2]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
     assert resumed[2]["payload"]["attempt_policy"] == {
         "max_attempts": 1,
         "seed_schedule": "fixed-base",
     }
+
+
+def test_structure_answer_v2_resume_keeps_its_direct_page_presentation(
+    live_run, tmp_path, monkeypatch
+):
+    """A sealed v2 attempt remains readable without acquiring v3 evidence fields."""
+    root, catalogue = live_run
+    original = designator._publish_structure_answer
+
+    def interrupt_after_first_page(context, page_record, answer):
+        reference = original(context, page_record, answer)
+        if answer.ordinal == 1:
+            raise RuntimeError("convert completed page to v2 fixture")
+        return reference
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(designator, "_publish_structure_answer", interrupt_after_first_page)
+        with pytest.raises(RuntimeError, match="v2 fixture"):
+            _run_designator(
+                root,
+                catalogue,
+                tmp_path,
+                patcher,
+                [_answer(PAGE_ONE_ACTS)],
+            )
+
+    tree = RunTree(root, RUN_ID)
+    answer_row = _by_page_ordinal(
+        _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+    )[1]
+    attempt_row = next(
+        row
+        for row in _artifacts(root, DESIGNATOR, "structure-attempt")
+        if row["subject_id"] == answer_row["subject_id"]
+    )
+    attempt_path = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "structure-attempt", attempt_row["artifact_id"])
+    )
+    attempt_envelope = json.loads(attempt_path.read_text(encoding="utf-8"))
+    presentation_path = attempt_envelope["payload"]["presentation_ref"]["relative_path"]
+    call_record = json.loads(
+        tree.read_bytes(attempt_envelope["payload"]["call_record_ref"]["relative_path"])
+    )
+    source_ref = attempt_envelope["inputs"][0]
+    source_bytes = tree.read_bytes(source_ref["relative_path"])
+    source_width, source_height = dimensions(source_bytes)
+    current_capacity = attempt_envelope["payload"]["capacity"]
+    legacy_capacity = structure_pass.page_capacity(
+        SimpleNamespace(
+            **{
+                key: current_capacity[key]
+                for key in (
+                    "recipe",
+                    "chair",
+                    "tier",
+                    "max_model_len",
+                    "min_pixels",
+                    "max_pixels",
+                    "patch_size",
+                    "merge_size",
+                )
+            }
+        ),
+        source_width,
+        source_height,
+    )
+    legacy_request = structure_pass.page_request(
+        source_bytes,
+        source_ref["sha256"],
+        temperature=attempt_envelope["payload"]["decoding"]["temperature"],
+        capacity=legacy_capacity,
+    )
+    temperature = attempt_envelope["payload"]["decoding"]["temperature"]
+    request_sha256 = digest_bytes(
+        request_body(
+            {
+                **legacy_request.generation_sent,
+                "messages": list(legacy_request.messages),
+            },
+            model_id=call_record["served_model_id"],
+            seed=call_record["generation_sent"]["seed"],
+            deterministic=temperature == 0,
+            temperature=temperature,
+        )
+    )
+    call_record["image_sha256s"] = [source_ref["sha256"]]
+    call_record["request_sha256"] = request_sha256
+    call_record["capacity"] = legacy_capacity
+    call_digest, call_blob = tree.put_blob(DESIGNATOR, canonical_bytes(call_record))
+    legacy_call_ref = {"relative_path": call_blob.relative_path, "sha256": call_digest}
+    attempt_envelope["payload"]["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+    attempt_envelope["payload"].pop("presentation_ref")
+    attempt_envelope["payload"]["call_record_ref"] = legacy_call_ref
+    attempt_envelope["payload"]["request_sha256"] = request_sha256
+    attempt_envelope["payload"]["capacity"] = legacy_capacity
+    attempt_envelope["inputs"] = attempt_envelope["inputs"][:1]
+    attempt_envelope["self_hash"] = self_hash(attempt_envelope)
+    attempt_bytes = canonical_bytes(attempt_envelope)
+    attempt_path.write_bytes(attempt_bytes)
+    attempt_ref = {
+        "relative_path": tree.artifact_path(
+            DESIGNATOR, "structure-attempt", attempt_row["artifact_id"]
+        ),
+        "sha256": digest_bytes(attempt_bytes),
+    }
+
+    answer_path = tree.resolve(
+        tree.artifact_path(
+            DESIGNATOR,
+            STRUCTURE_ANSWER_KIND,
+            answer_row["artifact_id"],
+        )
+    )
+    answer_envelope = json.loads(answer_path.read_text(encoding="utf-8"))
+    answer_envelope["payload"]["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+    answer_envelope["payload"].pop("presentation_ref")
+    answer_envelope["payload"]["call_record_ref"] = legacy_call_ref
+    answer_envelope["payload"]["request_sha256"] = request_sha256
+    answer_envelope["payload"]["capacity"] = legacy_capacity
+    answer_envelope["payload"]["attempts"] = [attempt_ref]
+    answer_envelope["inputs"] = answer_envelope["inputs"][:1]
+    answer_envelope["self_hash"] = self_hash(answer_envelope)
+    answer_path.write_bytes(canonical_bytes(answer_envelope))
+    tree.resolve(presentation_path).unlink()
+
+    endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [_answer(PAGE_TWO_ACTS)],
+    )
+    assert exit_code == EXIT_COMPLETE
+    assert len(endpoint.requests) == 1
+    resumed = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
+    assert resumed[1]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V2
+    assert "presentation_ref" not in resumed[1]["payload"]
+    assert resumed[2]["payload"]["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
 
 
 @pytest.mark.parametrize("damage", ["missing", "forged", "out-of-order", "extra"])
@@ -1266,6 +1446,11 @@ def test_structure_attempt_consumer_refuses_missing_forged_or_out_of_order_histo
     damage, monkeypatch
 ):
     monkeypatch.setattr(stage_contract, "validate_serving_provenance", lambda *_args, **_kw: None)
+    monkeypatch.setattr(
+        stage_contract,
+        "verify_structure_attempt_call",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         stage_contract,
         "load_decoding_policy",
@@ -1361,6 +1546,142 @@ def test_structure_attempt_consumer_refuses_missing_forged_or_out_of_order_histo
             terminal,
             page_id,
         )
+
+
+@pytest.mark.parametrize("case", ["prior-retry", "held", "fallback"])
+def test_shared_attempt_call_verifier_refuses_a_digest_valid_call_from_another_attempt(
+    live_run, tmp_path, monkeypatch, case
+):
+    root, catalogue = live_run
+    if case == "prior-retry":
+        answers = [
+            _answer(PAGE_ONE_ACTS),
+            scripted_structure_refusal("no-layout-blocks"),
+            _answer(PAGE_TWO_ACTS),
+        ]
+    elif case == "held":
+        answers = [
+            _answer(PAGE_ONE_ACTS),
+            scripted_prompt_too_long(
+                max_model_len=2048,
+                requested_tokens=3619,
+                prompt_tokens=2044,
+                completion_tokens=1575,
+            ),
+        ]
+    else:
+        answers = [_blank_page_answer(), _answer(PAGE_TWO_ACTS)]
+    _endpoint, _exit_code = _run_designator(
+        root, catalogue, tmp_path, monkeypatch, answers
+    )
+    attempts = _artifacts(root, DESIGNATOR, "structure-attempt")
+    if case == "prior-retry":
+        same_page = sorted(
+            (row for row in attempts if row["payload"]["page_ordinal"] == 2),
+            key=lambda row: row["payload"]["attempt_ordinal"],
+        )
+        target, foreign = same_page
+    elif case == "held":
+        target = next(row for row in attempts if row["payload"]["page_ordinal"] == 2)
+        foreign = next(row for row in attempts if row["payload"]["page_ordinal"] == 1)
+    else:
+        target = next(row for row in attempts if row["payload"]["page_ordinal"] == 1)
+        foreign = next(row for row in attempts if row["payload"]["page_ordinal"] == 2)
+    forged = {**target["payload"], "call_record_ref": foreign["payload"]["call_record_ref"]}
+    context = _open(root, catalogue, ATTESTATORES, "--placement-tier", TIER)
+    with pytest.raises(ContractError, match="retained call record|response evidence"):
+        stage_contract.verify_structure_attempt_call(
+            context,
+            forged,
+            target["subject_id"],
+            attempt_inputs=target["inputs"],
+        )
+
+
+def test_v3_attempt_refuses_a_call_that_names_the_original_instead_of_presented_image(
+    live_run, tmp_path, monkeypatch
+):
+    root, catalogue = live_run
+    _endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        _happy_answers(),
+    )
+    assert exit_code == EXIT_COMPLETE
+    target = _by_page_ordinal(_artifacts(root, DESIGNATOR, "structure-attempt"))[1]
+    tree = RunTree(root, RUN_ID)
+    call = json.loads(
+        tree.read_bytes(target["payload"]["call_record_ref"]["relative_path"])
+    )
+    source_ref = target["inputs"][0]
+    assert call["image_sha256s"] != [source_ref["sha256"]]
+    call["image_sha256s"] = [source_ref["sha256"]]
+    digest, blob = tree.put_blob(DESIGNATOR, canonical_bytes(call))
+    forged = {
+        **target["payload"],
+        "call_record_ref": {"relative_path": blob.relative_path, "sha256": digest},
+    }
+    context = _open(root, catalogue, ATTESTATORES, "--placement-tier", TIER)
+    with pytest.raises(ContractError, match="disagrees with its retained call record"):
+        stage_contract.verify_structure_attempt_call(
+            context,
+            forged,
+            target["subject_id"],
+            attempt_inputs=target["inputs"],
+        )
+
+
+@pytest.mark.parametrize("case", ["prior-retry", "held", "fallback"])
+def test_downstream_consumer_verifies_every_attempt_including_nonproposal_pages(
+    live_run, tmp_path, monkeypatch, case
+):
+    root, catalogue = live_run
+    if case == "prior-retry":
+        answers = [
+            _answer(PAGE_ONE_ACTS),
+            scripted_structure_refusal("no-layout-blocks"),
+            _answer(PAGE_TWO_ACTS),
+        ]
+        target_ordinal = 2
+        expected_verifications = 2
+    elif case == "held":
+        answers = [
+            _answer(PAGE_ONE_ACTS),
+            scripted_prompt_too_long(
+                max_model_len=2048,
+                requested_tokens=3619,
+                prompt_tokens=2044,
+                completion_tokens=1575,
+            ),
+        ]
+        target_ordinal = 2
+        expected_verifications = 1
+    else:
+        answers = [_blank_page_answer(), _answer(PAGE_TWO_ACTS)]
+        target_ordinal = 1
+        expected_verifications = 1
+    _endpoint, _exit_code = _run_designator(
+        root, catalogue, tmp_path, monkeypatch, answers
+    )
+    target_page = _by_page_ordinal(
+        _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+    )[target_ordinal]["subject_id"]
+    verified: list[str] = []
+    original = stage_contract.verify_structure_attempt_call
+
+    def record_verification(context, payload, page_id, **kwargs):
+        verified.append(page_id)
+        return original(context, payload, page_id, **kwargs)
+
+    monkeypatch.setattr(
+        stage_contract,
+        "verify_structure_attempt_call",
+        record_verification,
+    )
+    expected_acts(_open(root, catalogue, ATTESTATORES, "--placement-tier", TIER))
+    assert verified.count(target_page) == expected_verifications
 
 
 @pytest.mark.parametrize("outcome", ["no-layout-blocks", "blocks-not-at-top-level"])
@@ -1799,6 +2120,62 @@ def test_a_wrong_model_response_is_one_terminal_attempt_with_observed_model_reta
     assert call_record["parse_problem"] == "CHAIR_RESPONSE_MODEL_MISMATCH"
 
 
+def test_a_transport_timeout_is_retained_once_and_resume_never_resends_it(
+    live_run, tmp_path, monkeypatch
+):
+    root, catalogue = live_run
+    original = designator._publish_structure_answer
+
+    def interrupt_before_timeout_terminal(context, page_record, answer):
+        if answer.ordinal == 2:
+            raise RuntimeError("interrupted after timeout attempt")
+        return original(context, page_record, answer)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            designator,
+            "_publish_structure_answer",
+            interrupt_before_timeout_terminal,
+        )
+        with pytest.raises(RuntimeError, match="timeout attempt"):
+            _run_designator(
+                root,
+                catalogue,
+                tmp_path,
+                patcher,
+                [
+                    _answer(PAGE_ONE_ACTS),
+                    ScriptedAnswer(transport_failure="whole-call deadline exceeded"),
+                ],
+            )
+    attempts_before = _artifacts(root, DESIGNATOR, "structure-attempt")
+    timeout_attempts = [
+        row for row in attempts_before if row["payload"]["page_ordinal"] == 2
+    ]
+    assert len(timeout_attempts) == 1
+    attempt = timeout_attempts[0]["payload"]
+    assert attempt["reason_code"] == structure_pass.HELD_CALL_UNUSABLE
+    assert attempt["call_problem"] == "CHAIR_TRANSPORT_FAILURE"
+    assert attempt["raw_response_ref"] is None
+    tree = RunTree(root, RUN_ID)
+    call = json.loads(tree.read_bytes(attempt["call_record_ref"]["relative_path"]))
+    assert call["schema"] == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA
+    assert call["request_sha256"] == attempt["request_sha256"]
+    assert call["generation_sent"]["seed"] == attempt["attempt_seed"] == 0
+    assert call["transport_problem"]["response_completion"] == "unknown"
+
+    resumed, exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, [])
+    assert exit_code == EXIT_HELD
+    assert resumed.requests == []
+    assert _artifacts(root, DESIGNATOR, "structure-attempt") == attempts_before
+    terminal = _by_page_ordinal(
+        _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
+    )[2]["payload"]
+    assert terminal["call_record_ref"] == attempt["call_record_ref"]
+    assert terminal["attempt_ordinal"] == len(terminal["attempts"]) == 1
+    expected_acts(_open(root, catalogue, ATTESTATORES, "--placement-tier", TIER))
+
+
 # --- the refusals before any chair starts ---------------------------------------------
 
 
@@ -2015,11 +2392,37 @@ class _RefusingClient:
         raise AssertionError("a request that does not fit the sealed row must never be sent")
 
 
-def _ask(client, width: int, height: int):
+def _ask(client, width: int, height: int, monkeypatch):
+    target_width, target_height = scale_to_fit_chandra(width, height)
+    presented = {
+        "image_sha256": "b" * 64,
+        "transform": {
+            "resize": {
+                "target_width_px": target_width,
+                "target_height_px": target_height,
+            }
+        },
+    }
+    monkeypatch.setattr(
+        structure_pass,
+        "prepare_page_request_image",
+        lambda *_args: (
+            b"native Chandra request image",
+            presented,
+            {"relative_path": "2_designator/artifacts/request-image.json", "sha256": "d" * 64},
+        ),
+    )
     return structure_pass.ask_page(
         SimpleNamespace(tree=None),
         client,
-        {"subject_id": "page-1", "payload": {"source_sha256": "a" * 64}},
+        {
+            "subject_id": "page-1",
+            "payload": {
+                "ordinal": 1,
+                "image_path": "0_door/blobs/source.png",
+                "source_sha256": "a" * 64,
+            },
+        },
         1,
         b"",
         {"width": width, "height": height},
@@ -2029,7 +2432,7 @@ def _ask(client, width: int, height: int):
     )
 
 
-def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent():
+def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent(monkeypatch):
     """The failure this check exists to move off a billing card.
 
     An A4 300-dpi page is 2,480x3,508. Against the shipped 24 GB row it costs
@@ -2038,16 +2441,22 @@ def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent()
     2,048. Before this check the request went out and vLLM answered HTTP 400
     with a body the client discarded; now the page is held by name, its record
     is published with the whole arithmetic on it, and `_RefusingClient.read`
-    proves nothing was sent. The page is never downscaled to fit.
+    proves nothing was sent. Native presentation is never altered again merely
+    to make the request fit.
     """
 
-    answer = _ask(_RefusingClient(_capacity_row()), 2480, 3508)
+    answer = _ask(_RefusingClient(_capacity_row()), 2480, 3508, monkeypatch)
 
     assert answer.disposition == structure_pass.DISPOSITION_HELD
     assert answer.reason_code == structure_pass.HELD_REQUEST_TOO_LARGE
     assert answer.reason_code in structure_pass.STRUCTURE_HELD_CODES
     assert answer.mint == ()
     capacity = answer.record["capacity"]
+    target_width, target_height = scale_to_fit_chandra(2480, 3508)
+    (image_capacity,) = capacity["images"]
+    assert image_capacity["width"] == target_width
+    assert image_capacity["height"] == target_height
+    assert image_capacity["image_prompt_tokens"] == capacity["image_prompt_tokens"]
     assert capacity["image_prompt_tokens"] == 1715
     assert capacity["prompt_tokens"] == 593
     assert capacity["answer_budget"] == 1645
@@ -2061,12 +2470,12 @@ def test_a_page_that_cannot_fit_the_sealed_row_is_held_before_anything_is_sent()
     designator._validate_structure_answer_payload(answer.record, terminal=False)
 
 
-def test_the_same_page_is_admitted_once_the_row_states_a_larger_context():
+def test_the_same_page_is_admitted_once_the_row_states_a_larger_context(monkeypatch):
     """The counterfactual: only the row changed, and the request goes."""
 
     client = _RefusingClient(_capacity_row(max_model_len=8192))
     with pytest.raises(AssertionError, match="must never be sent"):
-        _ask(client, 2480, 3508)
+        _ask(client, 2480, 3508, monkeypatch)
 
 
 def test_the_structure_prompts_measured_token_count_still_matches_the_prompt_that_is_sent():

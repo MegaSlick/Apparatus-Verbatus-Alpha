@@ -11,6 +11,10 @@ from common.contracts.serving import (
     CHAIR_CALL_RECORD_SCHEMA,
     CHAIR_CALL_RECORD_SCHEMA_V1,
     CHAIR_CALL_RECORD_SCHEMAS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_PROBLEM_FIELDS,
+    CHAIR_TRANSPORT_PROBLEM_SCHEMA,
     ENGINE_STOP_COMPLETE,
     ENGINE_STOP_CUT_OFF,
     SERVING_CONFIG_INPUTS_FIELDS,
@@ -68,6 +72,19 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
         }
     )
     assert CHAIR_CALL_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS_V1 | {"response_status"}
+    assert CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA == "chair-transport-failure.v1"
+    assert CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS | {
+        "transport_problem"
+    }
+    assert CHAIR_TRANSPORT_PROBLEM_SCHEMA == "chair-transport-problem.v1"
+    assert CHAIR_TRANSPORT_PROBLEM_FIELDS == {
+        "schema",
+        "code",
+        "detail",
+        "definitively_absent",
+        "request_delivery",
+        "response_completion",
+    }
 
 
 def test_the_two_engine_stop_vocabularies_are_frozensets_with_exact_members() -> None:

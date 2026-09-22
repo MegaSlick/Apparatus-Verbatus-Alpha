@@ -17,7 +17,12 @@ import pytest
 from common.chairs.models import ChairIdentity, ServingDetails
 from common.chairs.receipts import build_receipt, receipt_record
 from common.contracts.canonical import canonical_bytes, digest_bytes
-from common.contracts.serving import CHAIR_CALL_RECORD_FIELDS, CHAIR_CALL_RECORD_SCHEMA
+from common.contracts.serving import (
+    CHAIR_CALL_RECORD_FIELDS,
+    CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+)
 
 from .client import (
     _FORBIDDEN_GENERATION_SENT_KEYS,
@@ -37,6 +42,7 @@ from .config import (
 from .errors import (
     ChairRequestRefusal,
     ChairResponseRefusal,
+    ChairTransportFailure,
     ServiceStopError,
     ServingConfigurationError,
 )
@@ -536,6 +542,48 @@ def test_a_long_refused_body_is_retained_whole_and_previewed_short(tmp_path: Pat
     assert len(blob_store.written) == 2
     assert len(excinfo.value.detail) < 1000
     assert f"first 512 of {len(body)} bytes" in excinfo.value.detail
+
+
+def test_transport_timeout_retains_the_known_request_and_explicit_response_uncertainty(
+    tmp_path: Path,
+) -> None:
+    client, endpoint, blob_store, _ = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(transport_failure="whole-call deadline exceeded"))
+        with pytest.raises(ChairTransportFailure) as excinfo:
+            client.read(_request())
+    assert len(endpoint.requests) == 1
+    assert len(blob_store.written) == 1
+    record = json.loads(blob_store.written[0])
+    assert record["schema"] == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA
+    assert set(record) == CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS
+    assert record["request_sha256"] == excinfo.value.request_sha256
+    assert record["image_sha256s"] == []
+    assert record["generation_sent"] == {"seed": 7, "temperature": 0}
+    assert record["generation_declared"] == {}
+    assert record["capacity"] is None
+    assert record["receipt_ref"] == excinfo.value.receipt_ref
+    for field in (
+        "raw_response_ref",
+        "response_sha256",
+        "response_status",
+        "response_model",
+        "finish_reason",
+        "usage",
+        "parse_problem",
+    ):
+        assert record[field] is None
+    assert record["transport_problem"] == {
+        "schema": "chair-transport-problem.v1",
+        "code": "ENDPOINT_UNAVAILABLE",
+        "detail": "whole-call deadline exceeded",
+        "definitively_absent": False,
+        "request_delivery": "unknown",
+        "response_completion": "unknown",
+    }
+    assert excinfo.value.raw_response_ref is None
+    assert excinfo.value.response_completion == "unknown"
+    assert excinfo.value.call_record_ref["sha256"] == digest_bytes(blob_store.written[0])
 
 
 # --- raw bytes retained before parsing; malformed body never raises -----------
