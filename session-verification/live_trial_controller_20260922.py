@@ -587,7 +587,7 @@ os.umask(0o077)
 # Establish the minimum close capability before any mount, user, service, or receipt work.
 api_key=os.environ.pop('VERBATUS_RUNPOD_API_KEY',None); pod_id=os.environ.get('RUNPOD_POD_ID')
 session=os.environ.get('VERBATUS_SESSION_ID','unbound'); challenge=os.environ.get('VERBATUS_CONTROLLER_CHALLENGE')
-root=Path('/workspace/private/session-evidence')/session; runtime_parent=Path('/run/verbatus-live'); runtime=runtime_parent/session
+private_parent=Path('/run/verbatus-live-private'); root=private_parent/session; runtime_parent=Path('/run/verbatus-live'); runtime=runtime_parent/session
 def write(path,obj,mode=0o600):
  data=(json.dumps(obj,sort_keys=True,separators=(',',':'))+'\n').encode(); path.parent.mkdir(parents=True,exist_ok=True); tmp=path.with_name('.'+path.name+'.'+str(os.getpid())+'.tmp')
  fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL,mode)
@@ -641,7 +641,8 @@ def demote(uid,gid):
 def boot():
  safe_stdout({'event':'runtime-boot-start','pid':os.getpid(),'uid':os.geteuid()})
  deadline=float(os.environ['VERBATUS_HARD_DEADLINE_EPOCH']); cleanup=float(os.environ['VERBATUS_CLEANUP_EPOCH'])
- root.mkdir(parents=True,exist_ok=True); os.chown(root,0,0); os.chmod(root,0o700)
+ private_parent.mkdir(exist_ok=True); os.chown(private_parent,0,0); os.chmod(private_parent,0o700)
+ root.mkdir(exist_ok=True); os.chown(root,0,0); os.chmod(root,0o700)
  runtime_parent.mkdir(exist_ok=True); os.chown(runtime_parent,0,0); os.chmod(runtime_parent,0o711)
  runtime.mkdir(exist_ok=True); os.chown(runtime,0,0); os.chmod(runtime,0o711)
  if os.geteuid()!=0: fail('deadman-not-root')

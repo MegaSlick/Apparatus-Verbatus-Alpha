@@ -2,14 +2,15 @@
 """Run the embedded deadman boot path in its exact pinned image, without network.
 
 This is a GitHub-runner diagnostic.  It changes only the terminal DELETE loop: a boot
-refusal is written to the bind-mounted evidence directory and exits instead of making a
-provider call.  The production helper is neither changed nor invoked as a controller.
+refusal is written to the container-private evidence directory and exits instead of making
+a provider call.  The production helper is neither changed nor invoked as a controller.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
@@ -160,12 +161,129 @@ def receipt_matches_mode(summary: dict[str, object], *, expect_pid1: bool) -> bo
         and ((pid == 1) if expect_pid1 else (pid != 1))
         and summary.get("uid") == 0
         and summary.get("deadman_proc_identity_verified") is True
+        and summary.get("receipt_copied_while_running") is True
+        and summary.get("worker_gate_refused_before_ack") is True
+        and summary.get("acknowledgement_observed_while_running") is True
+        and summary.get("worker_launcher_smoke_verified") is True
+        and summary.get("final_evidence_copied_while_running") is True
         and isinstance(probe, dict)
         and probe.get("deadman_pid") == pid
         and all(probe.get(key) is True for key in required_probe)
         and summary.get("provider_key_removed_before_start") is True
         and summary.get("runtime_verified") is True
     )
+
+
+def exercise_worker_handoff(
+    *,
+    container_name: str,
+    container_evidence_root: str,
+    evidence_root: Path,
+    session: str,
+) -> tuple[bool, bool, bool]:
+    worker_probe_source = r'''import json,os
+cap_eff_zero=False; no_new_privs=False
+for line in open('/proc/self/status'):
+ if line.startswith('CapEff:'): cap_eff_zero=int(line.split()[1],16)==0
+ if line.startswith('NoNewPrivs:'): no_new_privs=line.split()[1]=='1'
+print(json.dumps({'uid':os.geteuid(),'cap_eff_zero':cap_eff_zero,'no_new_privs':no_new_privs},sort_keys=True))'''
+    worker_command = [
+        "docker",
+        "exec",
+        container_name,
+        "/usr/bin/env",
+        "-i",
+        f"VERBATUS_SESSION_ID={session}",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "/usr/sbin/runuser",
+        "-u",
+        "verbatus-worker",
+        "--",
+        "/usr/local/bin/verbatus-worker-exec",
+        "/usr/bin/python3",
+        "-c",
+        worker_probe_source,
+    ]
+    refused = run(worker_command, check=False, capture=True)
+    gate_refused = bool(
+        refused.returncode != 0 and "worker gate refused" in refused.stderr
+    )
+
+    receipt_path = evidence_root / "runtime-receipt.json"
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = json.loads(receipt_bytes)
+    ack = {
+        "schema": "verbatus-controller-ack.v1",
+        "session_id": receipt["session_id"],
+        "pod_id": receipt["pod_id"],
+        "controller_challenge": receipt["controller_challenge"],
+        "hard_deadline_epoch": receipt["hard_deadline_epoch"],
+        "runtime_receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+    }
+    ack_bytes = (json.dumps(ack, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    ack_upload_path = evidence_root.parent / ".controller-ack.json"
+    descriptor = os.open(
+        ack_upload_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+    )
+    try:
+        os.write(descriptor, ack_bytes)
+    finally:
+        os.close(descriptor)
+    try:
+        run(
+            [
+                "docker",
+                "cp",
+                str(ack_upload_path),
+                f"{container_name}:{container_evidence_root}/controller-ack.json",
+            ]
+        )
+    finally:
+        ack_upload_path.unlink()
+
+    acknowledgement_observed = False
+    ack_end = time.monotonic() + 20
+    while time.monotonic() < ack_end:
+        acknowledged = run(
+            [
+                "docker",
+                "exec",
+                container_name,
+                "test",
+                "-f",
+                f"{container_evidence_root}/controller-acknowledged.json",
+            ],
+            check=False,
+            capture=True,
+        )
+        if acknowledged.returncode == 0:
+            acknowledgement_observed = True
+            break
+        state = run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+            check=False,
+            capture=True,
+        )
+        if state.stdout.strip() != "true":
+            break
+        time.sleep(1)
+
+    launcher_verified = False
+    if acknowledgement_observed:
+        worker = run(worker_command, check=False, capture=True)
+        try:
+            worker_result = json.loads(worker.stdout)
+        except json.JSONDecodeError:
+            worker_result = None
+        launcher_verified = bool(
+            worker.returncode == 0
+            and isinstance(worker_result, dict)
+            and worker_result.get("uid") == receipt.get("worker_uid")
+            and worker_result.get("uid") != 0
+            and worker_result.get("cap_eff_zero") is True
+            and worker_result.get("no_new_privs") is True
+        )
+    return gate_refused, acknowledgement_observed, launcher_verified
 
 
 def run_mode(
@@ -180,8 +298,8 @@ def run_mode(
     mode_workspace.mkdir(mode=0o700)
     session = f"{SESSION}-{mode}"
     now = dt.datetime.now(dt.timezone.utc)
-    deadline = now + dt.timedelta(seconds=55)
-    cleanup = now + dt.timedelta(seconds=45)
+    deadline = now + dt.timedelta(seconds=90)
+    cleanup = now + dt.timedelta(seconds=75)
     container_name = "verbatus-deadman-drill-" + uuid.uuid4().hex[:12]
     command = ["docker", "run", "--detach", "--name", container_name]
     if use_init:
@@ -214,14 +332,50 @@ def run_mode(
         ]
     )
 
-    evidence_root = mode_workspace / "session-evidence" / session
+    container_evidence_root = f"/run/verbatus-live-private/{session}"
+    evidence_root = (
+        workspace.with_name(workspace.name + "-private-evidence") / mode / session
+    )
+    evidence_root.mkdir(parents=True, mode=0o700)
+    receipt_observed_while_running = False
+    running_before_copy = False
+    running_after_copy = False
+    worker_gate_refused_before_ack = False
+    acknowledgement_observed_while_running = False
+    worker_launcher_smoke_verified = False
+    final_evidence_copied_while_running = False
     try:
         run(command)
         end = time.monotonic() + 60
         while time.monotonic() < end:
-            if (evidence_root / "runtime-receipt.json").is_file() or (
-                evidence_root / "boot-drill-result.json"
-            ).is_file():
+            receipt_ready = run(
+                [
+                    "docker",
+                    "exec",
+                    container_name,
+                    "test",
+                    "-f",
+                    f"{container_evidence_root}/runtime-receipt.json",
+                ],
+                check=False,
+                capture=True,
+            )
+            result_ready = run(
+                [
+                    "docker",
+                    "exec",
+                    container_name,
+                    "test",
+                    "-f",
+                    f"{container_evidence_root}/boot-drill-result.json",
+                ],
+                check=False,
+                capture=True,
+            )
+            if receipt_ready.returncode == 0:
+                receipt_observed_while_running = True
+                break
+            if result_ready.returncode == 0:
                 break
             state = run(
                 ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
@@ -231,7 +385,69 @@ def run_mode(
             if state.stdout.strip() == "false":
                 break
             time.sleep(1)
+        if receipt_observed_while_running:
+            state = run(
+                ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+                check=False,
+                capture=True,
+            )
+            running_before_copy = state.stdout.strip() == "true"
+        run(
+            [
+                "docker",
+                "cp",
+                f"{container_name}:{container_evidence_root}/.",
+                str(evidence_root),
+            ]
+        )
+        if receipt_observed_while_running:
+            state = run(
+                ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+                check=False,
+                capture=True,
+            )
+            running_after_copy = state.stdout.strip() == "true"
         summary = safe_summary(evidence_root, container_name)
+        receipt_ready_for_handoff = bool(
+            summary.get("outcome") == "runtime-receipt-created"
+            and receipt_observed_while_running
+            and running_before_copy
+            and running_after_copy
+        )
+        if receipt_ready_for_handoff:
+            (
+                worker_gate_refused_before_ack,
+                acknowledgement_observed_while_running,
+                worker_launcher_smoke_verified,
+            ) = exercise_worker_handoff(
+                container_name=container_name,
+                container_evidence_root=container_evidence_root,
+                evidence_root=evidence_root,
+                session=session,
+            )
+            state = run(
+                ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+                check=False,
+                capture=True,
+            )
+            final_running_before_copy = state.stdout.strip() == "true"
+            run(
+                [
+                    "docker",
+                    "cp",
+                    f"{container_name}:{container_evidence_root}/.",
+                    str(evidence_root),
+                ]
+            )
+            state = run(
+                ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+                check=False,
+                capture=True,
+            )
+            final_evidence_copied_while_running = bool(
+                final_running_before_copy and state.stdout.strip() == "true"
+            )
+            summary = safe_summary(evidence_root, container_name)
     except Exception as error:
         summary = {
             "schema": "verbatus-deadman-boot-drill-summary.v1",
@@ -249,6 +465,17 @@ def run_mode(
             safe_logs = safe_logs.replace(private_value, "[redacted]")
         run(["docker", "rm", "--force", container_name], check=False)
     summary["mode"] = mode
+    summary["receipt_copied_while_running"] = bool(
+        receipt_observed_while_running and running_before_copy and running_after_copy
+    )
+    summary["worker_gate_refused_before_ack"] = worker_gate_refused_before_ack
+    summary["acknowledgement_observed_while_running"] = (
+        acknowledgement_observed_while_running
+    )
+    summary["worker_launcher_smoke_verified"] = worker_launcher_smoke_verified
+    summary["final_evidence_copied_while_running"] = (
+        final_evidence_copied_while_running
+    )
     summary["supervisor_layout_verified"] = receipt_matches_mode(
         summary, expect_pid1=not use_init
     )
@@ -270,6 +497,12 @@ def main() -> int:
     workspace = arguments.workspace.resolve()
     if workspace.exists():
         shutil.rmtree(workspace)
+    private_evidence_workspace = workspace.with_name(
+        workspace.name + "-private-evidence"
+    )
+    if private_evidence_workspace.exists():
+        shutil.rmtree(private_evidence_workspace)
+    private_evidence_workspace.mkdir(mode=0o700)
     workspace.mkdir(parents=True, mode=0o700)
     arguments.summary.parent.mkdir(parents=True, exist_ok=True)
     source_path = workspace.parent / "deadman-drill-source.py"

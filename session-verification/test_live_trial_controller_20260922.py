@@ -830,6 +830,9 @@ def case_runtime_marker_permissions_allow_exact_traversal_but_deny_private_tree(
     tmp_path: Path,
 ) -> None:
     source = controller.POD_DEADMAN_SOURCE
+    assert "private_parent=Path('/run/verbatus-live-private')" in source
+    assert "Path('/workspace/private/session-evidence')" not in source
+    assert "os.chown(private_parent,0,0); os.chmod(private_parent,0o700)" in source
     assert "runtime_parent=Path('/run/verbatus-live')" in source
     assert "os.chown(runtime_parent,0,0); os.chmod(runtime_parent,0o711)" in source
     assert "os.chown(runtime,0,0); os.chmod(runtime,0o711)" in source
