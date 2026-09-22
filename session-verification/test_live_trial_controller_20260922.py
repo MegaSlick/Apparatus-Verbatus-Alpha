@@ -599,7 +599,7 @@ def case_unknown_create_with_no_exact_name_match_never_reads_as_absent(tmp_path:
     assert all(call[0] != "DELETE" for call in transport.calls)
 
 
-def case_runtime_ack_binds_pid1_deadline_worker_probe_and_receipt_digest(
+def case_runtime_ack_binds_supervisor_pid_deadline_worker_probe_and_receipt_digest(
     test: unittest.TestCase, tmp_path: Path
 ) -> None:
     session_dir, identity, auth = make_session(tmp_path)
@@ -614,13 +614,16 @@ def case_runtime_ack_binds_pid1_deadline_worker_probe_and_receipt_digest(
         "controller_challenge": identity["controller_challenge"],
         "hard_deadline_epoch": bound_deadlines["hard_deadline_epoch"],
         "cleanup_epoch": bound_deadlines["cleanup_epoch"],
-        "pid": 1,
+        "pid": 438,
         "uid": 0,
+        "deadman_proc_identity_verified": True,
         "runtime_verified": True,
         "provider_key_removed_before_start": True,
         "worker_probe": {
             "provider_env_absent": True,
             "proc1_environ_denied": True,
+            "deadman_pid": 438,
+            "deadman_environ_denied": True,
             "root_receipt_denied": True,
             "sudo_unavailable": True,
             "cap_eff_zero": True,
@@ -666,10 +669,44 @@ def case_runtime_ack_binds_pid1_deadline_worker_probe_and_receipt_digest(
     assert repeated["runtime_ack_consumed_by_pod"] is True
     assert repeated["phase"] == "runtime-verified-for-inference"
 
-    receipt["worker_probe"]["proc1_environ_denied"] = False
-    receipt_path.write_bytes(controller.canonical_bytes(receipt))
-    with test.assertRaisesRegex(controller.Refusal, "worker separation"):
-        controller.record_runtime_ack(session_dir, receipt_path, tmp_path / "bad-ack.json")
+    for label, mutate, reason in (
+        ("zero-pid", lambda value: value.update(pid=0), "positive root supervisor pid"),
+        ("bool-pid", lambda value: value.update(pid=True), "positive root supervisor pid"),
+        ("negative-pid", lambda value: value.update(pid=-438), "positive root supervisor pid"),
+        (
+            "probe-float-pid",
+            lambda value: value["worker_probe"].update(deadman_pid=438.0),
+            "worker separation",
+        ),
+        (
+            "probe-pid-mismatch",
+            lambda value: value["worker_probe"].update(deadman_pid=439),
+            "worker separation",
+        ),
+        (
+            "proc1-denial-false",
+            lambda value: value["worker_probe"].update(proc1_environ_denied=False),
+            "worker separation",
+        ),
+        (
+            "deadman-denial-false",
+            lambda value: value["worker_probe"].update(deadman_environ_denied=False),
+            "worker separation",
+        ),
+        (
+            "proc-identity-false",
+            lambda value: value.update(deadman_proc_identity_verified=False),
+            "root supervisor",
+        ),
+    ):
+        invalid_receipt = json.loads(json.dumps(receipt))
+        mutate(invalid_receipt)
+        invalid_path = tmp_path / f"{label}-receipt.json"
+        invalid_path.write_bytes(controller.canonical_bytes(invalid_receipt))
+        with test.assertRaisesRegex(controller.Refusal, reason):
+            controller.record_runtime_ack(
+                session_dir, invalid_path, tmp_path / f"{label}-ack.json"
+            )
 
     with test.assertRaisesRegex(controller.Refusal, "cannot read runtime receipt"):
         controller.record_runtime_ack(
@@ -688,6 +725,7 @@ def case_deadman_source_has_last_resort_and_persistent_delete_contract() -> None
     assert "range(1,5)" not in source
     assert "safe_stdout({'event':'runtime-boot-start'" in source
     assert "safe_stdout({'event':'runtime-refused','reason':reason})" in source
+    assert "safe_stdout({'event':'worker-separation-refused'" in source
     assert "safe_stdout({'event':'runtime-boot-exception'" in source
     assert "if len(data)>1024: return" in source
     assert "os.O_WRONLY|os.O_NONBLOCK|os.O_CLOEXEC" in source
@@ -1445,7 +1483,7 @@ class OfflineControllerTests(unittest.TestCase):
 
     def test_runtime_ack(self) -> None:
         with self.temporary_path() as directory:
-            case_runtime_ack_binds_pid1_deadline_worker_probe_and_receipt_digest(
+            case_runtime_ack_binds_supervisor_pid_deadline_worker_probe_and_receipt_digest(
                 self, Path(directory)
             )
 

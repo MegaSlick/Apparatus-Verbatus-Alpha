@@ -645,7 +645,9 @@ def boot():
  runtime_parent.mkdir(exist_ok=True); os.chown(runtime_parent,0,0); os.chmod(runtime_parent,0o711)
  runtime.mkdir(exist_ok=True); os.chown(runtime,0,0); os.chmod(runtime,0o711)
  if os.geteuid()!=0: fail('deadman-not-root')
- if os.getpid()!=1: fail('deadman-not-pid1')
+ try: deadman_proc_identity_verified=os.path.samefile('/proc/self/environ',f'/proc/{os.getpid()}/environ')
+ except OSError: deadman_proc_identity_verified=False
+ if not deadman_proc_identity_verified: fail('deadman-proc-identity-unverified')
  if deadline-time.time()>7200 or cleanup>=deadline or cleanup<=time.time(): fail('invalid-deadline')
  try: worker=pwd.getpwnam('verbatus-worker')
  except KeyError:
@@ -667,9 +669,12 @@ os.execvpe(sys.argv[1],sys.argv[1:],os.environ)
 """
  launcher_path=Path('/usr/local/bin/verbatus-worker-exec'); launcher_path.write_text(launcher); os.chown(launcher_path,0,0); os.chmod(launcher_path,0o755)
  probe=r"""import json,os,shutil,subprocess
-result={'uid':os.geteuid(),'gid':os.getegid(),'provider_env_absent':all(not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE')) for k in os.environ),'proc1_environ_denied':False,'root_receipt_denied':False,'sudo_unavailable':False,'cap_eff_zero':False,'no_new_privs':False}
+deadman_pid=int(os.environ['VERBATUS_DEADMAN_PID'])
+result={'uid':os.geteuid(),'gid':os.getegid(),'deadman_pid':deadman_pid,'provider_env_absent':all(not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE')) for k in os.environ),'proc1_environ_denied':False,'deadman_environ_denied':False,'root_receipt_denied':False,'sudo_unavailable':False,'cap_eff_zero':False,'no_new_privs':False}
 try: open('/proc/1/environ','rb').read(1)
 except OSError: result['proc1_environ_denied']=True
+try: open(f'/proc/{deadman_pid}/environ','rb').read(1)
+except OSError: result['deadman_environ_denied']=True
 try: os.listdir(os.environ['VERBATUS_ROOT_RECEIPT_DIR'])
 except OSError: result['root_receipt_denied']=True
 sudo=shutil.which('sudo'); result['sudo_unavailable']=sudo is None or subprocess.run([sudo,'-n','true'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0
@@ -677,16 +682,22 @@ for line in open('/proc/self/status'):
  if line.startswith('CapEff:'): result['cap_eff_zero']=int(line.split()[1],16)==0
  if line.startswith('NoNewPrivs:'): result['no_new_privs']=line.split()[1]=='1'
 print(json.dumps(result,sort_keys=True))"""
- child_env={k:v for k,v in os.environ.items() if not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE'))}; child_env['VERBATUS_ROOT_RECEIPT_DIR']=str(root)
+ child_env={k:v for k,v in os.environ.items() if not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE'))}; child_env['VERBATUS_ROOT_RECEIPT_DIR']=str(root); child_env['VERBATUS_DEADMAN_PID']=str(os.getpid())
  probe_run=subprocess.run(['python3','-c',probe],env=child_env,capture_output=True,text=True,preexec_fn=demote(worker.pw_uid,worker.pw_gid),timeout=20)
  try: probe_result=json.loads(probe_run.stdout)
  except Exception: fail('worker-probe-unreadable')
- required=('provider_env_absent','proc1_environ_denied','root_receipt_denied','sudo_unavailable','cap_eff_zero','no_new_privs')
- if probe_run.returncode or probe_result.get('uid')==0 or not all(probe_result.get(k) is True for k in required): fail('worker-separation-unverified')
+ if not isinstance(probe_result,dict): fail('worker-probe-unreadable')
+ required=('provider_env_absent','proc1_environ_denied','deadman_environ_denied','root_receipt_denied','sudo_unavailable','cap_eff_zero','no_new_privs')
+ if probe_run.returncode or probe_result.get('uid')==0 or probe_result.get('deadman_pid')!=os.getpid() or not all(probe_result.get(k) is True for k in required):
+  probe_diagnostic={k:(probe_result.get(k) if isinstance(probe_result.get(k),bool) else None) for k in required}
+  for k in ('uid','gid','deadman_pid'):
+   value=probe_result.get(k); probe_diagnostic[k]=value if isinstance(value,int) and not isinstance(value,bool) else None
+  safe_stdout({'event':'worker-separation-refused','probe_returncode':probe_run.returncode,'probe':probe_diagnostic})
+  fail('worker-separation-unverified')
  service_env={k:v for k,v in os.environ.items() if k!='VERBATUS_ROOT_RECEIPT_DIR' and not any(marker in k for marker in ('API_KEY','TOKEN','SECRET','CONTROLLER_CHALLENGE'))}
  service=subprocess.Popen(['/start.sh'],env=service_env); time.sleep(5)
  if service.poll() is not None: fail('default-start-service-exited')
- receipt={'schema':'verbatus-pod-runtime-receipt.v1','session_id':session,'pod_id':pod_id,'controller_challenge':challenge,'hard_deadline_epoch':deadline,'cleanup_epoch':cleanup,'pid':os.getpid(),'uid':os.geteuid(),'default_start_pid':service.pid,'worker_uid':worker.pw_uid,'worker_gid':worker.pw_gid,'worker_probe':probe_result,'provider_key_removed_before_start':True,'runtime_verified':True,'observed_at':time.time()}
+ receipt={'schema':'verbatus-pod-runtime-receipt.v1','session_id':session,'pod_id':pod_id,'controller_challenge':challenge,'hard_deadline_epoch':deadline,'cleanup_epoch':cleanup,'pid':os.getpid(),'uid':os.geteuid(),'default_start_pid':service.pid,'worker_uid':worker.pw_uid,'worker_gid':worker.pw_gid,'worker_probe':probe_result,'deadman_proc_identity_verified':deadman_proc_identity_verified,'provider_key_removed_before_start':True,'runtime_verified':True,'observed_at':time.time()}
  receipt_bytes=write(root/'runtime-receipt.json',receipt); receipt_sha=hashlib.sha256(receipt_bytes).hexdigest(); ack_path=root/'controller-ack.json'; enabled=False
  while time.time()<cleanup:
   if (root/'STOP').exists(): terminate_forever('durable-stop-flag')
@@ -1670,23 +1681,33 @@ def record_runtime_ack(session_dir: Path, receipt_path: Path, output_path: Path)
         "controller_challenge": identity["controller_challenge"],
         "hard_deadline_epoch": life.get("hard_deadline_epoch"),
         "cleanup_epoch": life.get("cleanup_epoch"),
-        "pid": 1,
         "uid": 0,
+        "deadman_proc_identity_verified": True,
         "runtime_verified": True,
         "provider_key_removed_before_start": True,
     }
     if any(receipt.get(key) != value for key, value in expected.items()):
-        raise Refusal("runtime receipt does not prove this exact session, pod, deadline, and root PID1")
+        raise Refusal("runtime receipt does not prove this exact session, pod, deadline, and root supervisor")
+    receipt_pid = receipt.get("pid")
+    if isinstance(receipt_pid, bool) or not isinstance(receipt_pid, int) or receipt_pid <= 0:
+        raise Refusal("runtime receipt does not identify a positive root supervisor pid")
     probe = receipt.get("worker_probe")
     required_probe = {
         "provider_env_absent": True,
         "proc1_environ_denied": True,
+        "deadman_environ_denied": True,
         "root_receipt_denied": True,
         "sudo_unavailable": True,
         "cap_eff_zero": True,
         "no_new_privs": True,
     }
-    if not isinstance(probe, dict) or any(probe.get(k) != v for k, v in required_probe.items()):
+    if (
+        not isinstance(probe, dict)
+        or not isinstance(probe.get("deadman_pid"), int)
+        or isinstance(probe.get("deadman_pid"), bool)
+        or probe.get("deadman_pid") != receipt_pid
+        or any(probe.get(k) != v for k, v in required_probe.items())
+    ):
         raise Refusal("runtime receipt does not prove non-root worker separation")
     ack = {
         "schema": SCHEMA_CONTROLLER_ACK,
