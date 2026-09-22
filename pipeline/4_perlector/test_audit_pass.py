@@ -18,6 +18,7 @@ import reader as reader_module
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ARMARIUM, PERLECTOR, RECENSOR
+from common.perlector_audit import LEGACY_SCHEMA
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -528,7 +529,9 @@ def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_pa
             assert reproof["prompt"] == (
                 f"Re-examine the ink at character location [{start}, {end}) of the "
                 "delivered act. Report only what the ink supports there; "
-                "if it supports the existing text, record confirmed unchanged."
+                "if it supports the existing text, record confirmed unchanged. Reply only as JSON with "
+                "schema `perlector-audit-response.v1` and one ordered edit for every requested location; "
+                "each edit repeats its exact original text and gives its replacement."
             )
 
         # Delivered == sealed, exactly: the plan, the frozen draft it indexes
@@ -676,6 +679,54 @@ def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp
         audit.validate_chain(tree, undelivered, final["subject_id"])
 
 
+def test_a_sealed_v2_chain_remains_validatable_without_reinterpreting_its_request(tmp_path):
+    """Existing v2 evidence keeps its old prompt/request digest during inspection."""
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    final = copy.deepcopy(_records(tree, "perlectio")[0])
+    draft = copy.deepcopy(
+        next(
+            record
+            for record in _records(tree, "audit-draft")
+            if record["subject_id"] == final["subject_id"]
+        )
+    )
+    finding = copy.deepcopy(
+        next(
+            record
+            for record in _records(tree, "audit-finding")
+            if record["subject_id"] == final["subject_id"]
+        )
+    )
+
+    for record in (draft["payload"], finding["payload"]):
+        record["policy"]["schema"] = LEGACY_SCHEMA
+    audit_record = final["payload"]["audit"]
+    audit_record["reproofs"] = audit.reproof_plan(
+        draft["payload"]["flags"],
+        text_length=len(draft["payload"]["semi_final_text"]),
+        policy_schema=LEGACY_SCHEMA,
+    )
+    legacy_request = audit.audit_request(
+        act_key=draft["payload"]["act_key"],
+        attempt_ordinal=draft["payload"]["attempt_ordinal"],
+        draft_ref=audit_record["draft_ref"],
+        semi_final_text=draft["payload"]["semi_final_text"],
+        flags=draft["payload"]["flags"],
+        policy_schema=LEGACY_SCHEMA,
+    )
+    audit_record["request_digest"] = audit.audit_digest(legacy_request)
+    audit_record["finding_digest"] = audit.audit_digest(finding["payload"])
+
+    class LegacyTree:
+        def read_artifact_reference(self, _reference, *, stage, kind, subject_id):
+            assert stage == PERLECTOR and subject_id == final["subject_id"]
+            return draft if kind == "audit-draft" else finding
+
+    audit.validate_chain(LegacyTree(), final, final["subject_id"])
+
+
 def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tmp_path):
     """`reproofs` alone could not tell a plan that ran from one that never could.
 
@@ -688,7 +739,7 @@ def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tm
     """
     exhausted = tmp_path / "exhausted.toml"
     exhausted.write_text(
-        'schema = "perlector-audit.v2"\n'
+        'schema = "perlector-audit.v3"\n'
         "default_round_cap = 1\n"
         "absolute_round_cap = 2\n"
         "round_cap = 0\n"
@@ -1181,7 +1232,7 @@ def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(
     """A sealed cap of 2 with Tyrel's reference would be recorded but never run."""
     approved = tmp_path / "approved.toml"
     approved.write_text(
-        'schema = "perlector-audit.v2"\n'
+        'schema = "perlector-audit.v3"\n'
         "default_round_cap = 1\n"
         "absolute_round_cap = 2\n"
         "round_cap = 2\n"
@@ -1265,14 +1316,14 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
 def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path):
     raised = tmp_path / "raised.toml"
     raised.write_text(
-        'schema = "perlector-audit.v2"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'
+        'schema = "perlector-audit.v3"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'
     )
     with pytest.raises(ContractError, match="Tyrel's approval reference"):
         audit.load(raised)
 
     exhausted = tmp_path / "exhausted.toml"
     exhausted.write_text(
-        'schema = "perlector-audit.v2"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 0\napproval_ref = ""\n'
+        'schema = "perlector-audit.v3"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 0\napproval_ref = ""\n'
     )
     result = _run(tmp_path / "exhausted-runs", "--perlector-audit-config", str(exhausted))
     assert result.returncode == 3, result.stderr
@@ -1304,7 +1355,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
             "page_ids": ["p1"],
             "round_cap": 0,
             "policy": {
-                "schema": "perlector-audit.v2",
+                "schema": "perlector-audit.v3",
                 "sha256": "0" * 64,
                 "approval_ref": "",
             },
@@ -1332,7 +1383,7 @@ def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span()
                 "page_ids": ["p1"],
                 "round_cap": 0,
                 "policy": {
-                    "schema": "perlector-audit.v2",
+                    "schema": "perlector-audit.v3",
                     "sha256": "0" * 64,
                     "approval_ref": "",
                 },
@@ -1975,7 +2026,16 @@ def test_an_escaping_reproof_is_refused_whatever_ended_its_call(
             )
             if pass_kind == "audit-reproof":
                 reproofed.append(dossier["act_key"])
-                return {**result, "text": "Zz " + result["text"], "stop_reason": stop_reason}
+                reply = json.loads(result["text"])
+                # A syntactically complete edit reply that changes a real
+                # draft span outside the delivered flag.  The v3 assembler
+                # preserves the proposal; the audit layer then rejects its
+                # scope as `reproof-rejected` rather than treating malformed
+                # JSON as an ordinary text rewrite.
+                reply["edits"][0]["location"] = {"start": 0, "end": 1}
+                reply["edits"][0]["original"] = audit_request["semi_final_text"][0:1]
+                reply["edits"][0]["replacement"] = "Z"
+                return {**result, "text": json.dumps(reply), "stop_reason": stop_reason}
             return result
 
     monkeypatch.setattr(perlector, "FixtureReader", EscapingReader)
@@ -2016,6 +2076,50 @@ def test_an_escaping_reproof_is_refused_whatever_ended_its_call(
         if act_key in reproofed:
             assert final["payload"]["text"] == frozen[act_key]
             audit.validate_chain(tree, final, final["subject_id"])
+
+
+def test_a_malformed_reproof_reply_becomes_a_retained_failed_act(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    _chain_through_attestatores(root, "audit-change")
+    perlector = _perlector()
+    declared = perlector.FixtureReader
+
+    class MalformedReader:
+        def __init__(self, fixture, fixture_scenario):
+            self._inner = declared(fixture, fixture_scenario)
+
+        def read(self, dossier, *, pass_kind, delivered_pixels=None, audit_request=None):
+            result = self._inner.read(
+                dossier,
+                pass_kind=pass_kind,
+                delivered_pixels=delivered_pixels,
+                audit_request=audit_request,
+            )
+            return {**result, "text": "not-json"} if pass_kind == "audit-reproof" else result
+
+    monkeypatch.setattr(perlector, "FixtureReader", MalformedReader)
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "audit-change",
+        ],
+    )
+    assert perlector.main() == 0
+    failures = [
+        record
+        for record in _records(RunTree(root, "r"), "perlectio")
+        if record["outcome"] == "failed"
+    ]
+    assert failures
+    assert all(record["payload"]["failure"]["kind"] == "reproof-response" for record in failures)
 
 
 def test_a_whitespace_reproof_that_erases_the_act_is_refused_not_crashed(tmp_path, monkeypatch):
@@ -2402,7 +2506,7 @@ def test_a_v1_audit_record_is_refused_by_name_and_never_read_forward():
             }
         )
     assert audit.RETIRED_SCHEMAS == frozenset({"perlector-audit.v1"})
-    assert audit.SCHEMA == "perlector-audit.v2"
+    assert audit.SCHEMA == "perlector-audit.v3"
 
 
 # --- The independent review of candidate 0934c057: forged terminations and delivery facts

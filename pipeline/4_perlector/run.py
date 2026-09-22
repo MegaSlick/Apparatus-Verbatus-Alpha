@@ -60,7 +60,7 @@ import protocol  # noqa: E402
 import regime  # noqa: E402
 import truncation  # noqa: E402
 from dissent import departures, dissent_against, validate_dissent  # noqa: E402
-from live_reader import VLLMReader  # noqa: E402
+from live_reader import EngineSignalRefusal, VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 
 from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
@@ -128,7 +128,7 @@ from operations.serving.config import (  # noqa: E402
     load_serving_recipes,
 )
 from operations.serving.errors import ChairResponseRefusal  # noqa: E402
-from operations.serving.http import UrllibHttpTransport  # noqa: E402
+from operations.serving.http import EndpointUnavailable, UrllibHttpTransport  # noqa: E402
 from operations.serving.manager import (  # noqa: E402
     MECHANICS_QUALIFICATION_PURPOSE,
     ServingManager,
@@ -2446,6 +2446,7 @@ _NOT_RUN_CAPACITY_FIELDS: Final = _NOT_RUN_ABSENT_FIELDS | {
     "logical_act_id",
     "cross_capture_autopsia",
 }
+_FAILED_FIELDS: Final = frozenset({"act_key", "attempt_ordinal", "reason", "failure", "provenance"})
 
 
 def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
@@ -2462,6 +2463,67 @@ def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
             f"a Perlector not-run payload is not its closed schema: missing {missing}, "
             f"unexpected {unexpected}"
         )
+
+
+def validate_failed_payload(payload: dict) -> None:
+    """The retained, act-local record for one live engine or transport failure."""
+    missing = sorted(_FAILED_FIELDS - set(payload))
+    unexpected = sorted(set(payload) - _FAILED_FIELDS)
+    if missing or unexpected:
+        raise SchemaRefusal(
+            f"a failed Perlectio payload is not its closed schema: missing {missing}, "
+            f"unexpected {unexpected}"
+        )
+    failure = payload["failure"]
+    if not isinstance(failure, dict) or set(failure) != {
+        "kind",
+        "code",
+        "detail",
+        "raw_response_ref",
+    }:
+        raise SchemaRefusal("a failed Perlectio has no closed failure record")
+    if failure["kind"] not in {"engine-signal", "chair-response", "transport", "reproof-response"}:
+        raise SchemaRefusal("a failed Perlectio names an unknown failure kind")
+    if (
+        not isinstance(failure["code"], str)
+        or not failure["code"]
+        or not isinstance(failure["detail"], str)
+    ):
+        raise SchemaRefusal("a failed Perlectio has no named failure code and detail")
+    if failure["raw_response_ref"] is not None:
+        validate_input_refs([failure["raw_response_ref"]])
+
+
+def _failure_record(error: Exception) -> dict[str, Any] | None:
+    """Translate only observed engine/transport failures into retained facts.
+
+    Contract and schema errors deliberately return ``None``: swallowing one of
+    those as an engine incident would make a broken producer look like a card
+    failure and permit the stage to seal over an integrity defect.
+    """
+    if isinstance(error, EngineSignalRefusal):
+        return {
+            "kind": "engine-signal",
+            "code": type(error).__name__,
+            "detail": str(error),
+            "raw_response_ref": dict(error.raw_response_ref),
+        }
+    if isinstance(error, ChairResponseRefusal):
+        raw_response_ref = getattr(error, "raw_response_ref", None)
+        return {
+            "kind": "chair-response",
+            "code": error.code,
+            "detail": error.detail,
+            "raw_response_ref": dict(raw_response_ref) if raw_response_ref is not None else None,
+        }
+    if isinstance(error, EndpointUnavailable):
+        return {
+            "kind": "transport",
+            "code": "endpoint-unavailable",
+            "detail": str(error),
+            "raw_response_ref": None,
+        }
+    return None
 
 
 def _dossier_image_refs(rows: Any, *, what: str) -> list[tuple[str, str]]:
@@ -4116,18 +4178,60 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
 
         # Every arm receives the complete presentation in one reader call.
-        passes = combined.run_logical_passes(
-            reader,
-            autopsia=autopsia,
-            dossier=base_dossier,
-            read_bytes=context.tree.read_bytes,
-            protocol_config=protocol_config,
-            nuda_sampled=nuda_due,
-            control_sampled=control_due,
-            draft_fed=context.draft_fed,
-            publish_prior=publish_prior,
-            sealed_prior=sealed_prior,
-        )
+        try:
+            passes = combined.run_logical_passes(
+                reader,
+                autopsia=autopsia,
+                dossier=base_dossier,
+                read_bytes=context.tree.read_bytes,
+                protocol_config=protocol_config,
+                nuda_sampled=nuda_due,
+                control_sampled=control_due,
+                draft_fed=context.draft_fed,
+                publish_prior=publish_prior,
+                sealed_prior=sealed_prior,
+            )
+        except (EngineSignalRefusal, ChairResponseRefusal, EndpointUnavailable) as error:
+            failure = _failure_record(error)
+            assert failure is not None  # narrowed by the exception tuple above
+            failure_inputs = (
+                _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
+                + [
+                    context.artifact_ref(ATTESTATORES, "testimonium", record["artifact_id"])
+                    for record in testimonia
+                ]
+                + [attachment_view["reference"]]
+            )
+            # Arms published before the failed call are immutable evidence of
+            # this same attempt.  Naming them makes a resume and the Recensor
+            # able to inspect what completed without re-asking the chair.
+            for kind, operation in _PRE_PERLECTIO_ARTIFACTS:
+                artifact_id = _attempt_artifact_id(act_id, kind, operation, ordinal)
+                if context.tree.has_artifact(PERLECTOR, kind, artifact_id):
+                    failure_inputs.append(context.artifact_ref(PERLECTOR, kind, artifact_id))
+            if failure["raw_response_ref"] is not None:
+                failure_inputs.append(failure["raw_response_ref"])
+            failure_inputs = _distinct_inputs(failure_inputs)
+            failure_payload = {
+                "act_key": act["act_key"],
+                "attempt_ordinal": ordinal,
+                "reason": f"live Perlector {failure['kind']} failure: {failure['code']}",
+                "failure": failure,
+                "provenance": provenance_for(
+                    context, chair, attempted=True, receipt_ref=receipt_ref
+                ),
+            }
+            validate_failed_payload(failure_payload)
+            context.publish(
+                kind="perlectio",
+                subject_id=act_id,
+                outcome="failed",
+                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
+                inputs=failure_inputs,
+                payload=failure_payload,
+            )
+            acknowledged += 1
+            continue
 
         if nuda_due:
             _publish_lectio_nuda(
@@ -4363,7 +4467,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # handed, and what every later consumer recomputes are therefore the
         # same computation over the same frozen flags rather than three
         # spellings that have to be kept agreeing.
-        reproofs = audit.reproof_plan(flags, text_length=len(final_text))
+        reproofs = audit.reproof_plan(
+            flags, text_length=len(final_text), policy_schema=audit_policy["schema"]
+        )
         request_digest: str | None = None
         changes: list[dict[str, Any]] = []
         uncertainty: list[dict[str, Any]] = []
@@ -4409,6 +4515,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 draft_ref=draft_ref,
                 semi_final_text=payload["text"],
                 flags=flags,
+                policy_schema=audit_policy["schema"],
             )
             request_digest = audit.audit_digest(audit_request)
             # The producer enforces the delivery contract itself, so the
@@ -4418,22 +4525,79 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             validate_audit_delivery(
                 payload["dossier"], pass_kind="audit-reproof", audit_request=audit_request
             )
-            reproof = reader.read(
-                payload["dossier"],
-                # The literal, not `audit.REPROOF_PASS_KIND`: every producer
-                # call site spells its pass so `test_reader.py`'s pin can read
-                # them out of this file and hold `reader.PASS_KINDS` to exactly
-                # the set run.py calls. That pin is also what makes the literal
-                # safe here -- a misspelling fails it rather than falling
-                # through to the establishing branch.
-                pass_kind="audit-reproof",
-                delivered_pixels=reproof_pixels,
-                # A copy, so a reader that mutated its input could not leave
-                # the sealed digest describing an object that no longer exists
-                # -- the exact shape of lie this seam was rebuilt to end.
-                audit_request=copy.deepcopy(audit_request),
-            )
-            final_text = reproof["text"]
+            try:
+                reproof = reader.read(
+                    payload["dossier"],
+                    pass_kind="audit-reproof",
+                    delivered_pixels=reproof_pixels,
+                    audit_request=copy.deepcopy(audit_request),
+                )
+            except (EngineSignalRefusal, ChairResponseRefusal, EndpointUnavailable) as error:
+                failure = _failure_record(error)
+                assert failure is not None
+                failure_inputs = row["inputs"] + [draft_ref]
+                if failure["raw_response_ref"] is not None:
+                    failure_inputs.append(failure["raw_response_ref"])
+                failure_payload = {
+                    "act_key": row["act"]["act_key"],
+                    "attempt_ordinal": payload["attempt_ordinal"],
+                    "reason": f"live Perlector {failure['kind']} failure during audit re-proof: {failure['code']}",
+                    "failure": failure,
+                    "provenance": payload["provenance"],
+                }
+                validate_failed_payload(failure_payload)
+                context.publish(
+                    kind="perlectio",
+                    subject_id=act_id,
+                    outcome="failed",
+                    attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+                    inputs=_distinct_inputs(failure_inputs),
+                    payload=failure_payload,
+                )
+                continue
+            # A Pass-C reply is a set of exact, draft-anchored edits, never a
+            # second whole-act reading.  Assembly validates every original
+            # substring and all requested locations before it can affect the
+            # established text; it therefore cannot silently carry a rewrite
+            # from outside the flagged spans into this record.
+            try:
+                final_text, _reproof_response = audit.assemble_reproof_response(
+                    reproof["text"], audit_request
+                )
+            except audit.ReproofResponseRefusal as error:
+                failure_inputs = (
+                    row["inputs"]
+                    + [draft_ref]
+                    + engine_call_inputs(context, reproof.get("engine_call"))
+                )
+                failure_payload = {
+                    "act_key": row["act"]["act_key"],
+                    "attempt_ordinal": payload["attempt_ordinal"],
+                    "reason": "the delivered audit re-proof response could not be assembled safely",
+                    "failure": {
+                        "kind": "reproof-response",
+                        "code": type(error).__name__,
+                        "detail": str(error),
+                        "raw_response_ref": (
+                            dict(reproof["engine_call"]["raw_response_ref"])
+                            if reproof.get("engine_call") is not None
+                            else None
+                        ),
+                    },
+                    "provenance": payload["provenance"],
+                }
+                if failure_payload["failure"]["raw_response_ref"] is not None:
+                    failure_inputs.append(failure_payload["failure"]["raw_response_ref"])
+                validate_failed_payload(failure_payload)
+                context.publish(
+                    kind="perlectio",
+                    subject_id=act_id,
+                    outcome="failed",
+                    attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+                    inputs=_distinct_inputs(failure_inputs),
+                    payload=failure_payload,
+                )
+                continue
             pre_audit_text = payload["text"]
             reproof_inputs = engine_call_inputs(context, reproof.get("engine_call"))
             reproof_truncation = truncation.classify(

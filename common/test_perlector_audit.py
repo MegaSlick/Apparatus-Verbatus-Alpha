@@ -12,10 +12,128 @@ witness-derived flag is still contained) and its boundary (any wider gap, or
 a gap against a non-witness-derived flag, still refuses).
 """
 
+import json
+
 import pytest
 
 from common.contracts.errors import SchemaRefusal
-from common.perlector_audit import change_record, text_change_span
+from common.perlector_audit import (
+    LEGACY_REQUEST_SCHEMA,
+    LEGACY_SCHEMA,
+    ReproofResponseRefusal,
+    assemble_reproof_response,
+    audit_request,
+    change_record,
+    text_change_span,
+)
+
+
+def _request(text: str = "alpha βeta gamma") -> dict:
+    return audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
+        semi_final_text=text,
+        flags=[{"class": "testimony-diff", "location": {"start": 6, "end": 10}}],
+    )
+
+
+def test_reproof_edits_assemble_only_from_exact_unicode_anchored_originals():
+    request = _request()
+    raw = json.dumps(
+        {
+            "schema": "perlector-audit-response.v1",
+            "edits": [
+                {
+                    "class": "testimony-diff",
+                    "location": {"start": 6, "end": 10},
+                    "original": "βeta",
+                    "replacement": "beta",
+                }
+            ],
+        }
+    )
+    assembled, response = assemble_reproof_response(raw, request)
+    assert assembled == "alpha beta gamma"
+    assert response["edits"][0]["original"] == "βeta"
+
+
+@pytest.mark.parametrize(
+    "edit, match",
+    [
+        (
+            {
+                "class": "testimony-diff",
+                "location": {"start": 0, "end": 5},
+                "original": "alpha",
+                "replacement": "omega",
+            },
+            "changed text outside every flagged location",
+        ),
+        (
+            {
+                "class": "testimony-diff",
+                "location": {"start": 6, "end": 10},
+                "original": "beta",
+                "replacement": "beta",
+            },
+            "exact frozen text",
+        ),
+    ],
+)
+def test_reproof_rejects_wrong_scope_or_original_without_fuzzy_assembly(edit, match):
+    raw = json.dumps({"schema": "perlector-audit-response.v1", "edits": [edit]})
+    if match == "changed text outside every flagged location":
+        assembled, _response = assemble_reproof_response(raw, _request())
+        with pytest.raises(SchemaRefusal, match=match):
+            change_record(_request()["semi_final_text"], assembled, _request()["reproofs"])
+    else:
+        with pytest.raises(ReproofResponseRefusal, match=match):
+            assemble_reproof_response(raw, _request())
+
+
+def test_reproof_rejects_a_partial_reply_before_any_text_is_assembled():
+    request = audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
+        semi_final_text="alpha beta gamma",
+        flags=[
+            {"class": "testimony-diff", "location": {"start": 0, "end": 5}},
+            {"class": "repetition", "location": {"start": 6, "end": 10}},
+        ],
+    )
+    raw = json.dumps(
+        {
+            "schema": "perlector-audit-response.v1",
+            "edits": [
+                {
+                    "class": "testimony-diff",
+                    "location": {"start": 0, "end": 5},
+                    "original": "alpha",
+                    "replacement": "alpha",
+                }
+            ],
+        }
+    )
+    with pytest.raises(ReproofResponseRefusal, match="does not answer every flagged span"):
+        assemble_reproof_response(raw, request)
+
+
+def test_legacy_v2_request_stays_validatable_but_cannot_mix_with_a_v3_edit_reply():
+    request = audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/audit-draft/a1.json", "sha256": "a" * 64},
+        semi_final_text="alpha beta",
+        flags=[{"class": "testimony-diff", "location": {"start": 6, "end": 10}}],
+        policy_schema=LEGACY_SCHEMA,
+    )
+    assert request["schema"] == LEGACY_REQUEST_SCHEMA
+    with pytest.raises(ReproofResponseRefusal, match="legacy request"):
+        assemble_reproof_response(
+            json.dumps({"schema": "perlector-audit-response.v1", "edits": []}), request
+        )
 
 
 def _flag(flag_class: str, start: int, end: int) -> dict:

@@ -46,7 +46,11 @@ import annotations
 from common.contracts.errors import ContractError
 from common.contracts.identities import act_id as derive_act_id
 from common.imaging import grayscale_rows
-from common.perlector_audit import REPROOF_PASS_KIND, validate_audit_request
+from common.perlector_audit import (
+    REPROOF_PASS_KIND,
+    reproof_response_from_text,
+    validate_audit_request,
+)
 
 # The page-fallback reader must be at least as sensitive as the Designator's
 # conservation denominator. This literal mirrors `structure.SECONDARY_MARGIN`;
@@ -193,6 +197,8 @@ class FixtureReader:
             delivered_pixels=delivered_pixels,
             audit_request=request,
         )
+        if request is not None:
+            text = reproof_response_from_text(request, text)
         return {
             "text": text,
             "stop_reason": self._declared_stop_reason(act_key, pass_kind),

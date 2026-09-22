@@ -40,7 +40,7 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
-from common.stage import EXIT_FATAL, EXIT_HELD, StageContext, run_stage
+from common.stage import EXIT_HELD, StageContext
 from operations.serving.client import ChairClient, ServingModeRefusal
 from operations.serving.config import (
     ServingConfigInputs,
@@ -58,6 +58,7 @@ from operations.serving.fakes import (
     ScriptedAnswer,
     scripted_prompt_too_long,
 )
+from operations.serving.http import EndpointUnavailable
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
@@ -628,23 +629,34 @@ def test_an_unreported_stop_reason_holds_the_reading_as_unknown(live_run, tmp_pa
         assert record["payload"]["engine_call"]["finish_reason"] is None
 
 
-def test_an_unrecognized_stop_reason_stops_the_pass_with_the_bytes_retained(
+def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_continues(
     live_run, tmp_path, monkeypatch
 ):
     """`"abort"` is neither a completion nor a cutoff, so it is refused by name.
 
-    Nothing is lost by stopping: the client retained the response before it was
-    parsed, so the bytes that stopped the pass are on disk and the act can be
-    traced back to exactly them. Nothing is published for the act, because a
-    Perlectio has no `failed` shape and minting one here would invent a record
-    kind this seam does not own.
+    The response remains retained, but it becomes the failed act's direct
+    evidence rather than aborting every later act.  A future invocation sees
+    the immutable failed Perlectio and does not ask the chair for it again.
     """
     root, _catalogue = live_run
-    with pytest.raises(EngineSignalRefusal, match="abort"):
-        _run_perlector(
-            live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="abort")
-        )
-    assert _published_readings(root) == []
+    endpoint, exit_code = _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="abort")
+    )
+    assert exit_code == 0
+    failures = [record for record in _published_readings(root) if record["outcome"] == "failed"]
+    assert failures
+    failure = failures[0]
+    assert failure["payload"]["failure"]["kind"] == "engine-signal"
+    assert failure["payload"]["failure"]["raw_response_ref"] in failure["inputs"]
+    assert endpoint.requests
+    resumed, resumed_exit = _run_perlector(
+        live_run,
+        tmp_path / "resume",
+        monkeypatch,
+        ScriptedAnswer(content="must not be requested", finish_reason="stop"),
+    )
+    assert resumed_exit == 0
+    assert resumed.requests == [], "a sealed failed act was re-asked on resume"
     blobs = root / "r" / "4_perlector" / "blobs" / "sha256"
     retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
     assert any(b'"abort"' in body for body in retained), "the refusing response was not retained"
@@ -1007,38 +1019,57 @@ def test_a_resumed_act_reuses_the_sampled_arms_it_already_published(
         assert [record["payload"]["text"] for record in fresh] == [resumed_reading]
 
 
-def test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary(
-    live_run, tmp_path, monkeypatch, capsys
+def test_a_non_200_from_the_engine_becomes_a_retained_act_failure_and_continues(
+    live_run, tmp_path, monkeypatch
 ):
-    """An HTTP refusal is a named stage refusal, not a traceback and exit 1.
-
-    `ChairResponseRefusal` is a `ServingError`, which is a `RuntimeError`:
-    `run_stage` catches `ContractError` and would never have seen it, so the
-    most likely first answer a real card gives — vLLM's 400 explaining a context
-    overflow — left this stage with a stack trace and an exit code that means
-    nothing in its own vocabulary. The refusal itself is unchanged: the bytes
-    are retained before it is raised (`ChairClient.read`), its code and the
-    engine's own sentence travel verbatim into what the stage exits on, and
-    nothing here reads a 400 as a stop reason of any kind.
-    """
+    """A non-200 is retained evidence for one act, not a stage-wide abort."""
     root, _catalogue = live_run
     refusal = scripted_prompt_too_long(
         max_model_len=2048, requested_tokens=4125, prompt_tokens=3909, completion_tokens=216
     )
 
-    exit_code = run_stage(lambda: _run_perlector(live_run, tmp_path, monkeypatch, refusal)[1])
+    _endpoint, exit_code = _run_perlector(live_run, tmp_path, monkeypatch, refusal)
 
-    assert exit_code == EXIT_FATAL
-    stderr = capsys.readouterr().err
-    assert "ChairResponseRefusal: CHAIR_RESPONSE_HTTP_ERROR" in stderr
-    assert "maximum context length is 2048" in stderr
-    assert "EngineSignalRefusal" not in stderr
-    assert _published_readings(root) == []
+    assert exit_code == 0
+    failures = [record for record in _published_readings(root) if record["outcome"] == "failed"]
+    assert failures
+    assert failures[0]["payload"]["failure"]["kind"] == "chair-response"
+    assert failures[0]["payload"]["failure"]["code"] == "CHAIR_RESPONSE_HTTP_ERROR"
     blobs = root / "r" / "4_perlector" / "blobs" / "sha256"
     retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
     assert any(b"maximum context length" in body for body in retained), (
         "the refusing body was not retained"
     )
+
+
+def test_a_transport_timeout_fails_one_act_and_continues_to_the_next(
+    live_run, tmp_path, monkeypatch
+):
+    """A transport timeout seals its act and does not prevent the next act from running."""
+    root, _catalogue = live_run
+    original_read = perlector.VLLMReader.read
+    calls = 0
+
+    def timeout_once(reader, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise EndpointUnavailable("simulated inference timeout")
+        return original_read(reader, *args, **kwargs)
+
+    monkeypatch.setattr(perlector.VLLMReader, "read", timeout_once)
+    endpoint, exit_code = _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+    )
+
+    assert exit_code == 0
+    records = _perlectiones(root)
+    assert len(records) == 2, "both acts must reach a terminal sealed record"
+    assert any(
+        record["outcome"] == "failed" and record["payload"]["failure"]["kind"] == "transport"
+        for record in records.values()
+    )
+    assert endpoint.requests, "the later act was not sent to the chair"
 
 
 def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
