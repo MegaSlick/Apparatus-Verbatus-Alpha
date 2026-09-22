@@ -96,7 +96,7 @@ def pod(
         "cloud": auth["cloud"],
         "dataCenterId": auth["data_center_id"],
         "gpu": {"id": auth["gpu_id"], "count": auth["gpu_count"], "vcpuCount": 16, "memory": 120},
-        "cost": float(str(auth["expected_pod_hourly_usd"])),
+        "cost": float(str(auth["quoted_gpu_hourly_usd"])),
         "createdAt": controller.iso(controller.utc_now()),
     }
 
@@ -1259,6 +1259,82 @@ def case_billing_rejects_gaps_bad_metadata_and_bad_money() -> None:
 
 
 class OfflineControllerTests(unittest.TestCase):
+    def test_live_gpu_rate_accounts_for_disk_and_combined_ceiling(self) -> None:
+        with self.temporary_path() as directory:
+            root, identity, auth = make_session(Path(directory))
+            bound = deadlines(root, auth)
+            row = pod(identity, auth, "vol-1", bound)
+            # Independent real response: A100 GPU 1.59, disk 200 GB.
+            row["cost"] = 1.59
+            assert controller.validate_pod(row, identity, auth, "vol-1", bound, "private-test-key") == "pod-1"
+            with self.assertRaisesRegex(controller.Refusal, "authorized ceiling"):
+                controller.validate_pod(row, identity, {**auth, "max_pod_hourly_usd": "1.60"}, "vol-1", bound, "private-test-key")
+            with self.assertRaisesRegex(controller.Refusal, "combined ceiling"):
+                controller.validate_pod(row, identity, {**auth, "max_combined_hourly_usd": "1.63"}, "vol-1", bound, "private-test-key")
+            with self.assertRaisesRegex(controller.Refusal, "combined ceiling"):
+                controller.validate_pod(row, identity, {**auth, "max_volume_hourly_usd": "0.05"}, "vol-1", bound, "private-test-key")
+            for invalid in (0, 1.58, 1.60, 1.618, 2.20):
+                with self.subTest(cost=invalid), self.assertRaisesRegex(controller.Refusal, "exact authorized"):
+                    controller.validate_pod({**row, "cost": invalid}, identity, auth, "vol-1", bound, "private-test-key")
+
+    def test_wrong_gpu_price_is_recorded_then_deleted(self) -> None:
+        with self.temporary_path() as directory:
+            root, identity, auth = make_session(Path(directory))
+            checked = controller.validate_authorization(auth, identity)
+            bound = deadlines(root, checked)
+            with controller.lifecycle_locked(root) as life:
+                life["volume_id"] = "vol-1"
+            row = pod(identity, checked, "vol-1", bound)
+            row["cost"] = 1.618
+            transport = ScriptedTransport([("POST", "pods", (201, row)), ("DELETE", "pods/pod-1", (204, None))])
+            def responding(method, route, body):
+                if method == "DELETE":
+                    events = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
+                    assert any(event.get("observed_gpu_hourly_usd") == "1.618" for event in events)
+                return transport(method, route, body)
+            with self.assertRaisesRegex(controller.Refusal, "exact authorized"):
+                controller.create_pod_once(controller.RunPodV2(responding), root, identity, checked, bound, "private-test-key")
+            assert not transport.answers
+            events = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
+            observed = next(row for row in events if row["event"] == "pod-price-observed")
+            assert observed["observed_gpu_hourly_usd"] == "1.618"
+            assert "private-test-key" not in (root / "events.jsonl").read_text()
+            assert identity["controller_challenge"] not in (root / "events.jsonl").read_text()
+            assert controller.lifecycle(root)["pod_create_outcome"] == "response-invalid"
+
+    def test_price_observation_never_retains_invalid_raw_values(self) -> None:
+        with self.temporary_path() as directory:
+            root, _, auth = make_session(Path(directory))
+            for invalid in ("private-test-key", {"secret": "private-test-key"}, float("nan"), True):
+                controller.record_pod_price_observation(root, {"cost": invalid}, auth)
+            raw = (root / "events.jsonl").read_text()
+            assert "private-test-key" not in raw
+            rows = [json.loads(line) for line in raw.splitlines()]
+            assert all(row["observed_gpu_hourly_usd"] is None for row in rows if row["event"] == "pod-price-observed")
+
+    def test_invalid_or_missing_gpu_price_is_deleted(self) -> None:
+        for invalid in (None, -1, float("nan"), "private-test-key", True):
+            with self.subTest(cost=invalid), self.temporary_path() as directory:
+                root, identity, auth = make_session(Path(directory))
+                checked = controller.validate_authorization(auth, identity)
+                bound = deadlines(root, checked)
+                with controller.lifecycle_locked(root) as life:
+                    life["volume_id"] = "vol-1"
+                row = pod(identity, checked, "vol-1", bound)
+                if invalid is None:
+                    row.pop("cost")
+                else:
+                    row["cost"] = invalid
+                transport = ScriptedTransport([
+                    ("POST", "pods", (201, row)),
+                    ("DELETE", "pods/pod-1", (204, None)),
+                ])
+                with self.assertRaises(controller.Refusal):
+                    controller.create_pod_once(controller.RunPodV2(transport), root, identity, checked, bound, "private-test-key")
+                assert not transport.answers
+                assert controller.lifecycle(root)["pod_create_outcome"] == "response-invalid"
+                assert "private-test-key" not in (root / "events.jsonl").read_text()
+
     def temporary_path(self):
         return tempfile.TemporaryDirectory(prefix="verbatus-controller-test-")
 

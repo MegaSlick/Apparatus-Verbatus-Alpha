@@ -774,14 +774,24 @@ def validate_pod(
         "count"
     ) != authorization["gpu_count"]:
         raise Refusal("pod response GPU id/count did not equal the exact authorized value")
-    if decimal(pod.get("cost"), "pod response cost") != decimal(
-        authorization["expected_pod_hourly_usd"], "expected pod rate"
+    # RunPod's v2 `cost` reports the GPU rate; the disk is accounted separately.
+    # The retained 2026-09-15 live A100 response reports 1.59 with a 200-GB disk.
+    observed_gpu_rate = decimal(pod.get("cost"), "pod response cost")
+    if observed_gpu_rate != decimal(
+        authorization["quoted_gpu_hourly_usd"], "quoted GPU rate"
     ):
         raise Refusal("pod response price did not equal the exact authorized quoted price")
-    if decimal(pod.get("cost"), "pod response cost") > decimal(
+    observed_pod_rate = observed_gpu_rate + decimal(
+        authorization["quoted_pod_disk_hourly_usd"], "quoted pod disk rate"
+    )
+    if observed_pod_rate > decimal(
         authorization["max_pod_hourly_usd"], "maximum pod rate"
     ):
         raise Refusal("pod response price exceeded the authorized ceiling")
+    if observed_pod_rate + decimal(
+        authorization["max_volume_hourly_usd"], "maximum volume rate"
+    ) > decimal(authorization["max_combined_hourly_usd"], "maximum combined rate"):
+        raise Refusal("pod response and storage prices exceeded the combined ceiling")
     status = pod.get("status")
     if status not in {"PROVISIONING", "STARTING", "RUNNING"}:
         raise Refusal(f"pod response status {status!r} is not a live startup status")
@@ -796,6 +806,26 @@ def validate_pod(
     if not isinstance(pod_id, str) or not pod_id:
         raise Refusal("pod response omitted a non-empty id")
     return pod_id
+
+
+def record_pod_price_observation(
+    session_dir: Path, pod: Mapping[str, object], authorization: Mapping[str, object],
+    *, source: str = "create",
+) -> None:
+    # Never retain raw response fields: a refused value can contain credentials.
+    try:
+        observed = str(decimal(pod.get("cost"), "pod response cost"))
+    except Refusal:
+        observed = None
+    event(
+        session_dir,
+        "pod-price-observed",
+        source=source,
+        session_id=session_dir.name,
+        observed_gpu_hourly_usd=observed,
+        quoted_gpu_hourly_usd=str(authorization["quoted_gpu_hourly_usd"]),
+        quoted_pod_disk_hourly_usd=str(authorization["quoted_pod_disk_hourly_usd"]),
+    )
 
 
 def exact_named(rows: list[dict[str, Any]], name: object) -> list[dict[str, Any]]:
@@ -1022,10 +1052,12 @@ def reconcile_pod(
     life = lifecycle(session_dir)
     matches = exact_named(api.list_pods(), identity["pod_name"])
     if len(matches) == 1:
+        record_pod_price_observation(session_dir, matches[0], authorization, source="reconcile-list")
         pod_id = validate_pod(matches[0], identity, authorization, str(life["volume_id"]), deadlines, api_key)
         _, exact = api.get_pod(pod_id)
         if exact is None:
             raise Refusal("named pod vanished before exact GET validation")
+        record_pod_price_observation(session_dir, exact, authorization, source="reconcile-get")
         validate_pod(exact, identity, authorization, str(life["volume_id"]), deadlines, api_key)
         with lifecycle_locked(session_dir) as current:
             current["pod_id"] = pod_id
@@ -1128,6 +1160,7 @@ def create_pod_once(
                     life["phase"] = "pod-create-rejected"
             return None
         return reconcile_pod(api, session_dir, identity, authorization, deadlines, api_key)
+    record_pod_price_observation(session_dir, value, authorization)
     try:
         pod_id = validate_pod(value, identity, authorization, volume_id, deadlines, api_key)
     except Refusal:
