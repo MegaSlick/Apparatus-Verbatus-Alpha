@@ -28,8 +28,10 @@
 # `max_model_len = 18,000` (the vendor's own `--max-model-len`); Churro
 # (`attestator_3`) 401,408 / 4,014,080 px (its `preprocessor_config.json` and
 # the paper's own 5,120-patch fine-tuning ceiling, CHURRO paper §B.2) at
-# `max_model_len = 8,192` (5,100 image + 27 prompt + 1,905 answer -- U14 --
-# clears it with room to spare); DAI (`attestator_2`) 3,136 / 2,359,296 px,
+# `max_model_len = 8,192` on the smaller tiers (5,100 image + 27 prompt +
+# 1,905 measured answer clears it); the 80 GB+ tier admits the complete
+# declared 20,000-token answer in a 32,768-token context. DAI (`attestator_2`)
+# 3,136 / 2,359,296 px,
 # equal to `DAI_MAX_TOTAL_PIXELS` in `pipeline/3_attestatores/feeding.py` so
 # the client-side crop alone binds, at the `max_model_len = 8,192` it already
 # carried.  `max_num_batched_tokens = 8,192` on the two page chairs (Chandra,
@@ -71,7 +73,13 @@
 # `MEASURED_DENSE_PAGE_ANSWER_TOKENS["attestator_3"]` now carries that cost
 # directly rather than a separately-tracked shortfall. Every row still holds
 # the request: 5,100 image + 27 prompt + 1,905 answer = 7,032, against
-# `max_model_len = 8,192` at every tier.
+# `max_model_len = 8,192` on the smaller tiers. That measured example is not
+# the vendor's complete output allowance: the 80 GB+ row now holds the full
+# 20,000-token declared bound plus page and prompt in 32,768 tokens. The
+# pinned Churro config declares max_position_embeddings = 128000:
+# https://huggingface.co/stanford-oval/churro-3B/blob/ca2150ea465d5a3d67818c50e234b9422619c75d/config.json
+# Smaller tiers remain capacity-limited; a length stop there cannot establish
+# that the whole page was read. The larger row remains preflight-unproven.
 #
 # `max_pixels` is deliberately NOT reduced to fit a smaller context.  Cutting
 # pixels to fit a context trades a measurable refusal for an unmeasurable
@@ -548,7 +556,7 @@ served_model_id = "attestator-3-churro"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 8192
+max_model_len = 32768
 max_num_seqs = 4
 max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.88"

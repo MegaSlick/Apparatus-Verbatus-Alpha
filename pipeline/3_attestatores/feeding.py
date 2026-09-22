@@ -189,8 +189,9 @@ def churro_generation() -> dict[str, int]:
     value is computed from, so this chair's bound cannot drift from the number
     the bound seam applies. It is *declared* evidence: what actually goes out is
     ``min(this, max_model_len - image - prompt)`` through
-    ``live_witness.generation_bound_sent``, and at every row in the shipped real
-    catalogue the row is what binds, so no ``max_tokens`` is sent at all.
+    ``live_witness.generation_bound_sent``. The smaller real tiers are bounded
+    by their row and send no ``max_tokens``; the 80 GB+ row has room for the
+    full declared output allowance and sends it explicitly.
 
     The vendor's ``repetition_penalty`` of 1.05 is deliberately **not** folded in
     here. This is the view retained inside every Churro model view, written

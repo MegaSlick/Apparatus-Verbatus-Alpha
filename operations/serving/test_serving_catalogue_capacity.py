@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,12 +20,14 @@ import pytest
 
 from common.churro_document import CHURRO_PROMPT_VARIANTS
 from common.request_capacity import (
+    DECLARED_ANSWER_BOUND_TOKENS,
     MEASURED_PROMPT_TOKENS,
     PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
     act_answer_budget,
     dense_page_answer_budget,
     request_fits,
     row_image_geometry,
+    sendable_max_tokens,
 )
 from operations.serving.config import ServingProfile, load_serving_recipes
 
@@ -161,6 +164,25 @@ def test_every_shipped_real_row_can_serve_the_requests_its_chair_sends(row, case
     record = request_fits(row, images, PROMPT_TOKENS[row.chair], answer_budget)
     assert record["fits"] is True, record["reason"]
     assert record["headroom"] >= 0
+
+
+def test_churro_80gb_admits_the_complete_vendor_answer_bound():
+    row = next(
+        row
+        for row in _shipped_rows()
+        if row.chair == "attestator_3" and row.tier == "generic-80gb-plus"
+    )
+    declared_answer = DECLARED_ANSWER_BOUND_TOKENS[row.chair]
+    capacity = request_fits(row, [A4_300DPI], PROMPT_TOKENS[row.chair], declared_answer)
+    assert capacity["fits"] is True, capacity["reason"]
+    assert sendable_max_tokens(row.chair, capacity) == {"max_tokens": declared_answer}
+    old_capacity = request_fits(
+        replace(row, max_model_len=8192),
+        [A4_300DPI],
+        PROMPT_TOKENS[row.chair],
+        declared_answer,
+    )
+    assert old_capacity["fits"] is False
 
 
 def test_the_two_view_page_fallback_act_fits_every_tiers_context():
