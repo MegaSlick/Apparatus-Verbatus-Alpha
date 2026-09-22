@@ -1095,6 +1095,8 @@ def _refused_page_answer(
         },
         "provenance": dict(provenance),
         "capacity": dict(capacity),
+        "attempt_ordinal": 1,
+        "attempts": [],
     }
     return PageAnswer(
         ordinal=ordinal,
@@ -1406,6 +1408,11 @@ def ask_page(
         # The arithmetic this request was admitted on, published beside the
         # answer it produced. Present on every live page record, fit or held.
         "capacity": capacity,
+        # `run.py` assigns this when it publishes the received answer as an
+        # immutable structure attempt, then carries the references on the
+        # once-only terminal page record.
+        "attempt_ordinal": 1,
+        "attempts": [],
     }
     return PageAnswer(
         ordinal=ordinal,

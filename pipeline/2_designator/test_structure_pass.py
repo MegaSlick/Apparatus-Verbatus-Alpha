@@ -1069,6 +1069,26 @@ def test_a_cut_off_answer_holds_the_page_even_though_it_parsed(live_run, tmp_pat
     assert len(endpoint.requests) == 2
 
 
+def test_an_invalid_structure_answer_gets_one_bounded_coverage_retry(live_run, tmp_path, monkeypatch):
+    root, catalogue = live_run
+    endpoint, exit_code = _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [_answer(PAGE_ONE_ACTS), scripted_structure_refusal("no-layout-blocks"), _answer(PAGE_TWO_ACTS)],
+    )
+    assert exit_code == EXIT_COMPLETE
+    assert len(endpoint.requests) == 3
+    attempts = [
+        row for row in _artifacts(root, DESIGNATOR, "structure-attempt")
+        if row["subject_id"] == _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["subject_id"]
+    ]
+    assert len(attempts) == 2
+    final = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
+    assert final["attempt_ordinal"] == 2 and len(final["attempts"]) == 2
+
+
 @pytest.mark.parametrize("outcome", ["no-layout-blocks", "blocks-not-at-top-level"])
 def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
     live_run, tmp_path, monkeypatch, outcome
@@ -1094,7 +1114,12 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
         catalogue,
         tmp_path,
         monkeypatch,
-        [_answer(PAGE_ONE_ACTS), scripted_structure_refusal(outcome)],
+        [
+            _answer(PAGE_ONE_ACTS),
+            scripted_structure_refusal(outcome),
+            scripted_structure_refusal(outcome),
+            scripted_structure_refusal(outcome),
+        ],
     )
     assert exit_code == EXIT_HELD
     _assert_page_two_held(root, code)
@@ -1633,6 +1658,8 @@ def _minimal_answer_record() -> dict[str, Any]:
     record["findings"] = []
     record["decoding"] = dict.fromkeys(designator._STRUCTURE_ANSWER_DECODING_FIELDS)
     record["vendor"] = dict.fromkeys(designator._STRUCTURE_ANSWER_VENDOR_FIELDS)
+    record["attempt_ordinal"] = 1
+    record["attempts"] = []
     return record
 
 

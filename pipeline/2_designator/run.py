@@ -99,6 +99,7 @@ from common.stage import (  # noqa: E402
     SECONDARY_PROPOSER_CHAIR,
     STRUCTURE_ANSWER_KIND,
     StageContext,
+    _stage_records,
     continuation_for,
     current_recovery_request,
     fallback_page_act_key,
@@ -109,6 +110,13 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
+
+# A whole-page structure call may be retried only to recover from a structural
+# loop or an invalid layout envelope.  This is a count of all attempts,
+# including the first, and is deliberately no greater than recovery.toml's
+# ruled absolute ceiling.  It is not a content-quality sampling budget.
+MAX_STRUCTURE_ATTEMPTS = 3
+STRUCTURE_ATTEMPT_KIND = "structure-attempt"
 
 # Fields a Designator artifact may never carry, at any depth of its payload.
 # `acts/`-equivalent artifacts (`kind="act-group"`) "contain no text" per the
@@ -394,6 +402,10 @@ _STRUCTURE_ANSWER_FIELDS = frozenset(
         # admitted or held on. Counts and dimensions only -- no text -- so it
         # passes `_refuse_text_fields` like every other block here.
         "capacity",
+        # Every received answer is first published under STRUCTURE_ATTEMPT_KIND.
+        # The once-only terminal answer names the complete attempt history.
+        "attempt_ordinal",
+        "attempts",
     }
 )
 # Geometry, and both of the chair's free strings only as a digest and a length.
@@ -438,6 +450,7 @@ _STRUCTURE_ANSWER_VENDOR_FIELDS = frozenset(
     {"repository", "commit", "licence", "prompt_source", "parser_source", "prompt_sha256"}
 )
 _STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "temperature", "decoding_config_sha256"})
+_STRUCTURE_ATTEMPT_REFERENCE_FIELDS = frozenset({"relative_path", "sha256"})
 # Seven finding kinds: this pass's own `duplicate-rectangle`, and the six the
 # Chandra layout grammar raises (`common/chandra_layout.py`), carried onto the
 # record by `structure_pass._designator_finding`. Declared here independently of
@@ -480,6 +493,14 @@ def _validate_structure_answer_payload(payload: object) -> None:
         record["decoding"], _STRUCTURE_ANSWER_DECODING_FIELDS, "structure-answer decoding block"
     )
     _closed_object(record["vendor"], _STRUCTURE_ANSWER_VENDOR_FIELDS, "structure-answer vendor")
+    ordinal = record["attempt_ordinal"]
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool) or not 1 <= ordinal <= MAX_STRUCTURE_ATTEMPTS:
+        raise ContractError("a Designator structure attempt ordinal is outside the bounded range")
+    attempts = record["attempts"]
+    if not isinstance(attempts, list) or len(attempts) > MAX_STRUCTURE_ATTEMPTS:
+        raise ContractError("a Designator structure answer has an unbounded attempt history")
+    for reference in attempts:
+        _closed_object(reference, _STRUCTURE_ATTEMPT_REFERENCE_FIELDS, "structure attempt reference")
     acts = record["acts"]
     if not isinstance(acts, list):
         raise ContractError("a Designator structure-answer payload carries no act list")
@@ -3006,6 +3027,50 @@ def _publish_structure_answer(
     return context.input_ref(published.relative_path)
 
 
+def _recoverable_structure_outcome(answer: structure_pass.PageAnswer) -> bool:
+    """Whether an answer permits another coverage attempt, never a quality reroll."""
+    return answer.reason_code == structure_pass.HELD_DEGENERATE or answer.reason_code in {
+        f"structure-answer-{outcome}" for outcome in structure_pass.chandra_layout.PARSE_OUTCOMES
+    }
+
+
+def _publish_structure_attempt(context, page_record: dict, answer: structure_pass.PageAnswer, ordinal: int) -> dict[str, str]:
+    """Persist one received answer before recovery can decide what comes next."""
+    answer.record["attempt_ordinal"] = ordinal
+    answer.record["attempts"] = []
+    _validate_structure_answer_payload(answer.record)
+    published = context.publish(
+        kind=STRUCTURE_ATTEMPT_KIND,
+        subject_id=answer.page_id,
+        outcome="held" if answer.disposition == structure_pass.DISPOSITION_HELD else "proposed",
+        attempt=attempt_id(answer.page_id, "structure", ordinal),
+        inputs=[context.input_ref(page_record["payload"]["image_path"])],
+        payload=answer.record,
+    )
+    return context.input_ref(published.relative_path)
+
+
+def _published_structure_attempts(context, page_id: str) -> list[tuple[structure_pass.PageAnswer, dict[str, str]]]:
+    """Read a contiguous immutable attempt history for an interrupted page."""
+    rows = [row for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ATTEMPT_KIND) if row["subject_id"] == page_id]
+    rows.sort(key=lambda row: row["payload"].get("attempt_ordinal", 0))
+    result: list[tuple[structure_pass.PageAnswer, dict[str, str]]] = []
+    for ordinal, row in enumerate(rows, start=1):
+        payload = row["payload"]
+        _validate_structure_answer_payload(payload)
+        if payload["attempt_ordinal"] != ordinal or row["attempt_id"] != attempt_id(page_id, "structure", ordinal):
+            raise ContractError(f"structure attempts for page {page_id} are not a contiguous sealed history")
+        result.append(
+            (
+                structure_pass.sealed_page_answer(payload),
+                context.input_ref(
+                    context.tree.artifact_path(DESIGNATOR, STRUCTURE_ATTEMPT_KIND, row["artifact_id"])
+                ),
+            )
+        )
+    return result
+
+
 def live_initial_pass(context, serving_factory, tier: str) -> bool:
     """Mark out every sealed page through the served structure chair. True when held.
 
@@ -3109,23 +3174,34 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
             )
             for ordinal in unanswered:
                 page_record = pages[ordinal]
-                answer = structure_pass.ask_page(
-                    context,
-                    client,
-                    page_record,
-                    ordinal,
-                    _read_checked_page_bytes(context, page_record),
-                    page_cache[ordinal],
-                    temperature=temperature,
-                    decoding_config_sha256=decoding_sha256,
-                    provenance=provenance,
-                )
-                # Published here, inside the loop, rather than after it: an
-                # interruption at page 900 of 1000 otherwise leaves nothing on
-                # disk and repeats every model call already paid for, and the
-                # 899 answers that did arrive are invisible until the pass ends
-                # (GOVERNANCE 2). Each page's answer is complete on its own, so
-                # there is nothing to wait for.
+                history = _published_structure_attempts(context, page_record["subject_id"])
+                while not history or (
+                    _recoverable_structure_outcome(history[-1][0])
+                    and len(history) < MAX_STRUCTURE_ATTEMPTS
+                ):
+                    answer = structure_pass.ask_page(
+                        context,
+                        client,
+                        page_record,
+                        ordinal,
+                        _read_checked_page_bytes(context, page_record),
+                        page_cache[ordinal],
+                        temperature=temperature,
+                        decoding_config_sha256=decoding_sha256,
+                        provenance=provenance,
+                    )
+                    # Publish before the loop decides whether another attempt
+                    # is permitted. An interruption here therefore resumes from
+                    # this immutable answer rather than paying to replace it.
+                    history.append(
+                        (
+                            answer,
+                            _publish_structure_attempt(context, page_record, answer, len(history) + 1),
+                        )
+                    )
+                answer = history[-1][0]
+                answer.record["attempts"] = [reference for _attempt, reference in history]
+                answer.record["attempt_ordinal"] = len(history)
                 answers[ordinal] = answer
                 answer_refs[ordinal] = _publish_structure_answer(context, page_record, answer)
 
