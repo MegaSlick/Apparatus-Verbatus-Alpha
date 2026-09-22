@@ -42,7 +42,7 @@ def drill_source(source: str) -> str:
     marker = "try: boot()"
     if source.count(marker) != 1:
         raise RuntimeError("embedded deadman did not have the expected single boot tail")
-    definitions = source.rsplit(marker, 1)[0]
+    definitions, production_tail = source.rsplit(marker, 1)
     harness = r'''
 SAFE_REASONS={
  'deadman-not-root','deadman-not-pid1','invalid-deadline',
@@ -50,6 +50,10 @@ SAFE_REASONS={
  'worker-separation-unverified','default-start-service-exited',
  'controller-ack-unreadable','controller-ack-mismatch',
 }
+def safe_drill_reason(reason):
+ if reason in SAFE_REASONS: return reason
+ if reason.startswith('unhandled-boot-or-timer-'): return reason
+ return 'unrecognized-termination-reason'
 def drill_result(outcome,reason):
  best_effort_write(root/'boot-drill-result.json',{
   'schema':'verbatus-deadman-boot-drill.v1',
@@ -60,19 +64,13 @@ def drill_result(outcome,reason):
   'uid':os.geteuid(),
  })
 def terminate_for_drill(reason):
- drill_result('terminate-requested',reason if reason in SAFE_REASONS else 'unrecognized-termination-reason')
- raise SystemExit(97)
+ drill_result('terminate-requested',safe_drill_reason(reason))
+ os._exit(97)
 terminate_forever=terminate_for_drill
-try:
- boot()
-except SystemExit:
- raise
-except BaseException as error:
- reason=str(error)
- drill_result('boot-exception',reason if reason in SAFE_REASONS else 'unhandled-'+type(error).__name__)
- raise SystemExit(98)
 '''
-    return definitions + harness
+    # Keep the production `try: boot()` / `except BaseException` tail byte-for-byte.
+    # Only its terminal provider DELETE function is replaced, immediately before use.
+    return definitions + harness + marker + production_tail
 
 
 def run(command: list[str], *, check: bool = True, capture: bool = False):
