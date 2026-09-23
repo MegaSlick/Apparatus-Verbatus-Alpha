@@ -1,16 +1,16 @@
 # How many times rework may be asked for before review.
 #
-# Tyrel's ruling, quoted so a later reader does not have to go looking:
+# The project lead's ruling, quoted so a later reader does not have to go looking:
 # "PURE ABSOLUTE, STOP AT 3". The absolute cap below is that ruling; it is not a
 # suggestion a stage may argue with, and nothing in the pipeline may raise it at
 # run time.
 #
-# SETTLED 2026-08-05, ruling #18: he blesses BOTH mechanisms. The per-act recovery
-# budget below and the run-level hard-failure cap are separate instruments and both
-# stand. The run-level threshold is "more than two": one hard failure is a fluke,
-# two is an early warning, more than two means something needs fixing and the run
-# stops. This file governs the per-act budget only; the run-level threshold lives
-# in `config/hard_failure.toml`. Nothing here is queued for him any more.
+# The per-act recovery budget below and the run-level hard-failure cap are
+# separate instruments and both stand. The run-level threshold is "more than
+# two": one hard failure is a fluke, two is an early warning, more than two
+# means something needs fixing and the run stops. This file governs the
+# per-act budget only; the run-level threshold lives in
+# `config/hard_failure.toml`.
 #
 # The two allowances below are two DISTINCT recovery OPERATIONS, not one pooled
 # total. Every `recovery-request` names which one it means in `recovery_kind`
@@ -29,7 +29,7 @@
 # regression tests with a zero fallback budget and with a page-level-only budget,
 # so it is not a branch no configuration can falsify.
 #
-# Recovery recovers COVERAGE, never quality (GOVERNANCE 11). A suspected
+# Recovery recovers COVERAGE, never quality (principle 7). A suspected
 # fabrication or a poor reading may be flagged for review; it may never be
 # re-rolled until it looks better. Nothing disappears inside a loop: every
 # request and every outcome is an artifact.

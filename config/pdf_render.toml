@@ -4,8 +4,8 @@
 # target and the bounded target it can safely use. Pixel, decoded-byte, and 72-DPI
 # floor limits remain code-owned and cannot be weakened here.
 #
-# 300 rather than the 400 this shipped with, on Tyrel's instruction 2026-08-05,
-# after measuring his own material rather than reasoning from a standard:
+# 300 rather than the 400 this shipped with, chosen after measuring the corpus
+# material rather than reasoning from a standard:
 #
 #   - Hudson's Bay Company account books, rendered and measured at several targets,
 #     put written line pitch near 52 px at 150 DPI. That is roughly a 21 px
@@ -23,7 +23,7 @@
 #
 # **Still not proven, and adjustable for exactly that reason.** This is measured
 # against page geometry, not against reading accuracy: nothing here has read a real
-# act yet. GOVERNANCE 9 wants a real approved sample before scale, and if a hand
+# act yet. Principle 10 wants a real approved sample before scale, and if a hand
 # turns out to need more, this is one number in one file.
 
 [pdf]

@@ -17,9 +17,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-# 3.13 was dropped from the contract on 2026-08-29 by Tyrel's in-session
-# ruling: 3.12 is the floor and 3.14 the newest supported, and no failure in
-# the pr/ queue's CI runs was ever unique to the middle leg. The documents the
+# 3.13 was dropped from the contract by ruling: 3.12 is the floor and 3.14
+# the newest supported, and no failure in the pr/ queue's CI runs was ever
+# unique to the middle leg. The documents the
 # assertion once cited (R0_CONTRACT_NOTE.md, GAMEPLAN_v3.md) are no longer in
 # the tree; this comment is the contract's record now.
 REQUIRED_PYTHON_VERSIONS = {"3.12", "3.14"}
