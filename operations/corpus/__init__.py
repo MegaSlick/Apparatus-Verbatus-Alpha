@@ -37,9 +37,9 @@ travel under its own name, would make every declared set open in practice. The
 package was inconsistent with itself here: `local_admission.py` already wrapped
 (`reference-build-refused`, `snapshot-mismatch`) while `evaluate.py` let
 `reference.py`'s and `compare.py`'s names escape. Settled for the package and
-recorded here (independent audit of 2026-09-11, round 2 item 11).
+recorded here.
 
-**Not a picker (hard rule 8).** Nothing in this package selects among readings
+**Not a picker (principle 1).** Nothing in this package selects among readings
 or witnesses. `plan.py` groups rows that already exist by the page they already
 belong to; `holdout.py` names pages the `test` split protects; `compare.py`
 runs only after a pipeline run is sealed, selects nothing about what the

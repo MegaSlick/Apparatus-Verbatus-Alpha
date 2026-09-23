@@ -29,7 +29,7 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
     Each path guard in `_canonical_distinct_paths` tells the operator that nothing
     was written. That is a statement about this directory, and until it is compared
     against the directory it is a statement the suite takes on trust -- exactly the
-    shape GOVERNANCE 10 refuses, since a pass that published the disagreement
+    shape principle 8 refuses, since a pass that published the disagreement
     document and then refused would still print it.
     """
     return {

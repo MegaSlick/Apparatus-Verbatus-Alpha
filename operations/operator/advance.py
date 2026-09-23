@@ -332,7 +332,7 @@ def record_advance(
     observation Unit 17 owns and never a refusal. In the worker that
     observation was written to a stderr pipe `trigger_advance` discards on
     success, so moving it to the parent is where it reaches a person at all
-    (GOVERNANCE 2). Splitting a diagnostic-free variant out of
+    (principle 2). Splitting a diagnostic-free variant out of
     `_verify_stage_seal` was the alternative and is declined: that function
     exists to be the single definition of what a seal means, and a second,
     weaker entry point beside it is the shape its own docstring warns against.
@@ -342,7 +342,7 @@ def record_advance(
     the `stored_boundary` read above and the write below — or between the
     parent's verification and this process starting at all — leaves a record
     binding a digest that is already stale. No number of re-reads closes that:
-    there is no cross-process lock over a run tree, and GOVERNANCE 4 forbids
+    there is no cross-process lock over a run tree, and principle 4 forbids
     retracting the record once it is written, so a post-write check could only
     report what the binding already reports. What the binding buys instead is that
     the staleness is permanent and visible — `verify_advance` refuses such a
@@ -572,7 +572,7 @@ def trigger_advance(
     # `runpy.run_module(run_name='__main__')`, where an ordinary
     # `DeprecationWarning` prints by default -- so a completed, verifiable
     # advance was reported as refused with no fault anywhere. What the worker
-    # wrote is still not discarded (GOVERNANCE 2): the record verified against
+    # wrote is still not discarded (principle 2): the record verified against
     # the exact request, so this is a note beside a real advance rather than a
     # verdict on it, and it is the operator who decides what to do about it.
     if completed.stderr.strip():
@@ -581,7 +581,7 @@ def trigger_advance(
         # person" -- it truncates at 2000 characters, rewrites vocabulary, and
         # replaces a structured traceback with a placeholder. A worker traceback
         # is exactly what this note exists to carry, so sanitizing here threw
-        # away the evidence and left the operator no copy of it (GOVERNANCE 2).
+        # away the evidence and left the operator no copy of it (principle 2).
         # This makes the line safe to print and changes nothing else about it.
         try:
             print(

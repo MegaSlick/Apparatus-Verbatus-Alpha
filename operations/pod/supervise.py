@@ -716,7 +716,8 @@ def close_lease_now(
     lifetime, by a supervisor tick that happened to observe a non-`RUNNING`
     provider state, or by the provider's own console: `cli.py` had `create` and
     `adopt` and nothing else, and the operator surface's `close` is
-    fixture-only. That is a gap on the one path GOVERNANCE 8 cares about, and
+    fixture-only. That is a gap on the one path that needs the project lead's
+    permission, and
     the plan for the first live boots says so.
 
     Nothing here is a second close implementation. `_close_lease` -- the same
@@ -891,12 +892,12 @@ def _write_final_record(
     detail: str,
     now: datetime,
 ) -> Path:
-    """One durable record per run, so GOVERNANCE 2 has something on disk even
+    """One durable record per run, so principle 2 has something on disk even
     when nobody is watching a terminal.
 
     Named per run -- pid and timestamp both -- rather than once per lease:
     a second driver's own outcome (e.g. a BUSY refusal while a first driver
-    is still live) is itself a fact GOVERNANCE 2 requires kept, and a shared
+    is still live) is itself a fact principle 2 requires kept, and a shared
     fixed name would let a later run's record silently replace it.
 
     An id that is not a lease id names the file the anonymous way and keeps the
@@ -1121,7 +1122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # A failing record write must not escape as a bare traceback --
             # the refusal itself is still the reason to return, not raise,
             # and the printed detail must say the record did not land too
-            # (GOVERNANCE 2, mirrored from the crash handler below).
+            # (principle 2, mirrored from the crash handler below).
             detail = f"{detail}; final record also failed to write: {record_error}"
         print(
             json.dumps(
@@ -1154,7 +1155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # must not stop the crash from being reported below either --
             # but it must not be swallowed silently either: an operator
             # reading only the printed detail could not otherwise tell a
-            # write that failed from one that never ran (GOVERNANCE 2).
+            # write that failed from one that never ran (principle 2).
             detail = f"{detail}; final record also failed to write: {record_error}"
         print(
             json.dumps(

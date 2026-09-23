@@ -8,8 +8,7 @@ export it reads them from.
 The three outcomes the whole "whole denominator" claim rests on -- a reference
 record missed, a reference record not attempted, and a pipeline act nothing
 matched -- each have their own case here, and every reason in
-`EVALUATION_REFUSAL_REASONS` is shown to fire (independent audit of 2026-09-11,
-finding 15).
+`EVALUATION_REFUSAL_REASONS` is shown to fire.
 """
 
 from __future__ import annotations

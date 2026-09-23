@@ -45,7 +45,6 @@ def test_reading_a_record_from_a_fifo_refuses_instead_of_hanging(tmp_path: Path)
     `sha256_file`'s own docstring describes and guards against by opening
     non-blocking and refusing anything the open descriptor does not call a
     regular file. `bounded_bytes` read the same recorded paths without it.
-    Found by CodeRabbit.
     """
     fifo = tmp_path / "not-a-record"
     os.mkfifo(fifo)

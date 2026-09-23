@@ -43,7 +43,7 @@ def test_only_milestone_and_decision_may_ever_be_sent(event: str) -> None:
 @pytest.mark.parametrize("event", sorted(notify_bridge.ALLOWED_EVENTS))
 def test_an_allowed_moment_reaches_the_notify_script_with_one_line(event: str) -> None:
     runner = RecordingRunner()
-    outcome = notify_bridge.shell_notifier(runner=runner)(event, "run tyrel-1 finished")
+    outcome = notify_bridge.shell_notifier(runner=runner)(event, "run r1 finished")
 
     assert outcome.attempted and outcome.delivered
     assert len(runner.calls) == 1
@@ -51,7 +51,7 @@ def test_an_allowed_moment_reaches_the_notify_script_with_one_line(event: str) -
     assert argv[0] == "sh"
     assert argv[1].endswith("operations/notify/notify.sh")
     assert argv[2] == event
-    assert argv[3] == "run tyrel-1 finished"
+    assert argv[3] == "run r1 finished"
     assert outcome.line() == "Phone notification: sent."
 
 
@@ -215,7 +215,7 @@ def test_the_test_sink_marker_is_reported_as_suppressed_and_never_as_sent() -> N
 
     runner = RecordingRunner(stdout="NOTIFY_SUPPRESSED verbatus-test-sink\n")
 
-    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", "run tyrel-1 finished")
+    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", "run r1 finished")
 
     assert outcome.attempted
     assert not outcome.delivered
@@ -230,7 +230,7 @@ def test_a_real_success_is_still_delivered_and_carries_no_suppression() -> None:
 
     for stdout in ("", "\n", "some unrelated chatter\n"):
         outcome = notify_bridge.shell_notifier(runner=RecordingRunner(stdout=stdout))(
-            "milestone", "run tyrel-1 finished"
+            "milestone", "run r1 finished"
         )
 
         assert outcome.attempted and outcome.delivered
