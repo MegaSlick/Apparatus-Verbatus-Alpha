@@ -6022,6 +6022,45 @@ def _publish_chandra_terminal(
     )
 
 
+def _sealed_chandra_intents(context, subject_id: str) -> list[dict[str, Any]]:
+    """Return the validated intent chain, including a possible unmatched tail."""
+
+    rows: list[dict[str, Any]] = []
+    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "chandra-native-attempt-intent" or entry["subject_id"] != subject_id:
+            continue
+        record = context.tree.read_artifact(
+            ATTESTATORES, "chandra-native-attempt-intent", entry["artifact_id"]
+        )
+        payload = record.get("payload")
+        ordinal = payload.get("native_attempt_ordinal") if isinstance(payload, dict) else None
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or not 1 <= ordinal <= CHANDRA_MAX_ATTEMPTS
+        ):
+            raise SchemaRefusal("a retained Chandra native intent has no valid ordinal")
+        expected_artifact_id = artifact_id(
+            ATTESTATORES,
+            "chandra-native-attempt-intent",
+            subject_id,
+            attempt_id(subject_id, "chandra-native-intent", ordinal),
+        )
+        if entry["artifact_id"] != expected_artifact_id:
+            raise SchemaRefusal("a retained Chandra native intent has a moved identity")
+        intent_ref = context.artifact_ref(
+            ATTESTATORES, "chandra-native-attempt-intent", entry["artifact_id"]
+        )
+        _validate_chandra_intent(
+            context,
+            subject_id=subject_id,
+            native_attempt_ordinal=ordinal,
+            intent_ref=intent_ref,
+        )
+        rows.append(record)
+    return sorted(rows, key=lambda record: record["payload"]["native_attempt_ordinal"])
+
+
 def _sealed_chandra_attempts(context, subject_id: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
@@ -6125,9 +6164,23 @@ def _serve_chandra_native_page(
     """Run or resume the pinned vendor loop and return only its final result."""
 
     subject_id = _chandra_native_subject(page_subject_id, chair, witness_attempt_ordinal)
+    intent_records = _sealed_chandra_intents(context, subject_id)
     terminal_records = _sealed_chandra_attempts(context, subject_id)
     if len(terminal_records) > CHANDRA_MAX_ATTEMPTS:
         raise FatalAccounting("a Chandra native retry chain exceeds seven physical requests")
+    if len(intent_records) not in {len(terminal_records), len(terminal_records) + 1}:
+        raise FatalAccounting(
+            "a Chandra native retry chain has intents that do not match its terminal evidence"
+        )
+    for expected, record in enumerate(intent_records, 1):
+        if record["payload"]["native_attempt_ordinal"] != expected:
+            raise FatalAccounting("a Chandra native intent chain has a non-contiguous ordinal")
+    if len(intent_records) == len(terminal_records) + 1:
+        # Detect the unmatched durable intent before preparing a new dispatch.
+        # A resumed service has a new receipt, so attempting to republish first
+        # would report immutable-byte drift instead of the delivery ambiguity
+        # this intent exists to preserve.
+        refuse_chandra_orphan_intent(True)
 
     # Existing terminal evidence is immutable and sufficient to resume. Its
     # trigger says whether the pinned loop had another request to make.

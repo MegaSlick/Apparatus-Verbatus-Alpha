@@ -202,6 +202,25 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _canonical_ast(value: object) -> object:
+    """Represent AST semantics without ``ast.dump``'s version-specific defaults."""
+    if isinstance(value, ast.AST):
+        return [
+            type(value).__name__,
+            [(name, _canonical_ast(field)) for name, field in ast.iter_fields(value)],
+        ]
+    if isinstance(value, list):
+        return [_canonical_ast(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"unsupported AST value {type(value).__name__}")
+
+
+def _canonical_ast_digest(value: ast.AST) -> str:
+    normalized = json.dumps(_canonical_ast(value), ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _function_body_digest(source: str, *, filename: str, function_name: str) -> str:
     """Digest one function's normalized AST body, excluding its docstring."""
     tree = ast.parse(source, filename=filename)
@@ -217,8 +236,7 @@ def _function_body_digest(source: str, *, filename: str, function_name: str) -> 
     body = (
         function.body[1:] if ast.get_docstring(function, clean=False) is not None else function.body
     )
-    normalized = ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return _canonical_ast_digest(ast.Module(body=body, type_ignores=[]))
 
 
 # How deep into a module-level container the string walk below goes.  Six is
@@ -450,10 +468,11 @@ def test_chandra_native_inference_carries_the_same_pinned_vendor_provenance():
 def test_chandra_native_retry_arithmetic_and_detector_match_the_pinned_source_offline():
     """Pin executable semantics measured from the named vendor revision.
 
-    The detector digest is over the AST body only, so comments, annotations and
-    the local explanatory docstring do not create false drift.  The expected
-    digest was measured from ``chandra/model/util.py::detect_repeat_token`` at
-    ``CHANDRA_CODE_COMMIT``.  Retry temperatures use the vendor expression
+    The detector digest is over a canonical AST body only, so comments,
+    annotations, the local explanatory docstring, and ``ast.dump`` default-field
+    rendering do not create false drift across supported Python versions. The
+    expected digest was measured from ``chandra/model/util.py::detect_repeat_token``
+    at ``CHANDRA_CODE_COMMIT``. Retry temperatures use the vendor expression
     itself; its fourth request deliberately exposes Python's binary-float
     ``0.6000000000000001`` rather than a hand-normalized decimal.
     """
@@ -465,9 +484,8 @@ def test_chandra_native_retry_arithmetic_and_detector_match_the_pinned_source_of
         if isinstance(node, ast.FunctionDef) and node.name == "detect_repeat_token"
     )
     body = function.body[1:]  # discard the local docstring, absent upstream
-    normalized = ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)
-    assert hashlib.sha256(normalized.encode()).hexdigest() == (
-        "1af1120e8d0e10cfca9fa303f0bdbab947e210df3fe52132b70530a81670920f"
+    assert _canonical_ast_digest(ast.Module(body=body, type_ignores=[])) == (
+        "a76c8f2bc96316cedf7ed3ba820f5cfae71663b98410bdeedb080499d9378345"
     )
 
     vendor_temperatures = [0.0] + [min(0.0 + 0.2 * (retries + 1), 0.8) for retries in range(6)]

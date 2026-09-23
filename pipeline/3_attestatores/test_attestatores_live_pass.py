@@ -745,7 +745,11 @@ def test_chandra_retries_retain_each_physical_request_but_publish_only_final_tex
     assert trace["physical_request_count"] == 2
     assert trace["returned_attempt_ordinal"] == 2
     assert [row["trigger"] for row in trace["attempts"]] == ["repeat-token", None]
-    assert page_one["payload"]["payload"] == CHANDRA_PAGE_ONE
+    assert page_one["payload"]["payload"] == (
+        "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"
+    )
+    capture_ref = page_one["payload"]["native_capture"]["raw_response_ref"]
+    assert tree.read_bytes(capture_ref["relative_path"]).decode("utf-8") == CHANDRA_PAGE_ONE
     native = [
         entry
         for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
@@ -875,6 +879,11 @@ def test_chandra_orphan_intent_fails_closed_without_reissuing(live_run, tmp_path
     with pytest.raises(SchemaRefusal, match="delivery is unknown"):
         run_attestatores(live_run, run_root, factory=resumed.factory)
     assert resumed.requests("attestator_1") == []
+    assert [
+        entry
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] in {"chandra-native-attempt-intent", "chandra-native-attempt"}
+    ] == native
 
 
 def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
