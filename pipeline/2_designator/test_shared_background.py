@@ -28,7 +28,7 @@ from common.residual_ink import (
 # the one property that broke the retired inference -- 20,400 pixels of frame
 # against the interior's 19,000 of paper (19,600 less the 600 the three marks
 # take), so the page's single most common value is the frame's
-# 5, which `common/residual_ink.py` called paper until 2026-09-06. Nothing here
+# 5, which `common/residual_ink.py` used to call paper. Nothing here
 # is a calibration sample; the Designator's 127 real pages are in its own survey.
 FRAME = 5
 PAPER = 210
@@ -193,7 +193,7 @@ def test_a_page_the_inference_refuses_is_refused_by_the_audit_too():
 
 
 def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation():
-    """The whole of the 2026-09-06 grouping unit, on one page, through shipped functions.
+    """The whole of the grouping unit, on one page, through shipped functions.
 
     The same photographed-shaped page above, driven through
     `structure.primary_scan`, `grouping.partition_page_spanning`,

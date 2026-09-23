@@ -107,7 +107,7 @@ def test_no_runnable_adapter_lets_a_caller_relabel_its_retention(name):
     ``adapter=`` argument to the caller. Code that had resolved one adapter
     could then retain those bytes under another adapter's name, making the
     sealed registry advisory precisely where it is meant to bind provenance
-    (GOVERNANCE 6) and handing the bytes to the wrong parser on read-back.
+    (principle 6) and handing the bytes to the wrong parser on read-back.
     Chandra's wrapper forwarded ``**kwargs`` and permitted exactly that while
     Churro's and DAI's did not, so every runnable adapter is checked here.
 
@@ -291,7 +291,7 @@ def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
     The stage's own `_verified_page_bytes` already names this failure; a bare
     `KeyError` out of the adapter boundary would reach the operator as an
     unclassified traceback, and the attempt would not be held with a reason
-    (GOVERNANCE 2).
+    (principle 2).
     """
     context = _DaiContext(_dai_page(20, 10))
     context.tree.read_artifact = lambda *_args: {"payload": payload}
@@ -817,7 +817,7 @@ def test_a_colour_conversion_that_cannot_run_is_named_rather_than_raised_through
     A bare `ValueError` out of an adapter boundary is the failure mode the
     bounds check beside it already exists to prevent: a caller that could have
     held this attempt with a reason gets an unclassified traceback instead
-    (GOVERNANCE 2).
+    (principle 2).
     """
     page = _dai_page(20, 10)
     context = _DaiContext(page)

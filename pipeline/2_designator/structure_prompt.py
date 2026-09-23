@@ -1,7 +1,7 @@
 """The structure chair's sealed request text: Chandra's own layout prompt (v3).
 
-The chair this pass serves is Chandra, and tonight's ruling (Tyrel, 2026-09-06)
-is that each witness runs as its developers intended -- the vendor's
+The chair this pass serves is Chandra, and the ruling is
+that each witness runs as its developers intended -- the vendor's
 preprocessing, prompt bytes, message shape, generation values and output grammar
 adopted verbatim and pinned by digest. So this module no longer *writes* a
 prompt. It names one: `common/chandra_layout.py::OCR_LAYOUT_PROMPT`, the
@@ -37,7 +37,7 @@ at all if the carried bytes no longer render to the sha256 recorded against
 byte edited here, by anyone, for any reason, fails at import rather than
 quietly changing what a chair is asked.
 
-**GOVERNANCE 10 still binds it, and now binds it differently.** The rule against
+**principle 8 still binds it, and now binds it differently.** The rule against
 an instrument that argues one way -- a severity floor, a confidence budget, a
 told direction -- is a rule about *our* instructions, and it is why v2 stated
 none of those. The carried prompt states none either: it is an OCR instruction,
@@ -91,7 +91,7 @@ STRUCTURE_ANSWER_GRAMMAR: Final = "chandra-layout-html.v1"
 def vendor_identity() -> dict[str, str]:
     """The vendor code this pass runs on, recorded onto every page's answer.
 
-    GOVERNANCE 6 requires the resolved identity and revision of the *model* on
+    principle 6 requires the resolved identity and revision of the *model* on
     every stored reading; the serving provenance block carries that. This is the
     other half the ruling added: the repository, commit and licence of the code
     whose prompt bytes were sent and whose grammar was read, plus the digest of

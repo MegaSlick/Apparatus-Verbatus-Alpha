@@ -285,7 +285,7 @@ def test_no_crop_is_cut_on_the_page_the_structure_pass_could_not_mark_out(struct
 def test_the_unmarked_pages_ink_is_accounted_as_residual_not_as_absence(structure_failure_run):
     """The page sealed, so its ink exists. Nothing claimed it, so all of it is residual.
 
-    This is the difference Tyrel drew on 2026-08-05 between "there was nothing
+    This is the difference between "there was nothing
     to read" and "we could not read it": a page the structure pass failed on is
     not a blank page, and its ink has to appear somewhere. It appears here, as
     conservation residual, and each residual becomes its own held act.
@@ -382,7 +382,7 @@ def _run_program(program: str, root):
 def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     tmp_path, monkeypatch
 ):
-    """Tyrel, 2026-08-11, twice, and the second ruling overrides the first.
+    """Two rulings, and the second overrides the first.
 
     "I'd rather err on the side of sending a blank page downstream than pull a
     page assuming it's blank and have it end up with text. Missing text is the
@@ -399,10 +399,10 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     nothing is held: no act is held, every declared act is still cut, and the
     page's own predetermined crops are cut too. And the *run* does not claim to
     have completed, because conservation could not run on this page and
-    GOVERNANCE 2 refuses "complete" "unless everything reconciles". Holding a
+    principle 2 refuses "complete" "unless everything reconciles". Holding a
     page out of reading is what the ruling forbids; withholding the run's
     completeness claim over a measurement that did not happen is what
-    GOVERNANCE 2 and 10 require, and the two are different acts.
+    principle 2 and principle 8 require, and the two are different acts.
 
     Previously the page's own mean was substituted as a divider so the
     accounting "had something defensible". On the inverted scan
@@ -640,7 +640,7 @@ def test_a_background_exactly_at_the_margin_still_infers():
 
 # --- a page the structure pass finds no ink on is cut into crops that go on ------
 #
-# Tyrel, 2026-08-11: "If the designator sees no text it should default to
+# The ruling: "If the designator sees no text it should default to
 # predetermined crops with a small margin of overlap and send the crops down
 # stream to be read by everything. If all the witnesses and the perlector see no
 # text on any of the crops then it's likely a true blank."
@@ -654,8 +654,8 @@ def test_a_background_exactly_at_the_margin_still_infers():
 # fires; nothing here monkeypatches the scan, the grouping, or the grid.
 #
 # The one substitution is the page's *pixels*: the door refuses any fixture root
-# but `proof/` (`door.declared_synthetic_fixture_root`, ruling 2026-08-04 item
-# 1), and every shipped fixture page carries ink, so an ink-free page cannot be
+# but `proof/` (`door.declared_synthetic_fixture_root`),
+# and every shipped fixture page carries ink, so an ink-free page cannot be
 # sealed here without adding one to the shipped fixture and moving every digest
 # in the tree. Substituting the sealed page's own byte reader gives this stage a
 # genuinely blank page to scan, crop and reconcile end to end. What that cannot
@@ -978,7 +978,7 @@ def test_the_missed_act_refusal_still_fires_where_detection_actually_ran(tmp_pat
     A page with one small mark, nowhere near either declared act, is a page the
     structure pass *did* find regions on. Nothing covers half of act a1's
     declared bounds, so the structure pass missed it -- and a missed act is the
-    finding GOALS 1 cares about most. It must still be a refusal, not a fallback
+    finding goal 2 cares about most. It must still be a refusal, not a fallback
     band quietly standing in for the detection that did not happen.
     """
     root = tmp_path / "runs"

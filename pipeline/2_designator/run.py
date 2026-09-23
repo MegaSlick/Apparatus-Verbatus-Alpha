@@ -34,7 +34,7 @@ by hand.
 Four sibling modules in this directory do the actual marking-out: `structure.py`
 finds every ink-bearing region on a decoded page, `grouping.py` assembles those
 regions into acts by geometry and structural cues alone — no election among
-candidates, GOVERNANCE 3's whole shape — `geometry.py` pads a structural
+candidates, principle 1's whole shape — `geometry.py` pads a structural
 rectangle into the capture rectangle actually cut, and `conservation.py`
 independently reconciles every page's own ink against what was actually
 claimed. See their module docstrings and `HANDOFF.md` for what each publishes.
@@ -212,7 +212,7 @@ def _refuse_text_fields(value, path: str = "$") -> None:
 # was wholly withheld by the page-spanning rule. In every fallback case
 # `detected_bounds` is
 # `null` and the two counts are zero -- recording a computed band there, with
-# zero members, would be a claim about something nothing measured (GOVERNANCE 10).
+# zero members, would be a claim about something nothing measured (principle 8).
 #
 # Three more values exist only on the live path, where the structure chair is
 # the proposer and the ink scan is corroboration rather than ground truth
@@ -227,7 +227,7 @@ def _refuse_text_fields(value, path: str = "$") -> None:
 # half of: null bounds and zero counts, like `fallback-tiles`, because nothing
 # measured corroborates it. The last two are distinct facts -- too many regions
 # and none -- and collapsing them would report a scan that found nothing where
-# it found too much (GOVERNANCE 10). The fixture path never emits any of the
+# it found too much (principle 8). The fixture path never emits any of the
 # three, so its records are unchanged.
 ACT_GROUP_EVIDENCE = frozenset(
     {
@@ -689,7 +689,7 @@ def page_pixels(
 
     Returns `structure.BackgroundEvidence` rather than a bare integer: an
     interior-mode page has a dark distribution to publish, and dropping that
-    measured population on the way back would be the silent half of GOVERNANCE 2. `grouping_policy` is the run's sealed
+    measured population on the way back would be the silent half of principle 2. `grouping_policy` is the run's sealed
     grouping config, resolved to *this* page's own background-inference policy
     here through `grouping_config.resolve_background_policy` -- the one resolver
     for that policy, so this call site and any other cannot come to disagree.
@@ -875,7 +875,7 @@ def _claim_structural_group(analysis: dict, group: dict, act_key: str, what: str
     as its own `body_member_count`, so the record claims detection corroborated
     each act separately when detection found neither. That is the "silent
     substitution" `_publish_act_group` documents itself as refusing, and it is a
-    claim about what was measured that was not measured (GOVERNANCE 10).
+    claim about what was measured that was not measured (principle 8).
 
     A brace-linked pair is not this case and stays legal: `grouping.group_page`
     returns two distinct groups sharing one anchor, so each act claims its own.
@@ -1249,7 +1249,7 @@ def publish_structure_status(
     structure pass ran on this page and succeeded" is a record rather than the
     absence of one. Without it a reader can only infer a page's structural
     outcome from whether crops happen to exist on it, which is exactly the
-    inference GOVERNANCE 2 refuses: a page nothing marked out and a page nothing
+    inference principle 2 refuses: a page nothing marked out and a page nothing
     tried to mark out would look identical.
 
     `state` says "scanned", never "marked-out": GLOSSARY defines Designator as
@@ -1281,7 +1281,7 @@ def publish_structure_status(
     page from its bytes and re-derive them -- and re-derivation is the thing
     that goes quietly wrong when a resolution rule changes. Publishing what
     executed costs eight integers and two dimensions on a record already being
-    written, which is GOVERNANCE 6 applied to these values (SPEC_C 4.2). It is a
+    written, which is principle 6 applied to these values (SPEC_C 4.2). It is a
     recording, never a decision: nothing reads these back to choose anything,
     and no threshold is computed here that `_analyze_page` did not already
     resolve for this page.
@@ -1391,7 +1391,7 @@ def _analyze_page(
     A page whose background cannot be inferred is the one case where that pass
     cannot run at all, and the honest answer is two facts, not one. **The page
     is still cut**: the predetermined grid below covers it and its crops go
-    downstream, because Tyrel ruled on 2026-08-11 that "everything gets read
+    downstream, because the ruling is "everything gets read
     every time nothing gets pulled out or held" and this stage's single
     threshold is the weakest instrument in the pipeline. **And its ink is not
     measured**: `background` stays `None`, no scan runs, and
@@ -1481,8 +1481,8 @@ def _analyze_page(
             brace_min_height_px=thresholds.brace_min_height_px,
             page_spanning_area_bp=thresholds.page_spanning_area_bp,
         )
-        # **A page with no eligible structural group is cut anyway.** Tyrel
-        # ruled 2026-08-11: "If the designator sees no text it should default to
+        # **A page with no eligible structural group is cut anyway.** The
+        # ruling: "If the designator sees no text it should default to
         # predetermined crops with a small margin of overlap and send the crops
         # down stream to be read by everything. If all the witnesses and the
         # perlector see no text on any of the crops then it's likely a true
@@ -1754,7 +1754,7 @@ def _publish_secondary_proposals(
     counted, never filtered: `structure.secondary_scan` still returns
     everything it finds and `_secondary_rescue_candidates` still reduces it by
     geometry alone, so what the bound changes is how many separate review items
-    one page mints -- never what was measured (GOVERNANCE 10).
+    one page mints -- never what was measured (principle 8).
 
     `secondary_enumeration` is on both shapes as a closed pair, exactly as
     `residual_enumeration` is on every conservation record: "this page had no
@@ -2220,7 +2220,7 @@ def _publish_page_fallback(
 ) -> dict | None:
     """Cut predetermined crops over a page with no eligible structural group.
 
-    This is the half of Tyrel's 2026-08-11 ruling that `grouping.fallback_tiles`
+    This is the half of the ruling that `grouping.fallback_tiles`
     alone never delivered. The grid existed and was handed to
     `_match_structural_group` as match candidates; no tile ever became a crop, so
     a sealed page with no found ink and no declared act still sent *nothing*
@@ -2271,7 +2271,7 @@ def _publish_page_fallback(
     # pass over a tree that already holds them would subtract them from
     # themselves, find no uncovered pixel, mint nothing, and seal a denominator
     # one act shorter than the crops already on disk -- a `complete` run missing
-    # a page (GOVERNANCE 2, GOALS 1). Filtered by act identity rather than by
+    # a page (principle 2, goal 2). Filtered by act identity rather than by
     # origin, so the declared crops on this page are still subtracted and no
     # pixel is read under two act identities.
     claimed = [claim for claim in claimed if claim["act_id"] != act_id]
@@ -2373,7 +2373,7 @@ def _publish_conservation_and_secondary(
     before it was ever analysed -- and that page's status record says null for
     the structure pass's own geometry, correctly, while this one had resolved
     integers in hand and used them. A null beside a computation is the shape
-    GOVERNANCE 10 refuses. Only the two thresholds `conservation.reconcile` was
+    principle 8 refuses. Only the two thresholds `conservation.reconcile` was
     actually given are published, and they are null on an unmeasurable page,
     where no reconciliation ran to have executed under anything.
 
@@ -2844,7 +2844,7 @@ def initial_pass(context) -> bool:
         if ordinal not in failures:
             # No hold is added here and none should be. `_analyze_page` handles a
             # page it cannot threshold by cutting predetermined crops instead of
-            # by removing it -- Tyrel, 2026-08-11, "everything gets read every
+            # by removing it -- the ruling is "everything gets read every
             # time nothing gets pulled out or held". A corrupt decode is still
             # fatal, and the comment above says why.
             _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
@@ -2917,15 +2917,15 @@ def initial_pass(context) -> bool:
     # A run that held an act, or held a page, or found ink no crop claimed has
     # not completed. The exit code is the one signal an operator reads without
     # opening the tree, and a 0 over a hold is a partial result wearing
-    # "complete" (GOVERNANCE 2). Act holds come from the seal itself; secondary
+    # "complete" (principle 2). Act holds come from the seal itself; secondary
     # holds deliberately sit outside that authority, so they arrive separately.
     #
-    # So does a page whose ink could not be measured at all. GOVERNANCE 2 refuses
+    # So does a page whose ink could not be measured at all. principle 2 refuses
     # "complete" "unless everything reconciles", and conservation is the
     # reconciliation: a page it could not run on has not reconciled, whatever the
     # seal's own rows say. This is not the same as holding the page — nothing was
     # pulled out, every act on it was still cut, and its predetermined crops still
-    # go downstream to be read, which is what Tyrel's 2026-08-11 ruling requires.
+    # go downstream to be read, which is what the ruling requires.
     # What is withheld is the run's claim to have completed, not the page.
     return _initial_pass_has_holds(
         expected,
@@ -2943,8 +2943,8 @@ def _live_secondary_provenance(context) -> dict:
     down. What differs is the configured case. The fixture path writes a
     `fixture://` receipt for a configured secondary chair; the live path
     called a real chair and may not write a declared serving moment for one it
-    did not (GOVERNANCE 6). Nothing here serves a secondary chair either: the
-    role is absent by ruling (Tyrel, 2026-08-12, "keep the optional YOLO
+    did not (principle 6). Nothing here serves a secondary chair either: the
+    role is absent by ruling ("keep the optional YOLO
     secondary proposer absent initially"), and a configured row on a live run
     is refused by name rather than run through a pass that does not exist.
     """
@@ -2962,7 +2962,7 @@ def _live_secondary_provenance(context) -> dict:
     raise ContractError(
         f"the secondary proposer chair {SECONDARY_PROPOSER_CHAIR!r} is configured, but the "
         "live structure pass serves no secondary chair and writes no fixture receipt for one; "
-        "the role is absent by ruling (2026-08-12), so a live run must configure it absent"
+        "the role is absent by ruling, so a live run must configure it absent"
     )
 
 
@@ -3232,7 +3232,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     guard the same way, and without it a resumed run died on the first page it
     had already answered. Each fresh answer is published inside the asking loop
     rather than after it, so an interruption partway through leaves what was
-    already paid for on disk and visible (GOVERNANCE 2), and the resume asks
+    already paid for on disk and visible (principle 2), and the resume asks
     only for the pages nothing answered. With every page already answered no
     chair is started at all.
 
@@ -3253,7 +3253,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
     # The structure pass's own posture, from the bytes this run sealed and
-    # rechecked at this point of use (Tyrel, 2026-09-02: `[structure]`, never
+    # rechecked at this point of use (`[structure]`, never
     # `reading_of_record`). Refused by name before any chair starts when the
     # sealed value is one the live seam cannot execute.
     decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
@@ -3445,7 +3445,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         _publish_live_act_groups(context, page_record, analysis, minted)
 
     # A page the chair answered with no act at all is cut into its predetermined
-    # crops (Tyrel, 2026-08-11), over the grid computed from the page's own
+    # crops, over the grid computed from the page's own
     # dimensions -- never over the scan's groups, which on this path are
     # corroboration and not what decides which crops a page gets.
     claimed_by_page = _claimed_regions_by_page(context)
@@ -3866,7 +3866,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
     # above only catches a recrop of the *exact* rectangle already cut, so a
     # rectangle strictly inside what this act already has -- or one covered
     # jointly by two of its regions -- passed it while recovering nothing.
-    # GOVERNANCE 11 gives the operation its purpose ("Recovery exists for
+    # principle 7 gives the operation its purpose ("Recovery exists for
     # completeness and coverage"), and ARCHITECTURE names it a "fallback or
     # **expanded** recrop": a recrop that adds no page pixel expands nothing.
     # It spends a bounded, recorded budget re-reading pixels the act already
@@ -3876,7 +3876,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
     #
     # Refused rather than accepted-and-flagged because a spent recovery budget
     # is not recoverable: the act's one recorded chance to widen its crop would
-    # be gone, which is the direction GOALS 1 cares about.
+    # be gone, which is the direction goal 2 cares about.
     covered = _coverage_on_page(existing_regions, page_ordinal, page_record["subject_id"])
     if not _uncovered_area(bounds, covered):
         raise ContractError(

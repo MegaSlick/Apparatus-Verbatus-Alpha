@@ -32,7 +32,7 @@ What is proven:
   nothing written;
 - a real run sealed under the fixture catalogue is refused by name before any
   chair is asked, because a real submission has no fixture to answer for a
-  witness (Tyrel's ruling, 2026-09-02: every witness runs its own full pass);
+  witness (every witness runs its own full pass);
 - the shipped real catalogue serves every witness chair at every placement
   tier, so the mixed-posture guard never fires on it;
 - a full pass over a real submission completes: every act record and every
@@ -513,7 +513,7 @@ def test_a_real_run_refuses_at_the_missing_designator_seal_with_its_context_open
 def test_a_real_run_under_the_fixture_catalogue_is_refused_before_any_chair_is_asked(
     fixture_catalogue_run, tmp_path
 ):
-    """No fixture answers for a witness on a real submission (ruling, 2026-09-02)."""
+    """No fixture answers for a witness on a real submission."""
     run_root = _copy(fixture_catalogue_run, tmp_path)
     _designate(run_root)
     before = _snapshot(run_root)
