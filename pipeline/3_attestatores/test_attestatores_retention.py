@@ -951,7 +951,7 @@ def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp
     fixture's chairs are deterministic, so the ordinal-1 attempts come back
     byte-identical, but the ordinal-2 attempt a reread appended does not come back
     at all. This folder's own manifest recorded seven sealed attempts; the silent
-    restart left six and said nothing. GOVERNANCE 2 and GOVERNANCE 4 both refuse
+    restart left six and said nothing. principle 2 and principle 4 both refuse
     that, and the inventory needed to notice it was on disk the whole time.
     """
     run_root, tree = run_to_designator(tmp_path, "reread-failure")
@@ -1697,7 +1697,7 @@ def test_chandra_combined_unrecordable_metadata_fails_one_attempt_without_holdin
     malformed = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
     assert malformed["outcome"] == "failed"
     # The native text a real witness sent is still retained as evidence -- only
-    # the untrustworthy self-report is discarded (GOVERNANCE 2, "kept, and
+    # the untrustworthy self-report is discarded (principle 2, "kept, and
     # demoted").
     assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta gamma"
     assert malformed["payload"]["format_capabilities"] is None
@@ -2143,7 +2143,7 @@ def test_an_accounting_imbalance_is_fatal_and_never_becomes_a_hold(tmp_path, mon
     places, from inside a block whose broadest handler caught every `ContractError`.
     So the fatal case reported as merely unknown, and a caller that holds on an
     unknown count would have waited politely for a broken partition to resolve
-    itself. Found by CodeRabbit reviewing the rebased branch.
+    itself.
     """
 
     run_root, tree = run_to_designator(tmp_path, "happy")
@@ -2405,7 +2405,7 @@ def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp
 
 
 def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
-    """One sealed-page read per act view's own derivations (CodeRabbit round 1, T8).
+    """One sealed-page read per act view's own derivations.
 
     `publish_attempt` needs the sealed page's size twice for a page-scoped act
     view: once to convert the wire contract's normalized boxes

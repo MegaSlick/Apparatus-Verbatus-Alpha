@@ -72,7 +72,7 @@ def test_every_sealed_page_is_mapped_before_any_detection(tmp_path):
 def _policy(width: int, height: int):
     """This page's own resolved background policy, from the shipped sealed file.
 
-    Every measure in this module needs one since 2026-09-06: the ink predicate is
+    Every measure in this module needs one: the ink predicate is
     taken below a background the shared inference derives, and no call site is
     allowed a default policy -- a stage measuring under a policy nobody sealed is
     what this argument exists to prevent.
@@ -86,7 +86,7 @@ def _coverage(width: int, height: int):
     """This page's own resolved coverage-audit policy, from the shipped file.
 
     The companion to `_policy`, and required at the same call sites for the same
-    reason: since 2026-09-06 the two outside-coverage gates and the perimeter
+    reason: the two outside-coverage gates and the perimeter
     band are fractions of the page sealed in `[coverage_audit]`, and no call site
     is allowed a default.
     """
@@ -109,8 +109,8 @@ def test_unclaimed_edge_ink_is_named_and_bounded_but_not_held():
     assert finding["flagged"] is True
     assert finding["named_finding"] == "unclaimed-edge-ink"
     # 2 pixels on a 200-pixel-square page: `edge_band_bp` is a fraction of the
-    # page's own shorter side since 2026-09-06, where 64 was a flat count that
-    # made a third of this page its own perimeter.
+    # page's own shorter side, not a flat count -- a flat count of 64 would make
+    # a third of this page its own perimeter.
     assert finding["edge_band_pixels"] == _coverage(200, 200)["edge_band_px"] == 2
     assert classify(INK_MAP, "unclaimed-edge-ink") is OutcomeClass.UNRESOLVED
     assert terminal_category(INK_MAP, "unclaimed-edge-ink") is None
@@ -121,14 +121,12 @@ def test_unclaimed_edge_ink_is_named_and_bounded_but_not_held():
 def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     """Two of this audit's five numbers are calibrated now; three are not.
 
-    The module used to say PROPOSED-NOT-MEASURED of all of them and the handoff
-    used to say the stage claimed no calibration, and both were true. On
-    2026-09-06 the two that are *lengths* -- the absolute outside-coverage gate
+    The two that are *lengths* -- the absolute outside-coverage gate
     and the perimeter band -- were measured on 44 real pages and sealed in
     `[coverage_audit]`, with `calibrated_for_this_corpus = true` and their own
-    provenance block. The three that are not lengths were not:
+    provenance block. The three that are not lengths are not:
     `MINIMUM_CONTRAST_BELOW_BACKGROUND` in source, and the noise floor and
-    fraction gate -- sealed in `[coverage_audit.noise_floor]` since 2026-09-14
+    fraction gate -- sealed in `[coverage_audit.noise_floor]`
     under a provenance block of their own -- are still reasoned defaults.
 
     So the claim this test protects has changed shape rather than gone away: the
@@ -156,7 +154,7 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     # And the unmeasured block states its own status directly, rather than
     # being established only by the banners above: a later edit that calibrated
     # the noise floor without moving this line would otherwise leave the test
-    # passing while the claim it protects had changed (CodeRabbit on PR #117).
+    # passing while the claim it protects had changed.
     noise_floor = config["coverage_audit"]["noise_floor"]["provenance"]
     assert noise_floor["calibrated_for_this_corpus"] is False
     assert noise_floor["sample_count"] == 0
@@ -239,7 +237,7 @@ def test_the_ink_map_refuses_a_run_it_was_handed_no_sealed_page_of():
     """An empty map is not a mapped run: every sealed page has exactly one record.
 
     A stage that sealed a boundary over zero records would report a completed
-    ink map for a run it never measured, which is GOVERNANCE 2's silent loss
+    ink map for a run it never measured, which is principle 2's silent loss
     wearing a completion seal.
     """
     refused = {"subject_id": "page-1", "outcome": "refused", "payload": {"ordinal": 1}}
@@ -272,7 +270,7 @@ def test_the_ink_map_declares_the_decode_route_it_actually_takes():
     The map and the Recensor's late reconciliation call the same
     `page_residual_ink` over the same `common/imaging.py` decoder, so a stage
     seal claiming a different route family for one of them is a false statement
-    about its own pass (GOVERNANCE 6) and makes the decode-environment census
+    about its own pass (principle 6) and makes the decode-environment census
     report drift that is not there.
     """
     from common.contracts.stages import RECENSOR
@@ -287,13 +285,13 @@ def test_the_ink_map_declares_the_decode_route_it_actually_takes():
 def test_the_edge_band_is_a_bounded_instrument_and_says_it_is_not_calibrated():
     """The edge width is a bounded instrument, and it is a fraction of the page.
 
-    It was the flat 64 pixels until 2026-09-06 and is `edge_band_bp` in the
-    sealed `[coverage_audit]` block now, resolved against the page's own shorter
-    side. Both halves are pinned here: the module still says what the band is
+    It is `edge_band_bp` in the
+    sealed `[coverage_audit]` block, resolved against the page's own shorter
+    side, not a flat pixel count. Both halves are pinned here: the module still says what the band is
     for and does not claim it is a calibrated cross-page-act threshold, and the
     resolution really is proportional -- the same sealed value gives 2 pixels on
-    this repository's 200x260 fixture and 36 on a 3,600-pixel leaf, where the
-    retired constant gave 64 on both.
+    this repository's 200x260 fixture and 36 on a 3,600-pixel leaf, where a flat
+    count would give 64 on both.
     """
     from common.residual_ink import (
         EDGE_BAND_BP_FIELD,
@@ -471,8 +469,8 @@ def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkey
     it says nothing about whether `page_residual_ink`/`page_edge_ink` can decode
     them. `run_stage` only catches `RunHalted` and `ContractError`
     (`common/stage.py`), so an uncaught decoder `ValueError` here would escape as
-    an unhandled traceback with `seal_boundary`/`finish` never reached -- GOVERNANCE
-    2's silent loss with extra steps.
+    an unhandled traceback with `seal_boundary`/`finish` never reached --
+    principle 2's silent loss with extra steps.
     """
     page = _sealed_page(1)
 
@@ -675,7 +673,7 @@ def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal(
     ]
     background = context.published[0]["payload"]["background"]
     assert background["config_sha256"] == load_background_config()["config_sha256"]
-    # GOVERNANCE 6, as fields rather than as a sentence: the paper value, where
+    # principle 6, as fields rather than as a sentence: the paper value, where
     # it came from, the level this stage measured at, and the derived margin the
     # Designator will measure the same page at.
     assert background["background_level"] == 230
@@ -695,9 +693,9 @@ def test_a_page_whose_paper_cannot_be_inferred_is_named_rather_than_mapped(monke
 
     The page is the inverted scan `pipeline/2_designator/test_structure.py`
     uses -- 80% at 30, 20% at 220 -- whose mode is darker than its own mean and
-    whose interior is dark, so no branch can call anything on it paper. Before
-    2026-09-06 this stage would have taken 30 as the paper value, found no pixel
-    40 levels below it, and published `mapped` with `total_ink_pixels: 0`: a
+    whose interior is dark, so no branch can call anything on it paper. Taking
+    the raw mode (30) as the paper value would find no pixel 40 levels below
+    it, and would publish `mapped` with `total_ink_pixels: 0`: a
     page reported clean because its threshold could not be reached.
 
     What is asserted here is what the record does *not* carry as much as what it

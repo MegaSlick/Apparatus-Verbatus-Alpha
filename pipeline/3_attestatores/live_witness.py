@@ -64,7 +64,7 @@ extra decoding parameters (``repetition_penalty``, ``top_k``, ``top_p``).
 ``generation_declared`` retains the whole carried view as evidence;
 ``generation_sent`` is built by *allow-listing* those three fields rather than
 a "minus" subtraction, so a future carried key nobody has named yet defaults
-to *not* being sent (GOVERNANCE 7: never send a vendor value silently) instead
+to *not* being sent (principle 3: never send a vendor value silently) instead
 of leaking onto the wire by omission from a denylist.
 
 **Every chair's generation bound is now decided by one rule, against the
@@ -143,7 +143,7 @@ evidence). This module confirms it only when the transport word is a
 recognized *natural* completion (``completed is True``); an empty response
 whose stop word is a recognized cut-off, unreported entirely, or unrecognized
 (``completed`` is ``False`` or ``None``) is held as ``failed`` instead --
-GOVERNANCE 10 forbids defaulting any of those into "the provider finished
+principle 8 forbids defaulting any of those into "the provider finished
 naturally." This applies on both the page-scoped and act-scoped paths alike;
 a naive read of `run.py::resolve_attempt`'s own fixture-path parity, which has
 no transport stop reason to reason about at all, would have kept this module's
@@ -208,7 +208,7 @@ def _format_capabilities_for(adapter: Any) -> dict[str, bool]:
 # endpoint accepts as extra decoding parameters. Everything else in that carried
 # view -- `do_sample`, `temperature`, the three token-id fields, and
 # `transformers_version` -- is retained evidence (`generation_declared`) but
-# never sent (GOVERNANCE 7's "the pipeline does not gate model behaviour" cuts
+# never sent (principle 3's "the pipeline does not gate model behaviour" cuts
 # the other way here too: it also never silently *substitutes* its own
 # understanding of a vendor field for the vendor's declared value).
 _DAI_GENERATION_SENT_KEYS = ("repetition_penalty", "top_k", "top_p")
@@ -295,8 +295,7 @@ def _user_content(text: str, image_bytes: bytes) -> list[dict[str, Any]]:
       text prompt, and ``model/hf.py`` does the same.
     * Churro -- its provider builds the image part first.
 
-    (``workbench/raw/research-2026-09-06/``, all three reports; verified by the
-    host against the tree and the vendor sources.)
+    (Verified by the host against the tree and the vendor sources.)
 
     **No token count moves with this.** The measured prompt constants
     (``common/request_capacity.py``) are taken over the message *texts* and
@@ -690,7 +689,7 @@ def _finish_reason_facts(response: ChairResponse) -> tuple[str, bool | None, boo
     positively says so (a recognized natural stop, or a recognized cut-off
     word); an absent ``finish_reason`` and an engine word this system does not
     recognize both leave *both* as ``None`` rather than guessing which bucket
-    they belong in -- GOVERNANCE 10: an unread engine signal is never defaulted
+    they belong in -- principle 8: an unread engine signal is never defaulted
     to a meaning, including the meaning "not cut off."
     """
 
@@ -931,7 +930,7 @@ def live_attempt_from_response(
         # one thing at the retention seam: Chandra's fixture-placeholder parser
         # may not run for a served chair, because a served chair answering in a
         # shape `chandra.prompt()` never asked for is a named surprise rather
-        # than a reading (CodeRabbit round 1, T7).
+        # than a reading.
         served=True,
     )
     parsed = capture["parse"]
@@ -1065,7 +1064,7 @@ def captured_page_attempt(
         # Which question this reading was asked, by name, on the record it
         # produced. The prompt bytes are already retained beside it; the name is
         # what lets one run's readings be compared with another's without
-        # digesting two prompts to discover they differ (GOVERNANCE 6, and the
+        # digesting two prompts to discover they differ (principle 6, and the
         # A/B this makes possible at all).
         view["framing"] = framing
     capture = adapter.retain(
@@ -1078,7 +1077,7 @@ def captured_page_attempt(
         # one thing at the retention seam: Chandra's fixture-placeholder parser
         # may not run for a served chair, because a served chair answering in a
         # shape `chandra.prompt()` never asked for is a named surprise rather
-        # than a reading (CodeRabbit round 1, T7).
+        # than a reading.
         served=True,
     )
     parsed = capture["parse"]
@@ -1108,7 +1107,7 @@ def captured_page_attempt(
             # would be a second, quieter list of the page adapters -- and a third
             # page chair added to the dispatch and forgotten here would then land
             # with `observation_payload=None`, deriving no geometry, silently
-            # (GOVERNANCE 2). One list, at the refusal, where a miss is loud.
+            # (principle 2). One list, at the refusal, where a miss is loud.
             observation_payload=response.content.encode("utf-8"),
         )
     if parsed["state"] == "parsed":

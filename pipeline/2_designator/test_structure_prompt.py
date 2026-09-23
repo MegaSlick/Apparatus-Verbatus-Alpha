@@ -2,7 +2,7 @@
 
 Covers `structure_prompt.py` (the sealed prompt text and its digest, that the
 text is Chandra's own carried bytes rather than a copy of them, and the
-GOVERNANCE 10 no-preference/no-severity/no-confidence check a test can
+principle 8 no-preference/no-severity/no-confidence check a test can
 actually pin) and the one equality this stage owns for
 `common/structure_answer.py`: its page-pixel conversion against
 `geometry_layer.chandra_layout`'s own arithmetic, over a grid of boxes
@@ -105,7 +105,7 @@ def test_the_vendor_identity_names_the_pin_the_carried_bytes_are_recorded_agains
 
 
 def test_prompt_text_states_no_preference_severity_floor_or_confidence_budget():
-    """GOVERNANCE 10: an instrument may state no preference, severity floor, or
+    """Principle 8: an instrument may state no preference, severity floor, or
     confidence budget. Pinned directly against the rendered text, not the
     module's own docstring, so a wording change that reintroduced one of these
     words into what the model actually receives would fail here."""
@@ -179,7 +179,7 @@ GRID_BOXES = [
 # that before it ever produces an `aabb` -- so a hairline `to_page_bounds`
 # result is outside the domain where the two functions are comparable at all.
 # Filtered here rather than dropped silently: the count below pins that the
-# filter still leaves the grid worth running, per GOVERNANCE 2.
+# filter still leaves the grid worth running, per principle 2.
 GRID_CASES = [
     (box, page_w, page_h)
     for box in GRID_BOXES

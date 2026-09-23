@@ -53,8 +53,8 @@ DAI_MAX_WIDTH_PX = 1_500
 #
 # `DAI_MAX_TOTAL_PIXELS` is `min(max_pixels)` over every DAI (`attestator_2`)
 # row in the shipped real catalogue (`config/serving_recipes_real.toml`) --
-# 2,359,296 as of U15 (Tyrel's ruling, 2026-09-06: the per-tier pixel ladder
-# is retired, so every tier now ships the same DAI `max_pixels`, its own
+# 2,359,296 now that the per-tier pixel ladder
+# is retired, so every tier ships the same DAI `max_pixels`, its own
 # trained-crop ceiling rather than a generic-24gb leftover) -- pinned against
 # that file by
 # `test_feeding.py::test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels`
@@ -69,7 +69,7 @@ DAI_MAX_WIDTH_PX = 1_500
 # none of those three callers has, which is a bigger seam than one hostile
 # finding earns; a fixed, sourced, worst-tier ceiling keeps `dai_dimensions`
 # pure and still guarantees no row's engine ever needs a second resize. The
-# cost, named rather than hidden (GOVERNANCE 10): a crop close to the width
+# cost, named rather than hidden (principle 8): a crop close to the width
 # ceiling served on a larger tier is cut down to what the *smallest* tier
 # would need, even where its own row could have held more. That is a
 # resolution cost on a minority of wide, tall crops, not a correctness gap.
@@ -80,7 +80,7 @@ DAI_MAX_WIDTH_PX = 1_500
 # "Image width: 1500 pixels (max)") rather than "design v2.1 section 2", which
 # named the same number but not the model's own source for it. The total-pixel
 # ceiling is the shipped serving catalogue itself, named above. A number
-# nobody can trace is exactly what GOVERNANCE 10 refuses, so both ceilings
+# nobody can trace is exactly what principle 8 refuses, so both ceilings
 # carry their provenance into the record they seal.
 DAI_MAX_TOTAL_PIXELS = 2_359_296
 DAI_LIMIT_SOURCES = {
@@ -93,8 +93,7 @@ DAI_LIMIT_SOURCES = {
     "max_total_pixels": (
         "config/serving_recipes_real.toml: the smallest max_pixels shipped for "
         "the dai.v1 (attestator_2) row across every tier -- 2,359,296, the same "
-        "at every tier since U15 (Tyrel's ruling, 2026-09-06) retired the "
-        "per-tier pixel ladder -- the floor every deployed tier's engine "
+        "at every tier since the per-tier pixel ladder was retired -- the floor every deployed tier's engine "
         "actually admits, so a client-side crop within it is never re-resized "
         "by any of them"
     ),
@@ -244,7 +243,7 @@ def churro_wire_decoding() -> dict[str, float]:
     to ``_DEFAULT_SAMPLING_PARAMS`` -- ``repetition_penalty 1.0``. The model's
     publisher ships 1.05 and the CHURRO paper section D.5 documents this model
     entering degeneration loops. Declining a vendor's own mitigation by
-    accident is exactly what GOVERNANCE 7 forbids in the other direction: the
+    accident is exactly what principle 3 forbids in the other direction: the
     pipeline does not gate model behaviour, and it does not silently substitute
     its own value for the vendor's either.
 
@@ -309,8 +308,8 @@ def dai_prompt() -> dict[str, str]:
     ``Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`` repository at
     ``e371095d4ffe585f31f4974462931ddbac61ff64``:
     https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR/tree/e371095d4ffe585f31f4974462931ddbac61ff64.
-    The source declares no licence; its research-track use is Tyrel's settled
-    2026-08-20 ruling. These are named carries, not reconstructed instructions:
+    The source declares no licence; its research-track use is the project lead's
+    settled ruling. These are named carries, not reconstructed instructions:
     changing any character changes the trained request framing.
     """
     return {
@@ -709,14 +708,14 @@ def _record_post_hoc_repetition(
     The vendor's own answer to a degenerate reading is a retry ladder --
     Chandra's ``_should_retry`` re-rolls the same page up the temperature
     ladder until the answer stops looking stuck. That is not carried: re-rolling
-    a reading until it looks better is recovering *quality*, which GOVERNANCE 11
+    a reading until it looks better is recovering *quality*, which principle 7
     reserves to a review flag and refuses to a recovery loop. What is carried is
     the fact. The scan runs after the bytes are already retained and already
     parsed, it changes nothing about the response, and it publishes a finding
     beside the reading plus a stop reason that says the reading is partial --
     without which a Chandra answer that degenerated but still ended under its
     bound would reach the Perlector as full testimony under
-    ``transport_stop_reason = "stop"`` (GOVERNANCE 2).
+    ``transport_stop_reason = "stop"`` (principle 2).
 
     Written here rather than inside ``derive_churro_capture`` because that
     function derives *Churro's* whole capture -- its grammar, its byte ceiling,
@@ -785,8 +784,8 @@ def retain_model_view(
 
     ``served`` says the bytes came off a chair that actually answered rather
     than out of the committed fixture. It decides exactly one thing -- whether
-    Chandra's fixture-placeholder parser may run at all (CodeRabbit round 1,
-    T7) -- and changes nothing else here. Retention itself is posture-blind,
+    Chandra's fixture-placeholder parser may run at all
+    -- and changes nothing else here. Retention itself is posture-blind,
     and stays so: the bytes are published to the tree before any parser runs,
     so a refusal names a surprise without losing it.
     """
@@ -798,13 +797,13 @@ def retain_model_view(
         raise SchemaRefusal("model-view transport stop reason is blank")
     # A parser this boundary cannot run would leave `parse.state` at "pending"
     # forever: a finished attempt wearing the look of one still in progress, which
-    # is the shape GOVERNANCE 2 refuses. Ask for a parse that runs, or ask for none.
+    # is the shape principle 2 refuses. Ask for a parse that runs, or ask for none.
     if parser is not None and (adapter, parser) not in _RUNNABLE_PARSERS:
         raise SchemaRefusal(f"model-view parser {parser!r} does not run for adapter {adapter!r}")
     # A served chair answering in the committed fixture's own placeholder schema
     # is answering a question nobody put to it, and reading that as a page of
     # text would publish a reading whose shape this repository never verified
-    # against anything (GOVERNANCE 10). The refusal is at the seam rather than
+    # against anything (principle 8). The refusal is at the seam rather than
     # inside the parser because the parser name is what the record will carry:
     # a live capture written under `json` could never be re-derived as the live
     # grammar it was actually asked in. The bytes are retained by the caller's
@@ -834,7 +833,7 @@ def retain_model_view(
     if adapter == "churro.v1":
         # Which vendor pin the prompt bytes beside this reading were taken from,
         # recorded whatever the answer turned out to be: the pin is a fact about
-        # the request, not about whether the response parsed (GOVERNANCE 6).
+        # the request, not about whether the response parsed (principle 6).
         # Imported locally for the reason Chandra's is: the runnable sibling
         # module imports this retention seam.
         import churro
@@ -868,7 +867,7 @@ def retain_model_view(
             # Which vendor pin the prompt bytes beside this reading were taken
             # from, recorded whatever the answer turned out to be: the pin is a
             # fact about the request, not about whether the response parsed
-            # (GOVERNANCE 6).
+            # (principle 6).
             record["vendor_identity"] = chandra.vendor_identity()
             parsed_layout = chandra.parse_layout(raw_response)
             parsed: Any
@@ -881,7 +880,7 @@ def retain_model_view(
                 # stdout nobody retains -- a malformed box, a retained blank
                 # page, text outside every block, a block count that does not
                 # reconcile -- and each one names a fact about this response
-                # that the page text alone cannot show (GOVERNANCE 2).
+                # that the page text alone cannot show (principle 2).
                 record["findings"] = list(parsed_layout["findings"])
         else:
             parsed = chandra.parse_fixture_placeholder(raw_response)
@@ -967,8 +966,9 @@ class SingleChairResidency:
     and this guard exists to keep a second chair off a card whose occupancy is
     unknown. Clearing the reservation would be guessing that nothing was
     allocated. Recovering from it is an operator act against observed provider
-    state, exactly as GOVERNANCE 8 requires of a shutdown, never an inference
-    this object may make on its own.
+    state, the same way a pod shutdown must be verified against the provider's
+    own state and never assumed, and never an inference this object may make
+    on its own.
     """
 
     def __init__(

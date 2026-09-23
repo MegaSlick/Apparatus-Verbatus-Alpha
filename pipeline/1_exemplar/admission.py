@@ -9,7 +9,7 @@ a policy decision about the submitter's format.
 *always* a container.**  PDF always is: every PDF is a document of pages, and a
 one-page PDF is still a page that has to be painted before there are any pixels at
 all.  Every raster format is *usually* one image and may hold more — multi-page
-TIFF is the case Tyrel named, but APNG, animated GIF, animated WebP and multi-picture
+TIFF is the clearest case, but APNG, animated GIF, animated WebP and multi-picture
 JPEG are the same shape.  So a raster source is admitted **or** fanned out, and the
 decoder's own frame count decides which: one frame is sealed as its own original
 bytes, unmodified, and more than one is fanned out to per-page ordinals and rendered.
@@ -20,7 +20,7 @@ first of a multi-page TIFF; removing the action removes the failure rather than
 testing for it.  `render-pages` is restricted at load time to PDF alone for the
 mirror-image reason: routing a raster format through it would re-encode every
 ordinary single-page file for nothing, and a single-page TIFF that seals cleanly as
-its own bytes must keep them (GOVERNANCE 4 — the Exemplar is the immutable source).
+its own bytes must keep them (principle 4 — the Exemplar is the immutable source).
 """
 
 from __future__ import annotations

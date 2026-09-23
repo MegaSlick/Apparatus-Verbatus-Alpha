@@ -569,7 +569,7 @@ def test_a_recrop_strictly_inside_the_existing_crop_refuses_by_name(tmp_path):
     pixel -- and yet it passed the transform-identity check above, spent the
     act's whole `fallback_recrop` budget, and left the export carrying a
     `witness_covered: false` caveat ("ink a recovery uncovers was never shown to
-    them") over nothing at all. GOVERNANCE 11: "Recovery exists for completeness
+    them") over nothing at all. principle 7: "Recovery exists for completeness
     and coverage."
 
     The refusal has to be by name rather than by the duplicate-transform message,
@@ -680,7 +680,7 @@ def test_uncovered_area_counts_exactly_the_pixels_no_cover_holds():
 
 
 def test_a_single_pixel_outside_every_cover_is_enough_coverage_to_recover():
-    """The guard's threshold is one pixel, not a fraction: GOALS 1 puts a missed
+    """The guard's threshold is one pixel, not a fraction: goal 2 puts a missed
     act above a poorly read one, so a recrop that widens by a hair still widens.
     The covers here leave exactly ONE pixel, so the name is the measurement."""
     designator = _load_designator()
