@@ -17,8 +17,9 @@ explicit actions:
   starts and stops that unproven row through `ServingManager` with its
   `MECHANICS_QUALIFICATION_PURPOSE`, private receipt publisher, loopback
   readiness POST, process ownership, and pod residency lease before calling
-  `run`'s upstream client. This is lifecycle evidence, not a pipeline receipt
-  or a claim that the catalogue row is proven.
+  `run`'s upstream client at the endpoint returned by that exact manager
+  handle. The derived endpoint is retained in `plan.json`. This is lifecycle
+  evidence, not a pipeline receipt or a claim that the catalogue row is proven.
 
 `run` also requires `--deadline-utc` and `--minimum-attempt-seconds`. Before
 each physical page reading, it reserves that minimum interval. If it cannot,
@@ -31,6 +32,13 @@ ambiguous delivery escapes upstream's broad `Exception` handler and stops the
 experiment rather than replaying it. The serving manager's readiness POST is
 not a page reading; it is retained in `serving-launch-audit.json` separately
 from the page-reading ledger.
+
+A received HTTP body that the SDK cannot parse is retained as
+`received-unparseable`; a parsed body whose result shape or repeat detector
+cannot classify it is retained as `received-unclassifiable`. If the SDK reports
+a response without original byte content, the ledger records
+`received-unretained` without claiming a response digest. All three states stop
+the native retry ladder after that single physical reading.
 
 Use `config/models-real.toml` for the cache and lifecycle commands. The helper
 expects an exact cold-pod checkout of upstream commit
@@ -76,5 +84,8 @@ after all seven readings) from a normal received response.
 `CHANDRA_UPSTREAM_TEST_ROOT` names a separately fetched clean checkout at the
 pinned upstream commit. It installs a fake SDK before importing vendor code and
 uses a synthetic image, so it exercises the actual native retry temperatures,
-RGB conversion, raw-response retention, and returned-attempt accounting without
-a GPU, server, private page, or network request.
+RGB conversion, ambiguous-delivery escape, raw-response retention, and
+returned-attempt accounting without a GPU, server, private page, or network
+request. A separate fake-manager test exercises endpoint binding, private
+lifecycle publication, and unconditional manager stop at the `serve-and-run`
+seam.

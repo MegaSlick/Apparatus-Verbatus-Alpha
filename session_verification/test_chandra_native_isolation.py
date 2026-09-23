@@ -21,6 +21,7 @@ from session_verification.chandra_native_isolation import (
     _DeadlineAdmission,
     _NoRetryOpenAI,
     _repeat_trigger,
+    serve_and_run,
     _write_diagnostic_catalogue,
 )
 
@@ -86,7 +87,7 @@ def test_ambiguous_transport_escapes_the_upstream_exception_retry_boundary(tmp_p
     def timeout(**_request):
         raise FakeTimeout("delivery may have reached the server")
 
-    proxy = _CompletionProxy(timeout, ledger, (FakeTimeout,), admission)
+    proxy = _CompletionProxy(timeout, ledger, (FakeTimeout,), admission, lambda _text: False)
     with pytest.raises(DeliveryUnknown, match="must not replay"):
         proxy.create(model="attestator-1-chandra", messages=[])
 
@@ -151,6 +152,7 @@ def test_sdk_wrapper_forces_timeout_and_retains_original_raw_response(tmp_path):
         ledger,
         (),
         admission,
+        lambda _text: False,
         api_key="unused",
         _isolation_timeout_seconds=90,
     )
@@ -160,6 +162,126 @@ def test_sdk_wrapper_forces_timeout_and_retains_original_raw_response(tmp_path):
     assert captured["max_retries"] == 0
     assert captured["timeout"] == 90
     assert (tmp_path / "research" / "reading-01-response.raw").read_bytes() == RawResponse.content
+
+
+def test_parse_failure_retains_received_bytes_and_aborts_retry(tmp_path):
+    ledger = ReadingLedger.create(tmp_path / "research")
+    admission = _DeadlineAdmission(
+        ledger,
+        datetime(2026, 9, 22, 3, 0, tzinfo=UTC),
+        minimum_attempt_seconds=60,
+        now=lambda: datetime(2026, 9, 22, 2, 0, tzinfo=UTC),
+    )
+    raw_body = b'{"choices":'
+
+    class RawResponse:
+        content = raw_body
+
+        def parse(self):
+            raise ValueError("truncated response")
+
+    class Client:
+        models = object()
+        with_raw_response = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_request: RawResponse())
+            )
+        )
+
+    client = _NoRetryOpenAI(
+        lambda **_kwargs: Client(),
+        ledger,
+        (),
+        admission,
+        lambda _text: False,
+        api_key="unused",
+        _isolation_timeout_seconds=90,
+    )
+    with pytest.raises(DurabilityRefusal, match="could not be retained"):
+        client.chat.completions.create(model="attestator-1-chandra", messages=[])
+
+    retained = json.loads((tmp_path / "research" / "reading-ledger.json").read_text())
+    assert retained["entries"][0]["state"] == "received-unparseable"
+    assert (tmp_path / "research" / "reading-01-response.raw").read_bytes() == raw_body
+
+
+@pytest.mark.parametrize("failure", ["shape", "detector"])
+def test_classification_failure_retains_received_bytes_and_aborts_retry(tmp_path, failure):
+    ledger = ReadingLedger.create(tmp_path / "research")
+    admission = _DeadlineAdmission(
+        ledger,
+        datetime(2026, 9, 22, 3, 0, tzinfo=UTC),
+        minimum_attempt_seconds=60,
+        now=lambda: datetime(2026, 9, 22, 2, 0, tzinfo=UTC),
+    )
+    raw_body = b'{"choices":[{"message":{"content":"native"}}]}'
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None if failure == "shape" else "native")
+            )
+        ],
+        usage=SimpleNamespace(completion_tokens=1),
+        model="attestator-1-chandra",
+        _native_raw_body=raw_body,
+    )
+
+    def refuse_classification(_text):
+        if failure == "detector":
+            raise ValueError("detector refused response")
+        return False
+
+    proxy = _CompletionProxy(
+        lambda **_request: response,
+        ledger,
+        (),
+        admission,
+        refuse_classification,
+    )
+    with pytest.raises(DurabilityRefusal, match="could not retain native response evidence"):
+        proxy.create(model="attestator-1-chandra", messages=[])
+
+    retained = json.loads((tmp_path / "research" / "reading-ledger.json").read_text())
+    assert retained["entries"][0]["state"] == "received-unclassifiable"
+    assert (tmp_path / "research" / "reading-01-response.raw").read_bytes() == raw_body
+
+
+def test_nonbytes_response_records_received_without_claiming_raw_retention(tmp_path):
+    ledger = ReadingLedger.create(tmp_path / "research")
+    admission = _DeadlineAdmission(
+        ledger,
+        datetime(2026, 9, 22, 3, 0, tzinfo=UTC),
+        minimum_attempt_seconds=60,
+        now=lambda: datetime(2026, 9, 22, 2, 0, tzinfo=UTC),
+    )
+
+    class RawResponse:
+        content = "not-original-bytes"
+
+    class Client:
+        models = object()
+        with_raw_response = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_request: RawResponse())
+            )
+        )
+
+    client = _NoRetryOpenAI(
+        lambda **_kwargs: Client(),
+        ledger,
+        (),
+        admission,
+        lambda _text: False,
+        api_key="unused",
+        _isolation_timeout_seconds=90,
+    )
+    with pytest.raises(DurabilityRefusal, match="could not be retained"):
+        client.chat.completions.create(model="attestator-1-chandra", messages=[])
+
+    retained = json.loads((tmp_path / "research" / "reading-ledger.json").read_text())
+    assert retained["entries"][0]["state"] == "received-unretained"
+    assert "response_sha256" not in retained["entries"][0]
+    assert not (tmp_path / "research" / "reading-01-response.raw").exists()
 
 
 def test_terminal_publication_refusal_cannot_be_retried_as_a_native_error(tmp_path, monkeypatch):
@@ -205,6 +327,104 @@ def test_repeat_trigger_matches_the_vendor_end_cut_predicate():
     assert calls == [("x" * 51, 0), ("x" * 51, 50)]
 
 
+def test_serve_and_run_uses_started_endpoint_and_always_stops(tmp_path, monkeypatch):
+    from common.chairs import receipts as receipt_module
+    from common.chairs import registry as registry_module
+    from operations.pod import preflight as preflight_module
+    from operations.serving import config as config_module
+    from operations.serving import manager as manager_module
+    from session_verification import chandra_native_isolation as harness
+
+    page = tmp_path / "page.tif"
+    page.write_bytes(b"approved-page")
+    monkeypatch.setattr(harness, "PAGE_SHA256", harness._sha256_path(page))
+    monkeypatch.setattr(harness, "_require_upstream", lambda _root: {"clean": True})
+    monkeypatch.setattr(
+        receipt_module,
+        "receipt_record",
+        lambda _receipt: {"schema": "fake-serving-receipt.v1"},
+    )
+
+    class FakeRegistry:
+        @classmethod
+        def from_toml(cls, _path, *, cache_root):
+            assert cache_root == tmp_path / "cache"
+            return cls()
+
+        def resolve(self, role):
+            assert role == "attestator_1"
+            return SimpleNamespace(revision=harness.MODEL_REVISION)
+
+    monkeypatch.setattr(registry_module, "ChairRegistry", FakeRegistry)
+    monkeypatch.setattr(
+        config_module,
+        "load_serving_recipes",
+        lambda _path: SimpleNamespace(source_sha256="a" * 64),
+    )
+    monkeypatch.setattr(
+        preflight_module,
+        "load_placement_table",
+        lambda _path, *, source_bytes: {"source_bytes": source_bytes},
+    )
+
+    managers = []
+
+    class FakeManager:
+        def __init__(self, **kwargs):
+            self.publisher = kwargs["receipt_publisher"]
+            self.stopped = []
+            managers.append(self)
+
+        def start(self, identity, tier):
+            assert identity.revision == harness.MODEL_REVISION
+            assert tier == "generic-80gb-plus"
+            self.publisher.publish(object(), {"event": "started"})
+            return SimpleNamespace(endpoint="http://127.0.0.1:8999/v1")
+
+        def stop(self, handle):
+            self.stopped.append(handle)
+
+    monkeypatch.setattr(manager_module, "ServingManager", FakeManager)
+    observed = {}
+
+    def refuse_run(arguments):
+        observed["arguments"] = arguments
+        raise DurabilityRefusal("bounded fake run refusal")
+
+    monkeypatch.setattr(harness, "run_native", refuse_run)
+    recipes = tmp_path / "recipes.toml"
+    recipes.write_text(
+        '[[profiles]]\nchair = "attestator_1"\ntier = "generic-80gb-plus"\n'
+        "max_model_len = 18000\nstartup_timeout_seconds = 300\n"
+    )
+    placement = tmp_path / "placement.toml"
+    placement.write_text("schema = 'pod-placement.v1'\n")
+    arguments = SimpleNamespace(
+        page=page,
+        upstream_root=tmp_path / "upstream",
+        diagnostic_root=tmp_path / "diagnostic",
+        recipes_config=recipes,
+        placement_config=placement,
+        models_config=tmp_path / "models.toml",
+        cache_root=tmp_path / "cache",
+        served_model_id="attestator-1-chandra",
+        evidence_root=tmp_path / "lifecycle",
+        residency_lock=tmp_path / "residency.lock",
+        vllm_api_base="http://caller-controlled.invalid/v1",
+    )
+
+    with pytest.raises(DurabilityRefusal, match="fake run refusal"):
+        serve_and_run(arguments)
+
+    assert observed["arguments"].vllm_api_base == "http://127.0.0.1:8999/v1"
+    assert arguments.vllm_api_base == "http://caller-controlled.invalid/v1"
+    assert len(managers) == 1
+    assert managers[0].stopped == [SimpleNamespace(endpoint="http://127.0.0.1:8999/v1")]
+    assert (tmp_path / "lifecycle" / "serving-receipt.json").exists()
+    assert (tmp_path / "lifecycle" / "serving-launch-audit.json").exists()
+    assert (tmp_path / "lifecycle" / "serving-evidence.json").exists()
+
+
 @pytest.mark.skipif(
     not os.environ.get("CHANDRA_UPSTREAM_TEST_ROOT"),
     reason="requires a separately fetched, exact upstream Chandra checkout",
@@ -221,6 +441,10 @@ def test_pinned_upstream_retries_real_rgb_request_with_fake_sdk(tmp_path, monkey
     monkeypatch.setattr(harness, "PAGE_SHA256", harness._sha256_path(page))
     attempts = []
     replies = ["x" * 30, "native answer"]
+    transport_failure = False
+
+    class FakeTimeout(Exception):
+        pass
 
     class Parsed:
         def __init__(self, content):
@@ -248,6 +472,8 @@ def test_pinned_upstream_retries_real_rgb_request_with_fake_sdk(tmp_path, monkey
 
         def create(self, **request):
             attempts.append(request)
+            if transport_failure:
+                raise FakeTimeout("delivery may have reached the server")
             return RawResponse(len(attempts))
 
     def fake_openai(**_kwargs):
@@ -255,7 +481,7 @@ def test_pinned_upstream_retries_real_rgb_request_with_fake_sdk(tmp_path, monkey
 
     fake_module = types.ModuleType("openai")
     fake_module.OpenAI = fake_openai
-    fake_module.APITimeoutError = type("APITimeoutError", (Exception,), {})
+    fake_module.APITimeoutError = FakeTimeout
     fake_module.APIConnectionError = type("APIConnectionError", (Exception,), {})
     monkeypatch.setitem(sys.modules, "openai", fake_module)
     for module_name in list(sys.modules):
@@ -303,3 +529,15 @@ def test_pinned_upstream_retries_real_rgb_request_with_fake_sdk(tmp_path, monkey
     )
     assert repeated_summary["terminal"] == "repeat-exhausted"
     assert repeated_summary["returned_attempt_ordinal"] == 7
+
+    attempts.clear()
+    transport_failure = True
+    arguments.output = tmp_path / "ambiguous-evidence"
+    result = harness.run_native(arguments)
+
+    assert result == 3
+    assert len(attempts) == 1
+    ambiguous = json.loads(
+        (tmp_path / "ambiguous-evidence" / "reading-ledger.json").read_text()
+    )
+    assert ambiguous["entries"][0]["state"] == "delivery-unknown"

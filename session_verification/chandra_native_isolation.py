@@ -40,6 +40,23 @@ class DurabilityRefusal(BaseException):
     """Do not let upstream misclassify failed evidence publication as a model error."""
 
 
+class ReceivedResponseRefusal(BaseException):
+    """Carry a known HTTP response across parse/retention failure without retrying it."""
+
+    def __init__(
+        self,
+        *,
+        state: str,
+        raw_body: bytes | None,
+        error: BaseException,
+    ) -> None:
+        super().__init__(f"{type(error).__name__}: {error}")
+        self.state = state
+        self.raw_body = raw_body
+        self.error_type = type(error).__name__
+        self.detail = str(error)
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -282,6 +299,16 @@ class _CompletionProxy:
             ) from error
         try:
             response = self._create(**request)
+        except ReceivedResponseRefusal as error:
+            self._terminal(
+                ordinal,
+                state=error.state,
+                raw_response=error.raw_body,
+                metadata={"exception": error.error_type, "detail": error.detail},
+            )
+            raise DurabilityRefusal(
+                f"received response could not be retained normally: {error}"
+            ) from error
         except BaseException as error:
             if isinstance(error, self._transport_errors):
                 self._terminal(
@@ -319,16 +346,48 @@ class _CompletionProxy:
             ) from error
         try:
             raw = getattr(response, "_native_raw_body", None)
+        except Exception as error:
+            self._terminal(
+                ordinal,
+                state="received-unretained",
+                metadata={"exception": type(error).__name__, "detail": str(error)},
+            )
+            raise DurabilityRefusal(
+                f"received response bytes could not be recovered: {type(error).__name__}: {error}"
+            ) from error
+        try:
             if not isinstance(raw, bytes):
-                raise DurabilityRefusal("OpenAI raw-response wrapper did not retain response bytes")
+                raise ReceivedResponseRefusal(
+                    state="received-unretained",
+                    raw_body=None,
+                    error=TypeError("OpenAI raw-response wrapper did not retain response bytes"),
+                )
             usage = getattr(response, "usage", None)
             text = response.choices[0].message.content
             if not isinstance(text, str):
-                raise DurabilityRefusal("upstream completion has no string native output")
+                raise ReceivedResponseRefusal(
+                    state="received-unclassifiable",
+                    raw_body=raw,
+                    error=TypeError("upstream completion has no string native output"),
+                )
             repeated = self._repeat_detector(text)
-        except DurabilityRefusal:
-            raise
+        except ReceivedResponseRefusal as error:
+            self._terminal(
+                ordinal,
+                state=error.state,
+                raw_response=error.raw_body,
+                metadata={"exception": error.error_type, "detail": error.detail},
+            )
+            raise DurabilityRefusal(
+                f"received response could not be classified normally: {error}"
+            ) from error
         except Exception as error:
+            self._terminal(
+                ordinal,
+                state="received-unclassifiable",
+                raw_response=raw,
+                metadata={"exception": type(error).__name__, "detail": str(error)},
+            )
             raise DurabilityRefusal(
                 f"could not retain native response evidence: {type(error).__name__}: {error}"
             ) from error
@@ -402,8 +461,20 @@ class _NoRetryOpenAI:
             raw_response = self._client.with_raw_response.chat.completions.create(**request)
             body = raw_response.content
             if not isinstance(body, bytes):
-                raise DurabilityRefusal("OpenAI raw response content was not bytes")
-            return _CapturedCompletion(raw_response.parse(), body)
+                raise ReceivedResponseRefusal(
+                    state="received-unretained",
+                    raw_body=None,
+                    error=TypeError("OpenAI raw response content was not bytes"),
+                )
+            try:
+                parsed = raw_response.parse()
+            except Exception as error:
+                raise ReceivedResponseRefusal(
+                    state="received-unparseable",
+                    raw_body=body,
+                    error=error,
+                ) from error
+            return _CapturedCompletion(parsed, body)
 
         self.chat = SimpleNamespace(
             completions=_CompletionProxy(
@@ -526,7 +597,9 @@ def serve_and_run(args: argparse.Namespace) -> int:
     del placement
     handle = manager.start(identity, "generic-80gb-plus")
     try:
-        return run_native(args)
+        run_arguments = argparse.Namespace(**vars(args))
+        run_arguments.vllm_api_base = handle.endpoint
+        return run_native(run_arguments)
     finally:
         manager.stop(handle)
 
@@ -597,6 +670,7 @@ def run_native(args: argparse.Namespace) -> int:
             "model_revision": MODEL_REVISION,
             "upstream_commit": UPSTREAM_COMMIT,
             "served_model_id": args.served_model_id,
+            "vllm_api_base": args.vllm_api_base,
             "prompt_type": args.prompt_type,
             "max_page_readings": MAX_PAGE_READINGS,
             "sdk_max_retries": 0,
