@@ -63,7 +63,7 @@ export UV_PROJECT_ENVIRONMENT
 # The required uv version has exactly one declaration, pyproject.toml's
 # `[tool.uv] required-version` — read here with the frozen interpreter's
 # stdlib `tomllib` (no third-party package needed) rather than repeated as a
-# second literal in this script, which is how F040 (2026-09-14) drifted: a
+# second literal in this script: a duplicated literal drifted before when a
 # version bump to one copy left the other two silently behind.
 required_uv_version=$("$frozen_python" -c '
 import tomllib
@@ -194,8 +194,9 @@ fi
 
 # The gate is the one place the suites run inside the checkout that holds the
 # real `private/ntfy.conf`, and that is exactly where a test which forgot to
-# inject its notification seam pages his phone: nine identical milestones
-# arrived from a single gate run. `operations/notify/notify.sh` treats one
+# inject its notification seam sends a real phone notification: a run of
+# duplicate milestones once arrived from a single gate run.
+# `operations/notify/notify.sh` treats one
 # reserved topic as "under test" -- it prints what it would have sent and exits
 # 0 without posting -- and the root `conftest.py` sets that topic for any pytest
 # session. This is belt to those braces, and it is set here rather than
