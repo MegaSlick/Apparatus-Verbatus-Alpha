@@ -70,3 +70,51 @@ jobs:
             ${{ runner.temp }}/deadman-boot-drill.log
           if-no-files-found: warn
           retention-days: 7
+
+  native-chandra-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: helper
+          persist-credentials: false
+      - name: Check out the exact live application baseline
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 99fe5d7df52953c193182c0995fc449532b38fb9
+          path: application
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install frozen test dependencies and only the pinned native caller dependencies
+        working-directory: application
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 99fe5d7df52953c193182c0995fc449532b38fb9
+          python -m pip install 'uv==0.12.1'
+          uv lock --check
+          uv sync --frozen --group test
+          uv export --frozen --only-group pod --no-hashes --no-emit-project \
+            --output-file "$RUNNER_TEMP/native-caller-constraints.txt"
+          uv pip install --python .venv/bin/python \
+            --constraint "$RUNNER_TEMP/native-caller-constraints.txt" openai pydantic-settings
+          cp -R "$GITHUB_WORKSPACE/helper/session_verification" ./session_verification
+      - name: Fetch the pinned upstream caller outside the repository
+        shell: bash
+        run: |
+          git init "$RUNNER_TEMP/upstream-chandra"
+          git -C "$RUNNER_TEMP/upstream-chandra" remote add origin https://github.com/datalab-to/chandra.git
+          git -C "$RUNNER_TEMP/upstream-chandra" fetch --no-tags --depth=1 origin d4f7467435aa4137d9539f000ddf0b7ced3eb43f
+          git -C "$RUNNER_TEMP/upstream-chandra" checkout --detach d4f7467435aa4137d9539f000ddf0b7ced3eb43f
+          test "$(git -C "$RUNNER_TEMP/upstream-chandra" rev-parse HEAD)" = d4f7467435aa4137d9539f000ddf0b7ced3eb43f
+      - name: Exercise native retries with synthetic pixels and fake responses only
+        working-directory: application
+        shell: bash
+        run: |
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+          PYTHONPATH=. \
+          CHANDRA_UPSTREAM_TEST_ROOT="$RUNNER_TEMP/upstream-chandra" \
+            .venv/bin/python -m pytest session_verification/test_chandra_native_isolation.py
