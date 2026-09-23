@@ -326,7 +326,7 @@ escaped_pid_file=/tmp/escaped-worker.pid
 stdout_link_file=/tmp/escaped-worker-stdout
 rm -f "$escaped_pid_file" "$stdout_link_file"
 run_worker "$TIMEOUT_SECONDS" /bin/sh -ceu '
-  setsid /bin/sh -ceu '\''trap "" TERM; readlink /proc/self/fd/1 >"$1"; echo $$ >"$2"; while :; do :; done'\'' ignored '"$stdout_link_file"' '"$escaped_pid_file"' &
+  setsid /bin/sh -ceu '\''trap "" TERM; readlink "/proc/$$/fd/1" >"$1"; echo $$ >"$2"; while :; do :; done'\'' ignored '"$stdout_link_file"' '"$escaped_pid_file"' &
   child=$!
   wait "$child"
 ' &
@@ -382,6 +382,14 @@ fi
         check=False,
         capture=True,
     )
+    print(json.dumps({
+        "worker_cleanup_diagnostic": {
+            "nonroot_returncode": nonroot.returncode,
+            "nonroot_stderr": nonroot.stderr[-2000:],
+            "cleanup_returncode": cleanup.returncode,
+            "cleanup_stderr": cleanup.stderr[-4000:],
+        }
+    }, sort_keys=True), flush=True)
     supervisor = run(
         ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
         check=False,
