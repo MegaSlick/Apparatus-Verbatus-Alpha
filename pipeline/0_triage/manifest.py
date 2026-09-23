@@ -5,8 +5,8 @@ never chooses a member of a re-shoot cluster: complementary views remain rows.
 
 Geometry and colour conversion are per split part, not per frame.  The unit's own structural case is a
 document taped over the page at its own angle, "where no single gutter exists for
-auto-split and no global deskew straightens both surfaces"
-(`CONSOLIDATED_REBUILD_PLAN_2026-08-20.md:332-370`); one frame-level crop box and
+auto-split and no global deskew straightens both surfaces";
+one frame-level crop box and
 one frame-level rotation cannot express it, and a bound spread's two pages each
 want their own crop besides.
 

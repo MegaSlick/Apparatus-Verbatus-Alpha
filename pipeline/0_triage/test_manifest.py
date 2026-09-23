@@ -153,7 +153,7 @@ def test_every_field_round_trips_and_a_derivative_links_to_the_row():
         ("actor", {"kind": "model", "identity": "x", "revision": None}, "resolved model revision"),
         (
             "actor",
-            {"kind": "human", "identity": "Tyrel", "revision": "n/a"},
+            {"kind": "human", "identity": "operator", "revision": "n/a"},
             "human triage actor carries no revision",
         ),
     ],
@@ -168,7 +168,7 @@ def test_required_provenance_and_closed_values_are_refused(field, value, match):
     any branch of `_validate_actor`, and the row was still refused and the test was
     still green. What that would cost in practice is a triage row carrying a
     confidence nobody declared or a mode nobody declared, and those two fields
-    decide which frames go to human review. Found by CodeRabbit."""
+    decide which frames go to human review."""
     values = row()
     values[field] = value
     with pytest.raises(ContractError, match=match):
@@ -178,7 +178,7 @@ def test_required_provenance_and_closed_values_are_refused(field, value, match):
 def test_a_human_actor_is_recorded_without_inventing_a_revision():
     # principle 6 binds a *model's* revision. A person has none, and the schema
     # says so with null rather than accepting a placeholder string.
-    human = row(actor={"kind": "human", "identity": "Tyrel", "revision": None})
+    human = row(actor={"kind": "human", "identity": "operator", "revision": None})
     assert validate_manifest(manifest([human]))
 
 
@@ -638,7 +638,7 @@ def test_contract_counts_are_bounded_before_their_work_can_amplify():
     # before it derives the digest and `_validate_split` guards it again afterwards,
     # and while both said the same words this assertion passed with the early guard
     # deleted — which is the guard that keeps the quadratic work off untrusted input
-    # in the first place. Found by CodeRabbit.
+    # in the first place.
     with pytest.raises(
         SchemaRefusal, match=f"{MAX_SPLIT_PARTS}-part limit before its row is serialized"
     ):
