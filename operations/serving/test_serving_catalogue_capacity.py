@@ -201,18 +201,24 @@ def test_chandra_80gb_admits_its_native_bound_after_the_observed_page_three_prom
         for row in _shipped_rows()
         if row.chair == "attestator_1" and row.tier == "generic-80gb-plus"
     )
-    prompt_tokens = 6_731
+    # The actual retained Chandra presentation was 2100x2968; the processor
+    # reported 6,138 image tokens plus the sealed 593-token text prompt.
+    images = [(2100, 2968)]
+    prompt_tokens = PROMPT_TOKENS[row.chair]
+    assert prompt_tokens == 593
     declared_answer = DECLARED_ANSWER_BOUND_TOKENS[row.chair]
-    assert prompt_tokens + declared_answer == 19_115
     assert row.max_model_len == 20_480
 
-    capacity = request_fits(row, [], prompt_tokens, declared_answer)
+    capacity = request_fits(row, images, prompt_tokens, declared_answer)
+    assert capacity["image_prompt_tokens"] == 6_138
+    assert capacity["image_prompt_tokens"] + capacity["prompt_tokens"] == 6_731
+    assert capacity["need"] == 19_115
     assert capacity["fits"] is True, capacity["reason"]
     assert capacity["headroom"] == 1_365
     assert sendable_max_tokens(row.chair, capacity) == {"max_tokens": declared_answer}
 
     old_capacity = request_fits(
-        replace(row, max_model_len=18_000), [], prompt_tokens, declared_answer
+        replace(row, max_model_len=18_000), images, prompt_tokens, declared_answer
     )
     assert old_capacity["fits"] is False
     assert old_capacity["headroom"] == -1_115
