@@ -325,8 +325,11 @@ fi
 escaped_pid_file=/tmp/escaped-worker.pid
 stdout_link_file=/tmp/escaped-worker-stdout
 rm -f "$escaped_pid_file" "$stdout_link_file"
+exec 3>&1
+expected_stdout_link="$(readlink "/proc/$$/fd/3")"
+exec 3>&-
 run_worker "$TIMEOUT_SECONDS" /bin/sh -ceu '
-  setsid /bin/sh -ceu '\''trap "" TERM; readlink "/proc/$$/fd/1" >"$1"; echo $$ >"$2"; while :; do :; done'\'' ignored '"$stdout_link_file"' '"$escaped_pid_file"' &
+  setsid /bin/sh -ceu '\''trap "" TERM; exec 3>&1; readlink "/proc/$$/fd/3" >"$1"; exec 3>&-; echo $$ >"$2"; while :; do :; done'\'' ignored '"$stdout_link_file"' '"$escaped_pid_file"' &
   child=$!
   wait "$child"
 ' &
@@ -345,8 +348,10 @@ escaped_pid="$(cat "$escaped_pid_file")"
   exit 1
 }
 kill -0 "$escaped_pid"
-[[ "$(cat "$stdout_link_file")" == "$(readlink /proc/$$/fd/1)" ]] || {
-  printf '%s\n' 'detached worker did not retain the caller stdout descriptor' >&2
+observed_stdout_link="$(cat "$stdout_link_file")"
+[[ "$observed_stdout_link" == "$expected_stdout_link" ]] || {
+  printf 'detached worker did not retain the caller stdout descriptor: observed=%q expected=%q\n' \
+    "$observed_stdout_link" "$expected_stdout_link" >&2
   exit 1
 }
 if wait "$wrapper_pid"; then
