@@ -6339,7 +6339,7 @@ def test_pod_runtime_checked_in_spend_policy_is_the_ledgered_one() -> None:
     floor_note, _, floor_line = active.partition("account_balance_floor_usd =")
     assert floor_line.startswith(' "50.00"')
     assert "Documented, unverified default" in floor_note
-    assert "checks it against the RunPod balance" in floor_note
+    assert "check it against the RunPod balance" in floor_note
     assert "not permission to launch" in text
 
 

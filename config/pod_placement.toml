@@ -6,7 +6,7 @@
 # next stage or to create another one.
 #
 # Serving is SEQUENTIAL — one model at a time, as much of the card as stays
-# stable, next model after (Tyrel's ruling, 2026-08-05).  Every tier below is
+# stable, next model after.  Every tier below is
 # `residency = "single"`; what a tier changes is how much of the card that one
 # model gets, never how many models run at once.  A retired three-tier
 # co-residency table (strictly_sequential / two_coresident_one_swapped /
@@ -18,14 +18,14 @@
 # on-demand prices (2026-07-30, re-checked by the lane-A build on 2026-08-05);
 # the gpu_type_id strings come from RunPod's published documentation and have
 # never been sent to the API, so confirm the exact accepted string in the console
-# before the first live launch.  Nothing here chooses a card: that is Tyrel's
-# call at this gate, and `config/spend.toml` refuses every paid path until he
-# has configured it.
+# before the first live launch.  Nothing here chooses a card: that is the
+# project lead's call at this gate, and `config/spend.toml` refuses every
+# paid path until it has been configured.
 #
 # UNITS, because two of these are easy to read wrong and one already was.
 # `context_cap` is tokens.  `batch_size` is concurrent sequences.
 # `engine_memory_fraction` is a fraction of the card.  **`pixel_cap` is a
-# LONGEST-EDGE cap in pixels**, not a pixel count — 2,560 (U15, every tier: the
+# LONGEST-EDGE cap in pixels**, not a pixel count — 2,560 (every tier: the
 # per-tier ladder is retired) is a side length; as a total count it would
 # describe roughly 51x51 images, where it actually admits 2,560² = 6,553,600
 # pixels, comfortably above Chandra's 6,291,456. A serving profile's `max_pixels` in
@@ -39,8 +39,7 @@
 # serving row at that tier to -- an upper bound each row's own `max_model_len`
 # must not exceed, never a per-request token budget in itself: what a request
 # actually spends is bounded by its own row, not by this tier-wide cap. They
-# were 2,048 / 4,096 / 8,192, then raised to 16,384 everywhere; U15 (Tyrel's
-# ruling, 2026-09-06 -- `CORRECTION_PLAN_2026-09-06.md` Q1/Q2/Q5) raises them
+# were 2,048 / 4,096 / 8,192, then raised to 16,384 everywhere, then raised
 # again, to admit each witness chair's own trained geometry rather than a
 # generic per-tier budget: `config/serving_recipes_real.toml` carries the
 # per-chair arithmetic and the reasoning. `context_cap = 20,480` at
@@ -81,13 +80,11 @@ residency = "single"
 detector_device = "cpu"
 
 [tiers.recipe]
-# U15 (Tyrel, 2026-09-06, hostile-review Q1): 0.58 has no derivation anywhere
-# in this tree or the old pipeline, which never served below 0.85 on a
-# comparable card; under `residency = "single"` it was a co-residency
-# leftover that only ever subtracted pixels.  0.90 is what DAI needs to be
-# servable on this card class at all (VRAM arithmetic in
-# `CORRECTION_PLAN_2026-09-06.md`: 18.7 GiB of 24, 0.78 minimum, 0.90 matches
-# the old `serve_dai.sh`).
+# 0.58 has no derivation anywhere in this tree or the old pipeline, which
+# never served below 0.85 on a comparable card; under `residency = "single"`
+# it was a co-residency leftover that only ever subtracted pixels.  0.90 is
+# what DAI needs to be servable on this card class at all (18.7 GiB of 24,
+# 0.78 minimum, 0.90 matches the old `serve_dai.sh`).
 engine_memory_fraction = "0.90"
 context_cap = 20480
 pixel_cap = 2560
