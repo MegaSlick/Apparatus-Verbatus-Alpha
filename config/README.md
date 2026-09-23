@@ -10,7 +10,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `pdf_render.toml` | what whole-page PDF resolution the next run targets |
 | `designator_padding.toml` | how far a proposal crop is expanded past its structural bounds before it is cut |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
-| `spend.toml` | deliberately unconfigured — the project lead's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
+| `spend.toml` | the project lead's pod-plus-attached-volume money caps; both paid paths refuse it unless configured, and configuring it is not permission to launch |
 | `pod_placement.toml` | planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | the fixture-only default serving catalogue; it stays untouched unless `--serving-recipes-config` selects another file |
 | `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles plus explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |

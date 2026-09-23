@@ -1,14 +1,8 @@
-# Deliberately non-operational until the project lead chooses a GPU class and
-# spend policy. Both creation and adoption refuse this state.  Test fixtures
-# supply configured policy values; this file contains no personal default or
-# billable approval.
-#
-# This is a refusal, not a placeholder.  A committed active policy reads as an
-# approved one to whoever opens the file next, and the spend policy and GPU
-# class are the project lead's to set.  The commented keys below document
-# the shape a configured policy must have so that filling it in needs no code
-# reading — the loader refuses any key it does not know, and refuses a policy
-# missing any of them.
+# The money ceilings for pod-plus-attached-volume spend. The spend policy and
+# GPU class are the project lead's to set; both paid paths (creation and
+# adoption) refuse the file unless `state = "configured"` and every key below is
+# present — the loader refuses unknown and missing keys alike. The commented
+# block documents the shape so filling it in needs no code reading.
 #
 # Configuring this file is not permission to launch (AGENTS.md "Who decides"):
 # every live run is separately authorised by the project lead in the session
