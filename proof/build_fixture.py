@@ -307,7 +307,7 @@ NATIVE_OBSERVATIONS = (
     # proposal regions, exercising geometric attachment and containment without
     # using an anchor as authority.
     #
-    # **AND NO LIVE CHAIR COULD PRODUCE IT.** U10 put the Churro chair back on
+    # **AND NO LIVE CHAIR COULD PRODUCE IT.** The Churro chair is back on
     # its vendor's own system, where `HistoricalDocument` carries no coordinate
     # vocabulary anywhere: `churro.FORMAT_CAPABILITIES` says
     # `can_express_layout = False`, the adapter declares no quantization rule
@@ -318,7 +318,7 @@ NATIVE_OBSERVATIONS = (
     # so the offline posture attaches this chair, counts three witnesses of a
     # floor of three, and reaches a *delivered* export via that declared box.
     #
-    # U12 has since landed: the live seam over the same chair now also reaches
+    # The live seam over the same chair now also reaches
     # *delivered* with three of three (`pipeline/test_live_reading_seam_e2e.py`),
     # but through a different basis -- the Perlector's own `anchor-line`
     # derivation, never a reported page-geometry box, since this chair's
@@ -639,10 +639,10 @@ CHURRO_PAGE_RESPONSES = tuple(
         # (`common/churro_document.py`) a body that offers no grammar at all is
         # not malformed: it is the plain reading-order text the paper-era
         # harness itself expected, and throwing a page of ink away over an
-        # unclosed tag is the loss GOALS 1 refuses. So a declared cut says
+        # unclosed tag is the loss goal 2 refuses. So a declared cut says
         # `HistoricalDocument` and stops mid-element. The `<output>` rows around
         # it stay as they are -- retained history, which the grammar still reads
-        # and names on the capture -- until U16 re-declares them.
+        # and names on the capture -- until a later revision re-declares them.
         "raw_xml": (
             f"<HistoricalDocument><Page><Body><Line>{_churro_native_page_text(2, 'attestator_3')}"
         ),
@@ -1082,7 +1082,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "",
         "# churro-truncation isolates the visibly cut, still-parseable response:",
         "# the transport said `length`, the text is kept, truncated is true, and",
-        "# nothing completes or re-asks it (GOVERNANCE 7).",
+        "# nothing completes or re-asks it (principle 3).",
         "[[scenario]]",
         'name = "churro-truncation"',
         "recover_acts = []",
@@ -1263,7 +1263,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "# Under `blank-with-dissent` only two of three chairs agree -- the third",
         "# reads real text -- so the identical Perlector finding must instead be",
         "# held for review: a single dissenting witness is exactly the",
-        "# disagreement GOALS 1 says may never be silently resolved.",
+        "# disagreement goal 2 says may never be silently resolved.",
         "",
         "[[reading_failure]]",
         'scenario = "confirmed-blank"',

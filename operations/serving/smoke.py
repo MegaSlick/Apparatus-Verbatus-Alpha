@@ -117,7 +117,7 @@ def render_golden_page(path: Path, witness: str) -> bytes:
     no-op, and different bytes at the same name are refused rather than
     written over. Every receipt that names a golden page names it by digest,
     and a page that could be silently replaced is the one artefact those
-    add-only receipts point at (GOVERNANCE 4).
+    add-only receipts point at (principle 4).
     """
 
     VisionSmokeCall(witness)

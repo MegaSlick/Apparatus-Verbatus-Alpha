@@ -1,6 +1,6 @@
 """The review surface opens an unfinished run and says what happened to it.
 
-Independent audit of 2026-09-10, finding F3, reproduced on `0aa08db7e4`: after the
+After the
 witnesses had sealed their evidence, `ReadOnlyRun.projection()` raised
 `OperatorError` because no Armarium export existed, and the same run opened only
 after export. The evidence was intact and the refusal visible, but the one surface
@@ -389,7 +389,7 @@ def _review_record(act_id: str, outcome: str, payload: dict[str, object]) -> dic
     identity, and the identity derives from (subject, operation, ordinal). A
     synthetic record missing either field is refused for its shape before any
     assertion about the outcome vocabulary can be reached -- which would have
-    made the refusal test pass for the wrong reason. Found by CodeRabbit.
+    made the refusal test pass for the wrong reason.
     """
     from common.contracts.identities import attempt_id
 
@@ -730,7 +730,7 @@ def test_an_act_count_with_no_denominator_says_so_rather_than_reading_as_no_acts
 
 
 def test_a_newline_becomes_a_separator_and_the_length_notice_names_two_lengths():
-    """Escaping first meant the replacement found nothing to replace. Found by CodeRabbit."""
+    """Escaping first meant the replacement found nothing to replace."""
     assert review_text._one_line("alpha\nbeta") == "alpha / beta"
     cut = review_text._one_line("x" * 500, 300)
     assert cut.endswith("(first 300 characters as shown, of a 500-character value)")
@@ -1045,8 +1045,7 @@ def test_an_object_valued_projection_field_of_the_wrong_type_is_refused_by_name(
     The list fields were shape-checked from the first candidate and the object
     fields were not, so `export`, `next_action`, a hold's `record_ref`, a
     reading's `audit` and an act's `row` each crashed the renderer instead of
-    refusing. Found by CodeRabbit (two minors) and by the same review as
-    finding 12.
+    refusing.
     """
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render({"run_id": "r", **projection})
@@ -1077,8 +1076,7 @@ def test_a_published_span_is_shown_beside_the_state_that_says_who_did_not_report
 
     With today's live reader that combination -- `not-assessed` beside real
     published spans -- is the only way a span reaches this surface at all, and
-    the renderer used to print the state line and return, hiding exactly those
-    (the independent review of 2026-09-11).
+    the renderer used to print the state line and return, hiding exactly those.
     """
     lines = review_text.render(
         _delivered_act(
@@ -1100,7 +1098,7 @@ def test_a_published_span_is_shown_beside_the_state_that_says_who_did_not_report
 
 
 def test_a_doubt_layer_entry_that_is_not_an_object_is_refused_by_field_and_index():
-    """The same rule as every other projection list, at the newest one (CodeRabbit)."""
+    """The same rule as every other projection list, at the newest one."""
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render(
             _delivered_act(
@@ -1136,7 +1134,7 @@ def test_an_audited_reading_does_not_credit_the_reader_with_the_audits_own_spans
     that also assesses adds its own; the published layer holds both and nothing
     in it says which is which. Saying "assessed by the reader; 3 span(s)" would
     credit a person's reading of the screen to an instrument that reported one
-    of them (GOVERNANCE 10).
+    of them (principle 8).
     """
     projected = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
     reader = {"start": 6, "end": 10, "alternatives": ["beta"], "confidence": "high"}
@@ -1198,7 +1196,7 @@ def test_an_identical_pair_is_one_line_with_the_count_and_no_claim_about_its_sou
     entry appears twice. Naming the two instruments would say a third thing no
     artifact records: nothing in the run names the instrument behind any one
     span, and two audit flags of different classes may share one location, so a
-    fold is evidence of a repeat and of nothing else (GOVERNANCE 10).
+    fold is evidence of a repeat and of nothing else (principle 8).
     """
     span = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
     for state, assessment in (
@@ -1446,9 +1444,9 @@ def test_an_unrecognised_state_is_named_as_one_rather_than_echoed():
 
 def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions():
     """The record holds more than position and offset, and a person reviewing a
-    gap against the ink should see what it holds (GOALS 5). Naming the chairs an
+    gap against the ink should see what it holds (goal 4). Naming the chairs an
     absence rests on is not a selection among them: nothing here chooses, and no
-    witness reading is shown as text (hard rule 8)."""
+    witness reading is shown as text (principle 1)."""
     lines = review_text.render(
         _delivered_act(
             {

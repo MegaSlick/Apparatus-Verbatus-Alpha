@@ -44,10 +44,10 @@ def configured(**overrides: object) -> SpendPolicy:
 
 
 def test_the_committed_policy_renders_the_a5000_drill_under_the_ledger_ceilings() -> None:
-    """`config/spend.toml` is configured since 2026-09-06 (standing ledger §8-§9):
-    the committed file renders the Boot A drill on the cheapest reviewed card
-    under exactly the ceilings Tyrel approved. The refusal path keeps its own
-    coverage in the unconfigured-policy tests below."""
+    """`config/spend.toml` is configured: the committed file renders the Boot A
+    drill on the cheapest reviewed card under exactly the ceilings the project
+    lead approved. The refusal path keeps its own coverage in the
+    unconfigured-policy tests below."""
     placement = load_placement_table(PLACEMENT)
     rendered = render_boot_a_request(load_spend_policy(COMMITTED_SPEND), placement)
 
@@ -137,7 +137,7 @@ def test_a_card_above_the_hourly_ceiling_is_named_as_a_coming_refusal() -> None:
 
 
 def test_the_pod_request_validates_once_tyrel_supplies_his_four_values() -> None:
-    """``hard_deadline`` is a value Tyrel supplies too -- ``pod_request``
+    """``hard_deadline`` is a value the project lead supplies too -- ``pod_request``
 
     carries no runtime that fills it in, unlike ``metadata``'s billing-cutoff
     margin, which the launch seals from the spend policy on its own. This
@@ -350,16 +350,16 @@ def test_the_drill_request_names_the_timer_capability_as_tyrels_to_deliver() -> 
     and a timer that cannot construct cannot close the pod -- the container
     exits and the pod stays EXITED and billing. Nothing in the tracked tree can
     deliver that value (`metadata` refuses credential-shaped keys), so it
-    belongs in "what only Tyrel supplies" rather than being discovered on a
+    belongs in "what only the project lead supplies" rather than being discovered on a
     billing card. Named by its factory rather than by the vendor's variable,
     because provider vocabulary stays inside the adapter.
     """
 
     rendered = render_boot_a_request(configured(), load_placement_table(PLACEMENT))
 
-    supplies = rendered.text.split("## What only Tyrel supplies", 1)[1].split("## The command", 1)[
-        0
-    ]
+    supplies = rendered.text.split("## What only the project lead supplies", 1)[1].split(
+        "## The command", 1
+    )[0]
     assert "timer_context_from_environment" in supplies
     assert "EXITED" in supplies
     assert "metadata" in supplies

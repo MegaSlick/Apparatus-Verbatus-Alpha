@@ -61,7 +61,7 @@ install_uv() {
     download "$archive" "$UV_URL"
     # Named, not a bare status: with `set -euo pipefail` a silent non-zero
     # leaves the operator unable to tell a bad download from a bad pin
-    # (CodeRabbit; operations/pod/** requires failures report what they are).
+    # (a failure here must report what it is, not a bare status).
     if ! echo "$UV_SHA256  $archive" | sha256sum --check --status; then
         echo "uv archive $archive failed its pinned sha256 $UV_SHA256" >&2
         return 1

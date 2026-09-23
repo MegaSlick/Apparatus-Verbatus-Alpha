@@ -387,7 +387,7 @@ def test_a_perlectio_testimonia_count_must_be_a_count_before_it_is_read_as_a_fla
     So `-1` and `True` both passed as "saw Testimonia" and were then retained as
     evidence — and the number travels into the dissent and parroting measures,
     where a count that is not a count is a measurement claim about something that
-    never happened (GOVERNANCE 10). Found by CodeRabbit.
+    never happened (principle 8).
     """
 
     for wrong in (True, -1, 2.0, "3"):

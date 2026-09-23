@@ -307,7 +307,6 @@ def test_disagreement_spans_refuses_something_that_is_not_text():
     must be refused is a value that merely answers to `len()` — bytes, a list —
     which reaches `SequenceMatcher` and is aligned as a sequence of something
     other than characters, returning offsets into a text that does not exist.
-    Found by CodeRabbit.
     """
 
     for wrong in (b"abc", ["a", "b", "c"], 123, None):

@@ -128,7 +128,7 @@ def test_a_declared_removed_half_is_refused_rather_than_published(tmp_path: Path
     `removed_half` was required by the closed image schema and then read by
     nothing, so an excluded half reached the Door as an ordinary row and could
     be established as an act with nothing downstream able to tell the removal
-    had been discarded (CodeRabbit). Refused rather than honoured: emitting
+    had been discarded. Refused rather than honoured: emitting
     only the retained half would decide that half's physical ordering silently.
     """
     document, frames, sources = _document(tmp_path)
@@ -158,7 +158,7 @@ def test_a_boolean_orientation_is_refused_not_read_as_zero(tmp_path: Path):
 
     It then selected the zero-degree region order, recorded `0` for
     `degrees * 1000`, and sealed `False` into the binding -- a malformed
-    canonical document accepted instead of refused (CodeRabbit).
+    canonical document accepted instead of refused.
     """
     orientations = {"schema": ORIENTATION_SCHEMA, "orientations": {"pages/a.jpg": False}}
     raw = canonical_bytes(orientations) + b"\n"

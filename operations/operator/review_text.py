@@ -7,8 +7,7 @@ already-checked JSON, and turns it into the lines the operator actually reads:
 which stages ran, which pages and crops exist, where each act stands, what is
 held and why, and the one supported next action. Before it existed the
 `review` verb printed the raw projection, and a person following an unfinished
-run had to read JSON to learn why it stopped (independent audit of 2026-09-10,
-finding F3).
+run had to read JSON to learn why it stopped.
 
 Every string from the projection passes through `inert` before it reaches a
 line: a control character becomes its escaped spelling rather than reaching the
@@ -28,8 +27,7 @@ class ProjectionShapeError(ValueError):
     Raised by name -- the field, and the index when there is one -- rather than
     skipped: a row the renderer silently passed over would be a row a person
     never sees, and the parent reports this as a fault of its own pipe, never as
-    a claim about the run tree (`cli._review_in_custody`). Found by CodeRabbit on
-    the first candidate.
+    a claim about the run tree (`cli._review_in_custody`).
 
     Three shapes, three sentences. `index=None` means the field itself is wrong,
     not one of its rows: `entry -1` read as a row number and sent a person
@@ -228,11 +226,11 @@ def _uncertainty_lines(
     `outcome` is the record's own word for whether a reading exists. Only a
     `not-run` record carries no text; a reading with any other outcome and no
     string text is a damaged record, refused by field rather than printed as an
-    act that was never read (CodeRabbit on the round-5 head).
+    act that was never read.
 
     The state line always comes first and always says which of the three states
     this record carries, so an empty layer is never displayed as a reader's
-    confidence (independent audit of 2026-09-10, F2). The spans and gaps are
+    confidence. The spans and gaps are
     then printed whenever there are any, whatever the state: the exhausted-cap
     projection mints spans on acts whose reader has no doubt channel, which is
     what a chair whose prompt has no doubt grammar reports -- the one bound in
@@ -248,7 +246,7 @@ def _uncertainty_lines(
     form is reserved for a record kind no projection puts on this screen today.
     That last sentence depends on `audit` being in the Perlectio's closed field
     set (`pipeline/4_perlector/run.py::_PERLECTIO_FIELDS`), which is where it
-    would stop being true (the independent review of 2026-09-11; GOVERNANCE 10).
+    would stop being true (principle 8).
     """
     if assessment is not None and not isinstance(assessment, dict):
         raise ProjectionShapeError(
@@ -257,8 +255,7 @@ def _uncertainty_lines(
     # The layers are validated and rendered whether or not the assessment is
     # there. Returning on the absence first meant a malformed layer BESIDE a
     # missing assessment was never looked at, and the spans such a record did
-    # carry were never shown -- the same silence one field over (found by
-    # CodeRabbit on the round-4 head).
+    # carry were never shown -- the same silence one field over.
     spans = _uncertainty_entries(spans, f"{label}.uncertain_spans")
     gaps = _uncertainty_entries(gaps, f"{label}.gaps")
     revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
@@ -353,7 +350,7 @@ def _uncertainty_lines(
         # wrote which span: two audit flags of different classes may share one
         # location, so a fold is evidence that the layer carried the entry
         # twice and of nothing else -- under `assessed` exactly as under every
-        # other state (found by CodeRabbit on the round-4 head; GOVERNANCE 10).
+        # other state (principle 8).
         repeated = f"; carried {carried} times in the layer" if carried > 1 else ""
         lines.append(
             f"      [{inert(start)}, {inert(end)}) {shown} confidence "
@@ -365,7 +362,7 @@ def _uncertainty_lines(
         witness_evidence = gap.get("witness_evidence")
         # Only absent defaults to empty. `or ()` swallowed `""`, `0` and `{}`,
         # each of which is a malformed value this screen would then have shown
-        # as a gap nobody corroborated (found by CodeRabbit on the round-4 head).
+        # as a gap nobody corroborated.
         evidence = _checked_rows(
             () if witness_evidence is None else witness_evidence,
             f"{label}.gaps[{index}].witness_evidence",
@@ -545,7 +542,6 @@ def render(projection: dict[str, Any]) -> list[str]:
             # the canonical layer the export carries. Without this an act that
             # reached the product unassessed would look, to the one person
             # reviewing it, exactly like one whose reader found no doubt
-            # (independent audit of 2026-09-10, F2).
             uncertainty = _object(row, "uncertainty", "acts[].row.uncertainty")
             lines.extend(
                 _uncertainty_lines(

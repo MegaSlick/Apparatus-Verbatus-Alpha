@@ -47,7 +47,7 @@ _REVIEW_ITEMS_MEMBER = "review-items.jsonl"
 # the largest that still passes through this pipe with room for the JSON copy
 # on both sides, so it refuses only runs the one-pass verification design could
 # not have served anyway — and it refuses them by name instead of by
-# exhaustion (GOVERNANCE 2).
+# exhaustion (principle 2).
 MAX_PROJECTED_IMAGE_BYTES = 256 * 1024 * 1024
 
 
@@ -83,7 +83,7 @@ def _budgeted_image_bytes(
     `RunTree.read_bytes` loads the whole file and only then hands its length to
     `spend`, so a page larger than the allowance was fully resident at the exact
     moment the limit existed to refuse it -- on a parish-sized image that is the
-    console dying rather than refusing by name (GOVERNANCE 2). The size on disk
+    console dying rather than refusing by name (principle 2). The size on disk
     is charged first and the read is then bounded by what was charged, so a file
     that grew between the two spends nothing it was not allowed.
     """
@@ -117,7 +117,7 @@ class ReviewProjection:
     acts: tuple[dict[str, Any], ...]
     review_items: tuple[dict[str, Any], ...] | None
     advance_records: tuple[dict[str, Any], ...]
-    # The pre-export view (independent audit of 2026-09-10, F3). Before this,
+    # The pre-export view. Before this,
     # the projection refused the whole run whenever the Armarium had not
     # exported -- exactly the moment a person needs to see the images, the
     # readings and the reason the run stopped. These four are derived from the
@@ -500,7 +500,7 @@ def _export_state(
     record before it seals its own boundary, so a run killed between the two
     leaves an export record behind a stage this same screen calls interrupted.
     Deriving "a completed export" from the record's mere presence announced
-    both as finished work (ARCHITECTURE invariant 6, GOVERNANCE 2).
+    both as finished work (ARCHITECTURE invariant 6, principle 2).
 
     So `present` means what a reader takes it to mean: a sealed Armarium with
     an export record under it. `complete` is the further question the record's
@@ -691,7 +691,7 @@ def _progress(
     has not run at all; and one whose stored seal no longer verifies against
     what is on disk. The last is never reported as "not run" and the third is
     never reported as damage -- a legitimate absence and a broken promise are
-    different facts (GOVERNANCE 2, 10).
+    different facts (principle 2, principle 8).
     """
     by_stage = {row["stage"]: row for row in boundaries}
     rows = []
@@ -812,7 +812,7 @@ def _progressive_crops(
 # one -- the proposal seal's closed row schema has no `approval_ref` field at
 # all, which is why the Armarium refuses every exclusion today for the missing
 # citation. Saying "excluded with approval" asserted a check nobody performed
-# (GOVERNANCE 10: an absence is never presented as a measurement).
+# (principle 8: an absence is never presented as a measurement).
 _TERMINAL_DESIGNATOR_REASONS: dict[str, tuple[str, str]] = {
     "excluded": (
         "excluded by the Designator",
@@ -850,8 +850,7 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
     before this contract existed and says so on the screen, while a
     present-but-malformed value is a fault of the run tree and is refused by
     field like every other projection list. Flattened to `None`, a broken layer
-    printed as no doubt line at all -- the pre-F2 silence, restored on the one
-    surface a person reads (the independent review of 2026-09-11).
+    would print as no doubt line at all, on the one surface a person reads.
     """
     reading_row = _latest(stage_records, PERLECTOR, "perlectio", act_id, operation="perlegere")
     if reading_row is None:
@@ -879,8 +878,7 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
         # holds it, for the reason the doubt layers above are. Mapping a
         # malformed value to `None` here spent the distinction: the renderer
         # would read "this reading had no audit", and a fault of the run tree
-        # would print as an ordinary absence (found by CodeRabbit on the
-        # round-4 head).
+        # would print as an ordinary absence.
         "audit": _projected_audit(audit),
         "record_ref": reading_row["record_ref"],
     }
@@ -1573,7 +1571,7 @@ def _act_row(
     # `source_regions` would then reach the console as an act with an empty
     # crop list, and the operator could not tell "this act records no crop"
     # from "the crop list went missing" — they would be approving text they
-    # never saw against the ink (GOVERNANCE 2, GOALS 5). Absent is refused
+    # never saw against the ink (principle 2, goal 2). Absent is refused
     # exactly like malformed. A non-delivered act is the one shape whose
     # writer never records the field, so only there absent means absent.
     source_regions = row.get("source_regions")
@@ -1673,8 +1671,7 @@ def _normalised_act_row(
         # DELIVERED row is described entirely by its export record, so one
         # without a witness basis is a damaged record, and reading its witnesses
         # and its reading out of the run tree instead would paper over that and
-        # show the delivered text beside a reading the export never named
-        # (found by CodeRabbit on the round-4 head).
+        # show the delivered text beside a reading the export never named.
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
@@ -1692,8 +1689,7 @@ def _normalised_act_row(
         # Armarium writes no text and no uncertainty layer for an act it did not
         # deliver, so a held act -- the one this screen exists for -- showed its
         # doubt report before the export and nothing after it. The same
-        # asymmetry, one field further on (the independent review of
-        # 2026-09-11).
+        # asymmetry, one field further on.
         reading = _reading_row(stage_records, row["act_id"])
         if reading is not None:
             attached["reading"] = reading
@@ -1833,12 +1829,12 @@ def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) 
     it was written, but nothing on the read path called it, so the console
     displayed "this boundary was advanced" as a present-tense fact however far
     the boundary had moved since. Detectable only by a function nobody calls is
-    not detectable (GOVERNANCE 2), and the digest binding is the whole reason
+    not detectable (principle 2), and the digest binding is the whole reason
     the record carries a `target_version_hash`.
 
     This reports; it does not choose. A stale record is still shown, still
     named, and still the operator's to act on — hiding it would be the picker
-    hard rule 8 forbids, wearing a tidier face.
+    principle 1 forbids, wearing a tidier face.
     """
 
     subjects = record["subject_ids"]
@@ -1932,7 +1928,7 @@ def _review_items(
         # The same shape the image allowance exists for: the bundle zip is read
         # whole to verify its digest, in the same projection pass that already
         # holds every page and crop, so it spends from the same allowance and an
-        # oversized run refuses by name instead of by exhaustion (GOVERNANCE 2).
+        # oversized run refuses by name instead of by exhaustion (principle 2).
         bundle_bytes = _budgeted_image_bytes(tree, path, budget, "the Armarium export bundle")
         actual_digest = digest_bytes(bundle_bytes)
         if actual_digest != expected_digest:
@@ -2023,7 +2019,7 @@ def _review_items(
             # hold up to MAX_REVIEW_ITEMS rows, and a refusal that names only
             # the bundle leaves the operator to find the bad row by hand. The
             # one-based number each item already carries is now in both
-            # refusals. Found by CodeRabbit.
+            # refusals.
             parsed: list[dict[str, Any]] = []
             for number, line in enumerate(lines, start=1):
                 try:

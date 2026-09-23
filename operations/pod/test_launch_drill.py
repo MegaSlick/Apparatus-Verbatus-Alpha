@@ -712,8 +712,8 @@ def test_c_a_report_that_never_appears_closes_the_pod_inside_the_create_that_mad
     The bound is clamped down to what is left of the lease *less the close
     budget*, the refusal names it, and `launch._arm_or_close` closes the pod
     before `create` returns. Reserving that budget is what keeps this close
-    inside the hard deadline instead of starting after it (CodeRabbit on PR
-    #117). The close is checked against provider state, not against the armer's
+    inside the hard deadline instead of starting after it. The close is
+    checked against provider state, not against the armer's
     word for it: terminated once, absent to a GET, absent from the list, and
     durably recorded as ``closed-verified``.
     """
@@ -828,7 +828,7 @@ def test_e_a_supervisor_close_leaves_the_launch_side_seeing_a_terminal_lease(
 
     # And the verified evidence itself is not replaceable by the shared token:
     # a launch side that closed again and recorded a lesser observation would
-    # turn a proven close back into a question (GOVERNANCE 4).
+    # turn a proven close back into a question (principle 4).
     with pytest.raises(LeaseOwnershipError, match="verified close evidence"):
         drill.store.record_close(
             owner_token=OWNER,
