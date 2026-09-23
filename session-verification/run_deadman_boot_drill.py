@@ -23,6 +23,7 @@ import uuid
 
 HERE = Path(__file__).resolve().parent
 CONTROLLER_PATH = HERE / "live_trial_controller_20260922.py"
+LIVE_PAYLOAD_LIB_PATH = HERE / "live_payload_lib.sh"
 EXPECTED_IMAGE = (
     "runpod/pytorch@sha256:"
     "0a360022e8de4375af99430f84e8b38951acc397252163a37ceac7204d01be35"
@@ -165,6 +166,8 @@ def receipt_matches_mode(summary: dict[str, object], *, expect_pid1: bool) -> bo
         and summary.get("worker_gate_refused_before_ack") is True
         and summary.get("acknowledgement_observed_while_running") is True
         and summary.get("worker_launcher_smoke_verified") is True
+        and summary.get("worker_timeout_cleanup_verified") is True
+        and summary.get("root_supervisor_survived_worker_timeout_cleanup") is True
         and summary.get("final_evidence_copied_while_running") is True
         and isinstance(probe, dict)
         and probe.get("deadman_pid") == pid
@@ -286,6 +289,109 @@ print(json.dumps({'uid':os.geteuid(),'cap_eff_zero':cap_eff_zero,'no_new_privs':
     return gate_refused, acknowledgement_observed, launcher_verified
 
 
+def exercise_worker_timeout_cleanup(
+    *, container_name: str, session: str, deadman_pid: int
+) -> tuple[bool, bool]:
+    """Exercise failure-only draining through the installed worker gate."""
+    container_lib = "/tmp/verbatus-live-payload-lib.sh"
+    run(["docker", "cp", str(LIVE_PAYLOAD_LIB_PATH), f"{container_name}:{container_lib}"])
+    nonroot = run(
+        [
+            "docker", "exec", "--user", "verbatus-worker", container_name,
+            "/bin/bash", "-ceu",
+            (
+                f"source {container_lib}; "
+                "if drain_worker_uid verbatus-worker; then "
+                "echo 'non-root cleanup unexpectedly succeeded' >&2; exit 1; fi"
+            ),
+        ],
+        check=False,
+        capture=True,
+    )
+    nonroot_refused = bool(
+        nonroot.returncode == 0
+        and "effective uid is not root" in nonroot.stderr
+    )
+    cleanup_script = r'''
+source /tmp/verbatus-live-payload-lib.sh
+if drain_worker_uid does-not-exist; then
+  printf '%s\n' 'unresolved worker user was accepted' >&2
+  exit 1
+fi
+if drain_worker_uid root; then
+  printf '%s\n' 'uid zero worker cleanup was accepted' >&2
+  exit 1
+fi
+escaped_pid_file=/tmp/escaped-worker.pid
+stdout_link_file=/tmp/escaped-worker-stdout
+rm -f "$escaped_pid_file" "$stdout_link_file"
+run_worker "$TIMEOUT_SECONDS" /bin/sh -ceu '
+  setsid /bin/sh -ceu '\''trap "" TERM; readlink /proc/self/fd/1 >"$1"; echo $$ >"$2"; while :; do :; done'\'' ignored '"$stdout_link_file"' '"$escaped_pid_file"' &
+  child=$!
+  wait "$child"
+' &
+wrapper_pid=$!
+deadline=$((SECONDS + 10))
+while [[ ! -s "$escaped_pid_file" ]]; do
+  [[ "$SECONDS" -lt "$deadline" ]] || {
+    printf '%s\n' 'detached worker did not publish its pid' >&2
+    exit 1
+  }
+  /bin/sleep 1
+done
+escaped_pid="$(cat "$escaped_pid_file")"
+[[ "$escaped_pid" =~ ^[1-9][0-9]*$ ]] || {
+  printf '%s\n' 'detached worker published an invalid pid' >&2
+  exit 1
+}
+kill -0 "$escaped_pid"
+[[ "$(cat "$stdout_link_file")" == "$(readlink /proc/$$/fd/1)" ]] || {
+  printf '%s\n' 'detached worker did not retain the caller stdout descriptor' >&2
+  exit 1
+}
+if wait "$wrapper_pid"; then
+  printf '%s\n' 'timed worker unexpectedly succeeded' >&2
+  exit 1
+else
+  status=$?
+fi
+[[ "$status" -eq 124 ]] || {
+  printf 'expected timeout status 124, got %s\n' "$status" >&2
+  exit 1
+}
+if kill -0 "$escaped_pid" 2>/dev/null; then
+  printf '%s\n' 'detached worker survived UID cleanup' >&2
+  exit 1
+fi
+'''
+    cleanup = run(
+        [
+            "docker", "exec", "--env", f"SESSION_ID={session}", "--env",
+            "TIMEOUT_SECONDS=1", container_name, "/bin/bash", "-ceu", cleanup_script,
+        ],
+        check=False,
+        capture=True,
+    )
+    supervisor = run(
+        ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+        check=False,
+        capture=True,
+    )
+    supervisor_pid = run(
+        ["docker", "exec", container_name, "/bin/kill", "-0", str(deadman_pid)],
+        check=False,
+        capture=True,
+    )
+    supervisor_survived = bool(
+        supervisor.stdout.strip() == "true" and supervisor_pid.returncode == 0
+    )
+    return bool(
+        nonroot_refused
+        and cleanup.returncode == 0
+        and supervisor_survived
+    ), supervisor_survived
+
+
 def run_mode(
     *,
     mode: str,
@@ -343,6 +449,8 @@ def run_mode(
     worker_gate_refused_before_ack = False
     acknowledgement_observed_while_running = False
     worker_launcher_smoke_verified = False
+    worker_timeout_cleanup_verified = False
+    root_supervisor_survived_worker_timeout_cleanup = False
     final_evidence_copied_while_running = False
     try:
         run(command)
@@ -425,6 +533,21 @@ def run_mode(
                 evidence_root=evidence_root,
                 session=session,
             )
+            deadman_pid = summary.get("pid")
+            if (
+                acknowledgement_observed_while_running
+                and worker_launcher_smoke_verified
+                and isinstance(deadman_pid, int)
+                and not isinstance(deadman_pid, bool)
+            ):
+                (
+                    worker_timeout_cleanup_verified,
+                    root_supervisor_survived_worker_timeout_cleanup,
+                ) = exercise_worker_timeout_cleanup(
+                    container_name=container_name,
+                    session=session,
+                    deadman_pid=deadman_pid,
+                )
             state = run(
                 ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
                 check=False,
@@ -473,6 +596,10 @@ def run_mode(
         acknowledgement_observed_while_running
     )
     summary["worker_launcher_smoke_verified"] = worker_launcher_smoke_verified
+    summary["worker_timeout_cleanup_verified"] = worker_timeout_cleanup_verified
+    summary["root_supervisor_survived_worker_timeout_cleanup"] = (
+        root_supervisor_survived_worker_timeout_cleanup
+    )
     summary["final_evidence_copied_while_running"] = (
         final_evidence_copied_while_running
     )
@@ -490,6 +617,8 @@ def main() -> int:
 
     if shutil.which("docker") is None or shutil.which("ssh-keygen") is None:
         raise RuntimeError("docker and ssh-keygen are required")
+    if not LIVE_PAYLOAD_LIB_PATH.is_file():
+        raise RuntimeError("reviewed live payload library is missing")
     controller = load_controller()
     if controller.PINNED_IMAGE != EXPECTED_IMAGE:
         raise RuntimeError("controller image is not the reviewed immutable image")
@@ -534,7 +663,7 @@ def main() -> int:
         for summary in mode_summaries.values()
     )
     combined = {
-        "schema": "verbatus-deadman-boot-drill-summary.v2",
+        "schema": "verbatus-deadman-boot-drill-summary.v3",
         "outcome": "both-supervisor-layouts-verified" if green else "boot-drill-failed",
         "modes": mode_summaries,
     }
