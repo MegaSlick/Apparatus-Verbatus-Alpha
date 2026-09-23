@@ -993,7 +993,7 @@ def _reviews(live_seam) -> list[dict[str, Any]]:
 
 
 def _assert_the_continuation_page_is_unmeasured_by_name(reviews: list[dict[str, Any]]) -> None:
-    """Tyrel's ruling on Unit 12 F2, asserted on a live tree.
+    """Ruling on Unit 12 F2, asserted on a live tree.
 
     Page 2 carries a2's continuation region and both page witnesses transcribe
     its whole text. No attachment on it can ever be `aligned` -- the Perlector
@@ -1076,7 +1076,7 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
         assert content["shortfall"] is False, content
         for chair, measured in content["by_chair"].items():
             assert measured["uncovered_non_whitespace"]["count"] == 0, (chair, measured)
-    # The third named half, since Tyrel's F2 ruling: the page neither act is
+    # The third named half, since the F2 ruling: the page neither act is
     # primary on. Delivered, and visibly unmeasured rather than silently clean.
     _assert_the_continuation_page_is_unmeasured_by_name(_reviews(live_seam))
     assert len(export["payload"]["delivered"]) == 2, export["payload"]["delivered"]

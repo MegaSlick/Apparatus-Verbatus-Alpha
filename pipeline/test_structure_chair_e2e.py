@@ -786,7 +786,7 @@ def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
 def test_a_blank_page_answer_falls_back_to_the_predetermined_tiles(designated, tmp_path):
     """The chair saw no text on a page, so the page is cut on the sealed grid.
 
-    Tyrel, 2026-08-11: a page the Designator sees nothing on is still sent
+    A page the Designator sees nothing on is still sent
     downstream as predetermined crops. The page is `scanned`, not held: an
     answer that says "no acts" is an answer.
 
@@ -940,7 +940,7 @@ PAGE_ONE_REDRAWN = (
 def test_a_second_attempt_at_the_same_pages_may_answer_differently_and_seals_what_it_got(
     designated, tmp_path
 ):
-    """Runs are attempts, never reproductions (Tyrel, 2026-09-02).
+    """Runs are attempts, never reproductions.
 
     The Attestatores read at the fixed reading-of-record posture; the
     Designator's `[structure]` pass may vary, sealed and recorded per run, so
