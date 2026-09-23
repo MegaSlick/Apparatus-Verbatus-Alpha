@@ -629,7 +629,7 @@ def test_no_designator_artifact_carries_the_chair_s_transcription(marked_out):
 
 
 def test_no_fixture_receipt_is_written_on_the_live_path(marked_out):
-    """principle 6: the one receipt is the moment the chair really served."""
+    """Principle 6: the one receipt is the moment the chair really served."""
     directory = marked_out.run_root / RUN_ID / RECEIPTS_DIR
     receipts = [
         json.loads(path.read_text(encoding="utf-8")) for path in sorted(directory.rglob("*.json"))
@@ -1108,7 +1108,7 @@ def status_receipts(root: Path) -> dict[int, str]:
 
 
 def test_a_resumed_live_pass_reuses_every_sealed_answer_and_starts_no_chair(designated, tmp_path):
-    """principle 4, on the stage that had no guard for it.
+    """Principle 4, on the stage that had no guard for it.
 
     A live chair cannot reproduce its own bytes: every answer embeds the
     serving session's receipt, call record and custody references, and those

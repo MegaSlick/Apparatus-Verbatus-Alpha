@@ -97,7 +97,7 @@ class LectioResult(_LectioResultRequired, total=False):
     `{call_record_ref, raw_response_ref, response_sha256, finish_reason,
     served_model_id}` on every call, so a live Perlectio can bind its text
     back to the exact response it came from (ARCHITECTURE invariant 3;
-    principle 6, provenance travels with the record).
+    principle 6: provenance travels with the record).
     """
 
     engine_call: dict[str, Any]

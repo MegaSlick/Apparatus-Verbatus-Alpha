@@ -257,7 +257,7 @@ def test_unproven_real_perlector_reproduces_the_neutral_template_plus_the_pinned
 
 
 def test_the_pinned_transcription_instruction_names_no_preference_and_sets_no_floor():
-    """principle 1 ('the Perlector never picks') and principle 8 ('the
+    """Principle 1 ('the Perlector never picks') and principle 8 ('the
     instrument may not constrain what it measures'), enforced on the one
     sentence this recipe adds beyond the shared neutral structure."""
     lowered = prompts.TRANSCRIPTION_INSTRUCTION.lower()

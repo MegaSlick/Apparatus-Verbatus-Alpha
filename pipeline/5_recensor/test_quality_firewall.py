@@ -4,7 +4,7 @@ quality signal to a re-roll.
     5. Quality firewall: a suspected-fabrication flag routes to review; no code
        path exists from a quality flag to a re-roll (module boundary test).
 
-principle 7 states the rule and ARCHITECTURE repeats it: "It recovers coverage,
+Principle 7 states the rule and ARCHITECTURE repeats it: "It recovers coverage,
 not quality. A suspected fabrication or a poor reading may be flagged for review.
 It may never be re-rolled until it looks better." That is a claim about what code
 *cannot* do, so proving it needs the structural half as well as the behavioural

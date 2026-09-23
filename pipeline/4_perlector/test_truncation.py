@@ -413,7 +413,7 @@ def test_the_shared_validator_refuses_a_record_without_its_measure():
 
 
 def test_the_record_carries_the_floor_it_was_judged_under():
-    """principle 6: the record protects the past on its own.
+    """Principle 6: the record protects the past on its own.
 
     A consumer holding this block and nothing else -- not the run's
     `config/perlector_protocol.toml` -- has every term of the predicate and can

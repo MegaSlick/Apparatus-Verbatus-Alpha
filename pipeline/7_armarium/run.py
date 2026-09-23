@@ -1602,7 +1602,7 @@ def verify_established_record(
     # neither route passes back through `latest_per_chair`, so a Testimonium
     # appended after the reading was established was structurally invisible at
     # the point where the export decides to say `complete` -- and the sealed
-    # export went on saying it (audit Opus-F2, 2d). principle 2 is
+    # export went on saying it (audit finding 2d). Principle 2 is
     # unconditional: `complete` is refused unless everything reconciles.
     require_current_witness_basis(
         act["act_id"],

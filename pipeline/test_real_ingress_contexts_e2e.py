@@ -377,7 +377,7 @@ def test_the_two_stages_past_the_stopping_point_still_open_before_they_refuse(re
 
 
 def test_opening_every_real_context_writes_nothing(real_run, tmp_path):
-    """principle 4 at the open: a recheck that writes before it decides is a
+    """Principle 4 at the open: a recheck that writes before it decides is a
     recheck that has already spent the evidence it was protecting."""
     run_root = tmp_path / "runs"
     shutil.copytree(real_run.run_root, run_root)

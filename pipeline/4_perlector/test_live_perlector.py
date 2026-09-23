@@ -645,7 +645,7 @@ def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
 ):
     """One request per reader call, and one reader call per arm.
 
-    principle 3: the pipeline does not gate model behaviour. A retry, a second
+    Principle 3: the pipeline does not gate model behaviour. A retry, a second
     sample, or a re-ask on a disappointing answer would all show up here as more
     requests than the pass has arms.
     """
@@ -815,7 +815,7 @@ def test_an_invalid_failed_record_is_refused_before_immutable_publication(
 def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
     live_run, tmp_path, monkeypatch
 ):
-    """principle 4: a live chair cannot reproduce immutable bytes.
+    """Principle 4: a live chair cannot reproduce immutable bytes.
 
     A fixture resume republishes byte-identical readings and the store reuses
     them. A live one cannot, so an act already sealed at this ordinal is left

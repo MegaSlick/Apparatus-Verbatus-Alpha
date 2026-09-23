@@ -208,7 +208,7 @@ def test_a_forged_review_naming_a_nuda_artifact_as_its_perlectio_is_refused(nuda
 
 
 def test_a_sampled_nuda_records_the_design_it_was_drawn_under(nuda_run):
-    """principle 8: a sample of unknown design measures nothing. Each record
+    """Principle 8: a sample of unknown design measures nothing. Each record
     names the rate, the selection rule, and the approval it was drawn under."""
     entry = next(
         entry

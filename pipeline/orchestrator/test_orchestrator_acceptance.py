@@ -5859,7 +5859,7 @@ def test_the_run_authority_names_the_commit_the_code_ran_at(tmp_path):
 
 
 def test_a_run_whose_caller_names_no_commit_records_none_rather_than_a_placeholder(tmp_path):
-    """principle 8: not measured is recorded as not measured, never invented."""
+    """Principle 8: not measured is recorded as not measured, never invented."""
 
     root = tmp_path / "runs"
     journal = tmp_path / "timings.json"
@@ -6267,7 +6267,7 @@ def _pixels(bounds: dict) -> set[tuple[int, int]]:
 
 
 def test_the_recovery_recrop_actually_widened_the_crop_it_was_asked_for(review_run):
-    """principle 7: "Recovery exists for **completeness and coverage**."
+    """Principle 7: "Recovery exists for **completeness and coverage**."
 
     This scenario is the walking skeleton's single proof that bounded recovery
     works, so what it spends the `fallback_recrop` budget on has to be a crop

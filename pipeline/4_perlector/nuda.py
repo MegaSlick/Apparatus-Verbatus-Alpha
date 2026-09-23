@@ -69,7 +69,7 @@ def sampling_design(
 ) -> dict[str, object]:
     """The design record every Lectio nuda carries.
 
-    principle 8: "cost is recorded but never silently narrows the
+    Principle 8: "cost is recorded but never silently narrows the
     instrument". A sample of unknown design measures nothing, so the rate, the
     rule and the approval travel on every record drawn under them.
     """

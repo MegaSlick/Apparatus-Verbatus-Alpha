@@ -270,7 +270,7 @@ def test_a_resealed_export_cannot_misreport_the_verified_package_aggregate(tmp_p
 def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
     tmp_path, happy_run, monkeypatch
 ):
-    """principle 5 at the gate the product leaves by, not only at the one it was built by.
+    """Principle 5 at the gate the product leaves by, not only at the one it was built by.
 
     The tampered package is internally whole -- every member digest, byte count and
     self-hash agrees -- and its manifest claims `identity_verified_across` all three

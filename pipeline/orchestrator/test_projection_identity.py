@@ -1,4 +1,4 @@
-"""principle 5's executable half: every export format's clean text hashes to the
+"""Principle 5's executable half: every export format's clean text hashes to the
 established record's own text hash.
 
 Spec 10, test 4: "every export format carries a canonical clean-text field, and

@@ -155,7 +155,7 @@ SEALED_ONE = _sealed_census()
 
 
 def test_a_mapped_page_records_the_measurement_nobody_took_as_absence():
-    """principle 8: `remeasured: None`, never a reassuring row of zeros."""
+    """Principle 8: `remeasured: None`, never a reassuring row of zeros."""
     armarium = _armarium()
     rows = armarium.ink_map_page_rows(_context({INK_MAP: [_ink_record("a", 1)]}), SEALED_ONE, {})
     assert rows == ({"ordinal": 1, "initial_outcome": "mapped", "remeasured": None},)

@@ -1077,7 +1077,7 @@ def test_the_ink_map_denominator_must_be_exactly_the_sealed_page_census():
 
 
 def test_a_page_the_map_never_flagged_may_not_carry_a_re_measurement():
-    """principle 8: absence of a measurement is recorded as absence."""
+    """Principle 8: absence of a measurement is recorded as absence."""
     with pytest.raises(SchemaRefusal, match="re-measures an ink-map page its own map never"):
         build_armarium_bundle(
             _otherwise_complete(
@@ -1548,7 +1548,7 @@ def test_a_non_delivered_act_may_not_carry_an_uncertainty_layer(tmp_path):
 
 
 def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(tmp_path):
-    """principle 5 on the path the product actually leaves by.
+    """Principle 5 on the path the product actually leaves by.
 
     The package above is internally whole and carries two different readings of one
     act, and its own manifest says `identity_verified_across` all three literal

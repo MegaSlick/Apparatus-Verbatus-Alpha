@@ -963,7 +963,7 @@ def test_every_finish_reason_travels_verbatim_from_the_wire_to_both_records(live
 
 
 def test_the_receipts_on_provenance_are_the_receipts_the_chairs_really_published(live_seam):
-    """principle 6: the record protects the past, so it names the real moment.
+    """Principle 6: the record protects the past, so it names the real moment.
 
     A fixture posture writes a declared `fixture://` receipt. Every record this
     run wrote must instead name the receipt its own client re-read through the

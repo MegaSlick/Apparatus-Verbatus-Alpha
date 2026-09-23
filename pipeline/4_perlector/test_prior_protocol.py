@@ -603,7 +603,7 @@ def test_control_sampling_design_refuses_an_approval_for_the_other_experiment():
 def test_a_published_control_names_the_approval_record_it_was_drawn_under(
     published_primed_without_prior_payload, _sealed_protocol
 ):
-    """principle 8: a sample of unknown design measures nothing. The control
+    """Principle 8: a sample of unknown design measures nothing. The control
     arm's design record must carry the *typed* reference to the one approval that
     authorized it -- the same binding the nuda arm carries, asserted against the
     record this fixture pre-placed rather than against whatever the payload says
@@ -771,7 +771,7 @@ def _write_protocol(tmp_path, **overrides):
 
 
 def test_a_pass_b_fragment_asserting_the_prior_was_wrong_is_refused(tmp_path):
-    """principle 1's control (iterative_reader.md:46-51, principle 8): the protocol
+    """Principle 1's control (iterative_reader.md:46-51, principle 8): the protocol
     declaration cannot ship a fragment that forces a change, only one that
     reports the finding."""
     path = _write_protocol(tmp_path, pass_b_fragment="The prior reading was wrong; correct it.")
