@@ -1,10 +1,10 @@
 """Act grouping: crops assemble into acts by geometry and structural cues only.
 
-GOVERNANCE 3 is the whole shape of this module. The old pipeline's grouping
+Principle 1 is the whole shape of this module. The old pipeline's grouping
 file elected a "pivot witness" per act -- a static trust table scored
 candidate witnesses and the highest-scoring one became the act's authoritative
 structure, with everyone else diff-aligned onto it (`resolve_columns`,
-confirmed a GOVERNANCE 3 picker by this project's own audit). Nothing here
+confirmed a principle 1 picker by this project's own audit). Nothing here
 scores, ranks, or weights candidate regions *by quality*, and nothing elects
 among witnesses. Every grouping decision below is a deterministic partition
 or an overlap test over fixed geometry: a component belongs to a column
@@ -193,7 +193,7 @@ def partition_page_spanning(
     mark contains nothing, while this decides only that it cannot join other
     marks into one group.
 
-    **It is not a picker** (GOVERNANCE 3). It scores nothing, ranks nothing and
+    **It is not a picker** (principle 1). It scores nothing, ranks nothing and
     compares no component against another: each one is measured against a sealed
     fraction of the page it sits on, independently, so the result is a
     deterministic partition and is invariant under input order like everything
@@ -351,11 +351,8 @@ def group_page(
 
     A page on which *every* component is withheld returns no groups at all, and
     that is the honest answer rather than an accident: `run.py` then reads the
-    page as `fallback-tiles` and cuts the predetermined grid Tyrel ruled for on
-    2026-08-11, so the page is still sent downstream to be read. Before this
-    rule such a page came back `detected` with one whole-leaf group, which is
-    the finding `workbench/standing/SPEC_FINDINGS.md` recorded on 2026-09-06 as
-    "the guaranteed fallback grid no longer fires on real pages".
+    page as `fallback-tiles` and cuts the predetermined grid the ruling below
+    requires, so the page is still sent downstream to be read.
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to group within")
@@ -532,7 +529,7 @@ def find_continuation_candidate(
 
 
 # The predetermined fallback crop grid, for a page with no eligible structural
-# group. Tyrel ruled 2026-08-11: "If the designator sees no text it should
+# group. The ruling: "If the designator sees no text it should
 # default to predetermined crops with a small margin of overlap and send the
 # crops down stream to be read by everything. If all the witnesses and the
 # perlector see no text on any of the crops then it's likely a true blank." And,
@@ -577,7 +574,7 @@ def fallback_tiles(
     This is not detection and it does not pretend to be: each group carries a
     rationale saying it is a fallback tile, so nothing downstream can mistake a
     grid for something the structure pass found. It elects nothing and ranks
-    nothing -- GOVERNANCE 3 is about choosing among witnesses, and a fixed grid
+    nothing -- principle 1 is about choosing among witnesses, and a fixed grid
     computed from the page's own dimensions chooses nothing at all.
     """
     if page_w <= 0 or page_h <= 0:

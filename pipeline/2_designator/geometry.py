@@ -215,9 +215,9 @@ def _pad_amount(dimension: int, bp: int) -> int:
     applied is deterministic and independent of Python's float rounding rules
     -- this is pure integer arithmetic and never touches a float at all.
 
-    Delegated to `common.background.round_half_up_bp` since 2026-09-06, when the
-    background band this rule also resolves stopped being this stage's alone:
-    the Ink Map and the Recensor now resolve a page's band through the shared
+    Delegated to `common.background.round_half_up_bp`: the
+    background band this rule also resolves is not this stage's alone --
+    the Ink Map and the Recensor also resolve a page's band through the shared
     inference, and two copies of a rounding rule are two rules the day one of
     them is edited. `BP_DENOMINATOR` and `common.background.BASIS_POINTS` are
     the same 10,000 and `test_geometry.py` pins them equal.
@@ -321,7 +321,7 @@ def from_model_space(
     trip through model space can only ever grow, never shrink. Rounding both
     edges the same way loses up to a pixel on each far edge, and the direction
     of that loss is the whole point: a shaved far edge is a clipped signature,
-    and GOALS 1 puts a missed act above a poorly read one. (The lane-B build of
+    and goal 2 puts a missed act above a poorly read one. (The lane-B build of
     this stage reached the same rule independently in `source_bounds_from_view`
     and named it the same way: it "cannot round a source pixel out of the
     emitted crop".)
