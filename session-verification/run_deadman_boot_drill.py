@@ -360,7 +360,7 @@ fi
   exit 1
 }
 if worker_processes_remain "$(/usr/bin/id -u verbatus-worker)"; then
-  printf '%s\n' 'a non-zombie worker survived UID cleanup' >&2
+  printf '%s\n' 'an active worker survived UID cleanup' >&2
   exit 1
 else
   worker_state=$?

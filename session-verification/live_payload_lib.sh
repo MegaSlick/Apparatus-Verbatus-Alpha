@@ -27,25 +27,32 @@ worker_uid() {
 }
 
 worker_processes_remain() {
-  local uid="$1" state states status
-  if states="$(/usr/bin/ps -o stat= -u "$uid" 2>/dev/null)"; then
+  local uid="$1" row_uid state nlwp remainder snapshot status
+  if snapshot="$(/usr/bin/ps -eo euid=,stat=,nlwp= 2>/dev/null)"; then
     :
   else
     status=$?
-    printf 'worker cleanup failed: ps for uid %s returned status %s\n' "$uid" "$status" >&2
+    printf 'worker cleanup failed: ps snapshot returned status %s\n' "$status" >&2
     return 2
   fi
-  for state in $states; do
+
+  while IFS=' ' read -r row_uid state nlwp remainder; do
+    [[ -z "$row_uid$state$nlwp$remainder" ]] && continue
+    if [[ ! "$row_uid" =~ ^[0-9]+$ || -z "$state" || ! "$nlwp" =~ ^[1-9][0-9]*$ || -n "$remainder" ]]; then
+      printf 'worker cleanup failed: ps snapshot had a malformed row\n' >&2
+      return 2
+    fi
+    [[ "$row_uid" == "$uid" ]] || continue
     case "$state" in
-      # Zombies and Linux dead tasks cannot run inference or retain file descriptors.
-      Z*|X*) ;;
+      # A Z/X leader with other threads can still retain runnable worker threads.
+      Z*|X*) [[ "$nlwp" -eq 1 ]] || return 0 ;;
       R*|S*|D*|T*|t*|I*|W*|P*) return 0 ;;
       *)
-        printf 'worker cleanup failed: ps for uid %s returned unknown state %q\n' "$uid" "$state" >&2
+        printf 'worker cleanup failed: ps snapshot had unknown state %q\n' "$state" >&2
         return 2
         ;;
     esac
-  done
+  done <<< "$snapshot"
   return 1
 }
 
