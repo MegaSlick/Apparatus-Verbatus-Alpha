@@ -367,8 +367,8 @@ def test_a_partial_run_never_exits_zero_and_the_report_names_its_state(
     # because `pod_timer` reads an early child exit as `completed-early` and
     # closes the pod with a non-green timer report. A run that did *not* finish
     # returns at once instead: holding a rented card to the deadline for a
-    # halted or failed run bills for nothing, which needs the project lead's
-    # permission and is the same close the red-bootstrap branch already takes.
+    # halted or failed run bills for nothing, so it is never held; this is the
+    # same close the red-bootstrap branch already takes.
     holding = state == "held"
     assert report["held_to_hard_deadline"] is holding
     hold_path = ws.volume / "pod-run-report-hold.json"

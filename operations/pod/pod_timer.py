@@ -26,7 +26,7 @@ from .models import POD_REPORT_SCHEMA, require_utc
 _CLOSE_ATTEMPTS = 3
 """Bounded re-attempts of a non-green close before the timer exits.
 
-Principle 7 forbids an unbounded reconsideration loop, and staying alive to
+An unbounded reconsideration loop would never report, and staying alive to
 retry bills the full running-pod rate against the cheaper EXITED state the exit
 falls back to -- so the bound is small, the wait is the monitoring interval
 capped at `_MAX_CLOSE_RETRY_WAIT_SECONDS`, and every attempt count reaches the

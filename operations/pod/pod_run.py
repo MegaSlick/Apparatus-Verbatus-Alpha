@@ -56,8 +56,8 @@ says ``running`` (principle 2).
 ``failed``, and "the orchestrator could not start" get no hold: holding one of
 those bills a rented card at the sealed hourly rate, to the hard deadline, for
 a run that produced nothing further -- exactly what the red-bootstrap branch
-already refuses to pay, and exactly what holding a rented pod without the
-project lead's permission would do.  Nothing is lost by leaving: the run
+already refuses to pay.  There is no path that holds such a pod, with or
+without anyone's permission.  Nothing is lost by leaving: the run
 tree, both reports, the journal and the preflight evidence are on the
 *volume*, which outlives the pod, and ``verbatus fetch-run`` reads it over S3
 with no pod running.  The run report records which way it went in
@@ -179,7 +179,7 @@ _ORCHESTRATOR_EXITS = {
 # such claim on the meter. `halted`, `failed`, and "the orchestrator could not
 # start" hold a rented card, at the sealed hourly rate, until the deadline for
 # nothing -- the same waste the bootstrap-red branch above already refuses to
-# pay, and exactly what needs the project lead's permission to do. The
+# pay; no permission opens a hold for such a run. The
 # evidence argument does not save the hold either: the run tree, the reports
 # and the preflight evidence are all on the *volume*, which outlives the pod
 # and is read by `verbatus fetch-run` over S3 with no pod running at all.

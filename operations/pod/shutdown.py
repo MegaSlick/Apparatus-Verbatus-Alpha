@@ -183,7 +183,7 @@ class VerifiedShutdown:
         # yet" from "nothing to post" has no pending state to return. A bounded,
         # recorded retry absorbs the lag before an empty response becomes the
         # terminal UNVERIFIED_BILLING that needs a human at the console — bounded
-        # because principle 7 does not allow an unbounded reconsideration loop.
+        # so an unreconciled close always reaches that terminal report.
         self.billing_attempts = billing_attempts
         self.billing_retry_seconds = billing_retry_seconds
         self.billing_cutoff_margin_seconds = require_billing_cutoff_margin_seconds(
