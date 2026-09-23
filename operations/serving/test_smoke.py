@@ -58,7 +58,7 @@ def test_the_rendered_golden_page_is_a_decodable_png_under_the_smallest_tier_cap
 
 
 def test_a_second_render_never_writes_over_a_different_golden_page(tmp_path: Path) -> None:
-    """Evidence is added, never replaced (GOVERNANCE 4).
+    """Evidence is added, never replaced (principle 4).
 
     The preflight receipts beside the page are content-addressed and refuse
     differing bytes at one address; the page they all point at used to be the

@@ -246,7 +246,7 @@ def test_printed_schedule_starts_podless_and_states_the_ruled_witness_order(caps
     assert schedule.splitlines()[1] == "1. ingest-to-volume: no pod (no GPU-hours)."
     witness_line = next(line for line in schedule.splitlines() if "attestatores:" in line)
     assert witness_line.index("Chandra") < witness_line.index("Churro") < witness_line.index("DAI")
-    assert witness_line.count("fresh GOVERNANCE 8 authorization") == 1
+    assert witness_line.count("fresh project-lead authorization") == 1
 
 
 def costs(tmp_path: Path) -> list[dict[str, object]]:
@@ -383,7 +383,7 @@ def test_a_refusal_that_still_created_a_billing_pod_lands_its_close_report(
     moved between preview and create all refuse *after* a machine exists and
     bills; the launcher closes it itself and hands the report back on the
     result. Discarding that report was a path to a real charge with nothing on
-    the volume naming it -- the exact shape GOVERNANCE 2 refuses.
+    the volume naming it -- the exact shape principle 2 refuses.
     """
 
     clock, provider, runtime, subject = lifecycle(tmp_path)
@@ -630,7 +630,7 @@ def test_a_boot_abandoned_before_its_close_has_unknown_cost_and_names_its_pod_on
 def test_the_store_refuses_to_overwrite_a_cost_record_with_different_bytes(
     tmp_path: Path,
 ) -> None:
-    """GOVERNANCE 4 at the money record: identical evidence re-lands, other bytes do not."""
+    """Principle 4 at the money record: identical evidence re-lands, other bytes do not."""
 
     store = StageCostStore(tmp_path / "volume")
     failure = StageCloseFailure("parish-17", "perlector", "grant-perlector", "fake-pod-1", "why")
@@ -649,9 +649,9 @@ def test_the_printed_schedule_names_every_chair_the_real_roster_configures() -> 
     is invisible in the direction that matters: a chair added to a stage the
     schedule calls podless is a boot nobody was asked to authorize. The real
     roster is the one a pod ever serves -- the fixture roster resolves to local
-    snapshots. `secondary_proposer` is `absent` in the real roster itself
-    (Tyrel's ruling of 2026-08-12), so it belongs to neither `configured` nor
-    the schedule; every chair the roster does configure is served by the pod of
+    snapshots. `secondary_proposer` is `absent` in the real roster itself, so
+    it belongs to neither `configured` nor the schedule; every chair the
+    roster does configure is served by the pod of
     the stage that reads it, and the drift this test exists to catch is one of
     them the schedule omits.
     """

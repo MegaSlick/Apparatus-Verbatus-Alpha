@@ -1,23 +1,20 @@
 """The data-handling gate: where real material may live, checked mechanically.
 
-The gate *package* — the written policy Tyrel approves — is this directory's
-`README.md`, so its wording and the policy it explains travel with the
-implementation.
+The gate *package* — the written policy the project lead approves — is this
+directory's `README.md`, so its wording and the policy it explains travel
+with the implementation.
 
-**Cut 2026-08-09, per Tyrel's ruling that session.** This module used to also make
-a per-run approval checkable: a policy hash, an approval record bound to the exact
-policy version, and a door that refused real input without a current one. His
-ruling: none of this material ever reaches git regardless of any such sign-off —
-it runs through the pipeline on a GPU host, `workbench/` is gitignored, and an
-ingress check plus CI's full-history payload scan already cover that mechanically — so the
-approval-record requirement bought nothing and is gone. What remains is the part
-that is still a real, mechanical safety net: the policy load and its storage-root
-enforcement, which keep real material inside the locations the policy names,
-independent of any per-run sign-off. Third-party transmission — sending real
-material to a vendor — remains its own decision Tyrel makes in session; this cut
-does not touch it and does not invent a replacement for it.
+This module does not make a per-run approval checkable: no material ever
+reaches git regardless of any such sign-off — it runs through the pipeline on
+a GPU host, `workbench/` is gitignored, and an ingress check plus CI's
+full-history payload scan already cover that mechanically. What remains is
+the part that is still a real, mechanical safety net: the policy load and its
+storage-root enforcement, which keep real material inside the locations the
+policy names, independent of any per-run sign-off. Third-party transmission —
+sending real material to a vendor — remains its own decision the project lead
+makes in session.
 
-**Ruling 2026-08-04, item 1 — fixture status is never a flag.** The door's fixture
+**Fixture status is never a flag.** The door's fixture
 route is selected by the repository's own declared fixture root and loaded
 manifest, and the self-hashed run ingress records which route created it. Nothing
 here accepts a filename, folder name, command-line switch, or boolean that can
@@ -75,7 +72,7 @@ class GateRefusal(ContractError):
     """The policy could not be loaded, or a location is outside every approved root.
 
     Not an `ApprovalRefusal`: that class is about a claimed approval-record artifact
-    failing its own schema. Since 2026-08-09 nothing here checks for one — this is
+    failing its own schema. Nothing here checks for one — this is
     the storage-location gate refusing on its own, mechanical terms.
     """
 
@@ -87,13 +84,13 @@ class DataHandlingPolicyBinding(NamedTuple):
     whichever file the invoker names. Until this digest existed, nothing recorded
     *which* file that was: `config/README.md` said plainly that nothing bound a run
     to the policy version that governed it, so later evidence could not establish
-    which caller-selected policy admitted the material (CodeRabbit CF01). The
+    which caller-selected policy admitted the material. The
     digest is of the same read the record was parsed from, because two reads can
     straddle a rewrite and a policy the run names must be the policy it enforced.
 
     This is tamper-evidence and provenance, not a reinstated approval record:
-    nothing here refuses a submission for want of a sign-off, and the per-run
-    approval requirement cut on 2026-08-09 stays cut.
+    nothing here refuses a submission for want of a sign-off; there is no
+    per-run approval requirement to reinstate.
     """
 
     policy: dict[str, Any]
@@ -116,7 +113,7 @@ def load_policy(path: Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
     concurrent edit to the file on disk, and the gate's whole point is comparing
     against what is currently there. Every clause the spec requires the package to
     carry must be present — a policy missing its retention rule is not a shorter
-    policy, it is one Tyrel did not approve.
+    policy, it is one the project lead did not approve.
 
     **The snapshot point is the start of a command, and that is a ruling rather than
     an accident.** `door.real_submission` loads the policy once, then may spend a
@@ -150,7 +147,7 @@ def _parse_policy(raw: bytes, path: Path | str) -> dict[str, Any]:
             f"{path} does not carry exactly the clauses this gate enforces. "
             f"Missing: {missing}. Unknown: {unknown}. A policy with a clause absent is "
             "not a shorter policy, it is one that was never approved; and a clause "
-            "nothing here checks is one Tyrel approved and nothing enforces"
+            "nothing here checks is one the project lead approved and nothing enforces"
         )
     for field in _REQUIRED_PROSE_CLAUSES:
         value = record[field]
@@ -177,7 +174,7 @@ class ResolvedStorageRoots(NamedTuple):
     ``skipped`` is returned rather than logged and dropped because a narrowed
     approved-root set is a fact about the run: on a pod the local ``private/``
     root does not exist, on a laptop the pod volume does not, and in both cases
-    the gate quietly enforces a shorter list than the policy names. GOVERNANCE 2
+    the gate quietly enforces a shorter list than the policy names. Principle 2
     does not let that live only inside a refusal that did not happen, so the
     caller gets it on the success path too and writes it into its own record.
     """

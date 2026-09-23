@@ -2,15 +2,15 @@
 
 A :class:`ChairClient` composes an already-built :class:`ServingManager`. It
 never starts a pod, never picks a chair, and never retries, re-samples, or
-edits a response (GOVERNANCE 7). Every call is one request: raw bytes are
-retained before they are parsed (GOVERNANCE 2), the receipt is re-read and
-matched before any reading is taken (GOVERNANCE 6), and an engine's stop
-reason travels verbatim, never defaulted (GOVERNANCE 10).
+edits a response (principle 3). Every call is one request: raw bytes are
+retained before they are parsed (principle 2), the receipt is re-read and
+matched before any reading is taken (principle 6), and an engine's stop
+reason travels verbatim, never defaulted (principle 8).
 
 Selection between a live chair and the offline fixture posture is
 ``serving_mode_for`` below: a three-name lookup in the sealed serving-recipe
 catalogue, with a named refusal on zero, several, or an unsupported match —
-never a fallback in either direction (GOVERNANCE 3 / hard rule 8).
+never a fallback in either direction (principle 1).
 """
 
 from __future__ import annotations
@@ -174,7 +174,7 @@ class ReceiptDriftRefusal(ServingError):
 
     Not defined in :mod:`operations.serving.errors` because U1 did not need
     it: nothing before this client ever re-read a receipt back through the
-    tree it had just written. The check itself is the guarantee GOVERNANCE 6
+    tree it had just written. The check itself is the guarantee principle 6
     asks for — "the record itself protects the past" — applied at the moment
     a client is about to start reading against it.
     """
@@ -283,7 +283,7 @@ class ChairRequest:
     as evidence even though it is never sent; ``generation_sent`` is what
     actually goes on the wire, and may never name ``model``, ``stream``,
     ``temperature``, ``seed``, or ``n`` — those are the manager's and the
-    decoding policy's alone (GOVERNANCE 7).
+    decoding policy's alone (principle 3).
 
     ``capacity`` is the caller's own
     ``common.request_capacity`` record for this request against the sealed row
@@ -777,7 +777,7 @@ class ChairClient:
         # *why* in the body of a non-200, and that sentence -- "this model's
         # maximum context length is N tokens, however you requested M" -- is
         # the whole diagnostic. Refusing before retaining threw it away, on a
-        # card billing by the hour, which is exactly what GOVERNANCE 2 forbids.
+        # card billing by the hour, which is exactly what principle 2 forbids.
         #
         # Retention is not attribution. A body from another model is still not
         # this chair's evidence and still never becomes a reading: the refusal
@@ -820,7 +820,7 @@ class ChairClient:
                     # parser's own comparison (`payload.get("model") !=
                     # expected_model_id`) cannot tell the two apart. Recorded
                     # verbatim, "model mismatch" would assert a foreign-model
-                    # observation that was never made (GOVERNANCE 10).
+                    # observation that was never made (principle 8).
                     parse_problem = "CHAIR_RESPONSE_INVALID"
             else:
                 content = result.outputs[0]
@@ -1077,7 +1077,7 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
     fixture regardless of a supplied tier. Otherwise at least one row is not
     a fixture row — live or unsupported — so a tier is required; the row at
     that exact tier decides, with no fallback to another tier or to fixture in either
-    direction (GOVERNANCE 3 / hard rule 8).
+    direction (principle 1).
     """
 
     rows = tuple(

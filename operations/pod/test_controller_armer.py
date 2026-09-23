@@ -614,7 +614,7 @@ def test_the_bound_is_clamped_down_to_what_is_left_of_the_lease(tmp_path: Path) 
     Clamped to the hard deadline itself, a slow launch waits right up to it and
     the verified close only starts once the bound has expired -- so the pod
     bills past its own hard deadline while the close it exists to guarantee is
-    attempted (CodeRabbit on PR #117). `close_reserve_seconds` is what the
+    attempted. `close_reserve_seconds` is what the
     policy says one close costs.
     """
 
@@ -893,7 +893,7 @@ def test_preflight_refuses_bounds_that_leave_this_policy_no_room_to_close() -> N
     the close. Nothing held anybody to the remedy the module docstring names,
     so a launch under such a policy waited to the deadline, returned
     BOUND_EXPIRED, and only then began the verified close -- with the pod
-    billing past its own hard deadline throughout (CodeRabbit on PR #117).
+    billing past its own hard deadline throughout.
     """
 
     clock = Clock()
@@ -935,7 +935,7 @@ def test_preflight_refuses_a_probe_whose_own_worst_case_breaks_the_heartbeat_bud
     status call is allowed 30 seconds by the shipped transport, so with the 5s
     poll and a 30s timeout one slow call produced a ~35s silence, and the
     supervisor -- started moments earlier over an unarmed lease -- closed the
-    pod while its image was still pulling (CodeRabbit on PR #117).
+    pod while its image was still pulling.
     """
 
     clock = Clock()

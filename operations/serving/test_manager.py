@@ -993,7 +993,7 @@ def test_the_argv_carries_every_typed_profile_flag_and_the_audit_digests_that_ar
     Its `profile` block is read from the same object the argv was rendered
     from, so dropping `--max-model-len` from the renderer leaves the audit still
     reporting a context cap that bound nothing — a claim about something nobody
-    measured (GOVERNANCE 10). The three boolean flags are parametrized because
+    measured (principle 8). The three boolean flags are parametrized because
     a swapped pair reads identically in a spot check.
     """
 
@@ -1159,7 +1159,7 @@ def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path
 
     `/v1/models` can advertise the exact id while a different process answers.
     A receipt naming a model that did not produce the answer is the provenance
-    defect GOVERNANCE 6 exists for.
+    defect principle 6 exists for.
     """
 
     chair = identity("reader", "reader-v1")
@@ -1192,7 +1192,7 @@ def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path
         ("VLLM_ERROR: fatal engine startup failure", "VLLM_ERROR"),
         # The two the old pipeline's own launch scripts grepped for, and the
         # two vLLM prints when it rejects an adapter loudly rather than
-        # ignoring one silently (Tyrel's ruling 1).
+        # ignoring one silently.
         (
             "ValueError: Qwen3VLForConditionalGeneration does not support LoRA yet.",
             "LORA_UNSUPPORTED",
@@ -1431,7 +1431,7 @@ def test_a_loading_marker_that_never_moved_is_not_reported_as_current_progress(
     "The engine was still starting when the bound expired" is the sentence an
     operator extends `startup_timeout_seconds` on and keeps billing for. It was
     produced by any loading marker anywhere in the tail, including one written
-    before the engine stopped making progress (CodeRabbit on PR #117). The
+    before the engine stopped making progress. The
     marker is still reported -- it is real evidence -- but as what it is.
     """
 
@@ -1470,7 +1470,7 @@ def test_an_endpoint_that_timed_out_is_not_reported_as_a_refused_connection() ->
     `definitively_absent` false, and every one of them was recorded as a
     refused connection -- so a start that timed out was told that raising
     `startup_timeout_seconds` was unlikely to help, which is the opposite of
-    the truth (CodeRabbit on PR #117).
+    the truth.
     """
 
     process = FakeProcess(4242, log_tail="INFO: nothing interesting here\n")
@@ -1512,7 +1512,7 @@ def test_the_watchdog_tail_is_bounded_in_bytes_not_in_characters() -> None:
     """The limit is spent in journals, pod reports and notifications, which carry bytes.
 
     Slicing the string counted characters, so a non-ASCII tail travelled at
-    several times the documented size (CodeRabbit on PR #117).
+    several times the documented size.
     """
 
     error = _watchdog_timeout(
@@ -1538,7 +1538,7 @@ def test_a_credential_inside_a_structured_log_field_is_redacted() -> None:
     anything carrying `.`, `:`, `/` or `@` as ordinary path punctuation, so
     `token=hf_...`, a JSON `"token":"eyJ..."`, a `Bearer` header and a
     tab-separated field all reached a journal, a pod report and a phone
-    notification unchanged (CodeRabbit on PR #117).
+    notification unchanged.
     """
 
     # Composed rather than written out: a credential-shaped literal in a source
@@ -1725,7 +1725,7 @@ def test_the_default_package_inspector_binds_the_pin_to_the_launched_interpreter
     interpreter while that default inspector stayed in place, so
     ``_assert_runtime`` passed against an environment the engine never imports
     and the launch audit recorded ``runtime_packages.observed`` for the wrong
-    Python -- a measurement of something nobody ran (GOVERNANCE 6, 10).
+    Python -- a measurement of something nobody ran (principle 6, principle 8).
     """
 
     chair = identity("reader", "reader-v1")
@@ -2275,7 +2275,7 @@ def test_an_unobservable_child_reaches_the_refusal_by_name_not_as_an_empty_reaso
     `_attempt_cleanup` as it stands. Wrapping it as `ServiceStopError(str(error))`
     turned a message-less exception into `VLLM_STOP_FAILED: ` and nothing else --
     and the registry raises one refusal, so whatever is not in it is not
-    anywhere (GOVERNANCE 2).
+    anywhere (principle 2).
     """
 
     chair = identity("reader", "reader-v1")
@@ -2883,12 +2883,12 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
 def test_real_catalogue_gives_every_real_chair_its_own_unproven_vllm_row():
     """The real roster is opt-in, and every configured chair is served.
 
-    `secondary_proposer` is absent from `config/models-real.toml` (Tyrel's
-    ruling of 2026-08-12), so it never reaches `configured` and needs no row.
-    Every chair that *is* configured has a live-shaped row at every tier,
-    `attestator_1` included: Chandra is served and read in the Attestatores'
-    own call rather than reusing the Designator's reading (Tyrel's ruling of
-    2026-09-02). Every row is `preflight_state = "unproven"` -- a planning
+    `secondary_proposer` is absent from `config/models-real.toml` (the
+    project lead's ruling, dated in the config's own `reason`), so it never
+    reaches `configured` and needs no row. Every chair that *is* configured
+    has a live-shaped row at every tier, `attestator_1` included: Chandra is
+    served and read in the Attestatores' own call rather than reusing the
+    Designator's reading. Every row is `preflight_state = "unproven"` -- a planning
     shape, never a claim that anything has started on real silicon.
     """
 
@@ -3676,7 +3676,7 @@ def test_prepare_log_root_refuses_a_symlink_rather_than_re_moding_its_target(
     `mkdir(exist_ok=True)` refuses a file, a symlink to a file and a broken
     symlink. It accepts a symlink to a directory, and the `chmod` that follows
     then re-modes the target — so the run's logs land somewhere it never named,
-    under a mode set on a directory it does not own. Found by CodeRabbit.
+    under a mode set on a directory it does not own.
     """
 
     elsewhere = tmp_path / "somewhere-else"

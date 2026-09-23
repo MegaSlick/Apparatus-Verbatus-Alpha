@@ -72,7 +72,9 @@ class _Batch:
             self.produced.manifest,
             self.evidence,
             proxy_paths=self.paths,
-            mode_declaration=triage.declare_mode("semi", batch_id="batch-1", operator="Tyrel"),
+            mode_declaration=triage.declare_mode(
+                "semi", batch_id="batch-1", operator="the-project-lead"
+            ),
             triage_modes_path=MODES,
         )
         self.candidate = next(
@@ -86,7 +88,7 @@ class _Batch:
             item_digest=self.item,
             corpus_id="c",
             appending_run="pass-1",
-            authority_identity="Tyrel",
+            authority_identity="the-project-lead",
             pages=[
                 {
                     "volume_id": "v1",
@@ -122,7 +124,9 @@ def test_queue_order_is_invariant_to_evidence_and_mapping_insertion_order(tmp_pa
         batch.produced.manifest,
         list(reversed(batch.evidence)),
         proxy_paths=dict(reversed(list(batch.paths.items()))),
-        mode_declaration=triage.declare_mode("semi", batch_id="batch-1", operator="Tyrel"),
+        mode_declaration=triage.declare_mode(
+            "semi", batch_id="batch-1", operator="the-project-lead"
+        ),
         triage_modes_path=MODES,
     )
     assert reversed_queue == batch.queue
@@ -149,7 +153,9 @@ def test_queue_derives_from_the_same_input_forms_it_validates(tmp_path: Path):
         manifest,
         batch.evidence,
         proxy_paths=DivergentPaths(batch.paths),
-        mode_declaration=triage.declare_mode("semi", batch_id="batch-1", operator="Tyrel"),
+        mode_declaration=triage.declare_mode(
+            "semi", batch_id="batch-1", operator="the-project-lead"
+        ),
         triage_modes_path=MODES,
     )
     review_rows = [item for item in queue["items"] if item["kind"] == "review-row"]
@@ -173,7 +179,9 @@ def test_instrument_configuration_failure_is_a_named_triage_refusal(
             batch.produced.manifest,
             batch.evidence,
             proxy_paths=batch.paths,
-            mode_declaration=triage.declare_mode("semi", batch_id="batch-1", operator="Tyrel"),
+            mode_declaration=triage.declare_mode(
+                "semi", batch_id="batch-1", operator="the-project-lead"
+            ),
             triage_modes_path=MODES,
         )
 
@@ -198,7 +206,7 @@ def test_preview_digest_binds_the_confirmation_write(tmp_path: Path):
         item_digest=digest_of(candidate),
         corpus_id="c",
         appending_run="pass-1",
-        authority_identity="Tyrel",
+        authority_identity="the-project-lead",
         pages=[
             {"volume_id": "v", "designation": "p", "member_frame_sha256": candidate["both_digests"]}
         ],
@@ -244,7 +252,7 @@ def test_unhashable_public_inputs_are_named_refusals(tmp_path: Path, operation: 
     batch = _Batch(tmp_path)
     with pytest.raises(triage.TriageRefusal, match=reason):
         if operation == "mode":
-            triage.declare_mode([], batch_id="batch-1", operator="Tyrel")
+            triage.declare_mode([], batch_id="batch-1", operator="the-project-lead")
         elif operation == "decision":
             triage.append_decision(
                 tmp_path / "state.json",
@@ -271,7 +279,7 @@ def test_unhashable_public_inputs_are_named_refusals(tmp_path: Path, operation: 
                 item_digest=[],
                 corpus_id="c",
                 appending_run="pass-1",
-                authority_identity="Tyrel",
+                authority_identity="the-project-lead",
                 pages=[],
             )
 
@@ -286,7 +294,7 @@ def test_write_mode_declaration_refuses_a_field_smuggled_inside_a_non_string(tmp
         "schema": triage.MODE_SCHEMA,
         "batch_id": {"value": "batch-1", "preferred": True},
         "mode": "semi",
-        "operator": "Tyrel",
+        "operator": "the-project-lead",
     }
     target = tmp_path / "mode.json"
     with pytest.raises(triage.TriageRefusal, match="mode-declaration-invalid"):
@@ -296,13 +304,13 @@ def test_write_mode_declaration_refuses_a_field_smuggled_inside_a_non_string(tmp
 
 def test_mode_declaration_is_idempotent_but_never_rewritten(tmp_path: Path):
     target = tmp_path / "mode.json"
-    first = triage.declare_mode("semi", batch_id="batch-1", operator="Tyrel")
+    first = triage.declare_mode("semi", batch_id="batch-1", operator="the-project-lead")
     triage.write_mode_declaration(target, first)
     stood = target.read_bytes()
     triage.write_mode_declaration(target, first)
     assert target.read_bytes() == stood
 
-    changed = triage.declare_mode("manual", batch_id="batch-1", operator="Tyrel")
+    changed = triage.declare_mode("manual", batch_id="batch-1", operator="the-project-lead")
     with pytest.raises(triage.TriageRefusal, match="mode-declaration-target-exists"):
         triage.write_mode_declaration(target, changed)
     assert target.read_bytes() == stood
@@ -316,7 +324,7 @@ def _pinned_draft(tmp_path: Path) -> dict:
         item_digest=digest_of(candidate),
         corpus_id="c",
         appending_run="pass-1",
-        authority_identity="Tyrel",
+        authority_identity="the-project-lead",
         pages=[
             {"volume_id": "v", "designation": "p", "member_frame_sha256": candidate["both_digests"]}
         ],
@@ -695,7 +703,9 @@ def test_queue_items_require_usable_proxy_paths(
             batch.produced.manifest,
             batch.evidence,
             proxy_paths=paths,
-            mode_declaration=triage.declare_mode("semi", batch_id="batch-1", operator="Tyrel"),
+            mode_declaration=triage.declare_mode(
+                "semi", batch_id="batch-1", operator="the-project-lead"
+            ),
             triage_modes_path=MODES,
         )
 
@@ -1038,7 +1048,7 @@ def test_the_double_click_triage_route_shows_the_queue_and_records_no_decision(m
             "/approved/proxies.json",
             "semi",
             "batch-1",
-            "Tyrel",
+            "the-project-lead",
             "/approved/mode.json",
         )
     )
@@ -1073,7 +1083,7 @@ def test_a_malformed_cluster_candidate_is_a_named_refusal_not_a_key_error(tmp_pa
             "schema": triage.MODE_SCHEMA,
             "mode": "semi",
             "batch_id": "batch-1",
-            "operator": "Tyrel",
+            "operator": "the-project-lead",
         },
     }
     digest = digest_of(item)
@@ -1084,7 +1094,7 @@ def test_a_malformed_cluster_candidate_is_a_named_refusal_not_a_key_error(tmp_pa
             item_digest=digest,
             corpus_id="c",
             appending_run="r",
-            authority_identity="Tyrel",
+            authority_identity="the-project-lead",
             pages=[],
         )
     # A *valid* draft, so the acceptance reaches the queue rather than stopping
@@ -1126,7 +1136,7 @@ def test_the_triage_verb_refuses_accept_and_decline_as_one_operator_act(
             "--batch-id",
             "batch-1",
             "--operator",
-            "Tyrel",
+            "the-project-lead",
             "--mode-record",
             str(mode_record),
             "--decline",
@@ -1181,7 +1191,7 @@ def test_an_incomplete_triage_decision_writes_no_mode_record(
             "--batch-id",
             "batch-1",
             "--operator",
-            "Tyrel",
+            "the-project-lead",
             "--mode-record",
             str(mode_record),
             *flags,
@@ -1226,7 +1236,7 @@ def test_decision_arguments_without_a_decision_word_refuse_and_write_nothing(
             "--batch-id",
             "batch-1",
             "--operator",
-            "Tyrel",
+            "the-project-lead",
             "--mode-record",
             str(mode_record),
             "--draft",
@@ -1291,7 +1301,7 @@ def test_a_decline_carrying_acceptance_arguments_records_nothing_at_all(
             "--batch-id",
             "batch-1",
             "--operator",
-            "Tyrel",
+            "the-project-lead",
             "--mode-record",
             str(mode_record),
             "--queue-state",
@@ -1334,7 +1344,7 @@ def test_a_decline_carrying_acceptance_arguments_records_nothing_at_all(
                 "--batch-id",
                 "batch-1",
                 "--operator",
-                "Tyrel",
+                "the-project-lead",
                 "--mode-record",
                 str(mode_record),
                 "--queue-state",
@@ -1388,7 +1398,7 @@ def test_a_queue_state_alone_stays_a_legitimate_display_run(tmp_path: Path):
                 "--batch-id",
                 "batch-1",
                 "--operator",
-                "Tyrel",
+                "the-project-lead",
                 "--mode-record",
                 str(tmp_path / "mode.json"),
                 "--queue-state",
@@ -1410,12 +1420,23 @@ def test_the_double_click_route_never_invents_a_triage_mode(monkeypatch):
     """
     from operations.operator import cli
 
-    blank = iter(("triage", "/m.json", "/e.json", "/p.json", "", "batch-1", "Tyrel", "/mode.json"))
+    blank = iter(
+        ("triage", "/m.json", "/e.json", "/p.json", "", "batch-1", "the-project-lead", "/mode.json")
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(blank))
     assert cli._interactive_arguments() == []
 
     typed = iter(
-        ("triage", "/m.json", "/e.json", "/p.json", "manual", "batch-1", "Tyrel", "/mode.json")
+        (
+            "triage",
+            "/m.json",
+            "/e.json",
+            "/p.json",
+            "manual",
+            "batch-1",
+            "the-project-lead",
+            "/mode.json",
+        )
     )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(typed))
     arguments = cli._interactive_arguments()
@@ -1457,7 +1478,7 @@ def test_an_unloadable_batch_writes_no_mode_record(
             "--batch-id",
             "batch-1",
             "--operator",
-            "Tyrel",
+            "the-project-lead",
             "--mode-record",
             str(mode_record),
         ]
@@ -1507,7 +1528,7 @@ def test_the_triage_verb_accepts_and_resumes_from_the_command_line(tmp_path: Pat
         "--batch-id",
         "batch-1",
         "--operator",
-        "Tyrel",
+        "the-project-lead",
         "--mode-record",
         str(tmp_path / "mode.json"),
         "--queue-state",

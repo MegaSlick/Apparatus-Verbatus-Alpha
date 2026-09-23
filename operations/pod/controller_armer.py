@@ -47,8 +47,9 @@ clamped down to the lease's own remaining lifetime **less the close budget**
 (`close_reserve_seconds`), which is what Boot A has to plan around: its hard
 lifetime is about 900 seconds *in total*, and the two bounds plus the close
 must fit inside it.  The defaults here (600 + 300) fill that window exactly and
-leave nothing for the close, so a Boot A factory lowers them -- or Tyrel raises
-the drill's lifetime -- rather than discovering the squeeze on a live pod.
+leave nothing for the close, so a Boot A factory lowers them -- or the project
+lead raises the drill's lifetime -- rather than discovering the squeeze on a
+live pod.
 `operations/pod/README.md`'s boot plan carries the arithmetic.
 
 That used to be prose and nothing else, and prose holds nobody: clamped to the
@@ -58,7 +59,7 @@ close -- so the pod billed past its own hard deadline while the close it exists
 to guarantee was attempted.  The reserve is subtracted in code now, and
 `preflight` refuses a configuration whose two bounds plus that reserve cannot
 fit the policy's whole hard lifetime.  A refusal before the create costs
-nothing (CodeRabbit on PR #117).
+nothing.
 
 **Arming order, and why the supervisor goes first.**  The supervisor is
 started and recorded *before* the poll begins.  A launcher that dies during
@@ -144,7 +145,7 @@ def close_reserve_seconds(policy: SpendPolicy) -> float:
     slow launch waits right up to it, ``_attempt`` returns ``BOUND_EXPIRED``,
     and only then does `launch._arm_or_close` begin the verified close -- so the
     pod bills past its own hard deadline while the close it exists to guarantee
-    is attempted (CodeRabbit on PR #117). ``0.0`` for a policy that names no
+    is attempted. ``0.0`` for a policy that names no
     shutdown deadline; `preflight` refuses such a policy before this matters.
     """
 
@@ -160,7 +161,7 @@ CONTROLLER_ARMING_TIMEOUT_SECONDS: Final = 300.0
 
 Code-owned, deliberately not a ``config/spend.toml`` key.  The loader refuses a
 policy that is missing any documented key, so adding one bumps that schema and
-hands Tyrel another number to choose -- and this is not a spend policy.  It is
+hands the project lead another number to choose -- and this is not a spend policy.  It is
 a safety envelope: past it, the honest answer is that nothing proved the pod
 can be closed, and the pod is closed.  It is clamped down to the lease's own
 remaining lifetime, never up.
@@ -313,7 +314,7 @@ class ContainerLivenessProbe(Protocol):
         heartbeats is this duration plus the poll interval, so a 30-second
         transport default under a 30-second `laptop_heartbeat_timeout_seconds`
         let the supervisor close the pod it was started to guard while the
-        image was still pulling (CodeRabbit on PR #117). A probe that cannot
+        image was still pulling. A probe that cannot
         state a bound cannot be admitted on this path -- the arithmetic that
         keeps the heartbeat inside the timeout has no other term to use.
         """
@@ -333,7 +334,7 @@ def detached_supervisor(argv: Sequence[str]) -> SupervisorProcess:
 
     The child's streams go nowhere on purpose: it is detached, nobody is
     watching its terminal, and `supervise` attempts a durable final record on
-    every exit path (GOVERNANCE 2) and names a failed attempt in its printed
+    every exit path (principle 2) and names a failed attempt in its printed
     exit record -- though with stdout here going to `DEVNULL`, a volume that
     refuses the write itself leaves nothing behind for this detached child to
     hand back.
@@ -615,8 +616,7 @@ class ChannelControllerArmer:
         # was the only term checked, and a provider status call is allowed 30
         # seconds by the shipped transport: with the 5s poll and a 30s
         # heartbeat timeout, one slow call produced a ~35s silence and the
-        # supervisor closed a pod that was still pulling its image (CodeRabbit
-        # on PR #117).
+        # supervisor closed a pod that was still pulling its image.
         if self.liveness is not None:
             try:
                 probe_seconds = float(self.liveness.worst_case_seconds())
@@ -1409,7 +1409,7 @@ class ObservingControllerArmer(ChannelControllerArmer):
             )
             filed = f"what it saw is recorded at {path}"
         except Exception as error:
-            # GOVERNANCE 2: the failure to record the measurement is itself the
+            # Principle 2: the failure to record the measurement is itself the
             # finding, and it travels in the detail rather than vanishing.
             filed = f"its evidence file at {path} could not be written: {error}"
         return ControllerArming(

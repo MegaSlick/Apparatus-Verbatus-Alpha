@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         # identifier carrying separators or `..` otherwise makes this tool read
         # an unrelated local file, and the containment check that exists
         # further down only rejects the escaped path once its bytes are already
-        # in hand (CodeRabbit).
+        # in hand.
         root = args.source_root.resolve()
         if not source.resolve().is_relative_to(root):
             parser.error(f"page identifier {identifier!r} leaves --source-root")
@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             # Equal paths satisfy `relative_to` with `Path(".")`, and the
             # generator below would then write the project *into* the submitted
             # source tree, adding an unsubmitted file to what the Door is about
-            # to read (CodeRabbit).
+            # to read.
             parser.error(
                 "--project-dir must be a strict ancestor of --source-root, not equal to it"
             )

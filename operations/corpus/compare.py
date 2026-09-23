@@ -1,6 +1,6 @@
 """The comparator: a post-hoc, read-only IoU join between a completed run and truth.
 
-Not a picker (hard rule 8 / GOVERNANCE 3), and this is enforced, not merely
+Not a picker (principle 1), and this is enforced, not merely
 asserted: it runs after pipeline output is immutable (this module never imports
 `pipeline/`, pinned by `test_compare.py::test_no_pipeline_module_imports_operations_corpus`'s
 AST scan across the whole tree), it never returns to the pipeline (`RunTree` is
@@ -51,7 +51,7 @@ Section 5.3(b)/(d)) and each matched pipeline act's hypothesis text, obtained fr
 a caller-supplied mapping rather than an assumed Perlector artifact shape:
 `compare.py` owns the join and the scoring call, not the Perlector's internal
 kinds, and inventing a read of an unverified internal shape here would be
-entering evidence this unit cannot justify (hard rule 6). The caller — the
+entering evidence this unit cannot justify (principle 6). The caller — the
 operator surface that actually knows where its run keeps final per-act text —
 supplies `hypotheses: {act_id: (OutputStatus, text_or_None)}`.
 """
@@ -414,7 +414,7 @@ def count_excluded_designator_artifacts(tree: RunTree) -> dict[str, dict[str, in
     `load_pipeline_proposal_acts` applies, so the excluded and included counts are
     always counting the same manifest -- this exists so a `reference-comparison.v1`
     record can say how much of the run it declined to look at, rather than
-    dropping that population silently (GOVERNANCE 10).
+    dropping that population silently (principle 8).
     """
     by_kind: dict[str, int] = {}
     by_origin: dict[str, int] = {}

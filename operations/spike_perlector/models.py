@@ -400,11 +400,11 @@ class GroundTruth:
     """An independently adjudicated reference, with raw text kept private.
 
     A checked reference may carry gaps, and that is the common case rather than
-    the edge one. On 2026-08-05 Tyrel ruled that damaged records retain successful
-    partial readings plus honest gaps rather than being treated as failed or filled
-    with invented content. The verbatim ruling ledger lives in the local, untracked
-    workbench; this states its operative substance and date inline. Without ``gaps`` the only way to record that act is ``UNRESOLVED_GAP``
-    for the whole crop, which throws away readable words and gap positions alike.
+    the edge one. Damaged records retain successful partial readings plus
+    honest gaps rather than being treated as failed or filled with invented
+    content. Without ``gaps`` the only way to record that act is
+    ``UNRESOLVED_GAP`` for the whole crop, which throws away readable words
+    and gap positions alike.
     """
 
     text: str | None
@@ -660,8 +660,7 @@ class WitnessConfiguration:
         makes it the one that matters more, and it was still an exact string match
         after the other was fixed. A trailing space, a capital letter or a
         `@revision` pin let a configured witness sit in the candidate roster, and
-        self-witness agreement is not evidence (GOVERNANCE 3, hard rule 8).
-        Found by the Opus read of this branch, which executed all four spellings.
+        self-witness agreement is not evidence (principle 1).
         """
 
         witness_artifacts = {source.artifact_digest for source in self.sources}
@@ -948,7 +947,7 @@ class Perlectio:
         # Testimonia" and are then retained as evidence — and this number travels
         # into the dissent and parroting measures, where a count that is not a
         # count is a measurement claim about something that never happened
-        # (GOVERNANCE 10). Found by CodeRabbit.
+        # (principle 8).
         if not isinstance(self.testimonia_count, int) or isinstance(self.testimonia_count, bool):
             raise MeasurementRefusal("Perlectio testimonia_count must be an integer count")
         if self.testimonia_count < 0:

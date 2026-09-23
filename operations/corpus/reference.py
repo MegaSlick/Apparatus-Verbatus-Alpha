@@ -37,7 +37,7 @@ with the existing `normalization.py`/`scoring.py` instruments, and a reference
 record with no text cannot supply that reference string. Carrying `text_sha256`
 alongside `text` mirrors `rows.py`'s own convention and lets a reader verify the
 text travelled unmodified from the row snapshot to this record -- an engineering
-decision recorded here under hard rule 13.
+decision recorded here.
 """
 
 from __future__ import annotations
@@ -400,8 +400,7 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
         # caller in this package catches. `local_admission.py` refuses it at
         # admission, but the evaluate command line reads reference pages from a
         # file rather than from an admission ledger, so the family's own
-        # validator is the boundary that must hold (independent audit of
-        # 2026-09-11, round 2 item 1).
+        # validator is the boundary that must hold.
         if not character_units(text, GRAPHEMIC_V1):
             raise CorpusRefusal(
                 f"empty-normalized-text: reference act {record_id!r} carries text {text!r}, "

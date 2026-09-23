@@ -80,7 +80,7 @@ def prepare_log_root(log_root: str | Path) -> Path:
     # `mkdir` below, anything that can write the parent directory could swap the
     # path. Closing that needs `O_NOFOLLOW` directory descriptors and `openat`
     # throughout, which is disproportionate for a log directory inside the run
-    # tree on a single-user machine. Found by CodeRabbit on this branch.
+    # tree on a single-user machine.
     try:
         existing = prepared.lstat()
     except FileNotFoundError:
@@ -317,10 +317,10 @@ def reconcile_usage_against_capacity(
     :class:`UsageReconciliation`.  This is a *reconciliation*, not a gate: a
     mismatch is returned as a named finding rather than raised, because a
     wrong laptop count would otherwise silently disagree with a correct
-    engine on every request with nothing surfaced anywhere (hostile review
-    item H) -- and because what the mismatch means (a dropped
+    engine on every request with nothing surfaced anywhere -- and because
+    what the mismatch means (a dropped
     ``mm_processor_kwargs``, a stale token-cost table, an engine upgrade that
-    changed rounding) is exactly the kind of thing GOVERNANCE 10 keeps out of
+    changed rounding) is exactly the kind of thing principle 8 keeps out of
     a hard-coded verdict.  Refusing outright would make this itself a picker
     among possible causes.
     """
