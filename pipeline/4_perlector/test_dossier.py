@@ -123,7 +123,7 @@ def _build(context, act_id, act_key, regions, testimonia, *, regime="named", wit
 
 
 def test_a_page_render_blob_is_reproducible_by_the_projects_own_encoder(evidence):
-    """PR #31's CI failure, pinned: Pillow's bundled zlib differs per wheel, so a
+    """Pillow's bundled zlib differs per wheel, so a
     Pillow-saved render renames its content-addressed path on another platform.
     The blob must decode with the project's minimal filter-0 decoder and
     re-encode byte-identically through the deterministic encoder -- if either

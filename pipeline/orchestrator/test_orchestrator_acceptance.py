@@ -130,7 +130,7 @@ def _perlector_dissent():
 # Re-pinned for the round-two merge. The recovery policy values are unchanged,
 # but its corrected explanatory text changes the policy file hash deliberately
 # sealed into run.json and therefore every downstream artifact config digest.
-# Re-pinned again for the CodeRabbit pass on PR #17: an admitted door source now
+# Re-pinned again: an admitted door source now
 # records `admitted_source_sha256`, the digest this door actually computed for the
 # submitted file. Duplicate accounting used to group on `declared_sha256`, which a
 # `SourceEntry` may legally omit — so a legal admission made the duplicate report
@@ -277,7 +277,7 @@ def _perlector_dissent():
 # real-submission door digest gained the four spec-08 settings. Counts
 # unchanged; digests re-measured.
 #
-# And once more after PR #31's CI failed on exactly the hazard this block
+# And once more after CI failed on exactly the hazard this block
 # documents: the page-render blobs were written by Pillow, whose Linux wheels
 # bundle a different zlib than macOS ships, so the blob bytes — and the
 # content-addressed digests sealed into every downstream artifact — differed
@@ -293,7 +293,7 @@ def _perlector_dissent():
 # trees therefore gain one file each and every downstream digest moves with the
 # payload shape. A deliberate record change, not drift.
 #
-# Re-pinned for the rebase onto the merged System 08 tree (PR #31): the counts are
+# Re-pinned for the rebase onto the merged System 08 tree: the counts are
 # 46 (happy) and 50 (review) -- the merged tree's 45/49 plus this branch's
 # index.json per run -- and both digests were re-measured from real orchestrator
 # runs under `semantic_snapshot_digest`.
@@ -1189,7 +1189,7 @@ def _perlector_dissent():
 # independent temporary roots through this module's own `orchestrate` and
 # `semantic_snapshot_digest` at canonical run id "r".
 #
-# Re-pinned at the GitHub review of PR #74: a page Testimonium binds every
+# Re-pinned at review: a page Testimonium binds every
 # retained response it derived from in its envelope `inputs`, not only a Churro
 # `native_capture`. `RunTree.read_artifact` verifies `inputs` and nothing else,
 # so a Chandra partition's `raw_response_refs` were bytes no ordinary consumer
@@ -1416,8 +1416,8 @@ def _perlector_dissent():
 # `semantic_snapshot_digest` helpers. The two roots agreed exactly on both
 # scenarios: happy exited 0 at 96 files, review exited 3 at 107 files. The snapshot
 # counts held, so they are re-stated below unchanged rather than re-pinned.
-# Merge re-pin (real-page robustness PR2 merged with the live reading seam,
-# PR #85). Both parent branches' causes are in this tree at once and neither
+# Merge re-pin (real-page robustness work merged with the live reading seam).
+# Both parent branches' causes are in this tree at once and neither
 # touches the other's bytes: Section C's `designator_grouping.toml` binding,
 # residual fields and structure-status geometry are orthogonal to the reading
 # seam's `prompts.py` module-source digest, and neither fixture scenario

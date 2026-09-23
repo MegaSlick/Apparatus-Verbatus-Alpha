@@ -171,7 +171,7 @@ def test_classify_refuses_a_policy_whose_floor_is_not_a_positive_integer(floor):
     `is_length_suspicious` raises `ValueError` for a floor of zero, which the
     stage boundary does not classify as a contract refusal -- so a hand-built
     policy carrying zero used to leave this module unnamed while a wrongly
-    typed one was refused properly (CodeRabbit on PR #117).
+    typed one was refused properly.
     """
     with pytest.raises(ContractError, match="not a positive integer"):
         truncation.classify(
@@ -488,7 +488,7 @@ def test_the_shared_validator_binds_the_floor_to_the_one_this_run_sealed():
     signal false, classifies `complete`, and clears an audit hold the sealed
     policy would have held. The caller that holds the sealed table passes it,
     and a record judged under any other floor is refused before the signal is
-    derived (CodeRabbit on PR #117).
+    derived.
     """
     from common.contracts.errors import SchemaRefusal
     from common.perlector_audit import validate_truncation_record

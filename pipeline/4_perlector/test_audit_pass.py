@@ -1616,7 +1616,7 @@ def test_the_chain_binds_an_assessed_readers_span_to_the_text_it_publishes(tmp_p
     The prefix rule leaves what follows the projection to the reader, and this
     is the last check before the Recensor publishes, so a span past the end of
     the text is refused here rather than carried to a review record and printed
-    as offsets that do not anchor (CodeRabbit on PR #115).
+    as offsets that do not anchor.
     """
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
@@ -1819,8 +1819,8 @@ def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_
     # one, bound rather than taken on the record's word: `validate_truncation_
     # record` re-derives `length_suspicious` from the record's own measure, so
     # a record naming a floor nobody sealed agrees with itself perfectly and
-    # can clear a hold the sealed policy would have held (CodeRabbit on PR
-    # #117). The Perlector passes the sealed floor at both of its own call
+    # can clear a hold the sealed policy would have held. The Perlector
+    # passes the sealed floor at both of its own call
     # sites, which is why the run above published at all.
     sealed_floor = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][
         protocol.TRUNCATION_TABLE
@@ -2695,7 +2695,7 @@ def test_the_recensor_routes_on_the_examination_and_refuses_a_contradicting_bool
 
 
 def test_a_sealed_reproof_call_must_name_the_digest_of_the_response_it_retains():
-    """CodeRabbit on the correction: the two digests are one fact stated twice."""
+    """The two digests are one fact stated twice."""
     reference = {"relative_path": "4_perlector/blobs/sha256/" + "a" * 64, "sha256": "a" * 64}
     call = {
         "call_record_ref": {
@@ -2810,7 +2810,7 @@ def test_the_audited_truncation_takes_an_already_measured_record_without_remeasu
 
 @pytest.mark.parametrize("bad", [["complete"], {"state": "complete"}, 7])
 def test_an_unhashable_or_non_string_vocabulary_value_is_refused_by_name_not_typeerror(bad):
-    """CodeRabbit on PR #112: a list or object at a frozenset check must be a refusal."""
+    """A list or object at a frozenset check must be a refusal, not a TypeError."""
     with pytest.raises(SchemaRefusal, match="unknown truncation classification"):
         audit.validate_truncation_record(
             {**_COMPLETE_TRUNCATION, "classification": bad}, label="a test record"
@@ -2847,7 +2847,7 @@ def test_an_emptied_reproof_is_re_measured_beside_the_text_it_publishes():
     still counted those characters, and `validate_finding` binds `measure.
     characters` to the published text -- so the producer's own `validate_chain`
     raised `SchemaRefusal` on a correct record and the pass stopped before the
-    later acts were processed (CodeRabbit on PR #117).
+    later acts were processed.
 
     Read from source for the reason `test_live_perlector.py::
     _reading_inputs_composition` reads its own property from source: reaching

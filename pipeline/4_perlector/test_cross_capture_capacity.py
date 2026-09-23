@@ -122,7 +122,7 @@ def test_the_recensor_holds_every_over_capacity_act_and_loses_none_of_them(over_
     """The downstream half of the capacity hold, asserted here because it rests
     on this module's one run rather than on a second fixture pass.
 
-    A review of this path (CodeRabbit, PR #78) read the Recensor's recovery gate
+    A review of this path read the Recensor's recovery gate
     — which admits only a declared recovery act or an ink-confirmed unclaimed
     observation — and concluded that an act held over capacity therefore stays
     unread *silently*. It does not. `not-run` is a non-COMPLETED reading class,

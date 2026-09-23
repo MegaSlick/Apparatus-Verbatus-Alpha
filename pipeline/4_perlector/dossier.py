@@ -85,7 +85,7 @@ def load_witness_context(path: Path) -> dict[str, dict[str, str]]:
     # itself: a declaration file that is not valid UTF-8 raises it rather than
     # `TOMLDecodeError`, and it escaped this handler as a raw traceback where
     # every other malformed-file case is a named refusal. `common/stage.py`
-    # already catches it for the same reason. Found by CodeRabbit.
+    # already catches it for the same reason.
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ContractError(
             f"witness context declaration at {path} could not be read: {error}"
@@ -140,8 +140,8 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
         # wheels bundle their own zlib, so `rendered.save(...)` produces
         # different bytes on Linux than on macOS — and a run-time blob's bytes
         # name its content-addressed path and every artifact digest downstream.
-        # Found by PR #31's CI, whose Linux runner re-derived both acceptance
-        # pins to values no macOS machine could reproduce.
+        # A Linux CI runner once re-derived both acceptance pins to values
+        # no macOS machine could reproduce.
         grayscale = rendered.convert("L")
         samples = grayscale.tobytes()
         deterministic = encode_grayscale_png_deterministic(
