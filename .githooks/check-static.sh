@@ -11,18 +11,14 @@ git diff --check HEAD --
 ruff check .
 ruff format --check .
 
-scripts=".githooks/applypatch-msg
-.githooks/check-all.sh
+scripts=".githooks/check-all.sh
 .githooks/check-documents.sh
 .githooks/check-fast.sh
 .githooks/check-static.sh
 .githooks/commit-msg
-.githooks/doc-allowlist.sh
 .githooks/install.sh
-.githooks/pre-applypatch
 .githooks/pre-commit
 .githooks/pre-merge-commit
-.githooks/pre-push
 operations/notify/notify.sh"
 
 # Repository ingress rejects control characters in paths, so this intentional

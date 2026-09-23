@@ -10,7 +10,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOKS = ROOT / ".githooks"
-ZERO = "0" * 40
 SAMPLE_SECRET = "rpa_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r"
 
 
@@ -168,100 +167,16 @@ def run_hook(repo, name, *, stdin="", args=(), env=None):
     )
 
 
-def push_line(sha, remote_ref="refs/heads/work/example", remote_sha=ZERO):
-    return f"{remote_ref} {sha} {remote_ref} {remote_sha}\n"
-
-
-def audit_repo(path):
-    repo = init_repo(path)
-    base = commit_file(repo, "safe.txt", "base\n")
-    head = commit_file(repo, "safe.txt", "head\n")
-    copy_hooks(repo, "pre-push", "check_ingress.py")
-    return repo, base, head
-
-
-def reviewed_message(subject, reviewers=()):
-    """A commit message carrying one `Reviewed-by:` trailer per reviewer."""
-    body = f"{subject}\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n"
-    for reviewer in reviewers:
-        body += f"Reviewed-by: {reviewer} <noreply@example.invalid>\n"
-    return body
-
-
-def test_document_allowlist_has_one_clear_boundary():
-    accepted = [
-        "README.md",
-        "pipeline/README.md",
-        "pipeline/1_exemplar/HANDOFF.md",
-        "history/2026-07-26_audit.md",
-        ".github/pull_request_template.md",
-        ".claude/agents/auditor.md",
-        ".claude/skills/session-start/SKILL.md",
-    ]
-    rejected = [
-        "NOTES.md",
-        "NOTES.txt",
-        "history/undated.md",
-        ".github/notes/session.md",
-        ".claude/skills/session-start/NOTES.md",
-        "workbench/active/RUN_PLAN.md",
-    ]
-    for path in accepted:
-        result = command(["sh", str(HOOKS / "doc-allowlist.sh")], stdin=f"{path}\n")
-        assert result.returncode == 0, path
-    for path in rejected:
-        result = command(["sh", str(HOOKS / "doc-allowlist.sh")], stdin=f"{path}\n")
-        assert result.returncode == 1, path
-        assert path in result.stdout
-
-
-def test_a_bounded_drawer_is_not_reopened_by_the_generic_readme_rule():
-    """`case` takes the first match, and the generic rule used to be first.
-
-    `HANDOFF.md|*/README.md|*/HANDOFF.md` accepts those two names at *any* depth — `*`
-    matches `/` in a shell case pattern — so it admitted
-    `operations/seats/nested/README.md` before the one-level-deep rules
-    further down could refuse it. Three drawers are bounded on purpose, and under those
-    two filenames all three were not. Found by CodeRabbit on pull request 15.
-
-    Both filenames are tested because only `README.md` was reported, and `HANDOFF.md`
-    sits in the same alternation with the same defect.
-    """
-    reopened = [
-        "operations/seats/nested/README.md",
-        "operations/seats/nested/HANDOFF.md",
-        ".claude/agents/nested/README.md",
-        ".claude/agents/nested/HANDOFF.md",
-        ".github/nested/README.md",
-        ".github/nested/HANDOFF.md",
-    ]
-    for path in reopened:
-        result = command(["sh", str(HOOKS / "doc-allowlist.sh")], stdin=f"{path}\n")
-        assert result.returncode == 1, f"{path} was admitted into a bounded drawer"
-        assert path in result.stdout, path
-    # The positive control. Tightening the order must not refuse the one-level files
-    # those drawers exist to hold, nor an ordinary README anywhere else in the tree.
-    for path in (
-        "operations/seats/README.md",
-        "operations/seats/builder.md",
-        "workbench/README.md",
-        ".claude/agents/README.md",
-        "HANDOFF.md",
-        "README.md",
-    ):
-        result = command(["sh", str(HOOKS / "doc-allowlist.sh")], stdin=f"{path}\n")
-        assert result.returncode == 0, f"{path} was refused: {result.stdout}"
-
-
 def make_document_repo(path):
     repo = init_repo(path)
-    copy_hooks(repo, "check-documents.sh", "doc-allowlist.sh", "check_ingress.py")
+    copy_hooks(repo, "check-documents.sh", "check_ingress.py")
     for name in (
         "README.md",
-        "GOALS.md",
-        "GOVERNANCE.md",
+        "PRINCIPLES.md",
         "ARCHITECTURE.md",
         "GLOSSARY.md",
+        "CONTRIBUTING.md",
+        "AGENTS.md",
         "CLAUDE.md",
     ):
         (repo / name).write_text(f"# {name}\n")
@@ -269,36 +184,14 @@ def make_document_repo(path):
 
 
 @pytest.mark.full
-def test_document_check_rejects_untracked_notes_and_dated_canonical_state(tmp_path):
-    repo = make_document_repo(tmp_path / "repo")
-    assert run_hook(repo, "check-documents.sh").returncode == 0
-
-    (repo / "NOTES.md").write_text("temporary\n")
-    result = run_hook(repo, "check-documents.sh")
-    assert result.returncode == 1
-    assert "NOTES.md" in result.stderr
-
-    (repo / "NOTES.md").unlink()
-    (repo / "GOALS.md").write_text(f"# Goals\n\n2026-07-28 {SAMPLE_SECRET}\n")
-    result = run_hook(repo, "check-documents.sh")
-    assert result.returncode == 1
-    assert "dated state" in result.stderr
-    assert SAMPLE_SECRET not in result.stdout + result.stderr
-
-
-@pytest.mark.full
 def test_the_root_readme_is_scanned_for_dates_like_every_other_document(tmp_path):
-    """Tyrel ruled: no README states a date, and README.md is no longer the exception.
-
-    It used to be the one canonical document a date was allowed in, because status lives
-    there and status is dated by nature. That exemption is what let the status line sit a
-    full day behind the thing it described — in the document that calls itself the only
-    place status lives, with nothing checking the claim. An undated line can only be
-    wrong about its substance, and substance is what a reader notices.
-    """
+    """A dated line in a core document is refused, and the secret-safe output holds."""
     repo = make_document_repo(tmp_path / "repo")
-    (repo / "README.md").write_text("# Apparatus Verbatus\n\n**Status — 2026-08-03:** alpha.\n")
+    (repo / "README.md").write_text(
+        f"# Apparatus Verbatus\n\n**Status — 2026-08-03:** alpha. {SAMPLE_SECRET}\n"
+    )
     result = run_hook(repo, "check-documents.sh")
+    assert SAMPLE_SECRET not in result.stdout + result.stderr
     assert result.returncode == 1, "a dated status line in README.md was accepted"
     assert "dated state" in result.stderr
     assert "README.md" in result.stderr
@@ -308,15 +201,12 @@ def test_the_root_readme_is_scanned_for_dates_like_every_other_document(tmp_path
 
 
 def test_document_check_rejects_control_character_paths(tmp_path):
-    # A newline in a filename splits one record into two innocent-looking ones on
-    # the way to the newline-delimited allowlist, so the paths are refused before
-    # the allowlist is ever handed them.
+    # A newline in a filename could split one record into two for later checks.
     repo = make_document_repo(tmp_path / "repo")
     (repo / "evil\nREADME.md").write_text("not an allowed document\n")
     result = run_hook(repo, "check-documents.sh")
     assert result.returncode == 1
     assert "control-path" in result.stderr
-    assert "unsafe to pass to the documentation allowlist" in result.stderr
 
 
 def run_commit_message(message, env=None):
@@ -329,21 +219,9 @@ def run_commit_message(message, env=None):
         )
 
 
-@pytest.mark.full
-def test_commit_message_requires_real_attribution_but_keeps_explicit_exception():
-    missing = run_commit_message("ordinary change\n")
-    valid = run_commit_message(
-        "ordinary change\n\nCo-Authored-By: GPT (OpenAI) <noreply@openai.com>\n"
-    )
-    explicit = run_commit_message("human-only change\n", {"ALLOW_UNATTRIBUTED": "1"})
-    assert missing.returncode == 1
-    assert valid.returncode == 0
-    assert explicit.returncode == 0
-
-
-def test_commit_message_exceptions_never_skip_secret_scanning():
+def test_commit_message_with_a_credential_is_refused():
     message = f"accident {SAMPLE_SECRET}\n\nCo-Authored-By: GPT (OpenAI) <noreply@openai.com>\n"
-    result = run_commit_message(message, {"ALLOW_UNATTRIBUTED": "1"})
+    result = run_commit_message(message)
     assert result.returncode == 1
     assert "credential" in result.stderr
     assert SAMPLE_SECRET not in result.stdout + result.stderr
@@ -416,38 +294,9 @@ def test_ordinary_commit_message_still_passes_with_the_identity_scan(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("exemption", ["allow-unattributed", "fixup", "merge"])
-def test_attribution_exemptions_do_not_exempt_a_poisoned_identity(tmp_path, exemption):
-    # The identity scan sits before every attribution exemption for the same
-    # reason the message scan does. Otherwise ALLOW_UNATTRIBUTED=1 — reached for
-    # to skip an *attribution* rule — silently skips a credential check too, and
-    # so does any commit git is merging or a `fixup!` subject.
-    #
-    # None of these messages carry a trailer, so an exemption that failed to fire
-    # would be refused for attribution instead; asserting the credential wording
-    # is what proves the scan ran ahead of an exemption that did fire.
-    repo = make_commit_message_repo(tmp_path / "repo")
-    message = "describe change\n"
-    env = {
-        "GIT_AUTHOR_NAME": POISONED_NAME,
-        "GIT_AUTHOR_EMAIL": "pasted@example.invalid",
-    }
-    if exemption == "allow-unattributed":
-        env["ALLOW_UNATTRIBUTED"] = "1"
-    elif exemption == "fixup":
-        message = "fixup! describe change\n"
-    else:
-        head = git(repo, "rev-parse", "HEAD").stdout.strip()
-        (repo / ".git" / "MERGE_HEAD").write_text(f"{head}\n")
-    result = run_commit_message_in(repo, message, env=env)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "credential pattern" in result.stderr
-    assert SAMPLE_SECRET not in result.stdout + result.stderr
-
-
 def make_precommit_repo(path, branch="work/example"):
     repo = init_repo(path, branch)
-    copy_hooks(repo, "pre-commit", "check_ingress.py", "doc-allowlist.sh")
+    copy_hooks(repo, "pre-commit", "check_ingress.py")
     return repo
 
 
@@ -460,229 +309,6 @@ def test_pre_commit_hard_blocks_main_even_if_old_bypass_is_set(tmp_path):
     assert blocked.returncode == 1
     assert "commit on main" in blocked.stderr
     assert old_bypass.returncode == 1
-
-
-def test_pre_commit_checks_staged_ingress_before_doc_exception(tmp_path):
-    repo = make_precommit_repo(tmp_path / "repo")
-    (repo / "NOTES.md").write_text(SAMPLE_SECRET)
-    git(repo, "add", "NOTES.md")
-    result = run_hook(repo, "pre-commit", env={"ALLOW_STRAY_DOC": "1"})
-    assert result.returncode == 1
-    assert "ingress" in result.stderr
-    assert SAMPLE_SECRET not in result.stdout + result.stderr
-
-
-def test_pre_commit_rejects_stray_document_on_work_branch(tmp_path):
-    repo = make_precommit_repo(tmp_path / "repo")
-    (repo / "NOTES.md").write_text("temporary\n")
-    git(repo, "add", "NOTES.md")
-    result = run_hook(repo, "pre-commit")
-    assert result.returncode == 1
-    assert "stray documentation" in result.stderr
-
-
-def test_pre_push_allows_declared_branch_and_prints_missing_review(tmp_path):
-    repo, _base, head = audit_repo(tmp_path / "repo")
-    result = run_hook(repo, "pre-push", stdin=push_line(head))
-    assert result.returncode == 0, result.stderr
-    # Checklist, not gate: an unreviewed push is reported and then allowed,
-    # because nothing here turns on anything but Tyrel's word.
-    assert "no commit in this push names a reviewer" in result.stderr
-    assert "Checklist only" in result.stderr
-    assert "Tyrel decides whether the coverage is enough" in result.stderr
-
-
-def test_pre_push_hard_blocks_main_even_if_old_bypass_is_set(tmp_path):
-    repo, _base, head = audit_repo(tmp_path / "repo")
-    result = run_hook(
-        repo,
-        "pre-push",
-        stdin=push_line(head, "refs/heads/main"),
-        env={"ALLOW_MAIN_PUSH": "1"},
-    )
-    assert result.returncode == 1
-    assert "direct push to main" in result.stderr
-
-
-@pytest.mark.full
-def test_pre_push_nonstandard_branch_requires_exact_standard_exception(tmp_path):
-    repo, _base, head = audit_repo(tmp_path / "repo")
-    line = push_line(head, "refs/heads/feature/example")
-    assert run_hook(repo, "pre-push", stdin=line).returncode == 1
-    assert run_hook(repo, "pre-push", stdin=line, env={"ALLOW_ANY_BRANCH": "1"}).returncode == 0
-
-
-@pytest.mark.full
-def test_pre_push_branch_deletion_requires_exact_confirmation(tmp_path):
-    repo, _base, head = audit_repo(tmp_path / "repo")
-    line = push_line(ZERO, remote_sha=head)
-    assert run_hook(repo, "pre-push", stdin=line).returncode == 1
-    assert (
-        run_hook(
-            repo,
-            "pre-push",
-            stdin=line,
-            env={"ALLOW_BRANCH_DELETE": "work/example"},
-        ).returncode
-        == 0
-    )
-    assert (
-        run_hook(
-            repo,
-            "pre-push",
-            stdin=line,
-            env={"ALLOW_BRANCH_DELETE": "work/other"},
-        ).returncode
-        == 1
-    )
-
-
-def test_pre_push_history_rewrite_needs_the_exact_owned_branch_exception(tmp_path):
-    repo, base, head = audit_repo(tmp_path / "repo")
-    wrong = run_hook(
-        repo,
-        "pre-push",
-        stdin=push_line(base, remote_sha=head),
-        env={"ALLOW_FORCE_PUSH": "1"},
-    )
-    exact = run_hook(
-        repo,
-        "pre-push",
-        stdin=push_line(base, remote_sha=head),
-        env={"ALLOW_FORCE_PUSH": "work/example"},
-    )
-    assert wrong.returncode == 1
-    assert "rewrites published history" in wrong.stderr
-    assert exact.returncode == 0
-
-
-@pytest.mark.full
-def test_pre_push_tags_are_scanned_and_immutable(tmp_path):
-    repo, _base, head = audit_repo(tmp_path / "repo")
-    git(repo, "tag", "-a", "safe", "-m", "safe release")
-    tag = git(repo, "rev-parse", "safe").stdout.strip()
-    assert run_hook(repo, "pre-push", stdin=push_line(tag, "refs/tags/safe")).returncode == 0
-    assert (
-        run_hook(
-            repo,
-            "pre-push",
-            stdin=push_line(tag, "refs/tags/safe", remote_sha=tag),
-        ).returncode
-        == 1
-    )
-    assert (
-        run_hook(
-            repo,
-            "pre-push",
-            stdin=push_line(ZERO, "refs/tags/safe", remote_sha=tag),
-        ).returncode
-        == 1
-    )
-
-    git(repo, "tag", "-a", "unsafe", "-m", f"release {SAMPLE_SECRET}", head)
-    unsafe = git(repo, "rev-parse", "unsafe").stdout.strip()
-    result = run_hook(repo, "pre-push", stdin=push_line(unsafe, "refs/tags/unsafe"))
-    assert result.returncode == 1
-    assert SAMPLE_SECRET not in result.stdout + result.stderr
-
-
-@pytest.mark.full
-def test_pre_push_scans_credentials_deleted_before_tip(tmp_path):
-    repo, _base, _head = audit_repo(tmp_path / "repo")
-    commit_file(repo, "safe.txt", SAMPLE_SECRET, "unsafe ancestor")
-    tip = commit_file(repo, "safe.txt", "clean again\n", "clean tip")
-    result = run_hook(repo, "pre-push", stdin=push_line(tip))
-    assert result.returncode == 1
-    assert "outgoing-history" in result.stderr.lower()
-    assert SAMPLE_SECRET not in result.stdout + result.stderr
-
-
-@pytest.mark.full
-def test_pre_push_scans_the_real_object_not_a_git_replace_substitute(tmp_path):
-    # `git replace` makes every reader — this hook, the scanner it calls, and a
-    # reviewer running `git show` — see a clean stand-in while the genuine object
-    # is what leaves in the pack. GIT_NO_REPLACE_OBJECTS is what turns the whole
-    # mechanism off; without it the outgoing scan reads a different history from
-    # the one being pushed and reports it clean.
-    repo, base, _head = audit_repo(tmp_path / "repo")
-    unsafe = commit_file(repo, "safe.txt", SAMPLE_SECRET, "unsafe tip")
-    innocent = git(
-        repo, "commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "innocent"
-    ).stdout.strip()
-    git(repo, "replace", "-f", unsafe, innocent)
-    result = run_hook(repo, "pre-push", stdin=push_line(unsafe))
-    assert result.returncode == 1, result.stderr
-    assert "outgoing-history" in result.stderr.lower()
-    assert SAMPLE_SECRET not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize("with_earlier_record", [False, True])
-def test_pre_push_checks_a_final_record_with_no_trailing_newline(tmp_path, with_earlier_record):
-    # `while read -r a b c d` returns non-zero on an unterminated last line
-    # *after* assigning the fields, so the loop body never ran for it: the ref
-    # went out with no branch rule, no history scan and no checklist, and the
-    # hook exited 0 — a gate that read nothing and looked exactly like one that
-    # agreed. The second case is the shape git actually produces it in, several
-    # refs at once with only the last truncated.
-    repo, _base, head = audit_repo(tmp_path / "repo")
-    stdin = push_line(head) if with_earlier_record else ""
-    stdin += push_line(head, "refs/heads/main").rstrip("\n")
-    result = run_hook(repo, "pre-push", stdin=stdin)
-    assert result.returncode == 1, result.stderr
-    assert "direct push to main" in result.stderr
-
-
-def reviewed_repo(path, subjects_and_reviewers):
-    """A repo whose outgoing commits carry the given `Reviewed-by:` trailers."""
-    repo = init_repo(path)
-    head = commit_file(repo, "safe.txt", "base\n")
-    for index, (subject, reviewers) in enumerate(subjects_and_reviewers):
-        head = commit_file(
-            repo, "safe.txt", f"revision {index}\n", reviewed_message(subject, reviewers)
-        )
-    copy_hooks(repo, "pre-push", "check_ingress.py")
-    return repo, head
-
-
-def test_pre_push_lists_the_reviewers_the_outgoing_commits_name(tmp_path):
-    repo, head = reviewed_repo(
-        tmp_path / "repo",
-        [
-            ("first", ["Claude Opus 5", "GPT-5.6 Sol (OpenAI)"]),
-            ("second", ["Claude Opus 5"]),
-        ],
-    )
-    result = run_hook(repo, "pre-push", stdin=push_line(head))
-    assert result.returncode == 0, result.stderr
-    assert "[x] Claude Opus 5" in result.stderr
-    assert "[x] GPT-5.6 Sol (OpenAI)" in result.stderr
-
-
-def test_pre_push_counts_one_reviewer_once_across_commits_and_spellings(tmp_path):
-    # Two commits naming the same seat is one reviewer, and case or run-together
-    # whitespace must not turn it into two — a checklist that inflates its own
-    # coverage is worse than none.
-    repo, head = reviewed_repo(
-        tmp_path / "repo",
-        [("first", ["Claude Opus 5"]), ("second", ["claude  opus 5"])],
-    )
-    result = run_hook(repo, "pre-push", stdin=push_line(head))
-    assert result.returncode == 0, result.stderr
-    assert result.stderr.lower().count("[x] claude") == 1
-
-
-def test_pre_push_reports_outgoing_commits_that_name_nobody(tmp_path):
-    # Partial coverage is the case worth surfacing: some commits reviewed, some
-    # slipped in behind them. Naming a reviewer at all must not imply the whole
-    # push was read.
-    repo, head = reviewed_repo(
-        tmp_path / "repo",
-        [("reviewed", ["Claude Opus 5"]), ("slipped in", [])],
-    )
-    result = run_hook(repo, "pre-push", stdin=push_line(head))
-    assert result.returncode == 0, result.stderr
-    assert "[x] Claude Opus 5" in result.stderr
-    assert "outgoing commit(s) name no reviewer" in result.stderr
 
 
 def test_install_configures_local_hooks_after_prerequisites(tmp_path):
@@ -775,11 +401,8 @@ def install_integration_hooks(repo):
         repo,
         "pre-commit",
         "pre-merge-commit",
-        "pre-applypatch",
-        "applypatch-msg",
         "commit-msg",
         "check_ingress.py",
-        "doc-allowlist.sh",
     )
     git(repo, "config", "core.hooksPath", ".githooks")
 
@@ -807,29 +430,3 @@ def test_merge_path_runs_the_same_precommit_boundary(tmp_path):
     blocked = git(repo, "merge", "--no-edit", "--no-ff", "work/second", check=False)
     assert blocked.returncode != 0
     assert "commit on main" in blocked.stderr
-
-
-@pytest.mark.full
-def test_git_am_path_scans_patch_content_before_commit(tmp_path):
-    repo = init_repo(tmp_path / "repo", "work/base")
-    commit_file(repo, "base.txt", "base\n")
-    git(repo, "switch", "-qc", "work/source")
-    commit_file(
-        repo,
-        "unsafe.txt",
-        SAMPLE_SECRET,
-        "unsafe patch\n\nCo-Authored-By: Test <test@example.invalid>",
-    )
-    patch_dir = tmp_path / "patches"
-    patch_dir.mkdir()
-    git(repo, "format-patch", "-q", "-1", "HEAD", "-o", str(patch_dir))
-    patch = next(patch_dir.glob("*.patch"))
-    git(repo, "switch", "-q", "work/base")
-    git(repo, "switch", "-qc", "work/apply")
-    install_integration_hooks(repo)
-    before = git(repo, "rev-parse", "HEAD").stdout.strip()
-    result = git(repo, "am", str(patch), check=False)
-    assert result.returncode != 0
-    assert SAMPLE_SECRET not in result.stdout + result.stderr
-    assert git(repo, "rev-parse", "HEAD").stdout.strip() == before
-    git(repo, "am", "--abort", check=False)
