@@ -481,7 +481,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # Churro-truncation's whole point is that a visibly cut but parseable
     # response is retained as it came. A recovery route or a hold here would
     # re-ask or withhold it, which is the thing the scenario exists to refuse
-    # (GOVERNANCE 11: recovery recovers coverage, never content quality).
+    # (principle 7: recovery recovers coverage, never content quality).
     assert by_name["churro-truncation"]["recover_acts"] == []
     assert by_name["churro-truncation"]["hold_acts"] == []
     assert [
@@ -728,7 +728,7 @@ def test_the_declared_reader_doubt_reports_anchor_to_the_texts_they_are_declared
     # The complete ordered table, every row, before anything is read by key:
     # `reader_doubt` is a many-row table (a reader may report several doubts on
     # one act), so a repeated row is valid and must be seen, not folded away
-    # under one key (CodeRabbit on PR #115, twice).
+    # under one key.
     assert [
         (r["scenario"], r["act_key"], r.get("pass_kind"), r["start"], r["end"], r["alternatives"])
         for r in skeleton["reader_doubt"]
@@ -756,8 +756,7 @@ def test_the_declared_reader_doubt_reports_anchor_to_the_texts_they_are_declared
     # and in bounds for the act's declared text -- which the `no-readable-text`
     # outcome then empties, so the producer must refuse it against the text it
     # actually publishes. Retrieved by key rather than left to the `==` above, so
-    # a row that lost its scenario or gained a pass kind fails here by name
-    # (found by CodeRabbit on the rebased candidate).
+    # a row that lost its scenario or gained a pass kind fails here by name.
     unreadable = doubts[("reader-doubt-unreadable", None)]
     assert unreadable["act_key"] == "a1"
     assert (unreadable["start"], unreadable["end"]) == (29, 34)
