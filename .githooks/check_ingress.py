@@ -419,7 +419,7 @@ def working_tree() -> dict[str, Blob]:
                 entries[path] = Blob(path, "worktree", "160000", "commit")
             else:
                 # A FIFO, socket or device used to fall through every branch
-                # and the run still reported passed. GOVERNANCE 2: a partial
+                # and the run still reported passed. principle 2: a partial
                 # result is visibly partial, so it is named and it blocks.
                 entries[path] = Blob(path, "worktree", "000000", file_kind(mode))
         except FileNotFoundError:

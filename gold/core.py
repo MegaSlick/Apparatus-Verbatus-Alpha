@@ -357,7 +357,7 @@ def _method_facts(method: Any, claimed_set: Any, sampling: Any) -> None:
     stated set and no catalog or plan behind it. Without this, a page chosen by
     hand could be minted as `stratified-seed`, and "the gold was drawn by the
     seed" would be an unfalsifiable label rather than a replayable fact
-    (GOVERNANCE 10).
+    (principle 8).
     """
     _refuse(
         not isinstance(method, str) or method not in {"stratified-seed", "manual"},
@@ -404,7 +404,7 @@ def build_sample(
     separate, honest record of what a manual picker believed the set was at pick
     time; it is carried unchanged even when it disagrees with `set`, so a pick
     made before the frame/seed existed is never silently corrected or discarded
-    (GOVERNANCE 2). `sampling` binds a seeded draw to the exact catalog and plan
+    (principle 2). `sampling` binds a seeded draw to the exact catalog and plan
     that produced it, so `verify_stratified_selection` can replay the draw
     instead of taking `method` at its word.
     """
@@ -440,7 +440,7 @@ def _quotas(plan: Any, strata: set[str]) -> dict[str, dict[str, int]]:
     """The plan, checked to account for every stratum the catalog declares.
 
     A stratum the plan does not name contributes nothing to gold, and does so
-    without saying anything — the silent shortfall GOVERNANCE 2 forbids. So the
+    without saying anything — the silent shortfall principle 2 forbids. So the
     plan must name every stratum in both sets, and a quota of 0 is how a stratum
     is deliberately left unsampled: still a declaration, still visible in the
     plan file.
@@ -682,17 +682,17 @@ def verify_stratified_selection(
 
 
 def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
-    """Record Tyrel's choice without selecting or replacing it.
+    """Record the picker's choice without selecting or replacing it.
 
-    A manual pick's stated `set` is his provenance, not an assertion this
-    function polices: B1 picks are made in week one, before the R0 frame or
-    its seed exist, so there is no partition to check them against yet. The
+    A manual pick's stated `set` is the picker's provenance, not an assertion
+    this function polices: B1 picks are made in week one, before the R0 frame
+    or its seed exist, so there is no partition to check them against yet. The
     persisted sample's `set` is always the page-derived partition, so
-    calibration and locked-acceptance membership remain disjoint; his original
-    stated set is kept alongside as `claimed_set` so a pick
+    calibration and locked-acceptance membership remain disjoint; the
+    original stated set is kept alongside as `claimed_set` so a pick
     that turns out to land in the other set is an honest, visible, recorded
     disagreement — never a silent reclassification and never a refusal that
-    would force him to redo real annotation hours.
+    would force the picker to redo real annotation hours.
     """
     frame, source = load_run_frame(run_path)
     _refuse(
@@ -799,7 +799,7 @@ def _person(value: Any, label: str) -> str:
     one, but a name shaped like a pipeline identity is the mistake worth catching:
     a model's output entering the gold corpus would make every later measurement
     circular, since these records are what the pipeline is measured *against*
-    (GOVERNANCE 3; GOALS 2's "not against what a witness reported").
+    (principle 1; goal 1's "not against what a witness reported").
     """
     _refuse(not isinstance(value, str) or not value.strip(), f"{label} is empty")
     _refuse(value != value.strip(), f"{label} has surrounding whitespace")
@@ -827,7 +827,7 @@ def _escaped_illegibilities(value: str, label: str) -> set[int]:
     marks and the `illegible` after it is unescaped, so it is refused and the
     transcriber writes `\\\\\\illegible` for a backslash before the literal word.
     These records are immutable and append-only, so an ambiguity admitted now is
-    one Tyrel's hours could never be re-recorded out of.
+    one the transcriber's hours could never be re-recorded out of.
     """
     starts: set[int] = set()
     position = 0
@@ -1031,14 +1031,14 @@ def adjudicate(
 ) -> dict[str, Any]:
     """Reconcile two independent transcriptions of one act into one gold reading.
 
-    **This is not a picker** (hard rule 8, GOVERNANCE 3), and the distinction is
+    **This is not a picker** (principle 1), and the distinction is
     the same one the architecture makes everywhere else. The transcribers are
     people making the corpus the pipeline is measured against, not Attestatores,
     and no model output reaches these records. Where the two readings differ, the
     adjudicator does not choose the better transcription: they read the ink and
     record what they read, which may match one, both in part, or neither. Both
     transcriptions are retained inside the record, unaltered, whatever it says
-    (GOVERNANCE 4).
+    (principle 4).
 
     Where the two readings are identical there is nothing to reconcile: the
     outcome is `agreed`, no adjudicator is recorded, and passing one is refused —
@@ -1239,7 +1239,7 @@ def validate_layout(record: Any, run_path: str | Path | None = None) -> dict[str
     _refuse(not isinstance(regions, list), "layout regions is not a list")
     # Page-layout gold accounts for the whole page, so "no regions" is not a
     # finding — it is an annotation that never happened, and an empty list would
-    # let it read as a completed one (GOVERNANCE 2). A page with nothing on it is
+    # let it read as a completed one (principle 2). A page with nothing on it is
     # annotated as such: that is what the `true-blank` kind is for.
     _refuse(
         not regions,
