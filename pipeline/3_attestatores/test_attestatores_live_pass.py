@@ -908,9 +908,7 @@ def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
     assert [request["temperature"] for request in resumed.requests("attestator_1")] == [0.2, 0.0]
 
 
-def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(
-    live_run, tmp_path
-):
+def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
     scripts["attestator_1"] = [
@@ -933,9 +931,7 @@ def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(
     assert resumed.requests("attestator_1") == []
 
 
-def test_chandra_retry_retains_post_response_refusal_in_earlier_terminal(
-    live_run, tmp_path
-):
+def test_chandra_retry_retains_post_response_refusal_in_earlier_terminal(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
     repeated = CHANDRA_PAGE_ONE + ("<!--repeat-->" * 24)
@@ -955,11 +951,7 @@ def test_chandra_retry_retains_post_response_refusal_in_earlier_terminal(
         for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
         if entry["kind"] == "chandra-native-attempt"
     ]
-    refused = [
-        record
-        for record in terminals
-        if record["payload"]["trigger"] == "repeat-token"
-    ]
+    refused = [record for record in terminals if record["payload"]["trigger"] == "repeat-token"]
     assert len(refused) == 1
     first_attempt = refused[0]["payload"]["resolved_attempt"]
     assert first_attempt["outcome"] == "failed"
@@ -995,9 +987,7 @@ def test_chandra_fatal_capture_accounting_stops_before_terminal_or_retry(
     assert native_kinds == ["chandra-native-attempt-intent"]
 
 
-def test_exhausted_repeat_geometry_survives_act_record_crash_resume(
-    live_run, tmp_path
-):
+def test_exhausted_repeat_geometry_survives_act_record_crash_resume(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     repeated = CHANDRA_PAGE_ONE + ("<!--repeat-->" * 24)
     scripts = default_scripts()
@@ -1034,17 +1024,12 @@ def test_exhausted_repeat_geometry_survives_act_record_crash_resume(
     )
 
 
-def test_unparsed_exhausted_repeat_does_not_gain_geometry_after_crash_resume(
-    live_run, tmp_path
-):
+def test_unparsed_exhausted_repeat_does_not_gain_geometry_after_crash_resume(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     repeated_unrecognized = "x" * 17
     scripts = default_scripts()
     scripts["attestator_1"] = [
-        *[
-            ScriptedAnswer(content=repeated_unrecognized, finish_reason="stop")
-            for _ in range(7)
-        ],
+        *[ScriptedAnswer(content=repeated_unrecognized, finish_reason="stop") for _ in range(7)],
         ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
     ]
     scripts["attestator_3"] = [ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="stop")]

@@ -324,7 +324,9 @@ def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old
         assert record["fits"] is False, (chair, tier)
 
 
-def test_startup_timeout_rows_preserve_the_one_measured_exception_and_all_other_derivations() -> None:
+def test_startup_timeout_rows_preserve_the_one_measured_exception_and_all_other_derivations() -> (
+    None
+):
     """F057: only the observed Designator row may depart from the 300s placeholder.
 
     The isolated 600-second retry completed with a warm cache after the cold

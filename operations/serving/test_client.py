@@ -1321,9 +1321,7 @@ def test_receipt_identity_drift_stops_before_http_even_when_chair_and_revision_m
         receipt[field] = wrong_value
         return receipt
 
-    client, endpoint, blob_store, _ = _built(
-        tmp_path, chair=chair, read_receipt=drifted_receipt
-    )
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair, read_receipt=drifted_receipt)
     with pytest.raises(ReceiptDriftRefusal, match="exact configured identity"):
         with client:
             pass

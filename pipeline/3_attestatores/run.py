@@ -5847,10 +5847,7 @@ def _validate_chandra_terminal(
         )
     if inference_error and (
         resolved.raw_response_ref != response_ref
-        or (
-            response_ref is not None
-            and resolved.raw_response_kind != RAW_RESPONSE_TRANSPORT_BODY
-        )
+        or (response_ref is not None and resolved.raw_response_kind != RAW_RESPONSE_TRANSPORT_BODY)
         or (response_ref is None and resolved.raw_response_kind is not None)
     ):
         raise SchemaRefusal(
