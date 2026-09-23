@@ -68,7 +68,7 @@ def test_triage_modes_are_bound_at_run_creation():
 def test_the_binding_seals_the_configuration_its_caller_named(tmp_path):
     """Every other sealed configuration binds a caller-supplied path; triage modes
     alone read the repository default, so a run bound against another file sealed a
-    digest of bytes its point-of-use check would never read. Found by CodeRabbit."""
+    digest of bytes its point-of-use check would never read."""
     root = Path(__file__).resolve().parents[1]
     config = tmp_path / "triage_modes.toml"
     config.write_text(
@@ -113,8 +113,7 @@ def test_the_binding_refuses_a_triage_configuration_it_could_only_seal(tmp_path,
     declaring a mode nobody declared sealed cleanly into `run.json` and the run
     walked several stages before the first `require_triage_modes` refused it. The
     binding and the point-of-use check now share one validator, so the refusal
-    lands at run creation, where nothing has been written yet. Found by
-    CodeRabbit."""
+    lands at run creation, where nothing has been written yet."""
     root = Path(__file__).resolve().parents[1]
     config = tmp_path / "triage_modes.toml"
     config.write_bytes(body)
@@ -134,8 +133,7 @@ def test_the_run_digest_moves_when_the_triage_thresholds_do(tmp_path):
     passes, while the guarantee that actually matters is gone: `open_context`
     compares `config_digest`, so reopening a run under changed review thresholds
     would no longer be refused as incompatible reuse. Two otherwise identical
-    bindings, differing only in the thresholds, must not hash alike. Found by
-    CodeRabbit."""
+    bindings, differing only in the thresholds, must not hash alike."""
     root = Path(__file__).resolve().parents[1]
     fixture = load_fixture(root / "proof")
     models = ChairRegistry.from_toml(root / "config/models.toml").config

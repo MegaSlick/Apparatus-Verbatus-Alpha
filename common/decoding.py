@@ -64,8 +64,8 @@ def _validate_decoding_policy(policy: Any) -> None:
     `reading_of_record` is pinned to temperature
     0: it is the posture every Attestator and the Perlector read under, and a
     reading of record that varied would not be one. `structure` is the
-    Designator's structure pass's own posture (Tyrel, 2026-09-02) and is
-    admitted at any finite, non-negative temperature: the ruling is that this
+    Designator's structure pass's own posture and is
+    admitted at any finite, non-negative temperature: this
     pass may vary, sealed and recorded, so the loader does not pin the number
     -- whether a given value can actually be executed is the pass's own refusal
     to make at its point of use, not this loader's to hide by rejecting the

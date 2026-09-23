@@ -94,7 +94,7 @@ def test_the_shipped_default_config_loads_at_the_ruled_boundary():
     assert ("door", "refused", "corrupt") in policy["reason_kinds"]
     assert ("door", "refused", "unreadable") in policy["reason_kinds"]
     # `truncated` is a dense page, not a damaged one (the old pipeline's own
-    # Tyrel-ruled distinction) -- a bounded-retry matter, never the run-level
+    # ruled distinction) -- a bounded-retry matter, never the run-level
     # systemic-breakage signal. See config/hard_failure.toml's own comment.
     assert (PERLECTOR, "truncated") not in policy["kinds"]
     # The exclusions argued in the config's own comments.
@@ -423,7 +423,7 @@ def test_exactly_two_hard_failures_is_an_early_warning_and_does_not_breach(tmp_p
     policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
     tally = tally_hard_failures(tree, policy)
     assert tally["count"] == 2
-    assert tally["breached"] is False, "two is an early warning, not a halt (Tyrel's ruling)"
+    assert tally["breached"] is False, "two is an early warning, not a halt"
 
 
 def test_a_third_hard_failure_breaches(tmp_path):
@@ -469,7 +469,7 @@ def test_a_third_hard_failure_breaches(tmp_path):
 
 def test_a_recovered_act_still_counts_the_incident_that_happened(tmp_path):
     """A hard failure that was later recovered away is still an incident: coverage
-    recovery does not erase the record that a failure occurred (GOVERNANCE 2)."""
+    recovery does not erase the record that a failure occurred (principle 2)."""
     tree = make_run(tmp_path)
     publish(
         tree,
@@ -561,7 +561,7 @@ def test_an_ordinary_held_for_review_never_counts(tmp_path):
 
 
 def test_a_truncated_reading_never_counts_toward_the_run_level_cap(tmp_path):
-    """The old pipeline's own Tyrel-ruled distinction (page_health.py, 2026-07-25):
+    """The old pipeline's own ruled distinction (`page_health.py`):
     a dense page is not a damaged one. Three truncated Perlectiones is heavy
     per-act recovery traffic, never evidence the run itself is going wrong."""
     tree = make_run(tmp_path)
@@ -634,7 +634,7 @@ def test_a_door_refusal_whose_reason_code_merely_starts_the_same_does_not_count(
     prefix with either hard reason -- so it would still pass if the comparison
     were ever loosened to `startswith`. A loosened match widens what the cap
     counts, and three ordinary door refusals would then halt a whole run at the
-    next stage boundary on routine noise. Found by CodeRabbit.
+    next stage boundary on routine noise.
     """
     tree = make_run(tmp_path)
     publish(

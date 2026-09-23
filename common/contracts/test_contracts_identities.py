@@ -144,7 +144,7 @@ def test_attempts_are_distinct_per_ordinal_and_per_operation():
 
 
 def test_artifacts_of_one_subject_differ_by_attempt():
-    """Spec 07's retention ruling, 2026-07-30: attempts are append-only and nothing
+    """Spec 07's retention ruling: attempts are append-only and nothing
     overwrites attempt 1 to record attempt 2. Two attempts colliding onto one
     artifact id is exactly how the old stage lost testimony."""
     act = identities.act_id(identities.page_id(ORIGIN, WHOLE), "proposal", BOUNDS_ORIGINAL)

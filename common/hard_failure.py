@@ -2,9 +2,9 @@
 
 Distinct from `common/recovery.py`: that module bounds how often ONE ACT may ask
 for bounded rework. This module answers a different question -- is this RUN
-going wrong -- and the two are not the same mechanism wearing two names. Tyrel's
-ruling of 2026-08-05 blesses both: the per-act recovery budget stays exactly as
-built, and this cap sits beside it.
+going wrong -- and the two are not the same mechanism wearing two names. Both
+stand as designed: the per-act recovery budget stays exactly as built, and
+this cap sits beside it.
 
 The tally is recomputed from the artifacts already on disk every time it is
 asked for, never from a running counter or an event stream: a count kept only in
@@ -31,7 +31,7 @@ DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "hard_failure.toml"
 )
 
-# Tyrel's ruled boundary, 2026-08-05: two continues as an early warning and the
+# The project lead's ruled boundary: two continues as an early warning and the
 # third stops. Unlike the recovery budget, the hard-failure threshold was not
 # delegated for downward tuning, so configuration cannot move it either way.
 RULED_THRESHOLD: Final = 2

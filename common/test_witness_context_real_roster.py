@@ -4,7 +4,7 @@
 Under the `named` regime that sentence is handed to the Perlector as fact about
 the witness whose testimony it is reading, so a real run sealed under it tells
 the reader that Chandra-2, DAI-RecordGold and Churro-3B are fixtures --
-GOVERNANCE 7's "feed it completely and honestly" failing on the first real call.
+principle 3's "feed it completely and honestly" failing on the first real call.
 `config/witness_context-real.toml` is the declaration the real roster is read
 under, selected on `--witness-context-config` exactly as the roster is selected
 on `--models-config`.
@@ -467,7 +467,7 @@ def test_the_refusal_holds_under_the_blinded_regime_too():
     """Blinded withholds the sentence from the dossier, not from the record.
 
     The run still seals a declaration saying its real chairs are synthetic, and
-    that record outlives the regime it was sealed under (GOVERNANCE 6).
+    that record outlives the regime it was sealed under (principle 6).
     """
     with pytest.raises(ContractError, match="shipped-fixture identity projection"):
         validate_witness_context_bindings(

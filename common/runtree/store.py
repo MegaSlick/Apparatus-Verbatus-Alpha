@@ -595,7 +595,7 @@ class RunTree:
 
         What a race can still do — replace a receipt from a later, more-resolved
         pass with one from an earlier pass over the same denominator — cannot
-        manufacture the failure GOVERNANCE 2 and ARCHITECTURE invariant 6 forbid.
+        manufacture the failure principle 2 and ARCHITECTURE invariant 6 forbid.
         Every review this receipt cites is itself immutable and append-only, and
         an act's classification only ever moves toward resolution
         (`common/contracts/outcomes.py` has no transition back from a
@@ -621,12 +621,11 @@ class RunTree:
             # and request evidence it is reconstructed from sits beside it
             # untouched — so a torn write, a truncated file or a receipt from an
             # older schema left the run permanently unable to record a partition
-            # it could recompute perfectly well. GOVERNANCE 4 protects evidence;
+            # it could recompute perfectly well. principle 4 protects evidence;
             # this is not evidence, and refusing here protected nothing while
             # blocking recovery. The `expected_act_count` refusal below still
             # applies whenever the existing receipt *is* valid, because that is a
             # real disagreement about a sealed denominator rather than damage.
-            # Found by CodeRabbit.
             try:
                 existing = validate_recensor_partition_receipt(_read_json(target))
             # `TypeError` is among them because strict canonicalization raises it: a
@@ -636,7 +635,7 @@ class RunTree:
             # true — invalid is treated as absent — was false for one whole class of
             # damage, and it is the same escape route found on the stage-05 branch
             # the same night: strict canonicalization refusing outside the governed
-            # vocabulary. Found by the Opus read of this branch.
+            # vocabulary.
             # `_read_json` already translates `OSError`, `ValueError`, and its
             # `UnicodeDecodeError` subclass into `SchemaRefusal`/`ContractError`.
             # `RecursionError` remains separate because `json.loads` can raise it
@@ -650,10 +649,10 @@ class RunTree:
                 # exactly this moment and nowhere afterwards, because the next
                 # line overwrites it. Discarding it without a word would leave
                 # an auditor a clean receipt and no reason to look further,
-                # which is the shape GOVERNANCE 2 forbids. The path is a
+                # which is the shape principle 2 forbids. The path is a
                 # run-tree relative path, never a submitted filename, so this
                 # channel is open to it (`common/exemplar_boundary.py` records
-                # why that distinction matters). Found by CodeRabbit.
+                # why that distinction matters).
                 print(
                     f"warning: the existing Recensor partition receipt at {relative} could "
                     f"not be read as a valid receipt and is being replaced "
@@ -686,7 +685,7 @@ class RunTree:
             except FileNotFoundError:
                 # Gone between `exists()` above and here. Nothing to reuse and
                 # nothing to refuse: fall through and publish it, which is what
-                # `_publish_bytes` does at the same seam. Found by CodeRabbit.
+                # `_publish_bytes` does at the same seam.
                 pass
         target.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(target, data)
@@ -724,8 +723,7 @@ class RunTree:
         # A reference whose file is gone is a provenance failure, not a crash. Without
         # this, a valid-looking reference to a removed receipt ended the stage with a
         # bare FileNotFoundError instead of a named refusal — and #42 is about refusing
-        # provenance, which includes provenance that is no longer there. Found by
-        # CodeRabbit on pull request 16.
+        # provenance, which includes provenance that is no longer there.
         try:
             data = self.read_bytes(parsed.relative_path)
         except OSError as error:
@@ -1743,7 +1741,7 @@ def _sync_published_name(target: Path) -> None:
     Strict, unlike the pod-side records' best-effort default, and that is a
     decision rather than an inherited setting. This tree is the evidence: a
     stage that reports an artifact published, and a resume that then trusts the
-    report, are exactly what a lost directory entry would betray. GOVERNANCE 2
+    report, are exactly what a lost directory entry would betray. principle 2
     does not allow that to disappear behind a successful return, so a filesystem
     that cannot prove the entry durable refuses the publication instead — in the
     same voice as the hard-link refusal above, because it is the same kind of

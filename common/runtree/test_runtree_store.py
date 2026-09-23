@@ -543,7 +543,7 @@ def test_the_shared_snapshot_reports_what_a_refusal_leaves_that_is_not_a_file(tm
     (root / "artifacts" / "kept.json").write_bytes(b"{}")
     before = tree_snapshot(root)
 
-    # The case CodeRabbit named: a refusal that created a stage directory and
+    # A refusal that created a stage directory and
     # wrote nothing into it. Invisible to a file-only snapshot.
     (root / "blobs").mkdir()
     after = tree_snapshot(root)
@@ -2034,7 +2034,7 @@ def test_an_authority_without_a_commit_is_still_a_whole_authority(tmp_path):
 
 # `"g" * 40` is the case the others cannot make: a validator checking only
 # length and case would accept it, so without it nothing here establishes that
-# the revision must be hexadecimal (CodeRabbit on PR #117).
+# the revision must be hexadecimal.
 @pytest.mark.parametrize("value", ["a1b2c3d", "A" * 40, "g" * 40, "", COMMIT + "-dirty"])
 def test_a_commit_that_is_not_a_full_lowercase_revision_is_refused(tmp_path, value):
     with pytest.raises(SchemaRefusal, match="forty lowercase hexadecimal"):
@@ -2295,12 +2295,11 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
     artifact. Validating the *existing* file before writing the new one meant a
     torn write, a truncated file, or a receipt from an older schema left the run
     permanently unable to record a partition it could recompute perfectly well.
-    GOVERNANCE 4 protects evidence; this is not evidence, and the refusal
+    principle 4 protects evidence; this is not evidence, and the refusal
     protected nothing while blocking recovery.
 
     The refusal that *does* matter — a valid receipt disagreeing about the sealed
     proposal-act denominator — is pinned by the test above and is unaffected.
-    Found by CodeRabbit.
     """
     tree = make_run(tmp_path)
     receipt = make_recensor_partition_receipt()
@@ -2331,7 +2330,6 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
         # 200,000 raise), which is precisely why `_read_json` cannot translate
         # it and why it is named separately in that clause. Without this case
         # that branch was untested and could have been deleted green.
-        # Found by CodeRabbit.
         "deeply-nested": (b"[" * 200_000) + (b"]" * 200_000),
     }[damage_kind]
     target.write_bytes(damage)
@@ -2357,10 +2355,8 @@ def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_cras
     then parses cleanly and is refused one step later for the fields it does not
     have. Both are refusals and neither is a traceback, which is the whole of what
     this test exists to prove. Pinning the message asserted the mechanism instead
-    of the guarantee, and the mechanism belongs to CPython. Found by running the
-    gate on a 3.14 host after the rebase; the container seats then ran 3.13 and CI only
-    3.12, so nothing in the ladder as it stood would have shown it; CI's matrix carries
-    3.14 today, so it would be caught there now."""
+    of the guarantee, and the mechanism belongs to CPython. CI's matrix carries
+    3.14 today, so a regression here would be caught."""
     tree = make_run(tmp_path)
     envelope = make_envelope()
     tree.publish_artifact(envelope)
@@ -2397,8 +2393,7 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
     floats ahead of hashing. A record shallow enough to parse cleanly but deep
     enough to exhaust the recursion limit during that second walk reached
     `verify_self_hash` and crashed one call past where the reader-side guard
-    already closed the door — found by blind audit against this same tree
-    (two independent audits, one depth each) rather than by this suite.
+    already closed the door.
     """
     tree = make_run(tmp_path)
     envelope = make_envelope()
@@ -2409,9 +2404,8 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
     # 2,000-deep object. The encoder recurses per level exactly as the scanner
     # does, so constructing the fixture that way makes the *setup* depend on the
     # interpreter's recursion limit — and a fixture that raises during setup is a
-    # false failure reporting nothing about the code. Flagged by CodeRabbit on the
-    # rebased branch, and the same family as the interpreter dependence that broke
-    # the test above on a 3.14 host.
+    # false failure reporting nothing about the code, the same family as the
+    # interpreter dependence that broke the test above on a 3.14 host.
     nesting = 2000
     deep_text = '{"nested": ' * nesting + '"leaf"' + "}" * nesting
     tampered = dict(envelope)
@@ -2426,9 +2420,8 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
     # absorbs 2,000 levels**, because the deliberately wrong `self_hash` earns the
     # same refusal whether or not the deep walk was ever the thing that failed. A
     # test that stops testing without saying so is worse than one that breaks, and
-    # a skip is visible where a silent pass is not (GOVERNANCE 2). So the premise
-    # is asserted first, against the same walk the code uses. Found by the Opus
-    # read of this branch.
+    # a skip is visible where a silent pass is not (principle 2). So the premise
+    # is asserted first, against the same walk the code uses.
     try:
         parsed_deep = json.loads(deep_text)
     except RecursionError:
@@ -2455,7 +2448,7 @@ def test_the_shared_snapshot_fails_loudly_on_a_descendant_it_cannot_read(tmp_pat
 
     `os.walk`'s default drops an unreadable descendant and moves on, so a
     refusal probe comparing two snapshots would see "no change" over entries
-    it never examined (CodeRabbit round 3 on PR #91).
+    it never examined.
     """
     root = tmp_path / "root"
     locked = root / "locked"

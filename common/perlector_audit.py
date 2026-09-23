@@ -13,7 +13,7 @@ these names so its own public API is unchanged.
 
 **The audit request is the instrument, and it lives here too.** A re-proof plan
 computed, sealed under `payload.audit.reproofs`, and then not handed to the
-reader is an instrument misreporting itself (GOVERNANCE 10): the record would
+reader is an instrument misreporting itself (principle 8): the record would
 say a measured, neutral, span-scoped re-examination produced the published text
 while the reader was shown only the Pass-B dossier and a bare string. So one
 function (`reproof_plan`) defines the plan, `audit_request` wraps it into the
@@ -52,12 +52,11 @@ LEGACY_SCHEMA: Final = "perlector-audit.v2"
 # A `perlector-audit.v1` record carried no fact about whether a delivered
 # re-proof completed: `unresolved` was defined as "flags and a zero cap", so a
 # re-proof cut off by its engine that returned the frozen text byte for byte was
-# sealed as a resolved audit and delivered as complete (independent audit of
-# 2026-09-10, finding F1). A v1 record cannot be read forward. The missing fact
+# sealed as a resolved audit and delivered as complete (finding F1). A v1 record cannot be read forward. The missing fact
 # was never measured, and inferring it from the record's silence would be the
 # exact claim the schema could not make, so consumers refuse it by name and the
 # act is re-read from its sealed evidence in a run under the current schema. The
-# old bytes are evidence and stay as written (GOVERNANCE 4).
+# old bytes are evidence and stay as written (principle 4).
 RETIRED_SCHEMAS: Final = frozenset({"perlector-audit.v1"})
 # The rendered instrument's own label. Separate from `SCHEMA` because the two
 # are versioned by different things: `SCHEMA` names the sealed policy an audit
@@ -141,11 +140,11 @@ DECLARED_STOP_WORDS: Final = frozenset({"stop", "length"})
 _TRUNCATION_SIGNALS: Final = frozenset(
     {"stop_reason_declared", "unclosed_structure", "length_suspicious", "ends_abruptly"}
 )
-# What the length signal was judged from, on the record since 2026-09-14 so a
+# What the length signal was judged from, on the record so a
 # reader can re-derive that signal rather than take the producer's word for it
-# (pre-launch review, F082/F088). Every term of the predicate is here,
+# (findings F082/F088). Every term of the predicate is here,
 # including the floor itself: the record protects the past on its own, without
-# the run's `config/perlector_protocol.toml` in hand (GOVERNANCE 6).
+# the run's `config/perlector_protocol.toml` in hand (principle 6).
 _TRUNCATION_MEASURE: Final = frozenset(
     {"region_pixels", "page_pixels", "characters", "length_floor_characters_per_page"}
 )
@@ -453,7 +452,7 @@ def _validate_reproof_rows(
     same screen: closed shape, a known flag class, a location inside the frozen
     text, and a prompt that is *exactly* `neutral_prompt` for that location.
     Equality against the generated prompt is the whole discipline — it leaves no
-    room for a sentence that tells the reader which way to argue (GOVERNANCE 10),
+    room for a sentence that tells the reader which way to argue (principle 8),
     because anything but the generated string is refused rather than screened for
     forbidden words.
     """
@@ -684,8 +683,7 @@ def validate_truncation_record(
         raise SchemaRefusal(f"{label} is not a closed truncation record")
     # Type before membership everywhere a frozenset is consulted: an unhashable
     # value (a list, an object) would otherwise leave as `TypeError`, which the
-    # stage boundary does not classify, instead of the named refusal it owes
-    # (CodeRabbit on PR #112).
+    # stage boundary does not classify, instead of the named refusal it owes.
     if type(value["classification"]) is not str or (
         value["classification"] not in TRUNCATION_CLASSIFICATIONS
     ):
@@ -714,7 +712,7 @@ def validate_truncation_record(
             )
     # The recomputation is only worth as much as `characters`, and `characters`
     # was the producer's word until a caller that holds the measured text binds
-    # it here (independent audit of 2026-09-14). `text is None` is the caller
+    # it here. `text is None` is the caller
     # that does not hold it and says so, never a silent skip.
     if text is not None and measure["characters"] != len(text):
         raise SchemaRefusal(
@@ -727,7 +725,7 @@ def validate_truncation_record(
     # record chose for itself proves only internal consistency: a record naming
     # floor 1 under a sealed floor of 50 derives `length_suspicious` false,
     # classifies `complete`, and clears an audit hold the sealed policy would
-    # have held (CodeRabbit on PR #117). Refused before the derivation, so the
+    # have held. Refused before the derivation, so the
     # refusal names the floor rather than the signal it produced.
     if (
         length_floor_characters_per_page is not None
@@ -796,8 +794,7 @@ def validate_reproof_call(
     # The live client sets `response_sha256` to the retained raw response's own
     # digest (`operations/serving/client.py`), so the two must agree here too: a
     # record naming one response's bytes and another response's digest would
-    # bind the sealed verdict to a call nobody can check it against. Found by
-    # CodeRabbit on the correction candidate.
+    # bind the sealed verdict to a call nobody can check it against.
     if value["response_sha256"] != value["raw_response_ref"]["sha256"]:
         raise SchemaRefusal(
             f"{label} names response digest {value['response_sha256']} but its retained raw "
@@ -1474,7 +1471,7 @@ def validate_finding(
         # (`pipeline/4_perlector/run.py`: one `final_text` feeds
         # `truncation.classify` and this validation), so the record's character
         # count is bound to the reading rather than taken on the producer's
-        # word (independent audit of 2026-09-14) -- except where the re-proof's
+        # word -- except where the re-proof's
         # text was refused and never published. A sealed change span beside a
         # published text equal to the frozen semi-final is exactly that case:
         # the re-proof departed from the semi-final (or there would be no
@@ -1635,7 +1632,7 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
     `numbering`, `order`) all span the whole text from offset 0, so first-listed
     meant "the widest flag on the act wins": a correction squarely inside a
     narrow `testimony-diff` span was recorded as `date-sequence`, and the one
-    measurement this record exists to support silently lost it (GOVERNANCE 10).
+    measurement this record exists to support silently lost it (principle 8).
 
     Width ties break on `(start, class)` so the attribution is a function of the
     frozen flag set alone. Consumers re-derive this record exactly
@@ -1735,8 +1732,8 @@ def validate_chain(
     under a floor nobody sealed: `validate_truncation_record` recomputes the
     signal from the record's *own* measure, so a record naming floor 1 under a
     sealed floor of 50 is internally consistent, classifies `complete`, and
-    clears an audit hold that the sealed policy would have held (CodeRabbit on
-    PR #117). Given the floor, a record judged under any other is refused
+    clears an audit hold that the sealed policy would have held. Given the
+    floor, a record judged under any other is refused
     before the signal is re-derived. `None` is the caller that does not hold
     the sealed table -- the Recensor, which reads this chain across stages and
     has no Perlector protocol of its own, and the fixture chamber, which runs
@@ -1916,14 +1913,13 @@ def validate_chain(
     # projection and nothing else. Without that, an act with no exhausted-cap
     # finding -- the ordinary case, where the projection is empty -- would
     # accept any invented span at all, because every list starts with the empty
-    # one (independent audit of 2026-09-10, F2).
+    # one.
     published = payload.get("uncertain_spans")
     # The record is validated before its state is read, by the one function the
     # canonical layer uses. Reading `state` off an unvalidated record let a
     # reading saying `assessed` while carrying a problem -- a contradiction the
     # canonical layer refuses by name -- choose the relaxed prefix rule here and
-    # publish spans and gaps the reader's report never named (found by
-    # CodeRabbit reading against the project's own configuration).
+    # publish spans and gaps the reader's report never named.
     assessment_record = uncertainty.validate_assessment_record(
         payload.get("uncertainty_assessment"), f"reading of {act_id}"
     )
@@ -1937,7 +1933,7 @@ def validate_chain(
     if not agrees:
         raise SchemaRefusal(f"reading of {act_id} disagrees with its audit uncertainty projection")
     # The same state rule over the other layer, and the direction that matters
-    # is the one that loses ink: a gap is unread ink (GOALS 1), and an act whose
+    # is the one that loses ink: a gap is unread ink (goal 2), and an act whose
     # gap went missing reads as wholly established. Under any state but
     # `assessed` the only gap a reading may carry is the whole-act gap its
     # `no-readable-text` outcome owes -- the producer mints no other, and an
@@ -1957,7 +1953,7 @@ def validate_chain(
     # and this is the last check before the Recensor publishes: the spans and
     # gaps are bound to the text here by the canonical validator itself, so a
     # span past the end of `text` never reaches a review record to be printed
-    # as offsets that do not anchor (CodeRabbit on PR #115). Self-revisions are
+    # as offsets that do not anchor. Self-revisions are
     # left out on purpose: their offsets index the prior draft, not this text,
     # and the canonical projection at the Archetypus is where they are held.
     try:

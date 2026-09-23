@@ -115,7 +115,7 @@ def test_every_variant_names_a_whole_commit():
 
     A prefix resolves against whatever objects a repository holds at the moment
     someone looks; the 40-hex name is the one that cannot become a different
-    commit later (GOVERNANCE 6).
+    commit later (principle 6).
     """
     for variant, entry in CHURRO_PROMPT_VARIANTS.items():
         commit = entry["commit"]

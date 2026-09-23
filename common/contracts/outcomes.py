@@ -156,8 +156,7 @@ def anchor_line_located(alignment: Any) -> bool:
     characters of Lorem ipsum therefore aligned against this repository's own
     fixture anchor, attached on `anchor-line`, and put a third chair on the
     witness floor for having placed the two characters of "em" -- the exact
-    reading of "placed nothing" the bullet above says it refuses (hostile review
-    of Unit 12, must-fix 1). The producer now measures how much of the act's own
+    reading of "placed nothing" the bullet above says it refuses. The producer now measures how much of the act's own
     anchor line the clipped fragments actually matched, records it, and this
     reads the measurement.
 

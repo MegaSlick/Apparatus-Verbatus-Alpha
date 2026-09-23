@@ -169,7 +169,7 @@ def _span_or_gap_ref(value: Any) -> Any:
     stands where the reading declined to place either observed form.  Anything
     free-form here could carry the established string itself, and this record's
     whole purpose is to hold evidence *beside* that text and never a second
-    copy of it (consult §6, GOVERNANCE 5).
+    copy of it (consult §6, principle 5).
     """
     if value is None:
         return None

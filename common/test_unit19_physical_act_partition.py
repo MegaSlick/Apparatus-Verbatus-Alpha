@@ -753,7 +753,7 @@ def test_ambiguous_correspondence_reaches_the_partition_as_a_named_finding(tmp_p
 def test_append_racing_a_retraction_is_refused_and_a_retried_retraction_is_precise(tmp_path):
     """A retraction that read a since-superseded register digest must be refused
 
-    exactly like any other stale writer (GOVERNANCE 4/7): the correction is
+    exactly like any other stale writer (principle 4 / principle 3): the correction is
     never silently dropped, and it is never silently applied against a register
     it did not actually observe. Retried against the live digest, it retracts
     only the correspondence it named -- the racing append survives untouched.
@@ -1238,7 +1238,7 @@ def test_every_capture_page_reaching_one_physical_page_stays_in_the_presentation
     -- a whole opening and the split half of it are two `page_id`s over identical
     source bytes. The presentation row carries `page_ids[]` for exactly that, and
     keeping whichever row was seen first would delete a page from the record that
-    a reading has to be traceable back to (GOALS 5).
+    a reading has to be traceable back to (goal 4).
     """
     path = _register(tmp_path)
     _mint(path, PAGE, [_local(ACT_A, PG1, SOURCE_A, "a")])
@@ -1346,7 +1346,7 @@ def test_a_vanished_local_act_cannot_be_covered_by_another_acts_finding():
 
     holds that same act reaches the expected count while a second act has
     disappeared entirely -- exactly the arithmetic an interrupted build would
-    leave behind, and GOVERNANCE 2 does not allow it to read as complete.
+    leave behind, and principle 2 does not allow it to read as complete.
     """
     payload = {
         "schema": PARTITION_SCHEMA,
@@ -1741,7 +1741,7 @@ def test_a_retracted_correspondence_is_not_re_declared_behind_the_retraction(tmp
     assert proposal["accepted_records"] == []
     # The retracted member is named for what it is; its sibling is named too,
     # because this run gave it no correspondence and an unnamed member is a lost
-    # one (GOVERNANCE 2).
+    # one (principle 2).
     assert proposal["findings"] == [
         {"code": "retracted-physical-act", "act_id": ACT_A},
         {"code": "unresolved-physical-act", "act_id": ACT_B},

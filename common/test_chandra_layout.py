@@ -264,7 +264,7 @@ def test_our_rectangle_contains_the_box_the_model_actually_reported(box, page_si
     arithmetic, so the real-valued rectangle `[x0*W/1000, x1*W/1000]` always
     lies inside ours. If that ever stopped holding, Chandra's blocks would be
     cropped tighter than the model reported them -- ink lost behind a clean
-    status, which GOALS 1 rates worst.
+    status, which goal 2 rates worst.
     """
     page_w, page_h = page_size
     ours = block_page_bounds(_block(bbox_1000=box), page_size=page_size)
@@ -537,7 +537,7 @@ def test_ink_outside_every_block_is_counted_rather_than_dropped_into_a_clean_par
     nothing to mark it. Read here, that same page would have come back
     `parse`d, with `findings == []` and the words simply absent from
     `page_text` and from every span -- a missed act under a successful status,
-    which GOALS 1 rates worst and GOVERNANCE 2 forbids. The finding is a count
+    which goal 2 rates worst and principle 2 forbids. The finding is a count
     rather than the text, because the response bytes are retained whole and a
     chair's own words are published here as a length.
     """

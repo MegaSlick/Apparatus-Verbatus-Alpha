@@ -770,7 +770,7 @@ def test_a_bare_boolean_attachment_earns_no_native_measurement_claim():
     `granularity_basis` says *how* the count was reached and travels in the
     receipt. Derived from the mere presence of the argument, the booleans below
     would have reported a native-overlap measurement nothing performed
-    (principle 90).
+    (principle 8).
     """
     coverage = witness_coverage(
         {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
@@ -820,7 +820,7 @@ def test_granularity_identity_is_executable_for_interim_and_native_bases():
         _validate_coverage(candidate, require_complete_granularity=True)
     # Widening the accepted set from one basis to two must not widen it to any
     # string: an unnamed basis would let a receipt claim a measurement nothing
-    # in this pipeline performs (principle 90).
+    # in this pipeline performs (principle 8).
     with pytest.raises(SchemaRefusal, match="honest granularity measurement basis"):
         _validate_coverage(
             {**coverage, "granularity_basis": "invented-basis"},
@@ -905,7 +905,7 @@ def test_a_delivered_act_that_established_no_readable_text_is_named():
 
 
 def test_a_delivered_act_with_no_text_status_is_named_rather_than_assumed_whole():
-    """principle 90 — a metric that cannot be measured is a failure, not a pass.
+    """principle 8 — a metric that cannot be measured is a failure, not a pass.
 
     The same self-enforcement as the missing page attribution beside it: a caller
     that supplies nothing is told so, because a default of "every delivered act
@@ -1200,7 +1200,7 @@ def test_no_anchor_line_is_located_by_a_record_that_did_not_locate_one(alignment
     trivially attached because it was genuinely empty, and no line for this act
     was found"; the zero-length span is what that trivial attach carries. Read as
     "aligned, therefore located", each of them would put a chair on the witness
-    floor for a slice with no characters in it (principle 90).
+    floor for a slice with no characters in it (principle 8).
 
     The malformed shapes are here for a different reason: this is read from
     untrusted retained evidence, and it must answer `False` rather than raise a
@@ -1292,7 +1292,7 @@ def test_the_anchor_line_run_floor_sits_between_coincidence_and_a_real_reading()
 
     What this deliberately does not claim: that the floor separates a badly
     misread line from a different act written in the same register formula. It
-    does not, and no character-level measure does (principle 90) -- the same
+    does not, and no character-level measure does (principle 8) -- the same
     formula really does share long runs. The floor refuses a coincidence, which
     is what the review found it letting through.
     """

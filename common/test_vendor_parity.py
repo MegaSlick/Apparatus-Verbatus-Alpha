@@ -415,7 +415,7 @@ def test_the_carried_dai_generation_values_are_the_shipped_configuration():
     assert generation == dict(DAI_GENERATION_CONFIG), (
         "DAI's carried generation values are no longer the shipped "
         "generation_config.json at the pinned revision. These are the vendor's "
-        "decoding policy, not ours (GOVERNANCE 7); `do_sample` stays true and "
+        "decoding policy, not ours (principle 3); `do_sample` stays true and "
         "`temperature` stays 0.1 even though the manager forces temperature 0 on "
         "the wire, because what is carried is the record of what shipped."
     )

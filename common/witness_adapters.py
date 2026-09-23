@@ -90,7 +90,7 @@ def validate_witness_adapter_bindings(models: ModelsConfig) -> None:
     if not isinstance(models, ModelsConfig):
         # Structural doubles are deliberately outside this preflight, but a
         # preflight that skips itself in silence is indistinguishable from one
-        # that ran and found nothing (GOVERNANCE 2). Say so where the unused
+        # that ran and found nothing (principle 2). Say so where the unused
         # registry finding is said.
         print(
             f"witness adapter registry: preflight skipped for a {type(models).__name__} that is "

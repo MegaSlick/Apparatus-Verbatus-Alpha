@@ -63,9 +63,8 @@ def chandra_wire_fields() -> dict[str, Any]:
 
 
 # **`chat_template_content_format` is not sendable per request, and nothing in
-# this tree should ever put it in `generation_sent` believing it is.** Hostile
-# review item A (SPEC_FINDINGS 2026-09-06) names pinning it to `"openai"` on
-# every row-derived request so a chat template that does not obviously branch
+# this tree should ever put it in `generation_sent` believing it is.** It is
+# pinned to `"openai"` on every row-derived request so a chat template that does not obviously branch
 # on `content` being a list cannot fall back to vLLM's `"string"` convention
 # and hoist every image ahead of the text regardless of the order a builder in
 # this tree actually sent (vLLM PR #14047). Verified against the pinned

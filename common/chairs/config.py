@@ -109,7 +109,7 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
         # two-step case through: two chairs each declaring the other as its base were both
         # accepted, and neither pair member named a base artifact that exists. An adapter
         # is an adapter *of* something, so a chain that never reaches a non-adapter chair
-        # is a roster with no base in it at all. Found by CodeRabbit on pull request 16.
+        # is a roster with no base in it at all.
         seen = [role]
         walker = value.adapter_of
         while walker is not None:

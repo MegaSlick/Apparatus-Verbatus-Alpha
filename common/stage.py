@@ -3833,7 +3833,7 @@ def _verify_structural_act_row(
     claiming a continuation with no far-page region names one that was never
     cut; a row denying one while a far-page region exists would drop a
     published continuation crop silently downstream (the Attestatores append
-    the far page only when the flag is set) -- exactly the loss GOALS 1 calls
+    the far page only when the flag is set) -- exactly the loss goal 2 calls
     worse than a poorly read act. So the far-page count is checked against the
     flag in both directions.
 
@@ -4375,7 +4375,7 @@ def _verify_minted_act_rows(
     at a declaration their run does not have.
 
     Two units the Designator may add beyond what the fixture declares, and no
-    others. Both exist for GOALS 1's "a missed act is worse than a poorly read
+    others. Both exist for goal 2's "a missed act is worse than a poorly read
     act", and neither may be trusted merely because the seal's own producer
     wrote it down — that is the same reasoning `expected_acts` already applies
     to every fixture-derived row above.

@@ -6,9 +6,9 @@ revision; the network client itself lives in :mod:`common.chairs.registry`.
 Consumers use this module to prove the store and its derived records still
 agree. Its writers preserve every evidence version: inventories and manifests
 publish once, while each download-record version is digest-addressed and only
-its active copy moves. Differing evidence is never overwritten (GOVERNANCE 4).
+its active copy moves. Differing evidence is never overwritten (principle 4).
 The documented store root is
-``/Users/tyrel/verbatus-models`` (for example only, never a default).
+``/Users/operator/verbatus-models`` (for example only, never a default).
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ INVENTORY_SCHEMA = "verbatus-model-inventory.v1"
 # the host reaches, not the only state it may record: an entry the operator has
 # not fetched yet is written in the `pending-fetch` shape, which names the
 # absence and its reason instead of leaving the store unrepresentable until the
-# last byte lands (GOVERNANCE 2 — a partial result is visibly partial).  The
+# last byte lands (principle 2 — a partial result is visibly partial).  The
 # schema label stays `.v1`: no record has ever been written in the earlier
 # shape, so there is no evidence on disk for a bump to protect.
 PRESENT_FIELDS = {
@@ -125,7 +125,7 @@ REQUIRED_ARTIFACTS = (
         "other: qwen-research",
     ),
     # No `secondary_proposer` row: the chair is absent from the real roster by
-    # Tyrel's ruling of 2026-08-12, so no chair this repository configures ever
+    # the project lead's ruling, so no chair this repository configures ever
     # serves Teklia's AGPL YOLO detector.  Requiring its bytes here would make a
     # store fetched for the real roster permanently incomplete against this
     # list, which is a refusal nobody could clear.  A roster that configures the
@@ -147,8 +147,8 @@ CHAIRS_WITHOUT_ROSTER_ROLE = MappingProxyType(
     {
         "proposer_surya2": (
             "config/models.toml configures no Surya detection chair, in its live "
-            "fixture roster or its commented real roster, and Tyrel's roster "
-            "ruling of 2026-08-20 named none"
+            "fixture roster or its commented real roster, and the project "
+            "lead's roster ruling named none"
         )
     }
 )
@@ -670,7 +670,7 @@ def _snapshot_licence(snapshot: Path, requirement: RequiredArtifact) -> str:
 
     Either sentinel is written into the staged snapshot before its manifest is
     built, so it is covered by the artifact's digest manifest and cannot be
-    edited afterwards without the store refusing (GOVERNANCE 4).  Neither
+    edited afterwards without the store refusing (principle 4).  Neither
     invents terms: the first records a declaration and where to read it, the
     second records that there is nothing to read.
     """
@@ -940,7 +940,7 @@ def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> 
     ``pending-fetch`` to ``present``. Each canonical record is therefore
     published once at ``records/<sha256>.json``; only the active copy
     ``download_record.json`` moves. Previous record bytes remain at
-    their digest-addressed names (GOVERNANCE 4), including the old ad-hoc record
+    their digest-addressed names (principle 4), including the old ad-hoc record
     this migration replaces. A present artifact may never move backwards to
     pending-fetch: missing bytes after acquisition are fetched-and-lost, not
     not-yet-fetched.
@@ -1201,7 +1201,7 @@ def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
     """Publish a derived record once; readers must call :func:`read_derived_inventory`.
 
     Identical bytes already at ``path`` are reused silently; differing bytes are
-    refused and the existing file is left untouched (GOVERNANCE 4 — evidence is
+    refused and the existing file is left untouched (principle 4 — evidence is
     never overwritten).
     """
 
@@ -1340,7 +1340,7 @@ def _verify_synthetic_licence_observation(snapshot: Path, item: Mapping[str, Any
         # bytes may genuinely disagree with the pin -- or this code's wording of
         # what it observed may have been edited since the fetch that wrote them,
         # in which case the store is intact and the only repair is a re-fetch.
-        # Under GOVERNANCE 4 the recorded observation is a layer and is not
+        # Under principle 4 the recorded observation is a layer and is not
         # retroactively re-blessed, so the refusal states both readings.
         raise DigestMismatchRefusal(
             item["artifact"],
@@ -1368,7 +1368,7 @@ def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any
     The caller supplies an already-created staging directory.  This function does
     not copy or download bytes; capacity must therefore reserve source + staging
     space before it is called.  Publication follows the rest of this module's
-    custody rule (GOVERNANCE 4 — evidence is never overwritten): identical bytes
+    custody rule (principle 4 — evidence is never overwritten): identical bytes
     already published are reused silently, a differing manifest already at that
     name is refused, and the existing file is never touched either way. A picked
     manifest name is a pin, not a rolling pointer a second promotion may rewrite.
@@ -1520,7 +1520,7 @@ def _validate_record_transition(
             # Reading `new[artifact]` here raised a bare `KeyError` that named
             # no chair, which is the one thing `errors.py`'s "complete public
             # taxonomy" forbids; an artifact leaving the record silently is
-            # also what GOVERNANCE 2 forbids.
+            # also what principle 2 forbids.
             raise DigestMismatchRefusal(
                 artifact,
                 "the replacement download record does not name this recorded artifact; "
@@ -1565,7 +1565,7 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
         )
     # `capacity` is a self-declared plan, exactly like a ServingProfile's GPU
     # figures (operations/serving/config.py) are "configuration/planning values,
-    # never a claim that an unmeasured card can sustain them" (GOVERNANCE 10).
+    # never a claim that an unmeasured card can sustain them" (principle 8).
     # Nothing here calls `shutil.disk_usage`: the caller supplies the capacity
     # observation made for this volume, while this record preserves that plan.
     # The arithmetic below only catches an internally inconsistent plan

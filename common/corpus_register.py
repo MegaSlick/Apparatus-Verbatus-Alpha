@@ -10,7 +10,7 @@ nothing else; the captures known to show it are carried by separate
 ``membership`` records, each naming the digest of the membership record it
 succeeds. A fourth capture found next month appends a fifth record rather than
 editing the first — which is what "append-only" has to mean if `physical_page_id`
-is not to be re-derived under everything beneath it, and what GOVERNANCE 4 means
+is not to be re-derived under everything beneath it, and what principle 4 means
 one level above the run tree.
 
 A wrong link is corrected the same way — by appending, never by editing. A
@@ -220,7 +220,7 @@ def _register_lock(path: Path) -> Iterator[None]:
     first one's records with nothing anywhere recording that it happened. So every
     way this function could fail to serialize refuses instead of proceeding — a
     register append that was silently not serialized is exactly the append-only
-    evidence loss GOVERNANCE 2 and 4 forbid.
+    evidence loss principle 2 and principle 4 forbid.
 
     The lock name is predictable -- ``.<register name>.lock`` beside the register
     it guards -- so it is opened with ``O_NOFOLLOW``. Without that, anything able
@@ -583,8 +583,7 @@ def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
 
     A retracted correspondence is not read back. Retraction is the register's
     only correction mechanism, and a correction that the reader ignores is not
-    one: the retracted declaration stays in the register as evidence (GOVERNANCE
-    4) and stops resolving anything (GOVERNANCE 2). A proposal whose every
+    one: the retracted declaration stays in the register as evidence (principle 4) and stops resolving anything (principle 2). A proposal whose every
     correspondence has been retracted is a named finding, distinct from one that
     never had a correspondence at all, because the two ask a caller for
     different things. A resolved row retains both the rendered page declared by
@@ -628,7 +627,7 @@ def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> N
     """Refuse a nested capture-preference claim, naming the record it was in.
 
     Public because the rule is not the corpus register's alone: a Testimonium
-    must not express preference either (ARCHITECTURE, GOVERNANCE 3), and it was
+    must not express preference either (ARCHITECTURE, principle 1), and it was
     reaching this through the private name -- which also told an operator
     reading a witness record that the *corpus register* was at fault.
 
@@ -871,14 +870,14 @@ def _retract_membership(row: dict[str, Any], reading: _Reading) -> None:
     frames a human confirmed as one physical page when they are not — two blank
     forms that agree everywhere because neither carries ink. Memberships grow and
     are never edited, so without this a wrong confirmation is a corpus-lifetime
-    fact nobody can answer, and GOVERNANCE 2 does not allow a result that can
+    fact nobody can answer, and principle 2 does not allow a result that can
     only be wrong in silence.
 
     Only the current head may be retracted, and that restriction is the whole
     design rather than a convenience. Each link's members contain its
     predecessor's, so retracting a link from the middle would leave every
     successor still asserting the captures it withdrew — a correction the reader
-    would have to ignore, which GOVERNANCE 4 says is not a correction. Unwinding
+    would have to ignore, which principle 4 says is not a correction. Unwinding
     from the head is the only order in which the surviving head is the honest
     answer; a page corrected two links deep is corrected by two retractions.
 
