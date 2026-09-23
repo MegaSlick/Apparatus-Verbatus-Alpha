@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -21,6 +22,14 @@ from .models import ChairIdentity, DigestManifest, ManifestRow, VerifiedSnapshot
 # anything about it, no matter its size. Matches `MAX_SHARD_INDEX_BYTES` there:
 # generous for even a many-thousand-file snapshot, still a fixed ceiling.
 MAX_MANIFEST_BYTES = 16_777_216
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotInspection:
+    """One strict cache inspection, either complete or repairably incomplete."""
+
+    verified: VerifiedSnapshot | None
+    missing: tuple[str, ...]
 
 
 def manifest_digest(manifest: DigestManifest) -> str:
@@ -131,6 +140,54 @@ def verify_snapshot(
 ) -> VerifiedSnapshot:
     """Verify every expected file and refuse the lexical first difference or extra."""
 
+    inspection = _inspect_snapshot(
+        identity,
+        snapshot_root,
+        manifest,
+        ignored_paths=ignored_paths,
+        allow_missing=False,
+    )
+    if inspection.verified is None:  # pragma: no cover - strict mode refuses every gap
+        raise DigestMismatchRefusal(
+            identity.role, "strict snapshot verification produced an incomplete result"
+        )
+    return inspection.verified
+
+
+def inspect_snapshot_for_repair(
+    identity: ChairIdentity,
+    snapshot_root: str | Path,
+    manifest: DigestManifest,
+    *,
+    ignored_paths: Iterable[str] = (),
+) -> SnapshotInspection:
+    """Strictly inspect a cache while returning only pinned paths that are absent.
+
+    Present files are size- and digest-verified, extras and non-regular entries
+    are refused, and a complete cache carries the verified result of this same
+    pass.  Callers may therefore repair genuine gaps without weakening complete
+    cache verification or hashing every present file a second time.
+    """
+
+    return _inspect_snapshot(
+        identity,
+        snapshot_root,
+        manifest,
+        ignored_paths=ignored_paths,
+        allow_missing=True,
+    )
+
+
+def _inspect_snapshot(
+    identity: ChairIdentity,
+    snapshot_root: str | Path,
+    manifest: DigestManifest,
+    *,
+    ignored_paths: Iterable[str],
+    allow_missing: bool,
+) -> SnapshotInspection:
+    """Inventory and verify a snapshot once, with an explicit repair mode."""
+
     root = Path(snapshot_root)
     if not root.is_dir():
         raise DigestMismatchRefusal(identity.role, f"snapshot root {root} is not a directory")
@@ -142,6 +199,7 @@ def verify_snapshot(
         for relative, path in _regular_files(root, chair=identity.role)
         if relative not in ignored
     }
+    missing: list[str] = []
     for relative in sorted(set(expected) | set(actual)):
         row = expected.get(relative)
         path = actual.get(relative)
@@ -150,23 +208,41 @@ def verify_snapshot(
                 identity.role, f"snapshot differs at {relative}: extra file"
             )
         if path is None:
+            if allow_missing:
+                missing.append(relative)
+                continue
             raise DigestMismatchRefusal(
                 identity.role, f"snapshot differs at {relative}: missing file"
             )
         size = file_size(path, identity.role, relative)
         if size != row.size:
+            if allow_missing:
+                raise DigestMismatchRefusal(
+                    identity.role,
+                    f"snapshot differs at {relative}: cached bytes do not match",
+                )
             raise DigestMismatchRefusal(
                 identity.role,
                 f"snapshot differs at {relative}: size {size}, expected {row.size}",
             )
         actual_sha = file_digest(path, identity.role, relative)
         if actual_sha != row.sha256:
+            if allow_missing:
+                raise DigestMismatchRefusal(
+                    identity.role,
+                    f"snapshot differs at {relative}: cached bytes do not match",
+                )
             raise DigestMismatchRefusal(
                 identity.role,
                 f"snapshot differs at {relative}: sha256 {actual_sha}, expected {row.sha256}",
             )
-    return VerifiedSnapshot(
-        identity=identity, root=root.resolve(), manifest_digest=manifest_digest(manifest)
+    if missing:
+        return SnapshotInspection(verified=None, missing=tuple(missing))
+    return SnapshotInspection(
+        verified=VerifiedSnapshot(
+            identity=identity, root=root.resolve(), manifest_digest=manifest_digest(manifest)
+        ),
+        missing=(),
     )
 
 

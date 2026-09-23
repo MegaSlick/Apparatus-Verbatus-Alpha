@@ -128,7 +128,9 @@ def test_a_complete_match_verifies_and_fetches_exactly_the_pinned_paths(hf_world
     assert (snapshot.root / CACHE_DESCRIPTOR).is_file()
 
 
-def test_a_second_ensure_over_a_complete_cache_verifies_again_and_fetches_nothing(hf_world):
+def test_a_second_ensure_hashes_each_complete_cache_file_once_and_fetches_nothing(
+    hf_world, monkeypatch
+):
     """The re-verification GOVERNANCE 6 asks for has to be survivable.
 
     A registry that leaves its own bookkeeping inside the snapshot directory
@@ -138,10 +140,19 @@ def test_a_second_ensure_over_a_complete_cache_verifies_again_and_fetches_nothin
     """
     identity = hf_world.identity()
     first = hf_world.registry.ensure(identity)
+    real_digest = manifests.file_digest
+    digested: list[str] = []
+
+    def record_digest(path, chair, relative):
+        digested.append(relative)
+        return real_digest(path, chair, relative)
+
+    monkeypatch.setattr(manifests, "file_digest", record_digest)
     second = hf_world.registry.ensure(identity)
 
     assert second.root == first.root
     assert second.manifest_digest == first.manifest_digest
+    assert digested == ["config.json", "nested/weights.bin"]
     assert len(hf_world.fetcher.calls) == 1, "a complete verified cache is not re-fetched"
 
 
@@ -241,6 +252,31 @@ def test_a_cache_holding_a_file_the_pin_does_not_name_is_refused_before_any_refe
     with pytest.raises(DigestMismatchRefusal) as caught:
         hf_world.registry.ensure(identity)
     assert "z-unpinned.json" in str(caught.value)
+    assert hf_world.fetcher.calls == []
+
+
+def test_a_cache_holding_tampered_bytes_is_refused_before_any_refetch(hf_world):
+    identity = hf_world.identity()
+    snapshot = hf_world.registry.ensure(identity)
+    # Keep the pinned size so this reaches the digest comparison itself.
+    (snapshot.root / "nested/weights.bin").write_bytes(b"fixture weightX\n")
+    hf_world.fetcher.calls.clear()
+
+    with pytest.raises(DigestMismatchRefusal, match="cached bytes do not match") as caught:
+        hf_world.registry.ensure(identity)
+    assert "nested/weights.bin" in str(caught.value)
+    assert hf_world.fetcher.calls == []
+
+
+def test_a_cached_symlink_directory_is_refused_before_any_refetch(hf_world, tmp_path):
+    identity = hf_world.identity()
+    snapshot = hf_world.registry.ensure(identity)
+    outside = write_snapshot(tmp_path / "outside", {"weights.bin": b"outside\n"})
+    (snapshot.root / "linked").symlink_to(outside, target_is_directory=True)
+    hf_world.fetcher.calls.clear()
+
+    with pytest.raises(DigestMismatchRefusal, match="linked: symlink directory"):
+        hf_world.registry.ensure(identity)
     assert hf_world.fetcher.calls == []
 
 
