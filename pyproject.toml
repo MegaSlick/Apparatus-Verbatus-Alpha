@@ -104,10 +104,6 @@ namespaces = false
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# The cleanroom holds presumed-contaminated drafts under review. They are read
-# by reviewers, never linted, formatted, or executed — a loaded tray must not
-# turn checks red, and a check that runs contaminated code is not a check.
-extend-exclude = ["cleanroom"]
 
 [tool.ruff.lint]
 # Deliberately narrow. These catch real breakage — undefined names, unused imports,
@@ -142,5 +138,4 @@ markers = [
 # basenames would break collection.
 norecursedirs = [".git", ".venv", "venv", ".ruff_cache", ".pytest_cache",
                  ".mypy_cache", ".tox", "node_modules", "build", "dist",
-                 "worktrees", "__pycache__", "workbench", "private", "scriptorium",
-                 "cleanroom"]
+                 "worktrees", "__pycache__", "workbench", "private", "scriptorium"]
