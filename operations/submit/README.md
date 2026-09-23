@@ -33,14 +33,13 @@ resumable", and no pod exists yet.
 
 ## The storage-root check is mechanical; the approval-record requirement is cut
 
-**Cut 2026-08-09, per Tyrel's ruling that session:** *"None of these images will be
-on git anyways they run through the pipeline on the gpu and won't ever touch git. So
-yes cut the approval record it's not really needed."* A submission used to also need
-a current data-gate approval-record artifact, verified before a byte was hashed and
-named in the sealed manifest. That requirement is gone: none of this material ever
-reaches git regardless of any per-run sign-off — it runs on a GPU host,
-`workbench/` is gitignored, and an ingress check plus CI's full-history payload scan
-already cover that mechanically.
+**No per-run approval record.** A submission once also needed a signed-off data-gate
+approval record; the project lead removed it because this material never goes near git:
+it runs on a GPU host and `workbench/` is gitignored. The commit hooks refuse
+credentials and oversized payloads before anything is committed; CI's full-history scan
+runs only after a push, so it detects a leak but cannot prevent one. Keeping real
+transcriptions and images out of the repository is the rule (PRINCIPLES.md principle 12),
+not something a scan guarantees.
 
 What remains, and is unaffected: a folder handed to this tool is never a fixture, by
 construction — it never goes near `load_fixture` — and both the submitted folder and

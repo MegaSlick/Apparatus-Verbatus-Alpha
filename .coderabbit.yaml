@@ -126,7 +126,8 @@ reviews:
       instructions: >-
         The git hooks and the check scripts CI runs. Flag any check that fails open: a
         check that cannot run is a failure, not a pass (PRINCIPLES.md principle 8). The
-        hooks stay removable with `git config --unset core.hooksPath`.
+        project lead can remove the hooks with `git config --unset core.hooksPath`
+        (AI sessions are denied that command in `.claude/settings.json` on purpose).
     - path: ".claude/**"
       instructions: >-
         Claude Code settings, read-only agent roles and session skills. Changes need the
