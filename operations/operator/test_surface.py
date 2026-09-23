@@ -952,7 +952,7 @@ def test_a_corrupted_saved_record_never_hides_the_intact_ledgers_behind_unexpect
     `status` reports an unreadable record beside the intact ones only for
     `RecordError`; a raw `TypeError` walks past that guard, abandons the whole
     listing, and reports `UNEXPECTED` — the opposite of the honesty ledger this
-    verb exists to show (GOVERNANCE 2).
+    verb exists to show (principle 2).
     """
 
     surface = _surface(tmp_path)
@@ -1027,7 +1027,7 @@ def test_a_record_too_large_to_be_one_of_ours_is_refused_rather_than_read(
     tmp_path: Path,
 ) -> None:
     """`status` reads every recorded receipt, so an unbounded read is its own
-    failure — and an out-of-memory kill prints nothing at all (GOVERNANCE 2).
+    failure — and an out-of-memory kill prints nothing at all (principle 2).
     """
 
     surface = _surface(tmp_path)
@@ -2421,7 +2421,7 @@ def test_cli_upload_forwards_a_named_prefix_for_both_manifest_routes(
 # `submission/two` joins these: a nested prefix writes image keys below it while
 # control files land as siblings inside the default `submission/` inventory, so a
 # later default Door run inventories files its manifest does not name and refuses
-# the run -- after the upload has already reported success (CodeRabbit).
+# the run -- after the upload has already reported success.
 @pytest.mark.parametrize(
     "prefix", ("/absolute", "../escape", "a//b", "a/./b", "bad\x00key", "submission/two")
 )
@@ -2833,10 +2833,10 @@ def test_exported_work_discloses_rather_than_silently_drops_malformed_rows():
     """A record this function cannot make sense of does not raise -- the
     accounting line's own job is to report what a completed run produced, not
     to re-validate the export schema a stricter reader already checked -- but
-    it is also not simply dropped, which would reopen F030's own mismatch: the
-    caller prints `len(page_records)`/`expected_acts` as the total beside
+    it is also not simply dropped, which would reopen the names-versus-total
+    mismatch: the caller prints `len(page_records)`/`expected_acts` as the total beside
     these names, and naming fewer than that with no explanation is the same
-    silent-partial-result GOVERNANCE 2 refuses."""
+    silent-partial-result principle 2 refuses."""
     pages, acts = _exported_work(
         [{"ordinal": 1}, {"no_ordinal": True}, "not-a-dict"],
         {"delivered": [{"act_key": "a1"}, {"no_act_key": True}], "non_delivered": ["not-a-dict"]},
@@ -3272,8 +3272,8 @@ def test_the_export_reader_refuses_a_member_missing_entirely(
     running different code). Before this, the loop below only checked type
     when a key was present, so an absent member passed silently and
     `_exported_work` printed the generic "the recorded acts" instead of the
-    run being refused -- the exact gap CodeRabbit's "Nothing Is Lost
-    Silently" check caught.
+    run being refused -- the exact gap principle 2's "nothing is lost
+    silently" exists to catch.
     """
 
     surface = _surface(tmp_path)
@@ -3781,7 +3781,7 @@ def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: 
     wrote zero members, the writer returned normally, and `export` recorded
     `"state": "complete"` for a bundle carrying `run.json` and not one
     established reading. For a parish run that is every act in it missing, with
-    a receipt vouching for the absence -- GOVERNANCE 2's "'complete' is refused
+    a receipt vouching for the absence -- principle 2's "'complete' is refused
     unless everything reconciles", through one more door.
     """
 
@@ -4063,8 +4063,8 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
     ``--evidence-key`` is for, each independently optional. The liveness report
     and the transfer journal were not asked for at all while they had no route
     home, and the four token-named siblings ``launch_evidence_keys`` derives
-    were reachable only through a saved receipt until 2026-09-15 (CodeRabbit on
-    PR #117). A saved launch receipt is asked for first and derives the
+    were reachable only through a saved receipt until this route was added. A
+    saved launch receipt is asked for first and derives the
     token-bound keys itself; this is the route for a run whose receipt is not
     to hand."""
 
@@ -4880,7 +4880,7 @@ def test_an_evidence_bundle_short_of_run_json_refuses_rather_than_saying_complet
     `_write_base_armarium_bundle` selects `run.json` and `7_armarium` and wrote
     each with `if is_file() ... elif is_dir()`. An absent `run.json` matched
     neither arm and was dropped with no record at all, while the export receipt
-    still said `"state": "complete"`. GOVERNANCE 2 is exactly this case: a partial
+    still said `"state": "complete"`. Principle 2 is exactly this case: a partial
     result is visibly partial, and "complete" is refused unless everything
     reconciles.
     """
@@ -5756,7 +5756,7 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     assert payload["stages_verified"] == ["designator"]
     # Every artifact here is recorded by a stored manifest, so none of them was
     # verified "by their own envelope" -- naming them all was a false statement
-    # about what was measured (GOVERNANCE 10) and made the field useless for
+    # about what was measured (principle 8) and made the field useless for
     # telling a crashed stage's artifacts from the rest.
     assert payload["envelope_only_artifacts"] == []
     assert payload["excluded_publication_temporaries"] == [
@@ -5898,7 +5898,7 @@ def test_fetch_run_brings_a_served_run_tree_home_and_names_its_logs_unverified(
     from a run that had already billed a card, with the receipt naming the log.
     The log is still not evidence the tree can check: no manifest records it and
     nothing digested it, so it comes home named as unverified side evidence
-    rather than counted among what was verified (GOVERNANCE 2 and 10).
+    rather than counted among what was verified (principle 2 and principle 8).
     """
 
     volume, reader = _volume_run(tmp_path)
@@ -5940,7 +5940,7 @@ def test_a_serving_log_that_grew_since_the_last_fetch_refuses_by_itself(
     for immutable evidence and fatal to the whole fetch if a log is held to it:
     the second call brought home nothing at all, with no remedy named anywhere.
     The log is refused by itself instead, named in the receipt and on the
-    screen, and the verified run tree still arrives (GOVERNANCE 2).
+    screen, and the verified run tree still arrives (principle 2).
     """
 
     volume, reader = _volume_run(tmp_path)
@@ -6040,7 +6040,7 @@ def test_a_symlink_where_a_serving_log_belongs_is_refused_and_left_alone(
 def test_a_refused_serving_log_is_not_counted_among_what_was_verified(
     tmp_path: Path,
 ) -> None:
-    """The counts stay honest across both serving-log states (GOVERNANCE 10).
+    """The counts stay honest across both serving-log states (principle 8).
 
     `fetched` and `reused` count arrivals; `verified_objects` counts what was
     checked against a digest the run tree recorded. A log that arrived was not,
@@ -6117,7 +6117,7 @@ def test_fetch_run_refuses_a_directory_marker_key_rather_than_writing_it(tmp_pat
 
     Which arm refuses it is not the claim -- the claim is that no run tree comes
     home with a file standing where a directory should be, and that the operator
-    is told (GOVERNANCE 2).
+    is told (principle 2).
     """
 
     volume, reader = _volume_run(tmp_path)
@@ -6171,9 +6171,9 @@ def test_fetch_run_brings_the_launch_evidence_home_and_names_what_it_did_not(
     The launch's PREFLIGHT tree -- which chairs were preflighted, against which
     catalogue digests, at what measured tier -- is written outside
     ``runs/<run_id>/`` and used to have no tracked path home, while the volume
-    it lives on is destroyed under the retention policy (GOVERNANCE 6). What
+    it lives on is destroyed under the retention policy (principle 6). What
     still cannot be fetched by name is said out loud rather than left to be
-    inferred from an empty folder (GOVERNANCE 2).
+    inferred from an empty folder (principle 2).
     """
 
     volume, reader = _volume_run(tmp_path)
@@ -6219,7 +6219,7 @@ def test_fetch_run_takes_a_named_evidence_key_and_records_one_it_cannot_read(
     records the pod-run report fetched with its digest cannot also assert that
     the pod-run report was not fetched. The field states the derivation limit
     and how many keys this call named; what arrived is read off ``objects`` and
-    ``refusals`` (GOVERNANCE 10).
+    ``refusals`` (principle 8).
     """
 
     volume, reader = _volume_run(tmp_path)

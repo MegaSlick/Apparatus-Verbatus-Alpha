@@ -39,7 +39,7 @@ def test_real_project_shape_round_trips_geometry_without_reducing_it(tmp_path: P
 @pytest.mark.parametrize(
     ("attribute", "value"),
     (
-        (b'path="masters"', b'path="/Users/tyrel/.ssh"'),
+        (b'path="masters"', b'path="/Users/someone/.ssh"'),
         (b'path="masters"', b'path=".."'),
         (b'path="masters"', b'path=""'),
     ),
@@ -47,11 +47,11 @@ def test_real_project_shape_round_trips_geometry_without_reducing_it(tmp_path: P
 def test_an_absolute_or_traversing_directory_path_is_refused(
     tmp_path: Path, attribute: bytes, value: bytes
 ) -> None:
-    """F025: source_path is `(project_path.parent / file_paths[fileId]).resolve()`.
+    """`source_path` is `(project_path.parent / file_paths[fileId]).resolve()`.
 
     An absolute `directory path` makes the `/` join discard `project_path.parent`
     entirely -- the same way `Path.__truediv__` is documented to behave -- so an
-    attacker-chosen project naming `/Users/tyrel/.ssh` as a "directory" and
+    attacker-chosen project naming `/Users/someone/.ssh` as a "directory" and
     `id_ed25519` as a "file" would otherwise resolve straight to that real path
     and publish it, unvalidated, into the sealed geometry record.
     """

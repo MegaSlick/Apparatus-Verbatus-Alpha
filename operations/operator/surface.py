@@ -184,8 +184,7 @@ gigabyte is past any page this project has rendered."""
 # matching the margin `operations/pod/test_pod_runtime.py` pairs with `.bill()`
 # throughout.
 #
-# **This comment said "backdates" until 2026-08-11, and the direction matters.**
-# A reader who believes the cutoff is in the past concludes that a *smaller*
+# **The direction matters.** A reader who believes the cutoff is in the past concludes that a *smaller*
 # margin is the safe direction. It is the opposite, and acting on that reversed
 # belief is exactly the defect below at `_shutdown`.
 FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS = 3600
@@ -457,7 +456,7 @@ class UnreconciledActPartitionError(ValueError):
     `.export()` can each tell "this record could not be read at all" apart
     from "this record was read fine and does not add up" -- the record
     exists, so treating it as missing, or its copy as failed, tells the
-    operator the wrong thing (CodeRabbit).
+    operator the wrong thing.
     """
 
 
@@ -510,7 +509,7 @@ class OperatorSurface:
         census's own refusal reason all reach here from a file or a run tree
         rather than from a constant. Stripping belongs on the channel, not on
         one kind of string. The receipt keeps the bytes it was given —
-        GOVERNANCE 4 — the terminal simply does not get to act on them.
+        principle 4 — the terminal simply does not get to act on them.
         """
 
         self._present(strip_control_bytes(line))
@@ -1040,7 +1039,7 @@ class OperatorSurface:
         launch's PREFLIGHT tree (``preflight/``) is written outside
         ``runs/<run_id>/`` and says which chairs were preflighted, against which
         catalogue digests, at what measured tier -- provenance that has to
-        travel with the record (GOVERNANCE 6) off a volume the retention policy
+        travel with the record (principle 6) off a volume the retention policy
         will destroy. Everything under ``evidence_prefixes`` is fetched into
         ``<into>/evidence/``, each object recorded in the receipt with its
         digest and the content-addressed ones checked against their own names.
@@ -1139,7 +1138,7 @@ class OperatorSurface:
         partial = bool(outcome.unmanifested_stages)
         # What was actually checked, which is not what arrived: a serving log is
         # counted in `fetched`/`reused` like any other object, and nothing
-        # checked it against anything (GOVERNANCE 10 -- claims are made only
+        # checked it against anything (principle 8 -- claims are made only
         # about what was measured). Every count of "verified" below is this one,
         # and the arrival counts stay beside it rather than standing in for it.
         verified_objects = outcome.fetched + outcome.reused - len(outcome.unverified_serving_logs)
@@ -1829,7 +1828,7 @@ class OperatorSurface:
             # (a run refused for this exact reason still leaves a receipt
             # `export` can be asked for later), and a record that could not
             # be called complete there must not be called complete here
-            # either -- GOVERNANCE 2 through whichever verb reads it.
+            # either -- principle 2 through whichever verb reads it.
             aggregate = export_payload["aggregate"]
             if aggregate.get("status") == "complete":
                 self._require_reconciled_act_partition(export_payload)
@@ -1847,7 +1846,7 @@ class OperatorSurface:
             # is immutable and names both this path pattern and its own digest,
             # so a second export of the same run — after the run tree changed —
             # must land beside the first rather than overwrite bytes an earlier
-            # receipt still vouches for (GOVERNANCE 4's argument, applied to the
+            # receipt still vouches for (principle 4's argument, applied to the
             # bundle this stage itself produces).
             destination = exports_dir / f"{recorded_id}-armarium-base-{digest}.zip"
             try:
@@ -1889,7 +1888,7 @@ class OperatorSurface:
         # The receipt's state, the exit status and the notice all follow the
         # aggregate's own status. A receipt hardcoded to `complete` over a
         # partial run, exiting 0, is the partial result presented as complete
-        # that GOVERNANCE 2 forbids -- the screen was honest, the exit status
+        # that principle 2 forbids -- the screen was honest, the exit status
         # and the record were not.
         aggregate = export_payload.get("aggregate")
         recorded_status = aggregate.get("status") if isinstance(aggregate, dict) else None
@@ -2268,8 +2267,9 @@ class OperatorSurface:
                 # "Close could not verify both pod absence and billing evidence."
                 #
                 # Dormant only because the shipped `config/spend.toml` is
-                # `unconfigured`: the first time Tyrel fills it in with anything
-                # but 3600, his first close rehearsal is red for no real reason.
+                # `unconfigured`: the first time the project lead fills it in
+                # with anything but 3600, their first close rehearsal is red
+                # for no real reason.
                 # `_shutdown`'s own docstring calls that "the fastest way to
                 # teach someone to ignore the one message that matters".
                 #
@@ -2935,10 +2935,10 @@ class OperatorSurface:
         # together, so a record missing one is never an honest partial write --
         # it is exactly the record a caller sees from a mismatched schema (an
         # older build, a record fetched from a pod running different code).
-        # Presence is required, not merely the right type when present: CodeRabbit
-        # caught that `_exported_work` treated an absent `delivered`/`non_delivered`
-        # as empty and printed "the recorded acts" instead of refusing -- GOVERNANCE
-        # 2's "a partial result is visibly partial" runs through this reader too.
+        # Presence is required, not merely the right type when present:
+        # `_exported_work` once treated an absent `delivered`/`non_delivered`
+        # as empty and printed "the recorded acts" instead of refusing --
+        # principle 2's "a partial result is visibly partial" runs through this reader too.
         for member in ("pages", "delivered", "non_delivered"):
             if member not in payload:
                 raise ValueError(f"Armarium export record is missing {member}")
@@ -2966,7 +2966,7 @@ class OperatorSurface:
         would give: this must stay safe for a payload that bypassed that
         reader entirely (every export test but the reader's own stubs
         `_armarium_export` directly). Caller decides what "complete" was
-        claiming here: GOVERNANCE 2: "complete" is refused unless everything
+        claiming here: principle 2: "complete" is refused unless everything
         reconciles.
         """
 
@@ -3015,15 +3015,14 @@ class OperatorSurface:
         # `"state": "complete"` -- a bundle short of the record saying which run
         # produced it, describing itself as whole.
         #
-        # Checking `exists()` alone closed only half of that, and CodeRabbit caught
-        # the other half on this very repair: a `7_armarium` that is a **regular
+        # Checking `exists()` alone closed only half of that: a `7_armarium` that is a **regular
         # file** exists, takes the `is_file()` arm, and is written as a single
         # member -- so the bundle ships without any of the Armarium output and
         # still says complete. That is the same defect through a different door,
         # which is the shape this whole review keeps finding. So each member is
         # required to be the *kind* it is expected to be, not merely present.
         #
-        # GOVERNANCE 2: "a partial result is visibly partial; 'complete' is refused
+        # Principle 2: "a partial result is visibly partial; 'complete' is refused
         # unless everything reconciles."
         temporary = destination.with_name(f".{destination.name}.tmp-{secrets.token_hex(16)}")
         root_descriptor: int | None = None
@@ -3525,7 +3524,7 @@ def _read_published_lease(path: Path) -> PodLease | None:
     `records.py`, and in this package's README — as reading only, and it is the
     one verb an operator runs to find a pod that may still be billing: a state
     directory that cannot be written must not turn every lease into UNREADABLE
-    and hide exactly that (GOVERNANCE 2). A lease is only ever published whole
+    and hide exactly that (principle 2). A lease is only ever published whole
     (`os.link` of an fsynced temporary, or `os.replace`), so a lock-free read
     sees one complete version or another, never a torn one, and
     `PodLease.from_record` still refuses any record whose seal does not
@@ -4266,7 +4265,7 @@ class FetchRunOutcome:
     # the whole tree for it, which is what an unnamed path did, threw away the
     # evidence the run existed to produce. It comes home as side evidence, named
     # here and digested in the receipt so the local copy can be told apart from
-    # a later one, and never counted among what was verified (GOVERNANCE 10).
+    # a later one, and never counted among what was verified (principle 8).
     unverified_serving_logs: tuple[tuple[str, str], ...] = ()
     # A serving log that did not come home, and why. Named per object rather
     # than raised: the log is the one append-only file in the tree -- a live
@@ -4274,7 +4273,7 @@ class FetchRunOutcome:
     # volume's, or a debug-level log past `MAX_FETCH_OBJECT_BYTES`, are ordinary
     # states of a file nobody digested, and taking the whole verified run tree
     # down for one of them is the failure this verb was fixed to stop. Nothing
-    # is lost silently (GOVERNANCE 2): each is in the receipt and on the screen.
+    # is lost silently (principle 2): each is in the receipt and on the screen.
     refused_serving_logs: tuple[str, ...] = ()
 
 
@@ -4454,7 +4453,7 @@ def _fetch_run_tree(
         # ones missing from this set were verified by envelope alone, and only
         # those belong in the receipt's `envelope_only_artifacts`. Reporting
         # the whole set named manifest-covered artifacts as unmanifested --
-        # a false statement about what was measured (GOVERNANCE 10) and
+        # a false statement about what was measured (principle 8) and
         # useless for telling a crashed stage's artifacts from the rest.
         manifest_recorded = set(expected)
         manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
@@ -4563,9 +4562,9 @@ class FetchEvidenceOutcome:
     published serving receipts and launch audits -- lives beside it on the
     volume and says which chairs were preflighted, against which catalogue
     digests, at what measured tier. The volume is destroyed under the retention
-    policy, so that provenance has to travel with the record (GOVERNANCE 6),
+    policy, so that provenance has to travel with the record (principle 6),
     and what could *not* be brought home has to be named rather than left
-    silent (GOVERNANCE 2).
+    silent (principle 2).
     """
 
     fetched: int
@@ -4866,8 +4865,9 @@ def _exported_work(
     prints, but never invisibly: the caller prints `len(page_records)` (or
     `expected_acts`) as the total beside these names, and a name silently
     dropped for being malformed would reopen exactly the names-versus-total
-    mismatch F030 named, just with "malformed" standing in for "unfiltered."
-    So a drop is disclosed as one more named entry instead, per GOVERNANCE 2:
+    mismatch a total that includes it but a name list that omits it, just
+    with "malformed" standing in for "unfiltered."
+    So a drop is disclosed as one more named entry instead, per principle 2:
     a partial result is visibly partial.
     """
 

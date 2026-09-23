@@ -38,7 +38,7 @@ class SpendSurface:
             # a window in which a policy could be widened, read, and restored
             # before the confirming hash, so the screen showed one file's limits
             # under another file's digest. Re-reading to confirm cannot close
-            # that; not re-reading does. Found by CodeRabbit.
+            # that; not re-reading does.
             policy_bytes = bounded_bytes(source, "the spend policy")
             policy_digest = hashlib.sha256(policy_bytes).hexdigest()
             policy = load_spend_policy_bytes(policy_bytes, source=source)
