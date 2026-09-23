@@ -251,7 +251,7 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
     if approver != APPROVER:
         raise ApprovalRefusal(
             f"approval record names approver {approver!r}; only "
-            f"{APPROVER} approves, and no agent stands in for him"
+            f"{APPROVER} approves, and no agent stands in for them"
         )
     action = record["action"]
     if type(action) is not str:

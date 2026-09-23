@@ -1283,7 +1283,7 @@ def test_an_excluded_testimonium_without_an_approval_reference_is_refused_at_the
         ATTESTATORES, "testimonium", envelope["subject_id"], envelope["attempt"]
     )
 
-    with pytest.raises(ApprovalRefusal, match="only Tyrel approves an exclusion"):
+    with pytest.raises(ApprovalRefusal, match="only the project lead approves an exclusion"):
         build_envelope(outcome="excluded", **envelope)
 
     # The generic envelope accepts a non-empty, well-formed-looking identifier.
