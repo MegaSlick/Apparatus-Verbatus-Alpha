@@ -801,7 +801,7 @@ def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
     assert [part["type"] for part in user["content"]] == ["image_url"]
 
 
-# --- the recorded framing selector (not a picker: hard rule 8) ----------------
+# --- the recorded framing selector (not a picker: principle 1) ----------------
 
 
 def test_the_default_framing_is_the_vendors_own_registry_answer():
@@ -876,7 +876,7 @@ def test_a_named_framing_reaches_the_request_and_its_capacity_record():
 
 
 def test_the_resolved_framing_is_written_onto_the_capture(tmp_path: Path):
-    """Hard rule 8, stated as a test: this selects the question before the page
+    """Principle 1, stated as a test: this selects the question before the page
     is read, never among readings, and the name it selected is on the record."""
 
     response, _, _ = _read_one(
@@ -1107,7 +1107,7 @@ def _stub_adapter(*, retain_result: dict[str, Any], prompt: dict[str, Any] | Non
         # `served` is the retention seam's posture flag: every real adapter
         # wrapper takes it and forwards it, and both live call sites pass it,
         # so a stub standing in for one takes it too. It reaches only Chandra's
-        # parser (CodeRabbit round 1, T7) and these stubs run no parser at all,
+        # parser, and these stubs run no parser at all,
         # which is why they record it and derive nothing from it.
         del tree, view, parser
         digest = hashlib.sha256(raw_response).hexdigest()
@@ -1412,7 +1412,7 @@ def test_live_attempt_from_response_genuinely_empty_on_a_confirmed_blank(tmp_pat
 
 
 def test_live_attempt_from_response_cut_off_empty_is_failed_not_confirmed_blank(tmp_path: Path):
-    # GOVERNANCE 10 / ARCHITECTURE "truncation is a refused reading, never an
+    # principle 8 / ARCHITECTURE "truncation is a refused reading, never an
     # output": an empty response the engine itself cut off at its token bound
     # is not evidence of a genuinely blank act, on the act path exactly as on
     # the page path.
@@ -1520,7 +1520,7 @@ def test_live_attempt_from_response_unknown_stop_reason_carried_verbatim(tmp_pat
     # Not in ENGINE_STOP_COMPLETE or ENGINE_STOP_CUT_OFF: this system does not
     # recognize "abort", so it is carried verbatim but never coerced into
     # either "the engine confirmed completion" or "the engine confirmed a cut
-    # off" -- GOVERNANCE 10 refuses to default an unread signal to a meaning.
+    # off" -- principle 8 refuses to default an unread signal to a meaning.
     assert attempt.health["truncated"] is None
     assert attempt.health["truncation_basis"] == "not-recorded"
     assert attempt.native_capture["transport_stop_reason"] == "abort"
@@ -1829,8 +1829,8 @@ def test_both_live_retention_call_sites_declare_the_served_posture(tmp_path: Pat
     `feeding.retain_model_view` defaults `served` to False, which is what the
     fixture posture wants and what every offline call site relies on -- so a
     live call site that forgot to pass it would restore exactly the acceptance
-    T7 closed, silently and with every other test still green. Both live sites
-    are pinned here, page-scoped and act-scoped (CodeRabbit round 1, T7).
+    this guards against, silently and with every other test still green. Both
+    live sites are pinned here, page-scoped and act-scoped.
     """
     response, _, _ = _read_one(
         tmp_path, script=ScriptedAnswer(content="<output>page text</output>", finish_reason="stop")
@@ -1893,7 +1893,7 @@ def test_captured_page_attempt_cut_off_and_parser_failure_names_both(tmp_path: P
 def test_captured_page_attempt_unreported_empty_is_failed_not_confirmed_blank(tmp_path: Path):
     # An empty page response whose stop boundary was never reported is no more
     # a confirmed blank page than one the provider admits it cut off -- the
-    # same GOVERNANCE 10 guard applies whether the unknown is "cut off" or
+    # same principle 8 guard applies whether the unknown is "cut off" or
     # "never said."
     response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="", finish_reason=ABSENT))
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
@@ -1981,8 +1981,8 @@ def test_captured_page_attempt_real_churro_adapter_still_reads_the_retired_envel
 
     A bare `<output>` body is the framing this chair no longer sends. It still
     reads -- throwing a page of ink away over an envelope would be the loss
-    GOALS 1 refuses -- and the capture carries `retired-output-envelope` so a
-    shape nobody asked for is visible rather than silent (GOVERNANCE 2).
+    goal 2 refuses -- and the capture carries `retired-output-envelope` so a
+    shape nobody asked for is visible rather than silent (principle 2).
     """
     response, _, blob_store = _read_one(
         tmp_path,
@@ -2062,7 +2062,7 @@ def test_captured_page_attempt_real_chandra_adapter_reads_the_vendor_grammar(tmp
         "generation": {"max_new_tokens": 12384},
     }
     # The vendor pin the prompt bytes came from travels with the reading, beside
-    # the model identity GOVERNANCE 6 already requires.
+    # the model identity principle 6 already requires.
     assert attempt.native_capture["vendor_identity"] == chandra.vendor_identity()
     # A clean page reports nothing the grammar could not resolve.
     assert attempt.native_capture["findings"] == []
@@ -2122,7 +2122,7 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
     tmp_path: Path,
 ):
     """A served chair's answer in the fixture's stand-in schema is a named
-    surprise, not a reading (CodeRabbit round 1, T7).
+    surprise, not a reading.
 
     `fixture-chandra-response.v1` is the committed fixture's own placeholder,
     declared in `proof/skeleton_fixture.toml` and asked for by nothing:
@@ -2133,7 +2133,7 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
     `no-layout-blocks`, a named surprise beside its retained bytes. And the
     retention seam refuses the placeholder parser outright for a served chair,
     so no route exists by which retained history could be read back as a live
-    reading (GOVERNANCE 10).
+    reading (principle 8).
 
     The offline posture keeps the acceptance the fixture's pinned bytes depend
     on, through `parse_fixture_placeholder` -- `test_chandra_adapter.py` and
@@ -2155,8 +2155,8 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
         "outcome": "no-layout-blocks",
     }
     # The bytes stay beside the record that could not read them: read the
-    # referenced blob back rather than trusting that a reference exists
-    # (CodeRabbit round 2), so a retention that returns a plausible reference
+    # referenced blob back rather than trusting that a reference exists,
+    # so a retention that returns a plausible reference
     # without storing the body fails here.
     assert attempt.raw_response_ref
     assert tree.read_bytes(attempt.raw_response_ref["relative_path"]) == body.encode("utf-8")

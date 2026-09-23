@@ -49,7 +49,6 @@ def _widened(tmp_path: Path) -> Path:
     # present anyway, and this helper would hand back a file identical to the
     # shipped one — leaving every test built on it asserting that a policy differs
     # from itself. The message even named the condition it was not checking.
-    # Found by CodeRabbit.
     assert "left_bp = 500" in shipped, "the shipped padding config no longer declares left_bp = 500"
     text = shipped.replace("left_bp = 500", "left_bp = 1000")
     path = tmp_path / "widened_padding.toml"

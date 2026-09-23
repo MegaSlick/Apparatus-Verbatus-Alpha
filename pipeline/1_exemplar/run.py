@@ -188,10 +188,10 @@ def _page_payload(
         sealed["rendered_from"] = payload["rendered_from"]
         resolution = _render_resolution_record(payload["rendered_from"])
         if resolution is not None:
-            # Ruling 14's unresolved interpretation leaves the memory-bounded
-            # renderer provisional.  Until Tyrel settles it, a page whose effective
-            # DPI is below the run target must not hide that reduction inside a
-            # nested renderer recipe: the sealed Exemplar page says so plainly.
+            # The memory-bounded renderer's interpretation is provisional. Until
+            # settled, a page whose effective DPI is below the run target must not
+            # hide that reduction inside a nested renderer recipe: the sealed
+            # Exemplar page says so plainly.
             sealed["render_resolution"] = resolution
     members = submission_rows or [{**source, "ordinal": ordinal}]
     sealed["submission_rows"] = [

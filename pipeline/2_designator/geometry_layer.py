@@ -17,7 +17,7 @@ from typing import Any, Callable, Final, TypedDict
 # halves are one rule and a stage may not import another stage's uniquely named
 # module. The write half is this stage's -- the live structure pass retains
 # every response under it -- and the read half has no served caller since the
-# Attestatores' capture intake was removed (Tyrel, 2026-09-02). Both are
+# Attestatores' capture intake was removed. Both are
 # re-exported here so this module keeps naming them. The signatures did NOT
 # survive the move unchanged -- both now require the page identity, the write
 # returns a `{"response_ref", "custody_ref"}` pair, and the read takes that
@@ -312,7 +312,7 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     # and, for YOLO and Chandra, the detection's index within one response. A
     # retained record whose provenance means a different thing depending on which
     # adapter wrote it cannot be read honestly by anything downstream
-    # (GOVERNANCE 6; GLOSSARY's one concept per word), so the record now names
+    # (principle 6; GLOSSARY's one concept per word), so the record now names
     # its own unit.
     if record["observation_unit"] not in _OBSERVATION_UNITS:
         raise SchemaRefusal("raw proposal does not name what its observation ordinals count")
@@ -438,7 +438,7 @@ def _within_issued_tile(points: list[dict[str, int]], tile: dict[str, int], what
     tile-local one -- both are well-formed page geometry -- so a live adapter
     that forgot to add the tile origin would place every proposal in the wrong
     part of the page, silently, and every crop, coverage record, and traceback to
-    the ink would follow it there (GOALS 5).
+    the ink would follow it there (goal 4).
 
     It is also the precondition the overlapping tiling now depends on: two tiles
     that both see one detection collapse to one retained proposal only because
@@ -448,7 +448,7 @@ def _within_issued_tile(points: list[dict[str, int]], tile: dict[str, int], what
 
     A detector cannot see ink outside the tile it was handed, so geometry outside
     that tile is refused rather than trusted. The refusal is loud: the page fails
-    visibly rather than entering the record mislocated (GOVERNANCE 2). If a real
+    visibly rather than entering the record mislocated (principle 2). If a real
     detector is ever measured to overshoot its tile by a rounding pixel, the
     tolerance belongs here, measured -- not in a silently widened contract.
     """
@@ -856,13 +856,13 @@ def _derive_resolution(
     # decision travels with the code it governs): ANY occlusion on the page marks
     # EVERY proposal on that page "review", not only proposals whose AABB
     # geometrically intersects the occlusion polygon. This is deliberately
-    # over-broad. GOALS 1 ranks a missed act above a poorly read one; Governance 1
+    # over-broad. goal 2 ranks a missed act above a poorly read one; principle 9
     # treats extra review effort as an acceptable cost, never a reason to read
     # less carefully; and Architecture requires occlusions are "never silently
     # read past." A tight geometric filter would let an occlusion the resolver
     # itself misjudged (e.g. a coarse polygon, or ink actually extending past its
     # drawn edge) silently clear proposals it should have flagged. The page-wide
-    # flag is intentionally conservative, decided in the R2 audit (2026-08-16);
+    # flag is intentionally conservative;
     # a geometric-intersection narrowing is future work if the
     # review-queue cost is measured and found to matter, never a default.
     # The same question, asked of the other source. Two occlusion envelopes under
@@ -870,7 +870,7 @@ def _derive_resolution(
     # are, and left unchecked they are worse than untidy: `occlusion_ids` below
     # goes into EVERY partition row, so one occlusion counted twice tells a
     # reviewer that two separate obstructions bear on every proposal on the page.
-    # GOVERNANCE 10 -- the record may only claim what was actually measured.
+    # principle 8 -- the record may only claim what was actually measured.
     occlusion_ids = sorted(payload["occlusion_id"] for _envelope, payload in occlusions)
     if len(occlusion_ids) != len(set(occlusion_ids)):
         raise SchemaRefusal("resolver received duplicate occlusion identities")

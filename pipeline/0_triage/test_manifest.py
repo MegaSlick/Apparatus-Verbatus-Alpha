@@ -153,7 +153,7 @@ def test_every_field_round_trips_and_a_derivative_links_to_the_row():
         ("actor", {"kind": "model", "identity": "x", "revision": None}, "resolved model revision"),
         (
             "actor",
-            {"kind": "human", "identity": "Tyrel", "revision": "n/a"},
+            {"kind": "human", "identity": "operator", "revision": "n/a"},
             "human triage actor carries no revision",
         ),
     ],
@@ -168,7 +168,7 @@ def test_required_provenance_and_closed_values_are_refused(field, value, match):
     any branch of `_validate_actor`, and the row was still refused and the test was
     still green. What that would cost in practice is a triage row carrying a
     confidence nobody declared or a mode nobody declared, and those two fields
-    decide which frames go to human review. Found by CodeRabbit."""
+    decide which frames go to human review."""
     values = row()
     values[field] = value
     with pytest.raises(ContractError, match=match):
@@ -176,9 +176,9 @@ def test_required_provenance_and_closed_values_are_refused(field, value, match):
 
 
 def test_a_human_actor_is_recorded_without_inventing_a_revision():
-    # GOVERNANCE 6 binds a *model's* revision. A person has none, and the schema
+    # principle 6 binds a *model's* revision. A person has none, and the schema
     # says so with null rather than accepting a placeholder string.
-    human = row(actor={"kind": "human", "identity": "Tyrel", "revision": None})
+    human = row(actor={"kind": "human", "identity": "operator", "revision": None})
     assert validate_manifest(manifest([human]))
 
 
@@ -638,7 +638,7 @@ def test_contract_counts_are_bounded_before_their_work_can_amplify():
     # before it derives the digest and `_validate_split` guards it again afterwards,
     # and while both said the same words this assertion passed with the early guard
     # deleted — which is the guard that keeps the quadratic work off untrusted input
-    # in the first place. Found by CodeRabbit.
+    # in the first place.
     with pytest.raises(
         SchemaRefusal, match=f"{MAX_SPLIT_PARTS}-part limit before its row is serialized"
     ):
@@ -695,7 +695,7 @@ def test_scantailor_transcription_reads_every_part_of_its_geometry():
 
 
 def test_scantailor_actor_revision_is_the_project_version_not_the_callers_claim():
-    # GOVERNANCE 6: the record protects the past. A caller-supplied version would
+    # principle 6: the record protects the past. A caller-supplied version would
     # be an assertion about an artifact nobody read, and a caller-supplied kind
     # would let a transcribed row claim to be natively produced.
     transcribed = transcribe(
@@ -854,7 +854,7 @@ def test_the_row_vocabulary_still_covers_unit_20s_comparability_facts():
     # explicit non-condition allowlist (identity, geometry, provenance-of-row).
     # A new row field forces a decision here -- read it in the derivation, or
     # name it below as not describing the capture condition -- instead of two
-    # differently-captured rows quietly comparing equal (GOVERNANCE 10).
+    # differently-captured rows quietly comparing equal (principle 8).
     assert _manifest_module._ROW_FIELDS - set(TRIAGE_FACT_FIELDS) == {
         "corpus_id",
         "source_frame_sha256",

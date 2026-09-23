@@ -399,7 +399,7 @@ def _answer(acts, page_w: int = 200, page_h: int = 260, **fields: Any) -> Script
     `common.structure_answer.to_page_bounds` itself. This file used to carry a
     second private copy of that search (`_box`), which is exactly the drift the
     one shared builder exists to prevent -- two inverses of one converter,
-    either free to stop agreeing with it (CodeRabbit round 1, T4).
+    either free to stop agreeing with it.
     """
     return scripted_structure_answer(acts, page_w, page_h, **fields)
 
@@ -726,7 +726,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
 def test_the_attestatores_read_a_live_seal_under_their_own_fixture_rows(
     live_run, tmp_path, monkeypatch
 ):
-    """Every witness keeps its own pass (Tyrel, 2026-09-02).
+    """Every witness keeps its own pass.
 
     The Attestatores stage is untouched by this unit: it runs as the real
     program over a tree the live Designator produced, under the same catalogue
@@ -915,7 +915,7 @@ def test_a_page_whose_every_block_failed_to_place_is_tiled_and_says_so(
     """No rectangle proposed, so the page is covered by predetermined crops.
 
     The alternative would be holding it, which costs every act on the page
-    until a reviewer looks (GOALS 1: a missed act is worse than a poorly read
+    until a reviewer looks (goal 2: a missed act is worse than a poorly read
     one). What `fallback-tiles` claims is "no rectangle was proposed", and that
     is true here -- so the disposition is honest and the record carries the
     part it does not say: two blocks came back, both unplaceable, with their
@@ -963,7 +963,7 @@ def test_ink_the_answer_wrote_outside_every_block_is_counted_and_named(
     A model that answered one act as a top-level `<p>`, or wrote a line between
     two divs, produces words that reach no block, no page text and no span --
     and, without this, a page that parses clean, mints its other rectangles and
-    reports `findings == []`. GOALS 1 rates that worst and GOVERNANCE 2 forbids
+    reports `findings == []`. goal 2 rates that worst and principle 2 forbids
     it. The count travels, not the text: the words are in the retained bytes,
     and a Designator artifact publishes no reading of them.
     """
@@ -998,7 +998,7 @@ def test_ink_the_answer_wrote_outside_every_block_is_counted_and_named(
     assert finding["characters"] == len(stray.replace(" ", ""))
     assert stray not in json.dumps(payload)
     # The block that did place is unaffected: the finding names a gap, it does
-    # not repair one (GOVERNANCE 7).
+    # not repair one (principle 3).
     assert payload["act_count"] == 1
 
 
@@ -1026,7 +1026,7 @@ def _assert_page_two_held(root: Path, reason_code: str) -> None:
 
 
 def test_the_repetition_measure_separates_the_live_runs_looping_pages():
-    """The floor is set from the four real RecordGold pages of 2026-09-15.
+    """The floor is set from four real RecordGold pages from a live run.
 
     Two completed and two spent their whole context on one repeated fragment.
     The measured shares were 0.004 and 0.005 against 0.067 and 0.305, so the
@@ -1072,8 +1072,8 @@ def test_a_looping_answer_is_held_as_degenerate_not_as_a_cut_off():
     """A loop and a page too dense to finish want opposite repairs.
 
     Reporting the loop as a cut-off sends a reader to the token budget, which
-    is exactly where this failure was first chased on 2026-09-15 before the
-    retained responses showed `. J. J. J.` 5,376 times.
+    is the wrong place to look: the retained responses showed
+    `. J. J. J.` 5,376 times.
     """
     looped = ". J" * 4000
     dense = "".join(
@@ -1877,7 +1877,7 @@ def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refu
     # run's refusal, never that page's published outcome. Page 1 is a different
     # page's fact and keeps the answer it got -- it is published as it arrives,
     # so a call this run already paid for stays visible and a resume reuses it
-    # instead of asking again (GOVERNANCE 2, and the Designator's resume rule).
+    # instead of asking again (principle 2, and the Designator's resume rule).
     assert sorted(_by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))) == [1]
 
 
@@ -2328,7 +2328,7 @@ license_note = \"fixture identity only; no model weights or model license apply\
 
 
 def test_a_configured_secondary_proposer_is_refused_on_the_live_path(tmp_path, monkeypatch):
-    """Absent by ruling (2026-08-12); a live run writes no fixture receipt for one."""
+    """Absent by ruling; a live run writes no fixture receipt for one."""
     import tomllib
 
     config_root = tmp_path / "chair-config"
@@ -2739,7 +2739,7 @@ def test_two_regions_each_covering_half_one_rectangle_are_split_detection_not_mo
 
     `model_evidence_blocks` takes the single group covering at least half of a
     rectangle, and two of them is a tie it must not resolve — naming one would
-    be a picker (GOVERNANCE 3). It used to record the tie as `model-only`,
+    be a picker (principle 1). It used to record the tie as `model-only`,
     whose rationale says "no region the ink scan found covers half of this
     rectangle", which is the opposite of what happened: a reader of that record
     would conclude the scan found nothing there. `split-detection` says what is
@@ -2816,14 +2816,14 @@ def test_a_custody_refusal_holds_that_page_instead_of_aborting_the_run(
     issued for another chair, a blob whose file is gone, a response that is
     itself a binding record. Uncaught, that `SchemaRefusal` came out of
     `ask_page` as the whole stage's crash: one page's receipt would have
-    discarded every other page's answer, which is the lost act GOALS 1 puts
+    discarded every other page's answer, which is the lost act goal 2 puts
     above everything.
 
     Held, not repaired and not silently minted. The bytes themselves are not
     lost — the client retained them and the call record before custody was
     reached — so what the refusal costs is the binding that proves which call
     they came from, and a rectangle minted without it would be attributed to a
-    call nothing ties it to (GOVERNANCE 6). The record still publishes what the
+    call nothing ties it to (principle 6). The record still publishes what the
     body said, with `custody_problem` naming the refusal and both custody
     references null, so nothing about the failure is inferred from an absence.
     """

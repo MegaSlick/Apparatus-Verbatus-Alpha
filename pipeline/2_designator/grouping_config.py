@@ -26,10 +26,10 @@ them, rather than of a page, and never resolve to pixels at all. Putting a
 field in the wrong sub-table is refused by the closed schema rather than caught
 by a comment nobody reads.
 
-That block was called `surround` until 2026-09-06, when it stopped being only a
-surround test: `max_ink_bp` asks whether the value inferred as paper is a
+That block is no longer only a surround test, so it is no longer called
+`surround`: `max_ink_bp` asks whether the value inferred as paper is a
 background of its own page at all, on a page that has no surround and never
-reaches the geometric test. `ink_margin_bp` joined it the same day for the same
+reaches the geometric test. `ink_margin_bp` belongs beside it for the same
 reason: it derives each page's own ink threshold and has nothing to do with a
 surround either. A sub-table named for one of its four fields is the misnaming
 GLOSSARY's "one word per concept" refuses, so it is named for what it governs.
@@ -70,9 +70,9 @@ from geometry import (
     _validate_dimensions,
 )
 
-# `resolve_background_policy` is re-exported rather than defined here: it stopped
-# being this stage's own resolver on 2026-09-06, when the Ink Map and the
-# Recensor began inferring a page's paper value under the same sealed policy.
+# `resolve_background_policy` is re-exported rather than defined here: it is not
+# this stage's own resolver, since the Ink Map and the Recensor also infer a
+# page's paper value under the same sealed policy.
 # `run.py` and this stage's tests still call it as `grouping_config.resolve_
 # background_policy`, which is what the name here preserves.
 from common.background import (  # noqa: F401
@@ -109,8 +109,8 @@ _PAGE_FRACTION_BP_FIELDS: Final = (
 )
 
 # The one field of `[grouping.continuation]`. A fraction of the page's own
-# HEIGHT, like five of the six above, and it sat among them until 2026-09-06.
-# It moved for the reason `page_area_bp` has a table of its own: it now carries
+# HEIGHT, like five of the six above, but given a table of its own for the
+# same reason `page_area_bp` has one: it now carries
 # a provenance block measured on 44 real pages, and the block above it truthfully
 # says of everything left in it that its values are unmeasured conversions of
 # retired pixel constants against a 200x260 fixture. One block cannot say both.
@@ -230,7 +230,7 @@ def load_grouping_config(
         # `fallback_bands` is the one count that may not be zero: a grid of no
         # bands cuts nothing, and a page the structure pass found nothing on
         # would then reach the witnesses as no crop at all -- the exact loss
-        # Tyrel's 2026-08-11 ruling on predetermined crops exists to prevent.
+        # the predetermined-crops ruling exists to prevent.
         floor = 1 if name == "fallback_bands" else 0
         if not _is_plain_int(value) or value < floor:
             shape = "positive" if floor else "non-negative"
@@ -545,9 +545,9 @@ def _load_background(table: Any) -> dict[str, Any]:
     these. Two blocks say two true things; one would say a false one.
 
     **The four values themselves are checked by
-    `common.background.validate_background_table`, not here.** They stopped
-    being this stage's alone on 2026-09-06: the Ink Map and the Recensor's
-    residual-ink audit now infer a page's paper value through the same function
+    `common.background.validate_background_table`, not here.** They are not
+    this stage's alone: the Ink Map and the Recensor's
+    residual-ink audit also infer a page's paper value through the same function
     under the same policy, so a value one of the three would refuse has to be a
     value all three refuse, and one validator is the only way that stays true.
     What remains here is what is genuinely this file's: the forbidden-name
