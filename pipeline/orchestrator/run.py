@@ -444,7 +444,7 @@ def _record_stage_timing(
     depends on: refusing a completed stage because its timing could not be
     written would destroy work to protect a record of it. A failure says so on
     stderr -- which on a pod reaches the durable transcript -- rather than
-    passing in silence (hard rule 7).
+    passing in silence (principle 2).
 
     Rewritten whole on each append rather than appended to: the file is bounded
     by the number of stage invocations in a run, and a torn append is a journal

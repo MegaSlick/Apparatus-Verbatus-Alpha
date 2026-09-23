@@ -1855,7 +1855,7 @@ def _real_resealed_manifest(mutate):
 
     Nothing crossed a boundary to get here. This is a sibling helper in this
     same module, adapted within the repository, not code carried from the old
-    pipeline or from a third party -- the quarantine rule (CLAUDE.md) governs
+    pipeline or from a third party -- the quarantine rule (principle 12) governs
     that crossing and has nothing to say about this one.
     """
     projection = replace(_projection(), fixture_id=None, submission_id="a" * 64)

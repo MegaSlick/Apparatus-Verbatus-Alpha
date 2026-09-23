@@ -39,12 +39,12 @@ which.
 **What the third witness costs, said here because the floor depends on it.**
 A chair attached by `anchor-line` counts at this act only because ANOTHER
 chair's response located its text. That is placement, not selection — nothing
-compares the two readings or prefers one (principle 1, hard rule 8) — but it
+compares the two readings or prefers one (principle 1) — but it
 means "three witnesses" here is two independent readings and one dependent
 placement, and any later claim about witness independence has to say so.
 
-**A delivered offline e2e is not a proven pipeline** (principle 8, hard rule
-1). One scripted run over a synthetic fixture reaches `delivered`; nothing
+**A delivered offline e2e is not a proven pipeline** (principle 8). One
+scripted run over a synthetic fixture reaches `delivered`; nothing
 follows about a real page. A real register carries headers, folio numbers and
 marginalia no proposal covers, Churro will transcribe them, and that page will
 hold on content coverage — the rule working, not a regression.
@@ -1141,7 +1141,7 @@ def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_se
     these acts on the `anchor-line` basis instead. The two page witnesses'
     observations are asserted to differ in kind for exactly that reason: one
     chair's boxes are never attributed to another, and nothing selects among them
-    (principle 1, hard rule 8).
+    (principle 1).
 
     **What the third witness costs, said here because the floor depends on it.**
     Churro is attached AND comparable only because Chandra's response located
