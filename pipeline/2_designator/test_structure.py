@@ -338,10 +338,10 @@ def test_a_majority_ink_page_is_refused_rather_than_reconciling_to_zero_ink():
     nothing, and the page reconciles to zero ink and exits `complete` having
     marked out no acts at all.
 
-    Measured against the pre-fix implementation on exactly this page: background
-    inferred as 30, and **0 ink pixels found out of the 60 that are there.**
-    GOALS 1 -- a missed act is worse than a poorly read one -- and Tyrel's
-    2026-08-04 ruling 15, that blank is proved and never inferred.
+    An implementation that infers the background from the modal pixel reads
+    background as 30 here and finds **0 ink pixels out of the 60 that are there.**
+    Goal 2 -- a missed act is worse than a poorly read one -- requires that a
+    blank be proved and never inferred.
     """
 
     width, height = 10, 10
@@ -503,7 +503,7 @@ def test_secondary_scan_refuses_a_missing_gap_tolerance_keyword():
 #
 # `label_components` was replaced by a row-run union-find on measurement (383 s
 # and 2.17 GB for one 8.7-megapixel photographed page at the sealed
-# `gap_tolerance_px = 3`; `workbench/active/TIMING_REPORT_2026-09-05.md` §1b).
+# `gap_tolerance_px = 3`).
 # The claim the substitution rests on is that the two implementations return the
 # *same list*: same components, same bounds, same pixel counts, same order. That
 # claim is proved here on every page these tests can build, not asserted once.
@@ -715,11 +715,11 @@ def test_the_reference_labeller_is_reachable_and_refuses_the_same_way():
 
 # --- the dark surround: a photographed page is not a dark page ------------------
 #
-# Measured 2026-09-05: `infer_background` refused 7 of 7 real photographed
+# `infer_background` refused 7 of 7 real photographed
 # register pages on the majority-ink branch, because 18-26% of each frame is
 # black bezel and pure black is therefore the modal pixel. The live path cut all
 # seven into blind fallback slabs with `ink_measurable: false` and reconciled
-# none of their ink (`workbench/active/TIMING_REPORT_2026-09-05.md` §1a). These
+# none of their ink. These
 # tests build that shape and the shapes it must still refuse.
 
 
@@ -800,7 +800,7 @@ def test_a_photographed_page_infers_its_paper_instead_of_refusing():
     assert dark_distribution["border_dark_bp"] == 10000
     # The sampled dark population is retained, never removed: every one of
     # those pixels remains on the page and below the ink threshold, so the scan
-    # counts it. That is the safe direction (GOALS 1). The two counts state the
+    # counts it. That is the safe direction (goal 2). The two counts state the
     # border-band and page-wide populations at one level; this framed fixture
     # has a real frame, but the values do not prove that interpretation for an
     # arbitrary admitted page.
@@ -916,11 +916,11 @@ def test_an_ordinary_page_still_reports_the_modal_source_and_no_surround():
 
 # --- the ink margin the page derives for itself --------------------------------
 #
-# `PRIMARY_MARGIN` was the threshold the primary scan ran at until 2026-09-06.
+# `PRIMARY_MARGIN` was the threshold the primary scan used to run at.
 # On 127 real pages a fixed 20 grey levels below the paper *mode* landed inside
 # the paper *population* -- a photographed leaf's tones spread over dozens of
 # levels -- so between 28% and 66% of every real page counted as ink and the
-# number could not be read (`DESIGNATOR_SURVEY_2026-09-06.md` section 6). The
+# number could not be read. The
 # margin is now a sealed fraction of the distance between the page's own two
 # population modes, and `PRIMARY_MARGIN` is its floor.
 
@@ -1200,7 +1200,7 @@ def test_the_interior_dark_bound_actually_decides_the_outcome():
     measurement flips the answer, so it is not a decoration.
 
     There is one bound here now, not two. `min_border_dark_bp` sat beside it
-    until 2026-09-06 and is gone on measurement: over 127 real pages it refused
+    and is gone on measurement: over 127 real pages it refused
     52 of them, and it refused no control the interior bound does not
     (`pipeline/2_designator/HANDOFF.md`, the calibration tables).
     """
@@ -1229,7 +1229,7 @@ def test_a_paper_value_that_leaves_the_page_mostly_ink_is_refused_by_name():
     majority-ink question is never asked, 255 is taken as paper, and 71 to 85%
     of the page is counted as ink. `group_page` finds structure,
     `conservation.reconcile` balances exactly, residual is zero, and nothing in
-    the record marks it (`DESIGNATOR_SURVEY_2026-09-06.md` §5).
+    the record marks it.
 
     This page is that shape in miniature: a saturated frame at 255 around paper
     at 205, so the mode is 255, the modal branch takes it, and the threshold it
