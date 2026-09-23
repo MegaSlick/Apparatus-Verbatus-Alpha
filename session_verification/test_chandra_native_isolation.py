@@ -127,6 +127,7 @@ def test_sdk_wrapper_forces_timeout_and_retains_original_raw_response(tmp_path):
     class Parsed:
         model = "attestator-1-chandra"
         usage = SimpleNamespace(completion_tokens=3)
+        choices = [SimpleNamespace(message=SimpleNamespace(content="native"))]
 
     class RawResponse:
         content = b'{"choices":[{"message":{"content":"native"}}]}'

@@ -110,6 +110,16 @@ jobs:
           git -C "$RUNNER_TEMP/upstream-chandra" fetch --no-tags --depth=1 origin d4f7467435aa4137d9539f000ddf0b7ced3eb43f
           git -C "$RUNNER_TEMP/upstream-chandra" checkout --detach d4f7467435aa4137d9539f000ddf0b7ced3eb43f
           test "$(git -C "$RUNNER_TEMP/upstream-chandra" rev-parse HEAD)" = d4f7467435aa4137d9539f000ddf0b7ced3eb43f
+          printf '%s  %s\n' \
+            2c5cacab541fba6eac998e1058a66418fca907c7cce8c5765e7ba6a41e87c7d9 \
+            "$RUNNER_TEMP/upstream-chandra/uv.lock" | sha256sum --check --status
+      - name: Install only the hash-locked CPU dependencies needed to import the pinned caller
+        working-directory: application
+        shell: bash
+        run: |
+          uv pip install --python .venv/bin/python --no-deps --require-hashes \
+            --only-binary=:all: \
+            -r "$GITHUB_WORKSPACE/helper/session_verification/chandra_native_extra_requirements.txt"
       - name: Exercise native retries with synthetic pixels and fake responses only
         working-directory: application
         shell: bash

@@ -43,9 +43,17 @@ the native retry ladder after that single physical reading.
 Use `config/models-real.toml` for the cache and lifecycle commands. The helper
 expects an exact cold-pod checkout of upstream commit
 `d4f7467435aa4137d9539f000ddf0b7ced3eb43f`; fetch it only on the pod, outside
-Git, and install it in an isolated environment with no dependency resolution
-unless a pinned missing dependency is demonstrated. `serve-and-run` accepts
-no credentials and does not put image/request/response bytes in the repository.
+Git, and do not install the vendor package or its GPU dependency closure.
+`chandra_native_extra_requirements.txt` is the hash-locked import-only CPU
+subset demonstrated missing from the frozen application environment. Its three
+packages and wheel hashes come from that exact upstream commit's `uv.lock`;
+install it after the frozen application sync with `--no-deps --require-hashes`
+and `--only-binary=:all:` so an unhashed source archive cannot substitute.
+The application already supplies the locked `six` and `typing_extensions`
+dependencies. `ServingManager` still validates its configured exact runtime
+package pins, while the live setup records the complete installed distribution
+set as private research evidence. `serve-and-run` accepts no credentials and
+does not put image/request/response bytes in the repository.
 
 On the pod, the intended one-shot interface is:
 

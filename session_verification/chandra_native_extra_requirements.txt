@@ -1,0 +1,11 @@
+# Import-only CPU dependencies from datalab-to/chandra uv.lock at
+# d4f7467435aa4137d9539f000ddf0b7ced3eb43f (uv.lock SHA-256
+# 2c5cacab541fba6eac998e1058a66418fca907c7cce8c5765e7ba6a41e87c7d9).
+# Install with --no-deps --require-hashes --only-binary=:all: after the frozen
+# application sync.
+beautifulsoup4==4.14.2 \
+    --hash=sha256:5ef6fa3a8cbece8488d66985560f97ed091e22bbc4e9c2338508a9d5de6d4515
+markdownify==1.1.0 \
+    --hash=sha256:32a5a08e9af02c8a6528942224c91b933b4bd2c7d078f9012943776fc313eeef
+soupsieve==2.8 \
+    --hash=sha256:0cc76456a30e20f5d7f2e14a98a4ae2ee4e5abdc7c5ea0aafe795f344bc7984c
