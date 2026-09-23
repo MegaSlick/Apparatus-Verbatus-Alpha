@@ -1,6 +1,6 @@
 """Chandra's page-witness adapter, running the vendor's own system.
 
-Tonight's ruling (Tyrel, 2026-09-06) is that each witness runs as its
+The ruling is that each witness runs as its
 developers intended: the vendor's preprocessing, prompt bytes, message shape,
 generation values and output grammar are adopted verbatim and pinned by digest,
 and the vendor's harness is not. This module is where that ruling reaches the
@@ -147,7 +147,7 @@ def prompt() -> dict[str, str]:
 def vendor_identity() -> dict[str, Any]:
     """Which vendor pin the prompt bytes beside a reading were taken from.
 
-    GOVERNANCE 6 already puts the model's resolved identity on every stored
+    principle 6 already puts the model's resolved identity on every stored
     reading. This is the other half once the chair runs the vendor's own
     system: the prompt is the vendor's, taken at one commit, and a later
     re-parse under a different pin produces a different reading of the same
@@ -190,7 +190,7 @@ def parse(raw_response: bytes) -> Any:
     already handles one page witness handles this one. Nothing here repairs,
     reorders or defaults an answer -- a block whose geometry could not be
     resolved is still a block, and the fact is a finding on the capture beside
-    the retained bytes rather than a substituted rectangle (GOVERNANCE 2).
+    the retained bytes rather than a substituted rectangle (principle 2).
     """
 
     parsed = parse_layout(raw_response)
@@ -202,7 +202,7 @@ def parse(raw_response: bytes) -> Any:
 def declares_fixture_placeholder(raw_response: Any) -> bool:
     """Whether these bytes are the committed fixture's own JSON placeholder.
 
-    A shape question, not a choice among readings (hard rule 8): the placeholder
+    A shape question, not a choice among readings (principle 1): the placeholder
     declares `FIXTURE_RESPONSE_SCHEMA` in a top-level JSON object, and the
     vendor grammar is HTML with no schema member anywhere in it, so no body can
     be both. Used by `observe`, which is handed bytes without being told which
@@ -226,7 +226,7 @@ def parse_fixture_placeholder(raw_response: bytes) -> Any:
     re-declares those rows in the vendor grammar. A *served* chair is never
     retained under this parser at all -- `feeding.retain_model_view` refuses the
     pair -- so a live answer in this shape lands as a named surprise rather than
-    as a reading whose shape nobody verified against anything (GOVERNANCE 10).
+    as a reading whose shape nobody verified against anything (principle 8).
     """
 
     decoded, problem = _decode(raw_response)
@@ -269,7 +269,7 @@ def retain(
     response as `churro.v1`. The retained record would then name the wrong
     model boundary, and read-back would hand a Chandra page's layout blocks to
     Churro's XML parser as an unparseable capture -- the sealed roster no longer
-    binding this chair's provenance (GOVERNANCE 6). Churro's and DAI's wrappers
+    binding this chair's provenance (principle 6). Churro's and DAI's wrappers
     pin their names for the same reason; this one now does too, and accepts no
     `adapter` argument to pin.
     """
@@ -367,7 +367,7 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         # crop cannot arrive in, and a bare `ValueError` out of an adapter is
         # the thing the bounds check above already exists to prevent: a caller
         # that could have held this attempt with a reason gets an unnamed
-        # interpreter error instead (GOVERNANCE 2).
+        # interpreter error instead (principle 2).
         raise SchemaRefusal(
             f"Chandra's presented page cannot be converted to RGB, which the vendor's own "
             f"loader performs on every image before scale_to_fit sees it: {error}"

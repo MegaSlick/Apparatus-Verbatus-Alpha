@@ -824,9 +824,8 @@ def test_a_withheld_component_is_returned_rather_than_dropped():
 def test_a_page_of_nothing_but_bezel_groups_to_nothing_so_the_fallback_grid_fires():
     """The guaranteed fallback grid is re-armed by this bound.
 
-    `SPEC_FINDINGS.md` 2026-09-06 item 4 recorded that on real pages
-    `group_page` returned bezel-welded groups, so the page read as `detected`
-    and the four-band grid Tyrel ruled for on 2026-08-11 never ran. A page whose
+    On real pages `group_page` used to return bezel-welded groups, so the page
+    read as `detected` and the four-band fallback grid never ran. A page whose
     only component spans it now returns no groups at all, which is the condition
     `run.py` reads as `fallback-tiles`.
 
@@ -852,7 +851,7 @@ def test_a_page_of_nothing_but_bezel_groups_to_nothing_so_the_fallback_grid_fire
 
 
 def test_the_partition_is_invariant_under_input_order():
-    """GOVERNANCE 3: a partition, never an election.
+    """Principle 1: a partition, never an election.
 
     Each component is measured against the page it sits on, independently of
     every other, so no presentation order can change which side it lands on.

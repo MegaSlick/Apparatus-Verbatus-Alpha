@@ -1,6 +1,6 @@
 """Structural checks and decoder-backed raster helpers for the door.
 
-Spec 03's ruling (settled 2026-08-04, item 5): the door uses a real decoder where
+Spec 03's ruling: the door uses a real decoder where
 decoding is the point. Pillow supplies ordinary raster support, while the structural
 walkers below keep catching malformed common containers before a later stage could
 mistake them for a page. A decoder gap is an alarm about this pipeline, never a
@@ -231,7 +231,7 @@ _PNG_VALID_BIT_DEPTHS: Final = {
 }
 # Adam7: (x offset, y offset, x step, y step) per pass. Interlaced PNGs are
 # *accounted for* rather than refused — the per-pass stride arithmetic is exact,
-# and a refused page is a page nobody reads (GOALS 1).
+# and a refused page is a page nobody reads (goal 2).
 _ADAM7: Final = (
     (0, 0, 8, 8),
     (4, 0, 8, 8),
@@ -917,7 +917,7 @@ def validate_tiff(data: bytes) -> ImageGeometry:
             # recognise rather than reject the file. Refusing the whole image over an
             # unknown type in a tag this validator never reads would refuse a
             # conforming file for a field nobody here touches — a page nobody reads,
-            # GOALS 1. A tag we *do* interpret is a different matter: an unreadable
+            # goal 2. A tag we *do* interpret is a different matter: an unreadable
             # value there is a check that cannot run, which is a failure.
             if interpreted:
                 raise corrupt(
@@ -1190,7 +1190,7 @@ def _decoder_only(detail: str, *, format_name: str | None = None):
     `FormatRefusal` subclasses `ValueError`, so it is re-raised explicitly ahead of
     the broad clause. Without that, a `corrupt` verdict raised by this module came
     back out relabelled `unsupported`, with the real reason buried in a
-    parenthesis — two different sentences to write to Tyrel (ruling 2), collapsed
+    parenthesis — two different sentences to tell the operator, collapsed
     into the wrong one.
     """
     try:
@@ -1352,10 +1352,10 @@ def has_reader(format_name: str) -> bool:
 def missing_reader_detail(format_name: str) -> str:
     """Why a sniffed format did not decode, worded as whose defect it is.
 
-    Ruling 2: "If things are failing the image got corrupted … or the pipeline is
-    broken." Those are different sentences to write to Tyrel, and which one is true
+    Either "the image got corrupted" or "the pipeline is broken" -- those are
+    different sentences to tell the operator, and which one is true
     is knowable: if nothing installed here reads that format at all, this project
-    owes him a reader and says so; if a reader exists and still could not open the
+    owes them a reader and says so; if a reader exists and still could not open the
     file, that is about these bytes. Lane B worded the first case correctly and had
     no way to reach the second; Lane A could reach both and worded them alike.
     """

@@ -186,8 +186,8 @@ def test_a_single_page_tiff_is_admitted_as_one_image_and_never_re_encoded():
     """The common TIFF is one image, and its own bytes are what gets sealed.
 
     Lane B's finding, kept: a PDF is *always* a container, but a TIFF usually is
-    not, and nothing in Tyrel's ruling asks for an ordinary flatbed scan to be
-    decoded and re-encoded on its way in. `inspect_source` decides it here, which
+    not, and an ordinary flatbed scan should not be decoded and re-encoded on
+    its way in. `inspect_source` decides it here, which
     is what makes the sealed bytes the submitted bytes.
     """
     data = tiff(4, 5)
@@ -277,8 +277,9 @@ def test_every_refusal_reason_in_the_closed_set_is_exercised():
 
 def test_the_two_refusal_voices_stay_apart():
     """Damaged bytes and an honest variant this door cannot read are different facts
-    and different decisions for Tyrel. Collapsing them would tell him a photograph
-    was corrupt when the truth is that we cannot read that flavour of it yet."""
+    and different decisions for the operator. Collapsing them would tell them a
+    photograph was corrupt when the truth is that we cannot read that flavour of
+    it yet."""
     corrupt = inspect_source(png()[:-4], declared_sha256=None, policy=POLICY)
     unsupported = inspect_source(_oversized_png(), declared_sha256=None, policy=POLICY)
     assert reason_code(corrupt.reason) is RefusalReason.CORRUPT

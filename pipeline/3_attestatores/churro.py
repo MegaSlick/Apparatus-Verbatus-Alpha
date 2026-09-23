@@ -1,6 +1,6 @@
 """Churro's page-witness adapter, running the vendor's own system.
 
-Tonight's ruling (Tyrel, 2026-09-06) is that each witness runs as its
+The ruling is that each witness runs as its
 developers intended: the vendor's preprocessing, prompt bytes, message shape,
 generation values and output grammar are adopted verbatim and pinned by digest,
 and the vendor's harness is not. This module is where that ruling reaches the
@@ -61,7 +61,7 @@ to solve is solved where it belongs -- the Perlector admits the existing
 built, with its two entries replaced by the two strings a vendor artifact
 actually sent: the registry's answer at tag `v0.3.0`, and the paper-era
 benchmark harness's own `SYSTEM_MESSAGE` with its two spelling errors intact.
-Nothing here selects among readings (hard rule 8): it selects the wording of a
+Nothing here selects among readings (principle 1): it selects the wording of a
 question before the page is read, and the name is written onto the Testimonium
 the reading produces so an A/B compares on a recorded fact rather than on a
 digest of two prompts.
@@ -160,7 +160,7 @@ if DEFAULT_FRAMING not in FRAMINGS:  # pragma: no cover - import-time guard
 def resolve_framing(framing: Any = None) -> str:
     """One declared framing name, exactly, or a refusal listing the declared set.
 
-    **Not a picker** (hard rule 8). It selects the wording of a question before
+    **Not a picker** (principle 1). It selects the wording of a question before
     the page is read; nothing here chooses among readings, ranks them, or looks
     at a response. The name it returns is written onto the Testimonium the
     reading produces, so which question was asked is a recorded fact rather
@@ -194,7 +194,7 @@ def prompt(framing: Any = None) -> dict[str, str]:
 def vendor_identity(system_prompt: Any) -> dict[str, Any] | None:
     """Which vendor pin the prompt bytes beside a reading were taken from.
 
-    GOVERNANCE 6 already puts the model's resolved identity on every stored
+    principle 6 already puts the model's resolved identity on every stored
     reading. This is the other half once the chair runs the vendor's own
     system: the prompt is the vendor's, taken at one commit, and a later
     re-parse under a different pin produces a different reading of the same
@@ -235,7 +235,7 @@ def parse(raw_response: bytes, *, system_prompt: str | None = None) -> Any:
     text the paper-era harness itself expected, and the retired `<output>`
     envelope kept so retained history still reads -- and each of the last two
     carries a finding on the capture beside these bytes rather than passing
-    silently (GOVERNANCE 2).
+    silently (principle 2).
 
     `system_prompt` is the exact string this request sent, and only that string
     is ever trimmed from the head of the response
@@ -273,7 +273,7 @@ def retain(
     Accepts no ``adapter`` argument to pin: forwarding one would let code that
     had resolved ``churro.v1`` file this response under another chair's model
     boundary, and the retained record would then name the wrong one
-    (GOVERNANCE 6). Chandra's and DAI's wrappers pin their names the same way.
+    (principle 6). Chandra's and DAI's wrappers pin their names the same way.
     """
     return feeding.retain_model_view(
         tree,
@@ -348,7 +348,7 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         # cannot arrive in, and a bare `ValueError` out of an adapter is the
         # thing the bounds check above is already written to prevent: a caller
         # that could have held this attempt with a reason gets an unnamed
-        # interpreter error instead (GOVERNANCE 2).
+        # interpreter error instead (principle 2).
         raise SchemaRefusal(
             f"Churro's presented page cannot be converted to RGB, which is half of the vendor's "
             f"own prepare_ocr_image and cannot be recorded as having run: {error}"

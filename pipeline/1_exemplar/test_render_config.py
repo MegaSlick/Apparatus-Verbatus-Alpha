@@ -29,7 +29,7 @@ def _exemplar_module():
 
 
 def test_the_shipped_default_is_documented_run_configuration():
-    """300 since 2026-08-05. The value is a decision, not an accident, so it is
+    """300 is a decision, not an accident, so it is
     asserted here — and `config/pdf_render.toml` carries the measurement it came
     from. A change to one without the other should fail."""
     settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
@@ -291,8 +291,7 @@ def test_a_render_policy_rewritten_while_the_door_binds_cannot_split_the_run(tmp
     `run_config_bindings` open it a second time for the digest. A rewrite landing
     between those reads produced a run that exited 0 while `run.json` recorded one
     target DPI and its `config_digest` bound the bytes of another — a proof run
-    claiming a configuration it did not execute (audit S6, reproduced at a
-    one-DPI edit).
+    claiming a configuration it did not execute, reproduced at a one-DPI edit.
 
     The rewrite here lands at exactly that instant: the moment the one read
     returns. There is no second read for it to reach, so the run records the

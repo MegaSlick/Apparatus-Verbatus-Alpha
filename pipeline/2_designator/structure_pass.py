@@ -28,7 +28,7 @@ engine already does with it, measured by the component that holds the
 tokenizer. So on every row this catalogue ships, where 12,384 is far above what
 the row leaves, nothing is sent and nothing changes; a shorter row would carry
 Chandra's own bound. A `"length"` stop still honestly means the answer did not
-fit, and the page is held on it rather than read short (GOALS 1: a truncated
+fit, and the page is held on it rather than read short (goal 2: a truncated
 act list is a missed act).
 
 **What comes back** is Chandra's layout HTML, read by
@@ -46,28 +46,28 @@ page's corner under a chair's provenance (`chandra_layout.py`'s Departures).
 The `content-outside-blocks` finding is carried onto the record for the reason
 that module raises it: character data outside every block is in no proposal and
 in no span, and a page that parsed clean without it would be a missed act under
-a successful status (GOALS 1, GOVERNANCE 2).
+a successful status (goal 2, principle 2).
 
 **What each answer does to the page** is the closed table in SPEC_D §1.4,
 implemented by `ask_page`: a parsed, complete answer with at least one proposal
 marks the page `scanned`/`detected`; a parsed, complete answer that proposes
 nothing marks it `scanned`/`fallback-tiles` and the page is cut into its
-predetermined crops (Tyrel, 2026-08-11); a cut-off, an unparseable answer, an
+predetermined crops; a cut-off, an unparseable answer, an
 unusable call, or a parsed answer whose rectangles touch none of the ink the
 scan itself found holds the page under a name from `STRUCTURE_HELD_CODES`. A
 transport or serving refusal is fatal, with nothing published for the page.
-Nothing is repaired, retried, or re-asked (GOVERNANCE 7).
+Nothing is repaired, retried, or re-asked (principle 3).
 
 **A page whose blocks all failed to place is tiled, not held**, and the
 difference from a page the chair answered `Blank-Page` is in the record rather
 than in the disposition: `block_count`, `blocks_without_proposal` and the
 findings say which happened. Tiling keeps the page covered by predetermined
-crops, which is what GOALS 1 asks for; holding it would cost every act on it
+crops, which is what goal 2 asks for; holding it would cost every act on it
 until a reviewer looked. The claim `fallback-tiles` makes is "no rectangle was
 proposed", and that claim is true in both cases.
 
 **Decoding.** The pass runs under `config/decoding.toml`'s `[structure]`
-section and never under `reading_of_record` (Tyrel, 2026-09-02): the
+section and never under `reading_of_record`: the
 Attestatores keep the fixed posture; this pass may vary, sealed and recorded.
 The value is read from the bytes the run sealed, rechecked by digest, and
 recorded on every page's structure-answer record and sent verbatim by the live
@@ -157,7 +157,7 @@ HELD_NO_INK_OVERLAP: Final = "structure-answer-no-ink-overlap"
 # (`common/chandra_custody.py`). Nothing is minted from an answer whose bytes
 # no binding proves came from this call: `_verify_proposal_act_row` and every
 # later reader are entitled to that binding, and a page minted without it would
-# be a rectangle attributed to a call nothing ties it to (GOVERNANCE 6).
+# be a rectangle attributed to a call nothing ties it to (principle 6).
 HELD_RESPONSE_NOT_RETAINED: Final = "structure-response-not-retained"
 # The request does not fit the sealed serving row this chair runs under: the
 # page's own image tokens, plus this prompt, plus a real answer, exceed the
@@ -165,7 +165,7 @@ HELD_RESPONSE_NOT_RETAINED: Final = "structure-response-not-retained"
 # goes on the wire, because the engine's answer to such a request is HTTP 400
 # and no reading at all.  A hold rather than a run refusal for the same reason
 # every other code here is one: another page may be smaller, and abandoning the
-# run would cost every page that fits (GOALS 1).  The page is *never* silently
+# run would cost every page that fits (goal 2).  The page is *never* silently
 # downscaled to make it fit -- 300 dpi is what `config/pdf_render.toml` argues
 # is needed to read the ink, and trading a measurable refusal for an
 # unmeasurable misreading is not this pass's decision to make.
@@ -174,8 +174,8 @@ HELD_REQUEST_TOO_LARGE: Final = "structure-request-too-large"
 # and over. That is a degenerate generation, not a page too dense to describe,
 # and the two want opposite repairs -- sampling that can leave a loop, against
 # room to finish an answer. Named apart from `HELD_CUT_OFF` because reporting a
-# loop as a cut-off sends a reader to the token budget, which is where this
-# failure was first (wrongly) chased on 2026-09-15.
+# loop as a cut-off sends a reader to the token budget, which is the wrong
+# place to look for this failure.
 HELD_DEGENERATE: Final = "structure-answer-degenerate"
 STRUCTURE_HELD_CODES: Final = frozenset(
     {
@@ -205,7 +205,7 @@ DISPOSITION_HELD: Final = "held"
 # fixture act is declared ground truth and a merged ink group under two of them
 # is a refusal; here the chair is the proposer and the scan is corroboration,
 # so the same fact is recorded rather than refused -- and recorded as *not*
-# independent corroboration (GOVERNANCE 10), never as `detected`.
+# independent corroboration (principle 8), never as `detected`.
 EVIDENCE_SHARED_DETECTION: Final = "shared-detection"
 EVIDENCE_SPLIT_DETECTION: Final = "split-detection"
 EVIDENCE_MODEL_ONLY: Final = "model-only"
@@ -214,7 +214,7 @@ EVIDENCE_MODEL_ONLY: Final = "model-only"
 # vocabulary rather than a sentence, for the reason every other structural field
 # here is one: a consumer must be able to count the three cases apart without
 # parsing prose, and a block that fell out of the mint for a reason nobody named
-# is exactly the silent loss GOVERNANCE 2 forbids. The three are disjoint and
+# is exactly the silent loss principle 2 forbids. The three are disjoint and
 # ordered -- `blank-page` is decided first, because a `Blank-Page` block carries
 # no page geometry however well-formed its own `data-bbox` was
 # (`chandra_layout.block_page_bounds`), and a block that is both blank and
@@ -396,7 +396,7 @@ def live_chair_record(
     Built from the client's real serving receipt, never from
     `run.py::_configured_chair_record`, whose receipt is a declared
     `fixture://` value over a chair nothing called -- on a path that did call
-    the chair that would be a fabricated serving moment (GOVERNANCE 6). Checked
+    the chair that would be a fabricated serving moment (principle 6). Checked
     through `validate_serving_provenance` at construction, so the record the
     consumer will hold every structural row to is one this stage already
     proved against the registry, the sealed recipe, the sealed decoding digest
@@ -424,7 +424,7 @@ def live_chair_record(
 def retain_chair_bytes(context: Any, data: bytes) -> dict[str, str]:
     """Store one chair response or call record under its own digest.
 
-    The client retains before it parses (GOVERNANCE 2). Guarded after the seal
+    The client retains before it parses (principle 2). Guarded after the seal
     for the reason `StageContext._write_serving_blob` is: this writes into the
     stage's own blob directory, whose inventory the completion seal witnessed.
     """
@@ -764,7 +764,7 @@ def blocks_to_proposals(
     `data-bbox` was absent or malformed. That `None` is the whole selection rule
     here, and it is the grammar's, not this pass's: nothing in this function
     decides which blocks are worth minting, only which ones carry a rectangle at
-    all (hard rule 8, GOVERNANCE 3).
+    all (principle 1).
 
     Both halves come back, because a block that proposed nothing is still
     something the chair returned. The second list is the record's
@@ -900,7 +900,7 @@ def dedupe_rectangles(
     (`common/contracts/identities.py::act_bindings`), so two identical
     rectangles on one page are one crop. The first is minted; every later one
     is a `duplicate-rectangle` finding naming both ordinals, and its text stays
-    in the retained blob. Not a refusal: GOVERNANCE 7, and a refusal here would
+    in the retained blob. Not a refusal: principle 3, and a refusal here would
     lose every other act on the page over one the chair drew twice.
     """
     unique: list[_Rectangle] = []
@@ -1015,10 +1015,9 @@ def touches_ink(rectangle: Mapping[str, int], analysis: Mapping[str, Any]) -> bo
 
 # The share of an answer's overlapping 12-character fragments that may be the
 # single most repeated one before the answer is read as a loop rather than as a
-# page. Measured over the four real RecordGold pages of the 2026-09-15 live run
-# (`workbench/active/RUNPOD_FUTURE_FIXES_2026-09-15.md`): the two pages that
-# completed scored 0.003 and 0.004, and the two that looped scored 0.061 (`de
-# l'Église,` 1,664 times) and 0.292 (`. J. J. J. J` 5,376 times). The floor sits
+# page. Measured over four real RecordGold pages from a live run: the two
+# pages that completed scored 0.003 and 0.004, and the two that looped scored
+# 0.061 (`de l'Église,` 1,664 times) and 0.292 (`. J. J. J. J` 5,376 times). The floor sits
 # an order of magnitude above the healthy pair and an order below the looping
 # one, because these registers really do repeat their formulae and a page of
 # genuine repeated phrasing must not be called degenerate.
@@ -1027,7 +1026,7 @@ _REPETITION_WINDOW: Final = 12
 # Answers shorter than this many overlapping windows score zero rather than
 # being judged. A count of windows, named rather than derived from the window
 # length, which is a different quantity and read as a mistake when the two were
-# multiplied (CodeRabbit on this branch). The value stays deliberately
+# multiplied. The value stays deliberately
 # conservative: the only answers this measure is asked about are cut-off ones,
 # which spent a whole context and run to five figures of characters, so the
 # floor excludes nothing real and refuses to call a fragment repeated twice in
@@ -1276,7 +1275,7 @@ def sealed_page_answer(record: Mapping[str, Any]) -> PageAnswer:
     move when the chair is started again, so a resumed pass that asked the
     chair a second time would build different bytes under an artifact identity
     the store has already fixed, and the run would die on `IncompatibleReuse`
-    one page into the resume (GOVERNANCE 4: evidence is never overwritten).
+    one page into the resume (principle 4: evidence is never overwritten).
 
     Reading the record back instead is what makes the rest of the pass
     idempotent: a page rebuilt from its sealed record republishes
@@ -1467,11 +1466,11 @@ def ask_page(
         ) from error
     # A custody refusal holds this page; it does not abort the run. The bytes
     # are not lost either way -- the client retained them and the call record
-    # before this line was reached (GOVERNANCE 2, ARCHITECTURE invariant 4) --
+    # before this line was reached (principle 2, ARCHITECTURE invariant 4) --
     # so what a refusal here costs is the binding that proves *which call* they
     # came from, and that costs exactly this page. Aborting instead would
     # discard every other page's answer over one page's receipt, which is the
-    # "lost act" GOALS 1 puts above everything.
+    # "lost act" goal 2 puts above everything.
     custody: dict[str, Any] | None = None
     custody_problem: str | None = None
     try:
@@ -1502,7 +1501,7 @@ def ask_page(
     # The grammar's own findings are carried onto every page it read, whatever
     # the page's disposition turns out to be: a held page's `content-outside-
     # blocks` or `malformed-bbox` is exactly as much a fact as a scanned page's,
-    # and losing it because the page was held is the loss GOVERNANCE 2 forbids.
+    # and losing it because the page was held is the loss principle 2 forbids.
     findings: list[dict[str, Any]] = (
         [] if parsed is None else [_designator_finding(f) for f in parsed["findings"]]
     )
@@ -1576,7 +1575,7 @@ def ask_page(
         # ours, not the vendor's (`chandra_layout`'s docstring states it in
         # full), so the record has to say which one produced its numbers.
         "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
-        # The other half of GOVERNANCE 6's provenance, added by tonight's
+        # The other half of principle 6's provenance, added by tonight's
         # ruling: the serving block below names the model that answered, and
         # this names the vendor code whose prompt bytes were sent and whose
         # grammar was read. A re-parse under a different vendor pin is then
@@ -1617,7 +1616,7 @@ def ask_page(
         "page_text_rule": structure_answer.PAGE_TEXT_RULE,
         # The posture this call actually ran under, per call: the sealed
         # section by name, the value read from the sealed bytes, and the digest
-        # of those bytes (Tyrel, 2026-09-02: sealed and recorded per run).
+        # of those bytes, sealed and recorded per run.
         "decoding": {
             "policy": STRUCTURE_DECODING_POLICY,
             "temperature": temperature,
@@ -1687,7 +1686,7 @@ def model_evidence_blocks(
     detect the boundary between them. On the fixture path the same fact is a
     refusal (`run.py::_claim_structural_group`), because there the declared
     rectangles are ground truth; here the chair is the proposer and the scan is
-    corroboration, so it is recorded (GOVERNANCE 10) and decides nothing.
+    corroboration, so it is recorded (principle 8) and decides nothing.
     `model-only` is a rectangle no group covers half of: null bounds, zero
     counts, the rectangle standing on the proposal alone. A page whose scan
     found nothing (predetermined grid as its groups) corroborates nothing, so
@@ -1699,10 +1698,10 @@ def model_evidence_blocks(
     cover at least half of *one* rectangle, so the chair drew one act where the
     scan found several. It carries null bounds and zero counts like
     `model-only`, because no single region is the corroborating one and picking
-    the largest would be a picker (GOVERNANCE 3), but it is a different fact
+    the largest would be a picker (principle 1), but it is a different fact
     from "nothing covers this" and reading it as `model-only` would report a
     scan that found nothing where the scan in fact found too much
-    (GOVERNANCE 10).
+    (principle 8).
     """
     if analysis["structure_evidence"] != DISPOSITION_DETECTED:
         return [_model_only_block() for _ in proposals]
@@ -1754,8 +1753,8 @@ def _uncorroborated_block(evidence: str, rationale: str) -> dict[str, Any]:
 
     Null bounds and zero counts, because reporting a region here -- either of
     the two in a split, or a computed union of them -- would be a claim about
-    something nothing measured (GOVERNANCE 10) and, in the split case, a choice
-    between them (GOVERNANCE 3).
+    something nothing measured (principle 8) and, in the split case, a choice
+    between them (principle 1).
     """
     return {
         "structure_evidence": evidence,

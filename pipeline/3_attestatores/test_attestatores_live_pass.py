@@ -1261,7 +1261,7 @@ def test_a_request_the_sealed_row_cannot_hold_costs_that_attempt_and_not_the_pas
     and `main` caught it: one oversized page killed the stage and every other
     page's testimony went with it, while the Designator held the single page
     and published the rest (`structure-request-too-large`). A missed act is
-    worse than a poorly read one (GOALS 1), so the refusal is now this attempt's
+    worse than a poorly read one (goal 2), so the refusal is now this attempt's
     own failure and the pass carries on.
 
     Both scopes at once: DAI is act-scoped and Churro page-scoped, their rows
@@ -1505,7 +1505,7 @@ def test_a_prompt_too_long_400_at_the_page_unit_still_stops_the_stage(live_run, 
     tree = RunTree(run_root, RUN_ID)
     # The engine's own diagnostic is on disk before the stage stopped, by its
     # own digest, which is the artefact a rented card would have been paying
-    # for (GOVERNANCE 2).
+    # for (principle 2).
     assert _RunTreeBlobs(SimpleNamespace(tree=tree)).has(hashlib.sha256(refusal.body).hexdigest())
     # No page Testimonium for the page it refused: nothing was published about
     # a response this stage would not read.
@@ -1576,7 +1576,7 @@ def test_the_engine_stop_word_decides_the_truncation_a_live_record_publishes(
 def test_a_served_chandra_publishes_a_real_page_testimonium_with_its_own_geometry(
     live_run, tmp_path
 ):
-    """Attestator 1 is a served Chandra witness like the others (Tyrel, 2026-09-02).
+    """Attestator 1 is a served Chandra witness like the others.
 
     Its page response parses under the vendor's own layout grammar, so the page
     record is a reading whose text is the block texts joined and whose observed
@@ -1665,7 +1665,7 @@ def test_a_chandra_body_in_neither_declared_shape_is_retained_and_refused_by_nam
     assert "no-layout-blocks" in payload["reason"]
     assert payload["content_health"]["recordable"] is False
     # The bytes are retained and the request is accounted for even though no
-    # parser could read them -- GOVERNANCE 2.
+    # parser could read them -- principle 2.
     assert (
         tree.read_bytes(payload["raw_response_ref"]["relative_path"]).decode()
         == CHANDRA_UNRECOGNIZED_BODY
@@ -1758,7 +1758,7 @@ def test_a_resumed_churro_page_republishes_exactly_what_the_interrupted_pass_sea
     adapter's name. Churro answers `False` there, because
     `HistoricalDocument` publishes no coordinates, so its page is rebuilt from
     the presentation echo, which is exactly what the interrupted pass sealed.
-    GOVERNANCE 4: the republished record has to be the record that was sealed,
+    principle 4: the republished record has to be the record that was sealed,
     not a different reading of the same bytes.
 
     The resume runs against a `refusing_factory`: a live chair cannot reproduce
@@ -1787,7 +1787,7 @@ def test_a_resumed_churro_page_republishes_exactly_what_the_interrupted_pass_sea
 
 
 def test_an_engine_stop_word_this_pipeline_cannot_read_is_refused_not_defaulted(live_run, tmp_path):
-    """GOVERNANCE 10: an unmeasured boundary is never recorded as a measured one."""
+    """Principle 8: an unmeasured boundary is never recorded as a measured one."""
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
     scripts["attestator_1"] = [ScriptedAnswer(content=CHANDRA_BODY, finish_reason="abort")]
@@ -1861,7 +1861,7 @@ def test_a_live_reread_is_refused_by_name(live_run, tmp_path):
 def test_the_pass_names_the_fixture_witness_rows_its_posture_does_not_read(
     live_run, tmp_path, capsys
 ):
-    """Ignoring a declaration silently is the loss GOVERNANCE 2 refuses."""
+    """Ignoring a declaration silently is the loss principle 2 refuses."""
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
@@ -2154,7 +2154,7 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
     decimal text the wire carries, which this test checks against the bytes the
     endpoint actually received rather than against the client's own values --
     a request recorded as something other than what was sent has no provenance
-    (GOVERNANCE 6), and rounding it would be the silent version of the same
+    (principle 6), and rounding it would be the silent version of the same
     problem.
     """
     identity = ChairIdentity(
@@ -2609,7 +2609,7 @@ def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payloa
     The blob is still read and digest-checked either way: the retained response
     has to be present and still itself before this record may stand in for a
     chair answer at all. Only whether it is offered as geometry depends on the
-    branch (GOVERNANCE 10 -- geometry from bytes nobody parsed is a measurement
+    branch (principle 8 -- geometry from bytes nobody parsed is a measurement
     nobody made).
     """
     run_root = fresh_tree(live_run, tmp_path)
@@ -2716,7 +2716,7 @@ def test_an_unparsed_resumed_record_still_reads_and_digest_checks_its_retained_b
     would then stand a retained response in for a chair answer without ever
     establishing that the response is still on disk and still itself, which is
     the whole reason the record may be reused instead of re-asked
-    (GOVERNANCE 4 -- the evidence is what makes the resume legitimate).
+    (principle 4 -- the evidence is what makes the resume legitimate).
 
     So the record's own reference stays exactly as the interrupted pass wrote
     it -- a well-formed, content-addressed Attestatores blob reference -- and the
@@ -2821,7 +2821,7 @@ def test_a_served_churro_reads_the_vendor_grammar_and_reports_no_geometry(live_r
     assert capture["parse"]["parser"] == "xml"
     # No `retired-output-envelope` here: this body is the grammar itself.
     assert capture["findings"] == []
-    # And the vendor pin travels with the reading (GOVERNANCE 6).
+    # And the vendor pin travels with the reading (principle 6).
     assert capture["vendor_identity"]["repository"] == "github.com/stanford-oval/Churro"
 
     # No geometry, and it reaches the act anyway: the `anchor-line` basis, on
@@ -2878,9 +2878,9 @@ def test_the_retired_envelope_reads_and_attaches_on_its_anchor_line(live_run, tm
 
     A body in the `<output>` envelope is a shape this chair is no longer asked
     for, and the capture carries `retired-output-envelope` so the arrival of a
-    shape nobody asked for is visible (GOVERNANCE 2). It still parses, still
+    shape nobody asked for is visible (principle 2). It still parses, still
     retains, and still aligns to the anchor -- throwing a page of ink away over
-    an envelope would be the loss GOALS 1 refuses. It carries no coordinates, so
+    an envelope would be the loss goal 2 refuses. It carries no coordinates, so
     its only observation is the `presented` echo routing and coverage exclude,
     asserted below as the counterfactual: there is no reported geometry here for
     any derivation to read. It used to land unattached on exactly that, which put
