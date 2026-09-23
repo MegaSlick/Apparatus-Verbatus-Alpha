@@ -285,10 +285,10 @@ class PrivateSampleAccounting:
         ):
             raise HoldoutRefusal("private sample accounting has an invalid scoreable act ID")
         # Type-checked before its ID is read, the same way the scoreable IDs
-        # above already are. An exclusion is Tyrel's approved removal of an act
-        # from the scored set, and it lands in the digest and the accounting
-        # record; anything that merely answers to `.opaque_act_id` was being
-        # taken at its word. Found by CodeRabbit.
+        # above already are. An exclusion is the project lead's approved removal
+        # of an act from the scored set, and it lands in the digest and the
+        # accounting record; anything that merely answers to `.opaque_act_id`
+        # was being taken at its word.
         if any(not isinstance(item, ReferenceExclusion) for item in self.exclusions):
             raise HoldoutRefusal("private sample accounting has an unchecked exclusion")
         exclusion_ids = [item.opaque_act_id for item in self.exclusions]

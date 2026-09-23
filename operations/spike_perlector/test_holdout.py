@@ -263,9 +263,9 @@ def test_the_sealed_draw_selects_exactly_these_acts_and_a_reader_can_recompute_i
 def test_an_exclusion_that_is_not_a_checked_exclusion_is_refused():
     """The scoreable IDs beside it were already type-checked; these were not.
 
-    An exclusion is Tyrel's approved removal of an act from the scored set, and
-    it lands in the accounting digest and record. Anything that merely answered
-    to `.opaque_act_id` was taken at its word. Found by CodeRabbit.
+    An exclusion is the project lead's approved removal of an act from the
+    scored set, and it lands in the accounting digest and record. Anything
+    that merely answered to `.opaque_act_id` was taken at its word.
     """
 
     class LooksLikeOne:

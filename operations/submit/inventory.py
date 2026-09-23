@@ -28,7 +28,7 @@ file did not move under the reader while it was being read.
 it.** A per-file refusal is the *door's* job and needs bytes to refuse; an
 inventory that quietly omitted a file it could not open would shrink the
 denominator the Armarium's census later reconciles against, which is exactly the
-silent loss GOVERNANCE 2 forbids.
+silent loss principle 2 forbids.
 
 **A refusal here says what happened and not what it was called.** The messages used
 to interpolate the offending entry's submitted relative path, and `submit.py`'s CLI

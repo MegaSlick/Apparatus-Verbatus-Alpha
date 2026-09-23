@@ -1,19 +1,16 @@
 """The data-handling gate as machinery: the policy load, and storage-root location.
 
-**Cut 2026-08-09, per Tyrel's ruling that session.** This file used to also cover
-spec 03's test 7 — a per-run data-gate approval-record requirement for real input,
-its policy-hash currency check, and the digest-checked reference an approval
-travelled as. All three are gone: real material never reaches git regardless of any
-per-run sign-off (it runs on a GPU host, `workbench/` is gitignored, and an ingress
-check plus CI's full-history payload scan already cover that mechanically), so the
-requirement bought nothing. What remains, and is still real mechanical safety, is
-the policy load's shape checks and the storage-root enforcement that keeps real
-material inside the locations the policy names.
+There is no per-run data-gate approval-record requirement for real input: real
+material never reaches git regardless of any per-run sign-off (it runs on a GPU
+host, `workbench/` is gitignored, and an ingress check plus CI's full-history
+payload scan already cover that mechanically). What remains, and is still real
+mechanical safety, is the policy load's shape checks and the storage-root
+enforcement that keeps real material inside the locations the policy names.
 
-The shipped policy at `config/data_handling_policy.json` is the one this machinery
-enforces. Harvest #14 applies as it does everywhere else — every refusal here has an
-acceptance beside it, because a gate that stopped refusing bad things in order to
-stop refusing good ones would not be a fix.
+The shipped policy at `config/data_handling_policy.json` is the one this
+machinery enforces. Every refusal here has an acceptance beside it, because a
+gate that stopped refusing bad things in order to stop refusing good ones
+would not be a fix.
 """
 
 import json
@@ -32,8 +29,9 @@ def policy():
 
 
 def test_the_shipped_policy_carries_every_clause_the_spec_requires(policy):
-    """A policy missing a clause is not a shorter policy; it is one Tyrel never
-    approved, and reading it as valid would be the gate approving itself."""
+    """A policy missing a clause is not a shorter policy; it is one the project
+    lead never approved, and reading it as valid would be the gate approving
+    itself."""
     assert set(policy) == gate._POLICY_FIELDS
     assert policy["alpha_shortcuts_ledger"] == "workbench/standing/ALPHA_SHORTCUTS.md"
 
@@ -70,8 +68,9 @@ def test_a_clause_that_states_no_rule_is_refused(tmp_path, policy, value):
 
 
 def test_a_clause_this_gate_does_not_enforce_is_refused(tmp_path, policy):
-    """The other direction, and the reason the field set is exact: a clause Tyrel
-    approved that nothing here checks is a rule with no machinery behind it."""
+    """The other direction, and the reason the field set is exact: a clause the
+    project lead approved that nothing here checks is a rule with no machinery
+    behind it."""
     extended = dict(policy)
     extended["a_clause_nothing_enforces"] = "some rule nobody checks"
     path = tmp_path / "extra-clause.json"
@@ -129,8 +128,8 @@ def test_the_shipped_policy_names_the_pod_volume_mount_as_a_root(policy):
 
     ``operations/pod/boot_a_request.py``'s ``BOOT_A_VOLUME_MOUNT_PATH`` is the
     one concrete ``volume_mount_path`` a real launch request in this tree
-    seals -- this is the path Tyrel's ruling names as accepted storage for the
-    run's duration (workbench/standing/TYREL_RULINGS_2026-09-01_BUILD_SESSION.md).
+    seals -- this is the path the project lead's ruling names as accepted
+    storage for the run's duration.
     """
     assert "/workspace/private" in policy["storage_roots"]
 
@@ -161,7 +160,7 @@ def test_the_full_shipped_policy_still_yields_a_usable_gate_on_any_machine(polic
 
 
 def test_a_skipped_root_comes_back_beside_the_resolved_ones_not_only_in_a_refusal(tmp_path, policy):
-    """GOVERNANCE 2: the narrowing is a fact about the run, on every path.
+    """Principle 2: the narrowing is a fact about the run, on every path.
 
     Naming a skipped root only when *every* root fails left the ordinary case
     -- a partially resolving policy, which is nearly every machine -- returning

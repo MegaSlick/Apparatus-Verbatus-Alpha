@@ -296,8 +296,8 @@ def request_body(
     # graph looks right at the moment of the check: a `dict` subclass whose
     # `get("type")` disagrees with what `json.dumps` actually serializes (or
     # a concurrent mutation between the check and the serialize) would pass
-    # the check while the wire body itself opened with text (CodeRabbit,
-    # `2f68441`'s review) -- re-parsing the exact bytes closes that gap by
+    # the check while the wire body itself opened with text -- re-parsing
+    # the exact bytes closes that gap by
     # construction, not by trusting the object that produced them.
     rendered = _canonical_json(value)
     assert_wire_part_order(json.loads(rendered), label=f"request for {model_id}")

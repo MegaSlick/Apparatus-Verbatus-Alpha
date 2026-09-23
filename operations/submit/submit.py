@@ -15,12 +15,9 @@ storage-root check is enforced here before a single byte is hashed — and again
 the door, on the door's own admission loop, because "material lives only where the
 policy names" has to be true of the door and not only of whatever ran before it.
 
-**Cut 2026-08-09, per Tyrel's ruling that session.** A submission used to also
-require a current data-gate approval-record artifact, verified here before a byte
-was hashed and named in the sealed manifest's `authorized_by` field. His ruling:
-none of this material ever reaches git regardless of any such sign-off, so the
-requirement bought nothing and is gone; the manifest no longer carries an
-authorization reference.
+A submission does not require a current data-gate approval-record artifact:
+none of this material ever reaches git regardless of any such sign-off, so
+the manifest carries no authorization reference.
 
 **Upload completion is explicit and sealed.** The manifest is built entirely in
 memory, then written once, atomically. A crash at any point before that final
@@ -168,10 +165,8 @@ def build_manifest(entries: list[dict[str, Any]]) -> dict[str, Any]:
     door's decision, made when it actually opens these files — this manifest only
     ever names what arrived.
 
-    **Cut 2026-08-09.** This used to also carry `authorized_by`, a digest-checked
-    reference to the data-gate approval record that admitted the corpus. That
-    requirement is gone (schema bumped to v1 accordingly); the manifest is purely
-    the filename-to-digest ledger.
+    Carries no `authorized_by` or other data-gate approval reference; the
+    manifest is purely the filename-to-digest ledger.
     """
     manifest: dict[str, Any] = {
         "schema": SCHEMA,
@@ -268,7 +263,7 @@ def _content_addressed_report_path(path: Path, report_hash: str) -> Path:
 def atomic_create(target: Path, data: bytes) -> bool:
     """Create the manifest, or reuse an identical one. Never overwrite a different.
 
-    GOVERNANCE 4: evidence is never overwritten. `os.replace` clobbered
+    Principle 4: evidence is never overwritten. `os.replace` clobbered
     unconditionally, so resubmitting a *changed* folder to the same path replaced a
     valid, self-hashed record of what was previously sealed with a different one —
     no comparison, no warning, no refusal, and nothing on disk retaining the record
@@ -322,14 +317,14 @@ def atomic_create(target: Path, data: bytes) -> bool:
                 raise ExistingRecordRefusal(
                     "something already exists at that path and could not be read as a regular "
                     "file, so it cannot be shown to seal these bytes. Evidence is never "
-                    "overwritten (GOVERNANCE 4): it was not touched. This is not a report that "
+                    "overwritten (principle 4): it was not touched. This is not a report that "
                     "the submission changed — a symlink, a directory, or an unreadable entry "
                     "there is a different problem, and it needs looking at rather than a new "
                     "manifest path"
                 ) from None
             raise ExistingRecordRefusal(
                 "a sealed submission record already exists at that path and seals different "
-                "content. Evidence is never overwritten (GOVERNANCE 4): the existing "
+                "content. Evidence is never overwritten (principle 4): the existing "
                 "record was not touched, and a changed submission needs its own path"
             ) from None
         completed = True

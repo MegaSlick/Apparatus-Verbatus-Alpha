@@ -7,11 +7,9 @@ folder is ever touched. And the logging rule is mechanical rather than a promise
 log line may carry counts, digests and status words, and it may never carry a name,
 a path, or image bytes.
 
-**Cut 2026-08-09, per Tyrel's ruling that session.** A submission used to also need
-a current data-gate approval-record artifact, verified before a byte was hashed and
-named in the sealed manifest's `authorized_by` field. His ruling: none of this
-material ever reaches git regardless of any such sign-off, so the requirement bought
-nothing and is gone; the manifest no longer carries an authorization reference.
+A submission does not need a current data-gate approval-record artifact: none
+of this material ever reaches git regardless of any such sign-off, and the
+manifest carries no authorization reference.
 
 Spec 03's test 6 — the cleanup drill on synthetic material, with declared bounds —
 runs against `purge` here and against `cleanup.verify_synthetic_cleanup` beside it.
@@ -394,7 +392,7 @@ def test_a_submit_budget_alarm_writes_the_source_name_to_its_private_report(
     assert "more than 1 files" in report["refusals"][0]["reason"]
 
 
-# --- Evidence is never overwritten (GOVERNANCE 4) --------------------------------
+# --- Evidence is never overwritten (principle 4) --------------------------------
 
 
 def test_resubmitting_changed_content_to_one_path_refuses_rather_than_replacing(submission):
@@ -507,7 +505,7 @@ def test_an_uncomparable_target_is_not_reported_as_a_changed_submission(tmp_path
         assert "seals different content" not in str(caught.value)
     assert "seals different content" in str(differs.value)
     assert "could not be read as a regular file" not in str(differs.value)
-    # Whichever refusal fired, GOVERNANCE 4 holds and nothing was written.
+    # Whichever refusal fired, principle 4 holds and nothing was written.
     assert os.readlink(linked) == str(referent)
     assert directory.is_dir() and not any(directory.iterdir())
     assert changed.read_bytes() == b"a genuinely different sealed record"

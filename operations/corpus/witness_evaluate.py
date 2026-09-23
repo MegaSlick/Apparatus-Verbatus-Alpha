@@ -609,7 +609,7 @@ def evaluate_run(
     # the ledger does not enforce unique `page_sha256` and the reference-hash
     # sets collapse duplicates, so both iterations would score the same page and
     # ordinal -- doubling `reports`, each chair's totals and `missing_proposals`
-    # while `selected_ordinals` and `page_health` kept one entry (CodeRabbit).
+    # while `selected_ordinals` and `page_health` kept one entry.
     # Refused here, beside the duplicate page-ID check, before any scoring.
     digests_seen: dict[str, str] = {}
     for page_id in sorted(selected):

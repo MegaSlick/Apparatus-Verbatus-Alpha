@@ -92,7 +92,7 @@ COMPLEMENTARY_CANDIDATE_REASON: Final = "insufficient-co-visible-evidence"
 # near-duplicate at every plausible threshold.  The named reason travels in every
 # emitted record beside the complementary one, and `SIGNATURE_BLINDNESS` states in
 # the sealed recipe what the signature provably cannot separate, so nothing
-# downstream may read this verdict as identity (GOVERNANCE 10).
+# downstream may read this verdict as identity (principle 8).
 NEAR_DUPLICATE_REASON: Final = "signature-agreement-only-not-page-identity"
 # Parenthesised element by element on purpose. These are adjacent string literals, so a
 # dropped comma merges two statements into one silently, and the validator compares the
@@ -233,7 +233,7 @@ class CandidateCost:
     precondition then refuses is counted in ``dimension_refused_pairs`` rather than
     dropped, so the arithmetic over one selection closes
     (``unique_candidate_pairs + dimension_refused_pairs`` is the deduplicated reach)
-    and no candidate leaves the selector unaccounted for (GOVERNANCE 2).
+    and no candidate leaves the selector unaccounted for (principle 2).
     """
 
     submission_window_pairs: int
@@ -661,7 +661,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
     if comparison["known_blindness"] != list(SIGNATURE_BLINDNESS):
         # A recipe that drops the blindness statement would let a reader take a
         # near-duplicate verdict for page identity with nothing in the sealed
-        # record contradicting it.  It is the honesty half of GOVERNANCE 10 and
+        # record contradicting it.  It is the honesty half of principle 8 and
         # is refused exactly as a changed encoder is.
         raise InstrumentRefusal(
             "triage producer recipe does not carry the declared signature blindness statement"
@@ -1152,7 +1152,7 @@ def evidence_manifest(
     records against the candidate rule is what makes a dropped pair *detectable* — a
     reader with the frame digests, the recipe, and this record can recompute the
     selection and find any pair the run failed to emit, instead of taking a shorter
-    evidence list at face value (GOVERNANCE 2, and 7's "measure honestly": the pass
+    evidence list at face value (principle 2, and principle 8's "measure honestly": the pass
     reports its own denominator).  Refused pairs are named, not merely tallied,
     because "which frames could not be compared" is the question a mixed-dimension
     reel actually raises.
