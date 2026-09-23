@@ -23,6 +23,7 @@ from PIL import Image
 from regime import NAMED, REGIMES, witness_label
 
 from common.chairs.models import ChairIdentity
+from common.chandra_native_retry import named_trace_summary
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -261,6 +262,15 @@ def _testimonium_entry(
         # blinded: either one would reverse the pseudonym inside the dossier.
         "model_name": model_name if regime == NAMED else None,
         "resolved_provenance": copy.deepcopy(provenance) if regime == NAMED else None,
+        # Structured dossier evidence only. Prompt builders deliberately do not
+        # render it: their measured capacity digest stays valid until the
+        # pinned tokenizer is re-measured. The final returned response remains
+        # the sole text clue; earlier attempts contribute facts, never text.
+        "native_inference": (
+            named_trace_summary(payload["native_inference"])
+            if regime == NAMED and payload.get("native_inference") is not None
+            else None
+        ),
         "training_domain": training_domain,
         "outcome": record["outcome"],
         "reported": reported,

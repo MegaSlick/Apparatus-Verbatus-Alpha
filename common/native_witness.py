@@ -14,6 +14,7 @@ from typing import Any, Final
 
 from common import churro_document
 from common.chairs.models import is_hf_revision
+from common.chandra_native_retry import validate_trace as validate_chandra_native_trace
 from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
@@ -67,6 +68,7 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
         "raw_response_refs",
         "adapter_metadata",
         "native_capture",
+        "native_inference",
     }
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
@@ -966,6 +968,8 @@ def validate_page_testimonium_payload(
                     raise SchemaRefusal(
                         "an unparseable Churro page capture has no reason naming its parser refusal"
                     )
+    if "native_inference" in payload:
+        validate_chandra_native_trace(payload["native_inference"])
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
 

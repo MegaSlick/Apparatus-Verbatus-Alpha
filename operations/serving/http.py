@@ -304,6 +304,46 @@ def request_body(
     return rendered
 
 
+def chandra_native_request_body(
+    payload: Mapping[str, object],
+    *,
+    model_id: str,
+    temperature: float,
+    top_p: float,
+) -> bytes:
+    """Render only the admitted Chandra native request shape.
+
+    This deliberately has no seed argument.  The pinned upstream client sends
+    ``temperature`` and ``top_p`` per request and omits a per-request seed; the
+    serving receipt still records the server launch seed.  Keeping this as a
+    separate function prevents the exception from becoming an ambient switch
+    on :func:`request_body`.
+    """
+
+    value = dict(payload)
+    supplied = value.pop("model", None)
+    if supplied is not None and supplied != model_id:
+        raise ServingConfigurationError(
+            f"request named model {supplied!r}, not this service's exact id {model_id!r}"
+        )
+    forbidden = sorted({"stream", "temperature", "top_p", "seed"} & set(value))
+    if forbidden:
+        raise ServingConfigurationError(
+            f"Chandra native request payload may not predeclare manager-owned {forbidden}"
+        )
+    value.update(
+        {
+            "model": model_id,
+            "stream": False,
+            "temperature": temperature,
+            "top_p": top_p,
+        }
+    )
+    rendered = _canonical_json(value)
+    assert_wire_part_order(json.loads(rendered), label=f"Chandra native request for {model_id}")
+    return rendered
+
+
 def parse_openai_answer(
     response: HttpResponse, *, kind: str, expected_model_id: str
 ) -> OpenAIResult:

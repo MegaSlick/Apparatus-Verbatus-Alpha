@@ -15,6 +15,10 @@ from common.contracts.serving import (
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
     CHAIR_TRANSPORT_PROBLEM_FIELDS,
     CHAIR_TRANSPORT_PROBLEM_SCHEMA,
+    CHANDRA_NATIVE_CALL_RECORD_FIELDS,
+    CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
+    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
     ENGINE_STOP_COMPLETE,
     ENGINE_STOP_CUT_OFF,
     SERVING_CONFIG_INPUTS_FIELDS,
@@ -83,6 +87,15 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
         "request_delivery",
         "response_completion",
     }
+
+    assert CHANDRA_NATIVE_CALL_RECORD_SCHEMA == "chandra-native-call-record.v1"
+    assert CHANDRA_NATIVE_CALL_RECORD_FIELDS == CHAIR_CALL_RECORD_FIELDS | {
+        "native_attempt_intent_ref"
+    }
+    assert CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA == "chandra-native-transport-failure.v1"
+    assert CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS == (
+        CHANDRA_NATIVE_CALL_RECORD_FIELDS | {"transport_problem"}
+    )
 
 
 def test_the_two_engine_stop_vocabularies_are_frozensets_with_exact_members() -> None:

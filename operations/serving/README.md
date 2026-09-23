@@ -605,6 +605,19 @@ comparison (`payload.get("model") != expected_model_id`) cannot distinguish
 the recorded `parse_problem` never asserts a foreign-source observation that
 was never made (GOVERNANCE 10).
 
+`prepare_chandra_native` / `read_chandra_native` is the one narrow exception.
+It is available only to page-scoped `attestator_1` with adapter `chandra.v1`
+under the exact `decoding.v3` recipe. The prepared dispatch fixes one of seven
+declared temperature/top-p pairs; the stage must publish and pass a durable
+attempt-intent reference before the POST. Its `chandra-native-call-record.v1`
+binds that reference, so the three identical 0.8/0.95 request schedules remain
+distinct physical attempts. These calls omit a per-request seed because the
+pinned upstream client omits it; the server launch seed remains on the serving
+receipt. `chat_template_kwargs.enable_thinking=false` remains a local vLLM
+0.27/template compatibility field and is recorded as such, not attributed to
+the upstream vLLM 0.17 recipe. The method still issues exactly one HTTP call;
+the Attestatores stage owns the bounded vendor loop and its durable evidence.
+
 If that POST raises before a complete HTTP response is available, the client
 retains `chair-transport-failure.v1` instead. It carries the same exact request,
 identity, receipt, decoding, generation, and capacity facts as a call record;

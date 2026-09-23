@@ -16,12 +16,17 @@ import pytest
 
 from common.chairs.models import ChairIdentity, ServingDetails
 from common.chairs.receipts import build_receipt, receipt_record
+from common.chandra_native_retry import recipe_record
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
     CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    CHANDRA_NATIVE_CALL_RECORD_FIELDS,
+    CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
+    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 
 from .client import (
@@ -166,6 +171,7 @@ def _built(
     row: dict[str, object] | None = None,
     read_receipt=None,
     record_temperature: int = 0,
+    chandra_native_policy=None,
 ):
     chair = chair or _identity()
     row = _seal(
@@ -197,6 +203,7 @@ def _built(
         decoding_config_sha256=DECODING_SHA,
         record_temperature=record_temperature,
         read_receipt=read_receipt or _default_read_receipt(chair),
+        chandra_native_policy=chandra_native_policy,
     )
     return client, endpoint, blob_store, chair
 
@@ -268,6 +275,114 @@ def test_a_nonzero_sealed_temperature_and_seed_are_sent_and_retained(tmp_path: P
         "decimal": "0.2",
     }
     assert record["generation_sent"]["seed"] == 7
+
+
+def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
+    tmp_path: Path,
+) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity().to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    intent_ref = {"relative_path": "3_attestatores/artifacts/intent.json", "sha256": "d" * 64}
+    request = _request(
+        generation_declared={"max_new_tokens": 12384},
+        generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    with client:
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=3)
+        endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
+        response = client.read_chandra_native(dispatch, intent_ref=intent_ref)
+    assert endpoint.requests[0]["temperature"] == 0.4
+    assert endpoint.requests[0]["top_p"] == 0.95
+    assert "seed" not in endpoint.requests[0]
+    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
+    assert record["schema"] == CHANDRA_NATIVE_CALL_RECORD_SCHEMA
+    assert set(record) == CHANDRA_NATIVE_CALL_RECORD_FIELDS
+    assert record["native_attempt_intent_ref"] == intent_ref
+
+
+def test_chandra_native_capability_refuses_a_different_chair(tmp_path: Path) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity(role="attestator_2").to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, _blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    with client, pytest.raises(ChairRequestRefusal, match="only to Attestator 1"):
+        client.prepare_chandra_native(_request(), attempt_ordinal=1)
+    assert endpoint.requests == []
+
+
+def test_a_legacy_client_does_not_acquire_the_native_capability(tmp_path: Path) -> None:
+    client, _endpoint, _blob_store, _ = _built(tmp_path)
+    assert client.carries_chandra_native_recipe is False
+
+
+def test_chandra_native_call_refuses_without_durable_intent_before_http(tmp_path: Path) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity().to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    request = _request(
+        generation_declared={"max_new_tokens": 12384},
+        generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    with client:
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=1)
+        with pytest.raises(ChairRequestRefusal, match="no durable attempt intent"):
+            client.read_chandra_native(dispatch, intent_ref={})
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+
+def test_chandra_native_transport_failure_retains_intent_and_physical_request(
+    tmp_path: Path,
+) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity().to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    request = _request(
+        generation_declared={"max_new_tokens": 12384},
+        generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    intent_ref = {"relative_path": "3_attestatores/artifacts/intent.json", "sha256": "d" * 64}
+    with client:
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=6)
+        endpoint.script(ScriptedAnswer(transport_failure="whole-call deadline exceeded"))
+        with pytest.raises(ChairTransportFailure):
+            client.read_chandra_native(dispatch, intent_ref=intent_ref)
+    record = json.loads(blob_store.written[0])
+    assert record["schema"] == CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA
+    assert set(record) == CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS
+    assert record["native_attempt_intent_ref"] == intent_ref
+    assert record["generation_sent"]["temperature"]["decimal"] == "0.8"
+    assert record["generation_sent"]["top_p"]["decimal"] == "0.95"
+    assert "seed" not in record["generation_sent"]
+    assert record["transport_problem"]["request_delivery"] == "unknown"
 
 
 def test_only_the_structure_chair_can_use_the_bounded_recovery_seed(tmp_path: Path) -> None:

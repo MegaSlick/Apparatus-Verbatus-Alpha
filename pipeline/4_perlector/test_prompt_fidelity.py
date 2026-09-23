@@ -147,6 +147,25 @@ def test_the_same_dossier_and_recipe_always_produce_the_same_bytes():
     assert first == second
 
 
+def test_structured_native_retry_provenance_does_not_change_measured_prompt_bytes():
+    baseline = _dossier()
+    carried = _dossier()
+    carried["testimonia"][0]["native_inference"] = {
+        "recipe": {"source_revision": "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"},
+        "physical_request_count": 3,
+        "returned_attempt_ordinal": 3,
+        "exhausted_condition": None,
+        "attempts": [
+            {"attempt_ordinal": 1, "trigger": "repeat-token", "error": False},
+            {"attempt_ordinal": 2, "trigger": "inference-error", "error": True},
+            {"attempt_ordinal": 3, "trigger": None, "error": False},
+        ],
+    }
+    assert prompts.build_prompt("fake-perlector-v0", "perlector", carried) == (
+        prompts.build_prompt("fake-perlector-v0", "perlector", baseline)
+    )
+
+
 def test_an_unregistered_recipe_refuses_rather_than_falling_back_to_a_default():
     """The load-bearing behaviour: a fine-tuned candidate served under a recipe
     with no declared builder must never silently render through some other

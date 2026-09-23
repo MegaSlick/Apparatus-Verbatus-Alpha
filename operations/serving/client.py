@@ -21,8 +21,16 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Callable, Mapping, Protocol
 
+from common.chair_wire import chandra_wire_fields
 from common.chairs.models import ChairIdentity
+from common.chandra_native_retry import (
+    CHANDRA_MAX_OUTPUT_TOKENS,
+    attempt_parameters,
+    validate_policy_record,
+    wire_parameters,
+)
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
+from common.contracts.errors import ContractError
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
@@ -30,6 +38,10 @@ from common.contracts.serving import (
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
     CHAIR_TRANSPORT_PROBLEM_FIELDS,
     CHAIR_TRANSPORT_PROBLEM_SCHEMA,
+    CHANDRA_NATIVE_CALL_RECORD_FIELDS,
+    CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
+    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
     WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
@@ -45,6 +57,7 @@ from .errors import (
 from .http import (
     EndpointUnavailable,
     HttpResponse,
+    chandra_native_request_body,
     chat_image_bytes_all,
     parse_openai_reading,
     request_body,
@@ -351,6 +364,23 @@ class ChairResponse:
     parse_problem: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ChandraNativeDispatch:
+    """One pre-built physical request under the sealed Chandra capability.
+
+    The stage persists an intent containing these facts before it hands this
+    value back for dispatch.  Keeping the exact body here prevents a mutation
+    between intent publication and HTTP from changing what that intent meant.
+    """
+
+    request: ChairRequest
+    attempt_ordinal: int
+    parameters: Mapping[str, str]
+    generation_sent: Mapping[str, object]
+    body: bytes
+    request_sha256: str
+
+
 class ChairClient:
     """The one client a stage holds for one chair, across every call in a pass.
 
@@ -371,6 +401,7 @@ class ChairClient:
         record_temperature: int | float,
         read_receipt: Callable[[Mapping[str, str]], Mapping[str, object]],
         adapter_calibration: AdapterCalibration | None = None,
+        chandra_native_policy: Mapping[str, object] | None = None,
     ) -> None:
         if (
             isinstance(record_temperature, bool)
@@ -394,6 +425,9 @@ class ChairClient:
         self._record_temperature = record_temperature
         self._read_receipt = read_receipt
         self._adapter_calibration = adapter_calibration
+        self._chandra_native_policy = (
+            dict(chandra_native_policy) if chandra_native_policy is not None else None
+        )
         self._handle: ServiceHandle | None = None
 
     @property
@@ -403,6 +437,12 @@ class ChairClient:
                 "ChairClient has no active service; enter it as a context manager first"
             )
         return self._handle
+
+    @property
+    def carries_chandra_native_recipe(self) -> bool:
+        """Whether this client was built from a decoding.v3 native recipe."""
+
+        return self._chandra_native_policy is not None
 
     def __enter__(self) -> "ChairClient":
         handle = self._manager.start(
@@ -464,6 +504,126 @@ class ChairClient:
         retained evidence (``parse_problem``), not a stage abort.
         """
 
+        return self._read(request)
+
+    def prepare_chandra_native(
+        self, request: ChairRequest, *, attempt_ordinal: int
+    ) -> ChandraNativeDispatch:
+        """Build one exact Chandra request before its durable intent is written."""
+
+        handle = self.handle
+        if (
+            self._identity.role != "attestator_1"
+            or self._identity.witness_adapter != "chandra.v1"
+            or self._identity.witness_scope != "page"
+        ):
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "the Chandra native inference capability belongs only to Attestator 1's "
+                "page-scoped chandra.v1 reading route",
+            )
+        if self._chandra_native_policy is None:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "the run carries no sealed Chandra native inference recipe",
+            )
+        try:
+            validate_policy_record(dict(self._chandra_native_policy))
+        except ContractError as error:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID", f"the sealed Chandra native recipe moved: {error}"
+            ) from error
+        _refuse_unbuildable_request(request)
+        if request.structure_recovery_seed is not None:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "a Chandra native witness request cannot carry a Designator recovery seed",
+            )
+        if "top_p" in request.generation_sent:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "a Chandra native request may not override the pinned top_p schedule",
+            )
+        expected_wire = chandra_wire_fields()
+        if request.generation_sent.get("chat_template_kwargs") != expected_wire[
+            "chat_template_kwargs"
+        ] or set(request.generation_sent) - {"chat_template_kwargs", "max_tokens"}:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "a Chandra native request must carry only the declared local "
+                "enable_thinking compatibility field and its optional capacity-bound max_tokens",
+            )
+        if request.generation_sent.get("max_tokens", CHANDRA_MAX_OUTPUT_TOKENS) != (
+            CHANDRA_MAX_OUTPUT_TOKENS
+        ):
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "a Chandra native request moved the pinned 12384-token upstream bound",
+            )
+        if dict(request.generation_declared) != {"max_new_tokens": CHANDRA_MAX_OUTPUT_TOKENS}:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "a Chandra native request does not declare the pinned upstream output bound",
+            )
+        declared = attempt_parameters(attempt_ordinal)
+        sent = {**request.generation_sent, **wire_parameters(attempt_ordinal)}
+        recorded = _recorded_generation(sent)
+        _refuse_generation_that_cannot_be_recorded_as_sent(recorded, sent, "generation_sent")
+        body = chandra_native_request_body(
+            {**request.generation_sent, "messages": list(request.messages)},
+            model_id=handle.profile.served_model_id,
+            temperature=sent["temperature"],  # type: ignore[arg-type]
+            top_p=sent["top_p"],  # type: ignore[arg-type]
+        )
+        return ChandraNativeDispatch(
+            request=request,
+            attempt_ordinal=attempt_ordinal,
+            parameters=MappingProxyType(declared),
+            generation_sent=MappingProxyType(sent),
+            body=body,
+            request_sha256=digest_bytes(body),
+        )
+
+    def read_chandra_native(
+        self,
+        dispatch: ChandraNativeDispatch,
+        *,
+        intent_ref: Mapping[str, str],
+    ) -> ChairResponse:
+        """Issue the one pre-intended Chandra physical request; never loops."""
+
+        if (
+            not isinstance(intent_ref, Mapping)
+            or set(intent_ref) != {"relative_path", "sha256"}
+            or not isinstance(intent_ref.get("relative_path"), str)
+            or not is_sha256(intent_ref.get("sha256"))
+        ):
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID", "a Chandra native call has no durable attempt intent"
+            )
+        rebuilt = self.prepare_chandra_native(
+            dispatch.request, attempt_ordinal=dispatch.attempt_ordinal
+        )
+        if rebuilt.body != dispatch.body or rebuilt.request_sha256 != dispatch.request_sha256:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                "the Chandra native request changed after its durable intent was prepared",
+            )
+        return self._read(
+            dispatch.request,
+            native_dispatch=dispatch,
+            native_intent_ref=dict(intent_ref),
+        )
+
+    def _read(
+        self,
+        request: ChairRequest,
+        *,
+        native_dispatch: ChandraNativeDispatch | None = None,
+        native_intent_ref: dict[str, str] | None = None,
+    ) -> ChairResponse:
+        """Shared one-call implementation; native use is an already-sealed capability."""
+
         handle = self.handle
         _refuse_unbuildable_request(request)
         # Built and checked before the request leaves: a generation value this
@@ -491,19 +651,31 @@ class ChairClient:
             if request.structure_recovery_seed is None
             else request.structure_recovery_seed
         )
-        actual_generation_sent = {
-            **request.generation_sent,
-            "temperature": self._record_temperature,
-            "seed": actual_seed,
-        }
-        body = request_body(
-            {**request.generation_sent, "messages": list(request.messages)},
-            model_id=handle.profile.served_model_id,
-            seed=actual_seed,
-            deterministic=self._record_temperature == 0,
-            temperature=self._record_temperature,
-        )
+        if native_dispatch is None:
+            actual_generation_sent = {
+                **request.generation_sent,
+                "temperature": self._record_temperature,
+                "seed": actual_seed,
+            }
+            body = request_body(
+                {**request.generation_sent, "messages": list(request.messages)},
+                model_id=handle.profile.served_model_id,
+                seed=actual_seed,
+                deterministic=self._record_temperature == 0,
+                temperature=self._record_temperature,
+            )
+        else:
+            if native_intent_ref is None:
+                raise ChairRequestRefusal(
+                    "CHAIR_REQUEST_INVALID", "a Chandra native dispatch lost its intent"
+                )
+            actual_generation_sent = dict(native_dispatch.generation_sent)
+            body = native_dispatch.body
         request_sha256 = digest_bytes(body)
+        if native_dispatch is not None and request_sha256 != native_dispatch.request_sha256:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID", "a Chandra native dispatch body moved after intent"
+            )
         try:
             response = handle.request_reading(
                 request.kind, body, handle.profile.request_timeout_seconds
@@ -522,7 +694,11 @@ class ChairClient:
                     "chair transport problem built the wrong field set"
                 ) from error
             failure_record = {
-                "schema": CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+                "schema": (
+                    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA
+                    if native_dispatch is not None
+                    else CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA
+                ),
                 "chair": self._identity.role,
                 "resolved_identity": self._identity.to_record(),
                 "resolved_revision": self._identity.receipt_revision,
@@ -548,9 +724,16 @@ class ChairClient:
                 ),
                 "transport_problem": transport_problem,
             }
-            if set(failure_record) != CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS:
+            if native_dispatch is not None:
+                failure_record["native_attempt_intent_ref"] = native_intent_ref
+            expected_failure_fields = (
+                CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS
+                if native_dispatch is not None
+                else CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS
+            )
+            if set(failure_record) != expected_failure_fields:
                 raise AssertionError(  # pragma: no cover - closed by construction
-                    f"{CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA} built the wrong field set"
+                    "chair transport failure record built the wrong field set"
                 ) from error
             call_record_ref = self._retain(canonical_bytes(failure_record))
             raise ChairTransportFailure(
@@ -616,7 +799,11 @@ class ChairClient:
                 usage = result.usage
 
         record = {
-            "schema": CHAIR_CALL_RECORD_SCHEMA,
+            "schema": (
+                CHANDRA_NATIVE_CALL_RECORD_SCHEMA
+                if native_dispatch is not None
+                else CHAIR_CALL_RECORD_SCHEMA
+            ),
             "chair": self._identity.role,
             "resolved_identity": self._identity.to_record(),
             "resolved_revision": self._identity.receipt_revision,
@@ -642,9 +829,16 @@ class ChairClient:
             # what is written is exactly the evidence the request carried.
             "capacity": _plain_capacity(request.capacity) if request.capacity is not None else None,
         }
-        if set(record) != CHAIR_CALL_RECORD_FIELDS:
+        if native_dispatch is not None:
+            record["native_attempt_intent_ref"] = native_intent_ref
+        expected_record_fields = (
+            CHANDRA_NATIVE_CALL_RECORD_FIELDS
+            if native_dispatch is not None
+            else CHAIR_CALL_RECORD_FIELDS
+        )
+        if set(record) != expected_record_fields:
             raise AssertionError(  # pragma: no cover - closed by construction above
-                f"{CHAIR_CALL_RECORD_SCHEMA} built the wrong field set: {sorted(record)}"
+                f"chair call record built the wrong field set: {sorted(record)}"
             )
         call_record_ref = self._retain(canonical_bytes(record))
 

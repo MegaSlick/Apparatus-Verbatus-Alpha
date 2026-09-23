@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from common.chandra_native_retry import recipe_record
 from common.contracts.errors import ContractError
 from common.decoding import (
     load_decoding_policy,
@@ -22,7 +23,8 @@ def test_shipped_decoding_policy_declares_a_zero_temperature_record_and_variance
         "seed": 20260820,
         "passes": 2,
     }
-    assert policy["schema"] == "decoding.v2"
+    assert policy["schema"] == "decoding.v3"
+    assert policy["chandra_native_inference"] == recipe_record()
     assert policy["structure"] == {
         "temperature": 1,
         "recovery_seed_schedule": "base-plus-attempt-ordinal-minus-one",
@@ -47,6 +49,26 @@ def test_legacy_decoding_v1_preserves_one_fixed_base_attempt(tmp_path: Path):
     assert structure_recovery_policy(policy) == {
         "max_attempts": 1,
         "seed_schedule": "fixed-base",
+    }
+
+
+def test_legacy_decoding_v2_keeps_structure_recovery_without_native_retry(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy-v2.toml"
+    path.write_text(
+        'schema = "decoding.v2"\n[reading_of_record]\ntemperature = 0\n'
+        '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n'
+        "[structure]\ntemperature = 1\n"
+        'recovery_seed_schedule = "base-plus-attempt-ordinal-minus-one"\n'
+        "recovery_max_attempts = 3\n",
+        encoding="utf-8",
+    )
+    policy, _digest = load_decoding_policy(path)
+    assert "chandra_native_inference" not in policy
+    assert structure_recovery_policy(policy) == {
+        "max_attempts": 3,
+        "seed_schedule": "base-plus-attempt-ordinal-minus-one",
     }
 
 

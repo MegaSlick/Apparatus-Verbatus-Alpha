@@ -47,6 +47,7 @@ import feeding  # noqa: E402
 from common import chandra_layout  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.chandra_native_retry import recipe_record  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA  # noqa: E402
 from common.contracts.stages import ATTESTATORES  # noqa: E402
@@ -536,6 +537,7 @@ class LiveWorld:
             decoding_config_sha256=self.live_run.decoding_sha256,
             record_temperature=0,
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
+            chandra_native_policy=recipe_record(),
         )
 
     def requests(self, chair: str) -> list[dict[str, object]]:
@@ -707,6 +709,76 @@ def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp
     assert records[("a2", "attestator_2")]["payload"]["payload"] == DAI_ACT_TWO
     assert records[("a1", "attestator_3")]["outcome"] == "read"
     assert page_records(tree)[(1, "attestator_3")]["outcome"] == "read"
+
+
+def test_chandra_retries_retain_each_physical_request_but_publish_only_final_text(
+    live_run, tmp_path
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    repeated = CHANDRA_PAGE_ONE + ("<!--repeat-->" * 24)
+    scripts["attestator_1"] = [
+        ScriptedAnswer(content=repeated, finish_reason="stop"),
+        ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="stop"),
+        ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
+    ]
+    world = LiveWorld(live_run, tmp_path, scripts)
+
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+    assert len(world.requests("attestator_1")) == 3
+    assert [request["temperature"] for request in world.requests("attestator_1")] == [
+        0.0,
+        0.2,
+        0.0,
+    ]
+    assert [request["top_p"] for request in world.requests("attestator_1")] == [
+        0.1,
+        0.95,
+        0.1,
+    ]
+    assert all("seed" not in request for request in world.requests("attestator_1"))
+
+    tree = RunTree(run_root, RUN_ID)
+    page_one = page_records(tree)[(1, "attestator_1")]
+    trace = page_one["payload"]["native_inference"]
+    assert trace["physical_request_count"] == 2
+    assert trace["returned_attempt_ordinal"] == 2
+    assert [row["trigger"] for row in trace["attempts"]] == ["repeat-token", None]
+    assert page_one["payload"]["payload"] == CHANDRA_PAGE_ONE
+    native = [
+        entry
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] in {"chandra-native-attempt-intent", "chandra-native-attempt"}
+    ]
+    assert len([entry for entry in native if entry["kind"].endswith("intent")]) == 3
+    assert len([entry for entry in native if entry["kind"] == "chandra-native-attempt"]) == 3
+
+
+def test_chandra_orphan_intent_fails_closed_without_reissuing(live_run, tmp_path, monkeypatch):
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+
+    def crash_after_call_record(*_args, **_kwargs):
+        raise RuntimeError("simulated crash after response and call record")
+
+    monkeypatch.setattr(attestatores, "_publish_chandra_terminal", crash_after_call_record)
+    with pytest.raises(RuntimeError, match="after response and call record"):
+        run_attestatores(live_run, run_root, factory=world.factory)
+    monkeypatch.undo()
+
+    tree = RunTree(run_root, RUN_ID)
+    native = [
+        entry
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] in {"chandra-native-attempt-intent", "chandra-native-attempt"}
+    ]
+    assert [entry["kind"] for entry in native] == ["chandra-native-attempt-intent"]
+    assert len(world.requests("attestator_1")) == 1
+
+    resumed = LiveWorld(live_run, tmp_path / "resumed")
+    with pytest.raises(SchemaRefusal, match="delivery is unknown"):
+        run_attestatores(live_run, run_root, factory=resumed.factory)
+    assert resumed.requests("attestator_1") == []
 
 
 def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(live_run, tmp_path):
@@ -1319,20 +1391,15 @@ def test_a_resumed_live_pass_asks_no_chair_again(live_run, tmp_path):
     assert act_records(RunTree(run_root, RUN_ID)) == before
 
 
-def test_a_resumed_live_pass_recovers_a_page_response_from_the_act_layer_it_sealed(
-    live_run, tmp_path
-):
+def test_a_resumed_live_pass_uses_chandra_terminal_evidence_without_reissuing(live_run, tmp_path):
     """The crash the resume rule exists for: act records sealed, page records not.
 
-    The first pass answers page 1 and then runs out of scripted answers inside
-    the page-2 request, exactly where a real interruption would land: page 1's
-    act-scoped compatibility records are sealed, no page record is. The resume
-    must rebuild page 1's response from those act records -- never re-asking a
-    chair that cannot reproduce its own bytes -- and ask again only for the
-    pages no sealed record depends on. Page 2 is one of those for both chairs:
-    it carries this fixture's continuation, and a continuation page's response
-    feeds no act-scoped record at all (an act's own view comes from its primary
-    page), so asking for it again contradicts nothing already sealed.
+    Chandra completes both page calls and seals their native terminal artifacts;
+    Churro then runs out of scripted answers on page 2 before any page Testimonia
+    are written. The resumed Chandra route rebuilds both returned attempts from
+    terminal evidence and issues no HTTP call, including for continuation page 2,
+    whose answer has no act-scoped compatibility record. Churro still reissues
+    page 2 under its separate legacy resume contract.
     """
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
@@ -1346,20 +1413,17 @@ def test_a_resumed_live_pass_recovers_a_page_response_from_the_act_layer_it_seal
     assert not page_records(RunTree(run_root, RUN_ID))
 
     resumed_scripts = {
-        "attestator_1": [ScriptedAnswer(content=CHANDRA_BODY, finish_reason="stop")],
+        "attestator_1": [],
         "attestator_3": [ScriptedAnswer(content=CHURRO_PAGE_TWO, finish_reason="stop")],
     }
     resumed = LiveWorld(live_run, tmp_path / "resumed", resumed_scripts)
     assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
 
-    # Exactly one request each, for the continuation page alone: page 1 is
-    # rebuilt from the act layer the interrupted pass sealed. The act-scoped
-    # chair finished both its acts before the interruption, so the resume has
-    # nothing to ask it and never starts it -- a chair with no pending unit is
-    # a chair that is not loaded, which is what makes a resume cheap as well as
-    # safe.
+    # The Chandra client is opened because its outer page records are pending,
+    # but the already-sealed native terminal artifacts make both physical calls
+    # complete. Churro has no such terminal record and reissues page 2.
     assert resumed.loads == ["attestator_1", "attestator_3"]
-    assert len(resumed.requests("attestator_1")) == 1
+    assert resumed.requests("attestator_1") == []
     assert len(resumed.requests("attestator_3")) == 1
     assert resumed.requests("attestator_2") == []
     tree = RunTree(run_root, RUN_ID)

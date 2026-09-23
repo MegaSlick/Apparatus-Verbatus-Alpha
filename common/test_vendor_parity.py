@@ -77,6 +77,15 @@ from typing import Any, Final
 
 import pytest
 
+from common.chandra_native_retry import (
+    CHANDRA_SOURCE_REVISION,
+)
+from common.chandra_native_retry import (
+    attempt_parameters as chandra_attempt_parameters,
+)
+from common.chandra_native_retry import (
+    recipe_record as chandra_recipe_record,
+)
 from common.imaging import encode_grayscale_png
 from common.imaging_ports import (
     CHANDRA_GRID_SIZE,
@@ -397,6 +406,18 @@ def test_the_vendor_pins_this_file_states_are_internally_consistent():
         assert _digest(message) == CHURRO_SYSTEM_MESSAGE_SHA256[variant]
     assert len(set(CHURRO_SYSTEM_MESSAGES.values())) == 2
     assert len(set(CHURRO_SYSTEM_MESSAGE_SHA256.values())) == 2
+
+
+def test_chandra_native_inference_carries_the_same_pinned_vendor_provenance():
+    recipe = chandra_recipe_record()
+    assert CHANDRA_SOURCE_REVISION == CHANDRA_CODE_COMMIT
+    assert recipe["source_revision"] == CHANDRA_CODE_COMMIT
+    assert recipe["recipe_path"] == "chandra/model/vllm.py"
+    assert recipe["detector_path"] == "chandra/model/util.py::detect_repeat_token"
+    assert recipe["max_output_tokens"] == 12384
+    assert recipe["max_retries"] == 6
+    assert chandra_attempt_parameters(1) == {"temperature": "0", "top_p": "0.1"}
+    assert chandra_attempt_parameters(7) == {"temperature": "0.8", "top_p": "0.95"}
 
 
 def test_the_carried_dai_generation_values_rebuild_the_shipped_file_byte_for_byte():

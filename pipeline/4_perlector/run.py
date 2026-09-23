@@ -67,6 +67,7 @@ import operations.serving.errors as serving_errors  # noqa: E402
 from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.chandra_native_retry import validate_trace as validate_chandra_trace  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
     ApprovalRecordBinding,
     ApprovalRecordReference,
@@ -599,6 +600,11 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
         inputs[reference["relative_path"]] = reference
     reference = context.input_ref(presented["image_path"])
     inputs[reference["relative_path"]] = reference
+    native_inference = payload.get("native_inference")
+    if native_inference is not None:
+        for row in validate_chandra_trace(native_inference)["attempts"]:
+            for native_reference in (row["intent_ref"], row["attempt_ref"]):
+                inputs[native_reference["relative_path"]] = native_reference
     expected_inputs = sorted(
         inputs.values(), key=lambda item: (item["relative_path"], item["sha256"])
     )
@@ -731,6 +737,10 @@ def validate_page_testimonium_record(
         capture = payload.get("native_capture")
         if capture is not None:
             retained.append(capture["raw_response_ref"])
+        native_inference = payload.get("native_inference")
+        if native_inference is not None:
+            for row in validate_chandra_trace(native_inference)["attempts"]:
+                retained.extend((row["intent_ref"], row["attempt_ref"]))
         # Named once each, before the sort, exactly as the producer names them
         # (`pipeline/3_attestatores/run.py::_named_once`). One retained response
         # can honestly appear twice in the payload -- a page whose partition was
