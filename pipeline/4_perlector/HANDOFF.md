@@ -609,7 +609,7 @@ byte-identical for every flag class. A `testimony-diff` flag's *location* is
 witness-derived, though, and now that the instrument is actually delivered the
 reader is directed to the exact spans where it disagreed with witnesses while
 the tree measures movement toward them — whether that is compatible with
-principle 1 ("never picks") and 10 ("the instrument may not constrain what it
+principle 1 ("never picks") and principle 8 ("the instrument may not constrain what it
 measures") is an open interpretation question routed to the project lead with
 the Tier-0 reproof change, not settled by this sentence.
 

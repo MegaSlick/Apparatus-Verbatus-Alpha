@@ -476,8 +476,8 @@ either, and a held, page-subject, `authoritative: false` crop that enters no
 act, no act-group and no proposal seal decides nothing whichever count it
 carries.
 
-A count of two or more is not a hard refusal, because that would let an
-optional, explicitly non-authoritative chair turn a complete run into a fatal
+A count of two or more is not a hard refusal. A hard refusal was tried and
+measured: it let an optional, explicitly non-authoritative chair turn a complete run into a fatal
 one with no denominator at all — the exact inverse of spec 06's test 5,
 "removing the proposer changes no authority decision (it adds recall, never
 verdicts)". (Act a1's and a2's *padded* capture rectangles can abut at exactly
@@ -1456,7 +1456,7 @@ and truncation signals are single-act.
 read it as acceptable.** Such an act is lost with **no hold and no review item**,
 which means a downstream reader cannot distinguish "this act was not there" from
 "this act was missed" — the exact discrimination `PRINCIPLES.md`'s "a missed act is
-worse than a poorly read act" exists to preserve, and the one failure mode
+worse than a poorly read one" exists to preserve, and the one failure mode
 `PRINCIPLES.md` 2 refuses by name. Nothing in this stage's output marks the page
 as suspect, so no recovery loop can be aimed at it either.
 

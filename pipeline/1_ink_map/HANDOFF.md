@@ -155,8 +155,8 @@ unclaimed edge ink.
 Unit 14B originally retained the fixture and fixed band.
 **The band was re-derived**: at the sealed `edge_band_bp` the same
 two pages contain 0 of 11,520 and 0 of 3,840 ink pixels in their perimeter
-strips. The sealed `minimum_ink_pixels` (`[coverage_audit.noise_floor]`, a module
-constant) remains the noise floor; the substantial-ink gate
+strips. The sealed `minimum_ink_pixels` (`[coverage_audit.noise_floor]`, formerly a
+module constant) remains the noise floor; the substantial-ink gate
 is resolved from page area. Armarium re-measures the Ink Map's retained,
 lossless page-space runs against verified final Designator crop bounds. A clear
 re-measure releases the page; a flagged re-measure holds it. The

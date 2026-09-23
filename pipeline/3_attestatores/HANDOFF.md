@@ -291,7 +291,7 @@ the Chandra chair's OWN served response for the page
 page text, and an act's anchor lines are the reported blocks whose geometry
 overlaps one of the act's sealed proposal regions on this page -- the same
 positive-area rule attachment uses, applied per block -- so alignment attaches
-text to acts by geometry and never by choosing among witnesses (hard rule 8).
+text to acts by geometry and never by choosing among witnesses (principle 1).
 The act's `anchor_span` is the hull, in the markup-stripped normalized view
 `align_to_anchor` measures in, of those blocks' spans translated through
 `markup_text_view`'s offset map; `line_geometry` carries every overlapping
@@ -339,7 +339,7 @@ carries 25 s rather than 5 s.
 
 The number is chosen from the legitimate ceiling, not from the pathological one,
 because measurement showed the pathological one cannot be cleared. Timings
-measured, `align_to_anchor` through the shipped bounds:
+measured on a development machine, `align_to_anchor` through the shipped bounds:
 
 | Input, at or near the sealed ceiling | Wall clock |
 |---|---|
@@ -595,7 +595,7 @@ comparison is a Stage 2 arm rather than a guess made here.
 `witness_adapters.framing_for` resolves it
 once per pass from the sealed roster, `run.py` hands it to both live seams, and
 the resolved name is written onto every Churro capture as `view.framing`. This
-is not a picker (hard rule 8): it chooses the wording of a question before the
+is not a picker (principle 1): it chooses the wording of a question before the
 page is read, never among readings, and it is recorded rather than inferred.
 Both framings carry their own measured prompt cost (27 and 29), because a
 framing whose cost nobody measured would be refused at the capacity check —
@@ -747,7 +747,7 @@ asserted through the other.
 
 **What that does and does not claim.** One scripted run over a fixture whose
 page text is exactly its two acts reaches `delivered`. Nothing follows about a
-real page (principle 8, hard rule 1). A real register carries headers, folio
+real page (principle 8). A real register carries headers, folio
 numbers and marginalia no proposal covers; Churro will transcribe them, and that
 page will hold on content coverage. That is the rule working (goal 2,
 principle 2), not a regression to repair by loosening a floor.
@@ -1247,8 +1247,8 @@ one reading of the proposal, plus one for each recovery crop cut since
 Archetypus and Armarium each enforce). Witness testimony never moves it.
 
 That is a decision, not an omission. A Testimonium is a clue that primes a
-reading, never the ink the reading is established from (ARCHITECTURE; GOVERNANCE
-3), so a second look by a witness does not make a second reading exist — and
+reading, never the ink the reading is established from (ARCHITECTURE;
+principle 1), so a second look by a witness does not make a second reading exist — and
 re-reading an act because a witness spoke again is the re-roll principle 7
 refuses. The alternatives were weighed and rejected: advancing the ordinal on any
 new current evidence makes witness quality a loop variable at the four stages that

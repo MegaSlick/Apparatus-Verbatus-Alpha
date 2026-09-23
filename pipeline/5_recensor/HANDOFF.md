@@ -210,7 +210,7 @@ the act was measured as reconciled. The consequence, stated plainly so nobody re
 route as a measurement: on a real run this stage's review routing is silent about
 cross-act reconciliation, and the only cross-act anomaly computation that reaches the
 review record is the Perlector's Pass C verdict, through `audit_unresolved`. This is a
-disclosure (principle 2 and 10), not a defect this stage repairs: a reconciliation
+disclosure (principles 2 and 8), not a defect this stage repairs: a reconciliation
 measure of its own would be a new instrument, and nothing here invents one.
 
 ## Real ingress
