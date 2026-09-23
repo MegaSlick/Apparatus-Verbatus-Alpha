@@ -142,5 +142,4 @@ markers = [
 # basenames would break collection.
 norecursedirs = [".git", ".venv", "venv", ".ruff_cache", ".pytest_cache",
                  ".mypy_cache", ".tox", "node_modules", "build", "dist",
-                 "worktrees", "__pycache__", "workbench", "private", "scriptorium",
-                 "cleanroom"]
+                 "worktrees", "__pycache__", "workbench", "private", "scriptorium"]

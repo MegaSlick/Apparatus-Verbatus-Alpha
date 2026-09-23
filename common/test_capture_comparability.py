@@ -37,7 +37,6 @@ _SKIP_DIRECTORIES = {
     ".venv",
     "venv",
     "__pycache__",
-    "cleanroom",
     "workbench",
     "private",
     "scriptorium",
