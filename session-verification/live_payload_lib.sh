@@ -49,8 +49,9 @@ wait_for_worker_exit() {
       fi
       /bin/sleep 1
       continue
+    else
+      status=$?
     fi
-    status=$?
     if [[ "$status" -eq 1 ]]; then
       return 0
     fi
@@ -75,8 +76,9 @@ drain_worker_uid() {
   deadline=$((SECONDS + 10))
   if wait_for_worker_exit "$uid" "$deadline"; then
     return 0
+  else
+    status=$?
   fi
-  status=$?
   if [[ "$status" -ne 1 ]]; then
     return "$status"
   fi
@@ -88,8 +90,9 @@ drain_worker_uid() {
     deadline=$((SECONDS + 5))
     if wait_for_worker_exit "$uid" "$deadline"; then
       return 0
+    else
+      status=$?
     fi
-    status=$?
     if [[ "$status" -ne 1 ]]; then
       return "$status"
     fi
