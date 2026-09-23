@@ -1,0 +1,18 @@
+# Weekly pull requests for outdated dependencies. Pins in this repository are exact on
+# purpose, so each update is reviewed and CI-tested like any other change; updates to the
+# GPU serving stack (vllm, transformers) still need a serving qualification on a pod
+# before they merge.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
