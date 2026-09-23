@@ -23,6 +23,7 @@ than described.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -754,6 +755,101 @@ def test_chandra_retries_retain_each_physical_request_but_publish_only_final_tex
     assert len([entry for entry in native if entry["kind"] == "chandra-native-attempt"]) == 3
 
 
+def test_chandra_trace_is_restricted_to_its_declared_chair_and_page_scope(live_run, tmp_path):
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+    tree = RunTree(run_root, RUN_ID)
+
+    act_payload = copy.deepcopy(act_records(tree)[("a1", "attestator_1")]["payload"])
+    act_payload["chair"] = "attestator_2"
+    with pytest.raises(SchemaRefusal, match="belongs only to page-scoped attestator_1"):
+        attestatores.validate_testimonium_payload(act_payload)
+
+    page_payload = copy.deepcopy(page_records(tree)[(1, "attestator_1")]["payload"])
+    page_payload["chair"] = "attestator_3"
+    with pytest.raises(SchemaRefusal, match="belongs only to page-scoped attestator_1"):
+        attestatores.validate_page_testimonium_payload(page_payload)
+
+
+def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_path):
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+    context = open_live_context(live_run, run_root)
+    entries = [
+        entry
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "chandra-native-attempt"
+    ]
+    entry = entries[0]
+    record = context.tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])
+    ordinal = record["payload"]["native_attempt_ordinal"]
+
+    moved_trigger = copy.deepcopy(record)
+    moved_trigger["payload"]["returned_condition"] = "inference-error"
+    with pytest.raises(SchemaRefusal, match="retry trigger|trigger disagrees"):
+        attestatores._validate_chandra_terminal(
+            context,
+            subject_id=entry["subject_id"],
+            native_attempt_ordinal=ordinal,
+            record=moved_trigger,
+        )
+
+    moved_call = copy.deepcopy(record)
+    moved_call["payload"]["resolved_attempt"]["serving_call_ref"] = moved_call["payload"][
+        "transport_response_ref"
+    ]
+    with pytest.raises(SchemaRefusal, match="serving call record"):
+        attestatores._validate_chandra_terminal(
+            context,
+            subject_id=entry["subject_id"],
+            native_attempt_ordinal=ordinal,
+            record=moved_call,
+        )
+
+    moved_raw = copy.deepcopy(record)
+    moved_raw["payload"]["resolved_attempt"]["raw_response_ref"] = moved_raw["payload"][
+        "transport_response_ref"
+    ]
+    with pytest.raises(SchemaRefusal, match="trigger disagrees|model output"):
+        attestatores._validate_chandra_terminal(
+            context,
+            subject_id=entry["subject_id"],
+            native_attempt_ordinal=ordinal,
+            record=moved_raw,
+        )
+
+    moved_receipt = copy.deepcopy(record)
+    moved_receipt["payload"]["resolved_attempt"]["receipt_ref"] = moved_receipt["payload"][
+        "transport_response_ref"
+    ]
+    with pytest.raises(SchemaRefusal, match="serving call record moved"):
+        attestatores._validate_chandra_terminal(
+            context,
+            subject_id=entry["subject_id"],
+            native_attempt_ordinal=ordinal,
+            record=moved_receipt,
+        )
+
+    call_ref = record["payload"]["resolved_attempt"]["serving_call_ref"]
+    call = json.loads(context.tree.read_bytes(call_ref["relative_path"]))
+    call["receipt_ref"] = record["payload"]["transport_response_ref"]
+    moved_call_receipt = copy.deepcopy(record)
+    moved_call_receipt["payload"]["resolved_attempt"]["serving_call_ref"] = (
+        attestatores.retained_blob_ref(
+            context, json.dumps(call, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+    )
+    with pytest.raises(SchemaRefusal, match="serving call record moved"):
+        attestatores._validate_chandra_terminal(
+            context,
+            subject_id=entry["subject_id"],
+            native_attempt_ordinal=ordinal,
+            record=moved_call_receipt,
+        )
+
+
 def test_chandra_orphan_intent_fails_closed_without_reissuing(live_run, tmp_path, monkeypatch):
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -779,6 +875,127 @@ def test_chandra_orphan_intent_fails_closed_without_reissuing(live_run, tmp_path
     with pytest.raises(SchemaRefusal, match="delivery is unknown"):
         run_attestatores(live_run, run_root, factory=resumed.factory)
     assert resumed.requests("attestator_1") == []
+
+
+def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
+    live_run, tmp_path, monkeypatch
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_1"] = [
+        ScriptedAnswer(content="overloaded", finish_reason="stop", status=503)
+    ]
+    interrupted = LiveWorld(live_run, tmp_path / "interrupted", scripts)
+
+    def crash_during_backoff(_seconds):
+        raise RuntimeError("simulated crash during native error backoff")
+
+    monkeypatch.setattr(attestatores.time, "sleep", crash_during_backoff)
+    with pytest.raises(RuntimeError, match="during native error backoff"):
+        run_attestatores(live_run, run_root, factory=interrupted.factory)
+    assert len(interrupted.requests("attestator_1")) == 1
+
+    delays: list[int] = []
+    monkeypatch.setattr(attestatores.time, "sleep", delays.append)
+    resumed_scripts = default_scripts()
+    resumed_scripts["attestator_1"] = [
+        ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="stop"),
+        ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
+    ]
+    resumed = LiveWorld(live_run, tmp_path / "resumed", resumed_scripts)
+    assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
+    assert delays == [2]
+    assert [request["temperature"] for request in resumed.requests("attestator_1")] == [0.2, 0.0]
+
+
+def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(
+    live_run, tmp_path
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_1"] = [
+        ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="unmeasured-stop")
+    ]
+    first = LiveWorld(live_run, tmp_path / "first", scripts)
+    with pytest.raises(ContractError, match="unmeasured-stop"):
+        run_attestatores(live_run, run_root, factory=first.factory)
+    assert len(first.requests("attestator_1")) == 1
+
+    tree = RunTree(run_root, RUN_ID)
+    assert any(
+        entry["kind"] == "chandra-native-attempt"
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+    )
+    resumed = LiveWorld(live_run, tmp_path / "resumed", {"attestator_1": []})
+    with pytest.raises(ContractError, match="unmeasured-stop") as caught:
+        run_attestatores(live_run, run_root, factory=resumed.factory)
+    assert "delivery is unknown" not in str(caught.value)
+    assert resumed.requests("attestator_1") == []
+
+
+def test_exhausted_repeat_geometry_survives_act_record_crash_resume(
+    live_run, tmp_path
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    repeated = CHANDRA_PAGE_ONE + ("<!--repeat-->" * 24)
+    scripts = default_scripts()
+    scripts["attestator_1"] = [
+        *[ScriptedAnswer(content=repeated, finish_reason="stop") for _ in range(7)],
+        ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
+    ]
+    # Chandra's act views are sealed before Churro runs out of page answers;
+    # page Testimonia have not yet been published at this crash boundary.
+    scripts["attestator_3"] = [ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="stop")]
+    interrupted = LiveWorld(live_run, tmp_path / "interrupted", scripts)
+    with pytest.raises(IndexError):
+        run_attestatores(live_run, run_root, factory=interrupted.factory)
+
+    tree = RunTree(run_root, RUN_ID)
+    exhausted = act_records(tree)[("a1", "attestator_1")]
+    assert exhausted["outcome"] == "failed"
+    assert exhausted["payload"]["native_inference"]["exhausted_condition"] == "repeat-token"
+    assert not page_records(tree)
+
+    resumed_scripts = {
+        "attestator_1": [],
+        "attestator_3": [ScriptedAnswer(content=CHURRO_PAGE_TWO, finish_reason="stop")],
+    }
+    resumed = LiveWorld(live_run, tmp_path / "resumed", resumed_scripts)
+    assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
+    assert resumed.requests("attestator_1") == []
+    page = page_records(RunTree(run_root, RUN_ID))[(1, "attestator_1")]
+    assert page["outcome"] == "failed"
+    assert page["payload"]["native_inference"]["physical_request_count"] == 7
+    assert any(
+        observation["bounds_source"] in {"native", "derived"}
+        for observation in page["payload"]["observed"]
+    )
+
+
+def test_chandra_error_exhaustion_is_failed_and_records_every_backoff(
+    live_run, tmp_path, monkeypatch
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_1"] = [
+        *[
+            ScriptedAnswer(content=f"error-{ordinal}", finish_reason="stop", status=503)
+            for ordinal in range(1, 8)
+        ],
+        ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
+    ]
+    delays: list[int] = []
+    monkeypatch.setattr(attestatores.time, "sleep", delays.append)
+    world = LiveWorld(live_run, tmp_path, scripts)
+
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+    assert delays == [2, 4, 6, 8, 10, 12]
+    page = page_records(RunTree(run_root, RUN_ID))[(1, "attestator_1")]
+    assert page["outcome"] == "failed"
+    trace = page["payload"]["native_inference"]
+    assert trace["physical_request_count"] == 7
+    assert trace["exhausted_condition"] == "inference-error"
+    assert all(row["error"] is True for row in trace["attempts"])
 
 
 def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(live_run, tmp_path):

@@ -194,17 +194,25 @@ the loop; only errors wait 2, 4, 6, 8, 10, then 12 seconds. This capability is
 restricted to the page-scoped `attestator_1`/`chandra.v1` route. The separate
 Designator structure chair retains its own coverage recovery policy.
 
-Every physical request has an immutable intent artifact before HTTP and a
-terminal artifact afterward. A crash that leaves an intent without terminal
-evidence is delivery-unknown and refuses manual-free resume; it is never replayed
-blindly. The final vendor-returned attempt alone supplies Testimonium text and
-geometry. Earlier requests, responses/errors, captures, parameters and triggers
-remain reachable through `native_inference`, whose `physical_request_count`
-does not alter the one-Testimonium-per-chair denominator. Exhausted repetition
-is retained as failed/partial with its text and capture; exhausted inference
-errors are failed. The older chair-neutral post-hoc repetition finding remains
-a diagnostic over the returned capture, but it does not schedule a request and
-is not the vendor trigger.
+Every physical request has an immutable `chandra-native-attempt-intent` artifact
+(`chandra-native-attempt-intent.v1`) before HTTP and a terminal
+`chandra-native-attempt` artifact (`chandra-native-attempt.v1`) afterward. Page
+and act Testimonia bind both through `native_inference`; their validators require
+the referenced evidence rather than treating the compact trace as a free-standing
+claim. A crash that leaves an intent without terminal evidence is delivery-unknown
+and refuses manual-free resume; it is never replayed blindly. A retained response
+that this stage cannot publish receives a terminal record first, so resume repeats
+the named refusal instead of misreporting known delivery as unknown. The final
+vendor-returned attempt alone supplies Testimonium text and geometry. Earlier
+requests, responses/errors, captures, parameters and triggers remain reachable
+through `native_inference`, whose `physical_request_count` does not alter the
+one-Testimonium-per-chair denominator. Exhausted repetition is retained as
+failed/partial with its text and capture; exhausted inference errors are failed.
+An HTTP error is an inference error under the pinned recipe: attempts one through
+six wait 2, 4, 6, 8, 10 and 12 seconds respectively before the next request (42
+seconds total on full exhaustion), including after crash/resume. The older
+chair-neutral post-hoc repetition finding remains a diagnostic over the returned
+capture, but it does not schedule a request and is not the vendor trigger.
 
 **The placeholder is offline only.** `proof/skeleton_fixture.toml`'s Chandra
 rows still declare `fixture-chandra-response.v1`, a JSON placeholder this
