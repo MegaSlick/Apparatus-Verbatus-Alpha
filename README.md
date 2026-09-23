@@ -1,86 +1,97 @@
 # Apparatus Verbatus
 
-Recovers the *ipsissima verba* — the very words themselves — from historical parish and
-civil registers, using imperfect witnesses. Several vision models report on each act at
-second hand; a trained reader, the **Perlector**, reads the ink itself and establishes
-the text.
+Reads handwritten historical parish and civil registers and recovers the *ipsissima
+verba*, the very words on the page. Several vision models act as witnesses and report
+what they see in each entry; a separate reader model, the **Perlector**, then reads the
+ink itself, uses the witnesses only as clues, and establishes the text. Every reading
+traces back to the exact region of the image it came from, and anything uncertain is
+flagged rather than guessed.
 
-**Status:** alpha. Governance and architectural direction are settled. The staged
-pipeline, its accounting boundaries and the Armarium export are implemented and pass
-their checks. Every stage through the three witnesses has run on original pages on a
-live pod, but no run has yet reached the Armarium, so the pipeline is not proven.
-This line is the only place status lives, and it carries no date.
+It is being developed on French-language parish registers from Quebec, whose
+handwriting spans centuries.
 
-## Where to look
+**Status: alpha.** The staged pipeline, its accounting and its export are implemented and
+tested on synthetic pages. Real pages have run on a GPU pod through the three witnesses,
+but no real run has yet produced a final export, so accuracy is not yet established.
 
-| If you want to know… | Read |
+## How it works
+
+```
+page images → Exemplar → Designator → Attestatores → Perlector → Recensor → Archetypus → Armarium
+              sealed      finds the     witness       reads the    checks     established   export
+              source      entries       models        ink          coverage   reading
+```
+
+[ARCHITECTURE.md](ARCHITECTURE.md) explains each stage and why it is shaped that way;
+[GLOSSARY.md](GLOSSARY.md) defines the terms. What the project holds itself to is in
+[PRINCIPLES.md](PRINCIPLES.md).
+
+| Role | Model |
 |---|---|
-| what this project is for | [GOALS.md](GOALS.md) |
-| what we are and aren't allowed to do | [GOVERNANCE.md](GOVERNANCE.md) |
-| how the pipeline is shaped and why | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| what a word means | [GLOSSARY.md](GLOSSARY.md) |
-| how a session works | [CLAUDE.md](CLAUDE.md) |
+| Designator, Attestator 1 | `datalab-to/chandra-ocr-2` |
+| Attestator 2 | `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR` |
+| Attestator 3 | `stanford-oval/churro-3B` |
+| Perlector | `Qwen/Qwen3.8-27B` |
 
-## The three that bind
+Models are bound to roles in `config/models-real.toml` and can be swapped without code
+changes.
 
-1. **A missed act is worse than a poorly read act.** Nothing is lost silently.
-2. **The Perlector reads; it never picks.** Witnesses are clues, never options.
-3. **Quality over speed.** More passes and slower runs are acceptable costs.
+## Getting started
 
-**Tyrel decides.** He is the only human in these rules; no agent stands in for him.
+Requirements: Python 3.12 or newer and [uv](https://docs.astral.sh/uv/) 0.12.1.
 
-## Scope
+```sh
+uv sync --frozen --group test --group audit   # create .venv from the lockfile
+sh .githooks/install.sh                        # arm the git hooks
+sh .githooks/check-fast.sh                     # quick checks and tests
+```
 
-Source images in, established readings out. Import to export. Training, research,
-search and correction happen elsewhere.
+**Try it without a GPU.** The default model roster (`config/models.toml`) uses small
+stand-ins, so the whole pipeline runs locally on the synthetic pages in
+`proof/fixtures/`:
 
-## Controls
+```sh
+.venv/bin/python pipeline/orchestrator/run.py --fixture synthetic-two-page-v0 \
+  --scenario happy --run-id demo --run-root /tmp/verbatus-demo
+```
 
-**GitHub enforces four things on `main`:** changes arrive by pull request, the required
-checks must pass, `main` cannot be force-pushed or deleted, and all of this applies to
-the owner too. No approval is required. Everything else here is a local convention.
+Each stage writes its sealed output under the run root, ending in `7_armarium/`.
 
-**Every local protection can be switched off** (CLAUDE.md hard rule 11):
+**Real pages** need the real roster and a Linux GPU machine running vLLM; the RunPod
+tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC
+or PDF. Output is a sealed ZIP bundle with a manifest, and it can include a text bundle,
+a searchable SQLite database, JSONL, and the items held for human review
+(`config/formats.toml`).
 
-- **The tool-call guard** (`.claude/hooks/guard.py`) refuses, for every session: landing
-  work on `main`, recursive deletes outside the disposable drawers, rewriting published
-  history, deleting a remote ref, putting a credential into git, and switching the git
-  hooks off. For a spawned agent it also refuses editing a governed path and pushing,
-  opening, readying or merging a pull request. A refusal is final within a session.
-  **To switch it off, delete the `PreToolUse` block from `.claude/settings.json`.**
-- **The git hooks** refuse a commit on `main`, a push at `main`, an unattributed commit,
-  and a credential or oversized payload in outgoing history. `sh .githooks/install.sh`
-  arms them; unsetting `core.hooksPath` removes them.
-- **The notifier's test sink** keeps tests from reaching a phone. To switch it off,
-  delete the `NTFY_TOPIC` block in `.githooks/check-all.sh` and the autouse fixture in
-  the root `conftest.py`.
+## Repository layout
 
-## Who wrote this
+| Path | What it holds |
+|---|---|
+| `pipeline/` | the numbered stages and the orchestrator that runs them |
+| `common/` | the only code shared between stages |
+| `config/` | settings and model rosters |
+| `operations/` | operator tools, image intake, GPU pod and serving, notifications, review |
+| `proof/` | small synthetic fixtures that are safe to publish |
+| `gold/` | tooling for building human-checked reference samples |
+| `.githooks/` | git hooks and the check scripts CI runs |
 
-**Every line of code here is AI-generated.** Tyrel directs the work, reviews it and
-decides what lands. Each commit is authored by Tyrel, who is accountable for it, with a
-`Co-Authored-By` line naming the model that wrote it and `Reviewed-by` lines naming any
-model that reviewed it. Models are named by release, not by vendor alone.
+## Contributing
 
-## Conventions
+See [CONTRIBUTING.md](CONTRIBUTING.md). AI coding agents follow
+[AGENTS.md](AGENTS.md) as well.
 
-**History is evidence, never instructions.** Dated documents under `history/` and the
-workbench ledgers record what happened; only the documents above say what to do.
+**All of the code here is written by AI models**, directed and reviewed by the project
+lead. Each commit names the model that wrote it (`Co-Authored-By`) and any model that
+reviewed it (`Reviewed-by`).
 
-**Status lives in one place**, the undated line under the title. `check-documents.sh`
-refuses a date in any of the canonical documents.
+## Roadmap
 
-## Versions
+- **alpha** (this repository): build the pipeline and prove it on a small set of real
+  pages.
+- **beta**: a fresh, clean repository carrying forward only what survived alpha.
+- **1.0**: the public release.
 
-**alpha** — a rebuild laboratory. Old systems are reference only; everything here is
-written new, one piece at a time, and nothing enters uninspected. Third-party code enters
-under a permitting licence, with its source recorded.
+## Licence
 
-**beta** — a fresh, clean environment built only from what survived alpha.
-
-**1.0** — the public release, with personal and community-specific material removed.
-
-**Distribution rule.** This alpha repository is public, so nothing personal, private or
-register-derived is ever committed: register material, gold pages and credentials stay
-in gitignored or external locations. Beta and 1.0 start from fresh history, exported by
-allowlist.
+Apache License 2.0; see [LICENSE](LICENSE). Copyright 2026 Tyrel Somerville, project
+lead.

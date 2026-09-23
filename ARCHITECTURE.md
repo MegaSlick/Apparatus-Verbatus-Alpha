@@ -1,7 +1,8 @@
-# Architecture — Apparatus Verbatus
+# Architecture
 
-*Architectural direction. Implementation is discovered and tested during alpha, not
-settled here.*
+*The shape of the pipeline and the reasons for it. Implementation details are discovered
+and tested during alpha; they are not settled here. Terms are defined in
+[GLOSSARY.md](GLOSSARY.md); the principles they serve are in [PRINCIPLES.md](PRINCIPLES.md).*
 
 ## The claim
 
@@ -106,9 +107,8 @@ back through the Perlector, request a full-page or continuation-aware pass, link
 material across pages, or hold for review.
 
 **It recovers coverage, not quality.** A suspected fabrication or a poor reading may be
-flagged for review. It may never be re-rolled until it looks better.
-The bounded native Chandra inference exception in GOVERNANCE 11 belongs to the
-witness recipe; it grants the Recensor no additional recovery action.
+flagged for review. It may never be re-rolled until it looks better. A witness model's
+own pinned retry recipe belongs to that witness and gives the Recensor no extra recovery.
 
 **Recovery is bounded.** The loop runs to a finite, configured budget before handing to
 review, so the system cannot reconsider itself indefinitely. Every loop is recorded, and
@@ -140,17 +140,8 @@ review where uncertainty remains.
 
 A text-only model may **flag** a problem. It may never rewrite or establish text.
 
-## The objects
+## Dissent
 
-| Object | What it is |
-|---|---|
-| **Testimonium** | One witness's report. Unverified. Carries the model identity and revision that produced it. |
-| **Lectio** | One reading pass by the Perlector, primed or unprimed. |
-| **Lectio nuda** | An unprimed Lectio. No witness shown. The baseline. |
-| **Perlectio** | What the Perlector returns: the reading, what it was based on, and its dissent. |
-| **Archetypus** | The established reading. Pipeline output, not truth. |
-
-### On dissent
 
 The Perlectio records where the reading departed from every witness. This is
 **structural, not evaluative**: it makes parroting measurable without new

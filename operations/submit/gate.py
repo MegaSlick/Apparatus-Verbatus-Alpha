@@ -9,7 +9,7 @@ a per-run approval checkable: a policy hash, an approval record bound to the exa
 policy version, and a door that refused real input without a current one. His
 ruling: none of this material ever reaches git regardless of any such sign-off —
 it runs through the pipeline on a GPU host, `workbench/` is gitignored, and an
-ingress check plus a pre-push payload scan already cover that mechanically — so the
+ingress check plus CI's full-history payload scan already cover that mechanically — so the
 approval-record requirement bought nothing and is gone. What remains is the part
 that is still a real, mechanical safety net: the policy load and its storage-root
 enforcement, which keep real material inside the locations the policy names,
