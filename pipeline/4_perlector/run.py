@@ -444,8 +444,8 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
         )
 
     candidate, record = candidates[0]
-    # "exclusion" and "salvage-promotion" approve a different governed action entirely
-    # (principle 9); a sampling design is filed under "other" so a record meant to
+    # "exclusion" and "salvage-promotion" approve a different governed action
+    # entirely; a sampling design is filed under "other" so a record meant to
     # authorize an exclusion can never double as a sampling approval by coincidence
     # of subject text.
     if record["action"] != "other":

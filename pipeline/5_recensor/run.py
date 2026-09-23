@@ -546,7 +546,7 @@ def act_cross_capture_coverage(
         # Continuation acts are ordinary in these registers, so this is the
         # common case and not an edge. Until the instrument can classify each
         # page on its own grid and combine the results, such a view is recorded
-        # as unmeasured rather than measured wrongly (principle 2 and 10).
+        # as unmeasured rather than measured wrongly (principles 2 and 8).
         if surveyed and len(view["page_ids"]) > 1:
             visibility_state = "unresolved"
             visible_cells = []
@@ -3006,7 +3006,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # for ink a proposal does in fact cover, and the witness's
             # observation is published as an unrouted-observation finding. That
             # is manufactured coverage evidence driving bounded recovery
-            # (principle 8, 11), which is why the range checks belong here and
+            # (principles 7 and 8), which is why the range checks belong here and
             # not only in the sibling reader.
             if (
                 not isinstance(bounds, dict)

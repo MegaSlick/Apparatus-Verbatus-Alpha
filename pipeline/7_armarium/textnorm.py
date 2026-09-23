@@ -12,9 +12,9 @@ is untouched by it: the Archetypus ``text`` field is never written from here and
 nothing this function returns may round-trip back into one.
 
 **The substitution table and the apostrophe set are carried from the window, and
-named as carried** — principle 12 lets bytes cross only when
-they are the best option, understood line by line, and named as carried in the
-commit and report.  Source: ``local/textnorm.py`` in the old repository, read
+named as carried** — adapted code is named as such (principle 12), and it
+enters only when it is the best option and understood line by line
+(principle 11).  Source: ``local/textnorm.py`` in the old repository, read
 through the window.  What is carried is the *data* in ``_SUBSTITUTIONS`` and ``_APOSTROPHES``,
 because each entry records a fact about this project's actual source material that
 cannot be re-derived from Unicode or from anything inside this repository:

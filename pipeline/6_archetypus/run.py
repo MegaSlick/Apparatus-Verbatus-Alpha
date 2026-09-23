@@ -1006,7 +1006,7 @@ def _require_the_partition_this_reading_was_made_over(
     ``logical_act_id`` alone would make that provenance the caller's assertion
     rather than the reading's -- a row naming five captures stapled to a joint
     autopsia that only ever presented two, and an established record claiming
-    evidence its own reading never demonstrated (consult §5.1, principle 11).
+    evidence its own reading never demonstrated (principle 8).
 
     The dossier's ``cross_capture_autopsia`` closes it. It is a full
     ``cross-capture-autopsia.v1`` (``assemble_reader_input`` puts the validated
