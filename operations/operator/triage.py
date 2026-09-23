@@ -39,7 +39,7 @@ class TriageRefusal(ProducerRefusal):
 
 
 def _refuse_preference_named(value: Any, what: str) -> None:
-    """Hard rule 8's refusal, in this console's own operator-facing vocabulary.
+    """Principle 1's refusal, in this console's own operator-facing vocabulary.
 
     The CLI boundary handles `TriageRefusal`, not the `SchemaRefusal` raised by
     `refuse_capture_preference`; without this translation a picker attempt loses

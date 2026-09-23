@@ -618,7 +618,7 @@ def test_a_refusal_report_write_failure_is_named_not_swallowed(
     """``_write_refusal_report`` used to return ``None`` whether it wrote the
     report or hit an ``OSError`` -- ``refuse`` could not tell, so a refusal
     that also failed to leave its durable reason exited exactly like a clean
-    one. GOVERNANCE 2 binds the write failure too: it must be named on
+    one. Principle 2 binds the write failure too: it must be named on
     stderr, and the refusal exit code stays exactly what it was.
     """
 
@@ -860,7 +860,7 @@ def test_refuses_a_report_path_missing_the_launch_token(
 
     A volume is retained across pods; an unbound report path would let a
     second launch's bootstrap/close evidence silently replace the first's
-    (GOVERNANCE 4).
+    (principle 4).
     """
 
     ws = _workspace(tmp_path)
@@ -1110,7 +1110,7 @@ def test_build_actions_does_not_read_models_config_before_configuration_runs(
     Building the chair cache eagerly would read whatever ``models.toml``
     happened to be on disk at container start, not the commit the journal
     names -- the receipt would attest a provenance nothing measured
-    (GOVERNANCE 6). ``--models-config`` is deliberately left absent here: were
+    (principle 6). ``--models-config`` is deliberately left absent here: were
     ``build_actions`` still eager, constructing the real actions would already
     raise trying to read it.
 
@@ -1201,7 +1201,7 @@ def test_a_configured_manifest_that_is_missing_fails_the_step_rather_than_no_opp
     a manifest nor a target. Returning it for a *configured* manifest whose
     file is absent recorded the TRANSFER step complete, so the pod went on
     without uploading the submission it declared, and the only sign was a
-    report saying there had been nothing to send (CodeRabbit on PR #117).
+    report saying there had been nothing to send.
     """
 
     from .bootstrap_main import BootstrapStep, BootstrapStepFailure, Plan, build_actions
@@ -1257,7 +1257,7 @@ def test_a_transfer_target_with_no_submission_manifest_is_refused_at_plan_time(
     tmp_path: Path,
 ) -> None:
     """The other half: a configured target with nothing to send would report a
-    success that moved nothing (GOVERNANCE 2)."""
+    success that moved nothing (principle 2)."""
 
     ws = _workspace(tmp_path)
 

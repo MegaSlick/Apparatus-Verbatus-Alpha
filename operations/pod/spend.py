@@ -44,18 +44,19 @@ CONFIRMATION_PREFIX = "I CONFIRM PAID POD"
 """The fixed opening of the typed phrase; the rest names one action and one challenge.
 
 A constant phrase can be typed from memory without referring to one action.
-CLAUDE.md's hard rule 1 reserves paid actions to Tyrel and requires the exact action to
+Paid actions are reserved to the project lead and require the exact action to
 be named, so this phrase names the action, subject, and both displayed hourly rates.
 
 Those four values are all derivable from the price sheet, so they alone proved only that
 the caller knew the price -- not that anyone had been shown a preview. The phrase
 therefore also carries a challenge that only a preview issued in this process can supply.
 
-What that does and does not establish, stated plainly because GOVERNANCE 10 forbids
+What that does and does not establish, stated plainly because principle 8 forbids
 claiming more than was measured: it binds the confirmation to a preview produced in this
-run, and makes the phrase unguessable and single-use. It is still not proof of *Tyrel's*
-identity -- nothing local can supply that -- so GOVERNANCE 8 continues to rest on his
-permission in the session, with this gate refusing everything that never saw a preview.
+run, and makes the phrase unguessable and single-use. It is still not proof of the
+project lead's identity -- nothing local can supply that -- so starting the pod still
+rests on the project lead's own permission in the session, with this gate refusing
+everything that never saw a preview.
 """
 
 CHALLENGE_BYTES = 8
@@ -95,7 +96,7 @@ def confirmation_phrase(
 
 @dataclass(frozen=True, slots=True)
 class SpendPolicy:
-    """Ceilings Tyrel configures; the checked-in policy intentionally has none.
+    """Ceilings the project lead configures; the checked-in policy intentionally has none.
 
     ``max_hourly_usd`` and ``max_estimated_metered_cost_usd`` apply to all
     launch-time metering: the pod plus its attached volume. Ongoing volume
@@ -250,7 +251,7 @@ class SpendAssessment:
     """What the notification seam actually did with each alert above.
 
     ``operations/notify/README.md`` requires a failed send to be said out loud
-    rather than swallowed, and GOVERNANCE 2 forbids losing it behind a
+    rather than swallowed, and principle 2 forbids losing it behind a
     successful result.  A warning is notification-only, so its delivery never
     changes ``allowed`` -- but whether the phone got it is part of the record.
     """
@@ -353,7 +354,6 @@ def load_spend_policy_bytes(data: bytes, *, source: str | Path = "<bytes>") -> S
     *same* bytes. Reading the file once to hash it and again to parse it lets a
     policy that changed between the two reads — and was restored before the
     confirming hash — show one file's limits under another file's digest.
-    Found by CodeRabbit.
     """
 
     try:

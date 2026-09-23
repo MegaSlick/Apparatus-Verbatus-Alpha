@@ -440,7 +440,7 @@ def test_generic_matrix_refuses_real_material_before_any_adapter_call():
 # This class decides whether private-register material may be disclosed to an
 # external adapter.  Until now its stale/missing/tampered behaviour was covered
 # only through `common/contracts/test_contracts_approval.py`, against the shared
-# "data-gate" action Tyrel retired on 2026-08-09.  When the rebase onto that cut
+# "data-gate" action retired for that reason.  When the rebase onto that cut
 # moved the behaviour into this class, the coverage did not come with it — and two
 # real regressions then passed the whole suite unnoticed.  These tests are the
 # protection moving to where the behaviour now lives.
@@ -566,7 +566,7 @@ def test_rehashed_approval_bytes_still_refuse_an_invalid_record_self_hash():
         target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY),
     )
     record = json.loads(payload)
-    record["reason"] = "edited after Tyrel's recorded act"
+    record["reason"] = "edited after the recorded approval"
     tampered = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
     tampered_sha256 = digest(tampered.decode("utf-8"))
     reference = ApprovalRecordReference(f"receipts/sha256/{tampered_sha256}.json", tampered_sha256)

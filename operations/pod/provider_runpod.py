@@ -387,11 +387,11 @@ class GraphQLBalanceObserver:
         """Notify the phone; return a note when the ping did not land.
 
         Best-effort, never raised: a notification hook must never turn a
-        successful observation into a failed one (ruling (b) -- tracking plus
-        notifications only, no new enforcement). But a ping that was refused
-        on sight, never delivered, or raised is itself a fact about this
-        observation, and GOVERNANCE 2 does not let it disappear into a bare
-        ``pass``. It comes back as a note appended to the observation's own
+        successful observation into a failed one (spend machinery is tracking
+        plus notifications only, no new enforcement). But a ping that was
+        refused on sight, never delivered, or raised is itself a fact about
+        this observation, and principle 2 does not let it disappear into a
+        bare ``pass``. It comes back as a note appended to the observation's own
         ``source``, which every spend assessment and launch record already
         carries, so a phone that never rang says so where the money decision
         is written down. A delivered ping adds nothing: the caller that wired
@@ -1251,7 +1251,7 @@ def _bounded_read(
     under the cap would then reach ``_json`` truncated and be refused as
     malformed.  CPython's own implementation happens not to short-read here
     today -- this accumulates against the documented contract rather than
-    against that implementation detail.  Found by CodeRabbit on this branch.
+    against that implementation detail.
 
     ``deadline`` is the caller's whole-call monotonic deadline, checked between
     reads.  It is a refinement and not the bound: ``read`` blocks until it has

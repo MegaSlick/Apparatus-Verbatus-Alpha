@@ -659,7 +659,7 @@ def test_a_non_200_body_is_retained_before_the_refusal_and_quoted_in_it(
     that sentence is the whole diagnostic. It used to be thrown away here --
     `_refuse_bytes_from_the_wrong_source` ran before `self._retain` -- so the
     predicted first real boot returned a stack trace and no engine account of
-    what went wrong. GOVERNANCE 2: nothing is lost silently.
+    what went wrong. Principle 2: nothing is lost silently.
     """
 
     body = (
@@ -942,7 +942,7 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert record["parse_problem"] is None
     # No caller stated one here, and the client never invents one.
     assert record["capacity"] is None
-    # GOVERNANCE 7: the exact bytes the engine returned, never stripped,
+    # Principle 3: the exact bytes the engine returned, never stripped,
     # cased, or trimmed — carried verbatim into both the response and the
     # blob the record was built alongside.
     assert response.content == exact_content
@@ -1126,7 +1126,7 @@ def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path:
     DAI's `temperature` 0.1 never reaches the wire — the sealed reading-of-
     record posture is 0 and the client refuses to be built against anything
     else — but the record must still say what the vendor declared, to the
-    digit, or the two halves of GOVERNANCE 7's account disagree.
+    digit, or the two halves of principle 3's account disagree.
     """
 
     client, endpoint, blob_store, _ = _built(tmp_path)
@@ -1139,7 +1139,7 @@ def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path:
     }
     # The posted body carries the sealed 0, never the declared 0.1 — asserted
     # strictly, since a client that stopped pinning temperature at all would
-    # silently drop the reading-of-record posture (GOVERNANCE 7) and this
+    # silently drop the reading-of-record posture (principle 3) and this
     # weaker form (`not in ... or ... == 0`) would not catch it.
     assert endpoint.requests[0]["temperature"] == 0
 

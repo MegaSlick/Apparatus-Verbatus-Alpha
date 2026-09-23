@@ -205,7 +205,7 @@ def all_definitions() -> list[dict[str, Any]]:
     Read off ``_MEASURES`` rather than repeated as a second hand-written list: a
     cell added to the matrix and forgotten in a duplicate roster would be absent
     from every exercise and every result with nothing failing to say so
-    (GOVERNANCE 2).  The names themselves are pinned by ``test_records.py``.
+    (principle 2).  The names themselves are pinned by ``test_records.py``.
     """
     return [definition(cell) for cell in _MEASURES]
 

@@ -25,8 +25,7 @@ them -- the stored page is decoded and measured before any record on it is
 admitted -- so it carries the box across and records every fact of the crossing:
 the original URL, the rotation, the original box, the transformed box, the
 page's digest and dimensions. Nothing is treated as unrotated that was not; a
-rotation outside `0`/`180` stays a named refusal (independent audit of
-2026-09-10, finding F4).
+rotation outside `0`/`180` stays a named refusal.
 
 **Read-only over the set.** Nothing here writes into a set root -- an output
 directory inside one is refused by name -- and the ledger and the reference
@@ -147,8 +146,7 @@ _GOLD_ROW_FIELDS = frozenset(
 
 # One closed row shape for both decisions. A refused row carries `None` where an
 # admitted row carries a measurement, so every row answers the same questions and
-# a validator can hold them all to one set of keys (independent audit of
-# 2026-09-11, finding 9).
+# a validator can hold them all to one set of keys.
 _LEDGER_ROW_FIELDS = frozenset(
     {
         "record_id",
@@ -204,8 +202,7 @@ _TOP_FIELDS = frozenset(
 
 # Every outcome a listed page can reach, closed and reconciled against
 # `pages_listed`: a page that produced no reference truth is named by why rather
-# than left out of both buckets (independent audit of 2026-09-11, finding 23 and
-# the CodeRabbit page-accounting finding on the same lines).
+# than left out of both buckets.
 _PAGE_OUTCOMES = ("admitted", "refused", "no-gold-row", "all-records-refused")
 
 
@@ -216,8 +213,7 @@ def transform_region(
 
     `width`/`height` are the **stored page's** dimensions, and the stored page is
     the upright, already-180-delivered view of the archive image. That frame was
-    verified against real pixels on 2026-09-11 for record
-    `07291eae-33d8-4b6b-8088-e761c9259db0`: the flipped box cuts the ink
+    verified against real pixels: the flipped box cuts the ink
     `gold.jsonl` transcribes, and the unflipped box cuts a different part of the
     page. The box arrives stated in the other frame, which the `/180/` in
     `record_url` names.
@@ -337,7 +333,7 @@ def _decode_page(body: bytes, *, width: int, height: int) -> None:
     in, and a page that no longer decodes to them, or that carries an EXIF
     display rotation, would put every box on it in the wrong frame. There is no
     switch to skip this: a ledger built with the check off would be
-    indistinguishable from one built with it on (GOVERNANCE 10).
+    indistinguishable from one built with it on (principle 8).
     """
     from PIL import Image
 
@@ -366,7 +362,7 @@ def _page_image_path(set_root: Path, image_rel: Any, page_id: str) -> Path:
     `..` or control-character segment, or a resolved path that leaves the set
     root is refused rather than read. Without this a crafted or damaged manifest
     makes admission hash a file outside the set it was pointed at and record its
-    size in the ledger (independent audit of 2026-09-11, finding 8).
+    size in the ledger.
     """
     if not isinstance(image_rel, str) or not image_rel:
         raise CorpusRefusal(f"malformed-record: page {page_id!r} names no image")
@@ -406,8 +402,7 @@ def _canonical_safe(value: Any) -> Any:
     then abort the whole admission inside `self_hash(ledger)` with a bare
     `TypeError` naming no record at all. Anything the canonical serialization
     does not carry becomes its `repr`; the refusal's own detail string already
-    holds the offending value verbatim (independent audit of 2026-09-11, round 2
-    item 2).
+    holds the offending value verbatim.
     """
     if value is None or isinstance(value, (bool, int, str)):
         return value
@@ -457,8 +452,7 @@ def _cross_check_snapshot(row: dict[str, Any], sealed: dict[str, dict[str, Any]]
     The receipt and the two files it names sit in one directory, so anything that
     rewrote a text or a box and re-wrote the receipt passes the receipt check.
     The row snapshot is this repository's own sealed copy of the corpus facts,
-    and the only witness that was never in that directory (independent audit of
-    2026-09-11, finding 4).
+    and the only witness that was never in that directory.
     """
     if sealed is None:
         return
@@ -688,8 +682,7 @@ def admit_local_set(
             # `MeasurementRefusal` on a blank checked reference, which is outside
             # this package's vocabulary and names neither the record nor the
             # page. Refuse it here, by record, against the same profile
-            # `compare.py` scores with (independent audit of 2026-09-11,
-            # finding 14).
+            # `compare.py` scores with.
             if not character_units(text, GRAPHEMIC_V1):
                 raise CorpusRefusal(
                     f"empty-normalized-text: record {record_id!r} carries text {text!r}, which "
@@ -803,7 +796,7 @@ def admit_local_set(
     ledger_rows.sort(key=lambda entry: (str(entry["page_id"]), str(entry["record_id"])))
     # Counted from the rows themselves rather than defined as each other's
     # complement: a check whose two sides are one subtraction apart proves
-    # arithmetic, not reconciliation (independent audit of 2026-09-11, finding 5).
+    # arithmetic, not reconciliation.
     admitted = sum(1 for entry in ledger_rows if entry["decision"] == "admitted")
     refused = sum(1 for entry in ledger_rows if entry["decision"] == "refused")
     named_in_gold = {row.get("page_id") for row in gold_rows}
@@ -886,8 +879,7 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
     count against the record count, the decisions against the rows, the reason
     histogram against the refused count, and every listed page against exactly
     one outcome. Every sibling record in this package carries a validator and a
-    loader; this one was the exception (independent audit of 2026-09-11,
-    finding 9).
+    loader; this one was the exception.
     """
     ledger = _closed(ledger, _TOP_FIELDS, "admission ledger")
     if ledger["schema"] != SCHEMA:
@@ -986,8 +978,7 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
             f"summary claims {summary['admitted']} / {summary['refused']}"
         )
     # Every histogram is a mapping of non-negative integer counts before any of
-    # them is summed: a list or a bool there is refused by name, never added up
-    # (CodeRabbit on e97d1482).
+    # them is summed: a list or a bool there is refused by name, never added up.
     histogram = _counts(summary["refused_by_reason"], "refused_by_reason")
     if sum(histogram.values()) != refused:
         raise CorpusRefusal(
@@ -1052,7 +1043,7 @@ def read_row_snapshot(path: str | Path) -> dict[str, Any]:
 
     The same boundary `_receipt` and `_load_jsonl` already hold: a missing file,
     a non-UTF-8 file and a file that is not JSON each refuse under this module's
-    own vocabulary (independent audit of 2026-09-11, round 2 item 7).
+    own vocabulary.
     """
     path = Path(path)
     if not path.is_file():

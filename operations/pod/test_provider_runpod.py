@@ -481,7 +481,7 @@ def test_a_recorder_failure_after_a_real_create_never_loses_the_pod_identity(
     no lease, even though the provider had already created a real, billing
     pod. ``create`` here must still return the pod RunPod actually created,
     and the recorder's own failure must be named on stderr rather than
-    silently dropped (GOVERNANCE 2).
+    silently dropped (principle 2).
     """
 
     from .fixture import RecordingTransport
@@ -1035,7 +1035,7 @@ def test_the_live_transport_does_not_hand_the_bearer_token_to_a_redirect() -> No
     assert "authorization" not in seen
 
 
-# --- audit/pod-money-path: red paths the 2026-08-12 independent audit found untested ---
+# --- red paths on the money path ---
 
 
 def test_provider_money_fields_never_exist_as_binary_floats() -> None:
@@ -1284,7 +1284,7 @@ def test_a_raising_notify_hook_never_prevents_the_observation() -> None:
     observed = live()
 
     assert observed.available_usd == Decimal("76.5")
-    # ... and the failure is not swallowed: GOVERNANCE 2 wants it visible where
+    # ... and the failure is not swallowed: principle 2 wants it visible where
     # the money decision is written, which is the observation's own source.
     assert "balance notification raised and was contained" in observed.source
     assert "notify.sh is not on PATH" in observed.source
@@ -1569,7 +1569,7 @@ def test_a_body_wearing_the_decimal_mark_is_recorded_as_the_string_it_is(tmp_pat
     carried (`_scrub_body` decodes with errors="replace"). A body echoing
     NUL + `decimal:` + digits + NUL would have been rewritten from a JSON
     string into a bare number: evidence altered with no record of it
-    (GOVERNANCE 4). The mark now carries a per-line nonce chosen after the
+    (principle 4). The mark now carries a per-line nonce chosen after the
     body was read.
     """
 

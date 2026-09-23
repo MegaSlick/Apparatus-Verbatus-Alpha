@@ -414,8 +414,8 @@ def test_the_read_only_wrapper_covers_every_method_run_tree_declares():
     A write with no stub fails with `AttributeError` rather than the named
     refusal -- closed, but silent -- and a read with no delegate fails the same
     way in the middle of a caller that had every right to it. Reconciled here
-    rather than kept in step by hand (independent audit of 2026-09-11, round 2
-    item 12; `write_recensor_partition_receipt` was the one that was missing).
+    rather than kept in step by hand (`write_recensor_partition_receipt` was
+    the one that was missing).
     """
     declared = {
         name

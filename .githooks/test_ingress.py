@@ -698,7 +698,7 @@ def test_a_character_device_is_refused_even_though_it_reads_cleanly(repo):
 
 
 def test_worktree_scan_reports_unscannable_entries_instead_of_skipping_them(repo):
-    # GOVERNANCE 2: a partial result is visibly partial. A tracked file
+    # principle 2: a partial result is visibly partial. A tracked file
     # replaced on disk by a FIFO used to fall through every branch of the
     # worktree walk, and the run still reported passed. Git omits untracked
     # non-regular files from `ls-files --others`, so a tracked path is the
