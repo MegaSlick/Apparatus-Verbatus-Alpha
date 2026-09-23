@@ -3292,7 +3292,7 @@ def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
             "the rendering is not fed this package's canonical uncertainty "
             "layer, which travels beside each literal instead; marking spans "
             "inside a displayed reading would exercise a convention that "
-            "remains the project lead's choice at this gate"
+            "remains Tyrel's choice at this gate"
         ),
     }
     # The same package says, two claims above, that it carries the canonical

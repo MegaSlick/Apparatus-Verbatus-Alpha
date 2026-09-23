@@ -228,7 +228,7 @@ _SALVAGE_ABSENCE_REASON: Final = "this run has no sealed salvage inventory to ac
 _DISPLAY_REASON: Final = (
     "the rendering is not fed this package's canonical uncertainty layer, which travels "
     "beside each literal instead; marking spans inside a displayed reading would exercise "
-    "a convention that remains the project lead's choice at this gate"
+    "a convention that remains Tyrel's choice at this gate"
 )
 _COMPLETED_CATEGORIES: Final = frozenset(
     {
