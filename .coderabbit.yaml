@@ -97,8 +97,10 @@ reviews:
     - path: "**"
       instructions: >-
         What this project reads, because it decides how expensive a defect is. The
-        material is Quebec parish registers and fur-trade-era records from public sources
-        such as FamilySearch and public archives. The corpus is deliberately
+        material is primarily Quebec parish registers of the 1700s-1900s, with French
+        records of the same era for tuning, and to a lesser degree censuses, fur-trade
+        ledgers, notarial contracts and some English-language records, from public
+        sources such as FamilySearch and public archives. The corpus is deliberately
         heterogeneous — handwriting across centuries, typed transcriptions and printed
         books together — and that is on purpose, not an oversight to be cleaned up. Runs
         cover whole parishes, approaching the population of a small town, and the

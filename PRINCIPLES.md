@@ -82,9 +82,11 @@ only from measurement (principle 8).
 
 12. **Other people's work is credited, and private material stays out.** Third-party
     code enters only under a licence that permits it, with its source recorded, and code
-    adapted from elsewhere is named as such. Real register images, transcriptions,
-    personal data and credentials never enter the repository; tests use synthetic
-    fixtures.
+    adapted from elsewhere is named as such. Credentials and keys never enter the
+    repository. Real register images, transcriptions and personal data are kept out
+    wherever possible; tests use synthetic fixtures. The alpha repository may still hold
+    some personal material from earlier work: do not add more, and remove it when you
+    come across it. The full purge happens when beta starts from fresh history.
 
 13. **Refusals speak plainly.** When the pipeline refuses or holds something, it names
     the cause and the remedy; nobody should have to read code to know what to do next.

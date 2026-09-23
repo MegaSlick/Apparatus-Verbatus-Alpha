@@ -38,8 +38,8 @@ change with `.venv/bin/python -m pytest <path>`; CI runs the full suite
 - **Third-party code** needs a licence that permits its use here, with the source and
   licence recorded beside it. Code adapted from elsewhere is named as adapted in the
   commit message.
-- **No real register material or personal data.** Real page images, transcriptions,
-  personal information and credentials stay out of git; tests use the synthetic fixtures
-  in `proof/`.
+- **No credentials, real register material or personal data.** Keys and secrets never
+  enter git. Real page images, transcriptions and personal information stay out; if you
+  find some already here, remove it. Tests use the synthetic fixtures in `proof/`.
 - **AI-written commits** name the model that wrote them with a `Co-Authored-By:` trailer,
   and any reviewing model with `Reviewed-by:`.

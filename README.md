@@ -7,8 +7,10 @@ ink itself, uses the witnesses only as clues, and establishes the text. Every re
 traces back to the exact region of the image it came from, and uncertainty is to be
 flagged, never guessed.
 
-It is being developed on French-language parish registers from Quebec, whose
-handwriting spans centuries.
+It is built primarily for Quebec parish registers of the 1700s to 1900s, and developed
+and tuned on those records and on French records of the same era (the RecordGold pages).
+It should also work, to a lesser degree, on other archival records — censuses, fur-trade
+ledgers, notarial contracts — and on some English-language records.
 
 **Status: alpha.** The staged pipeline, its accounting and its export are implemented and
 tested on synthetic pages. Real pages have run on a GPU pod through the three witnesses,
