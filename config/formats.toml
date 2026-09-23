@@ -13,22 +13,23 @@ formats = ["text-bundle", "acts-database", "jsonl", "review-items", "salvage-tie
 # bytes into the bundle, and clean-machine verification then opens them.
 #
 # Off by default. Embedding costs real disk -- every page and every crop, copied -- for
-# a benefit (offline pixel access with no run tree present) that is Tyrel's to spend
-# rather than this build's to assume, and a bundle never claims more than it carries
-# (GOVERNANCE 10).
+# a benefit (offline pixel access with no run tree present) that is the project
+# lead's to spend rather than this build's to assume, and a bundle never claims
+# more than it carries (principle 8).
 embed_pixels = false
 
-# TWO DECISIONS ARE DELIBERATELY NOT HERE, and both are Tyrel's at this gate.
+# TWO DECISIONS ARE DELIBERATELY NOT HERE, and both are the project lead's at
+# this gate.
 #
 # 1. Whether an Obsidian vault ships at all. Spec 11: "the old vault exporter is read
-#    for its lessons; whether an Obsidian vault ships at all is Tyrel's format call at
-#    this gate." No vault writer exists, so a flag here would be a knob with nothing
-#    behind it.
+#    for its lessons; whether an Obsidian vault ships at all is the project lead's
+#    format call at this gate." No vault writer exists, so a flag here would be a
+#    knob with nothing behind it.
 # 2. The uncertainty/gap display convention. Spec 11 proposes an EpiDoc-style rendering
-#    and leaves the choice to him. One rendering is implemented, in
+#    and leaves the choice open. One rendering is implemented, in
 #    `pipeline/7_armarium/display.py`, and every bundle's EXPORT_MANIFEST says on its
 #    face that it is proposed rather than chosen. A configuration key with exactly one
 #    legal value would read as a decision that has been made.
 #
-# Both land here the moment he rules, and this file's schema is closed on purpose: an
-# unrecognised key is refused rather than silently ignored.
+# Both land here the moment a ruling is made, and this file's schema is closed on
+# purpose: an unrecognised key is refused rather than silently ignored.

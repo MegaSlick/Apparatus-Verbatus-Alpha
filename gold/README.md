@@ -40,12 +40,12 @@ in the same directory is validated but is not reconciled against the draw's
 picks share one directory by design.  It is still reconciled against the draw's
 retained *catalog*, but by `validate-corpus` rather than here — see Custody.
 
-`ingest-manual` accepts Tyrel's `gold-manual-pick.v2` record, which has
-`selection_basis`, the bound page/stratum, and his stated set.  It records that
-selection unchanged; it does not choose a replacement page.  The persisted
+`ingest-manual` accepts a picker's `gold-manual-pick.v2` record, which has
+`selection_basis`, the bound page/stratum, and the picker's stated set.  It records
+that selection unchanged; it does not choose a replacement page.  The persisted
 sample's `set` is always the page-derived partition — calibration/locked-acceptance
 disjointness is enforced by construction, never by policing a human's claim — but
-B1 picks are made in week one, before the R0 frame or its seed exist, so his stated
+B1 picks are made in week one, before the R0 frame or its seed exist, so the stated
 set can honestly disagree with it. That disagreement is never silently resolved
 either way: it is carried unchanged as `claimed_set` alongside the true `set`, so a
 predates-the-seed pick is ingested, not refused and sent back for a re-pick.
@@ -103,7 +103,7 @@ re-recorded out of the hours that produced it.
 nothing to reconcile: the outcome is `agreed`, no adjudicator is recorded, and
 naming one is refused.  If they differ, the adjudicator and their own reading of
 the ink are required — **the adjudicator does not choose the better
-transcription** (hard rule 8; the transcribers are people making the corpus, not
+transcription** (principle 1; the transcribers are people making the corpus, not
 Attestatores, and no model output reaches these records).  What they read may
 match one, both in part, or neither.  Both transcriptions are retained inside the
 record unaltered, and `outcome` is derived from them on every read, so a record
@@ -130,16 +130,13 @@ may describe the same page; they are never the same kind of record, and
 neither directory is the right home for the other's.
 
 Whether RecordGold stands in for, or beside, the Quebec gold corpus for the
-GOVERNANCE 10 acceptance claim is a separate question, and it is Tyrel's, not
-this module's (`operations/corpus/README.md`'s "The acceptance corpus is
-Tyrel's call" gets this right; his 2026-09-01 direction on RecordGold reads
-the other way and is not yet reconciled with it — see the workbench ledger
-at `workbench/standing/RECORDGOLD_CONTAMINATION_LEDGER.md`, local and
-gitignored like `workbench/standing/SUSPENSIONS.md`, not a file a clone of
-this repository carries).  If he rules
-RecordGold in for that claim, the route is a named substitution recorded
-where the acceptance corpus is chosen, never a forged entry through this
-module's custody chain.
+principle 8 acceptance claim is a separate question, and it is the project
+lead's, not this module's (`operations/corpus/README.md`'s "The acceptance
+corpus is the project lead's call" gets this right; a 2026-09-01 direction on
+RecordGold reads the other way and is not yet reconciled with it).  If
+RecordGold is ruled in for that claim, the route is a named substitution
+recorded where the acceptance corpus is chosen, never a forged entry through
+this module's custody chain.
 
 ## Custody
 
