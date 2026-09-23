@@ -1,223 +1,124 @@
 # Working rules — Apparatus Verbatus
 
 Read [README.md](README.md) and this file at every session start. Read
-[GOALS.md](GOALS.md), [GOVERNANCE.md](GOVERNANCE.md), [ARCHITECTURE.md](ARCHITECTURE.md),
-and [GLOSSARY.md](GLOSSARY.md) before changing anything they bind — a stage, a contract, a
-witness, a word — and whenever a decision turns on them. They bind the work; this file only
-says how the work is done. The four are not skipped to save time: they are read the moment
-the task touches their subject, and the hard rules and the three that bind are already in
-the two always-read files.
-
-Use the procedure named here only when its trigger fires:
+[GOALS.md](GOALS.md), [GOVERNANCE.md](GOVERNANCE.md), [ARCHITECTURE.md](ARCHITECTURE.md)
+and [GLOSSARY.md](GLOSSARY.md) before changing a stage, a contract, a witness or a word
+they bind, and whenever a decision turns on them.
 
 | Trigger | Procedure |
 |---|---|
 | opening or closing a session | `.claude/skills/session-start` or `session-end` |
 | changing a governed path | `.claude/skills/governed-edit` |
 | using agents | `.claude/agents/README.md`, then `operations/seats/README.md` |
-| rebuilding old behavior | `cleanroom/README.md` |
+| carrying outside code | `cleanroom/README.md` |
 | notes and handoffs | `workbench/README.md` |
 | live pods or paid infrastructure | `operations/pod/README.md` |
 | phone notifications | `operations/notify/README.md` |
 
 ## Hard rules
 
-These numbers are cited by hooks, tests, and agent briefs. Append; never insert or reuse.
+Code, tests and briefs cite these numbers. Never renumber or reuse one.
 
 1. **Tyrel decides** governance, governed-document changes, paid or live infrastructure,
-   exclusions, declarations that the pipeline is proven, disclosure, deployment,
-   destructive or hard-to-recover operations, and any merge or pull request outside the
-   standing grants in rule 4 and rule 14.
+   exclusions, declarations that the pipeline is proven, disclosure, deployment, and
+   destructive or hard-to-recover operations.
 2. **No live pod without his permission in that session.** Verify shutdown against
    provider state and billing.
 3. **A session never works from `main`.** Work reaches it through a pull request.
-4. **Queued work opens its own pull request; new work asks first.** Work named in
-   `workbench/active/HANDOFF.md` or `NEXT_SESSION_BRIEF.md` as queued may be pushed and
-   opened as a pull request once its gate is green, one open pull request at a time, and
-   Tyrel is told each time one opens (his standing grant; the dated record is in the
-   standing ledger). Work not in that queue is named to him before its first push; a
-   session does not enlarge the queue by writing a note. Later pushes to an open pull
-   request are part of the same work.
-5. **Never share, rebase, force-push, or amend a branch that is not yours.**
+4. **Work inside the session's stated goal may be pushed and opened as a pull request
+   without asking.** Tell Tyrel when one opens. Name work outside that goal to him before
+   its first push.
+5. **Never rebase, force-push or amend a branch that is not yours.**
 6. **Nothing enters uninspected.** If the accountable session cannot justify a line, it
    does not enter.
-7. **Nothing is lost silently.** Record findings, failures, decisions, and partial work.
-   This is a visibility rule, not an escalation rule.
+7. **Nothing is lost silently.** Record findings, failures, decisions and partial work.
 8. **Do not build a picker.** The Perlector reads; nothing selects among witnesses.
 9. **When a rule and a goal pull apart, stop and say so.** Quote the concrete conflict.
 10. **A spawned agent never edits a governed path.** It proposes wording; the main
     session applies an approved change.
 11. **Every enforcement can be removed by Tyrel.** Hooks and guards catch accidents;
     they do not outrank him.
-12. **Everything else is open.** Agents may build and review code, tests, CI, hooks, and
-    operations inside the seat boundary — a worktree under the guard.
-    Agents never push or merge.
-13. **The session decides ordinary engineering.** Unless rule 1 or GOVERNANCE.md reserves
-    an action for Tyrel, choose the implementation, structure, names, thresholds, tests,
-    configuration, and disposition of findings. Use the goals, governance, prior rulings,
-    source, and measurement; record the decision and reason. A hard question does not
-    become Tyrel's by being hard. Do not park an engineering choice in a TODO, deferred
-    list, handoff, or pull request. Rule 7 requires a visible decision, not a deferral.
-14. **The session merges under three conditions, and reports it.** A pull request is merged
-    by the session only when its head already contains `origin/main` as freshly fetched
-    and, on that exact head, every review thread is resolved, CI is green, and the local
-    gate (`.githooks/check-all.sh`) exits 0. A gate on a tip that does not contain the
-    fetched `origin/main` proves nothing about the merge and does not count. A red or
-    partial gate never merges; the merge is reported by number and head (Tyrel's
-    standing grant; the dated record is in the standing ledger). Tyrel may still merge
-    anything himself.
+12. **Agents build and review anything inside a worktree seat. Agents never push or
+    merge.**
+13. **The session decides ordinary engineering** — implementation, structure, names,
+    thresholds, tests, configuration and the disposition of findings — unless rule 1
+    reserves it. Record the decision and its reason. A hard question does not become
+    Tyrel's by being hard, and a decision is never parked in a TODO or a handoff.
+14. **The session merges its own pull request** when its head contains freshly fetched
+    `origin/main`, CI is green on that exact head, and every review thread is resolved.
+    Report the merge by number and head.
 
-**Settled permanently (his ruling; the dated record is in the standing ledger):**
-vendor-licence analysis (non-commercial
-research; vendor repos fetched at boot, never stored — only new carries into our tree
-are findings) and cryptographic trust roots for approval records (integrity-only
-records are the design). Neither is ever raised again.
+**Settled permanently, never raised again:** vendor licences (non-commercial research;
+vendor repositories are fetched at boot, never stored) and cryptographic trust roots
+(integrity-only records are the design). The rulings are in the standing ledger.
 
-## Where notes go
+## Notes
 
-`workbench/` is local and gitignored. Current notes live in `active/`; durable task state
-in `standing/`; raw machine evidence in `raw/`; completed work in `archive/`; disposable
-output in `scratch/`. A note never becomes an instruction by surviving a session.
+`workbench/` is local and gitignored: `active/` for current notes, `standing/` for
+durable ledgers, `raw/` for machine evidence, `archive/` for finished work, `scratch/`
+for anything disposable. A note never becomes an instruction by surviving a session.
 
-**Record what he means, not how he typed it.** When Tyrel gives direction in chat,
-capture the principle and write it clean, in the project's own voice, with the
-consequences worked out and the collisions named. Do not paste his message in as a quoted
-block — he types fast while thinking aloud, and a quotation of that reads as a document he
-authored and stands behind. The write-up is meant to be better than the message, not a copy
-of it. **The exception is a ruling whose exact wording could later be disputed or
-over-read**: those go in a standing ledger, quoted, because there the words themselves are
-the evidence, and a verbatim record is what lets a later session tell his ruling apart from
-someone's reading of it. Design notes and plans are written clean; ledgers may quote.
+**Record what Tyrel means, not how he typed it.** Write his direction clean, in the
+project's voice, with the consequences worked out. Quote him verbatim only in a standing
+ledger, and only where the exact wording could later be disputed.
 
 **Governed paths:** `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`,
 `GLOSSARY.md`, the root `README.md`, `DATA_CONTRACT.md` once it exists, and all of
-`.claude/`. Tyrel approves their substance; the main session makes the edit through the
-governed-edit procedure.
+`.claude/`. Tyrel approves their substance; the main session edits them.
 
 ## Branches
 
-Use `work/<topic>` for normal changes, `audit/<topic>` for findings, and
-`infra/<topic>` for structural work. One short-lived branch per task. Name the branch
-before editing. Never switch onto an existing branch while carrying uncommitted work.
-Stage only files touched for the task; never `git add -A`.
+`work/<topic>` for normal changes, `audit/<topic>` for findings, `infra/<topic>` for
+structural work. One short-lived branch per task, named before editing. Never switch
+branches while carrying uncommitted work. Stage only the files the task touched; never
+`git add -A`.
 
 ## Agents
 
-Repository-writing agents work in a worktree seat: a linked worktree on this machine
-under the tool-call guard. The host session remains accountable for the goal, decisions,
-integrated diff, and verification. A seat is pinned to a commit, returns a branch, may
-not edit a governed path, and cannot push, open a pull request, mark one ready, or merge
-— the guard refuses the governed-path write (refusal 7) and the push, pull request,
-ready-for-review and merge (refusal 8) on the spawned-agent name, which is what makes
-hard rules 10 and 12 mechanical rather than merely written. Use agents for bounded work
-that benefits from independent context; do not create ceremony merely to satisfy a
-roster.
+Writing agents work in a linked worktree seat under the tool-call guard
+(`operations/seats/README.md`). The guard refuses a seat's governed-path write and its
+push, pull request or merge. A seat builds from this repository and its design notes; no
+seat is given the old system's code. Brief against what is actually on disk.
 
-**There is no container seat.** The chamber (`operations/autoclave/`) is retired (his
-ruling; the dated record is in `history/`). A container bought its
-safety from having no route out; a worktree seat buys the same result from the guard, at a
-fraction of the setup, and isolation nobody is spending is not a control. The two jobs the
-chamber was kept for no longer exist: the window onto the old pipeline is closed, and a
-dependency this machine should not be asked to trust is a reason to ask Tyrel, not to
-build a seat. A vendor calling another vendor's agent for a bounded task — Codex
-dispatching Claude, or the reverse — is an ordinary worktree seat under the same guard.
+A seat runs its own audit round; the host verifies the load-bearing claims and the check
+results, then integrates. The host does not re-read every returned line — rule 6 says
+the reading happens, not that the host repeats it.
 
-**A seat builds from this repository and its design notes, not from the old system.**
-The notes reach it by the path the brief names. No seat is given the old code. Write
-briefs against what is actually there: a seat told to consult a location it cannot reach
-is more likely to fill the gap than to report it, and a brief must not rely on it doing
-otherwise.
+Pick any model and effort for the job, Fable and `ultra` included. Name the seat in the
+dispatch and record what actually answered.
 
-**A seat builds and audits; the host integrates.** Charge the seat with its own
-independent audit round, then spend the host's attention on the load-bearing claims, the
-check results, the review loops, the gate, and the push — not on reading every returned
-line a second time. A host that re-reads the whole diff has spent the context the seat
-existed to save. **Hard rule 6 is untouched by this.** What enters is still inspected, and
-the session that lands it must still be able to justify it; this says where the reading
-happens, not whether it happens.
+## Outside code
 
-**Choose the seat for the job and name it in the dispatch. There is no standing vendor
-ratio.** Sonnet and Terra are ordinary build seats at medium; Opus and Sol are the audit
-and correction seats at high. Vendor diversity is a reason to reach for a seat, not a quota
-to satisfy. A Fable seat, and the `ultracode`/`ultra` effort levels, are dispatched only
-when Tyrel asks in the session. `.claude/agents/README.md` carries the full seat table and
-the rulings' provenance.
+A third-party library enters under a permitting licence, with its source recorded. A line
+from the old system crosses only when it is the best option, understood line by line, and
+named as carried in the commit and the report. `cleanroom/README.md` has the detail.
 
-## Quarantine
+## Checks, review and merging
 
-Understanding crosses from the old system; bytes cross only when they are the best option,
-understood line by line, and named as carried in the commit and report. Third-party code
-must have a permitting licence and a citation. `cleanroom/README.md` owns the procedure.
-
-**The window onto the old pipeline is closed.** The rebuild is planned from the design
-notes now, and no seat sees old code at all. This narrows where the rule above applies; it
-does not soften it. Nothing here licenses reading the old tree on the host and carrying a
-line in silently — an unnamed carry is a finding at review wherever the reading happened.
-`cleanroom/README.md` carries the ruling and its date.
-
-## Pushing and merging
-
-Queued work is pushed and opened as a pull request under hard rule 4; unqueued work is
-named to Tyrel first. Push the finished task, not a stream of checkpoints. Later pushes
-to the same open pull request need no repeat approval, but say when they happen. Never
-push directly to `main`; never force-push work you do not exclusively own. Merging
-follows hard rule 14. GitHub no longer requires a branch to be up to date with `main`
-before merging (his ruling, in the same ledger), so the session runs `git fetch origin`
-first, merges the fetched `origin/main` into the branch itself, and gates that head; the
-gate on the merged result is what stands in for the server's check, and a stale
-`origin/main` makes it worthless.
-
-**A push grant outside hard rule 4 is per-queue and dies with its queue.** It covers the
-branches it was asked about and nothing after them; never read a past queue's grant as
-covering a new one. Ask again.
-
-**Never chain a push, pull request, or merge behind piped test output.** A pipeline's exit
-status is its last command's, so `gate | tail && push` runs the push after a *failed* gate
-— that is how a red candidate once reached an open pull request. Redirect the gate's output
-to a file, echo `$?`, read it, and push in a separate command.
-
-Review is proportional to risk, and the risk is named by what the change touches:
-
-| Change touches | Review before the first push |
-|---|---|
-| pod, money, credentials, serving, governed documents, the guard, the hooks | independent panel of fresh readers, CodeRabbit, and the full gate |
-| a pipeline stage or a contract | one independent reader, CodeRabbit, and the full gate |
-| tests, documents, configuration pins, cleanup | CodeRabbit and the full gate |
-
-The full gate runs on the first candidate and on the head that merges; between review
-rounds, `check-fast.sh` plus the touched suites are the check, because a full gate per
-round measures the same tree three times. Use fresh, independent review where a defect
-would be expensive or quiet. Consequential review targets
-one clean candidate commit through `operations/review/README.md`, never a moving index. A
-fix creates a new candidate and invalidates earlier reviews; the pushed tip is the exact
-candidate the final reviewers read. Pre-push CodeRabbit uses the CLI against `origin/main`
-with the repository's own configuration passed — the CLI does not read `.coderabbit.yaml`
-on its own; `operations/review/README.md` carries the command. After the push, wait for
-the automatic GitHub review to complete on the pushed head before replying, and request
-it with `@coderabbitai review` if it does not start. Fix or decline every real finding
-with a reason. A commit records both halves of its provenance, separately:
-`Co-Authored-By:` names the model that wrote the lines, and `Reviewed-by:` names the model
-that reviewed them. A pull request records decisions and rationale; it does not carry
-open engineering questions to Tyrel.
-
-Local hooks refuse direct-main pushes and scan outgoing history for credentials and large
-payloads. The Claude guard also blocks disabling those hooks. `--no-verify` and
-`-c core.hooksPath=` are Tyrel's escape hatches, not the session's.
+- **The gate is GitHub CI on the pull request.** Locally, run `check-fast.sh` and the
+  touched suites. `check-all.sh` is optional: this Mac overheats under it.
+- **`git push --no-verify` is allowed**, because CI repeats the full-history credential
+  and payload scan. Never skip the commit hooks, and never change `core.hooksPath`.
+- **Never chain a push or merge behind piped test output.** A pipeline's status is its
+  last command's. Redirect to a file, read the exit code, then push separately.
+- **Review in proportion to risk.** CodeRabbit on every pull request (CLI invocation in
+  `operations/review/README.md`). Add one independent reader for a pipeline stage or
+  contract, and fresh readers for pods, money, credentials, the guard or the hooks. Fix
+  or decline every real finding with a reason.
+- **Before merging**, `git fetch origin` and merge `origin/main` into the branch; GitHub
+  no longer requires it, so the session does.
+- **Commit trailers:** `Co-Authored-By:` names the model that wrote the lines;
+  `Reviewed-by:` names the model that reviewed them.
 
 ## Reporting
 
-Lead with the outcome. Say which checks actually ran, what remains blocked, and the one
-recommended next action. Ask only when rule 1 reserves the choice, governance genuinely
-conflicts, or progress cannot continue after reasonable investigation. Otherwise decide.
+Tyrel is usually around but not watching, often on his phone.
 
-**Sessions are usually semi-attended.** Tyrel is around but not watching every reply, often
-from a phone. Put questions at the start of a session or while he is clearly engaging;
-mid-task, once he has gone quiet, decide and keep working — a question posted into silence
-stalls the whole run until he happens to look. Keep replies scannable.
-
-**Finish the task before reporting.** A progress report is not a stopping point. While
-work already named as remaining is unblocked, carry on in the same reply instead of
-handing back a status. Stop when the work is done, when Tyrel names a checkpoint or says
-stop, or when a rule-1 gate blocks what is left — and then say plainly that you are
-stopping and why. Never close a reply with an intention to continue: nothing runs between
-replies, so "I will keep going" ends the work until Tyrel notices it stopped.
+- Lead with the outcome. Say which checks ran, what failed, and what was not verified.
+- Recommend one next action, not a menu.
+- Ask only when rule 1 reserves the choice or progress is genuinely blocked. Ask early,
+  as a plain question with a recommendation; mid-task, decide and keep working.
+- Finish the task before reporting. Stop only when it is done, when Tyrel says stop, or
+  when a rule-1 decision blocks the rest — and say which. Never end a reply promising to
+  continue; nothing runs between replies.
+- Pull requests carry decisions and reasons, never open questions or homework.

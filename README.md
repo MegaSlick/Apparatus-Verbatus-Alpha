@@ -5,19 +5,11 @@ civil registers, using imperfect witnesses. Several vision models report on each
 second hand; a trained reader, the **Perlector**, reads the ink itself and establishes
 the text.
 
-**Status:** alpha. Governance and architectural *direction* are settled; the staged
-fixture pipeline, its accounting boundaries, and the Armarium product export are
-implemented and exercised by local checks, but the pipeline has not been proven on a
-Tyrel-approved small real-material trial. Agents build in a linked worktree on this
-machine under the tool-call guard. Implementation continues to be discovered during alpha. **GitHub enforces
-four things on `main`**, and only these four: a change arrives by pull request, the
-automated checks must pass before it can be merged, `main` cannot be force-pushed or
-deleted, and these apply to the owner as well. Everything else in this repository is a
-local convention that a determined tool can step around. Note that no *approval* is
-required, so anything holding the owner's credentials — including an agent — can merge a
-passing pull request; the three merge conditions in CLAUDE.md hard rule 14 are a rule the
-session follows, not one GitHub imposes.
-This line is the only place status lives.
+**Status:** alpha. Governance and architectural direction are settled. The staged
+pipeline, its accounting boundaries and the Armarium export are implemented and pass
+their checks. Every stage through the three witnesses has run on original pages on a
+live pod, but no run has yet reached the Armarium, so the pipeline is not proven.
+This line is the only place status lives, and it carries no date.
 
 ## Where to look
 
@@ -27,44 +19,7 @@ This line is the only place status lives.
 | what we are and aren't allowed to do | [GOVERNANCE.md](GOVERNANCE.md) |
 | how the pipeline is shaped and why | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | what a word means | [GLOSSARY.md](GLOSSARY.md) |
-
-## Controls
-
-Every local protection can be switched off, and how is written here — a guard the
-owner cannot unwire is a defect, whatever it prevents (CLAUDE.md hard rule 11).
-
-**The tool-call guard refuses six things for this session, and two more only for a
-spawned agent.** Landing work on `main`, deleting recursively outside the drawers that
-exist to be emptied, rewriting published history, deleting a remote ref, putting a
-credential into git, and switching the git hooks off. The seventh is a spawned agent
-editing a governed path, and the eighth is a spawned agent pushing, opening a pull
-request, marking one ready for review, updating its branch on the server, or merging
-one — in every `git`, `gh pr`, REST and GraphQL spelling the guard reaches — the two refusals that are not the same for both audiences,
-and the reason built-in agent types can be used here at all. The eighth is what carries
-hard rule 12 now that a build seat runs in a worktree on this machine: the container
-seat it replaced never pushed because it had no route out, while a worktree seat holds the
-session's own credentials and allow list, so the rule needed a mechanism rather than a
-sentence. It cannot ask — a refusal is final within a session, and the way
-past one is Tyrel. The predecessor asked 503 times in three days and approval became
-reflexive, which is worse than no guard. **To switch it off, delete the `PreToolUse`
-block from `.claude/settings.json`** — one step, no other file needs touching.
-
-Still in force and not suspended: the git hooks refuse a commit on `main`, a push at
-`main`, and a credential or oversized payload in outgoing history — `sh
-.githooks/install.sh` arms them in a clone, and unsetting `core.hooksPath` removes
-them. The test harness and the gate set the notifier's test-sink topic so no test can
-reach a phone (`operations/notify/README.md`); the gate fails closed if it cannot read that
-constant. **To switch that guard off, delete the `NTFY_TOPIC` block above the pytest line
-in `.githooks/check-all.sh`** and the autouse fixture in the root `conftest.py` — two
-lines, nothing else — and the notifier behaves as before under tests, which is how nine
-fake-balance pushes once reached a phone (the dated record is in the standing findings). GitHub's own rules on `main`, listed above, are outside this repository's reach
-and no local change affects them.
-
-## Scope
-
-Source images in, established readings out. Import to export.
-
-Training, research, search, and correction happen elsewhere. They are not this project.
+| how a session works | [CLAUDE.md](CLAUDE.md) |
 
 ## The three that bind
 
@@ -72,68 +27,60 @@ Training, research, search, and correction happen elsewhere. They are not this p
 2. **The Perlector reads; it never picks.** Witnesses are clues, never options.
 3. **Quality over speed.** More passes and slower runs are acceptable costs.
 
-**Tyrel decides.** He is the only human in these rules — no agent may stand in for him,
-and no session may amend these documents.
+**Tyrel decides.** He is the only human in these rules; no agent stands in for him.
+
+## Scope
+
+Source images in, established readings out. Import to export. Training, research,
+search and correction happen elsewhere.
+
+## Controls
+
+**GitHub enforces four things on `main`:** changes arrive by pull request, the required
+checks must pass, `main` cannot be force-pushed or deleted, and all of this applies to
+the owner too. No approval is required. Everything else here is a local convention.
+
+**Every local protection can be switched off** (CLAUDE.md hard rule 11):
+
+- **The tool-call guard** (`.claude/hooks/guard.py`) refuses, for every session: landing
+  work on `main`, recursive deletes outside the disposable drawers, rewriting published
+  history, deleting a remote ref, putting a credential into git, and switching the git
+  hooks off. For a spawned agent it also refuses editing a governed path and pushing,
+  opening, readying or merging a pull request. A refusal is final within a session.
+  **To switch it off, delete the `PreToolUse` block from `.claude/settings.json`.**
+- **The git hooks** refuse a commit on `main`, a push at `main`, an unattributed commit,
+  and a credential or oversized payload in outgoing history. `sh .githooks/install.sh`
+  arms them; unsetting `core.hooksPath` removes them.
+- **The notifier's test sink** keeps tests from reaching a phone. To switch it off,
+  delete the `NTFY_TOPIC` block in `.githooks/check-all.sh` and the autouse fixture in
+  the root `conftest.py`.
 
 ## Who wrote this
 
-**Every line of code here is AI-generated.** Tyrel directs the work, reviews it, and
-decides what lands; he does not write the lines, and the repository does not pretend
-otherwise.
+**Every line of code here is AI-generated.** Tyrel directs the work, reviews it and
+decides what lands. Each commit is authored by Tyrel, who is accountable for it, with a
+`Co-Authored-By` line naming the model that wrote it and `Reviewed-by` lines naming any
+model that reviewed it. Models are named by release, not by vendor alone.
 
-The history records which machine did what, and separates writing from reading. Each
-commit is authored by Tyrel, who is accountable for it, and carries a `Co-Authored-By`
-line naming the model that wrote it. An agent that audited the work and found defects
-without writing lines is recorded as `Reviewed-by` instead — so a commit can say it was
-written by one model and adversarially read by two others, which is worth knowing.
+## Conventions
 
-A `commit-msg` hook refuses a commit that names no author, in any clone where the hooks
-have been installed — CLAUDE.md says how, and until it is done the check does not run at
-all. Even then it is an alarm rather than a lock: the messages git writes itself are
-exempt, and it can be skipped deliberately. The merge commit GitHub creates when a pull
-request lands is made on their servers, where no local hook runs, so that one is outside
-its reach entirely.
+**History is evidence, never instructions.** Dated documents under `history/` and the
+workbench ledgers record what happened; only the documents above say what to do.
 
-Models are named by release, not by vendor alone, because "an AI wrote it" ages badly and
-"Claude Opus 5 wrote it" does not.
-
-## Two conventions
-
-**History is evidence, never instructions.** Dated documents record what happened. They
-do not tell you what to do. Only the files above do that.
-
-**Status lives in one place.** The line under the title. If you find a status claim
-anywhere else in this repository, it is wrong by construction.
-
-**And it carries no date, by Tyrel's ruling.** This document states no date at all, and
-`check-documents.sh` refuses one. A dated status line goes stale in silence: the line
-above once named a day that had already passed the thing it described, in the very
-document claiming to be the only place status lives. Undated, it can only be wrong about
-the substance — and substance is what a reader notices. Dated state belongs in `history/`
-and in the standing ledgers under `workbench/`, both of which are read as records rather
-than as instructions. **Provenance is a different thing** and survives in the documents
-that carry procedure — when a ruling was made, when something was measured — because the
-attribution discipline in CLAUDE.md depends on it and a ruling's date never goes stale.
+**Status lives in one place**, the undated line under the title. `check-documents.sh`
+refuses a date in any of the canonical documents.
 
 ## Versions
 
-**alpha** — a rebuild laboratory. Build the harness first; prove the workflow,
-branches, rules and contracts. Old code was the reference, read through a window that
-Tyrel closed once the rebuild could be planned from its own design notes — no seat is
-given it now, and `cleanroom/README.md` governs what may cross when a session reads the
-old tree on the host. Its systems are written new here, one piece
-at a time. Alpha does not need to be a finished pipeline.
+**alpha** — a rebuild laboratory. Old systems are reference only; everything here is
+written new, one piece at a time, and nothing enters uninspected. Third-party code enters
+under a permitting licence, with its source recorded.
 
-**Nothing enters this repository uninspected.** Code is written new, read line by line
-and justified, or it does not arrive. An old byte crosses only where it is the best
-option available and is named as carried; third-party code enters under a licence that
-permits it, recorded with its source.
-
-**beta** — start again in a fresh, clean private environment using only what survived
-alpha. Build there until the system works.
+**beta** — a fresh, clean environment built only from what survived alpha.
 
 **1.0** — the public release, with personal and community-specific material removed.
 
-**Distribution rule.** A private repository is never made public by changing its
-visibility. Either beta is public-safe from its first commit, or 1.0 is a separate
-clean, allowlisted export with fresh history.
+**Distribution rule.** This alpha repository is public, so nothing personal, private or
+register-derived is ever committed: register material, gold pages and credentials stay
+in gitignored or external locations. Beta and 1.0 start from fresh history, exported by
+allowlist.
