@@ -159,6 +159,33 @@ def test_trace_refuses_trigger_error_drift_early_exhaustion_and_reused_evidence(
     with pytest.raises(SchemaRefusal, match="reuses one retained artifact"):
         validate_trace(duplicate)
 
+    exhausted_attempts = [
+        {
+            "attempt_ordinal": ordinal,
+            "parameters": attempt_parameters(ordinal),
+            "intent_ref": reference(f"intent-{ordinal}", "a"),
+            "attempt_ref": reference(f"attempt-{ordinal}", "b"),
+            "trigger": "inference-error" if ordinal < 7 else None,
+            "error": True,
+        }
+        for ordinal in range(1, 8)
+    ]
+    hidden_error = {
+        **base,
+        "physical_request_count": 7,
+        "returned_attempt_ordinal": 7,
+        "attempts": exhausted_attempts,
+    }
+    with pytest.raises(SchemaRefusal, match="hides its final inference error"):
+        validate_trace(hidden_error)
+    false_error = {
+        **hidden_error,
+        "exhausted_condition": "inference-error",
+        "attempts": [*exhausted_attempts[:-1], dict(exhausted_attempts[-1], error=False)],
+    }
+    with pytest.raises(SchemaRefusal, match="inference-error exhaustion without an error"):
+        validate_trace(false_error)
+
 
 def test_a_persisted_intent_without_terminal_evidence_is_never_replayed():
     refuse_orphan_intent(False)

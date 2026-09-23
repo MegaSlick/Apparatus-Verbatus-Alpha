@@ -2400,9 +2400,12 @@ def _retains_chandra_observation_payload(record: Mapping[str, Any]) -> bool:
         return True
     payload = record.get("payload")
     trace = payload.get("native_inference") if isinstance(payload, dict) else None
+    capture = payload.get("native_capture") if isinstance(payload, dict) else None
     return (
         isinstance(trace, dict)
         and validate_chandra_trace(trace)["exhausted_condition"] == "repeat-token"
+        and isinstance(capture, dict)
+        and validate_native_capture(capture)["parse"]["state"] == "parsed"
     )
 
 
@@ -6213,6 +6216,8 @@ def _serve_chandra_native_page(
                     transport_stop_reason,
                     f"the {resolved.witness_adapter} response for page {page_ordinal}",
                 )
+            except FatalAccounting:
+                raise
             except ContractError as caught:
                 application_refusal = caught
             attempt = (
@@ -6244,12 +6249,6 @@ def _serve_chandra_native_page(
             if next_ordinal == CHANDRA_MAX_ATTEMPTS
             else trigger
         )
-        if application_refusal is not None and trigger is not None:
-            # The upstream repeat/error predicate owns whether another physical
-            # call occurs. A local publication refusal cannot suppress an
-            # otherwise-authorized retry, and it cannot become the final result
-            # while the vendor recipe still has a call to make.
-            attempt = attempt_from_live(live) if live is not None else attempt
         payload, _terminal_ref = _publish_chandra_terminal(
             context,
             subject_id=subject_id,

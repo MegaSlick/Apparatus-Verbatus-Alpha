@@ -1000,7 +1000,14 @@ def _world(tmp_path: Path, *, chair: ChairIdentity | None = None):
 
     def read_receipt(reference: Mapping[str, str]) -> dict[str, object]:
         del reference
-        return {"chair": chair.role, "revision": chair.receipt_revision}
+        return {
+            "chair": chair.role,
+            "source": chair.source,
+            "resolved": chair.source_reference,
+            "revision": chair.receipt_revision,
+            "revision_kind": chair.receipt_revision_kind,
+            "digest_manifest": chair.digest_manifest,
+        }
 
     client = ChairClient(
         manager=manager,

@@ -170,7 +170,7 @@ def _refuse_generation_that_cannot_be_recorded_as_sent(
 
 
 class ReceiptDriftRefusal(ServingError):
-    """The receipt re-read after start no longer names this chair and revision.
+    """The receipt re-read after start no longer names this chair's exact identity.
 
     Not defined in :mod:`operations.serving.errors` because U1 did not need
     it: nothing before this client ever re-read a receipt back through the
@@ -466,32 +466,45 @@ class ChairClient:
         # this, every stage wiring a real tree had to carry a private
         # converter, and `read_receipt=context.tree.read_run_receipt` — the
         # wiring this client's own README describes — refused every live start.
-        receipt = self._read_receipt(dict(handle.receipt_reference))
-        if (
-            not isinstance(receipt, Mapping)
-            or receipt.get("chair") != self._identity.role
-            or receipt.get("revision") != self._identity.receipt_revision
-        ):
-            observed = (
-                f"chair={receipt.get('chair')!r}, revision={receipt.get('revision')!r}"
+        try:
+            expected_identity = {
+                "chair": self._identity.role,
+                "source": self._identity.source,
+                "resolved": self._identity.source_reference,
+                "revision": self._identity.receipt_revision,
+                "revision_kind": self._identity.receipt_revision_kind,
+                "digest_manifest": self._identity.digest_manifest,
+            }
+            receipt = self._read_receipt(dict(handle.receipt_reference))
+            observed_identity = (
+                {field: receipt.get(field) for field in expected_identity}
                 if isinstance(receipt, Mapping)
-                else f"a non-mapping receipt read: {receipt!r}"
+                else None
             )
-            drift = ReceiptDriftRefusal(
-                "CHAIR_RECEIPT_DRIFT",
-                "the receipt re-read after start no longer names this chair and revision: "
-                f"observed {observed}; expected chair={self._identity.role!r}, "
-                f"revision={self._identity.receipt_revision!r}",
-            )
-            # The drift diagnosis is the thing GOVERNANCE 2 asks not to lose
-            # here. Stop the handle so a refused start never leaks the
-            # process, but if the shutdown itself is unverifiable, chain it
-            # onto the drift refusal rather than letting it replace it.
+            if observed_identity != expected_identity:
+                observed = (
+                    f"identity={observed_identity!r}"
+                    if observed_identity is not None
+                    else f"a non-mapping receipt read: {receipt!r}"
+                )
+                raise ReceiptDriftRefusal(
+                    "CHAIR_RECEIPT_DRIFT",
+                    "the receipt re-read after start no longer names this chair's exact "
+                    f"configured identity: observed {observed}; expected "
+                    f"identity={expected_identity!r}",
+                )
+        except BaseException as receipt_error:
+            # Reading and comparison are one post-start boundary. Any refusal
+            # here owns the exact handle that was just started, including a
+            # missing, corrupt or invalid receipt whose reader raises instead
+            # of returning a value. Stop it before propagating that original
+            # refusal; if shutdown is itself unverifiable, retain it as the
+            # cause rather than replacing the receipt diagnosis.
             try:
                 handle.stop()
             except BaseException as stop_error:
-                raise drift from stop_error
-            raise drift
+                raise receipt_error from stop_error
+            raise
         self._handle = handle
         return self
 

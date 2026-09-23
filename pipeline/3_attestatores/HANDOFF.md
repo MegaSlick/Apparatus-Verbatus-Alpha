@@ -1587,3 +1587,16 @@ This stage's own live boundary is U5, its wiring into the stage is U6, and the
 cross-file seams described under "The cross-file seams that let a live pass carry
 every chair" are U8. U7-e2e is the whole-run proof recorded at the end of that
 section.
+
+The final native-retry evidence audit corrections were implemented by GPT-5.6
+Sol (OpenAI). An exhausted repeat retains Chandra observation geometry across a
+resume only when its sealed native capture says the vendor layout parse reached
+`parsed`; retained but unrecognized bytes therefore remain visible without being
+promoted into geometry. A post-response application refusal remains the outcome
+of that physical attempt even when the vendor repeat/error predicate authorizes
+the next request, so the retry trace does not rewrite failed evidence as a
+reading. `FatalAccounting` from native capture now escapes before terminal
+publication or another request because that exception means the attempt itself
+cannot be accounted safely. Focused live-fake regressions pin all three boundaries,
+including the parsed exhausted-repeat recovery case and its unrecognized-shape
+counterpart after crash and resume.

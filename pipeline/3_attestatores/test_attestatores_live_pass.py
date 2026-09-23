@@ -933,6 +933,68 @@ def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(
     assert resumed.requests("attestator_1") == []
 
 
+def test_chandra_retry_retains_post_response_refusal_in_earlier_terminal(
+    live_run, tmp_path
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    repeated = CHANDRA_PAGE_ONE + ("<!--repeat-->" * 24)
+    scripts["attestator_1"] = [
+        ScriptedAnswer(content=repeated, finish_reason="unmeasured-stop"),
+        ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="stop"),
+        ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
+    ]
+    world = LiveWorld(live_run, tmp_path, scripts)
+
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+    assert len(world.requests("attestator_1")) == 3
+
+    tree = RunTree(run_root, RUN_ID)
+    terminals = [
+        tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "chandra-native-attempt"
+    ]
+    refused = [
+        record
+        for record in terminals
+        if record["payload"]["trigger"] == "repeat-token"
+    ]
+    assert len(refused) == 1
+    first_attempt = refused[0]["payload"]["resolved_attempt"]
+    assert first_attempt["outcome"] == "failed"
+    assert first_attempt["reason"].startswith("retained Chandra response refused: ")
+    assert "unmeasured-stop" in first_attempt["reason"]
+    assert first_attempt["native_capture"]["parse"]["state"] == "parsed"
+
+
+def test_chandra_fatal_capture_accounting_stops_before_terminal_or_retry(
+    live_run, tmp_path, monkeypatch
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    repeated = CHANDRA_PAGE_ONE + ("<!--repeat-->" * 24)
+    scripts["attestator_1"] = [
+        *[ScriptedAnswer(content=repeated, finish_reason="stop") for _ in range(7)]
+    ]
+    world = LiveWorld(live_run, tmp_path, scripts)
+
+    def refuse_capture(*_args, **_kwargs):
+        raise FatalAccounting("simulated fatal native-capture accounting")
+
+    monkeypatch.setattr(attestatores.live_witness, "captured_page_attempt", refuse_capture)
+    with pytest.raises(FatalAccounting, match="fatal native-capture accounting"):
+        run_attestatores(live_run, run_root, factory=world.factory)
+    assert len(world.requests("attestator_1")) == 1
+
+    native_kinds = [
+        entry["kind"]
+        for entry in RunTree(run_root, RUN_ID).build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] in {"chandra-native-attempt-intent", "chandra-native-attempt"}
+    ]
+    assert native_kinds == ["chandra-native-attempt-intent"]
+
+
 def test_exhausted_repeat_geometry_survives_act_record_crash_resume(
     live_run, tmp_path
 ):
@@ -970,6 +1032,47 @@ def test_exhausted_repeat_geometry_survives_act_record_crash_resume(
         observation["bounds_source"] in {"native", "derived"}
         for observation in page["payload"]["observed"]
     )
+
+
+def test_unparsed_exhausted_repeat_does_not_gain_geometry_after_crash_resume(
+    live_run, tmp_path
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    repeated_unrecognized = "x" * 17
+    scripts = default_scripts()
+    scripts["attestator_1"] = [
+        *[
+            ScriptedAnswer(content=repeated_unrecognized, finish_reason="stop")
+            for _ in range(7)
+        ],
+        ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
+    ]
+    scripts["attestator_3"] = [ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="stop")]
+    interrupted = LiveWorld(live_run, tmp_path / "interrupted", scripts)
+    with pytest.raises(IndexError):
+        run_attestatores(live_run, run_root, factory=interrupted.factory)
+
+    tree = RunTree(run_root, RUN_ID)
+    exhausted = act_records(tree)[("a1", "attestator_1")]
+    assert exhausted["outcome"] == "failed"
+    assert exhausted["payload"]["native_inference"]["exhausted_condition"] == "repeat-token"
+    assert exhausted["payload"]["native_capture"]["parse"]["state"] == "unrecognized-shape"
+    assert not page_records(tree)
+
+    resumed_scripts = {
+        "attestator_1": [],
+        "attestator_3": [ScriptedAnswer(content=CHURRO_PAGE_TWO, finish_reason="stop")],
+    }
+    resumed = LiveWorld(live_run, tmp_path / "resumed", resumed_scripts)
+    assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
+    assert resumed.requests("attestator_1") == []
+    page = page_records(RunTree(run_root, RUN_ID))[(1, "attestator_1")]
+    assert page["outcome"] == "failed"
+    assert page["payload"]["native_inference"]["physical_request_count"] == 7
+    assert page["payload"]["native_capture"]["parse"]["state"] == "unrecognized-shape"
+    assert {observation["bounds_source"] for observation in page["payload"]["observed"]} == {
+        "presented"
+    }
 
 
 def test_chandra_error_exhaustion_is_failed_and_records_every_backoff(
@@ -2099,7 +2202,11 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
         record_temperature=0,
         read_receipt=lambda reference: {
             "chair": identity.role,
+            "source": identity.source,
+            "resolved": identity.source_reference,
             "revision": identity.receipt_revision,
+            "revision_kind": identity.receipt_revision_kind,
+            "digest_manifest": identity.digest_manifest,
         },
     )
     declared = feeding.dai_generation()

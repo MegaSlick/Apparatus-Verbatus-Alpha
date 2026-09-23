@@ -160,7 +160,14 @@ def _recipes(*rows: dict[str, object]):
 def _default_read_receipt(chair: ChairIdentity):
     def read_receipt(reference: Mapping[str, str]) -> dict[str, object]:
         del reference
-        return {"chair": chair.role, "revision": chair.receipt_revision}
+        return {
+            "chair": chair.role,
+            "source": chair.source,
+            "resolved": chair.source_reference,
+            "revision": chair.receipt_revision,
+            "revision_kind": chair.receipt_revision_kind,
+            "digest_manifest": chair.digest_manifest,
+        }
 
     return read_receipt
 
@@ -1240,7 +1247,14 @@ def test_the_tree_receipt_reader_is_wired_bare_with_no_stage_side_converter(
                 "run receipt reference must contain exactly relative_path and sha256, "
                 f"as a plain dict; got {type(reference).__name__}"
             )
-        return {"chair": chair.role, "revision": chair.receipt_revision}
+        return {
+            "chair": chair.role,
+            "source": chair.source,
+            "resolved": chair.source_reference,
+            "revision": chair.receipt_revision,
+            "revision_kind": chair.receipt_revision_kind,
+            "digest_manifest": chair.digest_manifest,
+        }
 
     client, _, _, _ = _built(tmp_path, chair=chair, read_receipt=tree_shaped_read_receipt)
     with client as entered:
@@ -1270,6 +1284,53 @@ def test_receipt_match_enters_cleanly(tmp_path: Path) -> None:
     client, _, _, _ = _built(tmp_path, chair=chair, read_receipt=_real_read_receipt(chair))
     with client as entered:
         assert entered.handle is not None
+
+
+def test_receipt_reader_failure_stops_the_started_service_and_preserves_the_failure(
+    tmp_path: Path,
+) -> None:
+    failure = RuntimeError("the published receipt could not be read")
+
+    def unreadable_receipt(reference: Mapping[str, str]) -> dict[str, object]:
+        del reference
+        raise failure
+
+    client, endpoint, blob_store, _ = _built(tmp_path, read_receipt=unreadable_receipt)
+    with pytest.raises(RuntimeError) as excinfo:
+        with client:
+            pass
+
+    assert excinfo.value is failure
+    assert endpoint._available() is False
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    (("digest_manifest", "d" * 64), ("resolved", "example/a-different-attestator-1")),
+)
+def test_receipt_identity_drift_stops_before_http_even_when_chair_and_revision_match(
+    tmp_path: Path, field: str, wrong_value: str
+) -> None:
+    chair = _identity()
+    read_real_receipt = _real_read_receipt(chair)
+
+    def drifted_receipt(reference: Mapping[str, str]) -> dict[str, object]:
+        receipt = read_real_receipt(reference)
+        receipt[field] = wrong_value
+        return receipt
+
+    client, endpoint, blob_store, _ = _built(
+        tmp_path, chair=chair, read_receipt=drifted_receipt
+    )
+    with pytest.raises(ReceiptDriftRefusal, match="exact configured identity"):
+        with client:
+            pass
+
+    assert endpoint._available() is False
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
 
 
 def test_receipt_revision_drift_alone_refuses(tmp_path: Path) -> None:
