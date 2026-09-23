@@ -20,7 +20,7 @@ of a human act at a moment — so the moment is the point.
 **Cut 2026-08-09, per Tyrel's ruling that session.** `data-gate` used to be a third
 action here, backing a per-run approval-record requirement for real input: none of
 this pipeline's material ever reaches git (it runs on a GPU host, `workbench/` is
-gitignored, and an ingress check plus a pre-push payload scan already cover that
+gitignored, and an ingress check plus CI's full-history payload scan already cover that
 mechanically), so the extra sign-off bought nothing and is gone. `exclusion` and
 `salvage-promotion` remain — GOVERNANCE 1 still requires Tyrel's approval for an
 exclusion, and that is governance, not something this cut touches.

@@ -1,139 +1,104 @@
 # Apparatus Verbatus
 
-Recovers the *ipsissima verba* — the very words themselves — from historical parish and
-civil registers, using imperfect witnesses. Several vision models report on each act at
-second hand; a trained reader, the **Perlector**, reads the ink itself and establishes
-the text.
+Reads handwritten historical parish and civil registers and recovers the *ipsissima
+verba*, the very words on the page. Several vision models act as witnesses and report
+what they see in each entry; a separate reader model, the **Perlector**, then reads the
+ink itself, uses the witnesses only as clues, and establishes the text. Every reading
+traces back to the exact region of the image it came from, and uncertainty is to be
+flagged, never guessed.
 
-**Status:** alpha. Governance and architectural *direction* are settled; the staged
-fixture pipeline, its accounting boundaries, and the Armarium product export are
-implemented and exercised by local checks, but the pipeline has not been proven on a
-Tyrel-approved small real-material trial. Agents build in a linked worktree on this
-machine under the tool-call guard. Implementation continues to be discovered during alpha. **GitHub enforces
-four things on `main`**, and only these four: a change arrives by pull request, the
-automated checks must pass before it can be merged, `main` cannot be force-pushed or
-deleted, and these apply to the owner as well. Everything else in this repository is a
-local convention that a determined tool can step around. Note that no *approval* is
-required, so anything holding the owner's credentials — including an agent — can merge a
-passing pull request; the three merge conditions in CLAUDE.md hard rule 14 are a rule the
-session follows, not one GitHub imposes.
-This line is the only place status lives.
+It is built primarily for Quebec parish registers of the 1700s to 1900s, and developed
+and tuned on those records and on French records of the same era (the RecordGold pages).
+It should also work, to a lesser degree, on other archival records — censuses, fur-trade
+ledgers, notarial contracts — and on some English-language records.
 
-## Where to look
+**Status: alpha.** The staged pipeline, its accounting and its export are implemented and
+tested on synthetic pages. Real pages have run on a GPU pod through the three witnesses,
+but no real run has yet produced a final export, so accuracy is not yet established. The
+live reader does not yet mark word-level uncertainty; the export says so for every act.
 
-| If you want to know… | Read |
+## How it works
+
+```
+page images → Exemplar → Ink map → Designator → Attestatores → Perlector → Recensor → Archetypus → Armarium
+              sealed     where the   finds the    witness        reads the   checks     established  export
+              source     ink lies    entries      models         ink         coverage   reading
+```
+
+[ARCHITECTURE.md](ARCHITECTURE.md) explains each stage and why it is shaped that way;
+[GLOSSARY.md](GLOSSARY.md) defines the terms. What the project holds itself to is in
+[PRINCIPLES.md](PRINCIPLES.md).
+
+| Role | Model |
 |---|---|
-| what this project is for | [GOALS.md](GOALS.md) |
-| what we are and aren't allowed to do | [GOVERNANCE.md](GOVERNANCE.md) |
-| how the pipeline is shaped and why | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| what a word means | [GLOSSARY.md](GLOSSARY.md) |
+| Designator, Attestator 1 | `datalab-to/chandra-ocr-2` |
+| Attestator 2 | `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR` |
+| Attestator 3 | `stanford-oval/churro-3B` |
+| Perlector | `Qwen/Qwen3.8-27B` |
 
-## Controls
+Models are bound to roles in `config/models-real.toml` and can be swapped without code
+changes.
 
-Every local protection can be switched off, and how is written here — a guard the
-owner cannot unwire is a defect, whatever it prevents (CLAUDE.md hard rule 11).
+## Getting started
 
-**The tool-call guard refuses six things for this session, and two more only for a
-spawned agent.** Landing work on `main`, deleting recursively outside the drawers that
-exist to be emptied, rewriting published history, deleting a remote ref, putting a
-credential into git, and switching the git hooks off. The seventh is a spawned agent
-editing a governed path, and the eighth is a spawned agent pushing, opening a pull
-request, marking one ready for review, updating its branch on the server, or merging
-one — in every `git`, `gh pr`, REST and GraphQL spelling the guard reaches — the two refusals that are not the same for both audiences,
-and the reason built-in agent types can be used here at all. The eighth is what carries
-hard rule 12 now that a build seat runs in a worktree on this machine: the container
-seat it replaced never pushed because it had no route out, while a worktree seat holds the
-session's own credentials and allow list, so the rule needed a mechanism rather than a
-sentence. It cannot ask — a refusal is final within a session, and the way
-past one is Tyrel. The predecessor asked 503 times in three days and approval became
-reflexive, which is worse than no guard. **To switch it off, delete the `PreToolUse`
-block from `.claude/settings.json`** — one step, no other file needs touching.
+Requirements: Python 3.12 or newer and [uv](https://docs.astral.sh/uv/) exactly 0.12.1
+(the project pins it and uv refuses other versions).
 
-Still in force and not suspended: the git hooks refuse a commit on `main`, a push at
-`main`, and a credential or oversized payload in outgoing history — `sh
-.githooks/install.sh` arms them in a clone, and unsetting `core.hooksPath` removes
-them. The test harness and the gate set the notifier's test-sink topic so no test can
-reach a phone (`operations/notify/README.md`); the gate fails closed if it cannot read that
-constant. **To switch that guard off, delete the `NTFY_TOPIC` block above the pytest line
-in `.githooks/check-all.sh`** and the autouse fixture in the root `conftest.py` — two
-lines, nothing else — and the notifier behaves as before under tests, which is how nine
-fake-balance pushes once reached a phone (the dated record is in the standing findings). GitHub's own rules on `main`, listed above, are outside this repository's reach
-and no local change affects them.
+```sh
+uv sync --frozen --group test --group audit   # create .venv from the lockfile
+sh .githooks/install.sh                        # arm the git hooks
+sh .githooks/check-static.sh                   # lint, format and document checks (fast)
+```
 
-## Scope
+**Try it without a GPU.** The default model roster (`config/models.toml`) uses fixture
+stand-ins in place of models, with answers scripted by the chosen scenario, so a local
+run on the synthetic pages in `proof/fixtures/` exercises sealing, accounting, recovery
+and export — not reading:
 
-Source images in, established readings out. Import to export.
+```sh
+.venv/bin/python pipeline/orchestrator/run.py --fixture synthetic-two-page-v0 \
+  --scenario happy --run-id demo --run-root /tmp/verbatus-demo
+```
 
-Training, research, search, and correction happen elsewhere. They are not this project.
+Each stage writes its sealed output under the run root, ending in `7_armarium/`.
 
-## The three that bind
+**Real pages** need the real roster (`--models-config config/models-real.toml`) and a
+Linux GPU machine running vLLM; the RunPod
+tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC
+or PDF. Output is a sealed ZIP bundle with a manifest, and it can include a text bundle,
+a searchable SQLite database, JSONL, and the items held for human review
+(`config/formats.toml`).
 
-1. **A missed act is worse than a poorly read act.** Nothing is lost silently.
-2. **The Perlector reads; it never picks.** Witnesses are clues, never options.
-3. **Quality over speed.** More passes and slower runs are acceptable costs.
+## Repository layout
 
-**Tyrel decides.** He is the only human in these rules — no agent may stand in for him,
-and no session may amend these documents.
+| Path | What it holds |
+|---|---|
+| `pipeline/` | the numbered stages and the orchestrator that runs them |
+| `common/` | the only code shared between stages |
+| `config/` | settings and model rosters |
+| `operations/` | operator tools, image intake, GPU pod and serving, notifications, review |
+| `proof/` | small synthetic fixtures that are safe to publish |
+| `gold/` | tooling for building human-checked reference samples |
+| `.githooks/` | git hooks and the check scripts CI runs |
+| `private/`, `scriptorium/` | local only; gitignored except their READMEs |
 
-## Who wrote this
+## Contributing
 
-**Every line of code here is AI-generated.** Tyrel directs the work, reviews it, and
-decides what lands; he does not write the lines, and the repository does not pretend
-otherwise.
+See [CONTRIBUTING.md](CONTRIBUTING.md). AI coding agents follow
+[AGENTS.md](AGENTS.md) as well.
 
-The history records which machine did what, and separates writing from reading. Each
-commit is authored by Tyrel, who is accountable for it, and carries a `Co-Authored-By`
-line naming the model that wrote it. An agent that audited the work and found defects
-without writing lines is recorded as `Reviewed-by` instead — so a commit can say it was
-written by one model and adversarially read by two others, which is worth knowing.
+**All of the code here is written by AI models**, directed and reviewed by the project
+lead. Each commit names the model that wrote it (`Co-Authored-By`) and any model that
+reviewed it (`Reviewed-by`).
 
-A `commit-msg` hook refuses a commit that names no author, in any clone where the hooks
-have been installed — CLAUDE.md says how, and until it is done the check does not run at
-all. Even then it is an alarm rather than a lock: the messages git writes itself are
-exempt, and it can be skipped deliberately. The merge commit GitHub creates when a pull
-request lands is made on their servers, where no local hook runs, so that one is outside
-its reach entirely.
+## Roadmap
 
-Models are named by release, not by vendor alone, because "an AI wrote it" ages badly and
-"Claude Opus 5 wrote it" does not.
+- **alpha** (this repository): build the pipeline and prove it on a small set of real
+  pages.
+- **beta**: a fresh, clean repository carrying forward only what survived alpha.
+- **1.0**: the public release.
 
-## Two conventions
+## Licence
 
-**History is evidence, never instructions.** Dated documents record what happened. They
-do not tell you what to do. Only the files above do that.
-
-**Status lives in one place.** The line under the title. If you find a status claim
-anywhere else in this repository, it is wrong by construction.
-
-**And it carries no date, by Tyrel's ruling.** This document states no date at all, and
-`check-documents.sh` refuses one. A dated status line goes stale in silence: the line
-above once named a day that had already passed the thing it described, in the very
-document claiming to be the only place status lives. Undated, it can only be wrong about
-the substance — and substance is what a reader notices. Dated state belongs in `history/`
-and in the standing ledgers under `workbench/`, both of which are read as records rather
-than as instructions. **Provenance is a different thing** and survives in the documents
-that carry procedure — when a ruling was made, when something was measured — because the
-attribution discipline in CLAUDE.md depends on it and a ruling's date never goes stale.
-
-## Versions
-
-**alpha** — a rebuild laboratory. Build the harness first; prove the workflow,
-branches, rules and contracts. Old code was the reference, read through a window that
-Tyrel closed once the rebuild could be planned from its own design notes — no seat is
-given it now, and `cleanroom/README.md` governs what may cross when a session reads the
-old tree on the host. Its systems are written new here, one piece
-at a time. Alpha does not need to be a finished pipeline.
-
-**Nothing enters this repository uninspected.** Code is written new, read line by line
-and justified, or it does not arrive. An old byte crosses only where it is the best
-option available and is named as carried; third-party code enters under a licence that
-permits it, recorded with its source.
-
-**beta** — start again in a fresh, clean private environment using only what survived
-alpha. Build there until the system works.
-
-**1.0** — the public release, with personal and community-specific material removed.
-
-**Distribution rule.** A private repository is never made public by changing its
-visibility. Either beta is public-safe from its first commit, or 1.0 is a separate
-clean, allowlisted export with fresh history.
+Apache License 2.0; see [LICENSE](LICENSE). Copyright 2026 Tyrel Somerville, project
+lead.

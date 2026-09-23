@@ -3,18 +3,31 @@
   "env": {
     "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1"
   },
+  "permissions": {
+    "deny": [
+      "Bash(git*push*origin main)",
+      "Bash(git*push*origin main *)",
+      "Bash(git*push*:main)",
+      "Bash(git*push*:main *)",
+      "Bash(git*push*refs/heads/main)",
+      "Bash(git*push*refs/heads/main *)",
+      "Bash(git*merge*--no-verify*)",
+      "Bash(git*push*--force*)",
+      "Bash(git*push* -f*)",
+      "Bash(git*push*--mirror*)",
+      "Bash(git*push*--delete*)",
+      "Bash(git*commit*--no-verify*)",
+      "Bash(git*commit* -n*)",
+      "Bash(git*-c core.hooksPath*)",
+      "Bash(git config core.hooksPath *)",
+      "Bash(git config --unset core.hooksPath*)",
+      "Bash(git*filter-branch*)",
+      "Bash(git*filter-repo*)",
+      "Bash(git*reset --hard*)",
+      "Bash(runpodctl*)"
+    ]
+  },
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\" || { echo 'The repository guard could not run (python3 missing, guard.py missing, or it failed to start), so it cannot vouch for this tool call. GOVERNANCE.md 10: a check that cannot run is a failure, not a pass.' >&2; exit 2; }"
-          }
-        ]
-      }
-    ],
     "SessionStart": [
       {
         "matcher": "startup",

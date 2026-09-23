@@ -30,7 +30,7 @@ the proportionate, risk-warranted review again before push.
 ## Bounded CodeRabbit procedure
 
 CodeRabbit is advisory evidence. It never approves a merge: `request_changes_workflow` stays
-off, CLAUDE.md hard rule 14 and the final gate decide readiness, and a resolved CodeRabbit
+off, the merge conditions in AGENTS.md decide readiness, and a resolved CodeRabbit
 thread is not an automated approval.
 
 1. Finish one coherent branch change and commit it. Prepare the candidate against the complete
@@ -38,7 +38,7 @@ thread is not an automated approval.
 
    ```sh
    coderabbit review --agent --committed --base origin/main \
-     --config .coderabbit.yaml CLAUDE.md operations/review/README.md
+     --config .coderabbit.yaml AGENTS.md operations/review/README.md
    ```
 
    Record every finding as fixed or declined, with the concrete trigger, impact, evidence, and
@@ -50,7 +50,7 @@ thread is not an automated approval.
 
    ```sh
    coderabbit review --agent --committed --base-commit <preceding-candidate> \
-     --config .coderabbit.yaml CLAUDE.md operations/review/README.md
+     --config .coderabbit.yaml AGENTS.md operations/review/README.md
    ```
 
    This is a review of the material correction, not a new whole-branch baseline. Add
@@ -78,7 +78,7 @@ thread is not an automated approval.
 
 5. Preserve reviewer evidence with `candidate.py receipt` after the proportionate independent
    review. Report dispositions honestly; `@coderabbitai resolve` may close a thread but does not
-   establish correctness or waive hard rule 14. Run the final gate on the exact reviewed
+   establish correctness or waive the merge conditions in AGENTS.md. Run the final gate on the exact reviewed
    candidate and push it without amendment.
 
 The repository YAML is the shared GitHub configuration; validate edits locally with
@@ -95,7 +95,7 @@ explicitly; `.coderabbit.yaml` at the root is read by the GitHub app, not by the
 pass that omits it runs without the assertive profile, the project's own checks (no witness
 picker, nothing lost silently, carried bytes) and the per-path instructions, and reports
 clean on changes the GitHub review then flags. That is why steps 1 and 2 above pass
-`.coderabbit.yaml`, `CLAUDE.md` and this file on every pass, the baseline and the narrow
+`.coderabbit.yaml`, `AGENTS.md` and this file on every pass, the baseline and the narrow
 follow-up alike; a pass without them is not the project's review. Findings are advisory
 (`.coderabbit.yaml` sets `request_changes_workflow: false`); the session disposes of each
-one with a reason, and hard rule 14 decides the merge.
+one with a reason, and AGENTS.md decides the merge.

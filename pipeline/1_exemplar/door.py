@@ -32,7 +32,7 @@ simply be absent.
 current data-gate approval-record artifact before this door would admit it. His
 ruling: none of this material ever reaches git regardless of any such sign-off — it
 runs through the pipeline on a GPU host, `workbench/` is gitignored, and an ingress
-check plus a pre-push payload scan already cover that mechanically — so the
+check plus CI's full-history payload scan already cover that mechanically — so the
 requirement bought nothing and is gone. `operations.submit.gate`'s storage-root check
 is untouched; only the approval artifact and its currency check are cut.
 

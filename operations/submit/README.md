@@ -33,14 +33,13 @@ resumable", and no pod exists yet.
 
 ## The storage-root check is mechanical; the approval-record requirement is cut
 
-**Cut 2026-08-09, per Tyrel's ruling that session:** *"None of these images will be
-on git anyways they run through the pipeline on the gpu and won't ever touch git. So
-yes cut the approval record it's not really needed."* A submission used to also need
-a current data-gate approval-record artifact, verified before a byte was hashed and
-named in the sealed manifest. That requirement is gone: none of this material ever
-reaches git regardless of any per-run sign-off — it runs on a GPU host,
-`workbench/` is gitignored, and an ingress check plus a pre-push payload scan
-already cover that mechanically.
+**No per-run approval record.** A submission once also needed a signed-off data-gate
+approval record; the project lead removed it because this material never goes near git:
+it runs on a GPU host and `workbench/` is gitignored. The commit hooks refuse
+credentials and oversized payloads before anything is committed; CI's full-history scan
+runs only after a push, so it detects a leak but cannot prevent one. Keeping real
+transcriptions and images out of the repository is the rule (PRINCIPLES.md principle 12),
+not something a scan guarantees.
 
 What remains, and is unaffected: a folder handed to this tool is never a fixture, by
 construction — it never goes near `load_fixture` — and both the submitted folder and
@@ -71,7 +70,7 @@ never appear there.
   through the gap; a rule keyed on a suffix is a rule anyone can walk past by
   renaming. Storage roots are chosen by the stage that wrote the file.
 - **Testimonia survive per-stage cleanup.** They are pipeline records under
-  GOVERNANCE 4 — "testimony is always retained" — and remain until the whole run
+  PRINCIPLES.md principle 4 (evidence is never overwritten) and remain until the whole run
   reaches its sealed disposal condition; they are destroyed with that whole volume,
   not retained beyond it.
 - Temporary writes are same-directory, flushed and `fsync`ed before atomic
@@ -93,6 +92,6 @@ It checks that declared synthetic target paths and temporary paths are absent, t
 declared logs contain no forbidden marker, and that a volume object listing is empty
 where a volume applies. It is never a claim of forensic unrecoverability from storage
 media, snapshots or provider backups, which no filesystem check can establish
-(GOVERNANCE 10). Where there is no volume, it reports `None` rather than an empty
+(PRINCIPLES.md principle 8). Where there is no volume, it reports `None` rather than an empty
 listing: unknown is never zero. Routine deletion is unavailable here: retain every
 run artifact until the settled whole-run disposal condition is recorded elsewhere.

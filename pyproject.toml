@@ -77,9 +77,8 @@ audit = ["pip-audit==2.10.1"]
 # backend registry, the PyPI package publishes no wheel, and building its sdist
 # against torch 2.13 would be an hours-long nvcc compile on a billing card.
 #
-# Licence record (cleanroom/README.md: a third-party dependency's source and
-# licence recorded beside the code; full citations in operations/pod/README.md
-# under "The serving stack, re-planned and locked"):
+# Licence record (PRINCIPLES.md principle 12; full citations in
+# operations/pod/README.md under "The serving stack, re-planned and locked"):
 #   vllm==0.27.1           Apache-2.0  github.com/vllm-project/vllm
 #   transformers==5.14.1   Apache-2.0  github.com/huggingface/transformers
 #   qwen-vl-utils==0.0.14  Apache-2.0  github.com/QwenLM/Qwen2.5-VL (PyPI: qwen-vl-utils)
@@ -137,19 +136,10 @@ markers = [
     # unless this marker was named. See `common/test_vendor_parity.py`.
     "vendor_network: fetches the pinned vendor sources to re-measure the carried-bytes pins",
 ]
-# pytest skips every dotted directory by default, so the harness's own tests
-# under .claude/hooks/ were found by CI's `find` and then collected by nobody —
-# pytest exited 5, "no tests ran", and the step failed.
-#
-# `worktrees` is not optional. Agents work in .claude/worktrees/<topic>, each a
-# full checkout, so without it collection finds several files with the same
-# basename and dies on an import mismatch.
-# Setting this key REPLACES pytest's built-in list rather than adding to it, so
-# the ordinary noise directories have to be named again here or collection will
-# start walking them.
-# `cleanroom` is load-bearing here, not noise: pytest IMPORTS what it collects,
-# and the tray holds presumed-contaminated drafts. Without this entry, a
-# test_*.py dropped in the tray would execute on this machine and on CI.
+# Setting this key replaces pytest's built-in list, which skips dotted directories;
+# that is what lets the tests in .claude/ and .githooks/ be collected. The usual noise
+# directories are named again. `worktrees` holds agent checkouts, whose duplicate test
+# basenames would break collection.
 norecursedirs = [".git", ".venv", "venv", ".ruff_cache", ".pytest_cache",
                  ".mypy_cache", ".tox", "node_modules", "build", "dist",
                  "worktrees", "__pycache__", "workbench", "private", "scriptorium",

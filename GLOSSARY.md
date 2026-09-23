@@ -1,84 +1,79 @@
-# Glossary — Apparatus Verbatus
+# Glossary
 
-One word per concept, one concept per word. If two words mean the same thing, one of
-them is wrong.
+One word per concept, one concept per word. The stage names are Latin, borrowed from
+manuscript practice and textual criticism; each entry gives the plain meaning used here.
 
 ## The project
 
-**Apparatus Verbatus** — the system. *Apparatus criticus* is the record of variant
-readings printed beneath a critical edition; this is both the machinery and that record.
-Short form in code and conversation: `verbatus`.
+**Apparatus Verbatus** — the system. An *apparatus criticus* is the record of variant
+readings printed beneath a critical edition; this project is both the machinery and that
+record. Short form in code: `verbatus`.
 
-**Ipsissima verba** — "the very words themselves." The textual-criticism term for the
-exact original wording. What this project exists to recover.
+**Ipsissima verba** — "the very words themselves": the exact original wording, which is
+what the project exists to recover.
 
-## Ordinary words that carry weight
+## Everyday words with a specific meaning
 
-**act** — a unit of relevant body text. Usually a register entry: a baptism, marriage,
-or burial. But these books also hold index rows, letters, notes, and essays, and the
-variance is real. **Deliberately not defined tightly** — a narrow definition excludes
-material, and a missed act is worse than a poorly read one.
+**act** — one unit of body text, usually a register entry (a baptism, marriage or
+burial). Registers also hold index rows, letters and notes, so the term is kept
+deliberately loose: a narrow definition would exclude material, and a missed act is worse
+than a poorly read one.
 
-**page** — one rendered image from the Exemplar.
+**page** — one image from the source.
 
 **crop** — the image region marked out for one act.
 
-**chair** — a numbered place in the pipeline that one model occupies. The chair is the
-role; the model is the occupant, **bound to its chair only in `config/models.toml`** and
-swapped without touching code. *Attestator 1* is a chair; whichever model currently sits
-in it is not.
+**witness** — a model that reads an act and reports what it saw. Its report is
+evidence, not an answer.
 
-Binding is the exclusive part, not naming. The materialization inventory in
-`common/chairs/model_store.py` names the same repositories and revisions again, so an
-operator can fetch them before a chair ever resolves; a test reconciles the two lists so
-they cannot drift. Nothing but `models.toml` says which chair a model fills.
+**chair** — a numbered role in the pipeline that one model fills. The binding lives in a
+model roster under `config/`: `models.toml` holds small local stand-ins and
+`models-real.toml` the real models. *Attestator 1* is a chair; the model sitting in it
+can be swapped without touching code.
 
-**Not "seat".** In `.claude/`, `operations/seats/` and the working notes a *seat* is a
-model doing an agent's job — building, reviewing, auditing. That is harness vocabulary
-and it stops at the pipeline's edge.
+**door** — the intake step before the Exemplar: it checks and seals what was submitted,
+and records anything it refuses.
 
-**pod** — a rented cloud machine with a GPU. It bills by the hour while it exists.
+**sealed** — written once with a recorded hash, so any later change is detectable.
+
+**held** — set aside for human review rather than silently dropped or passed as done.
+
+**run tree** — the directory one run writes, with one folder per stage.
+
+**pod** — a rented cloud machine with a GPU, billed by the hour while it exists.
 
 ## The stages
 
-| Term | Latin sense | What it does here |
-|---|---|---|
-| **Exemplar** | the original one copies from | the sealed, immutable scanned page |
-| **Designator** | *designo*, to mark out | finds and bounds the acts on a page |
-| **Attestator** | *attestari*, to bear witness | one witness model. Plural: **Attestatores** |
-| **Perlector** | *perlegere*, to read through | the trained reader. Reads the ink, establishes the text |
-| **Recensor** | *recensio*, review | verifies completeness and drives bounded recovery. Establishes no text |
-| **Archetypus** | the reconstructed ancestor | the established reading — the pipeline's output |
-| **Armarium** | the cupboard for finished codices | where the output is written |
+| Term | Plain meaning here |
+|---|---|
+| **Exemplar** | The sealed, immutable source page. (In manuscript practice, the original a scribe copies from.) |
+| **Ink map** | Measures where ink lies on each sealed page, without any model, so the Recensor can check that every inked region ended up in an act. |
+| **Designator** | Finds the acts on a page and marks their bounds. It may use textual cues, but never establishes the text. |
+| **Attestator** | One witness model. Plural **Attestatores**. |
+| **Perlector** | The reader: reads the ink itself and establishes the text, using witness testimony as clues. |
+| **Recensor** | Checks that the page is completely covered and drives bounded recovery. It establishes no text. (Textual critics use *recensio* for weighing witnesses; here the word means the completeness review.) |
+| **Archetypus** | The established reading, the pipeline's output: a machine reading, not truth. (Borrowed loosely from the ancestor text all witnesses descend from.) |
+| **Armarium** | Where the output is written. (The cupboard where finished books were kept.) |
 
-## The objects
+## What the stages produce
 
-**Testimonium** — one witness's report. Unverified, of uncertain quality, never final,
-always retained. Carries the model identity and revision that produced it.
+**Testimonium** (plural *Testimonia*) — one witness's report on an act: unverified, of uncertain quality,
+never final, always kept. It carries the identity and revision of the model that made it.
 
-**Lectio** — one reading pass by the Perlector. May be primed by a single witness, or
-unprimed.
+**Lectio** — one reading pass by the Perlector, either shown witness testimony
+(primed) or not.
 
-**Lectio nuda** — an unprimed Lectio. No witness shown. The baseline.
+**Lectio nuda** — an unprimed reading, with no witness shown. The baseline that shows
+whether the reader can read without help.
 
-**Perlectio** — what the Perlector returns: the reading, what it was based on, and its
-dissent.
+**Perlectio** — what the Perlector returns: the reading, what it was based on, and where
+it departed from every witness (its dissent).
 
 ## The distinction that matters
 
-**Testimonium** is report. **Autopsia** is sight of the thing itself. The Attestatores
-have the first; the Perlector has the second. This is the classical difference between
-hearsay and eyewitness, and it is the architectural claim of the whole system.
+**Testimonium** is report; **autopsia** is seeing the thing itself. Witnesses and reader
+may both look at the page, but only the reader's role is to establish the text from the
+ink. That difference in role is the design of the whole system.
 
-## Retired terms
-
-These appear in the old repository and mean nothing here. If you see one, it is history.
-
-| Old | Now |
-|---|---|
-| Stage-W, act reader | **Perlector** |
-| picker | *retired, not renamed. Nothing selects among witnesses* |
-| consolidator | its witness-voting is **retired**. If an assembled page hypothesis is kept at all, it is a **Testimonium** like any other |
-| witness_dai_churro, chandra (as a stage name) | **Attestatores**, **Designator** |
-| lean bundle, pilot_*, *_v2 / *_v3 | naming carries meaning, not history |
-| seat (as a pipeline word) | **chair**. *Seat* is the harness's word for a model doing an agent's job and does not cross into the pipeline |
+**picker** — any step that chooses among witness readings. There is none, by design
+(PRINCIPLES.md, principle 1).

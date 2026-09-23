@@ -5,7 +5,7 @@ spec 03's test 7 — a per-run data-gate approval-record requirement for real in
 its policy-hash currency check, and the digest-checked reference an approval
 travelled as. All three are gone: real material never reaches git regardless of any
 per-run sign-off (it runs on a GPU host, `workbench/` is gitignored, and an ingress
-check plus a pre-push payload scan already cover that mechanically), so the
+check plus CI's full-history payload scan already cover that mechanically), so the
 requirement bought nothing. What remains, and is still real mechanical safety, is
 the policy load's shape checks and the storage-root enforcement that keeps real
 material inside the locations the policy names.

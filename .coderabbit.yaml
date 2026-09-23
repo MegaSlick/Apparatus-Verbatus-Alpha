@@ -3,7 +3,7 @@ language: en-GB
 # Capped at 250 characters by the schema, so what this project *is* lives in the
 # repository-wide path instruction below rather than here.
 tone_instructions: >-
-  Read by a manager who does not write code, on work that is entirely AI-generated. Name
+  Read by the project lead, who does not write code, on work that is entirely AI-generated. Name
   the concrete failure a defect causes, not the category it belongs to. A finding that
   cannot say what breaks is not a finding.
 
@@ -12,7 +12,7 @@ reviews:
   profile: assertive
 
   # `request_changes_workflow: false` — CodeRabbit must never be able to block a merge.
-  # A merge is decided by CLAUDE.md hard rule 14's three conditions, or by Tyrel; never here.
+  # Merging is decided by the rules in AGENTS.md, never here.
   request_changes_workflow: false
 
   high_level_summary: true
@@ -51,10 +51,9 @@ reviews:
       - name: Carried code is named as carried
         mode: warning
         instructions: >-
-          CLAUDE.md, "Quarantine": code from the old pipeline is written new here, not
-          copied. Adapted, renamed and reformatted count as copied. Where a line is
-          carried across anyway it must be named as carried in both the commit message
-          and the report, and third-party code must record its source and licence.
+          PRINCIPLES.md principle 12: code adapted from elsewhere is named as adapted in
+          the commit message, and third-party code records its source and licence.
+          Adapted, renamed and reformatted count as copied.
           When available evidence identifies carried code, check its source and attribution
           against the commit and report. Name that evidence; resemblance or AI authorship
           alone does not prove copying. If provenance cannot be established, report the
@@ -62,7 +61,7 @@ reviews:
       - name: No witness picker
         mode: warning
         instructions: >-
-          GOVERNANCE 3 and CLAUDE.md hard rule 8 forbid anything that selects among
+          PRINCIPLES.md principle 1 forbids anything that selects among
           witnesses — under any name: choosing, ranking to pick, voting, best-of,
           confidence-thresholding down to one, or discarding a witness as bad. Witnesses
           are clues, never options; the Perlector reads and never picks. No witness is
@@ -71,7 +70,7 @@ reviews:
       - name: Nothing is lost silently
         mode: warning
         instructions: >-
-          GOVERNANCE 2 and CLAUDE.md hard rule 7. Flag changes that reduce a declared
+          PRINCIPLES.md principle 2. Flag changes that reduce a declared
           collection without reconciling the source, retained, and published identities or
           counts; substitute an ordinary value for required missing or unverified evidence;
           swallow a write failure; or publish complete/success after a required record
@@ -98,8 +97,10 @@ reviews:
     - path: "**"
       instructions: >-
         What this project reads, because it decides how expensive a defect is. The
-        material is Quebec parish registers and fur-trade-era records from public sources
-        such as FamilySearch and public archives. The corpus is deliberately
+        material is primarily Quebec parish registers of the 1700s-1900s, with French
+        records of the same era for tuning, and to a lesser degree censuses, fur-trade
+        ledgers, notarial contracts and some English-language records, from public
+        sources such as FamilySearch and public archives. The corpus is deliberately
         heterogeneous — handwriting across centuries, typed transcriptions and printed
         books together — and that is on purpose, not an oversight to be cleaned up. Runs
         cover whole parishes, approaching the population of a small town, and the
@@ -125,21 +126,15 @@ reviews:
         must name that `raise`.
     - path: ".githooks/**"
       instructions: >-
-        Local enforcement. CLAUDE.md hard rule 11: every guard must be removable in one
-        documented step, and README.md must record that step. Flag any check that cannot
-        be switched off, and any that fails open — a check that cannot run is a failure,
-        not a pass (GOVERNANCE 10).
+        The git hooks and the check scripts CI runs. Flag any check that fails open: a
+        check that cannot run is a failure, not a pass (PRINCIPLES.md principle 8). The
+        project lead can remove the hooks with `git config --unset core.hooksPath`
+        (AI sessions are denied that command in `.claude/settings.json` on purpose).
     - path: ".claude/**"
       instructions: >-
-        Governed. CLAUDE.md hard rule 10 bars a spawned agent from editing anything here;
-        the main session may, at Tyrel's direction and after the governed-edit procedure.
-        Do not raise the rule against a change that followed it. What is worth raising is
-        drift: a refusal quoting a CLAUDE.md section name that no longer exists, a
-        hard-rule number cited wrongly (numbers are appended, never inserted or reused),
-        or a count of what the guard refuses that disagrees with its own `CHECKS`. All
-        three have gone stale here before. `guard.py` and `test_guard.py` are the local
-        enforcement layer: a check that cannot run is a failure, not a pass, and a test
-        that passes because of the machine it ran on has proved nothing.
+        Claude Code settings, read-only agent roles and session skills. Changes need the
+        project lead's approval (AGENTS.md). Flag drift: a skill or role that contradicts
+        AGENTS.md, or names a file or section that no longer exists.
     - path: "**/*.py"
       instructions: >-
         This repository selects only Ruff rules `E4, E7, E9, F, I, B` in `pyproject.toml`.
@@ -188,7 +183,7 @@ code_generation:
           and negative cases that fail when the named behaviour regresses. Isolate external services
           and unrelated collaborators explicitly, never the behaviour under test. Do not call live
           network services or pods,
-          edit governed files, push, or merge automatically.
+          edit core documents, push, or merge automatically.
 
 knowledge_base:
   opt_out: false
@@ -196,19 +191,17 @@ knowledge_base:
     enabled: true
   code_guidelines:
     enabled: true
-    # The whole point: every review reads the rules it is reviewing against, instead of
-    # re-deriving them from the diff. These are the documents that bind.
+    # Every review reads the principles it is reviewing against.
     filePatterns:
-      - "GOVERNANCE.md"
-      - "GOALS.md"
+      - "PRINCIPLES.md"
       - "ARCHITECTURE.md"
       - "GLOSSARY.md"
-      - "CLAUDE.md"
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
       - "README.md"
       - "**/README.md"
   learnings:
-    # Private repository, so `auto` would file learnings at organisation scope. This
-    # project's conclusions belong to this project.
+    # Keep learnings scoped to this repository.
     scope: local
   pull_requests:
     scope: local

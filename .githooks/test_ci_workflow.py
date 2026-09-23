@@ -682,17 +682,12 @@ def gate_env(tmp_path):
 
 def test_cleanroom_gate_distinguishes_empty_and_loaded_tray(tmp_path):
     gate = step_run("The cleanroom is empty")
-    empty = tray_repo(tmp_path / "empty", "cleanroom/README.md")
-    loaded = tray_repo(
-        tmp_path / "loaded",
-        "cleanroom/README.md",
-        "cleanroom/draft.py",
-        "cleanroom/nested/other.py",
-    )
+    empty = tray_repo(tmp_path / "empty", "README.md")
+    loaded = tray_repo(tmp_path / "loaded", "README.md", "cleanroom/nested/draft.py")
     assert run_shell(gate, empty, gate_env(tmp_path)).returncode == 0
     result = run_shell(gate, loaded, gate_env(tmp_path))
     assert result.returncode == 1
-    assert "2 unsterilized draft" in result.stderr
+    assert "cleanroom/nested/draft.py" in result.stderr
 
 
 def test_cleanroom_gate_fails_when_git_cannot_list(tmp_path):

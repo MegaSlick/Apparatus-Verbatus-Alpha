@@ -1,75 +1,28 @@
 ---
 name: session-end
-description: Close a state-changing session with verified Git state and a concise handoff.
+description: Close a session with verified git state, filed notes and a short handoff.
 disable-model-invocation: true
 ---
 
 # Session end
 
-Run this when Tyrel asks to close the session. The main session owns it.
+Run this when the lead asks to close, or when plan usage reaches the wind-down point.
 
-## 1. Establish state
-
-Run unfiltered:
-
-```sh
-git fetch origin || echo "FETCH FAILED — record it; do not measure divergence or park"
-git status --porcelain
-git status --short --branch
-git rev-list --left-right --count origin/main...HEAD   # only if the fetch above succeeded
-python3 .githooks/tidy.py
-```
-
-If fetch fails, do not measure divergence or park. Still write the handoff: record the
-fetch failure, dirty tree, partial work, and skipped checks, then report the notification
-outcome without claiming divergence was verified.
-
-Run checks proportional to the change. Name every skipped or failed check. Do not make
-the tree look clean by deleting evidence or discarding work.
-
-## 2. File finished notes
-
-Move genuinely completed task notes and cited raw evidence to one
-`workbench/archive/<date>_<topic>/` directory. Leave active material active and say why.
-Standing ledgers remain in place. Preserve the outgoing handoff and next-session brief in
-the archive before replacing them; never overwrite an archived file.
-
-## 3. Leave a truthful handoff
-
-`workbench/active/HANDOFF.md` contains only state the next session cannot derive cheaply:
-
-- branch, distance from `origin/main`, and dirty files;
-- checks not run or not green;
-- external or gitignored state;
-- decisions and their reasoning;
-- actual blockers, with paths to evidence;
-- models that wrote committed lines;
-- actions still requiring Tyrel under hard rule 1.
-
-Use `Tyrel ruled (date)` only for his decision and `session decided` or
-`session recommends` for the session's work. Do not turn completed engineering choices
-back into questions.
-
-Write `workbench/active/NEXT_SESSION_BRIEF.md` only when another session needs a specific
-queue. Its first line says Tyrel's next stated goal outranks it. Keep it short.
-
-## 4. Park safely
-
-If work continues, stay on its branch. If the task is finished and
-its pull request is verified merged, park on a fresh `work/boot-<date>-<time>` branch from
-`origin/main`. Delete a finished local branch only after the pull request reports
-`MERGED` and its `headRefOid` equals the exact branch tip; pin that oid in the delete.
-For a local ref, first refuse a symbolic ref, then use
-`git update-ref --no-deref -d refs/heads/<branch> <headRefOid>`: Git deletes only
-if the ref still holds that object, so a concurrent move becomes a refusal. Never
-substitute an unchecked `git branch -D`. Otherwise keep the branch and say why.
-
-## 5. Leave machine state explicit
-
-List the linked worktrees (`git worktree list`). Remove a seat this session created only
-once its branch is merged or its work is recorded; name any seat still holding uncollected
-work and its purpose. Never destroy uncollected work to tidy the close.
-
-Report the final branch/tree state, checks, filing, external actions, live suspensions,
-and the next action. Send the `done` notification through `operations/notify/notify.sh`;
-say plainly if delivery fails.
+1. **Establish state.** `git fetch origin`, `git status --short --branch`,
+   `git rev-list --left-right --count origin/main...HEAD`, `git worktree list` and
+   `python3 .githooks/tidy.py`. Name every check that was skipped or failed. Never tidy
+   by deleting evidence or discarding work.
+2. **File notes.** Move finished notes, the outgoing handoff included, into one
+   `workbench/archive/<date>_<topic>/` directory. Never overwrite an archived file.
+3. **Write the handoff** in `workbench/active/HANDOFF.md`, holding only what the next
+   session cannot cheaply work out: branch and distance from `main`, uncommitted work,
+   checks that are not green, state outside git, decisions and their reasons, real
+   blockers with paths to the evidence, and anything waiting on the lead.
+4. **Park.** If the work continues, stay on its branch. If its pull request has merged,
+   the tree is clean and the fetch succeeded, move to a fresh branch from `origin/main`;
+   delete the old branch only if the pull request's head commit equals the branch tip. Remove an agent's worktree only once its
+   work is merged or recorded.
+5. **Notify, then report.** Send the `done` notification with
+   `operations/notify/notify.sh`; it prints nothing on success and names the failure
+   otherwise. Then give the final state, checks, external actions, the notification
+   result and the next step.

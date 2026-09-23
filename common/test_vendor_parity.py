@@ -1234,7 +1234,7 @@ def test_no_vendor_source_sits_at_the_repository_root():
         "vendor's own __init__.py, hf.py, schema.py, util.py and vllm.py were sitting "
         "here untracked, one `git add -A` from history, and they are what made "
         f"{_shadowing_import_line()} resolvable to vendor code. Vendor bytes are "
-        "fetched at boot and never stored (cleanroom/README.md)."
+        "fetched at boot and never stored (AGENTS.md, Settled)."
     )
     for name in ("chandra", "churro_ocr", "churro"):
         assert not (ROOT / name).exists(), (

@@ -747,13 +747,8 @@ def scan_history(revision: str) -> list[Issue]:
     issues = []
     for commit in commits:
         issues.extend(scan_tree(commit_tree(commit), commit[:12]))
-        # The whole commit object, not `--format=%B`. The message alone left the
-        # author and committer headers unscanned, so credential-shaped text placed
-        # in a name or an email address entered the raw object and passed both this
-        # scan and `pre-push`. `commit-msg` does check those identities, but only in
-        # a clone where the hooks were installed — and this scan is the one that is
-        # supposed to catch what a missing hook let through. One subprocess either
-        # way; `cat-file` simply returns the headers as well as the message.
+        # The whole commit object, not just the message, so credential-shaped text
+        # in the author or committer header is caught even where no hook ran.
         issues.extend(
             secret_issues("<commit-object>", git("cat-file", "commit", commit), commit[:12])
         )
@@ -764,9 +759,7 @@ def scan_ref_object(revision: str) -> list[Issue]:
     """Scan every annotated-tag object in a ref's peel chain.
 
     `git rev-list` peels tags to commits and therefore never exposes annotated
-    tag messages. Tags are immutable under the local policy, so letting one
-    leave with a credential in its message would preserve the secret in the
-    exact object the guard then refuses to delete.
+    tag messages, so they are scanned here.
     """
     raw_oid = git("rev-parse", "--verify", revision).strip()
     try:
