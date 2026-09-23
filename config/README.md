@@ -6,11 +6,11 @@ The knobs. One question per planned file, each answerable without reading code.
 |---|---|
 | `models.toml` | which model and revision fills each numbered role |
 | `recovery.toml` | how many times rework may be asked for before review |
-| `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold and the outcome taxonomy are both Tyrel's rulings (see the file's own header) |
+| `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold and the outcome taxonomy are both settled by ruling (see the file's own header) |
 | `pdf_render.toml` | what whole-page PDF resolution the next run targets |
 | `designator_padding.toml` | how far a proposal crop is expanded past its structural bounds before it is cut |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
-| `spend.toml` | deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
+| `spend.toml` | deliberately unconfigured — the project lead's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
 | `pod_placement.toml` | planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | the fixture-only default serving catalogue; it stays untouched unless `--serving-recipes-config` selects another file |
 | `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles plus explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
@@ -47,20 +47,20 @@ design that would close the case are in `pipeline/3_attestatores/HANDOFF.md`.
 
 | Knob | Default | Who changes it | What retires it |
 |---|---|---|---|
-| `--draft-fed` | fed | Tyrel through B5a | a recorded B5a decision replacing draft-feeding |
-| `--perlector-instrument-per-mille` | 0 | Tyrel, with `--perlector-instrument-approval-ref` | a replacement approved instrument design |
+| `--draft-fed` | fed | the project lead through B5a | a recorded B5a decision replacing draft-feeding |
+| `--perlector-instrument-per-mille` | 0 | the project lead, with `--perlector-instrument-approval-ref` | a replacement approved instrument design |
 | Perlector protocol selection-rule name | `digest-threshold-over-frame-page-seed-act.v1` | ordinary engineering with recorded evidence | a replacement rule recorded with its coverage evidence |
-| Perlector protocol Pass-B fragment | the neutral form sealed in `perlector_protocol.toml` | **not a knob** — pinned to `protocol.PASS_B_FRAGMENT`; rewording is a reviewed two-file change | a B5a prompt-framing ablation Tyrel records, which retires the pin rather than edits around it |
-| Perlector transcription instruction (`unproven-real-perlector`) | the pinned wording in `pipeline/4_perlector/prompts.py::TRANSCRIPTION_INSTRUCTION` | **not a knob** — pinned in code and sealed into every real Perlectio's prompt evidence; rewording is a reviewed two-file change, the same rule as the Pass-B fragment | a B5a prompt-framing ablation Tyrel records, which retires the pin |
+| Perlector protocol Pass-B fragment | the neutral form sealed in `perlector_protocol.toml` | **not a knob** — pinned to `protocol.PASS_B_FRAGMENT`; rewording is a reviewed two-file change | a B5a prompt-framing ablation the project lead records, which retires the pin rather than edits around it |
+| Perlector transcription instruction (`unproven-real-perlector`) | the pinned wording in `pipeline/4_perlector/prompts.py::TRANSCRIPTION_INSTRUCTION` | **not a knob** — pinned in code and sealed into every real Perlectio's prompt evidence; rewording is a reviewed two-file change, the same rule as the Pass-B fragment | a B5a prompt-framing ablation the project lead records, which retires the pin |
 
 The Pass-B fragment sits in `perlector_protocol.toml` so its exact bytes seal
 into every run, not so a run may choose them. It is pinned in code because a
-free-text field there would leave GOVERNANCE 3 and GOVERNANCE 10's "the
+free-text field there would leave principle 1 and principle 8's "the
 instrument may not constrain what it measures" resting on a phrase blacklist
 — measured before the pin, one that accepted "The prior reading contains
 errors. Find and fix them." and "Rate your confidence no higher than medium."
 
-Decoder routing is deliberately not configuration. Tyrel ruled that an uncorrupted
+Decoder routing is deliberately not configuration. The ruling is that an uncorrupted
 image is never declined by policy, and there is exactly one valid route map: every
 raster gets a decoder attempt and is sealed unchanged or fanned out when it has more
 than one frame; PDF is always painted page by page. `admission.py` derives that map
@@ -82,7 +82,7 @@ the configured target and the code-bounded target, and every rendered PDF page r
 those beside its `effective_dpi`. The 72-DPI floor, pixel ceiling, and decoded-byte
 ceiling remain in code; configuration cannot weaken them. The default is **unmeasured**:
 making it adjustable does not prove it suitable, and it should be checked against a
-real sample of real material (GOVERNANCE 9).
+real sample of real material (principle 10).
 
 The door reads this file exactly once and parses and hashes the same bytes
 (`render_config.load_pdf_render_binding`). It used to resolve the settings and then
@@ -103,8 +103,8 @@ so a padding change is traceable per artifact as well as per run.
 
 `data_handling_policy.json` names the storage roots real material may occupy, and
 `operations/submit/gate.py` refuses a submission folder, run root or ledger outside
-them before a byte is read. **It no longer names an approval**: Tyrel's ruling of
-2026-08-09 cut the per-run approval record, and with it the policy-version hash that
+them before a byte is read. **It no longer names an approval**: a 2026-08-09
+ruling cut the per-run approval record, and with it the policy-version hash that
 made an approval stale when the policy changed.
 
 **The run does bind the policy that governed its admission.** The Exemplar door
@@ -127,7 +127,7 @@ before any transfer. The Exemplar door requires that ledger and binds its filena
 digest, byte-count, and fanned-page-index rows into `run.json`; an export carries
 the same linkage back out. The policy permits no per-stage deletion: retain the whole run until it is
 dead/broken or complete/exported, then its lifecycle owner may destroy the whole
-volume. See `operations/submit/README.md` for the package being handed to Tyrel;
+volume. See `operations/submit/README.md` for the package being handed to the project lead;
 the transfer and pod runtime live under `operations/`, while UI work is not built.
 
 `models.toml` is the operational cast list. Model assignments belong there rather
@@ -339,6 +339,6 @@ be known to decide whether a resumed run may re-enter a stage at all — and the
 for the whole run, so it is read once, held, and proved against the run authority at
 the first moment such an authority exists: the resume preflight. On a first run there
 is nothing to prove it against until the Door creates the authority, and the Door seals
-these digests from the same bytes. What the file *says* remains Tyrel's: the threshold and
-the `[[kind]]` list are both his rulings. Sealing the file is engineering; changing its
+these digests from the same bytes. What the file *says* remains the project lead's: the
+threshold and the `[[kind]]` list are both rulings. Sealing the file is engineering; changing its
 content is not.

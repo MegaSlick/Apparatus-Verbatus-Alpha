@@ -42,7 +42,7 @@ revision = "af93b47dba1b47b6640c86ccf487ed2260ab9a09"
 digest_manifest = "6bfe1e4192a251e1f1aced58e720f6ce9c5b915d12f766b09a79e22433e79230"
 manifest = "manifests/chandra-ocr-2.json"
 serving_recipe = "unproven-real-designator"
-license_note = "Revenue-capped; competitive use barred. Accepted under the research track (Tyrel, 2026-08-20)"
+license_note = "Revenue-capped; competitive use barred. Accepted under the research track (2026-08-20)"
 
 [chairs.attestator_1]
 state = "configured"
@@ -52,7 +52,7 @@ revision = "af93b47dba1b47b6640c86ccf487ed2260ab9a09"
 digest_manifest = "6bfe1e4192a251e1f1aced58e720f6ce9c5b915d12f766b09a79e22433e79230"
 manifest = "manifests/chandra-ocr-2.json"
 serving_recipe = "unproven-real-attestatores"
-license_note = "Revenue-capped (>$2M revenue/funding barred; competitive use barred). Accepted under the research track (Tyrel, 2026-08-20)"
+license_note = "Revenue-capped (>$2M revenue/funding barred; competitive use barred). Accepted under the research track (2026-08-20)"
 witness_adapter = "chandra.v1"
 witness_scope = "page"
 
@@ -64,7 +64,7 @@ revision = "e371095d4ffe585f31f4974462931ddbac61ff64"
 digest_manifest = "aba984924133d6eac951dc9f9e0302ee41cf5a26e5d427537f38f8040cccc2fb"
 manifest = "manifests/dai-recordgold-atr.json"
 serving_recipe = "unproven-real-attestatores"
-license_note = "No licence declared at all; accepted under the research track (Tyrel, 2026-08-20) — weights are pulled from the repository at the pinned revision, never vendored, and a downstream operator fetches them and accepts whatever terms apply at the source"
+license_note = "No licence declared at all; accepted under the research track (2026-08-20) — weights are pulled from the repository at the pinned revision, never vendored, and a downstream operator fetches them and accepts whatever terms apply at the source"
 witness_adapter = "dai.v1"
 witness_scope = "act"
 
@@ -76,19 +76,19 @@ revision = "ca2150ea465d5a3d67818c50e234b9422619c75d"
 digest_manifest = "a5be0ef7a842cb1b159f1793aa3072786dccef882cbaef2b8359fdd9518806c4"
 manifest = "manifests/churro-3B.json"
 serving_recipe = "unproven-real-attestatores"
-license_note = "Weights: Qwen research licence (research only); code incl. prompts: Apache-2.0. Accepted under the research track (Tyrel, 2026-08-20)"
+license_note = "Weights: Qwen research licence (research only); code incl. prompts: Apache-2.0. Accepted under the research track (2026-08-20)"
 witness_adapter = "churro.v1"
 witness_scope = "page"
 
-# Absent by Tyrel's ruling of 2026-08-12: the optional YOLO secondary proposer
+# Absent by ruling of 2026-08-12: the optional YOLO secondary proposer
 # stays absent initially, and the Designator's structure chair proposes alone.
 # The drafted identity it would take (Teklia's YOLOv26 record detector,
 # AGPL-3.0) is still recorded in the commented real roster in
-# config/models.toml; configuring it here again is a roster change for Tyrel,
-# not a config edit.
+# config/models.toml; configuring it here again is a roster change for the
+# project lead, not a config edit.
 [chairs.secondary_proposer]
 state = "absent"
-reason = "kept absent by Tyrel's ruling of 2026-08-12: the optional YOLO secondary proposer is not part of the first real roster"
+reason = "kept absent by ruling of 2026-08-12: the optional YOLO secondary proposer is not part of the first real roster"
 
 [chairs.perlector]
 state = "configured"
@@ -98,7 +98,7 @@ revision = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
 digest_manifest = "ace17319b4f843f3b746e6039e1c3dfc5e47b4e17bd935b030722a1d96a17f70"
 manifest = "manifests/qwen3.8-27B.json"
 serving_recipe = "unproven-real-perlector"
-license_note = "Apache-2.0, read from the repository card 2026-08-20; accepted under the research track (Tyrel, 2026-08-20)"
+license_note = "Apache-2.0, read from the repository card 2026-08-20; accepted under the research track (2026-08-20)"
 
 [chairs.annotator]
 state = "absent"

@@ -1,10 +1,10 @@
 # The run-level hard-failure cap. Distinct from `recovery.toml`'s per-act
 # recovery budget: that file bounds how often ONE act may ask for rework; this
 # one bounds how many accounted hard failures ONE RUN may carry before it needs
-# Tyrel rather than another automatic stage invocation.
+# the project lead rather than another automatic stage invocation.
 #
-# Tyrel's ruling, 2026-08-05 (quoted so a later reader does not have to go
-# looking): "2 hard failures continues till the next checkpoint (if errors
+# The ruling behind this threshold (quoted so a later reader does not have to
+# go looking): "2 hard failures continues till the next checkpoint (if errors
 # happened in chandra stage it finishes that section but pauses) and this is
 # per run... if we have more then 2 failures within a 1000 page run that to me
 # is a failure that needs fixing." One is a fluke, two is an early warning,
@@ -17,18 +17,18 @@
 threshold = 2
 
 # APPROVED. The closed list below is what counts as a "hard failure" for this
-# cap. It was proposed by this build and put to Tyrel; on 2026-08-20 he confirmed
-# the cap in the same terms he first ruled it -- one is a fluke, two is a pattern,
-# more than two in a thousand pages needs looking at before more resources are
-# spent -- and declined to re-open the taxonomy a further time, having answered it
-# twice already. The list stands as written.
+# cap. It was proposed by this build and confirmed in the same terms it was
+# first ruled -- one is a fluke, two is a pattern, more than two in a thousand
+# pages needs looking at before more resources are spent -- and the taxonomy
+# is not being reopened further, having been answered twice already. The
+# list stands as written.
 #
 # What follows is the argument that produced it, kept because a closed list whose
 # reasoning is lost cannot be amended safely later.
 #
-# SHARPENED AGAINST THE OLD PIPELINE'S OWN MEASURED DEFINITION (window pass,
-# 2026-08-05). The old repository's `page_health.py`
-# recorded Tyrel's 2026-07-25 ruling verbatim: a hard failure is "a corrupt or
+# SHARPENED AGAINST THE OLD PIPELINE'S OWN MEASURED DEFINITION (window pass).
+# The old repository's `page_health.py`
+# recorded this ruling verbatim: a hard failure is "a corrupt or
 # unrenderable image, or a page so damaged it must be re-run" -- and named two
 # things a hard failure explicitly is NOT: "a blank page is NOT a hard failure,
 # and neither is a tough page the [recovery] ladder is built to rescue." Its
@@ -56,8 +56,7 @@ threshold = 2
 # code yet says whether a real `failed` outcome will mean "an exception escaped
 # the read path" (the old pipeline's HARD_GENERATE_EXCEPTION, genuinely hard) or
 # "the model answered badly after every retry" (the old pipeline's
-# SOFT_READ_FAILED, a tough page, genuinely soft). Decided 2026-08-20 (hard rule
-# 13, recorded in the session's findings ledger): kept as hard conservatively;
+# SOFT_READ_FAILED, a tough page, genuinely soft). Kept as hard conservatively;
 # revisit when a real reader gives `failed` a real trigger.
 #
 # `(door, refused, reason="corrupt")` and `(door, refused, reason="unreadable")`
@@ -82,7 +81,7 @@ threshold = 2
 # pair is precisely the subset that should NOT be excused by it. Whether
 # `(door, refused, reason="digest-mismatch")` belongs here too is a closer
 # call -- it is an integrity signal, not literally "corrupt or unrenderable" --
-# and is left to Tyrel rather than decided here.
+# and is left to the project lead rather than decided here.
 #
 # `(exemplar, refused)` stays excluded. In the current architecture Exemplar's
 # own page-refusal is only ever a pass-through of the Door's refusal for the
