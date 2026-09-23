@@ -19,7 +19,7 @@ import json
 import math
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol, cast
 
 from common.chair_wire import chandra_wire_fields
 from common.chairs.models import ChairIdentity
@@ -377,6 +377,8 @@ class ChandraNativeDispatch:
     attempt_ordinal: int
     parameters: Mapping[str, str]
     generation_sent: Mapping[str, object]
+    generation_sent_record: Mapping[str, object]
+    generation_declared_record: Mapping[str, object]
     body: bytes
     request_sha256: str
 
@@ -428,6 +430,12 @@ class ChairClient:
         self._chandra_native_policy = (
             dict(chandra_native_policy) if chandra_native_policy is not None else None
         )
+        # A native dispatch is a one-use capability minted only after every
+        # request and evidence field has been checked.  Holding the object
+        # itself in this private registry prevents a caller-created dataclass,
+        # a dispatch prepared by another client, or a second use from crossing
+        # the HTTP boundary merely because its public fields look plausible.
+        self._prepared_chandra_dispatches: dict[int, ChandraNativeDispatch] = {}
         self._handle: ServiceHandle | None = None
 
     @property
@@ -445,6 +453,7 @@ class ChairClient:
         return self._chandra_native_policy is not None
 
     def __enter__(self) -> "ChairClient":
+        self._prepared_chandra_dispatches.clear()
         handle = self._manager.start(
             self._identity, self._tier, adapter_calibration=self._adapter_calibration
         )
@@ -490,6 +499,7 @@ class ChairClient:
         if self._handle is None:
             return
         handle, self._handle = self._handle, None
+        self._prepared_chandra_dispatches.clear()
         handle.stop()
 
     def read(self, request: ChairRequest) -> ChairResponse:
@@ -567,22 +577,30 @@ class ChairClient:
             )
         declared = attempt_parameters(attempt_ordinal)
         sent = {**request.generation_sent, **wire_parameters(attempt_ordinal)}
-        recorded = _recorded_generation(sent)
-        _refuse_generation_that_cannot_be_recorded_as_sent(recorded, sent, "generation_sent")
+        sent_record = _recorded_generation(sent)
+        declared_record = _recorded_generation(request.generation_declared)
+        _refuse_generation_that_cannot_be_recorded_as_sent(sent_record, sent, "generation_sent")
+        _refuse_generation_that_cannot_be_recorded_as_sent(
+            declared_record, request.generation_declared, "generation_declared"
+        )
         body = chandra_native_request_body(
             {**request.generation_sent, "messages": list(request.messages)},
             model_id=handle.profile.served_model_id,
             temperature=sent["temperature"],  # type: ignore[arg-type]
             top_p=sent["top_p"],  # type: ignore[arg-type]
         )
-        return ChandraNativeDispatch(
+        dispatch = ChandraNativeDispatch(
             request=request,
             attempt_ordinal=attempt_ordinal,
             parameters=MappingProxyType(declared),
             generation_sent=MappingProxyType(sent),
+            generation_sent_record=cast(Mapping[str, object], _immutable_json(sent_record)),
+            generation_declared_record=cast(Mapping[str, object], _immutable_json(declared_record)),
             body=body,
             request_sha256=digest_bytes(body),
         )
+        self._prepared_chandra_dispatches[id(dispatch)] = dispatch
+        return dispatch
 
     def read_chandra_native(
         self,
@@ -601,17 +619,15 @@ class ChairClient:
             raise ChairRequestRefusal(
                 "CHAIR_REQUEST_INVALID", "a Chandra native call has no durable attempt intent"
             )
-        rebuilt = self.prepare_chandra_native(
-            dispatch.request, attempt_ordinal=dispatch.attempt_ordinal
-        )
-        if rebuilt.body != dispatch.body or rebuilt.request_sha256 != dispatch.request_sha256:
+        prepared = self._prepared_chandra_dispatches.pop(id(dispatch), None)
+        if prepared is not dispatch:
             raise ChairRequestRefusal(
                 "CHAIR_REQUEST_INVALID",
-                "the Chandra native request changed after its durable intent was prepared",
+                "the Chandra native dispatch was not prepared by this client or was already used",
             )
         return self._read(
-            dispatch.request,
-            native_dispatch=dispatch,
+            prepared.request,
+            native_dispatch=prepared,
             native_intent_ref=dict(intent_ref),
         )
 
@@ -625,38 +641,39 @@ class ChairClient:
         """Shared one-call implementation; native use is an already-sealed capability."""
 
         handle = self.handle
-        _refuse_unbuildable_request(request)
-        # Built and checked before the request leaves: a generation value this
-        # client could not record as sent must stop the call, not be discovered
-        # after a chair has already answered it.
-        generation_sent = _recorded_generation(request.generation_sent)
-        generation_declared = _recorded_generation(request.generation_declared)
-        _refuse_generation_that_cannot_be_recorded_as_sent(
-            generation_sent, request.generation_sent, "generation_sent"
-        )
-        _refuse_generation_that_cannot_be_recorded_as_sent(
-            generation_declared, request.generation_declared, "generation_declared"
-        )
-        if (
-            request.structure_recovery_seed is not None
-            and self._identity.role != "designator_structure"
-        ):
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "only the Designator structure chair may override the manager seed for "
-                "bounded structural coverage recovery",
-            )
-        actual_seed = (
-            handle.profile.seed
-            if request.structure_recovery_seed is None
-            else request.structure_recovery_seed
-        )
         if native_dispatch is None:
+            _refuse_unbuildable_request(request)
+            # Built and checked before the request leaves: a generation value
+            # this client could not record as sent must stop the call, not be
+            # discovered after a chair has already answered it.
+            generation_sent = _recorded_generation(request.generation_sent)
+            generation_declared = _recorded_generation(request.generation_declared)
+            _refuse_generation_that_cannot_be_recorded_as_sent(
+                generation_sent, request.generation_sent, "generation_sent"
+            )
+            _refuse_generation_that_cannot_be_recorded_as_sent(
+                generation_declared, request.generation_declared, "generation_declared"
+            )
+            if (
+                request.structure_recovery_seed is not None
+                and self._identity.role != "designator_structure"
+            ):
+                raise ChairRequestRefusal(
+                    "CHAIR_REQUEST_INVALID",
+                    "only the Designator structure chair may override the manager seed for "
+                    "bounded structural coverage recovery",
+                )
+            actual_seed = (
+                handle.profile.seed
+                if request.structure_recovery_seed is None
+                else request.structure_recovery_seed
+            )
             actual_generation_sent = {
                 **request.generation_sent,
                 "temperature": self._record_temperature,
                 "seed": actual_seed,
             }
+            actual_generation_record = _recorded_generation(actual_generation_sent)
             body = request_body(
                 {**request.generation_sent, "messages": list(request.messages)},
                 model_id=handle.profile.served_model_id,
@@ -669,13 +686,12 @@ class ChairClient:
                 raise ChairRequestRefusal(
                     "CHAIR_REQUEST_INVALID", "a Chandra native dispatch lost its intent"
                 )
-            actual_generation_sent = dict(native_dispatch.generation_sent)
+            actual_generation_record = _plain_capacity(native_dispatch.generation_sent_record)
+            generation_declared = _plain_capacity(native_dispatch.generation_declared_record)
             body = native_dispatch.body
-        request_sha256 = digest_bytes(body)
-        if native_dispatch is not None and request_sha256 != native_dispatch.request_sha256:
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID", "a Chandra native dispatch body moved after intent"
-            )
+        request_sha256 = (
+            digest_bytes(body) if native_dispatch is None else native_dispatch.request_sha256
+        )
         try:
             response = handle.request_reading(
                 request.kind, body, handle.profile.request_timeout_seconds
@@ -710,7 +726,7 @@ class ChairClient:
                 "kind": request.kind,
                 "request_sha256": request_sha256,
                 "image_sha256s": list(request.image_sha256s),
-                "generation_sent": _recorded_generation(actual_generation_sent),
+                "generation_sent": actual_generation_record,
                 "generation_declared": generation_declared,
                 "raw_response_ref": None,
                 "response_sha256": None,
@@ -815,7 +831,7 @@ class ChairClient:
             "kind": request.kind,
             "request_sha256": request_sha256,
             "image_sha256s": list(request.image_sha256s),
-            "generation_sent": _recorded_generation(actual_generation_sent),
+            "generation_sent": actual_generation_record,
             "generation_declared": generation_declared,
             "raw_response_ref": dict(raw_response_ref),
             "response_sha256": raw_response_ref["sha256"],

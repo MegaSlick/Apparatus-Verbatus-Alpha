@@ -9,6 +9,8 @@ import prompts
 import protocol
 import pytest
 
+from common.chandra_native_retry import attempt_parameters, recipe_record, validate_trace
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -151,16 +153,34 @@ def test_structured_native_retry_provenance_does_not_change_measured_prompt_byte
     baseline = _dossier()
     carried = _dossier()
     carried["testimonia"][0]["native_inference"] = {
-        "recipe": {"source_revision": "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"},
+        "schema": "chandra-native-retry-trace.v1",
+        "recipe": recipe_record(),
         "physical_request_count": 3,
         "returned_attempt_ordinal": 3,
         "exhausted_condition": None,
         "attempts": [
-            {"attempt_ordinal": 1, "trigger": "repeat-token", "error": False},
-            {"attempt_ordinal": 2, "trigger": "inference-error", "error": True},
-            {"attempt_ordinal": 3, "trigger": None, "error": False},
+            {
+                "attempt_ordinal": ordinal,
+                "parameters": attempt_parameters(ordinal),
+                "intent_ref": {
+                    "relative_path": f"3_attestatores/artifacts/native/intent-{ordinal}.json",
+                    "sha256": f"{ordinal}" * 64,
+                },
+                "attempt_ref": {
+                    "relative_path": f"3_attestatores/artifacts/native/attempt-{ordinal}.json",
+                    "sha256": f"{ordinal + 3}" * 64,
+                },
+                "trigger": trigger,
+                "error": error,
+            }
+            for ordinal, trigger, error in (
+                (1, "repeat-token", False),
+                (2, "inference-error", True),
+                (3, None, False),
+            )
         ],
     }
+    validate_trace(carried["testimonia"][0]["native_inference"])
     assert prompts.build_prompt("fake-perlector-v0", "perlector", carried) == (
         prompts.build_prompt("fake-perlector-v0", "perlector", baseline)
     )

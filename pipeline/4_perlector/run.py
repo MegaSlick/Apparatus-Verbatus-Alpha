@@ -594,19 +594,37 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
         page_size=page_size,
         page_bytes=page_bytes,
     )
-    inputs = {}
+    input_references = []
     for region in proposal_regions:
-        reference = context.input_ref(region["payload"]["image_path"])
-        inputs[reference["relative_path"]] = reference
-    reference = context.input_ref(presented["image_path"])
-    inputs[reference["relative_path"]] = reference
+        input_references.append(context.input_ref(region["payload"]["image_path"]))
+    input_references.append(context.input_ref(presented["image_path"]))
     native_inference = payload.get("native_inference")
     if native_inference is not None:
+        provenance = payload.get("provenance")
+        identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
+        capture = payload.get("native_capture")
+        if (
+            payload.get("chair") != "attestator_1"
+            or payload.get("page_witness") is not True
+            or not isinstance(identity, dict)
+            or identity.get("role") != "attestator_1"
+            or identity.get("witness_adapter") != "chandra.v1"
+            or identity.get("witness_scope") != "page"
+            or (
+                capture is not None
+                and (not isinstance(capture, dict) or capture.get("adapter") != "chandra.v1")
+            )
+        ):
+            raise SchemaRefusal(
+                "Chandra native inference belongs only to the page-scoped "
+                "attestator_1 chandra.v1 act view"
+            )
         for row in validate_chandra_trace(native_inference)["attempts"]:
             for native_reference in (row["intent_ref"], row["attempt_ref"]):
-                inputs[native_reference["relative_path"]] = native_reference
+                input_references.append(native_reference)
     expected_inputs = sorted(
-        inputs.values(), key=lambda item: (item["relative_path"], item["sha256"])
+        _distinct_inputs(input_references),
+        key=lambda item: (item["relative_path"], item["sha256"]),
     )
     # Re-derive the explicit limit for every presentation kind so a kind change
     # cannot understate which bound crops its one page-space image omits.

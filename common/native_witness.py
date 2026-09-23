@@ -969,6 +969,24 @@ def validate_page_testimonium_payload(
                         "an unparseable Churro page capture has no reason naming its parser refusal"
                     )
     if "native_inference" in payload:
+        provenance = payload.get("provenance")
+        identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
+        if (
+            payload.get("chair") != "attestator_1"
+            or not isinstance(identity, dict)
+            or identity.get("role") != "attestator_1"
+            or identity.get("witness_adapter") != "chandra.v1"
+            or identity.get("witness_scope") != "page"
+        ):
+            raise SchemaRefusal(
+                "Chandra native inference provenance belongs only to page-scoped "
+                "attestator_1 with chandra.v1"
+            )
+        capture = payload.get("native_capture")
+        if capture is not None and capture.get("adapter") != "chandra.v1":
+            raise SchemaRefusal(
+                "Chandra native inference provenance names a non-Chandra native capture"
+            )
         validate_chandra_native_trace(payload["native_inference"])
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated

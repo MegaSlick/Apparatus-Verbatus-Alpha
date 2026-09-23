@@ -8,6 +8,7 @@ may derive the vendor's retry trigger from the result of that attempt.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Final, Mapping
 
 from common.contracts.canonical import is_sha256
@@ -22,17 +23,38 @@ CHANDRA_MAX_OUTPUT_TOKENS: Final = 12_384
 CHANDRA_MAX_RETRIES: Final = 6
 CHANDRA_MAX_ATTEMPTS: Final = CHANDRA_MAX_RETRIES + 1
 
-# Decimal text is the provenance form.  The serving boundary converts it to a
-# JSON number only while building the exact wire body, then records the number
-# through ``wire-decimal.v1`` like every other non-integral generation value.
-CHANDRA_PARAMETER_SCHEDULE: Final = (
-    ("0", "0.1"),
-    ("0.2", "0.95"),
-    ("0.4", "0.95"),
-    ("0.6", "0.95"),
-    ("0.8", "0.95"),
-    ("0.8", "0.95"),
-    ("0.8", "0.95"),
+# Decimal text is the provenance form.  Derive it through the pinned vendor's
+# own Python-float arithmetic rather than a hand-normalized decimal table:
+# ``min(temperature + 0.2 * (retries + 1), 0.8)``.  The distinction is visible
+# on the fourth physical request, whose JSON number is
+# ``0.6000000000000001``, not ``0.6``.  The serving boundary converts these
+# exact texts back to the same floats while building the wire body, then records
+# their serialized numbers through ``wire-decimal.v1``.
+CHANDRA_INITIAL_TEMPERATURE: Final = 0.0
+CHANDRA_RETRY_TEMPERATURE_STEP: Final = 0.2
+CHANDRA_MAX_TEMPERATURE: Final = 0.8
+CHANDRA_INITIAL_TOP_P: Final = 0.1
+CHANDRA_RETRY_TOP_P: Final = 0.95
+
+
+def _wire_decimal(value: float) -> str:
+    return json.dumps(value, allow_nan=False, separators=(",", ":"))
+
+
+CHANDRA_PARAMETER_SCHEDULE: Final = tuple(
+    (
+        _wire_decimal(
+            CHANDRA_INITIAL_TEMPERATURE
+            if attempt_ordinal == 1
+            else min(
+                CHANDRA_INITIAL_TEMPERATURE
+                + CHANDRA_RETRY_TEMPERATURE_STEP * (attempt_ordinal - 1),
+                CHANDRA_MAX_TEMPERATURE,
+            )
+        ),
+        _wire_decimal(CHANDRA_INITIAL_TOP_P if attempt_ordinal == 1 else CHANDRA_RETRY_TOP_P),
+    )
+    for attempt_ordinal in range(1, CHANDRA_MAX_ATTEMPTS + 1)
 )
 CHANDRA_ERROR_BACKOFF_SECONDS: Final = (2, 4, 6, 8, 10, 12)
 
@@ -197,6 +219,7 @@ def validate_trace(value: Any) -> dict[str, Any]:
     exhausted = value["exhausted_condition"]
     if exhausted is not None and exhausted not in TRIGGERS:
         raise SchemaRefusal("a Chandra native retry trace has an unknown exhaustion condition")
+    reference_paths: set[str] = set()
     for expected, row in enumerate(attempts, 1):
         if not isinstance(row, dict) or set(row) != {
             "attempt_ordinal",
@@ -217,6 +240,10 @@ def validate_trace(value: Any) -> dict[str, Any]:
             raise SchemaRefusal("the vendor-returned Chandra attempt still claims a retry trigger")
         if not isinstance(row["error"], bool):
             raise SchemaRefusal("a Chandra native retry trace has no boolean error fact")
+        if row["trigger"] == "inference-error" and row["error"] is not True:
+            raise SchemaRefusal(
+                "a Chandra native retry trace claims an inference-error trigger without an error"
+            )
         for field in ("intent_ref", "attempt_ref"):
             ref = row[field]
             if (
@@ -227,6 +254,25 @@ def validate_trace(value: Any) -> dict[str, Any]:
                 or not is_sha256(ref["sha256"])
             ):
                 raise SchemaRefusal(f"a Chandra native retry trace has an invalid {field}")
+            if ref["relative_path"] in reference_paths:
+                raise SchemaRefusal(
+                    "a Chandra native retry trace reuses one retained artifact as more than one "
+                    "physical-attempt record"
+                )
+            reference_paths.add(ref["relative_path"])
+    if count < CHANDRA_MAX_ATTEMPTS and exhausted is not None:
+        raise SchemaRefusal("a Chandra native retry trace claims exhaustion before seven attempts")
+    final_error = attempts[-1]["error"]
+    if final_error and count < CHANDRA_MAX_ATTEMPTS:
+        raise SchemaRefusal(
+            "a Chandra native retry trace returned an error before retries exhausted"
+        )
+    if exhausted == "inference-error" and final_error is not True:
+        raise SchemaRefusal(
+            "a Chandra native retry trace claims inference-error exhaustion without an error"
+        )
+    if count == CHANDRA_MAX_ATTEMPTS and final_error and exhausted is None:
+        raise SchemaRefusal("a Chandra native retry trace hides its final inference error")
     return value
 
 

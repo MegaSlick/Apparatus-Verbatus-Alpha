@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Mapping
 
@@ -279,6 +280,7 @@ def test_a_nonzero_sealed_temperature_and_seed_are_sent_and_retained(tmp_path: P
 
 def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     chair = ChairIdentity(
         **{
@@ -296,16 +298,49 @@ def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
         generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
     )
     with client:
-        dispatch = client.prepare_chandra_native(request, attempt_ordinal=3)
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=4)
+
+        def unexpected_reprepare(*_args, **_kwargs):
+            raise AssertionError("a prepared native dispatch must not be rebuilt after intent")
+
+        monkeypatch.setattr(client, "prepare_chandra_native", unexpected_reprepare)
         endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
         response = client.read_chandra_native(dispatch, intent_ref=intent_ref)
-    assert endpoint.requests[0]["temperature"] == 0.4
+    assert endpoint.requests[0]["temperature"] == 0.6000000000000001
     assert endpoint.requests[0]["top_p"] == 0.95
     assert "seed" not in endpoint.requests[0]
     record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
     assert record["schema"] == CHANDRA_NATIVE_CALL_RECORD_SCHEMA
     assert set(record) == CHANDRA_NATIVE_CALL_RECORD_FIELDS
     assert record["native_attempt_intent_ref"] == intent_ref
+
+
+def test_chandra_native_dispatch_is_a_one_use_client_minted_capability(tmp_path: Path) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity().to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, _blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    request = _request(
+        generation_declared={"max_new_tokens": 12384},
+        generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    intent_ref = {"relative_path": "3_attestatores/artifacts/intent.json", "sha256": "d" * 64}
+    with client:
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=1)
+        forged = replace(dispatch)
+        with pytest.raises(ChairRequestRefusal, match="not prepared by this client"):
+            client.read_chandra_native(forged, intent_ref=intent_ref)
+        endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
+        client.read_chandra_native(dispatch, intent_ref=intent_ref)
+        with pytest.raises(ChairRequestRefusal, match="already used"):
+            client.read_chandra_native(dispatch, intent_ref=intent_ref)
+    assert len(endpoint.requests) == 1
 
 
 def test_chandra_native_capability_refuses_a_different_chair(tmp_path: Path) -> None:

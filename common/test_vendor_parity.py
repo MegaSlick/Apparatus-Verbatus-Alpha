@@ -84,8 +84,12 @@ from common.chandra_native_retry import (
     attempt_parameters as chandra_attempt_parameters,
 )
 from common.chandra_native_retry import (
+    detect_repeat_token as chandra_detect_repeat_token,
+)
+from common.chandra_native_retry import (
     recipe_record as chandra_recipe_record,
 )
+from common.chandra_native_retry import wire_parameters as chandra_wire_parameters
 from common.imaging import encode_grayscale_png
 from common.imaging_ports import (
     CHANDRA_GRID_SIZE,
@@ -416,8 +420,42 @@ def test_chandra_native_inference_carries_the_same_pinned_vendor_provenance():
     assert recipe["detector_path"] == "chandra/model/util.py::detect_repeat_token"
     assert recipe["max_output_tokens"] == 12384
     assert recipe["max_retries"] == 6
-    assert chandra_attempt_parameters(1) == {"temperature": "0", "top_p": "0.1"}
+    assert chandra_attempt_parameters(1) == {"temperature": "0.0", "top_p": "0.1"}
+    assert chandra_attempt_parameters(4) == {
+        "temperature": "0.6000000000000001",
+        "top_p": "0.95",
+    }
     assert chandra_attempt_parameters(7) == {"temperature": "0.8", "top_p": "0.95"}
+
+
+def test_chandra_native_retry_arithmetic_and_detector_match_the_pinned_source_offline():
+    """Pin executable semantics measured from the named vendor revision.
+
+    The detector digest is over the AST body only, so comments, annotations and
+    the local explanatory docstring do not create false drift.  The expected
+    digest was measured from ``chandra/model/util.py::detect_repeat_token`` at
+    ``CHANDRA_CODE_COMMIT``.  Retry temperatures use the vendor expression
+    itself; its fourth request deliberately exposes Python's binary-float
+    ``0.6000000000000001`` rather than a hand-normalized decimal.
+    """
+
+    source = ast.parse(Path(chandra_detect_repeat_token.__code__.co_filename).read_text())
+    function = next(
+        node
+        for node in ast.walk(source)
+        if isinstance(node, ast.FunctionDef) and node.name == "detect_repeat_token"
+    )
+    body = function.body[1:]  # discard the local docstring, absent upstream
+    normalized = ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)
+    assert hashlib.sha256(normalized.encode()).hexdigest() == (
+        "1af1120e8d0e10cfca9fa303f0bdbab947e210df3fe52132b70530a81670920f"
+    )
+
+    vendor_temperatures = [0.0] + [min(0.0 + 0.2 * (retries + 1), 0.8) for retries in range(6)]
+    assert [chandra_wire_parameters(ordinal)["temperature"] for ordinal in range(1, 8)] == (
+        vendor_temperatures
+    )
+    assert json.dumps(vendor_temperatures[3]) == "0.6000000000000001"
 
 
 def test_the_carried_dai_generation_values_rebuild_the_shipped_file_byte_for_byte():
