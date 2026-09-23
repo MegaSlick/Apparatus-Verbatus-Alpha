@@ -134,7 +134,7 @@ def test_churro_records_its_declared_bound_and_detects_repetition_after_complete
     assert record["findings"][0]["kind"] == "post-hoc-repetition"
     # A body that offers no grammar at all is the plain reading-order text the
     # paper-era harness itself expected, so it reads rather than being thrown
-    # away (GOALS 1); the repeated tail is still a finding beside it.
+    # away (goal 2); the repeated tail is still a finding beside it.
     assert record["parse"]["state"] == "parsed"
     assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
@@ -230,7 +230,7 @@ def test_the_one_churro_parser_name_runs_and_no_other_does():
 
 
 def test_the_vendor_pin_travels_on_every_churro_capture_beside_the_model_identity():
-    """GOVERNANCE 6's other half once the chair runs the vendor's own system.
+    """Principle 6's other half once the chair runs the vendor's own system.
 
     Keyed on the bytes the view retained rather than on a framing name, so a
     record cannot name a pin for a prompt it did not send.
@@ -299,7 +299,7 @@ def test_the_grammars_own_findings_reach_the_capture_beside_the_repetition_scan(
 
     The retired `<output>` envelope still reads, so retained history parses --
     and it says, as a finding, that it arrived in a framing this chair no longer
-    sends (GOVERNANCE 2).
+    sends (principle 2).
     """
     tree = _Tree()
     record = retain_model_view(
@@ -540,7 +540,7 @@ def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordabl
     `HistoricalDocument` and will not parse is `failed` with its bytes retained.
     A body that offers no grammar at all is not malformed -- it is the plain
     reading-order text the paper-era harness itself expected, and throwing a
-    page of ink away over an unclosed tag is the loss GOALS 1 refuses.
+    page of ink away over an unclosed tag is the loss goal 2 refuses.
     """
     attestatores = _load_attestatores()
     tree = _Tree()

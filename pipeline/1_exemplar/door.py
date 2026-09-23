@@ -2568,8 +2568,8 @@ def _real_bindings(
         # `context.require_sealed_config("designator-padding", ...)`
         # (`pipeline/2_designator/run.py`) over real ingress would have refused
         # with "this context sealed no digest for the designator-padding
-        # configuration" on every real run, unconditionally, the day R2 lands.
-        # Found in audit (S5); F-S5.
+        # configuration" on every real run, unconditionally -- the defect
+        # named F-S5.
         "sealed_config_digests": {
             "designator-padding": designator_padding_config_sha256,
             "designator-geometry": designator_geometry_config_sha256,
