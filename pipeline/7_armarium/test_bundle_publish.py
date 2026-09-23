@@ -807,7 +807,7 @@ def test_a_published_bundle_directory_carries_the_operators_umask_not_mkdtemps(h
     So the published product inherited a *temporary* directory's permissions
     rather than the operator's own, and a bundle a recipient cannot enter is not
     a bundle that was published. The mode is set from the umask before the
-    rename, the way `mkdir` would have done it. Found by CodeRabbit.
+    rename, the way `mkdir` would have done it.
     """
     # **The umask is set here rather than read.** Computing the expectation the
     # same way the code does made this test conditional on the machine running
@@ -816,8 +816,8 @@ def test_a_published_bundle_directory_carries_the_operators_umask_not_mkdtemps(h
     # only ever failed correctly at a permissive umask. Measured on the branch:
     # umask 022 and 002 catch the defect, umask 077 does not. Pinning 0o022 makes
     # the expected 0o755 a fact about the fix rather than about the machine.
-    # Found by the Opus read of this branch, which is the second test of mine
-    # tonight that passed for a reason other than its own title.
+    # A prior version of this test passed for a reason other than its own
+    # title, at a permissive umask.
     previous = os.umask(0o022)
     try:
         out = tmp_path / "bundle-out"

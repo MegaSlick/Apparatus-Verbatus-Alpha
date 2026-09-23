@@ -2802,7 +2802,6 @@ def test_excluded_act_requires_and_carries_its_approval_reference(tmp_path):
     # whose locale is not UTF-8 would decode a published product's own bytes
     # differently from the machine that wrote them — the same environment
     # dependence this branch already carries in its sealed bundle identity.
-    # Found by CodeRabbit.
     rows = [
         json.loads(line) for line in (root / "acts.jsonl").read_text(encoding="utf-8").splitlines()
     ]
@@ -3293,7 +3292,7 @@ def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
             "the rendering is not fed this package's canonical uncertainty "
             "layer, which travels beside each literal instead; marking spans "
             "inside a displayed reading would exercise a convention that "
-            "remains Tyrel's choice at this gate"
+            "remains the project lead's choice at this gate"
         ),
     }
     # The same package says, two claims above, that it carries the canonical
@@ -3354,8 +3353,8 @@ def test_a_salvage_shaped_record_cannot_enter_the_acts_namespace(field, tmp_path
     """Spec 11 test 4, in the direction the reserved-field guard does not cover.
 
     A salvage item that resembles an act must be refused by name, not left to fail on
-    a missing key somewhere downstream. Promotion re-enters the pipeline under Tyrel's
-    recorded approval; there is no export-time promotion.
+    a missing key somewhere downstream. Promotion re-enters the pipeline under the
+    project lead's recorded approval; there is no export-time promotion.
     """
     base = _projection()
     smuggled = {**base.acts[0], field: "a grid tiling nobody established"}
@@ -4983,8 +4982,7 @@ def test_a_delivered_act_whose_doubt_report_was_broken_is_refused_not_counted():
     `acts_not_assessed` used to be everything that was not assessed, by
     subtraction, so an act whose reader's report could not be anchored would
     have been counted as one whose reader had no doubt channel -- two different
-    facts under one number (the independent review of 2026-09-11, and
-    CodeRabbit at the same site).
+    facts under one number.
     """
     original = _projection()
     broken = {

@@ -261,7 +261,7 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             # one at the destination. A published product a recipient cannot read
             # is not published. Set from the umask the way `mkdir` would, so the
             # bundle looks like every other directory this operator makes rather
-            # than like a temporary one. Found by CodeRabbit.
+            # than like a temporary one.
             umask = os.umask(0)
             os.umask(umask)
             os.chmod(staging, 0o777 & ~umask)

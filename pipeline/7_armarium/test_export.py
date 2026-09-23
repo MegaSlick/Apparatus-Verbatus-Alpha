@@ -237,7 +237,6 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     # whose locale is not UTF-8 would decode a published product's own bytes
     # differently from the machine that wrote them — the same environment
     # dependence this branch already carries in its sealed bundle identity.
-    # Found by CodeRabbit.
     rows = [
         json.loads(line) for line in (clean / "acts.jsonl").read_text(encoding="utf-8").splitlines()
     ]

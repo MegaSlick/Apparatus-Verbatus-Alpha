@@ -19,7 +19,7 @@ sealed projection produces identical bytes *for a given SQLite build*, and
 different bytes across builds: measured at 3.46.1 in a Linux chamber against
 3.53.4 on the maintainer's machine, with the same rows, schema and page size.
 Content-addressing it in the run tree therefore binds the toolchain as well as
-the data, which is carried to Tyrel rather than settled here.
+the data, which is carried to the project lead rather than settled here.
 """
 
 from __future__ import annotations
@@ -228,7 +228,7 @@ _SALVAGE_ABSENCE_REASON: Final = "this run has no sealed salvage inventory to ac
 _DISPLAY_REASON: Final = (
     "the rendering is not fed this package's canonical uncertainty layer, which travels "
     "beside each literal instead; marking spans inside a displayed reading would exercise "
-    "a convention that remains Tyrel's choice at this gate"
+    "a convention that remains the project lead's choice at this gate"
 )
 _COMPLETED_CATEGORIES: Final = frozenset(
     {
@@ -1982,7 +1982,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     # two different facts under one number. A delivered `malformed` act is a
     # broken tree rather than a count: the Recensor holds one, so it can only
     # reach here through a projection that did not come from a run
-    # (the independent review of 2026-09-11, and CodeRabbit at the same site).
+    # (an independent review found the same site).
     assessed_count = 0
     not_assessed_count = 0
     for act in projection.acts:
@@ -2232,7 +2232,7 @@ def _reject_act_salvage_namespace(act: dict[str, Any]) -> None:
     is expected, and its harvested scrap becoming established text through a writer
     that only ever asked whether a `canonical_clean_text` field was present. Spec 11
     test 4 is that "no code path from this stage writes act text under any
-    circumstance": promotion is a pipeline re-entry Tyrel approves, never an export
+    circumstance": promotion is a pipeline re-entry the project lead approves, never an export
     act, so a record carrying any of these discriminants is refused by name rather
     than left to fail on a missing key somewhere downstream.
     """
@@ -3806,7 +3806,7 @@ def _export_manifest(
             "transcription_annotations": _transcription_annotations_claim(formats.formats),
             "uncertainty": _uncertainty_claim(formats.formats),
             # Labelled a proposal because it is one: spec 11 leaves the choice of
-            # convention to Tyrel at this gate, and nothing hashed depends on it.
+            # convention to the project lead at this gate, and nothing hashed depends on it.
             # `renders_canonical_uncertainty` is the declaration R8 owes: the
             # record DOES carry the layer now, the `uncertainty:` field beside each
             # literal carries it into the product, and this rendering deliberately

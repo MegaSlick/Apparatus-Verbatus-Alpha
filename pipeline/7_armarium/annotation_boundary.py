@@ -47,8 +47,8 @@ ANNOTATION_KINDS: Final = frozenset({"act-type", "date", "person", "kinship", "f
 # an act tightly on purpose -- "a narrow definition excludes material, and a missed act
 # is worse than a poorly read one" -- so `other` is a first-class member here and an
 # act whose type is not in this list is annotated `other` with its established text
-# untouched. Widening the list is a code change Tyrel can rule on; nothing about the
-# text depends on it.
+# untouched. Widening the list is a code change the project lead can rule on; nothing
+# about the text depends on it.
 ACT_TYPES: Final = frozenset(
     {"baptism", "marriage", "burial", "index-row", "letter", "note", "essay", "other"}
 )
@@ -73,7 +73,7 @@ FLAG_KINDS: Final = frozenset(
 )
 
 # `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. A register date that cannot be resolved to one of
-# these is `None`, never an empty string -- Tyrel's 4c rule for `no_readable_text`
+# these is `None`, never an empty string -- the 4c rule for `no_readable_text`
 # applies to a normalized field for the same reason: an empty string is
 # indistinguishable from a value that was lost.
 _ISO_DATE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
