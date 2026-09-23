@@ -646,10 +646,10 @@ def test_container_pages_bind_membership_to_container_and_index_not_the_shared_f
 def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp_path):
     """The offset-0 TIFF gap: a real file must never vanish from the census.
 
-    Before the fix, `expand_sources` fanned this source to zero ordinals -- not
-    admitted, not refused, absent even from the run's source_manifest, exactly the
-    silent loss GOVERNANCE 2 forbids. The file beside it must be unaffected
-    (harvest #2: per-file, never per-folder).
+    An offset-0 TIFF must not fan to zero ordinals -- not admitted, not refused,
+    absent even from the run's source_manifest, exactly the silent loss
+    principle 2 forbids. The file beside it must be unaffected: per-file, never
+    per-folder.
     """
     import struct as _struct
 
@@ -762,7 +762,7 @@ def test_a_compressed_multipage_tiff_fans_out_and_every_page_reaches_real_pixels
     """ "TIFF 100% must work" is not satisfied by an ordinal with no pixels behind it.
 
     A page that fans out to an ordinal and then refuses is still a page nobody
-    reads, which is GOALS 1 failing quietly rather than loudly. So this asserts the
+    reads, which is goal 2 failing quietly rather than loudly. So this asserts the
     whole way through: two ordinals, two admitted outcomes, two distinct sealed PNG
     blobs, and the second page's real geometry — not merely that the door noticed
     there were two directories.
@@ -794,7 +794,7 @@ def test_a_single_page_tiff_is_sealed_as_its_own_untouched_bytes(tmp_path):
     """The common TIFF is one image, and the Exemplar seals the submitted bytes.
 
     A TIFF is *usually* one page, unlike a PDF, and re-encoding an ordinary scan on
-    the way in would spend the Exemplar's immutability (GOVERNANCE 4) for nothing.
+    the way in would spend the Exemplar's immutability (principle 4) for nothing.
     The check that matters is the last assertion: the stored blob is byte-identical
     to what was submitted, not merely an image of the same size.
     """
@@ -918,7 +918,8 @@ def test_duplicate_files_are_admitted_per_ordinal_and_reported_rather_than_refus
     that survives that refusal: both admissions, the `duplicate_of` link, one
     stored blob for both copies, and the complete per-filename report an
     operator reads back. Dropping the second copy would be an automated
-    exclusion, and GOVERNANCE reserves those to Tyrel.
+    exclusion, and excluding material is the project lead's decision, not
+    the pipeline's.
     """
     data = png(3, 2)
     sources = [
@@ -1073,7 +1074,7 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
     Including two byte-identical *pages of one container*, which produce no
     duplicate report at all -- the report groups by declared path, so a scanned
     volume's blank pages never reach this refusal, and a run that started
-    refusing them would be losing pages that genuinely exist (GOALS 1).
+    refusing them would be losing pages that genuinely exist (goal 2).
     """
     volume = blank_pages_pdf(2, width=8, height=6)
     files = {"scanned-volume.pdf": volume, "other.png": png(4, 3)}
@@ -1536,8 +1537,7 @@ def test_split_render_uses_the_deterministic_common_encoder(monkeypatch):
     `zlib.compress`, and neither does Pillow's PNG writer, which uses a compression
     object. So the shim changed neither render and the test passed no matter which
     encoder ran. The encoder call is spied on directly now, and the shim covers
-    `compressobj` too, so a replacement writer would be caught by both halves.
-    Found by CodeRabbit."""
+    `compressobj` too, so a replacement writer would be caught by both halves."""
     calls: list[bytes] = []
     genuine_encode = common_imaging.encode_image_deterministic
 
@@ -1827,7 +1827,7 @@ def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
     `--serving-recipes-config` files produced the same digest. `RunTree.create`
     saw no change, the same run id was reusable across them, and nothing in the
     authority could afterwards say which catalogue the run had been served from
-    (GOVERNANCE 6).
+    (principle 6).
     """
 
     models = _fixture_models()
@@ -2446,12 +2446,12 @@ def test_a_forged_nul_byte_manifest_row_refuses_only_itself(tmp_path, monkeypatc
 
     No real directory listing can ever produce a NUL byte in a name, so this row
     could only reach the door through a manifest built by hand rather than by
-    `submit.py`. Before this fix, `os.open`'s bare `ValueError` for an embedded
-    NUL was not caught anywhere between `inventory.open_submission_source` and
-    `door.expand_sources`'s own except clause, so it escaped as an uncaught
-    traceback and admitted nothing in the same run -- the same "one bad name
-    breaks the whole folder" shape this module already fixed once for directory
-    depth (harvest #2: per-file, never per-folder).
+    `submit.py`. An embedded NUL raises `os.open`'s bare `ValueError`, which must
+    be caught between `inventory.open_submission_source` and
+    `door.expand_sources`'s own except clause -- otherwise it escapes as an
+    uncaught traceback and admits nothing in the same run, the same "one bad name
+    breaks the whole folder" shape this module already guards against for
+    directory depth (per-file, never per-folder).
     """
     approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
         tmp_path, {"good.png": png(4, 3)}
@@ -2651,7 +2651,7 @@ def test_a_ledgered_file_absent_from_the_folder_keeps_its_ordinal_and_is_named(
     A file the sealed ledger names and the folder no longer holds is the door's
     ordinary per-source alarm: it keeps its ordinal, is refused by name, and the
     source beside it still admits. It may not vanish into a smaller corpus that
-    later looks complete (GOVERNANCE 2), and it may not abort the whole census.
+    later looks complete (principle 2), and it may not abort the whole census.
     """
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png(4, 3), "FS-2.png": png(5, 5)}
@@ -2786,7 +2786,7 @@ def test_two_byte_identical_pages_inside_one_container_are_both_kept(tmp_path):
     The duplicate rule and the fan-out rule meet here and could contradict each
     other: a scanned volume routinely holds several byte-identical blank or ruled
     pages, and collapsing the second into "already admitted as source-1" loses a
-    page that genuinely exists — GOALS 1, in the place the old door failed.
+    page that genuinely exists — goal 2, in the place the old door failed.
 
     The test beside this one is named for this case and never exercised it: its body
     submits two identical PNG *files* and stops there, so the half of its name about
@@ -2856,7 +2856,7 @@ def test_two_identical_broken_sources_are_each_told_the_truth_about_themselves(t
 
     The duplicate reason says "identical content already admitted as source-N". If a
     second copy of a corrupt file were given that reason, the record would assert an
-    admission that never happened (GOVERNANCE 10), and the census would read "one
+    admission that never happened (principle 8), and the census would read "one
     corrupt file, one duplicate" when the truth is two corrupt files, each needing
     the same fix.
 
@@ -3024,7 +3024,7 @@ def test_a_filename_ledger_byte_count_mismatch_has_its_own_named_alarm(tmp_path)
 def test_a_caller_owned_folder_is_never_the_declared_synthetic_fixture_root(tmp_path):
     """`--fixture-root` may not be the flag that turns the data-handling gate off.
 
-    Ruling 2026-08-04, item 1: fixture status comes from the declared fixture
+    Fixture status comes from the declared fixture
     manifest, never from a caller flag, a filename suffix or a folder name. The
     accepting half of this guard is exercised by every fixture run in the suite;
     the refusing half — the half that is the guard — was exercised by nothing.
@@ -3039,7 +3039,7 @@ def test_a_caller_owned_folder_is_never_the_declared_synthetic_fixture_root(tmp_
 
 
 def test_the_loud_failure_names_the_reasons_rather_than_counting_anonymously(tmp_path):
-    """An anonymous "unsupported" counter is the door defect this replaced.
+    """An anonymous "unsupported" counter is a door defect.
 
     The terminal may not carry filenames — that is the data-handling policy, and
     the private report is where the names are. What it must carry is *which* alarms
@@ -3071,7 +3071,7 @@ def test_the_loud_failure_survives_a_census_it_cannot_read(tmp_path):
 
     This path runs only on a bad day, to describe a failure that already happened.
     Masking the primary failure with a secondary one is a worse answer to
-    GOVERNANCE 2 than a partial census, so an unreadable record is counted under a
+    principle 2 than a partial census, so an unreadable record is counted under a
     name that says so and the loud failure still says what it is.
     """
     broken = b"not an image at all"
@@ -3120,8 +3120,8 @@ def test_the_loud_failure_survives_one_record_it_cannot_make_sense_of(tmp_path):
 
     Damaging the bytes takes out the whole manifest, so it exercises the outer
     fallback above. This takes out one *record's meaning* while leaving the tree
-    structurally sound — a reason outside the closed set, which is precisely the
-    free-text refusal this spec replaced. The row is counted under a name that says
+    structurally sound — a reason outside the closed set, which is exactly what a
+    free-text refusal would produce. The row is counted under a name that says
     it could not be read, and the other rows still count normally.
     """
     broken = b"not an image at all"
@@ -3173,7 +3173,7 @@ def test_the_loud_failure_survives_one_record_it_cannot_make_sense_of(tmp_path):
 def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(tmp_path):
     """A file that vanishes at expansion time never gets a refusal record at all.
 
-    GOVERNANCE 2: nothing is lost silently. A PDF too damaged to count pages cannot
+    principle 2: nothing is lost silently. A PDF too damaged to count pages cannot
     be fanned out, so it takes one slot and is refused by name in it — the
     alternative is a submitted file with no outcome anywhere in the run.
     """
@@ -3262,9 +3262,9 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "real run without the name refuses unconditionally (same class as F-S5)"
     )
     assert "corpus-frame-shard" in sealed, (
-        "the pre-existing corpus-frame-shard entry must survive this fix, not be replaced"
+        "the pre-existing corpus-frame-shard entry must survive, not be replaced"
     )
-    # The sealing family (audit S3/S6, CodeRabbit CF01). Each of these has a point
+    # The sealing family. Each of these has a point
     # of use on the real route: the door renders with the PDF policy it parsed, the
     # storage-root gate ran under the data-handling policy it loaded, and the
     # Designator recovery pass and the orchestrator's dispatch both work from the
@@ -3273,17 +3273,16 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     assert sealed.get("pdf-render") == supplied["pdf_render_config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'pdf-render' entry bound to the digest of the bytes the settings were parsed "
-        "from; without it the door cannot prove what it rendered under (audit S6)"
+        "from; without it the door cannot prove what it rendered under"
     )
     assert sealed.get("recovery") == recovery["config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'recovery' entry; the Recensor, the Designator recovery pass and the "
-        "orchestrator all require this name at their point of use (audit S3)"
+        "orchestrator all require this name at their point of use"
     )
     assert sealed.get("data-handling") == supplied["data_handling_config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'data-handling' entry naming the caller-selected policy that gated admission "
-        "(CodeRabbit CF01)"
+        "'data-handling' entry naming the caller-selected policy that gated admission"
     )
     triage_modes = ROOT / "config" / "triage_modes.toml"
     assert sealed.get("triage-modes") == digest_bytes(triage_modes.read_bytes()), (
@@ -3300,7 +3299,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'models' entry bound to the roster digest; without it a real run resumed under a "
         "moved chair revision publishes stage-3 Testimonia naming one model and stage-4 "
-        "dossiers naming another (GOVERNANCE 6)"
+        "dossiers naming another (principle 6)"
     )
     formats_digest, _formats = door.bind_armarium_formats(door.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH)
     assert sealed.get("armarium-formats") == formats_digest, (
@@ -3490,17 +3489,17 @@ def test_each_door_path_enforces_the_shard_limit_at_run_creation(submission, den
 
 
 def test_a_real_admission_names_the_data_handling_policy_that_governed_it(tmp_path, monkeypatch):
-    """CodeRabbit CF01: which caller-selected policy admitted this material.
+    """Which caller-selected policy admitted this material.
 
     Both entry points expose the policy as a flag, so "the current policy" is
-    whichever file the invoker names. `config/README.md` said outright that nothing
-    bound a run to the policy version governing it, which left later evidence
-    unable to establish which file's storage roots the corpus was admitted under —
-    a real gap even though the gate itself works from one in-memory record.
+    whichever file the invoker names. Nothing bound a run to the policy version
+    governing it, which left later evidence unable to establish which file's
+    storage roots the corpus was admitted under — a real gap even though the
+    gate itself works from one in-memory record.
 
     The run now names it. Not an approval record: nothing here refuses a submission
-    for want of a sign-off, and the per-run approval requirement cut on 2026-08-09
-    stays cut. This is provenance, which GOVERNANCE 6 asks travel with the record.
+    for want of a sign-off, and the per-run approval requirement stays cut, not
+    reinstated. This is provenance, which principle 6 asks travel with the record.
     """
     files = {"FS-9001.png": png(4, 3)}
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
@@ -3680,7 +3679,7 @@ def test_a_split_derivative_records_a_palette_master_and_the_rgb_it_was_sealed_i
     deterministic encoder expands P to RGB pixel-for-pixel, so colour_mode "keep"
     is honoured and the record must still say the master was a palette image. The
     test below described this case in its docstring and then built an RGB master,
-    so nothing exercised palette provenance at all. Found by CodeRabbit."""
+    so nothing exercised palette provenance at all."""
     palette = Image.new("P", (6, 4))
     palette.putpalette([10, 20, 30] + [0, 0, 0] * 255)
     output = BytesIO()
