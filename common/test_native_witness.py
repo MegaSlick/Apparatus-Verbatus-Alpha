@@ -6,6 +6,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
+from common.chandra_native_retry import attempt_parameters, recipe_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import STOP_REASON_UNREPORTED
@@ -1040,6 +1041,42 @@ def test_a_valid_page_testimonium_passes_its_closed_contract():
     value = _page_payload()
 
     assert validate_page_testimonium_payload(value) is value
+
+
+def test_chandra_retry_provenance_is_confined_to_its_page_scoped_a1_adapter():
+    reference = lambda kind: {  # noqa: E731 - compact closed fixture
+        "relative_path": f"3_attestatores/artifacts/native/{kind}.json",
+        "sha256": ("a" if kind == "intent" else "b") * 64,
+    }
+    trace = {
+        "schema": "chandra-native-retry-trace.v1",
+        "recipe": recipe_record(),
+        "physical_request_count": 1,
+        "returned_attempt_ordinal": 1,
+        "exhausted_condition": None,
+        "attempts": [
+            {
+                "attempt_ordinal": 1,
+                "parameters": attempt_parameters(1),
+                "intent_ref": reference("intent"),
+                "attempt_ref": reference("attempt"),
+                "trigger": None,
+                "error": False,
+            }
+        ],
+    }
+    identity = {
+        "role": "attestator_1",
+        "witness_adapter": "chandra.v1",
+        "witness_scope": "page",
+    }
+    value = _page_payload(provenance={"resolved_identity": identity}, native_inference=trace)
+    assert validate_page_testimonium_payload(value) is value
+
+    wrong_scope = copy.deepcopy(value)
+    wrong_scope["provenance"]["resolved_identity"]["witness_scope"] = "region"
+    with pytest.raises(SchemaRefusal, match="only to page-scoped attestator_1"):
+        validate_page_testimonium_payload(wrong_scope)
 
 
 def test_a_page_record_may_not_name_one_page_and_present_another():

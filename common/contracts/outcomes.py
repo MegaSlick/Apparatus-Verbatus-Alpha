@@ -337,6 +337,12 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
 BOUNDARY_OUTCOMES: Final = {
     "stage-seal": "sealed",
     "decode-environment": "recorded",
+    # Durable call-intent and terminal-evidence records are accounting
+    # boundaries, not additional witness outcomes. Their payloads retain each
+    # physical Chandra request/error while the outer Testimonium remains the
+    # one configured-chair denominator.
+    "chandra-native-attempt-intent": "recorded",
+    "chandra-native-attempt": "recorded",
 }
 
 # These two outcomes describe stage-boundary evidence, not an act's terminal

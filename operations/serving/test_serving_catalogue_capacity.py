@@ -185,6 +185,46 @@ def test_churro_80gb_admits_the_complete_vendor_answer_bound():
     assert old_capacity["fits"] is False
 
 
+def test_chandra_80gb_admits_its_native_bound_after_the_observed_page_three_prompt():
+    """The live page-three arithmetic keeps Chandra's native cap on the wire.
+
+    The retained page used 6,731 prompt tokens. Chandra's declared 12,384
+    output-token bound therefore needs 19,115 tokens in total. The former
+    18,000-token row leaves only 11,269 and binds generation by context; the
+    changed 20,480-token row leaves enough slack for the declared bound to be
+    sent. This is capacity accounting only: it does not attribute or cure the
+    observed repeated-line output.
+    """
+
+    row = next(
+        row
+        for row in _shipped_rows()
+        if row.chair == "attestator_1" and row.tier == "generic-80gb-plus"
+    )
+    # The actual retained Chandra presentation was 2100x2968; the processor
+    # reported 6,138 image tokens plus the sealed 593-token text prompt.
+    images = [(2100, 2968)]
+    prompt_tokens = PROMPT_TOKENS[row.chair]
+    assert prompt_tokens == 593
+    declared_answer = DECLARED_ANSWER_BOUND_TOKENS[row.chair]
+    assert row.max_model_len == 20_480
+
+    capacity = request_fits(row, images, prompt_tokens, declared_answer)
+    assert capacity["image_prompt_tokens"] == 6_138
+    assert capacity["image_prompt_tokens"] + capacity["prompt_tokens"] == 6_731
+    assert capacity["need"] == 19_115
+    assert capacity["fits"] is True, capacity["reason"]
+    assert capacity["headroom"] == 1_365
+    assert sendable_max_tokens(row.chair, capacity) == {"max_tokens": declared_answer}
+
+    old_capacity = request_fits(
+        replace(row, max_model_len=18_000), images, prompt_tokens, declared_answer
+    )
+    assert old_capacity["fits"] is False
+    assert old_capacity["headroom"] == -1_115
+    assert sendable_max_tokens(row.chair, old_capacity) == {}
+
+
 def test_the_two_view_page_fallback_act_fits_every_tiers_context():
     """The one measured Perlector shape that used to overrun a shipped row.
 
@@ -284,29 +324,41 @@ def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old
         assert record["fits"] is False, (chair, tier)
 
 
-def test_every_startup_timeout_row_records_how_its_value_should_be_derived() -> None:
-    """F057: 300s is a placeholder on every row, including a 51.7 GiB Perlector.
+def test_startup_timeout_rows_preserve_the_one_measured_exception_and_all_other_derivations() -> (
+    None
+):
+    """F057: only the observed Designator row may depart from the 300s placeholder.
 
-    The value is deliberately not changed here -- replacing one unmeasured
-    number with another is not a fix, and the row's bytes are sealed into the
-    run's configuration digest, so a guessed change would be indistinguishable
-    in the record from a measured one. What the file must carry instead is the
-    derivation, so that whoever reads the first red watchdog can set each row
-    from a measurement rather than from a feeling. This test is what keeps a
-    later edit from quietly dropping that back to a bare number.
+    The isolated 600-second retry completed with a warm cache after the cold
+    300-second startup timed out while progressing. It supports this one
+    watchdog allowance but not a claim that 600 seconds qualifies cold startup.
+    Every other row remains visibly unmeasured until it has comparable evidence.
     """
 
     text = REAL_RECIPES.read_text(encoding="utf-8")
     rows = [line for line in text.splitlines() if line.startswith("startup_timeout_seconds")]
 
     assert len(rows) == 15
-    for row in rows:
+    observed = [row for row in rows if "OBSERVED diagnostic evidence" in row]
+    assert observed == [
+        "startup_timeout_seconds = 600  # OBSERVED diagnostic evidence: cold 300s timed out while progressing; isolated 600s retry completed warm-cache, not cold-start qualification (see header)"
+    ]
+    exceptions = [
+        (profile.chair, profile.tier, profile.startup_timeout_seconds)
+        for profile in _shipped_rows()
+        if profile.startup_timeout_seconds != 300
+    ]
+    assert exceptions == [("designator_structure", "generic-80gb-plus", 600)]
+    placeholders = [row for row in rows if "UNMEASURED placeholder" in row]
+    assert len(placeholders) == 14
+    for row in placeholders:
         assert "UNMEASURED placeholder" in row, row
         assert "volume read rate" in row, row
         assert "see the header" in row, row
     # The one row whose weights this tree has actually measured says so.
     assert sum("51.7 GiB" in row for row in rows) == 3
     assert "HOW THE VALUE SHOULD BE DERIVED" in text
+    assert "does not qualify a 600-second cold start" in text
 
 
 # F005/F052: `operations/serving/preflight.py` only refuses a row's

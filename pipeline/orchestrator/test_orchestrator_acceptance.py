@@ -1724,10 +1724,15 @@ def _perlector_dissent():
 # semantic pins with the same 100/111 file counts and 0/3 scenario exits. Keep the
 # byte-for-byte rerun assertions below: updating a cross-revision golden never
 # substitutes for proving that a second invocation leaves its own tree intact.
+# PR121 seals decoding.v3 with the pinned native Chandra recipe; named dossiers
+# also retain an explicit native_inference field (null for these fixture reads).
+# Cloud Python3.12 run 35810529606 measured the resulting semantic pins below
+# with unchanged 100/111 file counts and 0/3 exits. These are cross-revision
+# golden updates; the second-invocation byte-for-byte assertions stay intact.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "804983968d4dd3b2b1bcc1a1dd4ea09e19a16bb4f567d3eafd7dc339347ef7f3"
-REVIEW_RUN_TREE_DIGEST = "53d6d3e3a51afe1e2dcea6f0690590a7c961bfa806ea19d44a33d82bfe521226"
+HAPPY_RUN_TREE_DIGEST = "75929230cc89498c6b7fa602d2e713448442044250297475ec7e371af4f54915"
+REVIEW_RUN_TREE_DIGEST = "489959015b0fa8299f973a3f5e9727b1b060a4b0a227ca29b1760b2bd4716be4"
 
 
 def orchestrate(

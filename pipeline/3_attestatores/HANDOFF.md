@@ -185,19 +185,34 @@ retains. A body the reader can place in no shape at all lands in the
 `unrecognized-shape` state naming what it saw in `outcome`, with its bytes
 already retained.
 
-**The post-hoc repetition scan runs here too.** Chandra's own answer to a
-degenerate reading is `_should_retry`'s rising-temperature ladder, which is not
-carried: re-rolling a reading until it stops looking stuck recovers quality,
-which GOVERNANCE 11 refuses to a recovery loop. `feeding.retain_model_view`
-instead runs the chair-neutral `common/native_witness.py::detect_repetition`
-over the parsed page text (or the raw bytes where no parse produced one, named
-in the finding's `inspected` field), publishes `post-hoc-repetition` beside the
-reading and sets `stop_reason = "partial-post-hoc-repetition-detected"`.
-Without it a stuck answer that ended under its bound would reach the Perlector
-as full testimony under `transport_stop_reason = "stop"`. A parse outcome takes
-precedence over the stop reason and the finding is kept either way, exactly as
-for Churro; a body past the grammar's own retained parsing limit is recorded
-`post-hoc-repetition-uninspected` rather than scanned.
+**Attestator 1 carries Chandra's pinned native inference loop.** New runs seal
+`decoding.v3`'s exact `datalab-to/chandra@d4f7467` recipe: the initial
+`temperature=0, top_p=0.1` request and at most six retries at temperatures
+0.2, 0.4, 0.6, 0.8, 0.8, 0.8 with `top_p=0.95`. Only the vendor's literal
+repeat detector (including its cut-last-50 probe) or an inference error advances
+the loop; only errors wait 2, 4, 6, 8, 10, then 12 seconds. This capability is
+restricted to the page-scoped `attestator_1`/`chandra.v1` route. The separate
+Designator structure chair retains its own coverage recovery policy.
+
+Every physical request has an immutable `chandra-native-attempt-intent` artifact
+(`chandra-native-attempt-intent.v1`) before HTTP and a terminal
+`chandra-native-attempt` artifact (`chandra-native-attempt.v1`) afterward. Page
+and act Testimonia bind both through `native_inference`; their validators require
+the referenced evidence rather than treating the compact trace as a free-standing
+claim. A crash that leaves an intent without terminal evidence is delivery-unknown
+and refuses manual-free resume; it is never replayed blindly. A retained response
+that this stage cannot publish receives a terminal record first, so resume repeats
+the named refusal instead of misreporting known delivery as unknown. The final
+vendor-returned attempt alone supplies Testimonium text and geometry. Earlier
+requests, responses/errors, captures, parameters and triggers remain reachable
+through `native_inference`, whose `physical_request_count` does not alter the
+one-Testimonium-per-chair denominator. Exhausted repetition is retained as
+failed/partial with its text and capture; exhausted inference errors are failed.
+An HTTP error is an inference error under the pinned recipe: attempts one through
+six wait 2, 4, 6, 8, 10 and 12 seconds respectively before the next request (42
+seconds total on full exhaustion), including after crash/resume. The older
+chair-neutral post-hoc repetition finding remains a diagnostic over the returned
+capture, but it does not schedule a request and is not the vendor trigger.
 
 **The placeholder is offline only.** `proof/skeleton_fixture.toml`'s Chandra
 rows still declare `fixture-chandra-response.v1`, a JSON placeholder this
@@ -1572,3 +1587,16 @@ This stage's own live boundary is U5, its wiring into the stage is U6, and the
 cross-file seams described under "The cross-file seams that let a live pass carry
 every chair" are U8. U7-e2e is the whole-run proof recorded at the end of that
 section.
+
+The final native-retry evidence audit corrections were implemented by GPT-5.6
+Sol (OpenAI). An exhausted repeat retains Chandra observation geometry across a
+resume only when its sealed native capture says the vendor layout parse reached
+`parsed`; retained but unrecognized bytes therefore remain visible without being
+promoted into geometry. A post-response application refusal remains the outcome
+of that physical attempt even when the vendor repeat/error predicate authorizes
+the next request, so the retry trace does not rewrite failed evidence as a
+reading. `FatalAccounting` from native capture now escapes before terminal
+publication or another request because that exception means the attempt itself
+cannot be accounted safely. Focused live-fake regressions pin all three boundaries,
+including the parsed exhausted-repeat recovery case and its unrecognized-shape
+counterpart after crash and resume.

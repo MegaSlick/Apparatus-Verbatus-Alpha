@@ -67,6 +67,7 @@ import operations.serving.errors as serving_errors  # noqa: E402
 from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.chandra_native_retry import validate_trace as validate_chandra_trace  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
     ApprovalRecordBinding,
     ApprovalRecordReference,
@@ -593,14 +594,37 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
         page_size=page_size,
         page_bytes=page_bytes,
     )
-    inputs = {}
+    input_references = []
     for region in proposal_regions:
-        reference = context.input_ref(region["payload"]["image_path"])
-        inputs[reference["relative_path"]] = reference
-    reference = context.input_ref(presented["image_path"])
-    inputs[reference["relative_path"]] = reference
+        input_references.append(context.input_ref(region["payload"]["image_path"]))
+    input_references.append(context.input_ref(presented["image_path"]))
+    native_inference = payload.get("native_inference")
+    if native_inference is not None:
+        provenance = payload.get("provenance")
+        identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
+        capture = payload.get("native_capture")
+        if (
+            payload.get("chair") != "attestator_1"
+            or payload.get("page_witness") is not True
+            or not isinstance(identity, dict)
+            or identity.get("role") != "attestator_1"
+            or identity.get("witness_adapter") != "chandra.v1"
+            or identity.get("witness_scope") != "page"
+            or (
+                capture is not None
+                and (not isinstance(capture, dict) or capture.get("adapter") != "chandra.v1")
+            )
+        ):
+            raise SchemaRefusal(
+                "Chandra native inference belongs only to the page-scoped "
+                "attestator_1 chandra.v1 act view"
+            )
+        for row in validate_chandra_trace(native_inference)["attempts"]:
+            for native_reference in (row["intent_ref"], row["attempt_ref"]):
+                input_references.append(native_reference)
     expected_inputs = sorted(
-        inputs.values(), key=lambda item: (item["relative_path"], item["sha256"])
+        _distinct_inputs(input_references),
+        key=lambda item: (item["relative_path"], item["sha256"]),
     )
     # Re-derive the explicit limit for every presentation kind so a kind change
     # cannot understate which bound crops its one page-space image omits.
@@ -731,6 +755,10 @@ def validate_page_testimonium_record(
         capture = payload.get("native_capture")
         if capture is not None:
             retained.append(capture["raw_response_ref"])
+        native_inference = payload.get("native_inference")
+        if native_inference is not None:
+            for row in validate_chandra_trace(native_inference)["attempts"]:
+                retained.extend((row["intent_ref"], row["attempt_ref"]))
         # Named once each, before the sort, exactly as the producer names them
         # (`pipeline/3_attestatores/run.py::_named_once`). One retained response
         # can honestly appear twice in the payload -- a page whose partition was

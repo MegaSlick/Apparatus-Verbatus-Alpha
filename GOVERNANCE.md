@@ -101,3 +101,11 @@ handing to Tyrel. Nothing disappears inside a recovery loop.
 Recovery exists for **completeness and coverage** — a missed region, a cut crop, a
 continuation. Content quality is not its business: suspected fabrication or a bad
 reading may be **flagged for review**, never re-rolled until it looks better.
+
+**Chandra native inference exception.** Its declared, revision-pinned upstream
+inference recipe may make at most six retries after the initial call, only under
+that recipe's repetition or inference-error triggers and parameter schedule. Every
+attempt, its parameters, trigger, response or error, and the recipe's returned-attempt
+identity is retained. Exhaustion remains visibly failed or partial. This exception
+does not authorize application-written quality retries, witness ranking, retries
+by other models, or quality recovery by the Recensor.

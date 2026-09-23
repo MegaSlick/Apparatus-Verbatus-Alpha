@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Final, Mapping
 
+from common.chandra_native_retry import validate_policy_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, attempt_id, derive
@@ -57,7 +58,10 @@ def load_decoding_policy(
 def _validate_decoding_policy(policy: Any) -> None:
     """Close every section before its values can mint provenance identities.
 
-    Three sections, each closed. `reading_of_record` is pinned to temperature
+    The legacy schemas carry three sections. ``decoding.v3`` adds the exact,
+    closed Chandra native inference recipe admitted for Attestator 1; there is
+    no enabled flag, and a v1/v2 run cannot acquire the capability on resume.
+    `reading_of_record` is pinned to temperature
     0: it is the posture every Attestator and the Perlector read under, and a
     reading of record that varied would not be one. `structure` is the
     Designator's structure pass's own posture (Tyrel, 2026-09-02) and is
@@ -72,9 +76,12 @@ def _validate_decoding_policy(policy: Any) -> None:
     """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
-    if set(policy) != {"schema", "reading_of_record", "variance_experiment", "structure"}:
+    expected_sections = {"schema", "reading_of_record", "variance_experiment", "structure"}
+    if policy.get("schema") == "decoding.v3":
+        expected_sections.add("chandra_native_inference")
+    if set(policy) != expected_sections:
         raise ContractError("decoding configuration has the wrong closed schema")
-    if policy["schema"] not in {"decoding.v1", "decoding.v2"}:
+    if policy["schema"] not in {"decoding.v1", "decoding.v2", "decoding.v3"}:
         raise ContractError("decoding configuration has an unsupported schema")
     record = policy["reading_of_record"]
     variance = policy["variance_experiment"]
@@ -93,7 +100,7 @@ def _validate_decoding_policy(policy: Any) -> None:
         or structure["temperature"] < 0
     ):
         raise ContractError("decoding structure must declare one finite, non-negative temperature")
-    if policy["schema"] == "decoding.v2" and (
+    if policy["schema"] in {"decoding.v2", "decoding.v3"} and (
         structure["recovery_seed_schedule"] != "base-plus-attempt-ordinal-minus-one"
         or not isinstance(structure["recovery_max_attempts"], int)
         or isinstance(structure["recovery_max_attempts"], bool)
@@ -103,6 +110,11 @@ def _validate_decoding_policy(policy: Any) -> None:
             "decoding structure recovery must declare the supported seed schedule and "
             "an integer maximum in 1..3"
         )
+    if policy["schema"] == "decoding.v3":
+        try:
+            validate_policy_record(policy["chandra_native_inference"])
+        except ContractError as error:
+            raise ContractError(str(error)) from error
     if (
         not isinstance(record, dict)
         or set(record) != {"temperature"}

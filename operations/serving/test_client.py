@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Mapping
 
@@ -16,12 +17,17 @@ import pytest
 
 from common.chairs.models import ChairIdentity, ServingDetails
 from common.chairs.receipts import build_receipt, receipt_record
+from common.chandra_native_retry import recipe_record
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
     CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    CHANDRA_NATIVE_CALL_RECORD_FIELDS,
+    CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
+    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 
 from .client import (
@@ -154,7 +160,14 @@ def _recipes(*rows: dict[str, object]):
 def _default_read_receipt(chair: ChairIdentity):
     def read_receipt(reference: Mapping[str, str]) -> dict[str, object]:
         del reference
-        return {"chair": chair.role, "revision": chair.receipt_revision}
+        return {
+            "chair": chair.role,
+            "source": chair.source,
+            "resolved": chair.source_reference,
+            "revision": chair.receipt_revision,
+            "revision_kind": chair.receipt_revision_kind,
+            "digest_manifest": chair.digest_manifest,
+        }
 
     return read_receipt
 
@@ -166,6 +179,7 @@ def _built(
     row: dict[str, object] | None = None,
     read_receipt=None,
     record_temperature: int = 0,
+    chandra_native_policy=None,
 ):
     chair = chair or _identity()
     row = _seal(
@@ -197,6 +211,7 @@ def _built(
         decoding_config_sha256=DECODING_SHA,
         record_temperature=record_temperature,
         read_receipt=read_receipt or _default_read_receipt(chair),
+        chandra_native_policy=chandra_native_policy,
     )
     return client, endpoint, blob_store, chair
 
@@ -268,6 +283,148 @@ def test_a_nonzero_sealed_temperature_and_seed_are_sent_and_retained(tmp_path: P
         "decimal": "0.2",
     }
     assert record["generation_sent"]["seed"] == 7
+
+
+def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity().to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    intent_ref = {"relative_path": "3_attestatores/artifacts/intent.json", "sha256": "d" * 64}
+    request = _request(
+        generation_declared={"max_new_tokens": 12384},
+        generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    with client:
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=4)
+
+        def unexpected_reprepare(*_args, **_kwargs):
+            raise AssertionError("a prepared native dispatch must not be rebuilt after intent")
+
+        monkeypatch.setattr(client, "prepare_chandra_native", unexpected_reprepare)
+        endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
+        response = client.read_chandra_native(dispatch, intent_ref=intent_ref)
+    assert endpoint.requests[0]["temperature"] == 0.6000000000000001
+    assert endpoint.requests[0]["top_p"] == 0.95
+    assert "seed" not in endpoint.requests[0]
+    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
+    assert record["schema"] == CHANDRA_NATIVE_CALL_RECORD_SCHEMA
+    assert set(record) == CHANDRA_NATIVE_CALL_RECORD_FIELDS
+    assert record["native_attempt_intent_ref"] == intent_ref
+
+
+def test_chandra_native_dispatch_is_a_one_use_client_minted_capability(tmp_path: Path) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity().to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, _blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    request = _request(
+        generation_declared={"max_new_tokens": 12384},
+        generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    intent_ref = {"relative_path": "3_attestatores/artifacts/intent.json", "sha256": "d" * 64}
+    with client:
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=1)
+        forged = replace(dispatch)
+        with pytest.raises(ChairRequestRefusal, match="not prepared by this client"):
+            client.read_chandra_native(forged, intent_ref=intent_ref)
+        endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
+        client.read_chandra_native(dispatch, intent_ref=intent_ref)
+        with pytest.raises(ChairRequestRefusal, match="already used"):
+            client.read_chandra_native(dispatch, intent_ref=intent_ref)
+    assert len(endpoint.requests) == 1
+
+
+def test_chandra_native_capability_refuses_a_different_chair(tmp_path: Path) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity(role="attestator_2").to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, _blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    with client, pytest.raises(ChairRequestRefusal, match="only to Attestator 1"):
+        client.prepare_chandra_native(_request(), attempt_ordinal=1)
+    assert endpoint.requests == []
+
+
+def test_a_legacy_client_does_not_acquire_the_native_capability(tmp_path: Path) -> None:
+    client, _endpoint, _blob_store, _ = _built(tmp_path)
+    assert client.carries_chandra_native_recipe is False
+
+
+def test_chandra_native_call_refuses_without_durable_intent_before_http(tmp_path: Path) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity().to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    request = _request(
+        generation_declared={"max_new_tokens": 12384},
+        generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    with client:
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=1)
+        with pytest.raises(ChairRequestRefusal, match="no durable attempt intent"):
+            client.read_chandra_native(dispatch, intent_ref={})
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+
+def test_chandra_native_transport_failure_retains_intent_and_physical_request(
+    tmp_path: Path,
+) -> None:
+    chair = ChairIdentity(
+        **{
+            **_identity().to_record(),
+            "witness_adapter": "chandra.v1",
+            "witness_scope": "page",
+        }
+    )
+    client, endpoint, blob_store, _ = _built(
+        tmp_path, chair=chair, chandra_native_policy=recipe_record()
+    )
+    request = _request(
+        generation_declared={"max_new_tokens": 12384},
+        generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    intent_ref = {"relative_path": "3_attestatores/artifacts/intent.json", "sha256": "d" * 64}
+    with client:
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=6)
+        endpoint.script(ScriptedAnswer(transport_failure="whole-call deadline exceeded"))
+        with pytest.raises(ChairTransportFailure):
+            client.read_chandra_native(dispatch, intent_ref=intent_ref)
+    record = json.loads(blob_store.written[0])
+    assert record["schema"] == CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA
+    assert set(record) == CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS
+    assert record["native_attempt_intent_ref"] == intent_ref
+    assert record["generation_sent"]["temperature"]["decimal"] == "0.8"
+    assert record["generation_sent"]["top_p"]["decimal"] == "0.95"
+    assert "seed" not in record["generation_sent"]
+    assert record["transport_problem"]["request_delivery"] == "unknown"
 
 
 def test_only_the_structure_chair_can_use_the_bounded_recovery_seed(tmp_path: Path) -> None:
@@ -1090,7 +1247,14 @@ def test_the_tree_receipt_reader_is_wired_bare_with_no_stage_side_converter(
                 "run receipt reference must contain exactly relative_path and sha256, "
                 f"as a plain dict; got {type(reference).__name__}"
             )
-        return {"chair": chair.role, "revision": chair.receipt_revision}
+        return {
+            "chair": chair.role,
+            "source": chair.source,
+            "resolved": chair.source_reference,
+            "revision": chair.receipt_revision,
+            "revision_kind": chair.receipt_revision_kind,
+            "digest_manifest": chair.digest_manifest,
+        }
 
     client, _, _, _ = _built(tmp_path, chair=chair, read_receipt=tree_shaped_read_receipt)
     with client as entered:
@@ -1120,6 +1284,51 @@ def test_receipt_match_enters_cleanly(tmp_path: Path) -> None:
     client, _, _, _ = _built(tmp_path, chair=chair, read_receipt=_real_read_receipt(chair))
     with client as entered:
         assert entered.handle is not None
+
+
+def test_receipt_reader_failure_stops_the_started_service_and_preserves_the_failure(
+    tmp_path: Path,
+) -> None:
+    failure = RuntimeError("the published receipt could not be read")
+
+    def unreadable_receipt(reference: Mapping[str, str]) -> dict[str, object]:
+        del reference
+        raise failure
+
+    client, endpoint, blob_store, _ = _built(tmp_path, read_receipt=unreadable_receipt)
+    with pytest.raises(RuntimeError) as excinfo:
+        with client:
+            pass
+
+    assert excinfo.value is failure
+    assert endpoint._available() is False
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    (("digest_manifest", "d" * 64), ("resolved", "example/a-different-attestator-1")),
+)
+def test_receipt_identity_drift_stops_before_http_even_when_chair_and_revision_match(
+    tmp_path: Path, field: str, wrong_value: str
+) -> None:
+    chair = _identity()
+    read_real_receipt = _real_read_receipt(chair)
+
+    def drifted_receipt(reference: Mapping[str, str]) -> dict[str, object]:
+        receipt = read_real_receipt(reference)
+        receipt[field] = wrong_value
+        return receipt
+
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair, read_receipt=drifted_receipt)
+    with pytest.raises(ReceiptDriftRefusal, match="exact configured identity"):
+        with client:
+            pass
+
+    assert endpoint._available() is False
+    assert endpoint.requests == []
+    assert len(blob_store) == 0
 
 
 def test_receipt_revision_drift_alone_refuses(tmp_path: Path) -> None:

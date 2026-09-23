@@ -77,6 +77,19 @@ from typing import Any, Final
 
 import pytest
 
+from common.chandra_native_retry import (
+    CHANDRA_SOURCE_REVISION,
+)
+from common.chandra_native_retry import (
+    attempt_parameters as chandra_attempt_parameters,
+)
+from common.chandra_native_retry import (
+    detect_repeat_token as chandra_detect_repeat_token,
+)
+from common.chandra_native_retry import (
+    recipe_record as chandra_recipe_record,
+)
+from common.chandra_native_retry import wire_parameters as chandra_wire_parameters
 from common.imaging import encode_grayscale_png
 from common.imaging_ports import (
     CHANDRA_GRID_SIZE,
@@ -187,6 +200,43 @@ _PENDING_REASON: Final = "U1/U2 pending: the module carrying these vendor bytes 
 
 def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _canonical_ast(value: object) -> object:
+    """Represent AST semantics without ``ast.dump``'s version-specific defaults."""
+    if isinstance(value, ast.AST):
+        return [
+            type(value).__name__,
+            [(name, _canonical_ast(field)) for name, field in ast.iter_fields(value)],
+        ]
+    if isinstance(value, list):
+        return [_canonical_ast(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"unsupported AST value {type(value).__name__}")
+
+
+def _canonical_ast_digest(value: ast.AST) -> str:
+    normalized = json.dumps(_canonical_ast(value), ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _function_body_digest(source: str, *, filename: str, function_name: str) -> str:
+    """Digest one function's normalized AST body, excluding its docstring."""
+    tree = ast.parse(source, filename=filename)
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    ]
+    assert len(functions) == 1, (
+        f"{filename} must define exactly one {function_name}, found {len(functions)}"
+    )
+    function = functions[0]
+    body = (
+        function.body[1:] if ast.get_docstring(function, clean=False) is not None else function.body
+    )
+    return _canonical_ast_digest(ast.Module(body=body, type_ignores=[]))
 
 
 # How deep into a module-level container the string walk below goes.  Six is
@@ -397,6 +447,52 @@ def test_the_vendor_pins_this_file_states_are_internally_consistent():
         assert _digest(message) == CHURRO_SYSTEM_MESSAGE_SHA256[variant]
     assert len(set(CHURRO_SYSTEM_MESSAGES.values())) == 2
     assert len(set(CHURRO_SYSTEM_MESSAGE_SHA256.values())) == 2
+
+
+def test_chandra_native_inference_carries_the_same_pinned_vendor_provenance():
+    recipe = chandra_recipe_record()
+    assert CHANDRA_SOURCE_REVISION == CHANDRA_CODE_COMMIT
+    assert recipe["source_revision"] == CHANDRA_CODE_COMMIT
+    assert recipe["recipe_path"] == "chandra/model/vllm.py"
+    assert recipe["detector_path"] == "chandra/model/util.py::detect_repeat_token"
+    assert recipe["max_output_tokens"] == 12384
+    assert recipe["max_retries"] == 6
+    assert chandra_attempt_parameters(1) == {"temperature": "0.0", "top_p": "0.1"}
+    assert chandra_attempt_parameters(4) == {
+        "temperature": "0.6000000000000001",
+        "top_p": "0.95",
+    }
+    assert chandra_attempt_parameters(7) == {"temperature": "0.8", "top_p": "0.95"}
+
+
+def test_chandra_native_retry_arithmetic_and_detector_match_the_pinned_source_offline():
+    """Pin executable semantics measured from the named vendor revision.
+
+    The detector digest is over a canonical AST body only, so comments,
+    annotations, the local explanatory docstring, and ``ast.dump`` default-field
+    rendering do not create false drift across supported Python versions. The
+    expected digest was measured from ``chandra/model/util.py::detect_repeat_token``
+    at ``CHANDRA_CODE_COMMIT``. Retry temperatures use the vendor expression
+    itself; its fourth request deliberately exposes Python's binary-float
+    ``0.6000000000000001`` rather than a hand-normalized decimal.
+    """
+
+    source = ast.parse(Path(chandra_detect_repeat_token.__code__.co_filename).read_text())
+    function = next(
+        node
+        for node in ast.walk(source)
+        if isinstance(node, ast.FunctionDef) and node.name == "detect_repeat_token"
+    )
+    body = function.body[1:]  # discard the local docstring, absent upstream
+    assert _canonical_ast_digest(ast.Module(body=body, type_ignores=[])) == (
+        "a76c8f2bc96316cedf7ed3ba820f5cfae71663b98410bdeedb080499d9378345"
+    )
+
+    vendor_temperatures = [0.0] + [min(0.0 + 0.2 * (retries + 1), 0.8) for retries in range(6)]
+    assert [chandra_wire_parameters(ordinal)["temperature"] for ordinal in range(1, 8)] == (
+        vendor_temperatures
+    )
+    assert json.dumps(vendor_temperatures[3]) == "0.6000000000000001"
 
 
 def test_the_carried_dai_generation_values_rebuild_the_shipped_file_byte_for_byte():
@@ -1297,6 +1393,22 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
                 "A pinned commit whose bytes changed is a stop, not a re-pin."
             )
             payloads[name] = payload
+
+        upstream_detector_digest = _function_body_digest(
+            payloads["chandra_util.py"].decode("utf-8"),
+            filename="chandra/model/util.py",
+            function_name="detect_repeat_token",
+        )
+        local_detector_path = Path(chandra_detect_repeat_token.__code__.co_filename)
+        local_detector_digest = _function_body_digest(
+            local_detector_path.read_text(encoding="utf-8"),
+            filename=str(local_detector_path),
+            function_name="detect_repeat_token",
+        )
+        assert local_detector_digest == upstream_detector_digest, (
+            "common.chandra_native_retry.detect_repeat_token no longer has the "
+            "same normalized AST body as chandra/model/util.py at the pinned commit"
+        )
 
         # --- Chandra's prompt, rendered from the vendor's own file -----------
         source = payloads["chandra_prompts.py"].decode("utf-8")

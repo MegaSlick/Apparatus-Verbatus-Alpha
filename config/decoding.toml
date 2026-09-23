@@ -1,5 +1,5 @@
 # These exact bytes are sealed into every run's decoding provenance.
-schema = "decoding.v2"
+schema = "decoding.v3"
 
 [reading_of_record]
 temperature = 0
@@ -23,3 +23,19 @@ temperature = 1
 # This is a Designator structure policy, not Chandra's vendor retry ladder.
 recovery_seed_schedule = "base-plus-attempt-ordinal-minus-one"
 recovery_max_attempts = 3
+
+[chandra_native_inference]
+# Exact upstream inference recipe admitted only for Attestator 1's Chandra
+# page-reading route. This is not an ambient retry or sampling switch.
+schema = "chandra-native-inference.v1"
+source_repository = "https://github.com/datalab-to/chandra"
+source_revision = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
+recipe_path = "chandra/model/vllm.py"
+detector_path = "chandra/model/util.py::detect_repeat_token"
+settings_path = "chandra/settings.py"
+max_output_tokens = 12384
+max_retries = 6
+temperature_schedule = ["0.0", "0.2", "0.4", "0.6000000000000001", "0.8", "0.8", "0.8"]
+initial_top_p = "0.1"
+retry_top_p = "0.95"
+error_backoff_seconds = [2, 4, 6, 8, 10, 12]

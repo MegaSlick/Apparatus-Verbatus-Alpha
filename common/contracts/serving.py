@@ -51,6 +51,19 @@ CHAIR_CALL_RECORD_FIELDS_V1: Final = frozenset(
 )
 CHAIR_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS_V1 | frozenset({"response_status"})
 
+# Only the revision-pinned Chandra native route writes these two shapes.  The
+# intent reference makes equal wire bodies at retry ordinals 5..7 distinguishable
+# after a crash; without it, recovery could not prove which physical request a
+# durable response belongs to and would have to guess or replay it.
+CHANDRA_NATIVE_CALL_RECORD_SCHEMA: Final = "chandra-native-call-record.v1"
+CHANDRA_NATIVE_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
+    {"native_attempt_intent_ref"}
+)
+CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chandra-native-transport-failure.v1"
+CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS: Final = (
+    CHANDRA_NATIVE_CALL_RECORD_FIELDS | frozenset({"transport_problem"})
+)
+
 CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chair-transport-failure.v1"
 CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
     {"transport_problem"}

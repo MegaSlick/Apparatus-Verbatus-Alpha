@@ -29,7 +29,7 @@ from .errors import (
     ServingRecipeRefusal,
     UnresolvedChairRefusal,
 )
-from .manifests import file_digest, file_size, read_manifest, verify_snapshot
+from .manifests import inspect_snapshot_for_repair, read_manifest, verify_snapshot
 from .models import (
     AbsentChair,
     ChairIdentity,
@@ -514,11 +514,12 @@ class ChairRegistry:
         missing: tuple[str, ...]
         if target.exists():
             _verify_cache_descriptor(target, identity.role, descriptor)
-            missing = _missing_files(identity, target, manifest)
-            if not missing:
-                return verify_snapshot(
-                    identity, target, manifest, ignored_paths=(CACHE_DESCRIPTOR,)
-                )
+            inspection = inspect_snapshot_for_repair(
+                identity, target, manifest, ignored_paths=(CACHE_DESCRIPTOR,)
+            )
+            if inspection.verified is not None:
+                return inspection.verified
+            missing = inspection.missing
         else:
             missing = tuple(row.path for row in manifest.rows)
 
@@ -638,43 +639,6 @@ def _verify_cache_descriptor(target: Path, chair: str, expected: dict[str, objec
 
 def _write_cache_descriptor(target: Path, descriptor: dict[str, object]) -> None:
     (target / CACHE_DESCRIPTOR).write_bytes(canonical_bytes(descriptor))
-
-
-def _missing_files(
-    identity: ChairIdentity, target: Path, manifest: DigestManifest
-) -> tuple[str, ...]:
-    expected = {row.path: row for row in manifest.rows}
-    actual: dict[str, Path] = {}
-    for path in sorted(target.rglob("*")):
-        if path.is_dir():
-            continue
-        relative = path.relative_to(target).as_posix()
-        if relative == CACHE_DESCRIPTOR:
-            continue
-        if path.is_symlink() or not path.is_file():
-            raise DigestMismatchRefusal(
-                identity.role, f"snapshot differs at {relative}: not a regular file"
-            )
-        actual[relative] = path
-    missing: list[str] = []
-    for relative in sorted(set(expected) | set(actual)):
-        row = expected.get(relative)
-        path = actual.get(relative)
-        if row is None:
-            raise DigestMismatchRefusal(
-                identity.role, f"snapshot differs at {relative}: extra file"
-            )
-        if path is None:
-            missing.append(relative)
-            continue
-        if (
-            file_size(path, identity.role, relative) != row.size
-            or file_digest(path, identity.role, relative) != row.sha256
-        ):
-            raise DigestMismatchRefusal(
-                identity.role, f"snapshot differs at {relative}: cached bytes do not match"
-            )
-    return tuple(missing)
 
 
 def _copy_existing_files(target: Path, candidate: Path, manifest: DigestManifest) -> None:

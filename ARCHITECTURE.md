@@ -107,6 +107,8 @@ material across pages, or hold for review.
 
 **It recovers coverage, not quality.** A suspected fabrication or a poor reading may be
 flagged for review. It may never be re-rolled until it looks better.
+The bounded native Chandra inference exception in GOVERNANCE 11 belongs to the
+witness recipe; it grants the Recensor no additional recovery action.
 
 **Recovery is bounded.** The loop runs to a finite, configured budget before handing to
 review, so the system cannot reconsider itself indefinitely. Every loop is recorded, and
