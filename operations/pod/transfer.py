@@ -73,7 +73,7 @@ class TransferReport:
             # An absent manifest is not a completed transfer -- there was
             # nothing to send -- and the word a reader scans for must say so
             # rather than require noticing "submission_manifest": "absent"
-            # one field over (GOVERNANCE 2: a partial result is visibly partial).
+            # one field over (principle 2: a partial result is visibly partial).
             "state": "complete" if self.submission_manifest_present else "nothing-to-transfer",
             "submission_manifest": "present" if self.submission_manifest_present else "absent",
             "completed_keys": list(self.completed_keys),
@@ -203,7 +203,7 @@ def normalize_transfer_prefix(value: str) -> str:
         # keys below it while control files land as siblings inside the default
         # `submission/` inventory, so a later default Door run inventories files
         # its manifest does not name and refuses the run -- after the upload has
-        # already reported success (CodeRabbit).
+        # already reported success.
         or "/" in normalized
         or normalized in {".", ".."}
     ):

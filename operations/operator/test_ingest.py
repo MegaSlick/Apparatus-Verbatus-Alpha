@@ -802,7 +802,7 @@ def test_ingest_refuses_a_submitted_file_larger_than_the_retained_byte_ceiling(
     The producer's API takes whole frames, so the bytes are held either way; what
     the bound changes is that an oversized submission becomes a named refusal
     instead of an OOM kill of the confined child, which returns no JSON and
-    reaches the operator with an empty detail (GOVERNANCE 2). The ceiling is
+    reaches the operator with an empty detail (principle 2). The ceiling is
     `inventory.MAX_SUBMITTED_BYTES` — this repository's own declared limit on
     retained submitted bytes — not a second hand-kept copy of the Door's.
     """
@@ -1188,7 +1188,7 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
     Each bound the preparer enforces tells the operator that nothing was written.
     That is a statement about the approved tree, and until it is compared against
     the tree it is a statement the suite takes on trust -- exactly the shape
-    GOVERNANCE 10 refuses, since a preparer that had already laid down part of the
+    principle 8 refuses, since a preparer that had already laid down part of the
     ready folder would still print it.
     """
     return {

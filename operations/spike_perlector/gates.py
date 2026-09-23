@@ -128,7 +128,7 @@ def _require_content_addressed_reference(
 
 
 def _checked_approval_record(reference: ApprovalRecordReference, payload: bytes) -> dict[str, Any]:
-    """Verify one generic Tyrel approval artifact from its exact stored bytes."""
+    """Verify one generic project-lead approval artifact from its exact stored bytes."""
 
     reference_digest = _require_content_addressed_reference(reference)
     if not isinstance(payload, bytes) or sha256_bytes(payload) != reference_digest:
@@ -150,8 +150,8 @@ class DataGateAuthority:
     Binds its own content-addressed scope, the same way
     ``ThirdPartyTransmissionApproval`` and ``RunPlanApproval`` below do: the shared
     approval-record contract's own ``data-gate`` action existed for a different
-    question (whether real images ever reach git) and was retired for it (Tyrel,
-    2026-08-09); this module's question — whether private-register material may be
+    question (whether real images ever reach git) and was retired for it;
+    this module's question — whether private-register material may be
     disclosed under a checked, current, content-addressed policy — is unrelated and
     still stands, now carried entirely by this class rather than by a shared action.
 
@@ -251,7 +251,7 @@ class DataGateAuthority:
         # governed condition that actually failed.  Reading `.relative_path` first
         # turned the missing case into an AttributeError wearing a refusal's clothes:
         # it still failed closed, but it reported a Python attribute rather than the
-        # absence of Tyrel's approval, which is the one fact a reader needs here.
+        # absence of the project lead's approval, which is the one fact a reader needs here.
         if not isinstance(approval_reference, ApprovalRecordReference):
             raise DisclosureRefusal(
                 "data-gate approval is missing; real input requires a current "
@@ -291,7 +291,7 @@ class DataGateAuthority:
 
 @dataclass(frozen=True, slots=True)
 class ThirdPartyTransmissionApproval:
-    """A typed vendor/pages approval loaded through a Tyrel approval artifact."""
+    """A typed vendor/pages approval loaded through a project-lead approval artifact."""
 
     vendor: str
     candidate_artifact_digest: str
@@ -394,9 +394,8 @@ class ThirdPartyTransmissionApproval:
 
         # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
         # gives: reading `.relative_path` off a missing reference reports a Python
-        # attribute where the governed condition is the absence of Tyrel's approval.
-        # That fix reached one of four loaders; this is another. Found by the Opus
-        # read of this branch.
+        # attribute where the governed condition is the absence of the project
+        # lead's approval. That fix reached one of four loaders; this is another.
         if not isinstance(approval_reference, ApprovalRecordReference):
             raise DisclosureRefusal(
                 "third-party transmission approval is missing; this run requires a current "
@@ -424,7 +423,7 @@ class ThirdPartyTransmissionApproval:
 
 @dataclass(frozen=True, slots=True)
 class RunPlanApproval:
-    """A session declaration plus Tyrel's narrow reserved-scope approval."""
+    """A session declaration plus the project lead's narrow reserved-scope approval."""
 
     protocol_sha256: str
     manifest_sha256: str
@@ -674,18 +673,17 @@ class RunPlanApproval:
         approval_reference: ApprovalRecordReference,
         read_bytes: Callable[[str], bytes],
     ) -> "RunPlanApproval":
-        """Load Tyrel's approval and the session's declaration through one reader.
+        """Load the project lead's approval and the session's declaration through one reader.
 
-        Tyrel's artifact binds only the reserved scope. The separate declaration
+        The approval artifact binds only the reserved scope. The separate declaration
         artifact makes the engineering fields durable because the run checks both at
         one boundary, but nothing in this loader treats those fields as human-approved.
         """
 
         # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
         # gives: reading `.relative_path` off a missing reference reports a Python
-        # attribute where the governed condition is the absence of Tyrel's approval.
-        # That fix reached one of four loaders; this is another. Found by the Opus
-        # read of this branch.
+        # attribute where the governed condition is the absence of the project
+        # lead's approval. That fix reached one of four loaders; this is another.
         if not isinstance(approval_reference, ApprovalRecordReference):
             raise DisclosureRefusal(
                 "run-plan approval is missing; this run requires a current approval-record artifact"

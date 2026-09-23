@@ -80,8 +80,8 @@ from .process import ProcessLauncher, ServerProcess
 from .residency import ResidencyHandle, ResidencyLease
 
 # The roster's two hybrid Mamba/attention checkpoints, named by the exact
-# `config/models-real.toml` repository they are pinned at (hostile review
-# 2026-09-06 item L) -- never by role.  A role name (`attestator_1`,
+# `config/models-real.toml` repository they are pinned at -- never by role.
+# A role name (`attestator_1`,
 # `designator_structure`, `perlector`, ...) is reused across this package's
 # whole test suite as a generic fixture identifier for chairs that have
 # nothing to do with these checkpoints, so keying this refusal on role would
@@ -593,7 +593,7 @@ class ServingManager:
             # is this interpreter.  Launch another one under the default
             # inspector and the pin passes against an environment nothing ran
             # in, and `runtime_packages.observed` in the launch audit becomes a
-            # measurement of the wrong Python (GOVERNANCE 6, GOVERNANCE 10).
+            # measurement of the wrong Python (principle 6, principle 8).
             #
             # Compared as exact strings rather than resolved paths on purpose:
             # two virtualenvs routinely symlink the same real interpreter while
@@ -854,7 +854,7 @@ class ServingManager:
             # louder of the two outcomes, because the retained lease then makes
             # every following start refuse by name, whereas an interrupt that
             # unwound past a handler would leave the stop failure in a
-            # traceback nobody stores (GOVERNANCE 2).
+            # traceback nobody stores (principle 2).
             cleanup_error = self._attempt_cleanup(process, endpoint)
             if cleanup_error is not None:
                 raise ServiceStopError(
@@ -937,7 +937,7 @@ class ServingManager:
             # `ServerProcess` implementation that raises there arrives here as
             # it stands — and `str()` of an exception raised with no arguments
             # is the empty string, which would report an unstopped child as
-            # `VLLM_STOP_FAILED: ` and nothing else (GOVERNANCE 2).
+            # `VLLM_STOP_FAILED: ` and nothing else (principle 2).
             raise ServiceStopError(f"{type(error).__name__}: {error}") from error
         else:
             self._active = None
@@ -1050,8 +1050,7 @@ class ServingManager:
         # is what tells those from a refused connection -- recording every one
         # of them as refused had a timed-out start reported as "connection
         # refused ... raising startup_timeout_seconds is unlikely to help",
-        # which is the opposite of the advice a timeout deserves (CodeRabbit on
-        # PR #117).
+        # which is the opposite of the advice a timeout deserves.
         endpoint_state: str | None = None
         # Whether the log's loading marker moved while this start was waited
         # on. A marker anywhere in the retained tail says loading was observed
@@ -1402,7 +1401,7 @@ class ServingManager:
         The stop failure is returned rather than raised or suppressed: an
         unknown still-live child is not secondary to the readiness or publisher
         problem that exposed it, and both facts have to reach the one refusal
-        the registry raises (GOVERNANCE 2).
+        the registry raises (principle 2).
         """
 
         try:
@@ -1504,7 +1503,7 @@ class ServingManager:
         never mentions that it died of CUDA out-of-memory; refusing with only
         the launch failure hides a child that may still hold the card. Both go
         in one message, because the registry raises one refusal and whatever is
-        not in it is not anywhere (GOVERNANCE 2).
+        not in it is not anywhere (principle 2).
         """
 
         error_code = getattr(error, "code", type(error).__name__)
@@ -1631,7 +1630,7 @@ def assert_no_discoverable_local_env(*, directory: str | Path | None = None) -> 
     exactly what an owned vLLM subprocess inherits when
     :class:`operations.serving.process.PopenServerProcess` launches it
     without an explicit ``cwd``. A file such as ``.env`` or ``local.env``
-    sitting there is exactly the kind of side channel hard rule 6 exists to
+    sitting there is exactly the kind of side channel principle 6 exists to
     catch: nothing in this package's config-inputs sealing or launch audit
     would ever see a value it silently injected (a Hub token enabling a
     network fetch the real path forbids, a proxy, an engine flag), because
@@ -2038,7 +2037,7 @@ def _redacted(text: str) -> str:
     and rejects anything carrying `.`, `:`, `/`, `\\` or `@` as ordinary path
     and URL punctuation -- so `token=hf_...`, `{"token":"eyJ..."}` and a
     tab-separated field went through unchanged although the bare value would
-    have been caught (CodeRabbit on PR #117). Three passes now: the name-bound
+    have been caught. Three passes now: the name-bound
     forms first, because `models.looks_like_credential_field` answers for a
     *name* that names itself a secret and no shape test can catch a JWT that
     looks like a dotted path; then `Bearer`, whose scheme names the secret
@@ -2190,7 +2189,7 @@ def _watchdog_timeout(
     # In bytes, because that is what the limit says and what a journal entry, a
     # pod report and a phone notification actually carry. Slicing the string
     # counted characters, so a non-ASCII tail could be several times the
-    # documented size (CodeRabbit on PR #117). A cut landing mid-character
+    # documented size. A cut landing mid-character
     # decodes to a replacement character rather than raising.
     encoded = tail.encode("utf-8")
     excerpt = encoded[-_WATCHDOG_TAIL_BYTES:].decode("utf-8", errors="replace").strip()

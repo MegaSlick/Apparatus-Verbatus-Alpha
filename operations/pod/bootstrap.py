@@ -232,7 +232,7 @@ def verify_image_contract(
     # What the receipt may honestly say. The last value is not "no credential is
     # needed" -- an SSH remote's key, or a public remote needing nothing, are
     # both outside what reading one config file can establish -- so it says
-    # exactly that instead of a claim this check did not make (GOVERNANCE 10).
+    # exactly that instead of a claim this check did not make (principle 8).
     verified["credential_route"] = (
         "embedded-in-url"
         if embedded_credential
@@ -300,7 +300,7 @@ def _read_pointer_or_refuse(path: Path, repository: Path) -> str:
     worktree with a `.git` file this process cannot read raised a bare
     `OSError`. `checkout_commit` catches only `ImageContractRefusal`, so the
     refusal lost its name and its remedy and the operator saw a traceback
-    while the card billed (CodeRabbit on PR #117).
+    while the card billed.
     """
 
     try:
@@ -1003,7 +1003,7 @@ class SubprocessBootstrapActions:
         the two directories the sync fills -- the wheel cache and the venv --
         and say so in one sentence naming both figures. Without this the
         failure is uv's own ENOSPC part way through a ten-gigabyte download
-        that was already paid for, which is the shape GOVERNANCE 2 forbids: a
+        that was already paid for, which is the shape principle 2 forbids: a
         cost with nothing to show and no named reason.
 
         Measured on the container-local disk deliberately. The preflight's GPU

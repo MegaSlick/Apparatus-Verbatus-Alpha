@@ -2,8 +2,8 @@
 
 This is deliberately not a second implementation of the six words.  It prepares
 small local fixture files, invokes the operator surface, and captures the same
-lines a person sees.  The resulting file is the acceptance artifact Tyrel can
-read without needing a configured provider account.
+lines a person sees.  The resulting file is the acceptance artifact the
+project lead can read without needing a configured provider account.
 """
 
 from __future__ import annotations
@@ -164,10 +164,10 @@ def make_transcript(output: str | Path) -> Path:
         surface.upload(source, sealed_manifest=manifest)
 
         _heading(lines, "4. run — named pages and acts, resumable evidence")
-        surface.run(run_id="tyrel-dry-run")
+        surface.run(run_id="acceptance-dry-run")
 
         _heading(lines, "5. export — local evidence bundle and reconciliation")
-        surface.export(run_id="tyrel-dry-run")
+        surface.export(run_id="acceptance-dry-run")
 
         _heading(lines, "6. close — separate confirmation and captured cost")
         if launched.record is None:  # defensive: the surface would already have refused.
@@ -187,7 +187,7 @@ def make_transcript(output: str | Path) -> Path:
 
 def _request() -> PodCreateRequest:
     return PodCreateRequest(
-        name="tyrel-dry-run",
+        name="acceptance-dry-run",
         gpu_type="fake-48gb",
         image="registry.example/verbatus@sha256:" + "a" * 64,
         volume_id="fixture-volume",

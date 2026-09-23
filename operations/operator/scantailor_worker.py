@@ -186,7 +186,7 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         if entry.attrib["id"] not in image_paths:
             raise _refuse("page-split geometry names an unknown image")
         if entry.attrib["id"] in claimed_images:
-            # Governance forbids selecting among competing geometries for one image.
+            # Principle 1 forbids selecting among competing geometries for one image.
             raise _refuse("page-split offers more than one geometry for the same image")
         claimed_images.add(entry.attrib["id"])
         image = image_paths[entry.attrib["id"]]
@@ -285,7 +285,7 @@ def _open_output_dir(output_dir: Path) -> int:
     only after the child has exited, so it cannot take that write back. The
     descriptor opened here is the folder that passes the identity check and the
     folder the document is created in, with nothing in between that resolves a
-    name again. Found by CodeRabbit.
+    name again.
     """
 
     try:

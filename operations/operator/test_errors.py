@@ -173,7 +173,7 @@ def test_a_detail_too_long_to_keep_says_it_was_cut() -> None:
     """This text reaches a person through `render`, never a stored receipt.
 
     A rendered fragment that reads as a whole diagnostic is the partial result
-    GOVERNANCE 2 requires to be visibly partial.
+    principle 2 requires to be visibly partial.
     """
 
     rendered = errors.sanitize_detail("x" * 5000)

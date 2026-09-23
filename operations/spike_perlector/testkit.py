@@ -126,7 +126,7 @@ def evaluation_act(
         # `is None`, not truthiness: an explicitly supplied empty tuple means a
         # caller wants an act with no witnesses, and `or` silently handed it the
         # default witness instead — so a test written to prove behaviour with no
-        # Testimonia was proving it with one. Found by CodeRabbit.
+        # Testimonia was proving it with one.
         testimonia=testimonia
         if testimonia is not None
         else (
@@ -207,7 +207,7 @@ def run_plan_approval_for(
     profile,
     sample_accounting: PrivateSampleAccounting | None = None,
 ) -> RunPlanApproval:
-    """Build a test-only artifact shaped like Tyrel's real declared run-plan approval."""
+    """Build a test-only artifact shaped like the project lead's real declared run-plan approval."""
 
     accounting = (
         PrivateSampleAccounting.all_scoreable(manifest)

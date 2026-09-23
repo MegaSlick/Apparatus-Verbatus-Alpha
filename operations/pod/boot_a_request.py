@@ -1,4 +1,4 @@
-"""The Boot A drill, rendered as a request Tyrel can read and authorize.
+"""The Boot A drill, rendered as a request the project lead can read and authorize.
 
 `operations/pod/README.md`'s boot plan splits the first live demonstration in
 two. Boot A is the drill: the cheapest reviewed card, a hard lifetime of
@@ -10,12 +10,13 @@ after how long, and whether the pod-scoped key holds delete and billing
 rights -- for minutes of a cheap card.
 
 This module renders that request from the sealed spend policy and the
-reviewed placement table, so what Tyrel reads is derived from the same
-numbers the launch will enforce, not retyped beside them. **It authorizes
-nothing.** GOVERNANCE 8 and CLAUDE.md hard rule 2 are one gate per exact
-action in the session it happens in; this text is what that gate needs in
-order to be given or refused. An unconfigured policy renders a refusal that
-names what is missing, never a request with blanks in it.
+reviewed placement table, so what the project lead reads is derived from the
+same numbers the launch will enforce, not retyped beside them. **It
+authorizes nothing.** Starting a pod needs the project lead's permission for
+that exact action in that exact session (AGENTS.md, "Who decides"); this text
+is what that permission decision needs in order to be given or refused. An
+unconfigured policy renders a refusal that names what is missing, never a
+request with blanks in it.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ bound, short enough that a stuck close costs minutes, not hours.
 armer separated its two waits the code did not deliver it: the arming bound's
 clock started when ``create`` returned, so the pull was spent out of the poll
 bound rather than beside it, and a pod that pulled for six minutes was
-terminated for a report it was about to write (hostile review F056).
+terminated for a report it was about to write.
 
 The armer now waits for the container first
 (`controller_armer.CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS`) and only then
@@ -178,7 +179,7 @@ def pod_request(
     hard_deadline: str | None = None,
     volume_mount_path: str = BOOT_A_VOLUME_MOUNT_PATH,
 ) -> dict[str, object]:
-    """The `cli.py create --request` JSON for the drill, placeholders where Tyrel decides.
+    """The `cli.py create --request` JSON for the drill, placeholders where the project lead decides.
 
     The report paths carry no launch token: `launch._bind_report_path_to_launch`
     folds it into both the timer's own ``--report-path`` and the nested
@@ -262,8 +263,8 @@ def _arming_window_lines(lifetime: int) -> list[str]:
     """State the armer's two waits, and their sum against the drill's own lifetime.
 
     Derived from the armer's own constants rather than retyped beside them, for
-    the same reason every other number in this document is: a request Tyrel
-    reads has to say what the launch will actually do.  The two bounds are
+    the same reason every other number in this document is: a request the
+    project lead reads has to say what the launch will actually do.  The two bounds are
     separately clamped down to whatever the lease has left, so a sum larger
     than the lifetime does not overrun it -- it silently eats the second wait,
     which is the one that decides whether anything arms.  That is worth a
@@ -363,7 +364,7 @@ def _render(
         lines += [f"- {obstacle}" for obstacle in obstacles]
         lines += [""]
     lines += [
-        "## What only Tyrel supplies",
+        "## What only the project lead supplies",
         "",
         "- In-session permission for this exact drill (and, separately, for Boot B).",
         "- The pinned image digest, the network volume id and the repository commit",

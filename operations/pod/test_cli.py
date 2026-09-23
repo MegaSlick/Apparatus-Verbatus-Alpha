@@ -119,7 +119,7 @@ def test_a_missing_armer_factory_refuses_in_this_surface_s_own_record(
     stderr, in a shape nothing that reads this command's records can parse.
     Every other refusal here is `{"state": "refused", "green": false,
     "detail": ...}` on stdout, and a refusal only argparse can explain is a
-    refusal half lost (GOVERNANCE 2).
+    refusal half lost (principle 2).
 
     Nothing is loaded before the check: `--provider-factory` below names a
     module that does not exist, and the refusal is still this one.

@@ -367,8 +367,8 @@ def test_a_partial_run_never_exits_zero_and_the_report_names_its_state(
     # because `pod_timer` reads an early child exit as `completed-early` and
     # closes the pod with a non-green timer report. A run that did *not* finish
     # returns at once instead: holding a rented card to the deadline for a
-    # halted or failed run bills for nothing (GOVERNANCE 8, hard rule 2), which
-    # is the same close the red-bootstrap branch already takes.
+    # halted or failed run bills for nothing, so it is never held; this is the
+    # same close the red-bootstrap branch already takes.
     holding = state == "held"
     assert report["held_to_hard_deadline"] is holding
     hold_path = ws.volume / "pod-run-report-hold.json"
@@ -383,7 +383,7 @@ def test_a_partial_run_never_exits_zero_and_the_report_names_its_state(
 def test_a_root_the_policy_names_and_this_machine_lacks_is_in_the_run_report(
     tmp_path: Path,
 ) -> None:
-    """GOVERNANCE 2: the narrowing is recorded, not only the approval.
+    """Principle 2: the narrowing is recorded, not only the approval.
 
     The shipped policy names two roots and no machine has both -- a pod has no
     local ``private/``, a laptop has no mounted volume -- so the gate almost
@@ -806,7 +806,7 @@ def test_a_refusal_report_write_failure_is_named_not_swallowed(
     """``_write_refusal`` used to return ``None`` whether it wrote the report or
     hit an ``OSError`` -- ``_refuse`` could not tell, so a run that refused
     *and* failed to leave its durable reason exited exactly like a run that
-    refused cleanly. GOVERNANCE 2 binds the write failure too: it must be
+    refused cleanly. Principle 2 binds the write failure too: it must be
     named on stderr, and the refusal exit code stays exactly what it was.
     """
 
@@ -894,7 +894,7 @@ def test_refuses_a_data_gate_policy_outside_the_repository(
 def test_refuses_before_bootstrap_when_the_policy_does_not_admit_the_volume(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The shipped policy names ``private/`` only; the volume is Tyrel's to list.
+    """The shipped policy names ``private/`` only; the volume is the project lead's to list.
 
     Refused here, before a single model is fetched on a billing card, and the
     refusal says whose decision the missing root is.
@@ -942,7 +942,7 @@ def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(
 def test_the_pre_bootstrap_refusal_names_a_root_this_machine_did_not_have(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """GOVERNANCE 2, on the path where nothing else gets to say it.
+    """Principle 2, on the path where nothing else gets to say it.
 
     This gate runs before the bootstrap's own mount diagnostic, so on a pod
     with the volume unmounted it is the only thing an operator reads. Naming
@@ -972,7 +972,7 @@ def test_actions_that_cannot_be_built_are_a_refusal_not_a_started_run(
 
     Nothing about that reaches the orchestrator, and the run report has to say
     refused: a run tree that never started must never be readable as one that
-    finished (GOVERNANCE 2).
+    finished (principle 2).
     """
 
     ws = _prepared(tmp_path)
@@ -1047,7 +1047,7 @@ def test_a_liveness_tick_carries_the_child_pid_and_the_moment_it_was_last_seen(
     """A stale tick reading `alive: true` is how a SIGKILLed pod_run looks.
 
     The last write of a run that ended normally says `alive: false`, so its
-    absence beside a `running` report is the signal (GOVERNANCE 2, F059).
+    absence beside a `running` report is the signal (principle 2).
     """
 
     ws = _prepared(tmp_path)
@@ -1463,7 +1463,7 @@ def test_a_report_path_that_is_the_mount_itself_is_dropped_not_a_traceback() -> 
 
     A receipt carrying such a path made the sibling derivation raise
     `ValueError: PurePosixPath('.') has an empty name`, so `fetch-run` ended in
-    a traceback instead of in a key list (CodeRabbit on PR #117). It is dropped
+    a traceback instead of in a key list. It is dropped
     like any other path this verb could not fetch.
     """
 
@@ -1495,8 +1495,8 @@ def _launch_receipt(path: Path, token: str, *, volume_id: str = "vol-1") -> Path
 
     The action's own data sits under `payload`, never at the top level. This
     fixture said otherwise until 2026-09-15, so the console's derivation could
-    read a key no real receipt carries and the suite stayed green over it
-    (CodeRabbit on PR #117); `test_the_console_derives_those_keys_from_a_real_
+    read a key no real receipt carries and the suite stayed green over it;
+    `test_the_console_derives_those_keys_from_a_real_
     stored_receipt` below builds one through the store itself.
     """
 
@@ -1531,7 +1531,7 @@ def test_the_console_derives_those_keys_from_a_real_stored_receipt(tmp_path: Pat
     `ReceiptStore.write` wraps every action under `payload`, so a derivation
     reading a top-level `request` refused every genuine launch receipt with
     "does not carry a readable launch request" -- the one failure shape this
-    flag exists to prevent, on the flag itself (CodeRabbit on PR #117).
+    flag exists to prevent, on the flag itself.
     """
 
     from operations.operator.records import ReceiptStore
@@ -1825,7 +1825,7 @@ def test_the_pod_dependency_group_carries_exactly_the_recipe_pins() -> None:
     assert observed == _recipe_pins()
 
 
-# --- the records the report names are audited at close (CodeRabbit, PR #117) ----
+# --- the records the report names are audited at close ----
 
 
 def _run_with(ws: Workspace, runner: RecordedRunner) -> dict:

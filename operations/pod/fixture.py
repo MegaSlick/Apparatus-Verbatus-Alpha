@@ -66,7 +66,7 @@ SCRUBBED = "SCRUBBED"
 # a recorded string is decoded with errors="replace" and keeps whatever NUL
 # bytes it carried, so a body echoing NUL + `decimal:` + number-shaped
 # characters + NUL would be rewritten from a JSON string into a bare number
-# -- evidence altered with no record of it (GOVERNANCE 4).  A fresh nonce
+# -- evidence altered with no record of it (principle 4).  A fresh nonce
 # per line closes that: the mark a body would have to wear is chosen after
 # the body was read, and is never reused.
 _DECIMAL_MARK = "\x00decimal:"
@@ -100,7 +100,7 @@ class FixtureRecorder:
         self.now = now
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Append, never truncate: a second launch that names the same file adds
-        # to the evidence rather than erasing the first's (GOVERNANCE 4).
+        # to the evidence rather than erasing the first's (principle 4).
         descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             # The 0600 above is the *creation* mode and says nothing about a
@@ -196,7 +196,7 @@ class RecordingTransport:
         ``Exception`` and reports ``PROVIDER_FAILURE`` with no pod identity
         and no lease, when in fact a pod was created and is now billing
         unleashed. So a recorder failure is caught here, named loudly on
-        stderr (GOVERNANCE 2: nothing is lost silently), and never allowed to
+        stderr (principle 2: nothing is lost silently), and never allowed to
         stand in for the provider's own exception.
         """
 

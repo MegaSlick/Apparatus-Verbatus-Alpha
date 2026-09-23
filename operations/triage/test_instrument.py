@@ -599,7 +599,7 @@ def test_every_selected_pair_yields_exactly_one_evidence_record():
 
     A verdict is only as honest as the set it belongs to: an instrument that quietly
     emitted fewer records than it selected pairs would report a corpus with fewer
-    candidates than it actually had, and nothing downstream could tell (GOVERNANCE 2).
+    candidates than it actually had, and nothing downstream could tell (principle 2).
     """
     config = instrument.load_config()
     proxies = frames(*[(256, 192)] * 5)
@@ -798,7 +798,7 @@ def test_a_swapped_evidence_record_is_refused_even_though_the_count_is_right():
     """Conservation is set equality, not a tally.
 
     Two records for one pair and none for another satisfies any count while leaving a
-    candidate pair unexamined — and an unexamined pair is exactly the thing GOVERNANCE 2
+    candidate pair unexamined — and an unexamined pair is exactly the thing principle 2
     refuses to let a successful status hide.
     """
     config = instrument.load_config()

@@ -111,7 +111,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ErrorCode.SPEND_POLICY_UNCONFIGURED: ErrorCopy(
         "The reviewed spend policy is intentionally unconfigured.",
         "It has no approved ceilings, balance floor, or alert threshold, so Verbatus will not display it as configured.",
-        "Keep this policy unconfigured until Tyrel supplies a reviewed policy; no provider was contacted and nothing was changed.",
+        "Keep this policy unconfigured until the project lead supplies a reviewed policy; no provider was contacted and nothing was changed.",
     ),
     ErrorCode.SPEND_POLICY_UNREADABLE: ErrorCopy(
         "Verbatus could not read the reviewed spend policy.",
@@ -263,7 +263,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "held, refused or unresolved act is listed above with its recorded reason, and "
         "nothing here calls the run complete.",
         "Read the recorded reasons, open the run tree read-only with `verbatus review`, and "
-        "decide with Tyrel what happens next; a hold is resolved only by a new authorized "
+        "decide with the project lead what happens next; a hold is resolved only by a new authorized "
         "run over the same sealed source. Nothing was started or charged; this is safe.",
     ),
     ErrorCode.EXPORT_UNRECONCILED: ErrorCopy(
@@ -272,7 +272,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "not add up to a total that can be checked, so no bundle was made and nothing was "
         "called complete.",
         "Open the run tree read-only with `verbatus review` and check it against the sealed "
-        "source with Tyrel; this is not a corrupted export, it is a record that cannot back "
+        "source with the project lead; this is not a corrupted export, it is a record that cannot back "
         "up its own claim. Nothing was started or charged; this is safe.",
     ),
     ErrorCode.CLOSE_NOTHING: ErrorCopy(
@@ -474,7 +474,7 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     it is saved would discard the one copy of the diagnostic that exists
     anywhere. Calling this anywhere but `render` is a second spelling of one
     idea, and for a persist site it is worse than redundant: it can throw away
-    evidence GOVERNANCE 2 requires to still be visibly there.
+    evidence principle 2 requires to still be visibly there.
 
     `maximum` stays generous rather than terminal-width-sized: a workspace
     nested inside a synced cloud-drive folder can easily produce a receipt
@@ -482,7 +482,7 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     silently break the "preserve this message and its saved receipt path"
     instruction most of these error codes give. Where the cut still happens it
     is named, because a rendered fragment that reads as a whole diagnostic is
-    exactly the partial result GOVERNANCE 2 requires to be visibly partial.
+    exactly the partial result principle 2 requires to be visibly partial.
     """
 
     # Control characters become single spaces; ordinary spaces are preserved.
