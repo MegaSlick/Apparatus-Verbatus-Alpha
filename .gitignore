@@ -35,5 +35,3 @@ private/*
 !private/README.md
 scriptorium/*
 !scriptorium/README.md
-
-# cleanroom/ is retired; CI fails if anything is committed there.
