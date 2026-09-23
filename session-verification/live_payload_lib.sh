@@ -27,17 +27,26 @@ worker_uid() {
 }
 
 worker_processes_remain() {
-  local uid="$1" status
-  /usr/bin/pgrep -u "$uid" >/dev/null 2>&1
-  status=$?
-  case "$status" in
-    0) return 0 ;;
-    1) return 1 ;;
-    *)
-      printf 'worker cleanup failed: pgrep for uid %s returned status %s\n' "$uid" "$status" >&2
-      return 2
-      ;;
-  esac
+  local uid="$1" state states status
+  if states="$(/usr/bin/ps -o stat= -u "$uid" 2>/dev/null)"; then
+    :
+  else
+    status=$?
+    printf 'worker cleanup failed: ps for uid %s returned status %s\n' "$uid" "$status" >&2
+    return 2
+  fi
+  for state in $states; do
+    case "$state" in
+      # Zombies and Linux dead tasks cannot run inference or retain file descriptors.
+      Z*|X*) ;;
+      R*|S*|D*|T*|t*|I*|W*|P*) return 0 ;;
+      *)
+        printf 'worker cleanup failed: ps for uid %s returned unknown state %q\n' "$uid" "$state" >&2
+        return 2
+        ;;
+    esac
+  done
+  return 1
 }
 
 wait_for_worker_exit() {

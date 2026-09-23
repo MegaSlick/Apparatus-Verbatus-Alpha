@@ -359,8 +359,18 @@ fi
   printf 'expected timeout status 124, got %s\n' "$status" >&2
   exit 1
 }
-if kill -0 "$escaped_pid" 2>/dev/null; then
-  printf '%s\n' 'detached worker survived UID cleanup' >&2
+if worker_processes_remain "$(/usr/bin/id -u verbatus-worker)"; then
+  printf '%s\n' 'a non-zombie worker survived UID cleanup' >&2
+  exit 1
+else
+  worker_state=$?
+fi
+[[ "$worker_state" -eq 1 ]] || {
+  printf 'worker liveness query failed with status %s\n' "$worker_state" >&2
+  exit 1
+}
+if /usr/bin/readlink "/proc/$escaped_pid/fd/1" >/dev/null 2>&1; then
+  printf '%s\n' 'escaped worker retained stdout after UID cleanup' >&2
   exit 1
 fi
 '''
