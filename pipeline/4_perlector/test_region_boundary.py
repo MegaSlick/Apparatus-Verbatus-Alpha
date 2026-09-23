@@ -93,7 +93,7 @@ def test_a_region_bound_to_its_actual_exemplar_input_verifies(real_region):
 def test_perlector_refuses_a_tampered_designator_region_provenance(real_region, monkeypatch):
     """The mirror of `test_perlector_refuses_a_tampered_testimonium_model_provenance`
     (pipeline/orchestrator/test_orchestrator_acceptance.py), one join earlier: a
-    region's own GOVERNANCE-6 provenance must be validated before the Perlector
+    region's own principle 6 provenance must be validated before the Perlector
     treats it as the basis for a real reading, exactly as
     pipeline/3_attestatores/run.py::proposed_regions already validates the
     identical artifact kind before showing it to a witness."""
@@ -652,7 +652,7 @@ def test_a_non_attempted_page_testimonium_may_not_retain_a_provider_response(rea
     Stripping the image evidence satisfies the presented/observed/inputs rule,
     so without this refusal the record passes while still naming retained
     response bytes outside its own input set. Downstream coverage then reads a
-    served chair as a non-attempt (GOVERNANCE 2).
+    served chair as a non-attempt (principle 2).
     """
     context, _ = real_region
     proposals = perlector.sealed_proposal_regions(context)

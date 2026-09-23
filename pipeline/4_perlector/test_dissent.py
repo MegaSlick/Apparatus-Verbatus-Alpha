@@ -450,7 +450,7 @@ def test_a_completed_reading_outcome_carrying_no_text_at_all_is_unknown_not_a_re
     retained payload, and a witness may genuinely hold one that is not text. So
     the chair is recorded `compared: "unknown"` with the fact named, exactly as
     a structured payload is -- visible, uncounted toward the floor, and neither
-    guessed at nor dropped (GOVERNANCE 2). Pinned separately from the structured
+    guessed at nor dropped (principle 2). Pinned separately from the structured
     case because an absent payload and an object payload are different records
     reaching the same branch, and only one of them was ever exercised here.
     """

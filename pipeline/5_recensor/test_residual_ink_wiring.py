@@ -246,7 +246,7 @@ def test_the_residual_ink_check_refuses_page_bytes_it_did_not_verify(tmp_path):
     and returns a different page on the second read of the same path. Before the
     digest check below, this produced `flagged: False` for both pages of the
     real fixture over pixels nobody verified -- a measurement recorded as a pass
-    without having been made (GOVERNANCE 10)."""
+    without having been made (principle 8)."""
     real = _built_through_designator(tmp_path)
 
     class RacingTree:

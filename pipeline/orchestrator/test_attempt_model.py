@@ -474,7 +474,7 @@ def test_a_whole_second_pass_is_still_available_on_a_run_that_was_not_reread(tmp
     """The rule above bounds the whole pass; it does not remove it.
 
     A run where nobody ran a targeted reread can still take every configured chair
-    through a second attempt — the expensive instrument GOVERNANCE 1 says is an
+    through a second attempt — the expensive instrument principle 9 says is an
     acceptable cost — and this is the assertion that closing the reread's
     interaction with it did not close the instrument.
     """

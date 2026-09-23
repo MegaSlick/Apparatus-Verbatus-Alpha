@@ -114,7 +114,7 @@ def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> li
         # and it is real. Cancelling here does not close it completely: a firing
         # in the remaining instructions is caught by the `except` and returns
         # `None`, which understates a finished comparison rather than crashing
-        # one. That is the safe direction of the two. Found by CodeRabbit.
+        # one. That is the safe direction of the two.
         signal.alarm(0)
         return result
     except _ComparisonTimedOut:
@@ -238,7 +238,7 @@ def is_comparable(record: dict[str, Any]) -> bool:
     # view that leaves its markers in, and the guard against that is a notation
     # field on the capability rather than a check this function could make: it
     # sees a string and cannot tell which grammar produced it. Named rather
-    # than assumed away (GOVERNANCE 10). R4 audit, F-X3.
+    # than assumed away (principle 8).
     return isinstance(payload.get("comparison_reported"), str)
 
 

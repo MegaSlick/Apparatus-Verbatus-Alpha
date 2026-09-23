@@ -137,8 +137,8 @@ def _perlector_dissent():
 # fatal, and fatal *after* every admission had already been published. The artifact
 # count is unchanged (42 and 46 below); only the bytes of the admission payloads
 # moved, which is what a deliberate record change looks like here.
-# Re-pinned once more on 2026-08-05: the shipped PDF render target moved from 400 to
-# 300 DPI on Tyrel's instruction, so every PDF-derived page is a different — and
+# The shipped PDF render target moved from 400 to
+# 300 DPI, so every PDF-derived page is a different — and
 # deliberately different — set of pixels. Artifact counts are again unchanged.
 #
 # Re-pinned again the same day for a *comment* in `config/pdf_render.toml`, which is
@@ -149,12 +149,10 @@ def _perlector_dissent():
 # seal behaving correctly — a run records exactly the configuration text it ran under —
 # but it means a documentation-only edit to anything under `config/` lands here.
 #
-# Re-pinned 2026-08-05 for the same reason a third time, this time a comment in
-# `config/recovery.toml`: it still asked Tyrel to confirm which mechanism his "stop at 3"
-# ruling governed, months after ruling #18 answered it (he blessed both, and set the
-# run-level threshold at more than two). A stale question standing in a merged config is
-# how a settled decision gets re-litigated, so the prose was corrected and these two pins
-# moved with it. Nothing about the pipeline's behaviour changed.
+# A comment in `config/recovery.toml` once left it unclear which mechanism the
+# "stop at 3" rule governed; both apply, and the run-level threshold is more than
+# two. The prose was corrected and these two pins moved with it. Nothing about
+# the pipeline's behaviour changed.
 #
 # Moved for the System 09 (Recensor) merge — 42 → 43 and 46 → 47 — for four
 # deliberate, recorded changes, not behavioural drift in the pinned scenarios:
@@ -255,8 +253,7 @@ def _perlector_dissent():
 #
 # **Deliberately not re-pinned.** Re-pinning for macOS would break CI, and picking
 # either platform's bytes decides by accident a question that should be decided on
-# purpose: whether a run's identity binds pixels or bytes. Carried to Tyrel in
-# workbench/raw/stage-prs/THE_ONE_DECISION.md.
+# purpose: whether a run's identity binds pixels or bytes.
 #
 # Re-pinned for the rebase of the System 08 build onto the merged System 09 tree:
 # both movements above are now in one tree, so the counts are 45 (happy) and 49
@@ -644,8 +641,8 @@ def _perlector_dissent():
 # that lesson arriving on schedule: the first measurement was taken before the
 # review, and a review that changes a sealed configuration file changes the pins
 # with it.)
-# Re-pinned once more, for `config/hard_failure.toml` alone. Tyrel confirmed the
-# hard-failure cap and declined to re-open its outcome taxonomy, so the file's
+# `config/hard_failure.toml` was re-pinned alone: the hard-failure cap is
+# confirmed and its outcome taxonomy is not reopened, so the file's
 # "PROPOSED, NOT YET APPROVED" header became false and was rewritten to record the
 # ruling. The file is sealed into every run by its bytes (`sealed_config_digests`
 # gained `hard-failure` in the T7 family), so a comment in it moves both scenarios'
@@ -698,7 +695,7 @@ def _perlector_dissent():
 # `expand_sources`; the fixture route these runs take submits none, so the report
 # returns None and no artifact reaches the tree. The pins did move at the merge that
 # landed the report, but for the typed render-origin validator and the page-identity
-# refusal composed in the same commit. Found by CodeRabbit.
+# refusal composed in the same commit.
 #
 # Re-pinned for Unit 10A: adapter names and scopes enter models_digest and
 # config_digest, so the pins bind those provenance fields even though artifact
@@ -734,7 +731,7 @@ def _perlector_dissent():
 # twin (`attempted`, i.e. ATTEMPTED_WITNESS_OUTCOMES) and collapsed a page
 # witness that was genuinely shown pixels and returned an unusable response
 # into the same `presented: {}` fact as a chair never shown an image at all
-# (GOVERNANCE 2). Confirmed live in this exact fixture: attestator_3's page-2
+# (principle 2). Confirmed live in this exact fixture: attestator_3's page-2
 # Testimonium in the "review" scenario, whose sole contributing act (a2's
 # continuation) fails for that chair. Fixed by `page_witness_attempted`
 # (`pipeline/3_attestatores/run.py`), gating page-scope `presented` on
@@ -865,7 +862,7 @@ def _perlector_dissent():
 # `adapter_metadata`). The act-scoped Testimonia already carried both, but they
 # are the compatibility bridge Unit 14 deletes, and the page record is the one a
 # page-scoped occupant actually produces -- so the record holding the integers
-# held no route back to the floats they came from (GOALS 5; ARCHITECTURE
+# held no route back to the floats they came from (goal 4; ARCHITECTURE
 # invariant 3). Two payload fields on the one Chandra page record whose geometry
 # is native; a record whose observations are only the presentation echo reports
 # no conversion, because none happened. No new artifact, no new blob, no
@@ -995,7 +992,7 @@ def _perlector_dissent():
 # retained text departs from the reading. On this very fixture both acts raise
 # two `testimony-diff` flags and the basis named three chairs -- attestator_1
 # agreed with the reading exactly and was recorded as the basis of a flag it
-# did not raise (GOVERNANCE 10, consult §4.7: a fact re-derived over a wider
+# did not raise (principle 8, consult §4.7: a fact re-derived over a wider
 # denominator than its writer counted on). The two producers are now held to
 # the same count. Counts and exits unchanged (happy 97/0, review 106/3); both
 # re-measured twice in independent roots at run id "r".
@@ -1091,7 +1088,7 @@ def _perlector_dissent():
 # attempt, not the page Testimonium's -- `review`'s attestator_3 has a failed a2
 # attempt beside a page-1 Testimonium that read a1 and records `read` -- so the
 # record named a non-reading page Testimonium that had in fact read
-# (GOVERNANCE 10). The reason now names the attempt in that case
+# (principle 8). The reason now names the attempt in that case
 # (`non-reading-act-attempt-<outcome>`) and keeps
 # `non-reading-page-testimonium-<outcome>` for a native page capture, which is
 # the only path where the page record's own attempt supplies it. One string on
@@ -1124,7 +1121,7 @@ def _perlector_dissent():
 # review recovery round fix pass 2 restored was therefore spent on a2 (which
 # `hold_acts` declares should go straight to a hold) for no evidence at all --
 # a witness's own unconfirmed report picking a pipeline action for itself,
-# exactly what GOVERNANCE 3 forbids. Restoring the ink gate removes that
+# exactly what principle 1 forbids. Restoring the ink gate removes that
 # wasted round: a1's recovery request now names its true origin ("the crop may
 # be incomplete", not the coverage-origin phrase, since its own box is equally
 # unconfirmed by ink), and a2 goes directly to held-for-review, without an
@@ -1435,7 +1432,7 @@ def _perlector_dissent():
 # Section D re-pin, and the cause is one line of configuration.
 # `config/decoding.toml` gained a `[structure]` section: the Designator's
 # structure pass runs under its own sealed decoding posture and never under
-# `reading_of_record` (Tyrel, 2026-09-02), and `common/decoding.py` requires the
+# `reading_of_record`, and `common/decoding.py` requires the
 # section rather than treating it as optional, so the shipped file carries it.
 # Every run seals that file's bytes, so its digest moved
 # (aafb4c8bec41e46ed8d1af8f3e9ec4545e8a2a32c6787999327f6068dcdeb0e3 ->
@@ -1647,7 +1644,7 @@ def _perlector_dissent():
 #
 # 1. `length_floor_characters_per_page` added to every truncation `measure`
 #    block -- the floor the signal was judged under, now on the record so a
-#    reader holding the record alone re-derives `length_suspicious` (GOVERNANCE
+#    reader holding the record alone re-derives `length_suspicious` (principle
 #    6). Happy: 4 on `payload.truncation` and 2 on `payload.reproof_truncation`;
 #    review: 6 and 3. Nothing else was added and nothing removed.
 # 2. In the export manifest, the `designator-geometry-calibration` survey gains
@@ -1660,7 +1657,7 @@ def _perlector_dissent():
 # and `config/designator_grouping.toml` both changed bytes -- `self_hash`,
 # `sha256`, and the references that carry them). In the exported `acts.jsonl`
 # every difference is a reference digest: no established text, outcome,
-# category, crop geometry or count moved (GOVERNANCE 5).
+# category, crop geometry or count moved (principle 5).
 # Evidence: the comparison scripts and both run trees were built in this
 # session's scratch and are not retained in Git.
 # Both digests moved again on this branch, and for one reason: the audit
@@ -1671,7 +1668,7 @@ def _perlector_dissent():
 # which is the evidence that this is the same inventory with a changed record
 # shape rather than an artifact appearing or going missing: the two assertions
 # that pin the counts passed while these two failed. No established text,
-# outcome, category, crop geometry or count moved (GOVERNANCE 5); the new field
+# outcome, category, crop geometry or count moved (principle 5); the new field
 # is `null` wherever no re-proof departed from the semi-final, which is every
 # act in the fixture scenarios.
 #
@@ -1701,7 +1698,7 @@ def _perlector_dissent():
 # Everything else below it is a digest cascade (`self_hash`, `sha256` references,
 # `artifact_inventory`, `blob_inventory`, and the manifest/index entries that
 # carry them). No established text, outcome, category, crop geometry or count
-# moved (GOVERNANCE 5); the two count assertions above this comment passed while
+# moved (principle 5); the two count assertions above this comment passed while
 # only the two digest assertions failed.
 # F132 gave the Recensor review its own attempt model (`pipeline/5_recensor/
 # run.py::publish_review`/`current_review`): a review's own recense ordinal is
@@ -2508,7 +2505,7 @@ def file_identities(root: Path) -> dict[str, tuple[int, int]]:
 
     A digest cannot tell a reused artifact from one deleted and rewritten with
     the same bytes, so a test that only compares digests proves the tree is
-    right and says nothing about the claim in its own name (GOVERNANCE 10).
+    right and says nothing about the claim in its own name (principle 8).
     Identity can tell them apart: `RunTree` publishes through a temporary that
     is then `os.link`-ed or `os.replace`-d into place, so every write lands a
     *new* inode, while both reuse paths (`_publish_bytes` on identical bytes,
@@ -3703,7 +3700,7 @@ def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
 
 
 def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happy_run):
-    """Tyrel's ruling on Unit 12's F2, on the principal fixture.
+    """Unit 12's F2 rule, on the principal fixture.
 
     Both acts are marked out on page 1; a2 continues onto page 2, and both page
     witnesses transcribe page 2's whole text. No attachment there can ever be
@@ -3717,7 +3714,7 @@ def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happ
     non-whitespace characters nothing accounted for. Now the observation is kept
     and the verdict is withheld: `shortfall: None`, the reason naming the cause,
     the chairs, the page and the count, restated on the act that spans the page
-    in its review, in the manifest entry, and in the export (GOVERNANCE 2). The
+    in its review, in the manifest entry, and in the export (principle 2). The
     happy path still establishes both acts — this is a visible partial, not a
     hold — and the Perlector gap that would make the measurement real is filed.
     """
@@ -3983,7 +3980,7 @@ def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_bl
     receipt minted and trusted-boundary health recorded — and the Recensor then
     sealed `confirmed-blank`, stating that three chairs had actually and
     independently read the page. The conclusion was true of that white page; the
-    evidence was not, and the same shape over a page with ink is GOALS 1's worst
+    evidence was not, and the same shape over a page with ink is goal 2's worst
     failure arriving as a green run.
 
     So: no response, no reading. Every chair is `not-run`, nothing claims a
@@ -4434,7 +4431,7 @@ def test_a_conservation_residual_the_seal_never_minted_is_refused(tmp_path):
     be caught as unaccounted evidence, because a residual that never became a
     hold leaves no artifact behind. Before this check the run reconciled
     perfectly and exited `complete` over ink the stage itself measured and no
-    crop claimed, which is exactly what GOVERNANCE 2 refuses.
+    crop claimed, which is exactly what principle 2 refuses.
     """
     root = tmp_path / "runs"
     _run_through_designator(root)
@@ -4793,7 +4790,7 @@ def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(ha
 
 
 def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happy_run):
-    """GOALS 3/5: page two retains and audits the pixels a2 contributes there."""
+    """Principle 1 and goal 4: page two retains and audits the pixels a2 contributes there."""
     _, tree = happy_run
     a2 = next(
         act
@@ -5084,7 +5081,7 @@ def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_wit
     records in `pipeline/5_recensor/test_comparability_floor.py`, and the
     arithmetic in `common/contracts/test_contracts_algebra.py`; claiming this
     scenario exercises it would report an instrument that did not run
-    (GOVERNANCE 10).
+    (principle 8).
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "structured-witness")
@@ -5337,7 +5334,7 @@ def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
 def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proof(tmp_path):
     """An accepted reading is not itself evidence that the page was blank.
 
-    Tyrel ruled blank pages ordinary, and also distinguished them from unread ink.
+    Blank pages are ordinary, and distinguished from unread ink.
     The outcome algebra therefore leaves silence unresolved until the Recensor
     retains a blank proof.  Acceptance alone must not manufacture that proof.
     """
@@ -5630,7 +5627,7 @@ def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path)
     reference only where the stage's own derivation has already reached
     `no_readable_text` reads past the Recensor's finding everywhere else, so the
     contradiction resolves in favour of whichever claim the derivation reaches
-    first and leaves no trace of the other (GOVERNANCE 2).
+    first and leaves no trace of the other (principle 2).
     """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
@@ -5862,7 +5859,7 @@ def test_the_run_authority_names_the_commit_the_code_ran_at(tmp_path):
 
 
 def test_a_run_whose_caller_names_no_commit_records_none_rather_than_a_placeholder(tmp_path):
-    """GOVERNANCE 10: not measured is recorded as not measured, never invented."""
+    """principle 8: not measured is recorded as not measured, never invented."""
 
     root = tmp_path / "runs"
     journal = tmp_path / "timings.json"
@@ -5925,7 +5922,7 @@ def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tm
     `repository_commit` used to be reached from the Door's own argv build and
     from the timing journal, so a manual or semi run starting later -- with no
     journal configured, nothing else reads it -- could accept a malformed
-    revision and go on to execute stages (CodeRabbit on PR #117).
+    revision and go on to execute stages.
     """
 
     root = tmp_path / "runs"
@@ -5961,7 +5958,7 @@ def test_a_timing_journal_inside_the_run_tree_is_refused_before_anything_runs(tm
 
     A journal under the run directory would add mutable bytes to an immutable
     tree once per stage invocation and change the byte identity the rerun,
-    resume and restore checks all rest on (CodeRabbit on PR #117).
+    resume and restore checks all rest on.
     """
 
     root = tmp_path / "runs"
@@ -5978,7 +5975,7 @@ def test_a_timing_journal_belonging_to_another_run_is_left_unchanged(tmp_path):
     Nothing checked the identity of an existing journal before appending, so
     the first run's entries were kept while the top-level `run_id` was replaced
     with the second's -- a file attributing one run's stage timings to another
-    (CodeRabbit on PR #117). The conflict is reported on stderr like every other
+    -- the conflict is reported on stderr like every other
     journal fault, because a stopwatch never fails a stage.
     """
 
@@ -6270,7 +6267,7 @@ def _pixels(bounds: dict) -> set[tuple[int, int]]:
 
 
 def test_the_recovery_recrop_actually_widened_the_crop_it_was_asked_for(review_run):
-    """GOVERNANCE 11: "Recovery exists for **completeness and coverage**."
+    """principle 7: "Recovery exists for **completeness and coverage**."
 
     This scenario is the walking skeleton's single proof that bounded recovery
     works, so what it spends the `fallback_recrop` budget on has to be a crop
@@ -6479,7 +6476,7 @@ def test_recovery_stayed_inside_its_budget(review_run):
     # page_level_reread`, 1 + 1 in config/recovery.toml, separately bounded by
     # `absolute_cap = 3`. The exact value, not merely "within the cap": `<= 3`
     # is also satisfied by a budget that silently collapsed to 0 or 1, so it
-    # could not fail for the regression it names (GOVERNANCE 10).
+    # could not fail for the regression it names (principle 8).
     assert len(requests) == 1
     allowed = [request["payload"]["budget_allowed"] for request in requests]
     assert allowed == [2], "the configured recovery budget is one recrop plus one reread"
@@ -6513,7 +6510,7 @@ def test_the_held_act_appears_in_the_review_output_and_forces_partial(review_run
 
 
 def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
-    """GOALS 3: a witness reading is never itself an output. The established text
+    """Principle 1: a witness reading is never itself an output. The established text
     must not equal any witness's reported words *by accident of the fixture*
     either, so the fixture deliberately makes two chairs disagree."""
     _, tree = review_run
@@ -6593,7 +6590,7 @@ def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_v
     assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
     # The counterfactual, on this run's own retained evidence: the exemption is
     # still there and still bites. The retained Testimonium carries the verbatim
-    # report and no derived view (GOVERNANCE 4), and on that record
+    # report and no derived view (principle 4), and on that record
     # `is_comparable` is False — so what lifted it above is the view
     # `dissent_testimonia` builds, not a relaxed rule.
     assert "comparison_reported" not in testimonium["payload"]
@@ -7478,7 +7475,7 @@ def truncated_reading_run(tmp_path_factory):
 
 
 def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_run):
-    """GOALS 2 is accuracy against the ink, and GOVERNANCE 2 refuses a loss hidden
+    """Goal 1 is accuracy against the ink, and principle 2 refuses a loss hidden
     behind a successful status. Text nobody successfully read is neither, so it is
     held — visibly, with the outcome that caused it named in the reason."""
     _, tree = truncated_reading_run
@@ -7540,7 +7537,6 @@ def test_the_recensor_refuses_a_testimonium_from_a_chair_the_run_never_sealed(tm
     came from. So a testimonium under a role `run.json` never named raised the
     completed count: two real witnesses and one stranger read as three, and
     `under_witnessed` came back False on a run that was genuinely short a witness.
-    Found by CodeRabbit on pull request 16.
     """
     root = tmp_path / "runs"
     for program in (

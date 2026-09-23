@@ -345,7 +345,7 @@ def test_a_real_act_crop_cut_off_after_one_line_is_not_caught_by_the_length_sign
     accident of scale (F082), but a 2,400x420 act crop that should carry about
     380 characters and returned its first line's 40 is NOT length-suspicious,
     and under a clean engine stop that act is established `complete`. That is
-    the silent loss GOVERNANCE 2 refuses, left standing because no real ink has
+    the silent loss principle 2 refuses, left standing because no real ink has
     been read through this instrument yet, and it is pinned here so that
     re-deriving the floor against a real run's own Perlectiones must move this
     test rather than pass it quietly. What still catches the same reading is
@@ -413,7 +413,7 @@ def test_the_shared_validator_refuses_a_record_without_its_measure():
 
 
 def test_the_record_carries_the_floor_it_was_judged_under():
-    """GOVERNANCE 6: the record protects the past on its own.
+    """principle 6: the record protects the past on its own.
 
     A consumer holding this block and nothing else -- not the run's
     `config/perlector_protocol.toml` -- has every term of the predicate and can

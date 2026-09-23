@@ -556,7 +556,7 @@ def test_unclaimed_geometry_alone_does_not_publish_a_clean_text_measurement(monk
     `shortfall: False`. On a page whose witness reported no text, nothing then
     measures anything -- and the seed would be published as a clean text
     coverage result, byte-identical to a page whose witnesses were read and
-    covered every character (GOVERNANCE 10). The geometry stays; the text fact
+    covered every character (principle 8). The geometry stays; the text fact
     goes back to unmeasured.
     """
     page = _page_testimonium(outcome="failed")
@@ -1190,7 +1190,7 @@ def test_a_continuation_pages_content_coverage_is_recorded_unmeasured_by_name(mo
     Perlector declared it empty, not because the witnesses covered nothing. The
     count is kept -- it is a real observation and somebody has to be able to act
     on it -- and the verdict is withheld, in the spelling this module already
-    uses for a measurement nobody took (GOVERNANCE 10).
+    uses for a measurement nobody took (principle 8).
     """
     context = _continuation_page_context(monkeypatch, reason="continuation-page-no-act-anchor")
 
@@ -1341,8 +1341,8 @@ def test_a_mixed_pages_uncovered_text_is_measured_beside_a_declared_continuation
     A page where one act starts and another continues through still has a real
     span union -- the starting act's -- so the text outside it was measured, and
     calling that unmeasured would hide a genuine coverage loss behind the
-    neighbouring act's declaration (GOALS 1). The unmeasured half is still
-    recorded beside the verdict rather than dropped (GOVERNANCE 2).
+    neighbouring act's declaration (goal 2). The unmeasured half is still
+    recorded beside the verdict rather than dropped (principle 2).
     """
     context = _mixed_page_context(monkeypatch)
 
@@ -1458,7 +1458,7 @@ def test_every_page_an_act_spans_but_is_not_primary_on_is_restated():
 
 
 def test_a_continuation_page_with_no_finding_at_all_is_restated_as_unavailable():
-    """Absence stays absence: never a measured clean page (GOVERNANCE 10)."""
+    """Absence stays absence: never a measured clean page (principle 8)."""
     regions = [{"payload": {"transform": {"source_page_ordinal": 2}}}]
 
     rows = RUN.testimony_content_for_continuation_pages({}, regions, 1)

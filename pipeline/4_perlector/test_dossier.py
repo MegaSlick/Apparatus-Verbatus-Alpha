@@ -192,7 +192,7 @@ def test_the_sweep_runs_on_every_dossier_the_build_actually_produces(evidence, m
     this module's own code -- so no forged input can trip it, and the only
     honest test of the wiring is that the build really calls it. A future edit
     that drops the call fails here rather than silently removing the one guard
-    standing over GOVERNANCE 3."""
+    standing over principle 1."""
     context, act_id, act_key, regions, testimonia = evidence
     swept = []
     monkeypatch.setattr(
@@ -240,7 +240,7 @@ def test_the_no_order_bearing_sweep_walks_a_pathological_dossier_instead_of_the_
     data -- a dossier carries every Testimonium verbatim -- and it runs on the
     production path, before the digest, on every dossier this build produces.
     Recursing over a deep one raised `RecursionError`: a crash naming nothing,
-    from the guard standing over GOVERNANCE 3.
+    from the guard standing over principle 1.
     """
     nested: object = {"leaf": 1}
     for _ in range(PATHOLOGICAL_DEPTH):
@@ -332,7 +332,7 @@ def test_an_attachment_with_no_edge_deltas_key_at_all_is_refused_not_read_as_emp
     Read through a `{}` default, an attachment that never carried the key
     produced a well-formed dossier saying no chair's ink sat outside the sealed
     proposal for this act -- boundary evidence deleted from the one record a
-    human reads, with nothing downstream able to tell (GOVERNANCE 2). Every
+    human reads, with nothing downstream able to tell (principle 2). Every
     other case here supplies the key explicitly, so only this pins the absence.
     """
     context, act_id, act_key, regions, testimonia = evidence

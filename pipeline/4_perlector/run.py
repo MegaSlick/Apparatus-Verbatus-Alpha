@@ -2,7 +2,7 @@
 
 The fake here proves wiring and nothing else — its text comes from the fixture, so
 it demonstrates exactly zero about reading. What it *does* prove is the shape of
-the record, and the shape is where GOVERNANCE 3 either holds or quietly fails:
+the record, and the shape is where principle 1 either holds or quietly fails:
 
   It verifies the region evidence.        The stage reads the bytes, checks their
                                           digest against the sealed reference, and
@@ -429,7 +429,7 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
     if not candidates:
         raise ContractError(
             f"no approval record names experiment {subject!r}; a nonzero sampling arm "
-            "cannot draw without Tyrel's typed approval record. Expected one record "
+            "cannot draw without the project lead's typed approval record. Expected one record "
             f"under {RECEIPTS_DIR}/ in this run tree with subject_ids "
             f"[{subject!r}], action 'other', and target_version_hash "
             f"{context.config_digest}"
@@ -445,7 +445,7 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
 
     candidate, record = candidates[0]
     # "exclusion" and "salvage-promotion" approve a different governed action entirely
-    # (GOVERNANCE 1); a sampling design is filed under "other" so a record meant to
+    # (principle 9); a sampling design is filed under "other" so a record meant to
     # authorize an exclusion can never double as a sampling approval by coincidence
     # of subject text.
     if record["action"] != "other":
@@ -827,7 +827,7 @@ def sealed_proposal_regions(context) -> list[dict]:
 def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[dict]:
     """Every chair's current testimonium for this act — the latest attempt only.
 
-    Attempts are append-only (GOVERNANCE 4): a failed re-read is recorded beside
+    Attempts are append-only (principle 4): a failed re-read is recorded beside
     the earlier success, never over it. Every record is still read and its
     provenance still validated, but only each chair's latest attempt is returned
     as evidence — the same collapsing `pipeline/5_recensor/run.py::chair_outcomes`
@@ -1583,7 +1583,7 @@ def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) 
 
     Two sources, one per scope, and neither writes anything back to the
     Attestatores record: the copy exists precisely so the retained Testimonium
-    stays the verbatim bytes GOVERNANCE 4 requires while dissent gets something
+    stays the verbatim bytes principle 4 requires while dissent gets something
     it can honestly diff.
 
     * A **page witness** gets this act's anchored, markup-stripped slice of its
@@ -1610,12 +1610,12 @@ def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) 
     It
     would be the wrong one for a future act-scoped chair that expressed
     uncertainty some other way -- its markers would survive and read as
-    disagreement. Named rather than assumed away (GOVERNANCE 10), and it is the
+    disagreement. Named rather than assumed away (principle 8), and it is the
     mirror of the hazard `dissent.is_comparable` already records for page
     witnesses; the fix for both is a notation field on the capability, not a
     silent widening here.
 
-    Nothing selects among witnesses (GOVERNANCE 3, hard rule 8): every chair
+    Nothing selects among witnesses (principle 1): every chair
     that reported gets a view derived from its OWN retained bytes, dissent is
     computed after the reading is fixed, and no view is ever fed back into it.
     """
@@ -1661,7 +1661,7 @@ def verify_region(context, region: dict) -> dict:
     behind on `__cause__` reached nobody: every one of those distinct faults —
     a missing blob, a relabelled act, a transform outside the page — arrived at
     the operator as the same nine words, and the one thing they needed to know,
-    which of them it was, had been thrown away one frame down (GOVERNANCE 2).
+    which of them it was, had been thrown away one frame down (principle 2).
     The boundary's own messages name ordinals and run-tree-relative paths, never
     a submitted filename, so nothing this adds to stderr crosses the logging rule.
     """
@@ -1780,7 +1780,7 @@ def provenance_for(
     would be a serving moment nobody observed.
 
     A reading that *did* happen re-verifies the configured snapshot first, at the
-    moment it is produced rather than once at run creation: GOVERNANCE 6 is about
+    moment it is produced rather than once at run creation: principle 6 is about
     identity when the reading was made, and a receipt captured at serve time and
     copied forward is the weaker claim spec 02 names and refuses.
 
@@ -1790,7 +1790,7 @@ def provenance_for(
     live mode, and it is not an optimisation: `fixture_serving_details` declares
     `fixture://` for an endpoint and `fixture` for a dtype, so minting one
     beside a reading a real engine produced would put a declared fixture value
-    where a measurement belongs (GOVERNANCE 10). Fixture mode passes nothing and
+    where a measurement belongs (principle 8). Fixture mode passes nothing and
     writes the declared receipt exactly as before, which is what leaves its bytes
     where they were.
     """
@@ -1805,7 +1805,7 @@ def provenance_for(
             "would name a serving moment this chair never had"
         )
     regime = {
-        # Tyrel's 2026-07-30 ruling: witness identity travels under a run-level
+        # Ruling: witness identity travels under a run-level
         # toggle, and every Perlectio records the regime it ran under, because a
         # reading's provenance includes what its reader was shown.
         "witness_regime": context.witness_context,
@@ -1911,8 +1911,8 @@ class ResidentChair:
     for exactly that reason.
 
     A `ServiceStopError` propagates. An unverified shutdown of a child this
-    process started is the local form of GOVERNANCE 8's rule that shutdown is
-    verified rather than inferred, and swallowing it in cleanup is how a run
+    process started must be reported: shutdown is verified rather than
+    inferred, and swallowing it in cleanup is how a run
     reports success over a service nobody proved was gone.
     """
 
@@ -1995,7 +1995,7 @@ def retain_chair_bytes(context, data: bytes) -> dict[str, str]:
     """Store one chair response or call record under its own digest.
 
     The client retains before it parses, so this runs before anything has looked
-    at the body: it is the durability half of response-as-arrival (GOVERNANCE 2),
+    at the body: it is the durability half of response-as-arrival (principle 2),
     and it is a property of the client rather than of this stage's publication
     order. Guarded after the seal for the reason `StageContext._write_serving_blob`
     is — this writes into the stage's own blob directory, whose inventory digest
@@ -2068,7 +2068,7 @@ def _live_reader(
     The receipt reference comes back beside the reader because every record this
     pass publishes must name the receipt of the service that actually answered —
     `ChairClient.__enter__` has already read it back through the tree and refused
-    a receipt that no longer names this chair and revision (GOVERNANCE 6).
+    a receipt that no longer names this chair and revision (principle 6).
     """
     factory = serving_factory or default_serving_factory(
         bound_serving_recipes(context, args.serving_recipes_config),
@@ -2192,7 +2192,7 @@ def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
 def _sealed_prior_draft(context, act_id: str, ordinal: int) -> dict[str, Any] | None:
     """This attempt's already-published Pass A, in the shape the arms take it.
 
-    GOVERNANCE 4: the retained draft is this attempt's evidence and is never
+    Principle 4: the retained draft is this attempt's evidence and is never
     overwritten. Reusing it is also the only honest answer available — the bytes
     on disk are what the interrupted attempt actually produced, and a second
     live Pass A would answer differently — so a resumed act pays for the arms it
@@ -2211,7 +2211,7 @@ def _sealed_prior_draft(context, act_id: str, ordinal: int) -> dict[str, Any] | 
     can never come from another model, revision or sealed configuration. What is
     left is a same-configuration, different-session pairing, and the alternative
     — re-asking Pass A to keep the pair inside one session — is the overwrite
-    GOVERNANCE 4 forbids. Whether the record should also *say* it is such a pair
+    Principle 4 forbids. Whether the record should also *say* it is such a pair
     is a change to a closed payload shape, and is not decided here.
     """
     identifier = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
@@ -2418,7 +2418,7 @@ _PERLECTIO_FIELDS: Final = frozenset(
 # on the published Perlectio. The reader answers the same way on an instrument
 # call as on the establishing one, Lectio nuda is the instrument ARCHITECTURE
 # names for telling a reader that reads ink from one that agrees with witnesses
-# -- so a doubt reported there is a measurement -- and GOVERNANCE 2 says a
+# -- so a doubt reported there is a measurement -- and principle 2 says a
 # result is not lost quietly (the independent review of 2026-09-11).
 _LECTIO_NUDA_FIELDS: Final = frozenset(
     {
@@ -3085,7 +3085,7 @@ def _assessed(result: dict[str, Any], *, text: str) -> dict[str, Any]:
     width, an unknown confidence -- becomes a `malformed` record carrying the
     refusal as its problem, with empty layers: the fault stays visible where a
     reader would look for the doubt, and never becomes an empty confident list
-    (independent audit of 2026-09-10, F2; GOVERNANCE 10).
+    (audit finding F2; principle 8).
     """
     report = result.get("assessment")
     if report is None:
@@ -4112,7 +4112,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # the second reading's bytes differ, the store refuses the collision
             # (`IncompatibleReuse`), and the run ends loudly one act into a
             # resume. The act is already recorded, so the honest resume is to
-            # leave it recorded and read the rest — GOVERNANCE 4, evidence is
+            # leave it recorded and read the rest — principle 4, evidence is
             # never overwritten. Counted apart from `read`, because this
             # invocation did not read it and a tally that said otherwise would be
             # this pass measuring work it did not do.
@@ -4128,7 +4128,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # a live pass answering a declared act is a misconfiguration knowable
         # from the fixture and the act key alone, and this stage must refuse
         # while the tree is still exactly as this invocation found it --
-        # GOVERNANCE 10 names exactly this override.
+        # Principle 8 names exactly this override.
         declared_failure = declared_reading_failure(context, act["act_key"])
         if serving_mode == "live" and declared_failure is not None:
             raise ContractError(
@@ -4154,7 +4154,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # held here, explicitly, naming the retained evidence: the run
             # resumes and reads every other act, and the Recensor routes this
             # one to review rather than the whole run dying on a reuse nobody
-            # can clear. GOVERNANCE 2 — visibly partial, never silently absent.
+            # can clear. Principle 2 — visibly partial, never silently absent.
             #
             # Named by digest-checked reference and not only in prose, so the
             # reader routed here reaches the bytes instead of rebuilding an
@@ -4836,7 +4836,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 # stopped was dropped entirely, so a re-proof cut off mid-emission
                 # could replace established text while the record still read
                 # `complete` (ARCHITECTURE: "truncation is a failure, not an
-                # output"; GOVERNANCE 10).
+                # output"; principle 8).
                 #
                 # Pass C may only ever make this worse -- see
                 # `_audited_truncation`.
@@ -4873,7 +4873,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     # disagrees with it -- so a re-proof that returned "   "
                     # sealed a three-character measure over a published empty
                     # reading and took the whole pass down inside the
-                    # producer's own `validate_chain` (CodeRabbit on PR #117).
+                    # producer's own `validate_chain`.
                     # The signals move with it: an empty reading is never
                     # length-suspicious and never ends abruptly, which is the
                     # same rubric the Pass-B `no-readable-text` path measures
@@ -5085,7 +5085,7 @@ def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
     not appear in this derivation, and that is the model rather than an omission:
     a Testimonium is a clue that primes a reading, never the ink the reading is
     established from, so a second look by a witness does not make a second reading
-    attempt exist (GOVERNANCE 3, 11). `pipeline/3_attestatores/run.py::reread_pass`
+    attempt exist (principles 1, 7). `pipeline/3_attestatores/run.py::reread_pass`
     therefore closes its own window at the reading rather than moving this number.
 
     Counted through `recovery_region_count`, the same shared reader the Recensor,
@@ -5123,7 +5123,7 @@ def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
     loud, nothing written, nothing lost. The forward path from that refusal is
     the one the design already has — a Recensor recovery request — and it is
     deliberately not a second reading minted here, because a reading nobody
-    requested is what GOVERNANCE 11 refuses and what all three consumers reject.
+    requested is what principle 7 refuses and what all three consumers reject.
     """
     return recovery_region_count(act_id, regions) + 1
 

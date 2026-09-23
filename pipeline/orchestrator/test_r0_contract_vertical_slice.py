@@ -248,7 +248,7 @@ def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, 
     """F-X2. A span is a provenance claim about which of this chair's characters
     belong to this act. Two acts asserting the identical range of one page
     reading is not a partition of that reading, it is the same claim made
-    twice, and GOALS 5 asks every result to return to the exact ink it came
+    twice, and goal 4 asks every result to return to the exact ink it came
     from.
 
     Strengthened on the P2 review from identity to disjointness: two acts
@@ -378,7 +378,7 @@ def test_page_testimony_excludes_text_from_an_act_the_same_chair_failed(tmp_path
     `isinstance(attempt.native_payload, str)` alone (never `attempt.outcome`), so
     this failed act's own text was folded into attestator_3's page-1 testimony,
     which reported `outcome: "read"` as though nothing had failed -- a recorded
-    failure silently counted as page coverage (D2/D3; GOVERNANCE 2). Confirmed
+    failure silently counted as page coverage (D2/D3; principle 2). Confirmed
     against the real run tree before the fix: the page-1 testimonium for
     attestator_3 carried the full two-act joined text including act a1's, while
     the act-scoped Testimonium for the same chair on act a1 was `outcome: "failed"`.
@@ -1259,7 +1259,7 @@ def test_page_testimony_names_a_reading_the_join_could_not_carry(tmp_path, fixtu
     second went behind a successful status: in the shipped `structured-witness`
     scenario, attestator_1's page-1 record reported `read`, carried act a2's text
     alone, and disclosed an empty omission list while act a1 was simply gone
-    (GOVERNANCE 2). Measured on the real run tree before the fix.
+    (principle 2). Measured on the real run tree before the fix.
     """
     root = tmp_path / "runs"
     _through_attestatores(root, "structured", "structured-witness")

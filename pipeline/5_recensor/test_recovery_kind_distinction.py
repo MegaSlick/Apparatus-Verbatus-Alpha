@@ -120,7 +120,7 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
     # The other half of the claim above, and the half nothing checked: a2 is
     # still accounted for and is HELD, not quietly absent. Counting only the
     # recovery-requested reviews, an a2 that vanished entirely -- no request and
-    # no review -- left both counts above at 1 and this test green. GOALS 1: a
+    # no review -- left both counts above at 1 and this test green. goal 2: a
     # missed act is worse than a poorly read one, so the act that was refused a
     # recrop must be named as refused.
     every_review = [

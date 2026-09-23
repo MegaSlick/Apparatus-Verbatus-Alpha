@@ -208,7 +208,7 @@ def test_a_forged_review_naming_a_nuda_artifact_as_its_perlectio_is_refused(nuda
 
 
 def test_a_sampled_nuda_records_the_design_it_was_drawn_under(nuda_run):
-    """GOVERNANCE 10: a sample of unknown design measures nothing. Each record
+    """principle 8: a sample of unknown design measures nothing. Each record
     names the rate, the selection rule, and the approval it was drawn under."""
     entry = next(
         entry
@@ -345,7 +345,7 @@ def test_nuda_approval_refuses_a_record_for_a_different_sealed_config_digest(tmp
 
 def test_nuda_approval_refuses_a_record_approved_for_a_different_action(tmp_path):
     """A record naming this exact subject and config digest still is not a sampling
-    approval if it was filed under a different governed action (GOVERNANCE 1's
+    approval if it was filed under a different governed action (principle 9's
     exclusion/salvage-promotion are different sign-offs than a sampling design)."""
     context = _approval_context(tmp_path)
     record = build_approval_record(

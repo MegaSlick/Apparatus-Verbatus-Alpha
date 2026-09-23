@@ -3,9 +3,9 @@
 ARCHITECTURE: "Lectio nuda -- an unprimed Lectio. No witness shown. The
 baseline." Spec_08: nuda "never establishes text: it is an instrument record
 with no path to the Archetypus constructor," and it "runs on a predeclared,
-Tyrel-approved sampling design (`nuda_fraction` plus selection rule, fixed
+approved sampling design (`nuda_fraction` plus selection rule, fixed
 before the run; cost is recorded but never silently narrows the instrument --
-GOVERNANCE 10)."
+principle 8)."
 
 `common/contracts/canonical.py` refuses floats everywhere a value is hashed
 into an artifact or a run's sealed configuration, so a literal `nuda_fraction`
@@ -69,7 +69,7 @@ def sampling_design(
 ) -> dict[str, object]:
     """The design record every Lectio nuda carries.
 
-    GOVERNANCE 10: "cost is recorded but never silently narrows the
+    principle 8: "cost is recorded but never silently narrows the
     instrument". A sample of unknown design measures nothing, so the rate, the
     rule and the approval travel on every record drawn under them.
     """

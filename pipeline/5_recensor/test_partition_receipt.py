@@ -508,7 +508,7 @@ def test_recovery_replaces_the_current_partition_snapshot_without_erasing_histor
     assert before["self_hash"] != after["self_hash"]
 
     # The receipt is the one record replaced in place. The evidence it was
-    # derived from is append-only (GOVERNANCE 4) and must still be on disk, or
+    # derived from is append-only (principle 4) and must still be on disk, or
     # the round that produced the recrop could no longer be reconstructed.
     assert tree.resolve(requested["review_ref"]["relative_path"]).exists()
 
@@ -580,7 +580,7 @@ def test_a_run_that_proposed_no_acts_gets_a_visibly_partial_receipt_not_a_refusa
     """An empty denominator is a fact about the run, not a malformed receipt.
 
     The Designator proposing nothing at all is the silent-failure shape this whole
-    pipeline exists to catch (GOALS 1), and the Armarium's own aggregate already
+    pipeline exists to catch (goal 2), and the Armarium's own aggregate already
     treats a sealed page nobody marked out as a named partial rather than an
     error. Refusing to build the receipt would have turned that into a traceback
     at the one boundary whose job is making it visible -- neither lane noticed,

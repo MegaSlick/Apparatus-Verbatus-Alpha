@@ -95,7 +95,7 @@ class TruncationMeasure(TypedDict):
     the reason the Armarium's re-measurement row carries its own noise floor
     (`pipeline/7_armarium/run.py::ink_map_page_rows`): configuration protects
     reproducibility going forward, the record itself protects the past
-    (GOVERNANCE 6), and a reader who has the record but not that run's
+    (principle 6), and a reader who has the record but not that run's
     `config/perlector_protocol.toml` could otherwise only take the signal on
     trust.
     """
@@ -229,7 +229,7 @@ def classify(
     # function raises `ValueError` for a floor of zero, and a `ValueError` is
     # not one of the named contract refusals this stage's boundary classifies,
     # so a hand-built policy carrying zero escaped as an unclassified exception
-    # where a wrongly-typed one was named (CodeRabbit on PR #117). The bound is
+    # where a wrongly-typed one was named. The bound is
     # the same one `protocol.validate_truncation_table` applies to the sealed
     # file: a floor of zero never fires and is the signal switched off by a
     # value rather than by a decision.

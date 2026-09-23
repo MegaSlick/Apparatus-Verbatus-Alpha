@@ -4,7 +4,7 @@ quality signal to a re-roll.
     5. Quality firewall: a suspected-fabrication flag routes to review; no code
        path exists from a quality flag to a re-roll (module boundary test).
 
-GOVERNANCE 11 states the rule and ARCHITECTURE repeats it: "It recovers coverage,
+principle 7 states the rule and ARCHITECTURE repeats it: "It recovers coverage,
 not quality. A suspected fabrication or a poor reading may be flagged for review.
 It may never be re-rolled until it looks better." That is a claim about what code
 *cannot* do, so proving it needs the structural half as well as the behavioural
@@ -290,7 +290,7 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     # `runpy` is on this list because it needs none of the others: one
     # `runpy.run_path("pipeline/4_perlector/run.py")` re-invokes the reading
     # stage in this very process, importing nothing banned, and the guard would
-    # have reported a pass over exactly the re-roll GOVERNANCE 11 forbids and
+    # have reported a pass over exactly the re-roll principle 7 forbids and
     # this file exists to make impossible. `pty` reaches a shell the same way
     # `subprocess` does.
     #

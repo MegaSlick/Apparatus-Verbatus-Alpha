@@ -30,7 +30,7 @@ the Designator for the R2 conservation denominator -- per sealed page, the ink
 there is, the ink the crops claim, and what the unclaimed remainder became --
 and a hand-built layer has none, because those are measurements of the real
 page and composing them here would be exactly the fabricated structural
-accounting the Designator refuses to produce (GOVERNANCE 10). So the run stops
+accounting the Designator refuses to produce (principle 8). So the run stops
 at the Recensor, by name, with nothing written, and the Archetypus and Armarium
 refuse at their own predecessor boundaries. That is the boundary of real
 ingress today; the real structural pass is what moves it, and these assertions
@@ -377,7 +377,7 @@ def test_the_two_stages_past_the_stopping_point_still_open_before_they_refuse(re
 
 
 def test_opening_every_real_context_writes_nothing(real_run, tmp_path):
-    """GOVERNANCE 4 at the open: a recheck that writes before it decides is a
+    """principle 4 at the open: a recheck that writes before it decides is a
     recheck that has already spent the evidence it was protecting."""
     run_root = tmp_path / "runs"
     shutil.copytree(real_run.run_root, run_root)
@@ -501,7 +501,7 @@ def test_a_real_run_stops_at_the_recensor_and_names_the_denominator_it_has_no_pr
     conservation record composed here would be exactly the fabricated
     structural accounting `pipeline/2_designator/run.py` refuses to produce, and
     every stage after it would then be reading numbers no producer measured
-    (GOVERNANCE 10).
+    (principle 8).
 
     So the run stops here, by name, with nothing written -- and that is the
     honest boundary of *this module's* hand-built Designator layer, not of real
@@ -536,7 +536,7 @@ def test_the_last_two_stages_refuse_by_name_rather_than_carrying_an_unsealed_run
     The Archetypus and the Armarium are driven anyway, as an operator retrying
     the sequence would: each refuses at its own predecessor boundary, names it,
     writes nothing, and leaves no traceback. A run that stopped is visibly
-    stopped at every later stage (GOVERNANCE 2), not quietly resumed.
+    stopped at every later stage (principle 2), not quietly resumed.
     """
     for name, stage in (("6_archetypus", ARCHETYPUS), ("7_armarium", ARMARIUM)):
         result = real_run.tail[name]
@@ -562,7 +562,7 @@ def test_every_witness_and_the_reader_really_served_this_real_submission(real_ru
     # pick one silently. This tree is a single ordinal-1 pass, so a second
     # record here would be a duplicate publication or an unintended second
     # attempt -- and a comprehension would have reported the pass complete
-    # either way (GOVERNANCE 2).
+    # either way (principle 2).
     records = act_records(tree)
     assert {chair for _act, chair in records} == set(WITNESS_CHAIRS)
     assert len(records) == len(ACT_KEYS) * len(WITNESS_CHAIRS), (

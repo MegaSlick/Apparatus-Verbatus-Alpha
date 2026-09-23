@@ -178,7 +178,7 @@ class _RecordingContext:
         # row per sealed page, and the stage reads them with no capability
         # sniff -- a guard that silently yielded "no holds" beside a hold gate
         # is exactly the shape that becomes reachable later without anyone
-        # noticing (GOVERNANCE 2). This double therefore answers the manifest
+        # noticing (principle 2). This double therefore answers the manifest
         # walk the real tree answers: one `mapped` page 1 finding, carrying
         # real `ink-runs.v2`-shaped evidence rather than a placeholder, and no
         # Designator regions to release anything with.

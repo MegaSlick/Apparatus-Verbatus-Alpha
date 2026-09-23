@@ -8,7 +8,7 @@ twice, and its export then reached through `consolidated_literal`, `reader_text`
 `literal`, `text`, `markdown` for whichever was non-empty. Every closed field set
 in this file exists to stop that being rebuilt one field at a time — including
 `_REGION_FIELDS`, because a region is embedded whole and travels into the export
-whole (GOVERNANCE 5: one established text, projected identically).
+whole (principle 5: one established text, projected identically).
 
 **The three silences, which must never collapse** (Tyrel, 2026-08-05). Nothing
 there — `no_readable_text`, a positive finding carrying its own evidence. Ink
@@ -501,7 +501,7 @@ def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
     Spec 10 test 3: an empty `text` with `established` status is refused at the
     schema. `no_readable_text` is a positive finding (Tyrel, 2026-08-05) and
     requires its own evidence reference — an unlabeled empty string is never
-    proof that a page was blank (4c: GOVERNANCE 2's exact enemy).
+    proof that a page was blank (4c: principle 2's exact enemy).
     """
     if text_status not in TEXT_STATUSES:
         raise SchemaRefusal(f"text_status {text_status!r} is not one of {sorted(TEXT_STATUSES)}")

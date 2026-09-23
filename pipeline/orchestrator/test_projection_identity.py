@@ -1,4 +1,4 @@
-"""GOVERNANCE 5's executable half: every export format's clean text hashes to the
+"""principle 5's executable half: every export format's clean text hashes to the
 established record's own text hash.
 
 Spec 10, test 4: "every export format carries a canonical clean-text field, and
@@ -138,7 +138,7 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
         # projection-identity claim, proven rather than asserted by construction.
         assert digest_of(delivered["text"]) == payload["text_hash"]
         # The record's word about its own text travels with the text: one
-        # status, everywhere, exactly as GOVERNANCE 5 holds the characters.
+        # status, everywhere, exactly as principle 5 holds the characters.
         assert delivered["text_status"] == payload["text_status"]
     # The whole delivered set, not a sample: a projection check that skipped an
     # act would pass while that act's export carried a different reading. These

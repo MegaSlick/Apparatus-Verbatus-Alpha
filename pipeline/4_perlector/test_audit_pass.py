@@ -522,7 +522,7 @@ def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_pa
         # compares the instrument against its own generator, so an edit that
         # made the generator directional would agree with its own output
         # everywhere. This is the one place the delivered text is held still
-        # from outside the instrument (GOVERNANCE 10).
+        # from outside the instrument (principle 8).
         for reproof in request["reproofs"]:
             start = reproof["location"]["start"]
             end = reproof["location"]["end"]
@@ -610,7 +610,7 @@ def test_a_directional_or_empty_audit_request_is_refused_at_the_delivery_boundar
     it is stored. `payload.audit.reproofs` was already held to `neutral_prompt`
     exactly; the request now goes through the same screen, so a prompt telling
     the reader which way to argue cannot reach a reader by travelling on the
-    delivered copy instead of the sealed one (GOVERNANCE 10)."""
+    delivered copy instead of the sealed one (principle 8)."""
     request = audit.audit_request(
         act_key="a1",
         attempt_ordinal=1,
@@ -748,7 +748,7 @@ def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tm
     still sealed -- they are what the exhausted-cap uncertainty spans point at --
     but no reader is called at all. Recording that as an absent request is the
     difference between "a re-proof confirmed this span" and "nothing re-examined
-    it", which is exactly the distinction GOVERNANCE 10 asks a measurement to
+    it", which is exactly the distinction principle 8 asks a measurement to
     keep.
     """
     exhausted = tmp_path / "exhausted.toml"
@@ -1266,7 +1266,7 @@ def test_change_record_names_the_narrowest_flag_that_located_the_change():
 
 
 def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(tmp_path):
-    """A sealed cap of 2 with Tyrel's reference would be recorded but never run."""
+    """A sealed cap of 2 with an approval reference would be recorded but never run."""
     approved = tmp_path / "approved.toml"
     approved.write_text(
         'schema = "perlector-audit.v3"\n'
@@ -1368,7 +1368,7 @@ def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path
     raised.write_text(
         'schema = "perlector-audit.v3"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'
     )
-    with pytest.raises(ContractError, match="Tyrel's approval reference"):
+    with pytest.raises(ContractError, match="the project lead's approval reference"):
         audit.load(raised)
 
     exhausted = tmp_path / "exhausted.toml"

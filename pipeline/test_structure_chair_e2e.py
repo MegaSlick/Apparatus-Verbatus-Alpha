@@ -572,7 +572,7 @@ def test_the_sealed_structure_temperature_is_recorded_on_every_call(marked_out):
     """The executed decoding posture, per call, from the sealed `[structure]` table.
 
     A number reported on a record and a number put on the wire are two
-    different claims (GOVERNANCE 10), so both are read here: the request the
+    different claims (principle 8), so both are read here: the request the
     endpoint actually received, and the call record the client retained beside
     the answer.
     """
@@ -629,7 +629,7 @@ def test_no_designator_artifact_carries_the_chair_s_transcription(marked_out):
 
 
 def test_no_fixture_receipt_is_written_on_the_live_path(marked_out):
-    """GOVERNANCE 6: the one receipt is the moment the chair really served."""
+    """principle 6: the one receipt is the moment the chair really served."""
     directory = marked_out.run_root / RUN_ID / RECEIPTS_DIR
     receipts = [
         json.loads(path.read_text(encoding="utf-8")) for path in sorted(directory.rglob("*.json"))
@@ -885,7 +885,7 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_that_name(designated, t
     A page whose answer this system cannot read is held with the outcome that
     says why, and its ink reconciles as conservation residual — never repaired,
     never re-asked, and never quietly tiled as though the chair had answered
-    (GOVERNANCE 7).
+    (principle 3).
 
     This covers 2 of `chandra_layout.PARSE_OUTCOMES`' 6 codes — the two an
     answer's *shape* can reach, and every one
@@ -1108,7 +1108,7 @@ def status_receipts(root: Path) -> dict[int, str]:
 
 
 def test_a_resumed_live_pass_reuses_every_sealed_answer_and_starts_no_chair(designated, tmp_path):
-    """GOVERNANCE 4, on the stage that had no guard for it.
+    """principle 4, on the stage that had no guard for it.
 
     A live chair cannot reproduce its own bytes: every answer embeds the
     serving session's receipt, call record and custody references, and those
@@ -1157,14 +1157,14 @@ def test_an_interrupted_live_pass_keeps_its_answers_and_asks_only_for_the_rest(
     published as it arrived, so it is on disk: a pass that published only at
     the end of its loop would have thrown away a model call it had already paid
     for, and on a thousand-page shard it would throw away nine hundred of them
-    (GOVERNANCE 2).
+    (principle 2).
 
     The resume then asks for page 2 and for nothing else — one request, not
     three — and finishes the run. Page 1 keeps the receipt of the session that
     answered it while page 2 names the session that answered *it*: two serving
     sessions really did mark this run out, and each page's own record says
     which one, rather than the run being restamped with whichever session ran
-    last (GOVERNANCE 6).
+    last (principle 6).
     """
     run_root = fresh_tree(designated, tmp_path)
     interrupted = StructureWorld(
@@ -1234,7 +1234,7 @@ def test_a_resumed_live_pass_keeps_the_page_it_fell_back_to_tiles_on(designated,
     therefore subtracts the page's own tiles from themselves, finds nothing
     uncovered, mints no act, and seals a denominator one act shorter than the
     one the first pass sealed — an immutable `proposal-seal` that no longer
-    accounts for crops sitting on disk, which is GOVERNANCE 2 and invariant 8
+    accounts for crops sitting on disk, which is principle 2 and invariant 8
     both. The page's own fallback act is excluded from its claim set for
     exactly that reason, so the grid is the same on every pass.
     """
@@ -1276,7 +1276,7 @@ def test_a_pass_interrupted_after_its_fallback_tiles_seals_them_on_the_resume(
     the same denominator: a seal that silently dropped `page-fallback:2` would
     exit 0 over a run whose next stage refuses it as an unaccounted act, and
     the seal's own immutability would make every later pass reproduce the same
-    short denominator (GOVERNANCE 2, GOALS 1).
+    short denominator (principle 2, goal 2).
     """
     run_root = fresh_tree(designated, tmp_path)
     world = StructureWorld(
@@ -1313,7 +1313,7 @@ def test_a_resumed_live_pass_keeps_the_page_it_held(designated, tmp_path):
     """The third disposition, resumed: a held page stays held and is never re-asked.
 
     A hold is the one outcome a resume could plausibly be read as an invitation
-    to retry, and it is not one (GOVERNANCE 7, GOVERNANCE 11: a bad answer is
+    to retry, and it is not one (principle 3, principle 7: a bad answer is
     flagged, never re-rolled until it looks better). The second pass is handed
     a chair scripted to answer page 2 cleanly; it never reaches the script,
     because the held answer is already on disk. The run exits `EXIT_HELD` both

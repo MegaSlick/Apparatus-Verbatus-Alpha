@@ -645,7 +645,7 @@ def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
 ):
     """One request per reader call, and one reader call per arm.
 
-    GOVERNANCE 7: the pipeline does not gate model behaviour. A retry, a second
+    principle 3: the pipeline does not gate model behaviour. A retry, a second
     sample, or a re-ask on a disappointing answer would all show up here as more
     requests than the pass has arms.
     """
@@ -815,7 +815,7 @@ def test_an_invalid_failed_record_is_refused_before_immutable_publication(
 def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
     live_run, tmp_path, monkeypatch
 ):
-    """GOVERNANCE 4: a live chair cannot reproduce immutable bytes.
+    """principle 4: a live chair cannot reproduce immutable bytes.
 
     A fixture resume republishes byte-identical readings and the store reuses
     them. A live one cannot, so an act already sealed at this ordinal is left
@@ -897,7 +897,7 @@ def test_a_live_pass_interrupted_after_its_pass_a_resumes_and_reuses_the_sealed_
     the documented `verbatus run` resume was dead for that run forever, with
     every other act still unread.
 
-    The sealed Pass A is this attempt's own evidence (GOVERNANCE 4), so it is
+    The sealed Pass A is this attempt's own evidence (principle 4), so it is
     reused rather than re-asked: the resumed act pays for the arms it has not
     run and no more. The proof is that the published reading is the *second*
     engine answer while the prior draft it was primed with is still the
@@ -954,7 +954,7 @@ def test_an_act_whose_audit_round_sealed_without_its_perlectio_is_held_not_read_
     reuse the draft either, because the Perlectio it belongs to was never
     written. So the act is held with an explicit `not-run` naming the retained
     record, the rest of the run is read, and the stage seals — instead of every
-    invocation dying on a reuse nobody can clear (GOVERNANCE 2: a partial result
+    invocation dying on a reuse nobody can clear (principle 2: a partial result
     is visibly partial, and the run does not disappear behind it).
     """
     root, catalogue = live_run
@@ -1084,7 +1084,7 @@ def test_a_resumed_act_reuses_the_sampled_arms_it_already_published(
 
     What must *not* move is the sampling design itself: membership is derived
     from the run's predeclared rate and the act's own facts, never stored, so a
-    reused arm stays sampled and stays counted (GOVERNANCE 10 -- the instrument
+    reused arm stays sampled and stays counted (principle 8 -- the instrument
     is not allowed to shrink because a run was interrupted). Only the reader call
     is dropped. The act that was never reached is still read and still sampled,
     which is what the second act proves here.
@@ -2153,7 +2153,7 @@ def test_a_zero_length_anchored_span_does_not_attach_a_page_witness(monkeypatch)
     The trivial attach a genuinely empty page reading gets carries
     `anchor_basis: "act-anchor"` with a zero-length `witness_span`. Reading the
     anchor basis alone would attach it and count a chair toward the floor for a
-    slice with no characters in it (GOVERNANCE 10); the span's length is what
+    slice with no characters in it (principle 8); the span's length is what
     separates the two.
     """
     context, act, testimonia, bases = _primary_context(
@@ -2313,7 +2313,7 @@ def test_an_uncertainty_declaring_act_chair_is_given_a_bracket_stripped_view():
     rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
     assert rows[0]["payload"]["comparison_reported"] == "Marie  Dupont"
     # The retained record is untouched: the copy exists so the verbatim bytes
-    # stay verbatim (GOVERNANCE 4).
+    # stay verbatim (principle 4).
     assert testimonia[0]["payload"] == {
         "chair": "attestator_2",
         "payload": "Marie [UNCERTAIN] Dupont",

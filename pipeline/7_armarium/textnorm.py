@@ -7,7 +7,7 @@ ships a different UCD per version: 15.0 on 3.12 and 16.0 on 3.14 (CI runs both),
 15.1 on 3.13, which nothing in the ladder runs today, and characters assigned between them fold
 differently.  It never establishes, replaces, compares, or
 selects a reading.  Callers must retain the literal Archetypus text beside any
-value returned here and label the value as derived.  GOVERNANCE 5's one-text rule
+value returned here and label the value as derived.  principle 5's one-text rule
 is untouched by it: the Archetypus ``text`` field is never written from here and
 nothing this function returns may round-trip back into one.
 
