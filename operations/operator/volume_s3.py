@@ -275,7 +275,7 @@ class S3VolumeTarget:
                     # unmake the bytes already read and digested. Left to the
                     # outer handler it became a `VolumeTransferRefusal`, so a
                     # verified transfer was recorded as partial on a cleanup
-                    # error (CodeRabbit). `S3VolumeObjectReader.read` already
+                    # error. `S3VolumeObjectReader.read` already
                     # suppresses this for the same reason.
                     try:
                         closer()
@@ -729,7 +729,6 @@ def _means_absent(error: BaseException) -> bool:
     # raises while classifying fails in the direction this docstring says it must
     # not: the caller never reaches its fail-closed answer at all. The response
     # comes from a remote server, so its shape is not ours to assume.
-    # Found by CodeRabbit.
     error_detail = response.get("Error")
     metadata = response.get("ResponseMetadata")
     code = str((error_detail if isinstance(error_detail, Mapping) else {}).get("Code", ""))

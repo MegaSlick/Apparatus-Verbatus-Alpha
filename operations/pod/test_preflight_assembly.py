@@ -4,7 +4,7 @@
 receipt carried the note "fixture-only result; no real chair or GPU assembly is
 proven".  On the fixture path that is exactly right.  On a rented card it is a
 false record of a paid measurement: the receipt disowns the one measurement the
-pod was rented to make.  GOVERNANCE 10 binds understatement as much as
+pod was rented to make.  Principle 8 binds understatement as much as
 overstatement -- claims are made only about what was actually measured, and
 "nothing was measured" is itself a claim.
 
@@ -431,7 +431,7 @@ def test_an_invalid_page_read_through_a_real_engine_proves_no_assembly(
     assert [issue.code for issue in report.issues] == ["smoke-output-invalid"]
     assert report.assembly_proven is False
     # The engine that served the invalid read is still recorded: the read
-    # happened, and only the claim about it is withheld (GOVERNANCE 2).
+    # happened, and only the claim about it is withheld (principle 2).
     assert report.smoke_receipts[0]["served_engine"] == "vllm 0.27.1"
 
 

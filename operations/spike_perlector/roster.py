@@ -16,12 +16,11 @@ def validate_perlector_candidate(identity: ResolvedIdentity) -> None:
     """Apply the structural no-self-witness rule at every execution boundary.
 
     **The comparison is normalized, because this is a structural rule and not a
-    string match.** GOVERNANCE 3 and CLAUDE.md hard rule 8 say the Perlector reads
+    string match.** Principle 1 says the Perlector reads
     and never picks among witnesses; a witness sitting in the candidate roster is
     that rule broken at the root. Compared exactly, a trailing space, a capital
     letter, or a `@revision` pin walked the Attestator straight through the one
     check standing in its way — and the refusal that did not fire is invisible.
-    Found by CodeRabbit on the rebased branch.
     """
 
     if repository_of(identity.source_ref) == repository_of(FORBIDDEN_ATTESTATOR_SOURCE):
@@ -100,7 +99,7 @@ class CandidateRoster:
             )
         if self.trained_checkpoint.delivery is not DeliveryMode.LOCAL:
             raise CandidateRosterRefusal(
-                "Tyrel's trained checkpoint must resolve from its own local repository"
+                "the project lead's trained checkpoint must resolve from its own local repository"
             )
         if not is_sha256(self.vendor_unaltered_evidence_sha256):
             raise CandidateRosterRefusal("vendor candidate has no unaltered-model evidence digest")

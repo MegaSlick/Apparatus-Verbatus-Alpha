@@ -85,12 +85,12 @@ fi
 # Deliberately *not* a failure. Exiting non-zero would make the guard change
 # what the suites measure — several tests assert on delivered/NOT DELIVERED
 # outcomes — and a guard that rewrites its subject's results is the shape
-# GOVERNANCE 10 refuses. It exits 0 and says what it swallowed, so the
+# principle 8 refuses. It exits 0 and says what it swallowed, so the
 # behaviour under test is unchanged and the leak is still visible to anyone
 # reading stderr.
 #
 # The value is a literal, not a pattern: a prefix or suffix rule would make a
-# mistyped real topic silently stop notifying him.
+# mistyped real topic silently stop notifying the project lead.
 #
 # Exit 0 alone was a second lie in the place built to stop the first one. Every
 # Python bridge over this script (`operations/pod/notify_bridge.py`,
@@ -251,7 +251,7 @@ then
   if [ "$event" = start ]; then
     record_start_delivery
   fi
-  # The 2026-09-06 finding: this script printed nothing on success, so a
+  # This script used to print nothing on success, so a
   # session reading silence after a stalled earlier command could not tell
   # "delivered" from "hung" and sent the same ping twice. One line on stderr
   # closes that: silence is never again evidence of anything. Stdout is
