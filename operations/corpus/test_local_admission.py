@@ -1,7 +1,6 @@
 """Pure tests for `operations/corpus/local_admission.py`: synthetic sets, no network.
 
-The corpus's forty 180-degree records are the case (independent audit of
-2026-09-10, F4). A synthetic two-page set -- one page stated upright, one stated
+The corpus's forty 180-degree records are the case. A synthetic two-page set -- one page stated upright, one stated
 through a 180-degree view -- is written under `tmp_path` with real JPEG bytes.
 
 **What the pixel test here can and cannot prove.** It builds the rotated view by
@@ -10,7 +9,7 @@ rotation agree -- the algebra, over real pixel data. It cannot tell a right
 formula from a wrong one, because both sides of it rest on the same assumption
 about which frame the stored page is in. That question was settled outside this
 file, against the real material; the answer is recorded in `transform_region`'s
-docstring and in the host's rotation check of 2026-09-11.
+docstring and in the host's rotation check.
 
 Every reason in `LOCAL_ADMISSION_REFUSAL_REASONS` is shown to fire here, and the
 coverage test at the bottom derives what was exercised from this file's own
@@ -316,7 +315,7 @@ def test_a_numeric_identity_in_a_refused_record_does_not_abort_the_whole_admissi
 
     A gold row carrying `"record_id": 7` was refused by name and then, stored
     raw, failed the ledger's own validation after every other record had been
-    admitted (CodeRabbit on PR #114). One bad row must cost one row.
+    admitted. One bad row must cost one row.
     """
     root = _two_page_set(tmp_path / "set", **{"r-rot": {"record_id": 7}})
     ledger = admit_local_set(root, split="val")
@@ -859,7 +858,6 @@ def _exercised_reasons() -> set[str]:
                     # tuple in a table whose parameter names end in "reason".
                     # Taking every string in the table would count a reason that
                     # merely appears beside an assertion as exercised by it
-                    # (independent audit of 2026-09-11, round 2 item 8).
                     names, cases = node.args[0], node.args[1]
                     if not (
                         isinstance(names, (ast.Tuple, ast.List))

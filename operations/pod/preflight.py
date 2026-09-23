@@ -38,7 +38,7 @@ class _RuntimeProvenance:
     smoke result could therefore publish "real assembly measured on <card>"
     with no `nvidia-smi` read and no served engine anywhere in the run. A
     fabricated *page* was already caught by `_bound_receipt`; a fabricated
-    *claim about the hardware* was not (GOVERNANCE 10).
+    *claim about the hardware* was not (principle 8).
 
     So the two facts now travel as an instance of this class, which is:
 
@@ -279,7 +279,7 @@ class SystemGpuProbe:
     # block preflight forever on a pod that is already billing, and the red
     # `GpuProfile` path below would never be reached.  `TimeoutExpired` is an
     # `Exception`, so the handler in `profile` records it in `discovery_detail`
-    # like any other discovery failure.  Found by CodeRabbit on this branch.
+    # like any other discovery failure.
     _RUN_TIMEOUT_SECONDS = 30.0
 
     @classmethod
@@ -926,7 +926,7 @@ class PreflightRunner:
         if not smoke_receipts:
             # An all-absent or fully-failed roster produced placements and no
             # measurements; green here would claim a serving assembly nobody
-            # smoke-read (GOVERNANCE 10).
+            # smoke-read (principle 8).
             issues.append(
                 PreflightIssue(
                     "no-chair-verified",
@@ -972,7 +972,7 @@ class PreflightRunner:
         This used to be the constant `False`, with a note that called every
         result "fixture-only".  On a rented card that was a false record of a
         paid measurement: the receipt disowned the one measurement it was bought
-        to make (GOVERNANCE 10 -- claims are made only about what was actually
+        to make (principle 8 -- claims are made only about what was actually
         measured, and an understatement is as untrue as an overstatement).
 
         Both halves must hold, and each is a fact the layer that produced it
@@ -998,7 +998,7 @@ class PreflightRunner:
         says a chair *read its witness*, not that a process was started.  The
         colour of the report is deliberately not consulted -- a red preflight
         that nonetheless served one chair on a real card proved that much, and
-        hiding it would lose a measured fact behind a status (GOVERNANCE 2).
+        hiding it would lose a measured fact behind a status (principle 2).
         """
 
         measured = profile.measured and _is_runtime_provenance(profile.provenance)

@@ -250,7 +250,7 @@ def test_a_delivered_notification_writes_nothing_on_stdout(notify_repo):
 @pytest.mark.full
 @pytest.mark.parametrize("event", ["start", "milestone", "decision", "done"])
 def test_a_delivered_notification_prints_one_line_on_stderr(notify_repo, event):
-    """The 2026-09-06 fix: silence on success let a session read a stalled prior
+    """Silence on success used to let a session read a stalled prior
     command as a lost ping and resend it -- three `done` pings for one close.
     Every event that actually reaches the server now says so, on stderr, once."""
 

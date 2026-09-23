@@ -116,7 +116,7 @@ def _current_directory() -> str:
     deleted or is no longer readable, and it was being called while the
     original exception was already being handled: the receipt was abandoned,
     the entry boundary called this same function again on the new failure, and
-    Verbatus printed a raw traceback and saved nothing (CodeRabbit on PR #117).
+    Verbatus printed a raw traceback and saved nothing.
     A receipt that cannot say where it ran is still the record of what
     happened.
     """
@@ -279,7 +279,7 @@ _UNREADABLE_RECEIPT = (
     json.JSONDecodeError,
     # A receipt inside the byte bound can still nest deeply enough for the
     # decoder to recurse out on 3.12; that is an unreadable receipt, not an
-    # internal failure for the catch-all (CodeRabbit on PR #117).
+    # internal failure for the catch-all.
     RecursionError,
     KeyError,
     TypeError,
@@ -337,7 +337,7 @@ def _read_launch_command(
         # with it, so reading a top-level `request` raised `KeyError` for every
         # genuine launch receipt and refused the derivation this flag exists
         # for -- while the suite's hand-built fixture, which had no `payload`
-        # wrapper, passed (CodeRabbit on PR #117). Read here rather than
+        # wrapper, passed. Read here rather than
         # through `ReceiptStore.read` because this path takes a receipt an
         # operator names, which may sit outside the state root that store
         # resolves against; the bounded no-follow open above is the reviewed
@@ -747,14 +747,16 @@ def build_parser() -> PlainParser:
     )
     advance = verbs.add_parser(
         "advance",
-        help="append Tyrel's confirmed decision to pass one exact sealed stage boundary",
+        help="append the project lead's confirmed decision to pass one exact sealed stage boundary",
     )
     advance.add_argument(
         "--run-root", type=Path, required=True, help="folder containing the run tree"
     )
     advance.add_argument("--run-id", required=True, help="the sealed run to advance")
     advance.add_argument("--stage", required=True, help="the sealed stage boundary to pass")
-    advance.add_argument("--reason", required=True, help="why Tyrel chose to advance this boundary")
+    advance.add_argument(
+        "--reason", required=True, help="why the project lead chose to advance this boundary"
+    )
     advance.add_argument(
         "--mode",
         choices=RUN_MODES,
@@ -1708,7 +1710,7 @@ def _interactive_arguments() -> list[str]:
             # `-timings.json` and `-transcript.log` -- and this route asked for
             # none of them, so a run whose receipt was not to hand could bring
             # home only six of the ten records the receipt route fetches
-            # (CodeRabbit on PR #117). Each stays "leave blank to skip",
+            # Each stays "leave blank to skip",
             # because a key that names a record this launch never wrote comes
             # back as a per-object refusal in the receipt.
             for label in (
@@ -1823,7 +1825,7 @@ def _typed_close_confirmation(phrase: str) -> str | None:
 def _typed_advance_confirmation(phrase: str) -> str | None:
     try:
         return input(
-            "This appends Tyrel's decision record; it does not edit evidence or start a provider.\n"
+            "This appends the project lead's decision record; it does not edit evidence or start a provider.\n"
             f"Type this line exactly, with no quotation marks:\n{phrase}\n> "
         )
     except EOFError:

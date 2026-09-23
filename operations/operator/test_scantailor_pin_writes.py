@@ -30,7 +30,7 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
 
     Both pin failures tell the operator that nothing was written. That is a statement
     about this directory, and until it is compared against the directory it is a
-    statement the suite takes on trust -- exactly the shape GOVERNANCE 10 refuses,
+    statement the suite takes on trust -- exactly the shape principle 8 refuses,
     since a commit that published the geometry document and then noticed the pin had
     moved would still print it.
     """

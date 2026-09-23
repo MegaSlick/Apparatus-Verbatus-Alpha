@@ -5,8 +5,7 @@ with reference boxes by IoU and scores each pair with the sealed normaliser and
 scorer. It deliberately takes the hypotheses -- `{act_id: (status, text)}` --
 from its caller, and until this module there was no caller that built them from
 a real run: the bench runner emits `not-run`, and a mathematically correct scorer
-handed the wrong texts scores the wrong thing (independent audit of 2026-09-10,
-measurement gap). This module is that caller, and it takes the texts from one
+handed the wrong texts scores the wrong thing. This module is that caller, and it takes the texts from one
 place only: the Armarium export the run itself sealed, each delivered text
 re-digested against the Archetypus record that established it, so a score can
 never be computed over a text the pipeline did not publish.
@@ -137,7 +136,7 @@ _CATEGORY_STATUS: dict[str, OutputStatus] = {
 
 # One normalisation profile for both halves of the missed-inclusive fraction and
 # for `compare_page` itself, passed explicitly rather than left to two defaults
-# that could drift apart (independent audit of 2026-09-11, round 2 item 15). The
+# that could drift apart. The
 # report records which one ran.
 PROFILE = GRAPHEMIC_V1
 
@@ -169,7 +168,7 @@ _CODE_REF_CHECK_FIELDS = frozenset({"state", "checkout_head"})
 # One closed row shape for all three outcomes. A missed or not-attempted record
 # carries `None` where a scored one carries a measurement, so a reader is never
 # left to infer which questions a row was even asked -- the same repair the
-# admission ledger's rows needed (independent audit of 2026-09-11, finding 9).
+# admission ledger's rows needed.
 _RECORD_ROW_FIELDS = frozenset(
     {
         "physical_act_id",
@@ -313,8 +312,7 @@ def _established_text_hashes(tree: ReadOnlyRunTree) -> dict[str, str]:
 
     `verify_inputs=False` is for a caller whose own boundary owns lineage. This
     caller verifies the Armarium seal, not the Archetypus one, so it has no such
-    boundary and leaves the default alone (independent audit of 2026-09-11,
-    finding 13).
+    boundary and leaves the default alone.
     """
     hashes: dict[str, str] = {}
     for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]:
@@ -426,15 +424,14 @@ def _code_ref_check(code_ref: str) -> dict[str, Any]:
     """What checking `code_ref` against this checkout actually found.
 
     A declaration is not a measurement, and the report says which this is
-    (GOVERNANCE 10; independent audit of 2026-09-11, finding 11).
+    (principle 8).
     """
     head = _checkout_commit()
     if head is None:
         return {"state": "no-checkout-found", "checkout_head": None}
     # Any honest abbreviation of the head, not the three lengths this module
     # happened to think of: git abbreviates to whatever is unambiguous, and this
-    # repository's own commit tables use ten (independent audit of 2026-09-11,
-    # round 2 item 3). Seven is git's own floor, below which a prefix names too
+    # repository's own commit tables use ten. Seven is git's own floor, below which a prefix names too
     # much.
     matches = len(code_ref) >= 7 and head.startswith(code_ref)
     state = "matches-checkout" if matches else "differs-from-checkout"
@@ -447,8 +444,7 @@ def run_is_fixture(export_payload: Mapping[str, Any]) -> bool:
     The Armarium seals exactly one of `fixture_id` (fixture route) and
     `submission_id` (real ingress), and refuses a manifest naming both or
     neither. Reading that is a measurement; a `--fixture` flag the operator could
-    omit is not, and omitting it published a fixture score under the live label
-    (independent audit of 2026-09-11, finding 11).
+    omit is not, and omitting it published a fixture score under the live label.
     """
     has_fixture = bool(
         isinstance(export_payload.get("fixture_id"), str) and export_payload["fixture_id"].strip()
@@ -481,7 +477,7 @@ def evaluate_run(
     body itself, and every reference page must appear in it by `self_hash` -- so
     `reference_ledger_verified` can only be true of a ledger, and
     `reference_ledger_sha256` can only be the digest of the ledger that was
-    checked (independent audit of 2026-09-11, round 2 item 6).
+    checked.
     """
     if not isinstance(code_ref, str) or not code_ref:
         raise CorpusRefusal("malformed-record: an evaluation must name the code it ran under")
@@ -546,7 +542,7 @@ def evaluate_run(
     # One page's bytes sealed at two ordinals would compare that page twice and
     # count its reference acts twice, which surfaces later as a denominator that
     # does not reconcile -- a correct outcome under a message that names nothing
-    # (independent audit of 2026-09-11, finding 22). Name the digest instead.
+    # Name the digest instead.
     repeated = sorted(
         {sha for sha in page_shas.values() if list(page_shas.values()).count(sha) > 1}
         & set(references)
@@ -781,8 +777,7 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     """Refuse an evaluation that is not exactly `recordgold-evaluation.v1`.
 
     This is the artifact a person reads as the measurement, and it was the one
-    record in this package that nothing held to a shape (independent audit of
-    2026-09-11, finding 10).
+    record in this package that nothing held to a shape.
 
     **Closed exactly where a name is read**, and the docstring says so rather
     than claiming more (round 2 item 5): the top level, `run`, `corpus`,
@@ -857,7 +852,7 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
                 _validate_units(block[unit], f"aggregate.{name}.{unit}")
 
     # Closed before a single name is looked up: indexing an open record by name
-    # raises `KeyError`, which is not a refusal (CodeRabbit on 497034d2).
+    # raises `KeyError`, which is not a refusal.
     _closed(report["run"], _RUN_FIELDS, "the run block")
     totals = _closed(report["denominators"], _DENOMINATOR_FIELDS, "the denominators")
     outcomes = {"scored": 0, "missed": 0, "not-attempted": 0}
@@ -914,7 +909,7 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
         )
     # Each comparison is its own validated record, and no page identity appears
     # twice: a duplicated comparison would keep the count whole while one page's
-    # evidence went missing (CodeRabbit on PR #114).
+    # evidence went missing.
     seen_pages: set[str] = set()
     seen_references: set[str] = set()
     seen_ordinals: set[int] = set()
@@ -1007,8 +1002,7 @@ def load_reference_pages(path: str | Path) -> list[dict[str, Any]]:
     """One `reference-pages.jsonl`, refused by name rather than by traceback.
 
     A missing file and a file that is not UTF-8 each refused under this module's
-    own vocabulary, as a line that is not JSON already was (independent audit of
-    2026-09-11, round 2 item 7).
+    own vocabulary, as a line that is not JSON already was.
     """
     path = Path(path)
     if not path.is_file():

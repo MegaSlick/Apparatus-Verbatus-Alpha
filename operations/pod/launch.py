@@ -128,7 +128,7 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     """Fold the launch token into every report path the launch seals.
 
     A volume outlives any one pod, so an unbound report path lets a second
-    launch's durable evidence overwrite the first's (GOVERNANCE 4).  Binding
+    launch's durable evidence overwrite the first's (principle 4).  Binding
     happens once, here, at sealing time -- the request's own validation then
     refuses a report path that does not carry the sealed token.
 
@@ -144,8 +144,7 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     non-``--hold-only`` plan, so until it was bound here the only launchable
     shape was the drill.
     ``operations/pod/boot_a_request.py``'s own docstring named this as an
-    unbound seam left for this unit; it is closed here rather than left for a
-    later one, per CLAUDE.md hard rule 13.
+    unbound seam left for this unit; it is closed here rather than left open.
 
     ``PodCreateRequest.__post_init__`` already refuses a command that does not
     carry exactly one ``--report-path`` with a value, so neither refusal below
@@ -299,8 +298,8 @@ def launch_evidence_keys(
         # The mount itself is dropped with the rest: `relative_to` answers `.`
         # for it, which has no name, and `with_name` on that raises
         # `ValueError` -- so a receipt carrying a report path equal to the
-        # mount ended `fetch-run` in a traceback rather than in a key list
-        # (CodeRabbit on PR #117). It is the same condition
+        # mount ended `fetch-run` in a traceback rather than in a key list.
+        # It is the same condition
         # `models._required_timer_arguments` already refuses on the create
         # path, applied here to a record this verb only reads.
         if (
@@ -449,7 +448,7 @@ notify.sh deliberately never suppresses a ``milestone`` itself -- a rate limit t
 could swallow a real result (operations/notify/README.md). A hovering balance is not
 that: the same alert is reassessed on every preview, on the internal re-preview inside
 ``create``/``adopt``, and (for ``create``) again after the pod actually exists, so an
-unthrottled send pages Tyrel two or more times for one decision. The dedup belongs at
+unthrottled send pages the project lead two or more times for one decision. The dedup belongs at
 this wiring, before notify.sh is ever called.
 """
 
@@ -503,7 +502,7 @@ ALERT_STATE_LOCK_WAIT_SECONDS: Final = 5.0
 This lock guards notification bookkeeping and is taken *inside* the spend gate on
 the create/adopt path.  A notification-only feature may never hold a paid action
 open, so it gives up early; ``_record_spend_notifications`` then records that the
-warning was not delivered, which is the outcome GOVERNANCE 2 asks for and is not
+warning was not delivered, which is the outcome principle 2 asks for and is not
 a refusal.
 """
 
@@ -1578,7 +1577,7 @@ class PodRuntime:
             # description releases the flock, and the `with` above closes it on
             # every path out. The unlock that stood here could only fail, and
             # its handler discarded that failure unrecorded — a swallowed error
-            # in exchange for nothing. Found by CodeRabbit.
+            # in exchange for nothing.
             yield
 
     def _load_spend_alert_state(self, path: Path) -> dict[str, object] | None:
@@ -1709,7 +1708,7 @@ class PodRuntime:
 
         Returns the observation and, when there is none, why -- a swallowed
         provider error leaves an operator staring at "not observed" with no way
-        to tell a missing configured source from a timeout (GOVERNANCE 2).
+        to tell a missing configured source from a timeout (principle 2).
         """
 
         if self.balance_source is None:

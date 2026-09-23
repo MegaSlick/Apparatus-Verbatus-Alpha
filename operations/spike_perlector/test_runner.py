@@ -351,7 +351,7 @@ def test_a_candidate_whose_every_read_failed_is_refused_not_quietly_dropped():
     A candidate with no successful read contributes no aggregate, so a slot set
     built from `condition_aggregates()` never mentions it and `condition_deltas`
     returned the *other* candidates' deltas as though the matrix were whole.
-    Hard rule 7: the loss has to be named, not skipped.
+    Principle 2: the loss has to be named, not skipped.
     """
 
     working = identity("working-private", 1)
