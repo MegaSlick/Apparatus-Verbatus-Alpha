@@ -668,8 +668,7 @@ def act_attachment_facts(
     # act_attachment_view selects it. The local sort this replaces defaulted a
     # missing ordinal to 0 and took the last record blind, so a duplicate or
     # gapped ordinal chain picked an arbitrary attachment where the strict
-    # helper refuses — the same two-predicates-drifting shape as F-O1/F-O3
-    # (CodeRabbit chain-end review, critical; host disposition: fixed).
+    # helper refuses — the same two-predicates-drifting shape as F-O1/F-O3.
     record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
     payload = record.get("payload")
     entries = payload.get("attachments") if isinstance(payload, dict) else None

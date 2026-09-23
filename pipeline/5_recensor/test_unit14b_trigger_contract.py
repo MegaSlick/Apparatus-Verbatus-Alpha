@@ -869,7 +869,7 @@ def test_the_live_caller_passes_the_floor_it_read_from_the_sealed_table():
 # with every other page of the same container. The sealed Exemplar page's own
 # `source_sha256` is the identity the physical-act partition and the
 # cross-capture autopsia both use, and `verify_sealed_page_pixels` has already
-# proved it verifies (CodeRabbit, PR #78).
+# proved it verifies.
 _DIGEST = "a" * 64
 
 

@@ -142,7 +142,7 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     # check (the other act's page Testimonium against its aligned attachments)
     # also finds no shortfall: a1's genuinely-empty contribution adds no
     # characters to the page text at all -- the join used to give it a leading
-    # separator no act delivered (CodeRabbit W44) -- and the alignment correctly
+    # separator no act delivered -- and the alignment correctly
     # maps a2's matched span back to that raw page text (not the
     # whitespace-collapsed comparison view `align_to_anchor` matches over) so
     # the join never reads as lost coverage.
@@ -499,7 +499,7 @@ def test_completed_reading_evidence_below_the_floor_never_corroborates_blank():
 
 def test_an_excluded_chair_cannot_stand_in_for_a_witness_that_never_read(tmp_path):
     """The floor is met by real ATTESTATORES `witness_coverage` accounting (two
-    genuinely-empty reads plus one Tyrel-approved `excluded` chair, which
+    genuinely-empty reads plus one approved `excluded` chair, which
     classifies COMPLETED for ATTESTATORES -- common/contracts/outcomes.py), so
     `under_witnessed` is `False`. `excluded` is not a reading, though: the
     chair never looked at the ink, and `blank_corroboration` must not let it

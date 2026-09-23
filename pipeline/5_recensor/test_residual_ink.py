@@ -185,7 +185,7 @@ def test_the_fast_counts_agree_with_a_straightforward_implementation():
             # is supposed to catch a threshold flipped from `>=` to `>` --
             # which would drop one pixel value per page out of `total_ink` and
             # `outside_ink` together, lowering `fraction_outside` and leaving a
-            # page with a missed act unflagged. Found by CodeRabbit.
+            # page with a missed act unflagged.
             on_boundary = BACKGROUND - MINIMUM_CONTRAST_BELOW_BACKGROUND
             just_inside = on_boundary + 1
             rows = [

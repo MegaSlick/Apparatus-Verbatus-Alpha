@@ -1184,7 +1184,7 @@ def _continuation_page_context(monkeypatch, *, reason):
 
 
 def test_a_continuation_pages_content_coverage_is_recorded_unmeasured_by_name(monkeypatch):
-    """Tyrel's ruling on Unit 12 F2, at the measurement itself.
+    """Ruling on Unit 12 F2, at the measurement itself.
 
     The span union this page's text was diffed against is empty because the
     Perlector declared it empty, not because the witnesses covered nothing. The
@@ -1369,7 +1369,7 @@ def test_a_mixed_pages_uncovered_text_is_measured_beside_a_declared_continuation
 
 
 def test_a_zero_width_aligned_span_leaves_the_page_unmeasured(monkeypatch):
-    """The union decides, not the span list (PR #100 review).
+    """The union decides, not the span list.
 
     An aligned span of zero width is a valid row that covers nothing, and
     `_covered_intervals` drops it from the union. Reading `spans` as evidence

@@ -810,7 +810,7 @@ def test_every_recensor_terminal_set_combination_builds_a_matching_receipt_item(
 
 
 def test_a_receipt_item_refuses_a_partition_class_its_review_does_not_derive():
-    """Pin the refusal whose wording was repaired after CodeRabbit found it."""
+    """Pin the refusal, whose wording was repaired after review."""
     from common.recensor_receipt import build_recensor_partition_receipt
 
     item = dict(

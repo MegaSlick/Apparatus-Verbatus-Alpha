@@ -286,7 +286,7 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     # they had already drifted: the check refused `multiprocessing` and the message
     # intersected a set without it, so a Recensor that imported `multiprocessing`
     # would have failed reporting an empty list of offending modules — the failure
-    # naming nothing it failed on. Found by CodeRabbit.
+    # naming nothing it failed on.
     # `runpy` is on this list because it needs none of the others: one
     # `runpy.run_path("pipeline/4_perlector/run.py")` re-invokes the reading
     # stage in this very process, importing nothing banned, and the guard would
@@ -307,7 +307,7 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     # **This guard covers direct imports only.** A dynamic route —
     # `__import__(name)` from a computed string, or an attribute reached
     # through an already-imported module — is outside what a static scan of
-    # import statements can see. Both findings above were CodeRabbit's.
+    # import statements can see.
     assert not imported & INVOCATION_MODULES, (
         f"the Recensor imports {sorted(imported & INVOCATION_MODULES)}; it appends recovery "
         "requests and never invokes the stage that answers one"
@@ -348,7 +348,7 @@ def test_every_banned_module_is_actually_caught_when_a_source_file_imports_it(mo
     member from the set (or breaking the extraction) fails here by name. Without
     it, a later edit could drop `asyncio` and a subsequent
     `asyncio.create_subprocess_exec(...)` could re-roll a reading with nothing
-    failing. Found by CodeRabbit.
+    failing.
     """
     plain = _top_level_imports([ast.parse(f"import {module}\n")])
     assert module in plain, f"a source file importing {module} was not seen at all"
