@@ -162,7 +162,7 @@ def test_nuda_and_the_pass_a_prior_are_fed_the_identical_condition(tmp_path):
     sampling variance, not witness dependence; the witness-dependence contrast
     is lectio-prior (or the sampled control) against the production Perlectio.
     Whether the approval-gated nuda arm still earns its second model call is
-    B4's three-condition matrix and Tyrel's, not this build's -- but it cannot
+    B4's three-condition matrix and the project lead's, not this build's -- but it cannot
     be answered by anyone who does not know the two arms are the same draw.
     This test makes either arm drifting a deliberate, visible change.
     """

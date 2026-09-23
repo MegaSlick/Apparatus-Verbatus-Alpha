@@ -632,7 +632,7 @@ def test_the_instrument_records_carry_the_doubt_report_too(tmp_path):
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     )
-    # A sampled instrument is Tyrel's decision and the Perlector resolves the
+    # A sampled instrument is the project lead's decision and the Perlector resolves the
     # approval record it was told to; the run refuses without one on disk. The
     # records are rebuilt from the flags by the sibling suite's own deterministic
     # helper rather than copied, so a change to the binding cannot leave this

@@ -97,7 +97,7 @@ perlector = _perlector()
 # Both instrument arms on for every act. `nuda_per_mille` and
 # `perlector_instrument_per_mille` are sealed into `config_digest`, so the whole
 # chain is given them and not only the Door, and a nonzero rate may not draw
-# without Tyrel's predeclared approval record (`resolve_sampling_approval`) --
+# without a predeclared approval record (`resolve_sampling_approval`) --
 # which is why `_write_sampling_approvals` runs between the Door and the rest.
 SAMPLING_ARGUMENTS = (
     "--nuda-per-mille",

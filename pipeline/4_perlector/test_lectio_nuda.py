@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-# A stand-in for the reference Tyrel's own approval would carry. It is required
+# A stand-in for the reference a real approval would carry. It is required
 # whenever anything is sampled, so these tests must supply one exactly as a real
 # run would; a test that could sample without it would be testing a pipeline
 # nobody is allowed to run.
@@ -373,7 +373,7 @@ def test_nuda_approval_refuses_a_corrupt_typed_record(tmp_path, corruption, refu
     if corruption == "self-hash":
         record["reason"] = "edited after approval"
     elif corruption == "approver":
-        record["approver"] = "not-Tyrel"
+        record["approver"] = "not-approved"
         record["self_hash"] = self_hash(record)
     else:
         record["schema"] = "approval-record.v9"
