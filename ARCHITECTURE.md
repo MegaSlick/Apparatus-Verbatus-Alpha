@@ -27,7 +27,8 @@ page; only one establishes the text.
 
 ```mermaid
 flowchart LR
-    A["Exemplar<br/><i>sealed source</i>"] --> B["Designator<br/><i>marks out acts</i>"]
+    A["Exemplar<br/><i>sealed source</i>"] --> I["Ink map<br/><i>where the ink lies</i>"]
+    I --> B["Designator<br/><i>marks out acts</i>"]
     B --> C["Attestatores<br/><i>witnesses report</i>"]
     C --> D["Perlector<br/><i>reads the ink</i>"]
     D --> E["Recensor<br/><i>completeness & recovery</i>"]
@@ -38,13 +39,17 @@ flowchart LR
 
 **Stage names describe responsibilities, not models.** One model may serve more than one
 role — the detector that finds act regions also reads them, and a secondary detector
-proposes regions too. Which model fills which role is configuration, not architecture.
+may propose regions too. Which model fills which role is configuration, not architecture.
 
 ## The stages
 
 **Exemplar** — the sealed source. In manuscript practice the exemplar is the original
 you copy *from*; here it is the immutable scanned page, hashed and accounted for.
 Nothing downstream may alter it.
+
+**Ink map** — measures where ink lies on each sealed page, with no model involved. It
+gives the Recensor an independent account of the page to check coverage against: an inked
+region that no act claims is a candidate for a missed act.
 
 **Designator** — *designo*, to mark out. Finds the acts on the page and marks their
 bounds.

@@ -592,7 +592,7 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
         raise RunRefusal(
             f"the data-handling policy {plan.data_gate_policy} does not admit the submission "
             f"folder: {error}.{narrowing} Listing the volume root as an approved storage root "
-            "is a disclosure decision reserved to Tyrel (hard rule 1); nothing was fetched and "
+            "is a disclosure decision reserved to the project lead; nothing was fetched and "
             "no run was started",
             report_path=plan.report_path,
         ) from error

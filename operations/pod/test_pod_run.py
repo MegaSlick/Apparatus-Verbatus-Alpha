@@ -909,7 +909,7 @@ def test_refuses_before_bootstrap_when_the_policy_does_not_admit_the_volume(
     assert runner.calls == []
     err = capsys.readouterr().err
     assert "does not admit the submission folder" in err
-    assert "reserved to Tyrel" in err
+    assert "reserved to the project lead" in err
 
 
 def test_refuses_the_pod_mount_path_when_it_is_only_a_plain_directory(

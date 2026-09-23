@@ -8,10 +8,12 @@ fight a goal, stop and raise it rather than choosing quietly.
 ## Goals
 
 1. **Read archival handwriting as close to perfectly as the ink allows.** Accuracy is
-   measured against the ink itself, not against what a witness model reported, and not
-   against what a plausible entry of that period would say.
-2. **Never lose an act.** A missed act is worse than a poorly read one: a poor reading
-   can be corrected later, but an act nobody knows exists is lost for good.
+   measured against the ink itself — in practice, against careful human transcriptions
+   (`gold/`) — not against what a witness model reported, and not against what a
+   plausible entry of that period would say.
+2. **Never lose an act** (one register entry: a baptism, marriage, burial or other unit
+   of text). A missed act is worse than a poorly read one: a poor reading can be
+   corrected later, but an act nobody knows exists is lost for good.
 3. **Flag uncertainty; never fabricate.** An unclear word stays marked as unclear. A
    gap, a guess or a suspected invention is shown as such, never smoothed over.
 4. **Be trustworthy.** Every reading can be traced back to the exact region of ink it
@@ -37,9 +39,11 @@ only from measurement (principle 8).
    in a transcript nobody reads has been lost.
 
 3. **Uncertainty is an output.** Doubt, disagreement and suspected fabrication are
-   recorded and passed on, not resolved by guessing. The pipeline does not try to correct
-   a model's behaviour; its job is to feed each model completely, record what it said, and
-   flag what looks wrong for review.
+   recorded and passed on, not resolved by guessing. No code repairs, rewrites or
+   re-rolls what a model returned. Each model is asked properly — complete input, in its
+   documented format, with a way to mark what it cannot read — and its answer is recorded
+   as given and flagged if it looks wrong. A witness is corrected only by the Perlector
+   reading the ink.
 
 4. **Evidence is never overwritten.** The source image is sealed and immutable. Witness
    testimony and readings are layers: each records, none replaces what came before.
@@ -61,8 +65,9 @@ only from measurement (principle 8).
 
 8. **Measure honestly.** A metric that cannot be measured is a failure, not a pass.
    Claims are made only about what was actually measured. The instrument must not steer
-   what it measures: a grading prompt that sets a floor or tells a reader which way to
-   argue reports the instruction, not the finding.
+   what it measures: a prompt that tells a model which answer to prefer, or what score to
+   reach, measures the prompt, not the model. Asking a reader to mark what it cannot read
+   is not steering.
 
 9. **Quality over speed.** Extra passes, more careful reading and slower runs are
    acceptable costs. Speed is never a reason to read less carefully.
@@ -81,10 +86,13 @@ only from measurement (principle 8).
     personal data and credentials never enter the repository; tests use synthetic
     fixtures.
 
+13. **Refusals speak plainly.** When the pipeline refuses or holds something, it names
+    the cause and the remedy; nobody should have to read code to know what to do next.
+
 ## Scope
 
-Source images in, established readings out: import to export. Training models,
-research, search and correction of the output happen elsewhere.
+Source images in, established readings out: import to export. Measuring the pipeline
+is in scope; training models, search and correction of the output happen elsewhere.
 
 ## Decisions
 

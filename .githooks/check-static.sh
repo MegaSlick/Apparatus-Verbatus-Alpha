@@ -6,6 +6,12 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) ||
   { echo "check-static: not inside a Git repository" >&2; exit 1; }
 cd "$root"
 
+# Use the project environment's ruff and shellcheck when it exists.
+if [ -x .venv/bin/ruff ]; then
+  PATH="$root/.venv/bin:$PATH"
+  export PATH
+fi
+
 sh .githooks/check-documents.sh
 git diff --check HEAD --
 ruff check .

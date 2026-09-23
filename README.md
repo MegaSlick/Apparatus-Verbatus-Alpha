@@ -4,22 +4,23 @@ Reads handwritten historical parish and civil registers and recovers the *ipsiss
 verba*, the very words on the page. Several vision models act as witnesses and report
 what they see in each entry; a separate reader model, the **Perlector**, then reads the
 ink itself, uses the witnesses only as clues, and establishes the text. Every reading
-traces back to the exact region of the image it came from, and anything uncertain is
-flagged rather than guessed.
+traces back to the exact region of the image it came from, and uncertainty is to be
+flagged, never guessed.
 
 It is being developed on French-language parish registers from Quebec, whose
 handwriting spans centuries.
 
 **Status: alpha.** The staged pipeline, its accounting and its export are implemented and
 tested on synthetic pages. Real pages have run on a GPU pod through the three witnesses,
-but no real run has yet produced a final export, so accuracy is not yet established.
+but no real run has yet produced a final export, so accuracy is not yet established. The
+live reader does not yet mark word-level uncertainty; the export says so for every act.
 
 ## How it works
 
 ```
-page images → Exemplar → Designator → Attestatores → Perlector → Recensor → Archetypus → Armarium
-              sealed      finds the     witness       reads the    checks     established   export
-              source      entries       models        ink          coverage   reading
+page images → Exemplar → Ink map → Designator → Attestatores → Perlector → Recensor → Archetypus → Armarium
+              sealed     where the   finds the    witness        reads the   checks     established  export
+              source     ink lies    entries      models         ink         coverage   reading
 ```
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains each stage and why it is shaped that way;
@@ -38,17 +39,19 @@ changes.
 
 ## Getting started
 
-Requirements: Python 3.12 or newer and [uv](https://docs.astral.sh/uv/) 0.12.1.
+Requirements: Python 3.12 or newer and [uv](https://docs.astral.sh/uv/) exactly 0.12.1
+(the project pins it and uv refuses other versions).
 
 ```sh
 uv sync --frozen --group test --group audit   # create .venv from the lockfile
 sh .githooks/install.sh                        # arm the git hooks
-sh .githooks/check-fast.sh                     # quick checks and tests
+sh .githooks/check-static.sh                   # lint, format and document checks (fast)
 ```
 
-**Try it without a GPU.** The default model roster (`config/models.toml`) uses small
-stand-ins, so the whole pipeline runs locally on the synthetic pages in
-`proof/fixtures/`:
+**Try it without a GPU.** The default model roster (`config/models.toml`) uses fixture
+stand-ins in place of models, with answers scripted by the chosen scenario, so a local
+run on the synthetic pages in `proof/fixtures/` exercises sealing, accounting, recovery
+and export — not reading:
 
 ```sh
 .venv/bin/python pipeline/orchestrator/run.py --fixture synthetic-two-page-v0 \
@@ -57,7 +60,8 @@ stand-ins, so the whole pipeline runs locally on the synthetic pages in
 
 Each stage writes its sealed output under the run root, ending in `7_armarium/`.
 
-**Real pages** need the real roster and a Linux GPU machine running vLLM; the RunPod
+**Real pages** need the real roster (`--models-config config/models-real.toml`) and a
+Linux GPU machine running vLLM; the RunPod
 tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC
 or PDF. Output is a sealed ZIP bundle with a manifest, and it can include a text bundle,
 a searchable SQLite database, JSONL, and the items held for human review
@@ -74,6 +78,7 @@ a searchable SQLite database, JSONL, and the items held for human review
 | `proof/` | small synthetic fixtures that are safe to publish |
 | `gold/` | tooling for building human-checked reference samples |
 | `.githooks/` | git hooks and the check scripts CI runs |
+| `private/`, `scriptorium/` | local only; gitignored except their READMEs |
 
 ## Contributing
 

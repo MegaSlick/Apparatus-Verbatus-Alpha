@@ -9,26 +9,15 @@ if [ -z "$message" ] || [ ! -f "$message" ]; then
   exit 1
 fi
 
-# Attribution exemptions never exempt secrets. Scan the exact message file
-# before any merge/fixup/ALLOW_UNATTRIBUTED exit; CI repeats the same scan over
-# reachable commit messages so bypassing this local hook cannot clean history.
+# CI repeats this scan over every reachable commit message.
 ingress="$(dirname "$0")/check_ingress.py"
 if [ ! -f "$ingress" ]; then
   echo "  BLOCKED: $ingress is missing, so the commit message cannot be checked." >&2
   exit 1
 fi
-# A finding and a failure are opposite states, and the operator is told which
-# one happened. `check_ingress.py` exits 1 when it recognized a credential and 2
-# when it could not read what it was pointed at — a FIFO, a socket, a device, an
-# unreadable path, a scanner that itself broke. Reporting the second as the
-# first asserts a measurement nobody took (GOVERNANCE 10) and misdirects whoever
-# is trying to work out why their commit was refused. Both still block: a check
-# that cannot run is a failure, not a pass.
-#
-# The status is captured on its own line, never with `if ! cmd; then ... $?`:
-# after an `if` compound completes, `$?` is the status of the compound, not of
-# its condition, so reading the exit code that way yields 0 and every failure
-# would report as the wrong kind.
+# check_ingress.py exits 1 for a recognised credential and 2 when it could not read
+# its input; both block, but the message says which. The status is captured on its
+# own line because `$?` after an `if` compound is the compound's status.
 python3 "$ingress" --message-file "$message" >/dev/null
 status=$?
 if [ "$status" -ne 0 ]; then

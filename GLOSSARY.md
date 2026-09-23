@@ -26,9 +26,19 @@ than a poorly read one.
 **witness** — a model that reads an act and reports what it saw. Its report is
 evidence, not an answer.
 
-**chair** — a numbered role in the pipeline that one model fills, bound to that role only
-in `config/models.toml`. *Attestator 1* is a chair; the model sitting in it can be
-swapped without touching code.
+**chair** — a numbered role in the pipeline that one model fills. The binding lives in a
+model roster under `config/`: `models.toml` holds small local stand-ins and
+`models-real.toml` the real models. *Attestator 1* is a chair; the model sitting in it
+can be swapped without touching code.
+
+**door** — the intake step before the Exemplar: it checks and seals what was submitted,
+and records anything it refuses.
+
+**sealed** — written once with a recorded hash, so any later change is detectable.
+
+**held** — set aside for human review rather than silently dropped or passed as done.
+
+**run tree** — the directory one run writes, with one folder per stage.
 
 **pod** — a rented cloud machine with a GPU, billed by the hour while it exists.
 
@@ -37,6 +47,7 @@ swapped without touching code.
 | Term | Plain meaning here |
 |---|---|
 | **Exemplar** | The sealed, immutable source page. (In manuscript practice, the original a scribe copies from.) |
+| **Ink map** | Measures where ink lies on each sealed page, without any model, so the Recensor can check that every inked region ended up in an act. |
 | **Designator** | Finds the acts on a page and marks their bounds. It may use textual cues, but never establishes the text. |
 | **Attestator** | One witness model. Plural **Attestatores**. |
 | **Perlector** | The reader: reads the ink itself and establishes the text, using witness testimony as clues. |
@@ -46,7 +57,7 @@ swapped without touching code.
 
 ## What the stages produce
 
-**Testimonium** — one witness's report on an act: unverified, of uncertain quality,
+**Testimonium** (plural *Testimonia*) — one witness's report on an act: unverified, of uncertain quality,
 never final, always kept. It carries the identity and revision of the model that made it.
 
 **Lectio** — one reading pass by the Perlector, either shown witness testimony

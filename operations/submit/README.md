@@ -39,7 +39,7 @@ yes cut the approval record it's not really needed."* A submission used to also 
 a current data-gate approval-record artifact, verified before a byte was hashed and
 named in the sealed manifest. That requirement is gone: none of this material ever
 reaches git regardless of any per-run sign-off — it runs on a GPU host,
-`workbench/` is gitignored, and an ingress check plus a pre-push payload scan
+`workbench/` is gitignored, and an ingress check plus CI's full-history payload scan
 already cover that mechanically.
 
 What remains, and is unaffected: a folder handed to this tool is never a fixture, by

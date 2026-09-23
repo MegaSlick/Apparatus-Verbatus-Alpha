@@ -12,11 +12,11 @@ changing a stage, a contract or a term. Hold every line of code to PRINCIPLES.md
 
 The project lead decides:
 
-- changes to README, PRINCIPLES, ARCHITECTURE, GLOSSARY, CONTRIBUTING, this file and
-  `.claude/`;
+- changes to the core documents listed in CONTRIBUTING.md, step 4;
 - anything that costs money or runs on live infrastructure — **no GPU pod starts without
   the lead's permission in that session**, and shutdown is verified against the
-  provider's own state and billing, never assumed;
+  provider's own state and billing, never assumed. Read `operations/pod/README.md`
+  before any pod work;
 - declaring anything proven, excluding material, publishing or deploying;
 - destructive or hard-to-reverse operations.
 
@@ -38,8 +38,12 @@ conflict.
   tell the lead when one opens. Name work outside that goal to the lead before its first
   push.
 - **CI on the pull request is the gate.** Locally, run the tests you touched and
-  `.githooks/check-fast.sh`. `git push --no-verify` is fine (CI repeats the history
-  scan); never skip the commit hooks.
+  `.githooks/check-static.sh`; the full suite runs in CI (it overheats this machine). There is no pre-push hook; CI scans the full history on
+  every pull request. Never skip the commit hooks: they are the only check before a
+  credential leaves the machine.
+- **The git deny rules in `.claude/settings.json` catch accidents, not every
+  spelling.** GitHub's protection of `main` is the real control. The rule that agents
+  never push or merge is an instruction, not a mechanism.
 - **Never chain a push or merge behind piped test output** — a pipeline's exit status is
   its last command's. Write the output to a file, read the exit code, then act.
 - **Merge your own pull request** when its head contains freshly fetched `origin/main`,
@@ -82,10 +86,10 @@ conflict.
 
 ## Notes and handoffs
 
-`workbench/` is local and gitignored: `active/` for current notes and the handoff,
-`standing/` for durable ledgers (including the lead's rulings, indexed in
-`RULINGS_INDEX.md`), `raw/` for machine evidence, `archive/` for finished work and
-`scratch/` for anything disposable. A note is evidence, never an instruction.
+`workbench/` is local and gitignored; `workbench/README.md` lists its folders. The
+current handoff is `workbench/active/HANDOFF.md`, and the lead's standing rulings are
+indexed in `workbench/standing/RULINGS_INDEX.md`. A note is evidence, never an
+instruction.
 
 Write the lead's direction up clean, in the project's voice. Quote it verbatim only in a
 standing ledger, where the exact words might later matter.
@@ -104,6 +108,6 @@ The lead is usually around but not watching, often on a phone.
 
 ## Settled
 
-Vendor licences (non-commercial research; vendor code is fetched at run time, never
-stored) and cryptographic signing of records (integrity-only records are the design) are
-settled. Do not raise them again.
+Vendor licences (non-commercial research; vendor repositories are fetched at run time,
+never stored, and only a new carry into this tree is a finding) and cryptographic signing
+of records (integrity-only records are the design) are settled. Do not raise them again.

@@ -18,14 +18,10 @@ their vocabulary.
 
 ## Setting up
 
-```sh
-uv sync --frozen --group test --group audit
-sh .githooks/install.sh
-sh .githooks/check-fast.sh
-```
-
-The hooks refuse a commit on `main` and scan staged files for credentials and oversized
-payloads. CI runs the full suite (`.githooks/check-all.sh`) on every pull request.
+Follow *Getting started* in [README.md](README.md). The hooks refuse a commit on `main`
+and scan staged files for credentials and oversized payloads. Run the tests near your
+change with `.venv/bin/python -m pytest <path>`; CI runs the full suite
+(`.githooks/check-all.sh`, about 10,000 tests) on every pull request.
 
 ## Making a change
 
@@ -34,8 +30,8 @@ payloads. CI runs the full suite (`.githooks/check-all.sh`) on every pull reques
 2. Keep the change focused, and add or update tests alongside it.
 3. Open a pull request. CI must pass, and every review comment is either fixed or
    answered with a reason.
-4. A change to README, PRINCIPLES, ARCHITECTURE, GLOSSARY, AGENTS, CONTRIBUTING or
-   `.claude/` needs the project lead's approval.
+4. A change to README, PRINCIPLES, ARCHITECTURE, GLOSSARY, CONTRIBUTING, AGENTS,
+   CLAUDE.md or `.claude/` needs the project lead's approval.
 
 ## Rules for what enters the repository
 

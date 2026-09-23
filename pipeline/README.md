@@ -1,7 +1,8 @@
 # The pipeline
 
-Seven stages, numbered in flow order. A directory listing here reads top to bottom
-exactly like the diagram in [ARCHITECTURE.md](../ARCHITECTURE.md).
+The stages, numbered in flow order: `0_triage` (optional sorting before intake), the
+Exemplar and its intake door, the ink map, then the stages drawn in
+[ARCHITECTURE.md](../ARCHITECTURE.md), and `orchestrator/`, which runs them.
 
 The numbers also make a direct statement such as `import 4_perlector` invalid Python.
 That is a useful deterrent and keeps the flow visible, but it is not a complete

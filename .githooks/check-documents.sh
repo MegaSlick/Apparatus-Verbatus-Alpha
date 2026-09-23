@@ -19,11 +19,19 @@ for file in $documents; do
   fi
   # Print only line numbers and dates, never the line: this runs before the credential
   # scan in CI, and a whole line could carry a secret.
-  if dates=$(grep -nEo '20[0-9]{2}-[0-9]{2}-[0-9]{2}' "$file"); then
-    printf '%s\n' "$dates"
-    echo "$file carries a date; dated state belongs in workbench/." >&2
-    failed=1
-  fi
+  dates=$(grep -nEo '20[0-9]{2}-[0-9]{2}-[0-9]{2}' "$file")
+  case $? in
+    0)
+      printf '%s\n' "$dates"
+      echo "$file carries a date; dated state belongs in workbench/." >&2
+      failed=1
+      ;;
+    1) ;;
+    *)
+      echo "could not read $file." >&2
+      failed=1
+      ;;
+  esac
 done
 
 # Paths with control characters could split one record into two for later checks.

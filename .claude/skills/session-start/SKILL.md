@@ -16,6 +16,7 @@ disable-model-invocation: true
    if not, run `sh .githooks/install.sh`. If you are on `main`, a detached head, or a
    branch whose work has merged, create a fresh branch from `origin/main` named for the
    task.
-4. **Check plan usage** and note it if the weekly limit is close.
+4. **Check the workspace and usage.** Run `python3 .githooks/tidy.py` as a report, and
+   check plan usage; note it if the weekly limit is close.
 5. **Begin.** Read the goal back in one line, name anything in it that needs the lead's
    decision, and start.

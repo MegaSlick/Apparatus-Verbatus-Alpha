@@ -100,7 +100,7 @@ def make_static_gate_repo(path, broken=None):
         "stub-bin/sh",
         "stub-bin/dash",
     )
-    git(repo, "commit", "-qm", "fixture", env={"ALLOW_UNATTRIBUTED": "1"})
+    git(repo, "commit", "-qm", "fixture")
     log = repo / "sh-n.log"
     environment = {"PATH": f"{stubs}:{os.environ['PATH']}", "SH_N_LOG": str(log)}
     return repo, listed, log, environment
@@ -200,6 +200,14 @@ def test_the_root_readme_is_scanned_for_dates_like_every_other_document(tmp_path
     assert run_hook(repo, "check-documents.sh").returncode == 0
 
 
+def test_document_check_reports_a_missing_core_document(tmp_path):
+    repo = make_document_repo(tmp_path / "repo")
+    (repo / "PRINCIPLES.md").unlink()
+    result = run_hook(repo, "check-documents.sh")
+    assert result.returncode == 1
+    assert "missing core document: PRINCIPLES.md" in result.stderr
+
+
 def test_document_check_rejects_control_character_paths(tmp_path):
     # A newline in a filename could split one record into two for later checks.
     repo = make_document_repo(tmp_path / "repo")
@@ -230,7 +238,7 @@ def test_commit_message_with_a_credential_is_refused():
 def make_commit_message_repo(path):
     repo = init_repo(path)
     copy_hooks(repo, "commit-msg", "check_ingress.py")
-    commit_file(repo, "safe.txt", "base\n", env={"ALLOW_UNATTRIBUTED": "1"})
+    commit_file(repo, "safe.txt", "base\n")
     return repo
 
 
@@ -298,6 +306,33 @@ def make_precommit_repo(path, branch="work/example"):
     repo = init_repo(path, branch)
     copy_hooks(repo, "pre-commit", "check_ingress.py")
     return repo
+
+
+def test_pre_commit_refuses_a_staged_credential_without_echoing_it(tmp_path):
+    repo = make_precommit_repo(tmp_path / "repo")
+    (repo / "config.txt").write_text(f"token = {SAMPLE_SECRET}\n")
+    git(repo, "add", "config.txt")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1
+    assert "ingress" in result.stderr
+    assert SAMPLE_SECRET not in result.stdout + result.stderr
+    # Positive control: the same hook accepts clean staged content.
+    (repo / "config.txt").write_text("token = placeholder\n")
+    git(repo, "add", "config.txt")
+    assert run_hook(repo, "pre-commit").returncode == 0
+
+
+def test_pre_commit_refuses_a_detached_head_unless_asked(tmp_path):
+    repo = make_precommit_repo(tmp_path / "repo")
+    commit_file(repo, "base.txt", "base\n")
+    git(repo, "switch", "-q", "--detach")
+    (repo / "safe.txt").write_text("safe\n")
+    git(repo, "add", "safe.txt")
+    blocked = run_hook(repo, "pre-commit")
+    assert blocked.returncode == 1
+    assert "detached" in blocked.stderr
+    allowed = run_hook(repo, "pre-commit", env={"ALLOW_DETACHED_COMMIT": "1"})
+    assert allowed.returncode == 0, allowed.stderr
 
 
 def test_pre_commit_hard_blocks_main_even_if_old_bypass_is_set(tmp_path):
@@ -424,7 +459,6 @@ def test_merge_path_runs_the_same_precommit_boundary(tmp_path):
         repo,
         "second.txt",
         "second\n",
-        env={"ALLOW_UNATTRIBUTED": "1"},
     )
     git(repo, "switch", "-q", "main")
     blocked = git(repo, "merge", "--no-edit", "--no-ff", "work/second", check=False)

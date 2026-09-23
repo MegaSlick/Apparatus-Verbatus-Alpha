@@ -5,18 +5,22 @@
   },
   "permissions": {
     "deny": [
-      "Bash(git push origin main:*)",
-      "Bash(git push origin HEAD:main:*)",
-      "Bash(git push --force:*)",
-      "Bash(git push -f:*)",
-      "Bash(git push --force-with-lease:*)",
-      "Bash(git push --mirror:*)",
-      "Bash(git push --delete:*)",
-      "Bash(git config core.hooksPath:*)",
-      "Bash(git filter-branch:*)",
-      "Bash(git filter-repo:*)",
-      "Bash(git reset --hard:*)",
-      "Bash(runpodctl:*)"
+      "Bash(git push origin main*)",
+      "Bash(git push*:main*)",
+      "Bash(git push*refs/heads/main*)",
+      "Bash(git*push*--force*)",
+      "Bash(git*push* -f*)",
+      "Bash(git*push*--mirror*)",
+      "Bash(git*push*--delete*)",
+      "Bash(git*commit*--no-verify*)",
+      "Bash(git*commit* -n*)",
+      "Bash(git*-c core.hooksPath*)",
+      "Bash(git config core.hooksPath *)",
+      "Bash(git config --unset core.hooksPath*)",
+      "Bash(git*filter-branch*)",
+      "Bash(git*filter-repo*)",
+      "Bash(git*reset --hard*)",
+      "Bash(runpodctl*)"
     ]
   },
   "hooks": {

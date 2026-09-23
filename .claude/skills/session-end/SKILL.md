@@ -9,9 +9,9 @@ disable-model-invocation: true
 Run this when the lead asks to close, or when plan usage reaches the wind-down point.
 
 1. **Establish state.** `git fetch origin`, `git status --short --branch`,
-   `git rev-list --left-right --count origin/main...HEAD` and `git worktree list`. Name
-   every check that was skipped or failed. Never tidy by deleting evidence or discarding
-   work.
+   `git rev-list --left-right --count origin/main...HEAD`, `git worktree list` and
+   `python3 .githooks/tidy.py`. Name every check that was skipped or failed. Never tidy
+   by deleting evidence or discarding work.
 2. **File notes.** Move finished notes, the outgoing handoff included, into one
    `workbench/archive/<date>_<topic>/` directory. Never overwrite an archived file.
 3. **Write the handoff** in `workbench/active/HANDOFF.md`, holding only what the next
