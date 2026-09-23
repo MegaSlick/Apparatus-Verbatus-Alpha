@@ -1785,8 +1785,7 @@ def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_
     Half of this test is the repair itself: the pass-scoped stop-reason row that
     lets a fixture say "Pass B stopped, the re-proof was cut off" did not exist
     before it, so the pre-repair failure is the audit's own `reproduce.py` (two
-    delivered acts under a complete aggregate, exit 0), retained under
-    workbench/raw/independent-audit-2026-09-10 and re-reproduced on 0aa08db7e4.
+    delivered acts under a complete aggregate, exit 0), re-reproduced on 0aa08db7e4.
     """
     result = _run(tmp_path / "runs", scenario="audit-reproof-cutoff")
     assert result.returncode == 3, result.stderr

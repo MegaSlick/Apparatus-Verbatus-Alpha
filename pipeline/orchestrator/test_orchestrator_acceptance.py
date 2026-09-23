@@ -1473,9 +1473,6 @@ def _perlector_dissent():
 # and Honesty/Shared disclosure contracts account for 96/107 becoming 100/111 files.
 # All three control comparisons have zero unexplained leaves or reference failures.
 # The v7/v8-aware reducer and its persisted-integrity checks remain intact.
-# Evidence: workbench/raw/codex-queue-2026-09-08/grouping/acceptance-integrated-7ce178e0,
-# acceptance-causal-attribution-7ce178e0-bound.json and acceptance-output-review-7ce178e0.md.
-# Earlier attribution text is preserved beside them and in Git history.
 # Three fixed 17-page surveys reproduce 14 measured/3 refused and every deterministic
 # field. Their grouping rectangles are a coverage surrogate, not served final crops,
 # pairwise continuation proof or a full real-material pipeline trial. A separate
@@ -1511,9 +1508,6 @@ def _perlector_dissent():
 # The embedded main-versus-original control is identical to its retained inventory.
 # All six comparisons have exhaustive item assignments and zero ambiguous pairs.
 # The semantic reducer and v7/v8 integrity checks are unchanged.
-# Evidence: workbench/raw/codex-queue-2026-09-08/audit-gates/
-# acceptance-integrated-26dd5e07/measurement.json,
-# acceptance-output-review-26dd5e07.md and acceptance-output-assignments-26dd5e07.json.
 # Measurement SHA256: 9f058088b692424d2725f93c7fed47c38f5904bfe6d6cadcbc703e8c1eedf634.
 # Historical calibration has 47 pages, 44 measurable and 3 refused; all measurable
 # pages contain a spanning component. Group rectangles are a coverage surrogate;
@@ -1552,9 +1546,6 @@ def _perlector_dissent():
 # outcome, category, crop geometry, count, terminal status, file count or exit code
 # changes. The pins below are read from these two tests' own computation over the
 # candidate; the bare-CLI measurement attributes the change and does not mint the pin.
-# Evidence: workbench/raw/audit-fixes-2026-09-10/f1-pin-attribution/ and
-# f1-fix-suites/pytest.log (retained outside Git, like every other evidence
-# directory this file cites).
 # The reader's own doubt report (independent audit of 2026-09-10, F2), measured
 # three times as the branch was reviewed and corrected: first at a4833a2a14, then
 # at c1353558e5 (which widened the three instrument records by the same field),
@@ -1596,9 +1587,6 @@ def _perlector_dissent():
 # exit code changes. The pins below are read from these two tests' own
 # computation over the candidate; the bare-CLI measurement attributes the change
 # and does not mint the pin.
-# Evidence: workbench/raw/audit-fixes-2026-09-11/f2-pin-attribution/round3/ and
-# f2-fix/pins-round3.log (retained outside Git, like every other evidence
-# directory this file cites).
 # The pre-launch review's G1 correction (2026-09-14, F082/F088/F089): the
 # truncation instrument's length signal made scale-invariant under a floor
 # sealed in `config/perlector_protocol.toml`, and the coverage audit's noise
@@ -1630,8 +1618,6 @@ def _perlector_dissent():
 # exit code changes. The pins below are read from these two tests' own
 # computation over the candidate; the attribution attributes the change and
 # does not mint the pin.
-# Evidence: workbench/raw/prelaunch-g1-2026-09-14/pin-attribution/ (retained
-# outside Git, like every other evidence directory this file cites).
 # The independent audit of that correction (2026-09-14) moved the pins once
 # more, and the attribution was taken the same way: two fresh runs of the
 # audited head 48cd47e7's own tree (exported with `git archive`, run under its
