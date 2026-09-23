@@ -1,14 +1,13 @@
 """The outcome algebra: total, closed, and unable to grow a picker.
 
-Meta-invariant #93 — tests record the ruling they enforce, verbatim, with date.
-The ruling behind most of this file is harvest invariant #10: "Every unit
-(page/act) entering a stage is accounted for at the stage boundary as exactly one
-of completed / unresolved-with-evidence / failed; a unit in none of those sets is a
-FATAL accounting imbalance, never a warning."
+Harvest invariant #10 governs most of this file: every unit (page/act) entering
+a stage is accounted for at the stage boundary as exactly one of
+completed / unresolved-with-evidence / failed; a unit in none of those sets is
+a FATAL accounting imbalance, never a warning.
 
-Meta-invariant #88 — no test here reports success over an empty population. Every
-loop asserts an exact expected count, never "at least one", so a vocabulary that
-quietly emptied would fail rather than pass vacuously.
+No test here reports success over an empty population. Every loop asserts an
+exact expected count, never "at least one", so a vocabulary that quietly
+emptied would fail rather than pass vacuously.
 """
 
 import random
@@ -82,18 +81,15 @@ def test_every_outcome_has_exactly_one_class_and_one_terminal_decision():
     assert checked == sum(EXPECTED_VOCABULARY_SIZES.values())
 
 
-# --- Blocker 4 / Sol finding B-2, closed and pinned shut -----------------------
-
-
 def test_witness_failed_is_a_member_of_the_closed_vocabulary():
-    """Sol B-2, 2026-07-30: "add `failed` to the witness outcome vocabulary and
-    map it through the Recensor and Armarium aggregates."
+    """`failed` must be a member of the witness outcome vocabulary, mapped
+    through the Recensor and Armarium aggregates.
 
-    Spec 07 requires a failed re-read to derive `current=FAILED` (its retention
-    ruling of 2026-07-30: attempts are append-only, "current" is the latest
-    attempt with its honest status). The vocabulary listed only read / not-run /
-    dead / genuinely-empty, so the supposedly closed algebra had no member for the
-    exact case the ruling created. This test is the hole, welded.
+    Spec 07 requires a failed re-read to derive `current=FAILED` (attempts are
+    append-only, and "current" is the latest attempt with its honest status).
+    The vocabulary listed only read / not-run / dead / genuinely-empty, so the
+    supposedly closed algebra had no member for that case. This test is the
+    hole, welded.
     """
     assert classify(ATTESTATORES, "failed") is OutcomeClass.FAILED
     assert terminal_category(ATTESTATORES, "failed") is None
@@ -134,14 +130,14 @@ def test_armarium_boundary_evidence_is_nonterminal_not_delivered_output():
 
 
 def test_no_witness_outcome_terminates_an_act():
-    """GOVERNANCE 3 — the Perlector never picks, and no stage selects a winner
+    """Principle 1 — the Perlector never picks, and no stage selects a winner
     among witnesses. If any witness outcome ever mapped to a terminal category,
     chair results would decide an act's fate: a picker wearing an accounting name.
 
     Scope, stated so this is not read as more than it is: this catches one specific
     shape of accidental picker — an *outcome* that terminates an act. A stage that
     selected among witnesses without touching this mapping would pass here untouched,
-    so this is not a general guarantee against hard rule 8. `pipeline/5_recensor`'s
+    so this is not a general guarantee against principle 1. `pipeline/5_recensor`'s
     quality-firewall tests constrain the recovery gate's inputs, which is the other half.
     """
     terminating = [
@@ -161,7 +157,7 @@ def test_perlector_failures_flow_to_the_recensor_rather_than_terminating():
 
 
 def test_no_readable_text_is_unresolved_until_a_blank_proof_exists():
-    """Silence is not blank proof (ruling 15), so it cannot reach an Archetypus.
+    """Silence is not blank proof, so it cannot reach an Archetypus.
 
     The Recensor's existing unresolved branch holds this status. A future
     proof-bearing `confirmed-blank` may complete, but a Perlector saying it found
@@ -198,7 +194,7 @@ def test_fatal_accounting_is_not_catchable_as_a_schema_refusal():
 
 
 def test_excluded_without_an_approval_record_is_refused():
-    """GOVERNANCE: only Tyrel approves an exclusion. A claimed approval with no
+    """Only the project lead approves an exclusion. A claimed approval with no
     artifact is no approval."""
     with pytest.raises(ApprovalRefusal):
         require_approval(DESIGNATOR, "excluded", None)
@@ -293,7 +289,7 @@ def test_a_fully_delivered_well_witnessed_run_is_complete():
 
 
 def test_a_run_that_accounted_for_nothing_is_not_complete():
-    """GOVERNANCE 2 — "complete" is refused unless everything reconciles. Over an
+    """principle 2 — "complete" is refused unless everything reconciles. Over an
     empty population every loop runs zero times and `reasons` stays empty, so the
     aggregate used to fall through to a green verdict asserting that nothing had
     gone wrong with nothing. An empty population reconciles vacuously, not actually."""
@@ -316,7 +312,7 @@ def test_a_sealed_page_carrying_no_acts_is_unresolved_not_inferred_blank():
 
 
 def test_one_silent_page_beside_a_busy_one_still_forces_partial():
-    """Ruling 15 at page granularity, which is the granularity it was given at.
+    """The same silent-page rule, at page granularity.
 
     The run-level check asked only whether the run produced *any* acts, so a single
     silent page among busy ones had its proof obligation discharged by its
@@ -387,7 +383,7 @@ def test_attribution_naming_an_act_or_a_page_the_run_never_had_is_fatal():
 
 
 def test_an_edge_hold_forces_partial_and_names_the_page_once():
-    """GOVERNANCE 2 at page scope, and a held page counted as one page.
+    """principle 2 at page scope, and a held page counted as one page.
 
     A page whose edge ink no Designator crop claimed keeps the run partial even
     when every act cut from it was delivered, because no act can own that ink
@@ -464,7 +460,7 @@ def test_an_act_marked_out_on_a_page_the_exemplar_never_sealed_is_fatal():
 
 
 def test_a_held_act_forces_partial_and_names_itself():
-    """GOVERNANCE 2 — a partial result is visibly partial; "complete" is refused
+    """principle 2 — a partial result is visibly partial; "complete" is refused
     unless everything reconciles."""
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED, "act_b": ArmariumCategory.HELD_FOR_REVIEW},
@@ -505,7 +501,7 @@ def test_aggregate_reason_order_does_not_depend_on_mapping_insertion_order():
 
 
 def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered():
-    """The strict reading of GOVERNANCE 2, and queued for Tyrel in spec 01: an act
+    """The strict reading of principle 2, and queued for the project lead in spec 01: an act
     delivered on two live chairs against a floor of three stays `delivered`, and
     the run says partial with the shortfall named. The act's own category is
     untouched — witness coverage never demotes text."""
@@ -541,9 +537,9 @@ def test_a_category_that_is_not_a_category_is_fatal():
 
 
 def test_a_fully_sealed_census_leaves_a_complete_run_complete():
-    """Every sealed page produced an act, so nothing is silent and nothing is
-    inferred. This case previously carried only one act across two sealed pages and
-    still read `complete`, which is the blank-by-silence hole one page wide."""
+    """Every sealed page produced its own act, so nothing is silent and nothing
+    is inferred: this is the fully-covered case the blank-by-silence check must
+    still pass, one act per page rather than one act standing in for both."""
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED, "act_b": ArmariumCategory.DELIVERED},
         {
@@ -560,7 +556,7 @@ def test_a_fully_sealed_census_leaves_a_complete_run_complete():
 
 
 def test_a_refused_page_forces_partial_and_names_the_loss():
-    """GOVERNANCE 2, at page granularity. Before this, the seal was the only
+    """principle 2, at page granularity. Before this, the seal was the only
     conservation authority and it never mentioned pages: a run that lost a whole
     page at the door could still report `status: complete, reasons: []`."""
     aggregate = run_aggregate(
@@ -663,7 +659,7 @@ def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class()
     witness that read its page and did not align into this act. Printing the
     wider number put a floor-satisfying count next to an under-witnessed
     verdict: "act act_a is under-witnessed (3 of a floor of 3)", a sentence
-    that refutes itself, which is exactly the shape GOVERNANCE 2 and 10 refuse.
+    that refutes itself, which is exactly the shape principle 2 and principle 8 refuse.
 
     Written on this audit: the repair landed with no named test holding it, and
     the fixture cannot produce the divergence today.
@@ -774,7 +770,7 @@ def test_a_bare_boolean_attachment_earns_no_native_measurement_claim():
     `granularity_basis` says *how* the count was reached and travels in the
     receipt. Derived from the mere presence of the argument, the booleans below
     would have reported a native-overlap measurement nothing performed
-    (GOVERNANCE 10).
+    (principle 90).
     """
     coverage = witness_coverage(
         {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
@@ -824,7 +820,7 @@ def test_granularity_identity_is_executable_for_interim_and_native_bases():
         _validate_coverage(candidate, require_complete_granularity=True)
     # Widening the accepted set from one basis to two must not widen it to any
     # string: an unnamed basis would let a receipt claim a measurement nothing
-    # in this pipeline performs (GOVERNANCE 10).
+    # in this pipeline performs (principle 90).
     with pytest.raises(SchemaRefusal, match="honest granularity measurement basis"):
         _validate_coverage(
             {**coverage, "granularity_basis": "invented-basis"},
@@ -861,12 +857,12 @@ def test_an_attached_but_incomparable_witness_is_page_only_and_cannot_meet_the_f
 
 # --- The established text's own status: damage the category cannot express ------
 #
-# Opus-F1 / Sol-S4 (T0 export honesty). `delivered` says where an act ended and nothing about
+# `delivered` says where an act ended and nothing about
 # whether the reading that left is whole, so an act whose own Perlectio recorded a
 # gap -- ink the reader knows is present and could not read -- aggregated to
-# `complete` with an empty reason list. GOVERNANCE 2: a partial result is visibly
-# partial, and Tyrel expects damage to be ordinary ("many of our records are
-# damaged"), so this is the common case rather than the edge one.
+# `complete` with an empty reason list. Principle 2: a partial result is visibly
+# partial, and damage is expected to be ordinary rather than the edge case —
+# many records are damaged.
 
 
 def _delivered_with(status=None, **kwargs):
@@ -909,7 +905,7 @@ def test_a_delivered_act_that_established_no_readable_text_is_named():
 
 
 def test_a_delivered_act_with_no_text_status_is_named_rather_than_assumed_whole():
-    """GOVERNANCE 10 — a metric that cannot be measured is a failure, not a pass.
+    """principle 90 — a metric that cannot be measured is a failure, not a pass.
 
     The same self-enforcement as the missing page attribution beside it: a caller
     that supplies nothing is told so, because a default of "every delivered act
@@ -1204,7 +1200,7 @@ def test_no_anchor_line_is_located_by_a_record_that_did_not_locate_one(alignment
     trivially attached because it was genuinely empty, and no line for this act
     was found"; the zero-length span is what that trivial attach carries. Read as
     "aligned, therefore located", each of them would put a chair on the witness
-    floor for a slice with no characters in it (GOVERNANCE 10).
+    floor for a slice with no characters in it (principle 90).
 
     The malformed shapes are here for a different reason: this is read from
     untrusted retained evidence, and it must answer `False` rather than raise a
@@ -1296,7 +1292,7 @@ def test_the_anchor_line_run_floor_sits_between_coincidence_and_a_real_reading()
 
     What this deliberately does not claim: that the floor separates a badly
     misread line from a different act written in the same register formula. It
-    does not, and no character-level measure does (GOVERNANCE 10) -- the same
+    does not, and no character-level measure does (principle 90) -- the same
     formula really does share long runs. The floor refuses a coincidence, which
     is what the review found it letting through.
     """

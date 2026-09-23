@@ -7,7 +7,7 @@ Attestatores' own Chandra witness contract (`common/chandra_layout.py`, read
 by `pipeline/3_attestatores/chandra.py`) converts its normalized boxes
 through `to_page_bounds` below. The two calls are separate readings -- every
 witness runs its own full pass and nothing is captured from one call into
-another (Tyrel's ruling, 2026-09-02) -- so what they share is the conversion,
+another -- so what they share is the conversion,
 never the bytes. A stage may not import another stage's module, so that
 conversion has to live where neither owns it.
 
@@ -18,7 +18,7 @@ empty (the "sees no text" case). Any other key, at the top level or inside an ac
 `unverified-response-schema`: the wire shape is unverified (`chandra.py`'s own
 docstring says why -- the vendor publishes no response specimen), so nothing
 outside the declared shape is read as though it were understood. Nothing here
-repairs, reorders, trims, or defaults a malformed answer (GOVERNANCE 7); a
+repairs, reorders, trims, or defaults a malformed answer (principle 3); a
 truncated or malformed response is refused whole, never salvaged in part.
 
 **Geometry.** Box entries are JSON numbers in `[0, 1000]`, finite, with
@@ -150,7 +150,7 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     JSON envelope (v2): the two closed wire contracts read the same normalized
     answer shape from the same chair on the same page, and a duplicate-member
     rule that drifted between them would mean one reading refusing a body the
-    other accepted (CodeRabbit round 1, T6). That module is retired -- both
+    other accepted. That module is retired -- both
     Chandra chairs now read the vendor's own layout grammar instead
     (`common/chandra_layout.py`, via `pipeline/3_attestatores/chandra.py`) --
     so this guard has no current caller outside `decode_json_body` below and
@@ -215,7 +215,7 @@ def validate_box_1000(value: Any) -> list[int] | None:
     check, the same split `chandra.py::_quantize_box` keeps.
 
     Public, and shared with `pipeline/3_attestatores/chandra_response.py` while
-    that JSON-envelope contract (v2) was live (CodeRabbit round 1, T6). Both
+    that JSON-envelope contract (v2) was live. Both
     Chandra chairs now read the vendor's own layout grammar instead
     (`common/chandra_layout.py`, via `pipeline/3_attestatores/chandra.py`), so
     this function has no current live caller outside its own tests -- kept, not
@@ -288,7 +288,7 @@ def _parse_act(value: Any, ordinal: int, page_w: int, page_h: int) -> ParsedAct 
     # `label` is declared an optional string (SPEC_D §1.2): present-as-string,
     # or absent. An explicit JSON `null` is neither -- accepting it as a
     # synonym for absent would be this module quietly normalizing a value the
-    # declared shape does not contain (GOVERNANCE 7), so it refuses like any
+    # declared shape does not contain (principle 3), so it refuses like any
     # other non-string label.
     if "label" in value and not isinstance(label, str):
         return "malformed-act"
@@ -313,7 +313,7 @@ def join_delivered_texts(texts: list[str]) -> tuple[str, list[dict[str, int]]]:
     Takes plain strings rather than this module's own `ParsedAct` so the page
     witness's blocks join by the same rule, from the same code -- imported by
     `common/chandra_layout.py`, read by `pipeline/3_attestatores/chandra.py`
-    (CodeRabbit round 1, T6; the import moved here from the retired
+    (the import moved here from the retired
     `pipeline/3_attestatores/chandra_response.py` when both Chandra chairs
     were switched to the vendor's own layout grammar). Both readings publish
     spans into their retained page text, and a join rule that drifted would
@@ -343,7 +343,7 @@ def parse(raw: bytes, *, page_w: int, page_h: int) -> ParsedAnswer | dict[str, s
 
     Accepts only the closed `{"schema", "acts"}` shape this module's docstring
     describes. Nothing is repaired, reordered, trimmed, or defaulted: the first
-    malformed act refuses the whole response (GOVERNANCE 7).
+    malformed act refuses the whole response (principle 3).
     """
     decoded, problem = decode_json_body(raw, max_bytes=MAX_RESPONSE_BYTES)
     if problem is not None:

@@ -185,7 +185,7 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
         or not producer["adapter_revision"].strip()
     ):
         raise SchemaRefusal(
-            "producer names no adapter revision; GOVERNANCE 6 — provenance travels "
+            "producer names no adapter revision; principle 6 — provenance travels "
             "with the record, at the moment it was produced"
         )
 

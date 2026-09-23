@@ -1,13 +1,13 @@
 """The approval-record contract: schema, self-hash, and the closed ingress record.
 
-**Cut 2026-08-09, per Tyrel's ruling that session.** This file used to be almost
-entirely about `require_current_data_gate_approval`, the `data-gate` action, and the
-policy-hash currency check that backed a per-run approval requirement for real
-input. All three are gone: real material never reaches git regardless of any
-per-run sign-off, so the requirement bought nothing. What remains — and what this
-file now covers — is the approval-record contract itself (`exclusion` and
-`salvage-promotion` still need Tyrel's approval under GOVERNANCE 1) and the closed
-fixture-or-real ingress record every run authority carries.
+This file used to be almost entirely about `require_current_data_gate_approval`,
+the `data-gate` action, and the policy-hash currency check that backed a per-run
+approval requirement for real input. All three are gone: real material never
+reaches git regardless of any per-run sign-off, so the requirement bought
+nothing. What remains — and what this file now covers — is the approval-record
+contract itself (`exclusion` and `salvage-promotion` still need the project
+lead's approval under principle 9) and the closed fixture-or-real ingress
+record every run authority carries.
 """
 
 from pathlib import Path
@@ -43,7 +43,7 @@ def approval(*, action="exclusion", target=None, timestamp="2026-08-04T12:00:00Z
 def test_data_gate_is_not_an_approvable_action():
     """Real input no longer needs a per-run approval, and this action no longer
     exists to claim one against. `exclusion` and `salvage-promotion` remain —
-    GOVERNANCE 1 still requires Tyrel's approval for an exclusion."""
+    principle 9 still requires the project lead's approval for an exclusion."""
     assert "data-gate" not in ACTIONS
     assert set(ACTIONS) == {"advance", "exclusion", "salvage-promotion", "other"}
     with pytest.raises(ApprovalRefusal, match="not one of"):
@@ -251,7 +251,7 @@ def test_no_pipeline_module_mints_its_own_approval_record():
 
     `approver` is a string compare against a constant this module stamps itself,
     so a record's authority rests entirely on *who wrote the file* -- nothing in
-    the bytes distinguishes Tyrel's record from one a stage wrote for itself. The
+    the bytes distinguishes the project lead's record from one a stage wrote for itself. The
     gates that consume approval records (spec 08's two sampled Perlector arms)
     therefore depend on production code never reaching the builder or the writer.
     An unused writer leaves no runtime trace, so this reads the source: a stage
@@ -282,8 +282,8 @@ def test_no_pipeline_module_mints_its_own_approval_record():
                 offenders.append(relative)
     assert scanned > 20, f"only {scanned} modules were inspected; the scan lost its subject"
     assert not offenders, (
-        f"{offenders} mint or store an approval record from pipeline code; only Tyrel "
-        "approves, and a stage that writes its own approval has approved itself"
+        f"{offenders} mint or store an approval record from pipeline code; only the "
+        "project lead approves, and a stage that writes its own approval has approved itself"
     )
 
 

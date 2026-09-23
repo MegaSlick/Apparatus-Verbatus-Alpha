@@ -6,8 +6,8 @@ retains every structure chair response under this binding and publishes the
 resulting `custody_ref` on the page's `structure-answer` record. The read half,
 `read_retained_chandra_response`, has no caller on the served path: it was
 written for the Attestatores' capture intake, and that intake was removed as
-unreachable when Tyrel ruled (2026-09-02) that Attestator 1 runs its own
-Chandra pass rather than reading the Designator's call. It is kept, and
+unreachable once Attestator 1 ran its own Chandra pass rather than reading the
+Designator's call. It is kept, and
 exercised by `pipeline/2_designator/test_geometry_layer.py`, because it is the
 half that says what the binding *means*: a response is admissible only paired
 with the receipt it was retained under, and a writer whose record no reader
@@ -19,7 +19,7 @@ back is recorded as a follow-up, not hidden here.
 The rule lives in `common/` rather than in a stage because both halves are one
 rule and a stage may not import another stage's uniquely named module
 (`pipeline/test_stage_import_boundaries.py`); duplicating the check would let
-the two halves drift (the R0 freeze-note derived-record pattern).
+the two halves drift.
 
 A serving receipt carries no reference back to any response (`common/chairs/
 receipts.py`'s schema has no such field), so two independently-supplied,
@@ -53,14 +53,11 @@ from common.runtree.store import BLOBS_DIR
 CUSTODY_BINDING_SCHEMA = "chandra-custody-binding.v1"
 
 # Derived from the run tree's own directory naming (`writing_directory`) rather
-# than written out as a literal: a literal here previously read "designator/…"
-# while `tree.put_blob(DESIGNATOR, …)` actually writes under "2_designator/…"
-# (`common/contracts/stages.STAGE_DIRECTORIES`), so every real response and
-# custody-binding blob failed this module's own prefix check on the first real
-# write. The mismatch was invisible in both existing test suites because their
-# fixture trees fabricated paths from the bare stage name instead of exercising
-# the real numbered layout — the derived-record pattern the R0 freeze note
-# names, reproduced in the test doubles meant to catch it.
+# than written out as a literal: `tree.put_blob(DESIGNATOR, …)` writes under
+# "2_designator/…", not the bare stage name "designator/…"
+# (`common/contracts/stages.STAGE_DIRECTORIES`), so a hardcoded prefix would
+# fail this module's own check on every real write while a fixture tree that
+# fabricates paths from the bare stage name would not catch it.
 RESPONSE_BLOB_PREFIX = f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}/"
 _RECEIPT_PREFIX = "receipts/sha256/"
 # Named once, because the writer and the reader must not drift on what a binding
@@ -239,9 +236,9 @@ def _validated_designator_receipt(tree: Any, receipt: dict[str, str]) -> dict[st
     This custody covers the Chandra call the Designator serves in
     `designator_structure` and nothing else: a receipt naming any other chair is
     a different call however honestly it verifies. The Attestatores' own Chandra
-    witness is a separate reading under its own receipt (Tyrel, 2026-09-02:
-    every witness runs its own full pass and nothing is captured from one call
-    into another), and its responses are not retained through here.
+    witness is a separate reading under its own receipt — every witness runs
+    its own full pass and nothing is captured from one call into another —
+    and its responses are not retained through here.
     `common.stage` is imported inside the function, as the read half already did:
     it is the whole stage-program harness, and a small custody rule two stages
     share should not drag that in at import time. There is no import cycle --

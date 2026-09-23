@@ -20,13 +20,13 @@ this file that terminates nothing. They aggregate into a coverage record and nev
 into a category or a character of text. An act every one of whose chairs is `failed`
 or `dead` still reaches the Perlector, which reads the ink; it may be delivered,
 carrying `under_witnessed`. Any rule that let chair outcomes promote or demote an
-act's text would be a picker wearing an accounting name, and GOVERNANCE 3 forbids
+act's text would be a picker wearing an accounting name, and principle 1 forbids
 it under every name.
 
-`failed` in the witness vocabulary is Sol's blocker 4 (finding B-2), repaired: spec
-07 required a failed re-read to derive `current=FAILED` while the stated vocabulary
-had no such member, so the supposedly closed algebra had a hole exactly where the
-retention ruling bites.
+`failed` in the witness vocabulary closes a gap spec 07 left open: it required a
+failed re-read to derive `current=FAILED` while the stated vocabulary had no
+such member, so the supposedly closed algebra had a hole exactly where
+attempt retention bites.
 """
 
 from collections.abc import Mapping, Sequence
@@ -80,8 +80,7 @@ INTERIM_GRANULARITY_BASIS: Final = "computed-act-attachment-alignment"
 # observation at all, and a page witness whose grammar carries no coordinates
 # attaches by `anchor-line`. What this word actually distinguishes is
 # act-granularity facts that each name their OWN basis from the older, weaker
-# interim derivation, so that is what it now says (GOVERNANCE 10; the deferral
-# the previous comment left open is closed under hard rule 13). The string is a
+# interim derivation, so that is what it now says (principle 8). The string is a
 # receipt value and nothing in the tree or on disk carried the old spelling
 # outside its own constant and one assertion.
 NATIVE_GRANULARITY_BASIS: Final = "native-per-chair-attachment-basis"
@@ -120,7 +119,7 @@ ATTACHMENT_BASES: Final = frozenset(
 #
 # The bar is deliberately set where the instrument is decisive and no further.
 # It cannot tell a heavily misread line from another act's line in the same
-# formula, and nothing character-level can (GOVERNANCE 10); what it does refuse
+# formula, and nothing character-level can (principle 8); what it does refuse
 # is a coincidence.
 ANCHOR_LINE_RUN_FLOOR: Final = 8
 
@@ -144,7 +143,7 @@ def anchor_line_located(alignment: Any) -> bool:
     * a positive-length `witness_span` -- the same trivial attach carries
       `{"start": 0, "end": 0}`. A zero-length slice is not text this act was
       placed in, and counting it would put a chair on the witness floor for a
-      reading that placed nothing (GOVERNANCE 10).
+      reading that placed nothing (principle 8).
     * an `anchor_line_match` whose longest contiguous run reaches
       `ANCHOR_LINE_RUN_FLOOR` (or the whole anchor line, where the line is
       shorter than the floor).
@@ -219,12 +218,11 @@ def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: 
     design -- reports real page text and can never overlap a proposal
     rectangle. Deriving attachment from geometry alone left every such chair
     permanently unattached, so every act sat one witness under a floor of
-    three, and the whole run held on a shortfall that never happened
-    (HOSTILE_REVIEW_2026-09-06 §2 B). `anchor-line` is not a new vocabulary
-    word invented to solve that: it has been in `ATTACHMENT_BASES` since the
-    set was closed, assigned by nothing.
+    three, and the whole run held on a shortfall that never happened.
+    `anchor-line` is not a new vocabulary word invented to solve that: it has
+    been in `ATTACHMENT_BASES` since the set was closed, assigned by nothing.
 
-    **This is not a picker** (GOVERNANCE 3, hard rule 8). Nothing here selects
+    **This is not a picker** (principle 1). Nothing here selects
     among witnesses or prefers one chair's reading: the anchor is a
     text-locating instrument derived from another chair's own response, and
     what it decides is whether this chair's text was *placed* in this act --
@@ -473,7 +471,7 @@ def require_approval(stage: str, outcome: Any, approval_ref: Any) -> None:
     if not isinstance(approval_ref, str) or not approval_ref:
         raise ApprovalRefusal(
             f"{stage} outcome {outcome!r} carries no approval-record reference; "
-            "only Tyrel approves an exclusion, and the artifact is the approval"
+            "only the project lead approves an exclusion, and the artifact is the approval"
         )
 
 
@@ -515,8 +513,7 @@ def check_algebra_is_total() -> None:
 # A closed vocabulary about *what one record's `text` contains*, beside — never
 # inside — the category vocabulary above, which is about *where the act ended*.
 # An act can be `delivered` and `partial` at once, and the whole point of keeping
-# the two words apart is that it can (Tyrel, 2026-08-05: "many of our records are
-# damaged").
+# the two words apart is that it can — many records are damaged.
 #
 # It lives here rather than in the Archetypus because two stages read it and
 # stages talk only through `common/` (`pipeline/test_stage_import_boundaries.py`):
@@ -629,7 +626,7 @@ def witness_coverage(
     # accepted below carries no geometry at all: read from the argument's mere
     # presence, it earned the native-overlap claim for free. A caller that does
     # not say which basis decided its facts gets the older, weaker interim name
-    # rather than a measurement nothing performed (GOVERNANCE 10).
+    # rather than a measurement nothing performed (principle 8).
     native_evidence = attachments is not None
     if attachments is not None:
         unknown = set(attachments) - set(chair_outcomes)
@@ -648,7 +645,7 @@ def witness_coverage(
                 # into `comparable` let a caller that measured no comparison at
                 # all count one toward the witness floor for free, which is the
                 # same free claim the granularity basis above refuses it
-                # (GOVERNANCE 10). A caller with comparability evidence states
+                # (principle 8). A caller with comparability evidence states
                 # it in the mapping form.
                 fact = {"attached": fact, "comparable": False}
             if (
@@ -721,9 +718,7 @@ def witness_coverage(
         # The old spelling, `native-observation-overlap`, asserted an
         # observation overlap for acts whose chairs attached with no observation
         # at all, so it was renamed rather than defended: a receipt string is a
-        # claim, and a claim is made only about what was measured (GOVERNANCE
-        # 10). Its former comment left the rename to "whoever owns that
-        # migration", which is the deferral hard rule 13 forbids.
+        # claim, and a claim is made only about what was measured (principle 8).
         "granularity_basis": (
             NATIVE_GRANULARITY_BASIS
             if native_evidence
@@ -849,7 +844,7 @@ def run_aggregate(
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
-    GOVERNANCE 2, read literally: a partial result is visibly partial, and
+    Principle 2, read literally: a partial result is visibly partial, and
     "complete" is refused unless everything reconciles. So `complete` here means
     every act reached a completed-class category, every configured chair
     reconciled against the configuration it was run under, AND every page in the
@@ -867,8 +862,8 @@ def run_aggregate(
 
     `act_pages` maps each act key to every page ordinal it was marked out on, and
     it is what makes the blank-by-silence refusal reach a *page* rather than only
-    the whole run. Tyrel's ruling of 2026-08-04 is that truly blank pages exist at the
-    scale of tens of thousands of archival scans and are not failures — but that a
+    the whole run. Truly blank pages exist at the scale of tens of thousands of
+    archival scans and are not failures — but a
     blank sheet and a page whose faint ink the Designator missed give the identical
     zero-act signal. Blank is proved, never inferred. Checking only "did the run
     produce any acts at all" left that proof obligation satisfied by any other page:
@@ -877,13 +872,13 @@ def run_aggregate(
     is told so rather than believed.
 
     `act_text_status` maps each *delivered* act key to the `TEXT_STATUSES` word its
-    Archetypus record sealed, and it carries the half of GOVERNANCE 2 the category
+    Archetypus record sealed, and it carries the half of principle 2 the category
     vocabulary alone can never state. `delivered` is a fact about where the act
     ended; it says nothing about whether the reading that left is whole. An act the
     Perlector itself recorded a gap in — ink known to be present and unread — was
     aggregating to `complete` with an empty reason list, which is "a partial result
-    is visibly partial" failing at the last boundary in the one case Tyrel expects
-    to be ordinary rather than exceptional. A non-`established` status therefore
+    is visibly partial" failing at the last boundary in the ordinary case of a
+    damaged record, not an exceptional one. A non-`established` status therefore
     contributes its own named reason, exactly as an under-witnessed act or a refused
     page does.
 
@@ -895,7 +890,7 @@ def run_aggregate(
     A delivered act with no status supplied is named too, rather than assumed whole:
     that is the same "this run does not know" `NO_ATTRIBUTION_REASON` refuses to
     round up, and an unmeasured metric is a failure rather than a pass
-    (GOVERNANCE 10). A status attached to an act that was *not* delivered is fatal
+    (principle 8). A status attached to an act that was *not* delivered is fatal
     instead — no Archetypus record exists for it, so the claim describes a reading
     that is not there.
     """
@@ -906,7 +901,7 @@ def run_aggregate(
     # `reasons` starts empty and the loops below can each execute zero times, so
     # an aggregate over no acts and no pages fell straight through to `complete`
     # — a green verdict asserting that nothing had gone wrong with nothing.
-    # GOVERNANCE 2 refuses "complete" unless everything reconciles, and an empty
+    # Principle 2 refuses "complete" unless everything reconciles, and an empty
     # population reconciles vacuously rather than actually.
     #
     if not act_categories and not (page_census or {}):

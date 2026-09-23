@@ -331,8 +331,7 @@ def attempt_bindings(subject: str, operation: str, ordinal: int) -> dict[str, An
     Ordinals are monotonic per (subject, operation) and never reused. Attempts are
     append-only — nothing overwrites attempt 1 to record attempt 2 — which is what
     lets a failed re-read derive a current outcome of `failed` while attempt 1
-    stays intact and visible as history (GOVERNANCE 4, and Tyrel's 2026-07-30
-    retention ruling).
+    stays intact and visible as history (principle 4).
     """
     return {"subject_id": subject, "operation": operation, "ordinal": ordinal}
 
