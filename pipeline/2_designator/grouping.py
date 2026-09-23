@@ -352,7 +352,9 @@ def group_page(
     A page on which *every* component is withheld returns no groups at all, and
     that is the honest answer rather than an accident: `run.py` then reads the
     page as `fallback-tiles` and cuts the predetermined grid the ruling below
-    requires, so the page is still sent downstream to be read.
+    requires, so the page is still sent downstream to be read. Without this
+    rule such a page comes back `detected` with one whole-leaf group, and the
+    fallback grid never fires on real pages.
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no area to group within")
