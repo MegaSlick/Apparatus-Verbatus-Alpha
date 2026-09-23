@@ -12,7 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.chairs.models import ChairIdentity
 from session_verification.chandra_native_isolation import (
+    MODEL_REVISION,
     DeliveryUnknown,
     DurabilityRefusal,
     LedgerExhausted,
@@ -21,8 +23,9 @@ from session_verification.chandra_native_isolation import (
     _DeadlineAdmission,
     _NoRetryOpenAI,
     _repeat_trigger,
-    serve_and_run,
     _write_diagnostic_catalogue,
+    ensure_role_cache,
+    serve_and_run,
 )
 
 
@@ -334,6 +337,99 @@ def test_repeat_trigger_matches_the_vendor_end_cut_predicate():
 
     assert _repeat_trigger("x" * 51, detector) is True
     assert calls == [("x" * 51, 0), ("x" * 51, 50)]
+
+
+def test_cache_setup_injects_the_production_fetcher_and_ensures_only_the_pinned_role(
+    tmp_path, monkeypatch
+):
+    from common.chairs import registry as registry_module
+
+    identity = ChairIdentity(
+        role="attestator_1",
+        source="huggingface",
+        repo="datalab-to/chandra-ocr-2",
+        path=None,
+        revision=MODEL_REVISION,
+        digest_manifest="a" * 64,
+        manifest="manifests/chandra-ocr-2.json",
+        adapter_of=None,
+        serving_recipe="chandra-native-research",
+        license_note="test identity only",
+        witness_adapter="chandra.v1",
+        witness_scope="page",
+    )
+    selected_identity = [identity]
+    fetcher = object()
+    resolved = []
+    ensured = []
+
+    class FakeRegistry:
+        def resolve(self, role):
+            resolved.append(role)
+            return selected_identity[0]
+
+        def ensure(self, supplied):
+            ensured.append(supplied)
+            return SimpleNamespace(root=tmp_path / "verified-snapshot")
+
+    def build_registry(cls, path, *, cache_root, fetcher):
+        assert cls is registry_module.ChairRegistry
+        assert path == tmp_path / "models-real.toml"
+        assert cache_root == tmp_path / "model-cache"
+        assert fetcher is fetcher_sentinel
+        return FakeRegistry()
+
+    fetcher_sentinel = fetcher
+    monkeypatch.setattr(
+        registry_module.HuggingFaceFetcher,
+        "from_huggingface_hub",
+        classmethod(lambda cls: fetcher_sentinel),
+    )
+    monkeypatch.setattr(
+        registry_module.ChairRegistry,
+        "from_toml",
+        classmethod(build_registry),
+    )
+
+    evidence = tmp_path / "evidence"
+    ensure_role_cache(
+        tmp_path / "models-real.toml",
+        tmp_path / "model-cache",
+        evidence,
+    )
+
+    assert resolved == ["attestator_1"]
+    assert ensured == [identity]
+    receipt = json.loads((evidence / "registry-ensure.json").read_text())
+    assert receipt["revision"] == MODEL_REVISION
+
+    resolved.clear()
+    ensured.clear()
+    selected_identity[0] = ChairIdentity(
+        role=identity.role,
+        source=identity.source,
+        repo=identity.repo,
+        path=identity.path,
+        revision="0" * 40,
+        digest_manifest=identity.digest_manifest,
+        manifest=identity.manifest,
+        adapter_of=identity.adapter_of,
+        serving_recipe=identity.serving_recipe,
+        license_note=identity.license_note,
+        witness_adapter=identity.witness_adapter,
+        witness_scope=identity.witness_scope,
+    )
+    refused_evidence = tmp_path / "refused-evidence"
+    with pytest.raises(RuntimeError, match="not the required pinned Chandra identity"):
+        ensure_role_cache(
+            tmp_path / "models-real.toml",
+            tmp_path / "model-cache",
+            refused_evidence,
+        )
+
+    assert resolved == ["attestator_1"]
+    assert ensured == []
+    assert not refused_evidence.exists()
 
 
 def test_serve_and_run_uses_started_endpoint_and_always_stops(tmp_path, monkeypatch):

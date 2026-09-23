@@ -4,8 +4,12 @@
 pipeline stage and writes no pipeline artifacts. It performs two separate,
 explicit actions:
 
-- `ensure-role-cache` resolves and verifies only the pinned `attestator_1`
-  Chandra manifest through `ChairRegistry.ensure`.
+- `ensure-role-cache` constructs the production `HuggingFaceFetcher`, resolves
+  and checks the exact pinned `attestator_1` identity, then passes only that
+  identity to `ChairRegistry.ensure`. The fetcher imports the official
+  `huggingface_hub` client without a request; network access begins only inside
+  `ensure`, after the role and revision checks. No other configured chair is
+  resolved or fetched during this cold-cache setup.
 - `run` invokes the pinned upstream `chandra.model.vllm.generate_vllm` on the
   one approved page. It defaults to upstream's documented `ocr_layout` prompt
   type and records it in `plan.json`; `--prompt-type` can name an alternate

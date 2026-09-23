@@ -627,9 +627,13 @@ def _require_upstream(upstream_root: Path) -> dict[str, object]:
 def ensure_role_cache(models_config: Path, cache_root: Path, evidence_root: Path) -> None:
     """Fetch and verify only the configured Chandra Attestator-1 manifest files."""
     from common.chairs.models import ChairIdentity
-    from common.chairs.registry import ChairRegistry
+    from common.chairs.registry import ChairRegistry, HuggingFaceFetcher
 
-    registry = ChairRegistry.from_toml(models_config, cache_root=cache_root)
+    registry = ChairRegistry.from_toml(
+        models_config,
+        cache_root=cache_root,
+        fetcher=HuggingFaceFetcher.from_huggingface_hub(),
+    )
     identity = registry.resolve("attestator_1")
     if not isinstance(identity, ChairIdentity) or identity.revision != MODEL_REVISION:
         raise RuntimeError("attestator_1 is not the required pinned Chandra identity")
