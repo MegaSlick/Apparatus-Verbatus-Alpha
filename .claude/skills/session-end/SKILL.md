@@ -18,9 +18,9 @@ Run this when the lead asks to close, or when plan usage reaches the wind-down p
    session cannot cheaply work out: branch and distance from `main`, uncommitted work,
    checks that are not green, state outside git, decisions and their reasons, real
    blockers with paths to the evidence, and anything waiting on the lead.
-4. **Park.** If the work continues, stay on its branch. If its pull request has merged
-   and the tree is clean, move to a fresh branch from `origin/main`; delete the old branch only if the pull
-   request's head commit equals the branch tip. Remove an agent's worktree only once its
+4. **Park.** If the work continues, stay on its branch. If its pull request has merged,
+   the tree is clean and the fetch succeeded, move to a fresh branch from `origin/main`;
+   delete the old branch only if the pull request's head commit equals the branch tip. Remove an agent's worktree only once its
    work is merged or recorded.
 5. **Notify, then report.** Send the `done` notification with
    `operations/notify/notify.sh`; it prints nothing on success and names the failure
