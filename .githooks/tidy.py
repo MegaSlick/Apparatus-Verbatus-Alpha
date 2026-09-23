@@ -18,7 +18,7 @@ docstring. Filing stays a judgement a session makes with its hands.
 Exit status is 0 when nothing wants attention, 1 when something does, and 2 when
 the check itself broke. **Exit 1 is the ordinary, informative case** — it means the
 report has something in it, not that the tool failed. Only 2 is a failure, and a
-caller must treat it as one and never as a pass — GOVERNANCE.md 10.
+caller must treat it as one and never as a pass — principle 8.
 """
 
 import argparse
@@ -37,9 +37,9 @@ SCRATCH = WORKBENCH / "scratch"
 RAW = WORKBENCH / "raw"
 QUARANTINE = WORKBENCH / "quarantine"
 
-# A session never deletes from quarantine/; it stages material there and Tyrel
-# deletes it. This is how long something may sit before the session says so
-# unprompted — his instruction, 2026-08-02, when the drawer was created.
+# A session never deletes from quarantine/; it stages material there and the
+# project lead deletes it. This is how long something may sit before the
+# session says so unprompted.
 QUARANTINE_RIPE_DAYS = 7
 
 # The one ledger in standing/ whose absence is itself a finding: CLAUDE.md records a
@@ -82,7 +82,7 @@ NEVER_FILED = {"HANDOFF.md", "NEXT_SESSION_BRIEF.md"}
 # Claude Code derives this directory name from the repository's absolute path,
 # with both separators and underscores flattened to hyphens. Deriving it rather
 # than hardcoding it means a second clone, a worktree or another machine reports
-# on its own memory instead of complaining that Tyrel's is missing.
+# on its own memory instead of complaining that the original checkout's is missing.
 MEMORY = (
     Path.home() / ".claude" / "projects" / str(REPO).replace("/", "-").replace("_", "-") / "memory"
 )
@@ -289,7 +289,7 @@ def main(argv=None):
                 print(f"  {rel_or_abs(path)}")
         # Read it, not stat it: is_file() is true for a ledger this process cannot
         # open, and a report that exits clean over an unreadable safety ledger has
-        # measured nothing (GOVERNANCE 10). The two failures get different words
+        # measured nothing (principle 8). The two failures get different words
         # because their fixes differ.
         try:
             (STANDING / SUSPENSIONS).read_text(encoding="utf-8")
@@ -316,8 +316,8 @@ def main(argv=None):
         print(f"\nscratch/  {scratch_count} files — disposable, delete whenever.")
 
     # quarantine/ is the staging drawer for material a session believes is dead.
-    # Nothing is deleted here by a session: it is moved in, and Tyrel deletes it.
-    # The report exists because a staging drawer nobody empties is just a slower
+    # Nothing is deleted here by a session: it is moved in, and the project
+    # lead deletes it. The report exists because a staging drawer nobody empties is just a slower
     # kind of clutter — after a week, the session says so rather than waiting to
     # be asked. Ages are mtime, which a move resets, so the clock starts when the
     # material was quarantined rather than when it was written. That is the age
@@ -326,7 +326,8 @@ def main(argv=None):
     if quarantine:
         q_bytes = sum(p.stat().st_size for p in quarantine)
         print(
-            f"\nquarantine/ {len(quarantine)} files, {q_bytes // 1024} KB — staged for HIS deletion."
+            f"\nquarantine/ {len(quarantine)} files, {q_bytes // 1024} KB — staged for the "
+            "project lead's deletion."
         )
         cutoff = time.time() - QUARANTINE_RIPE_DAYS * 86400
         top = sorted(
@@ -336,7 +337,7 @@ def main(argv=None):
             wants_attention = True
             print(
                 f"  -> {len(top)} item(s) have sat over {QUARANTINE_RIPE_DAYS} days. "
-                f"Tell him; he decides whether they go:"
+                f"Tell the project lead; they decide whether they go:"
             )
             for name in top:
                 print(f"     {name}")

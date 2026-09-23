@@ -6,13 +6,13 @@ double keying is that no disagreement is quietly dropped.  What makes it
 mechanical: ``disagreement_spans`` computes the disputed spans, and ``reconcile``
 demands exactly that set as the adjudicator's resolution keys.  Both drafts and
 every resolution stay on the record unedited beside the reconciled reading
-(GOVERNANCE 4).
+(principle 4).
 
 The method is standard rather than invented here -- two independent annotators,
 differences resolved by a third and more experienced one, and material whose
 disagreement cannot be reconciled excluded from the gold standard rather than
 guessed into it, which is the consistently recommended shape across
-digital-humanities and OCR ground-truth work (read 2026-08-05).
+digital-humanities and OCR ground-truth work.
 """
 
 from __future__ import annotations
@@ -36,10 +36,8 @@ ILLEGIBLE = "ILLEGIBLE"
 
 An adjudicator who cannot read a disputed span says so.  "We could not read it"
 becomes a zero-width gap anchor, never a plausible reconstruction and never an
-empty span that looks like agreement on nothing. On 2026-08-05 Tyrel ruled that
-damaged records retain honest gaps and that the system must not invent content.
-The verbatim ruling ledger lives in the local, untracked workbench; this states
-its operative substance and date inline.
+empty span that looks like agreement on nothing. Damaged records retain honest
+gaps; the system must not invent content.
 """
 
 

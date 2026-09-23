@@ -237,8 +237,8 @@ def test_the_two_view_page_fallback_act_fits_every_tiers_context():
     page-sized images.  At 24 GB and 48 GB the context holds them; at 80 GB+
     the same four images cost 20,400 tokens on their own -- against the old
     16,384 context this catalogue could not hold the request, which is why
-    this test was once named for the tier it could not serve.  U15 (Tyrel's
-    ruling, 2026-09-06) raises `generic-80gb-plus`'s `context_cap` to 32,768
+    this test was once named for the tier it could not serve.  The project
+    lead's ruling raises `generic-80gb-plus`'s `context_cap` to 32,768
     for exactly this shape, and the request now fits at every tier.  Pinned
     rather than passed over: the arithmetic no longer refuses it on this
     laptop, and a later edit that quietly lowers the context again changes

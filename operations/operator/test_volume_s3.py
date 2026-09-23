@@ -141,7 +141,7 @@ def _shape(url: SplitResult) -> tuple[str, str | None, int | None, str]:
 
 
 def test_urls_in_sees_every_scheme_spelling_and_normalises_the_host() -> None:
-    """Mutation guard for the helper itself (CodeRabbit on PR #103): an
+    """Mutation guard for the helper itself: an
     upper-case scheme or a trailing DNS dot must not slip past the assertions
     that rely on it."""
 

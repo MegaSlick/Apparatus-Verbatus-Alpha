@@ -97,7 +97,7 @@ def ingest_in_custody(
         f"{summary['submission_ledger_self_hash']}, "
         f"triage mode {summary['mode']}, {summary['candidate_count']} candidate evidence record(s), "
         f"{summary['confirmed_cluster_count']} confirmed cluster(s).\n"
-        "No pod was started, confirmed, or billed. The observation-based full-run exit remains Tyrel's."
+        "No pod was started, confirmed, or billed. The observation-based full-run exit remains the project lead's."
     )
 
 
@@ -116,7 +116,7 @@ def _call_worker(
     # preserve the folder and retry into a new one. The preview child is launched
     # with no write allowance at all, so the same copy applied to a preview
     # failure asserts records that provably cannot exist and costs the operator a
-    # usable empty folder they were told not to reuse (GOVERNANCE 10).
+    # usable empty folder they were told not to reuse (principle 8).
     unresolved = (
         ErrorCode.INGEST_PREVIEW_UNRESOLVED
         if operation == "preview"

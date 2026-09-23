@@ -629,7 +629,7 @@ hold_acts = []
 
 # churro-truncation isolates the visibly cut, still-parseable response:
 # the transport said `length`, the text is kept, truncated is true, and
-# nothing completes or re-asks it (GOVERNANCE 7).
+# nothing completes or re-asks it (principle 3).
 [[scenario]]
 name = "churro-truncation"
 recover_acts = []
@@ -815,7 +815,7 @@ outcome = "no-readable-text"
 # Under `blank-with-dissent` only two of three chairs agree -- the third
 # reads real text -- so the identical Perlector finding must instead be
 # held for review: a single dissenting witness is exactly the
-# disagreement GOALS 1 says may never be silently resolved.
+# disagreement goal 2 says may never be silently resolved.
 
 [[reading_failure]]
 scenario = "confirmed-blank"

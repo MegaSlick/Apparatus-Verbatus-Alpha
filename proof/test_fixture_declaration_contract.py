@@ -218,7 +218,7 @@ def test_every_declared_response_is_readable_by_its_own_chairs_adapter(skeleton,
     has one. Chandra's live grammar is the vendor's HTML layout answer, while
     this fixture's rows declare its own `fixture-chandra-response.v1`
     placeholder -- retained history whose bytes are pinned into the fixture's
-    digests until U16 re-declares them. `RunnableAdapter.fixture_parse` is what
+    digests until a later revision re-declares them. `RunnableAdapter.fixture_parse` is what
     the registry says about that, so this asks the registry rather than the
     adapter's name (`pipeline/3_attestatores/witness_adapters.py`).
     """
@@ -339,7 +339,7 @@ def test_the_declared_rows_no_live_chair_could_produce_are_named_here(skeleton, 
     attaches this chair offline, so the fixture happy scenario counts three
     witnesses of a floor of three and reaches a delivered export.
 
-    U12 has since landed: the live seam over the same chair now also reaches
+    The live seam over the same chair now also reaches
     a delivered export with three of three
     (`pipeline/test_live_reading_seam_e2e.py`), but through the Perlector's
     own `anchor-line` derivation rather than a reported page-geometry box --
@@ -504,7 +504,7 @@ def test_no_attempt_is_declared_twice(skeleton):
 
 
 def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton, chairs, adapters):
-    """One reading per attempt (GOVERNANCE 5), stated where both halves exist.
+    """One reading per attempt (principle 5), stated where both halves exist.
 
     A row carries the payload the stage records and, for a native adapter, the
     raw bytes that payload was parsed out of. When a scenario rewrote one and not

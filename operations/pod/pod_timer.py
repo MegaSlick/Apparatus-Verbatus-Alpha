@@ -26,7 +26,7 @@ from .models import POD_REPORT_SCHEMA, require_utc
 _CLOSE_ATTEMPTS = 3
 """Bounded re-attempts of a non-green close before the timer exits.
 
-GOVERNANCE 11 forbids an unbounded reconsideration loop, and staying alive to
+An unbounded reconsideration loop would never report, and staying alive to
 retry bills the full running-pod rate against the cheaper EXITED state the exit
 falls back to -- so the bound is small, the wait is the monitoring interval
 capped at `_MAX_CLOSE_RETRY_WAIT_SECONDS`, and every attempt count reaches the
@@ -53,7 +53,7 @@ class TimerContext:
     stamped from ``timer.now()``, the same injected clock the timer itself
     uses to decide expiry, never from wall-clock time: a report claiming an
     acknowledgement moment nobody's clock measured is exactly what
-    GOVERNANCE 10 forbids.
+    principle 8 forbids.
     """
 
     timer: PodDeadmanTimer
@@ -105,15 +105,14 @@ def _note_termination(
 
     This breadcrumb is the difference between those two readings.  Best effort
     and never raising: a breadcrumb that refused a close would trade the pod's
-    shutdown for its own paperwork, which is the wrong way round (GOVERNANCE 8).
+    shutdown for its own paperwork, which is the wrong way round.
 
     **Best effort is not silence.**  Returns ``None`` when a breadcrumb is on
     the volume, and the failure detail when one could not be written -- the
     caller carries that into the close result's own durable report, so the
     volume never ends up holding a report saying ``close: null`` with nothing
     at all to say that the DELETE was attempted and the breadcrumb that would
-    have said so could not be written (CodeRabbit, pre-merge review of PR
-    #117). The stderr line stays: it is the only channel left when the report
+    have said so could not be written. The stderr line stays: it is the only channel left when the report
     write fails too.
     """
 
@@ -127,8 +126,7 @@ def _note_termination(
         # write on its way out, had its own reason overwritten by "mandatory
         # pod report write failed" with a lower attempt count. The only record
         # left on the volume then sent an operator after a write fault instead
-        # of the bootstrap that actually caused the close (CodeRabbit on PR
-        # #117). A later close reason is dropped rather than allowed to rename
+        # of the bootstrap that actually caused the close. A later close reason is dropped rather than allowed to rename
         # an earlier one; the report beside this breadcrumb carries the rest.
         # `is_file`, not `exists`: anything else at that name is not a
         # breadcrumb this process wrote, and the write below is what reports it
@@ -170,8 +168,7 @@ def _with_breadcrumb_failure(
     Added only when there was a failure, so an ordinary report keeps the exact
     shape every reader of this volume already knows. When it is there it is the
     only record that the DELETE was attempted: the breadcrumb that would
-    normally say so is the thing that could not be written (CodeRabbit,
-    pre-merge review of PR #117).
+    normally say so is the thing that could not be written.
     """
 
     if breadcrumb_failure is None:
@@ -548,7 +545,7 @@ def _durable_failure_close(
     Whether the fallback receipt itself reached the volume is carried in the
     raised error too.  It used to be swallowed, so an operator finding no
     receipt could not tell a write that failed twice from one that never ran --
-    GOVERNANCE 2, on the only durable evidence this pod leaves behind.
+    Principle 2, on the only durable evidence this pod leaves behind.
 
     The breadcrumb goes out first here too: this path also issues a DELETE from
     inside the container it destroys, so the same "never tried versus destroyed
@@ -563,7 +560,7 @@ def _durable_failure_close(
             "close": result.close_report.to_record() if result.close_report else None,
             # Close attempts already made before the report write failed, plus
             # this one -- a fallback claiming one attempt after three would hide
-            # the three (GOVERNANCE 2).
+            # the three (principle 2).
             "close_attempts": prior_attempts + 1,
             "green": False,
         },

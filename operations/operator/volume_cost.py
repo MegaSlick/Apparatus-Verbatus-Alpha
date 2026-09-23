@@ -22,7 +22,7 @@ quoted from RunPod's own documentation rather than asserted:
 Both were read at `https://docs.runpod.io/storage/network-volumes` on
 `CHECKED_ON` below. That is a page read on one day, not a live lookup and not
 this account's bill — so the note's *primary* content is the instruction to look
-in the console, and everything else is context around it. GOVERNANCE 10: claims
+in the console, and everything else is context around it. Principle 8: claims
 are made only about what was actually measured, and nothing here measures a
 storage rate.
 

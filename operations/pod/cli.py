@@ -118,7 +118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Every other refusal this surface makes is one JSON object on stdout
         # with a state, a green flag and a detail, and exit 2 for "nothing was
         # paid"; a caller or a log that reads those records should not have to
-        # learn a second, unparseable shape for one of them (GOVERNANCE 2 --
+        # learn a second, unparseable shape for one of them (principle 2 --
         # a refusal that only argparse can explain is a refusal half lost).
         return _refused(
             f"{args.command} arms two controllers and requires --controller-armer-factory; "
@@ -174,7 +174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # stop the meter because the evidence recorder could not be
             # attached would trade money and a live pod for a fixture nobody
             # asked for in that moment. The fact is recorded in the close
-            # record instead of raised (GOVERNANCE 2).
+            # record instead of raised (principle 2).
             fixture_note = f"--record-fixture was not honoured: {detail}"
     # Wired before the preview, because the preview itself observes a balance:
     # a launch run with --notify should page the phone for the reading its own
@@ -358,7 +358,7 @@ def _close_not_attempted(args: argparse.Namespace, detail: str) -> int:
     it is a lie about a lease: the lease exists because a paid action created
     it, and the pod it names is not stopped by this command failing to run. The
     honest status is "go and look", and the durable record is written for the
-    same reason every other close outcome writes one (GOVERNANCE 2).
+    same reason every other close outcome writes one (principle 2).
     """
 
     return _print_close_record(
@@ -402,7 +402,7 @@ def _close_command(
     meaning "nothing was paid" would be false about it.
 
     Every outcome, refusals included, leaves a durable record beside the lease
-    through `supervise._write_final_record` (GOVERNANCE 2): the operator who
+    through `supervise._write_final_record` (principle 2): the operator who
     reaches for this verb is usually looking at a terminal that is about to be
     closed, and a refusal that existed only in that scrollback would be lost.
     `supervise.main` has written one per run since it landed; this is the same
@@ -550,7 +550,7 @@ def _print_close_record(
 ) -> int:
     """Print the close record, and leave the same outcome on disk.
 
-    GOVERNANCE 2: a refusal that exists only in a terminal has been lost. The
+    Principle 2: a refusal that exists only in a terminal has been lost. The
     durable copy is `supervise._write_final_record`, the same per-run file the
     supervisor driver writes, so both drivers of this one close path file their
     outcome in one place and one format.
@@ -586,7 +586,7 @@ def _notify_launch_and_close(
     """Gated behind ``--notify``, exactly like the existing spend-alert bridge.
 
     Best-effort in both directions: a failed ping is recorded in the printed
-    record's own notification fields (GOVERNANCE 2 -- nothing lost silently)
+    record's own notification fields (principle 2 -- nothing lost silently)
     and never raised, so a broken phone can never turn a green launch or an
     already-decided close into something this command reports differently.
     """
@@ -606,7 +606,7 @@ def _notify_launch_and_close(
         # nothing here measured. `CloseReport` carries no observed stop time,
         # and the cutoff can sit up to `billing_cutoff_margin_seconds` past
         # the absence observation, so calling this "ran Ns" reported a figure
-        # no instrument took (GOVERNANCE 10). It is named for what it is.
+        # no instrument took (principle 8). It is named for what it is.
         billed_seconds: object = "unknown"
         if result.record is not None:
             billed_seconds = (close.cutoff_at - result.record.created_at).total_seconds()
@@ -754,7 +754,7 @@ def _timestamp(value: object) -> datetime:
 class _BalanceWiring:
     """Whether balance notifications are wired, and what every ping did.
 
-    Both halves are printed in the launch record. GOVERNANCE 2: a phone that
+    Both halves are printed in the launch record. Principle 2: a phone that
     was asked for and could not be wired, and a ping that was refused on sight
     or never delivered, are facts about this launch and are written down beside
     the pod and the lease rather than left in a return value nobody reads.

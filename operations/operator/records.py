@@ -46,7 +46,7 @@ MAX_RECORD_BYTES: Final = 4 * 1024 * 1024
 Both readers below load a whole file before they can check anything about it,
 and `status` calls them once per recorded action. Measured: a 600 MiB file at
 either path costs 1.8 GiB resident, and a larger one ends as a kill — the one
-failure that prints nothing at all, against GOVERNANCE 2. The largest receipt
+failure that prints nothing at all, against principle 2. The largest receipt
 written here is a few kilobytes and the descriptor grows by one path per
 action, so only a file this tool did not write can reach four mebibytes.
 """
@@ -111,7 +111,7 @@ def bounded_bytes(path: str | Path, subject: str, *, dir_fd: int | None = None) 
     blocks on the open itself, and `status` hangs forever having printed nothing.
 
     That protection was written once and applied to one of the two readers. This
-    is the other one. Found by CodeRabbit.
+    is the other one.
 
     ``dir_fd`` resolves ``path`` as a single entry name relative to an already
     open directory rather than by walking the name again. The store's
@@ -221,7 +221,7 @@ class ReceiptStore:
         its own files read as this store's history, or hides the real ones. The
         descriptor is the directory — not a name that resolved to it once — so
         every entry below is enumerated and opened relative to the object that
-        passed the check. Found by CodeRabbit.
+        passed the check.
 
         ``None`` means there is nothing recorded yet, which stays an empty
         history rather than a failure. Every other refusal to open it — a link

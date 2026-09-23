@@ -198,7 +198,7 @@ def test_the_rendered_json_is_accepted_by_the_create_surface(tmp_path: Path) -> 
     # Against the constant that carries the arithmetic, not against the number
     # it currently holds: the first boot replaces that number with a
     # measurement, and a request still printing the old one would be found by
-    # a free-space refusal on a rented card (CodeRabbit on PR #117).
+    # a free-space refusal on a rented card.
     assert loaded.container_disk_gb == DEFAULT_CONTAINER_DISK_GB
     assert request["container_disk_gb"] == DEFAULT_CONTAINER_DISK_GB
     assert BOOT_B_REPOSITORY_PATH in _sealed_nested_argv(loaded.docker_start_cmd)[-1]
@@ -239,8 +239,8 @@ def test_the_self_validation_runs_under_a_launch_token_like_a_real_create() -> N
     ...``. Validating with ``metadata={}`` left the token unset, so the
     renderer proved its shape with exactly those rules switched off -- and the
     class of defect it was written to stop could return unnoticed, to be
-    refused after Tyrel had authorised the run and the card was rented
-    (CodeRabbit on PR #117).
+    refused after the project lead had authorised the run and the card was
+    rented.
     """
 
     request = validated_pod_request(filled_request())

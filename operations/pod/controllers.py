@@ -52,7 +52,7 @@ class ControllerResult:
         if self.state is ControllerState.LEASE_RECORD_FAILURE:
             # A verified shutdown whose result never reached the durable lease
             # is not safe to report green: a restart has nothing on disk
-            # telling it the pod is gone (GOVERNANCE 2, nothing lost silently).
+            # telling it the pod is gone (principle 2, nothing lost silently).
             return False
         return self.close_report is not None and self.close_report.verified
 
@@ -233,7 +233,6 @@ class LaptopSupervisor:
         # Not an assert. `assert` disappears under `python -O`, and this one sat inside
         # the try below — so a missing recovery intent was reported as the *provider*
         # having failed to prove a pod, which is a different fact about a money path.
-        # Found by CodeRabbit on this branch.
         if attempted.pending_create is None:
             return ControllerResult(
                 ControllerState.PENDING_CREATE_REVIEW,
