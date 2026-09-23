@@ -202,6 +202,25 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _function_body_digest(source: str, *, filename: str, function_name: str) -> str:
+    """Digest one function's normalized AST body, excluding its docstring."""
+    tree = ast.parse(source, filename=filename)
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    ]
+    assert len(functions) == 1, (
+        f"{filename} must define exactly one {function_name}, found {len(functions)}"
+    )
+    function = functions[0]
+    body = (
+        function.body[1:] if ast.get_docstring(function, clean=False) is not None else function.body
+    )
+    normalized = ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 # How deep into a module-level container the string walk below goes.  Six is
 # far past any shape a carried-bytes table has taken (U2's is two: variant name,
 # then field) and shallow enough that a pathological object cannot turn the walk
@@ -1356,6 +1375,22 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
                 "A pinned commit whose bytes changed is a stop, not a re-pin."
             )
             payloads[name] = payload
+
+        upstream_detector_digest = _function_body_digest(
+            payloads["chandra_util.py"].decode("utf-8"),
+            filename="chandra/model/util.py",
+            function_name="detect_repeat_token",
+        )
+        local_detector_path = Path(chandra_detect_repeat_token.__code__.co_filename)
+        local_detector_digest = _function_body_digest(
+            local_detector_path.read_text(encoding="utf-8"),
+            filename=str(local_detector_path),
+            function_name="detect_repeat_token",
+        )
+        assert local_detector_digest == upstream_detector_digest, (
+            "common.chandra_native_retry.detect_repeat_token no longer has the "
+            "same normalized AST body as chandra/model/util.py at the pinned commit"
+        )
 
         # --- Chandra's prompt, rendered from the vendor's own file -----------
         source = payloads["chandra_prompts.py"].decode("utf-8")
