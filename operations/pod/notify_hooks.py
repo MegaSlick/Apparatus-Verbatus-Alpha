@@ -1,7 +1,6 @@
 """A vendor-neutral phone-notification seam for the three pod-lease moments.
 
-Ruling (b) in `workbench/standing/TYREL_RULINGS_2026-09-01_BUILD_SESSION.md`:
-spend machinery is tracking plus notifications only -- no new enforcement,
+Spend machinery is tracking plus notifications only -- no new enforcement,
 RunPod's own limits enforce. This module is the notification half of that: it
 never refuses a launch, never blocks a close, and never changes what any of
 this package's spend gates decide. It only tells `operations/notify/notify.sh`
@@ -38,7 +37,7 @@ close or launch path that was about to report it.
 **A failed ping cannot prevent a close.** Every function here returns a
 `NotifyOutcome` rather than raising for a transport failure, a timeout, or a
 non-zero exit from `notify.sh` -- the caller logs `.detail` in the durable
-receipt (GOVERNANCE 2: nothing is lost silently) and moves on. Only a
+receipt (principle 2: nothing is lost silently) and moves on. Only a
 malformed message (not one non-empty line) or a message this module refuses
 on sight is reported the same way, never as an exception.
 """
@@ -250,7 +249,7 @@ def notify_close(
     path, and the cutoff can stand up to `billing_cutoff_margin_seconds` past
     the moment the pod was seen gone. The message says "billed" rather than
     "ran" for that reason: a number is reported as the thing that was actually
-    measured (GOVERNANCE 10), never as the nearer-sounding one.
+    measured (principle 8), never as the nearer-sounding one.
     """
 
     message = (

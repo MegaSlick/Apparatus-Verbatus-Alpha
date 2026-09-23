@@ -21,7 +21,7 @@ plan and not accepted again here: ``PREFLIGHT`` measured that roster against
 that catalogue, and a run that named different files would serve chairs no
 preflight had looked at.
 
-**Exit codes never read "complete" for a partial run (GOVERNANCE 2).**
+**Exit codes never read "complete" for a partial run (principle 2).**
 ``EXIT_COMPLETE`` (0) is returned only when the orchestrator itself returned
 ``EXIT_COMPLETE``; ``EXIT_HELD`` (3) and ``EXIT_HALTED`` (4) mirror the
 orchestrator's own held and halted exits; ``EXIT_REFUSED`` (2) is a named
@@ -50,18 +50,19 @@ launch-token-named transcript beside the run report, and the report names it by
 path.  A liveness line beside them carries the child's pid and the moment it
 was last seen, re-journaled on the same interval the hold loop uses, so a
 supervisor killed mid-run leaves a stale tick rather than a record that still
-says ``running`` (GOVERNANCE 2).
+says ``running`` (principle 2).
 
 **A run that did not finish returns instead, and the pod closes.**  ``halted``,
 ``failed``, and "the orchestrator could not start" get no hold: holding one of
 those bills a rented card at the sealed hourly rate, to the hard deadline, for
 a run that produced nothing further -- exactly what the red-bootstrap branch
-already refuses to pay, and what GOVERNANCE 8 and hard rule 2 are for.  Nothing
-is lost by leaving: the run tree, both reports, the journal and the preflight
-evidence are on the *volume*, which outlives the pod, and ``verbatus fetch-run``
-reads it over S3 with no pod running.  The run report records which way it went
-in ``held_to_hard_deadline``, so the choice is in the durable record and not
-only here (GOVERNANCE 2).
+already refuses to pay, and exactly what holding a rented pod without the
+project lead's permission would do.  Nothing is lost by leaving: the run
+tree, both reports, the journal and the preflight evidence are on the
+*volume*, which outlives the pod, and ``verbatus fetch-run`` reads it over S3
+with no pod running.  The run report records which way it went in
+``held_to_hard_deadline``, so the choice is in the durable record and not
+only here (principle 2).
 
 **No placement-tier flag.**  The consult that asked for this entrypoint named
 ``--placement-tier``; neither the orchestrator nor any stage parser accepts one
@@ -75,7 +76,7 @@ orchestrator's Door refuses a submission folder outside the policy's approved
 storage roots.  ``config/data_handling_policy.json`` now names the pod volume
 mount path (``operations/pod/boot_a_request.py``'s sealed
 ``volume_mount_path``) beside the local ``private/`` root -- that listing was
-a disclosure decision, Tyrel's under hard rule 1, made once rather than
+a disclosure decision the project lead made once rather than
 per-launch.  This process asks the gate the same question first, so a launch
 whose submission folder is outside every listed root is refused here, by
 name, before a model is fetched on a billing card rather than after.
@@ -138,7 +139,7 @@ TRANSCRIPT_TAIL_BYTES = 1 * 1024 * 1024
 # exited. The pipe reaches end of file only when every holder closes it, and a
 # stray descendant of the orchestrator can hold it long after the orchestrator
 # is gone; an unbounded join there would keep `_run` from returning and the
-# final run report from ever being written (CodeRabbit on PR #117). The child
+# final run report from ever being written. The child
 # is dead by then, so nothing this waits for is the run's own output.
 TRANSCRIPT_READER_JOIN_SECONDS = 30.0
 # The stage-timing journal is read back at close to audit it; a file past this
@@ -178,7 +179,7 @@ _ORCHESTRATOR_EXITS = {
 # such claim on the meter. `halted`, `failed`, and "the orchestrator could not
 # start" hold a rented card, at the sealed hourly rate, until the deadline for
 # nothing -- the same waste the bootstrap-red branch above already refuses to
-# pay, and the one failure GOVERNANCE 8 and hard rule 2 exist to prevent. The
+# pay, and exactly what needs the project lead's permission to do. The
 # evidence argument does not save the hold either: the run tree, the reports
 # and the preflight evidence are all on the *volume*, which outlives the pod
 # and is read by `verbatus fetch-run` over S3 with no pod running at all.
@@ -257,7 +258,7 @@ class RunPlan:
         it the only durable statement on the volume for the whole duration of a
         run is a `running` record with no heartbeat, and a pod_run killed by the
         OOM killer or by the container teardown leaves that record as its final
-        word -- a partial result that does not look partial (GOVERNANCE 2).
+        word -- a partial result that does not look partial (principle 2).
         """
 
         return self.report_path.with_name(
@@ -563,7 +564,7 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
     this machine, both for the run report.  A pod has no local ``private/`` and
     a laptop has no mounted volume, so this gate almost always enforces a
     shorter list than the policy names; the run report says which one it was
-    (GOVERNANCE 2), rather than leaving the narrowing to be inferred from a
+    (principle 2), rather than leaving the narrowing to be inferred from a
     refusal that did not happen.  A refusal names the policy file and says
     whose decision the missing root is.
     """
@@ -657,7 +658,7 @@ def _write_refusal(
     refusal raised before a plan exists) -- neither is a failure worth a
     caller's attention. Any other case returns a description of why the
     durable record could not be written, so the caller can say so: a refusal
-    that never reaches the volume is silent (GOVERNANCE 2) unless something
+    that never reaches the volume is silent (principle 2) unless something
     names that it happened.
     """
 
@@ -730,8 +731,7 @@ def _records_at_close(
     writer says so on stderr and carries on. That stderr line lives in the
     transcript, which is bounded, and nothing else said whether the file the
     report *names* was actually there -- a fetched report could read
-    ``complete`` over an absent journal (CodeRabbit pre-merge check on PR
-    #117). This audits the three at close and names each missing, unreadable
+    ``complete`` over an absent journal. This audits the three at close and names each missing, unreadable
     or foreign one in the report itself, and a run whose named records did
     not all come home is held rather than complete, so the absence is a
     durable fact in the state rather than a line a reader has to grep for.
@@ -868,7 +868,7 @@ def _pump(stream, transcript: BoundedTranscript, mirror, failure: list[str]) -> 
     recorded in ``failure`` and the pipe is still drained to the mirror: a
     reader that stopped would block the child on a full pipe, and a failure
     that stayed in this thread would leave a truncated file the close-time
-    audit could only call present (CodeRabbit on PR #117).
+    audit could only call present.
     """
 
     try:
@@ -1030,7 +1030,7 @@ def main(
         # Named on every run, not only when every root is missing: the roots
         # this machine did not have are what makes the enforced list shorter
         # than the approved policy, and a reader of this report should not have
-        # to guess which (GOVERNANCE 2).
+        # to guess which (principle 2).
         "skipped_storage_roots": list(skipped_roots),
         "hard_deadline": _stamp(hard_deadline),
         "started_at": started_at,
@@ -1090,7 +1090,7 @@ def main(
         "orchestrator_argv": command,
         # Named in the report, not only written beside it: a fetched report is
         # what a later session reads first, and a record it cannot name is a
-        # record nobody asks the volume for (GOVERNANCE 2).
+        # record nobody asks the volume for (principle 2).
         "transcript_path": str(plan.transcript_path),
         "liveness_path": str(plan.liveness_path),
         "hold_path": str(plan.hold_path),

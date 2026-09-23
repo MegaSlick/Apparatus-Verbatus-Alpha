@@ -11,13 +11,14 @@ that a grant has been spent is a file on the run volume, written before the
 provider is touched, so it survives the process and binds a later one; it is not
 a set in memory that a restart empties.  What it establishes is exactly one
 thing: this collection stage's grant reference has been used for a boot attempt.
-It is not proof of Tyrel's permission -- nothing local can supply that, and
-GOVERNANCE 8 continues to rest on his permission in the session.  The typed
+It is not proof of the project lead's permission -- nothing local can supply
+that, and starting a pod still rests on the project lead's own permission in
+the session.  The typed
 confirmation in ``spend.py`` remains the money gate underneath, per-process and
 single-use by design; this layer records what that gate was spent on.
 
 Every path out of a boot leaves durable money evidence, because the one thing
-GOVERNANCE 2 cannot tolerate here is a pod that billed and left nothing behind:
+principle 2 cannot tolerate here is a pod that billed and left nothing behind:
 a grant claim and an explicitly unknown cost intent before the create, a boot
 record the moment a pod exists, and then either a cost record or a named close
 failure. A close that raised is the case where a pod is most likely to be
@@ -30,13 +31,14 @@ written only inside ``boot``, so an adopted pod has no stage/grant binding here
 at all. That is a gap, named rather than implied: whoever reconciles an adopted
 pod after a crash will find no durable collection/stage/grant record for it, and
 should read that as never written rather than as lost. Supplying one means
-adding the adoption path, which is paid-infrastructure work under GOVERNANCE 8.
+adding the adoption path, which is paid-infrastructure work that needs the
+project lead's permission.
 
 The schedule starts with volume ingest because transfer needs no pod or GPU
 hours. ``run`` attempts the close even when stage work raises, and retaining a
-pod between stages is not an option in this API. A real lifecycle remains gated
-by GOVERNANCE 8; the in-memory fake is the only provider used by this
-repository's tests.
+pod between stages is not an option in this API. A real lifecycle remains
+gated by the project lead's permission; the in-memory fake is the only
+provider used by this repository's tests.
 """
 
 from __future__ import annotations
@@ -74,7 +76,7 @@ class StageRuntime(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class StageAuthorization:
-    """One externally recorded GOVERNANCE 8 grant, scoped to one boot only.
+    """One externally recorded, project-lead-approved grant, scoped to one boot only.
 
     ``authorization_ref`` is an operator record reference, not a typed spend
     phrase and not a claim that software can grant permission.  The value lets
@@ -141,12 +143,11 @@ class ScheduledStage:
 # schedule measured against it would under-report every real boot.
 #
 # `secondary_proposer` is absent from this schedule because it is absent from
-# the real roster itself (`config/models-real.toml`, Tyrel's ruling of
-# 2026-08-12): a role this schedule would need to name, if it were configured,
-# is not a boot to describe until it is.  Every other configured chair boots on
-# the pod of the stage that reads it, `attestator_1` included: Chandra is served
-# and read again here, in the Attestatores' own call (Tyrel's ruling of
-# 2026-09-02), never handed down from the Designator's reading.
+# the real roster itself (`config/models-real.toml`): a role this schedule
+# would need to name, if it were configured, is not a boot to describe until
+# it is.  Every other configured chair boots on the pod of the stage that
+# reads it, `attestator_1` included: Chandra is served and read again here, in
+# the Attestatores' own call, never handed down from the Designator's reading.
 COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
     ScheduledStage("ingest-to-volume", False),
     ScheduledStage(
@@ -189,7 +190,7 @@ def render_boot_schedule(collection_id: str) -> str:
             continue
         chairs = "; ".join(chair.render() for chair in item.chairs)
         lines.append(
-            f"{ordinal}. {item.stage}: one fresh GOVERNANCE 8 authorization, one pod, "
+            f"{ordinal}. {item.stage}: one fresh project-lead authorization, one pod, "
             f"then pod-down. Serving order: {chairs}."
         )
     return "\n".join(lines)
@@ -297,7 +298,7 @@ class StageCloseFailure:
 
     Deliberately a different schema rather than a cost record with a null close:
     a reader totalling spend must not be able to mistake "we do not know what
-    this cost" for "this cost nothing", and GOVERNANCE 2 asks a partial result
+    this cost" for "this cost nothing", and principle 2 asks a partial result
     to look partial rather than to be a field away from looking complete.
     """
 
@@ -324,7 +325,7 @@ class StageCostStore:
     Two addressing schemes, because two different facts are being kept. A cost
     intent, cost, boot or close-failure record is *content*-addressed: writing the same
     evidence twice is a no-op, and different bytes at one address is a refusal,
-    because GOVERNANCE 4 does not overwrite evidence. A claim is *key*-addressed
+    because principle 4 does not overwrite evidence. A claim is *key*-addressed
     by its grant, because there the file's existence is the fact: the exclusive
     create is what makes one grant unable to boot a second pod, in this process
     or in one that starts after a crash.

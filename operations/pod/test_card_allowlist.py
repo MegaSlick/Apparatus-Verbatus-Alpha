@@ -10,8 +10,8 @@ launch.
 
 The reviewed table used here is the repository's own `config/pod_placement.toml`,
 not a fixture: the point of the gate is that the shipped table is the allowlist.
-The spend policies are test policies -- `config/spend.toml` is Tyrel's and stays
-unconfigured.
+The spend policies are test policies -- `config/spend.toml` is the project
+lead's and stays unconfigured.
 
 Nothing here reaches a network, a provider account, or money.
 """
@@ -52,7 +52,7 @@ BLACKWELL = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
 
 
 def policy(*, max_hourly: str) -> SpendPolicy:
-    """A configured test policy. `config/spend.toml` is Tyrel's and is untouched."""
+    """A configured test policy. `config/spend.toml` is the project lead's and is untouched."""
 
     return SpendPolicy(
         state="configured",
@@ -146,7 +146,7 @@ CONFIGURED_SPEND_TOML = "\n".join(
     ]
 )
 """A configured test policy for the `cli.main` drills. `config/spend.toml` is
-Tyrel's and stays unconfigured."""
+the project lead's and stays unconfigured."""
 
 
 def write_request(tmp_path: Path, ask: PodCreateRequest) -> Path:

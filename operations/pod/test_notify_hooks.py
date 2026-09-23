@@ -78,7 +78,7 @@ def test_notify_close_sends_lease_state_and_the_billed_window() -> None:
     assert "612" in message
     # The number is pod creation to the verified billing cutoff, and nothing on
     # this path observes a stop time. It is named for what it is: "ran 612s"
-    # reported a measurement no instrument took (GOVERNANCE 10).
+    # reported a measurement no instrument took (principle 8).
     assert "billed" in message
     assert "ran" not in message
 

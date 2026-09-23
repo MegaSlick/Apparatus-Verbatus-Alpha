@@ -475,7 +475,7 @@ class LeaseStore:
         with self._lock():
             lease = self._require_owner_unlocked(owner_token)
             if lease.phase == "closed-verified":
-                # Verified close evidence is never replaced (GOVERNANCE 4): a
+                # Verified close evidence is never replaced (principle 4): a
                 # later, lesser observation overwriting it would turn a proven
                 # close back into a question.  The unverified phase stays
                 # writable so reconciliation can still upgrade it.
@@ -617,8 +617,8 @@ def _validate_close_record(
     A verified close asserts ``pod_get_absent`` and ``pod_list_absent`` about
     one exact pod, so a ``closed-verified`` lease that names no pod is evidence
     about nothing.  Before this check, the binding check below skipped itself in
-    exactly that case and the phase was accepted.  Found by CodeRabbit on this
-    branch.  The unverified path legitimately closes without a pod id -- a
+    exactly that case and the phase was accepted.  The unverified path
+    legitimately closes without a pod id -- a
     create that never bound one still has to close -- so only the verified
     phase requires it.
     """

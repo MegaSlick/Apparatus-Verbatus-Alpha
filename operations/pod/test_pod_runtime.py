@@ -1277,7 +1277,7 @@ def test_a_metadata_value_with_no_utf_8_form_refuses_instead_of_raising(
     a valid request whose canonical form has no UTF-8 encoding.
     `canonical_bytes` refuses that with TypeError while the sibling refusal
     above is a ValueError, so the preview gate caught one and let the other
-    escape the paid path as a traceback. Found by CodeRabbit.
+    escape the paid path as a traceback.
     """
 
     clock = Clock()
@@ -1469,7 +1469,7 @@ def test_a_price_that_moves_at_the_paid_call_is_named_on_the_green_launch(
     hourly ceiling bounds the difference. That is the honest limit of this gate.
     A green result reporting a price the operator never confirmed, under a detail
     that lists confirmation among the gates it passed, is that limit disappearing
-    behind a successful status (GOVERNANCE 2).
+    behind a successful status (principle 2).
     """
 
     clock = Clock()
@@ -1781,7 +1781,7 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
     printed = capsys.readouterr().out
     assert exit_code == 2
     # The refusal itself is still fully reported: withholding the phrase must
-    # not cost the operator the reason (GOVERNANCE 2).
+    # not cost the operator the reason (principle 2).
     assert "at or below the hard floor" in printed
     assert json.loads(printed)["preview"]["confirmation_phrase"] is None
     assert CONFIRMATION_PREFIX not in printed
@@ -2244,7 +2244,7 @@ def test_a_failed_debounce_write_is_recorded_beside_the_delivered_warning(
 
     Losing the stamp is advisory -- it can cause one duplicate page, never a
     blocked action -- but a receipt reading only ``sent`` leaves that duplicate
-    with no recorded cause, which is the shape GOVERNANCE 2 refuses.
+    with no recorded cause, which is the shape principle 2 refuses.
     """
 
     clock = Clock()
@@ -2660,7 +2660,7 @@ def test_the_projected_floor_comparison_is_exact_to_the_cent(
 def test_an_unobservable_balance_records_why_it_could_not_be_read(
     tmp_path: Path, provider_error: BaseException, expected: str
 ) -> None:
-    """ "Not observed" alone cannot be triaged. GOVERNANCE 2 is about the reason
+    """ "Not observed" alone cannot be triaged. Principle 2 is about the reason
     as much as the result: a missing configured source, a timeout, and a response
     nobody could parse call for three different actions, and the refusal has to
     say which one happened rather than swallowing the provider's own words."""
@@ -3909,8 +3909,7 @@ def test_billing_cutoff_margin_refuses_evidence_one_second_past_the_configured_b
 def test_a_billing_cutoff_arbitrarily_far_in_the_future_is_refused_not_verified() -> None:
     """ "Charges captured through a named cutoff" is a claim about measured time
 
-    (GOVERNANCE 10); a cutoff nobody has reached yet is not that (audit-d
-    Finding 2).
+    (principle 8); a cutoff nobody has reached yet is not that.
     """
 
     clock = Clock()
@@ -4430,7 +4429,7 @@ def test_a_later_close_reason_never_renames_the_breadcrumb_already_on_the_volume
     report write then fails too, `_durable_failure_close` reaches the same path
     again with "mandatory pod report write failed" and one allowed attempt. The
     only record left on the volume then blamed the durable store for a close
-    the bootstrap caused (CodeRabbit on PR #117).
+    the bootstrap caused.
     """
 
     clock = Clock()
@@ -4453,7 +4452,7 @@ def test_a_later_close_reason_never_renames_the_breadcrumb_already_on_the_volume
 def test_a_breadcrumb_that_cannot_be_written_never_blocks_the_close(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A pod's shutdown is never traded for its own paperwork (GOVERNANCE 8)."""
+    """A pod's shutdown is never traded for its own paperwork."""
 
     clock = Clock()
     provider = fake(clock)
@@ -4479,7 +4478,6 @@ def test_a_breadcrumb_that_cannot_be_written_never_blocks_the_close(
     # attached to a pod's stderr -- so the failure is handed back for the
     # durable report to carry, or the volume could keep a report saying
     # `close: null` with nothing on it saying the DELETE was attempted at all
-    # (CodeRabbit, pre-merge review of PR #117).
     assert breadcrumb_failure is not None
     assert "termination breadcrumb could not be written" in breadcrumb_failure
 
@@ -4492,7 +4490,7 @@ def test_a_failed_breadcrumb_is_named_in_the_durable_report_the_close_files(
     A close that fails to leave its pre-DELETE breadcrumb and then writes a
     report saying `close: null` is indistinguishable, on the volume, from a
     timer that never tried to close anything -- which is the exact ambiguity
-    the breadcrumb exists to remove (CodeRabbit, pre-merge review of PR #117).
+    the breadcrumb exists to remove.
     """
 
     clock = Clock()
@@ -5706,7 +5704,7 @@ def test_the_image_contract_names_an_unreadable_pointer_file(
     pointer reads that find it were not, so the refusal escaped as a bare
     `OSError`, lost its name and its remedy in `checkout_commit` -- which
     catches only `ImageContractRefusal` -- and reached the operator as a
-    traceback while the card billed (CodeRabbit on PR #117).
+    traceback while the card billed.
 
     The unreadable condition is injected at the read rather than built with a
     mode-000 file: this suite runs as root in CI, where a mode-000 file is
@@ -5853,7 +5851,7 @@ def test_a_failed_image_contract_is_a_named_red_repository_step(tmp_path: Path) 
 
 
 def test_a_passing_image_contract_is_recorded_in_the_repository_receipt(tmp_path: Path) -> None:
-    """What was verified is evidence, and evidence is written down (GOVERNANCE 2)."""
+    """What was verified is evidence, and evidence is written down (principle 2)."""
 
     commit = "f" * 40
 
@@ -6312,8 +6310,8 @@ def test_preflight_environment_failures_are_red_with_named_remediation(
 
 
 def test_pod_runtime_checked_in_spend_policy_is_the_ledgered_one() -> None:
-    """Since 2026-09-06 the committed policy is configured with Tyrel's values
-    (standing ledger §8-§9). This pins them: a drift in the file is a drift in
+    """The committed policy is configured with the project lead's values.
+    This pins them: a drift in the file is a drift in
     what every paid gate enforces, and the floor stays marked unverified until
     it has been checked against the provider's balance."""
     from decimal import Decimal
@@ -6516,7 +6514,7 @@ def test_a_credential_nested_in_a_receipt_list_is_refused() -> None:
         ControllerReadiness(False, START, "armer refused", {"seen": [[{"bearer": "value"}]]})
 
 
-# --- audit/pod-money-path: red paths the 2026-08-12 independent audit found untested ---
+# --- red paths on the money path ---
 
 
 def test_a_wrong_confirmation_neither_echoes_the_phrase_nor_burns_the_challenge(
@@ -7068,7 +7066,7 @@ def test_cli_adopt_refused_at_preview_for_a_real_pod_exits_three(
 
 def test_a_fallback_receipt_counts_the_close_attempts_already_made(tmp_path: Path) -> None:
     """A report-write failure after three close attempts must not file a
-    fallback claiming one: the earlier attempts would vanish (GOVERNANCE 2).
+    fallback claiming one: the earlier attempts would vanish (principle 2).
     An unserializable close record makes the primary write fail while the
     serializable fallback still lands."""
 
@@ -8082,7 +8080,7 @@ def test_a_raising_notify_hook_still_prints_the_record_on_a_green_create(
 
     raise, but nothing enforced that promise at this call site. A raising
     hook must not take the post-action record -- naming the pod and lease --
-    down with it (hard rule 7), and a green create must still exit 0.
+    down with it (principle 2), and a green create must still exit 0.
     """
 
     clock = Clock()
@@ -8193,7 +8191,7 @@ def test_a_provider_with_no_balance_seam_is_recorded_never_refused(
     A provider that cannot take the hook must not turn a green launch into a
     refusal -- but the launch record has to say the phone will not ring for a
     balance reading, or the operator is relying on something that is not there
-    (GOVERNANCE 2).
+    (principle 2).
     """
 
     clock = Clock()
