@@ -1,7 +1,7 @@
 # workbench
 
 Local working space for sessions and agents. Everything here except this file is
-gitignored and never reaches the repository.
+gitignored. That stops ordinary adds, not `git add -f`, so never force-add from here.
 
 | Folder | What goes in it | Kept until |
 |---|---|---|

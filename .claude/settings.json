@@ -5,9 +5,13 @@
   },
   "permissions": {
     "deny": [
-      "Bash(git push origin main*)",
-      "Bash(git push*:main*)",
-      "Bash(git push*refs/heads/main*)",
+      "Bash(git*push*origin main)",
+      "Bash(git*push*origin main *)",
+      "Bash(git*push*:main)",
+      "Bash(git*push*:main *)",
+      "Bash(git*push*refs/heads/main)",
+      "Bash(git*push*refs/heads/main *)",
+      "Bash(git*merge*--no-verify*)",
       "Bash(git*push*--force*)",
       "Bash(git*push* -f*)",
       "Bash(git*push*--mirror*)",

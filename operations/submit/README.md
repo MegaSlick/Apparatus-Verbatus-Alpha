@@ -70,7 +70,7 @@ never appear there.
   through the gap; a rule keyed on a suffix is a rule anyone can walk past by
   renaming. Storage roots are chosen by the stage that wrote the file.
 - **Testimonia survive per-stage cleanup.** They are pipeline records under
-  GOVERNANCE 4 — "testimony is always retained" — and remain until the whole run
+  PRINCIPLES.md principle 4 (evidence is never overwritten) and remain until the whole run
   reaches its sealed disposal condition; they are destroyed with that whole volume,
   not retained beyond it.
 - Temporary writes are same-directory, flushed and `fsync`ed before atomic
@@ -92,6 +92,6 @@ It checks that declared synthetic target paths and temporary paths are absent, t
 declared logs contain no forbidden marker, and that a volume object listing is empty
 where a volume applies. It is never a claim of forensic unrecoverability from storage
 media, snapshots or provider backups, which no filesystem check can establish
-(GOVERNANCE 10). Where there is no volume, it reports `None` rather than an empty
+(PRINCIPLES.md principle 8). Where there is no volume, it reports `None` rather than an empty
 listing: unknown is never zero. Routine deletion is unavailable here: retain every
 run artifact until the settled whole-run disposal condition is recorded elsewhere.
