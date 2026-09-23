@@ -4,7 +4,7 @@ Two levels, because nothing upstream of this stage populates `annotations` yet:
 unit tests against `validate_annotations` directly, and end-to-end tests that
 tamper a reviewed Perlectio into carrying some and drive the real CLI over it.
 
-Tyrel, 2026-08-05: "many of our records are damaged," so a single act carrying
+A single act carrying
 fifty gaps is ordinary material and anything that behaves acceptably at one gap
 and badly at fifty is a defect. Hence the multi-gap cases below.
 """
@@ -51,7 +51,7 @@ REF_B = {
 # The roster a gap annotation may cite, and what each of those witnesses actually
 # reported. A quoted variant must be something its witness really said.
 WITNESSES = {
-    (REF_A["relative_path"], REF_A["sha256"]): "old Tyrel possibly a name variant-0 v0 x",
+    (REF_A["relative_path"], REF_A["sha256"]): "old Reader possibly a name variant-0 v0 x",
     (REF_B["relative_path"], REF_B["sha256"]): "Sohn old variant-1 v1 x",
 }
 
@@ -179,7 +179,7 @@ def test_gap_evidence_must_cite_one_of_this_acts_own_witnesses():
         "relative_path": "3_attestatores/artifacts/testimonium/art_cccccccccccccccc.json",
         "sha256": "c" * 64,
     }
-    note = gap(2, witness=stranger, variant="Tyrel")
+    note = gap(2, witness=stranger, variant="Reader")
     with pytest.raises(SchemaRefusal, match="not one of this act's own witnesses"):
         archetypus.validate_annotations([note], "some text", WITNESSES, "annotations")
 
@@ -192,8 +192,7 @@ def test_gap_evidence_requires_a_non_empty_variant():
 
 def test_a_variant_no_witness_ever_reported_is_refused():
     """A quoted variant that is neither the ink nor something its cited witness
-    actually said is a reconstruction, and Tyrel ruled on 2026-08-05 that the
-    record carries none of those."""
+    actually said is a reconstruction, and the record carries none of those."""
     note = gap(2, witness=REF_A, variant="INVENTED")
     with pytest.raises(SchemaRefusal, match="never reported"):
         archetypus.validate_annotations([note], "some text", WITNESSES, "annotations")
@@ -220,15 +219,15 @@ def test_a_variant_from_a_witness_that_reported_nothing_is_refused():
 
 
 def test_gap_evidence_has_a_closed_two_field_schema():
-    note = gap(2, witness=REF_A, variant="Tyrel")
-    note["witness_evidence"][0]["candidate_text"] = "Tyrel"
+    note = gap(2, witness=REF_A, variant="Reader")
+    note["witness_evidence"][0]["candidate_text"] = "Reader"
     with pytest.raises(SchemaRefusal, match="is not exactly"):
         archetypus.validate_annotations([note], "some text", WITNESSES, "annotations")
 
 
 def test_the_same_witness_claim_twice_is_refused():
-    note = gap(2, witness=REF_A, variant="Tyrel")
-    note["witness_evidence"].append({"witness_ref": REF_A, "variant": "Tyrel"})
+    note = gap(2, witness=REF_A, variant="Reader")
+    note["witness_evidence"].append({"witness_ref": REF_A, "variant": "Reader"})
     with pytest.raises(SchemaRefusal, match="repeats the same witness claim"):
         archetypus.validate_annotations([note], "some text", WITNESSES, "annotations")
 
@@ -256,7 +255,7 @@ def test_an_uncertain_span_covering_only_whitespace_is_refused():
     `no_readable_text` — a positive finding that the act held no ink. A span
     accepted over that blankness would sit in the same record asserting the
     reader did read characters there and offering alternatives for them. The two
-    silences Tyrel separated would then be one, inside a single sealed record.
+    silences separated here would then be one, inside a single sealed record.
     """
     with pytest.raises(SchemaRefusal, match="covering no readable character"):
         archetypus.validate_annotations([uncertain(0, 3)], "   ", WITNESSES, "annotations")
@@ -566,8 +565,8 @@ def test_an_internal_gap_in_every_reading_leaves_the_run_visibly_partial(tmp_pat
     the run aggregate, which names each act and reports `partial`.
 
     What this deliberately does not assert is anything about the `display:`
-    rendering. Whether a gap is *shown* inside a rendered reading is Tyrel's
-    choice of convention (spec 11), and the manifest says so on its own face.
+    rendering. Whether a gap is *shown* inside a rendered reading is the project
+    lead's choice of convention (spec 11), and the manifest says so on its own face.
     Counting the damage is this seam's business; showing it is not.
     """
     root = tmp_path / "runs"

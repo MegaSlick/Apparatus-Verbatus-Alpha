@@ -1,7 +1,7 @@
 """Spec 10, test 2: a second write for the same act_id fails loudly, and the
 first record is byte-identical afterwards.
 
-Tyrel's 4b ruling: a revised reading is a whole new pipeline run over the same
+Ruling 4b: a revised reading is a whole new pipeline run over the same
 Exemplar, never a rewrite of an existing record. This is enforced a layer down,
 in `common.runtree.store.RunTree._publish_bytes` (immutable, atomic publish; a
 second publish of *different* bytes under the same identity is refused before
