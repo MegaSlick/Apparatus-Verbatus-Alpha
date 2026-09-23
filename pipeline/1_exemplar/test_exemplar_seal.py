@@ -562,7 +562,7 @@ def test_loading_the_exemplar_run_module_does_not_change_import_search_order():
 
 
 def test_a_pdf_page_rendered_below_its_run_target_says_so_in_the_sealed_page_record():
-    """The provisional per-page cap is visible until Tyrel settles ruling 14.
+    """The provisional per-page cap is visible until this interpretation is settled.
 
     This is deliberately a page payload rather than a corpus-seal field: the
     existing cross-stage corpus-seal contract closes its census-row schema in

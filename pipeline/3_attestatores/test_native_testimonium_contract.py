@@ -111,7 +111,7 @@ def test_a_page_witness_shown_pixels_that_all_come_back_failed_is_still_attempte
     """A page chair attempted (shown pixels) on every act but every response was
     unusable must not collapse into the same `presented: {}` fact as a chair
     never shown an image at all -- those are held acts, refused pages, and
-    absent chairs, not attempted-and-failed (GOVERNANCE 2)."""
+    absent chairs, not attempted-and-failed (principle 2)."""
     acts = [{"act_id": "a1"}, {"act_id": "a2"}]
     attempts_by_pair = {
         ("a1", "attestator_1"): _attempt("failed"),
@@ -519,7 +519,7 @@ def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_
 
 def test_a_page_witness_shown_pixels_carries_the_serving_moment_that_produced_them(tmp_path):
     """One record may not say both "I was shown this image" and "no serving
-    happened"; attempted testimony must carry its receipt (GOVERNANCE 6)."""
+    happened"; attempted testimony must carry its receipt (principle 6)."""
     result = subprocess.run(
         [
             sys.executable,

@@ -5,12 +5,12 @@ page on which this measure finds no ink; proposals do not exist yet. The record
 is bounded evidence: ``unclaimed-edge-ink`` names an edge signal without holding
 anything; Unit 14 owns that explicit hold outcome.
 
-Since 2026-09-06 this stage infers each page's paper value through
+This stage infers each page's paper value through
 ``common.background``, the same inference and the same sealed
 ``[grouping.background]`` policy the Designator's structure pass runs under, and
-proves the bytes it read against the run's own ``designator-grouping`` seal. It
-took the page's raw histogram mode until then, which on a photographed opening
-is the bezel, so every such page was mapped as carrying approximately no ink at
+proves the bytes it read against the run's own ``designator-grouping`` seal. The
+page's raw histogram mode is not used: on a photographed opening that mode is
+the bezel, which would map every such page as carrying approximately no ink at
 all. A page the shared inference refuses is published as ``ink-not-measurable``
 -- present in the census, with its refusal named and no counts -- rather than as
 a page that measured clean.
@@ -107,7 +107,7 @@ def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
 
     `verify_sealed_page_pixels` proves a separate read of the sealed blob. This
     read must therefore verify its own digest or the measurement would describe
-    unchecked pixels (GOVERNANCE 10).
+    unchecked pixels (principle 8).
 
     Read one page at a time rather than accumulated with the census, because
     this stage measures EVERY sealed page of a shard and a shard runs to 1,000
@@ -184,7 +184,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # independent decoder can read them. An uncaught decoder ValueError
             # here would escape `run_stage`'s refusal handling as a bare
             # traceback, with `seal_boundary`/`finish` never reached and earlier
-            # pages already published -- GOVERNANCE 2's silent loss with extra
+            # pages already published -- principle 2's silent loss with extra
             # steps. Named and stopped instead, like every other census failure
             # this stage refuses.
             width, height, rows = grayscale_rows(image_bytes)
@@ -251,7 +251,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             payload={
                 "page_ordinal": ordinal,
                 "ink_measurable": True,
-                # GOVERNANCE 6: the record names the paper value it ran under,
+                # principle 6: the record names the paper value it ran under,
                 # where that value came from, the contrast this audit applied
                 # below it, and the digest of the sealed policy that decided
                 # the inference.

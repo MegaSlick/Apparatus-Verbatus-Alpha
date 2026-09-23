@@ -1,7 +1,7 @@
 """Ink connected-component scanning: the walking skeleton's structure pass.
 
 **The background inference this pass thresholds against is no longer here.** It
-moved to `common/background.py` on 2026-09-06 so that the Ink Map and the
+lives in `common/background.py` so that the Ink Map and the
 Recensor's residual-ink audit infer the same paper value on the same page bytes
 that this stage does; the names are re-exported at the top of this file, and
 `common/background.py`'s own docstring carries the reason and the measurement.
@@ -37,8 +37,7 @@ now been crossed on measurement.** `label_components` is the row-run
 implementation `conservation.py` uses (U13), because the retired per-pixel
 set/union-find version measured **383 s and 2.17 GB for one 8.7-megapixel
 photographed page** at the sealed `gap_tolerance_px = 3`, against 0.41 s for
-`conservation.reconcile` labelling *more* ink on the same page
-(`workbench/active/TIMING_REPORT_2026-09-05.md` §1b, §1e). The retired
+`conservation.reconcile` labelling *more* ink on the same page. The retired
 implementation stays here as `_label_components_reference`, the oracle both
 this module's and `conservation.py`'s labelling are checked against.
 
@@ -83,7 +82,7 @@ from common.components import (  # noqa: F401  (re-exported: see the note below)
 from common.contracts.errors import ContractError
 
 # The background inference this scan runs on top of lives in `common/background.py`
-# and is re-exported here. It moved on 2026-09-06 because three stages threshold
+# and is re-exported here, because three stages threshold
 # ink and only this one had the measured inference: the Ink Map and the
 # Recensor's residual-ink audit took the page's raw histogram mode as paper,
 # which on a photographed opening is a dark population, so their audit measured
@@ -106,7 +105,7 @@ from common.contracts.errors import ContractError
 # and `conservation.reconcile` uses it as the denominator that makes a mark the
 # grouping pass missed appear as residual rather than as an absence. A derived
 # margin there would trade a visible over-count for a possible silent loss,
-# which is the one direction GOALS 1 forbids. Three properties follow and all
+# which is the one direction goal 2 forbids. Three properties follow and all
 # three are pinned: the secondary scan is strictly more sensitive than the
 # primary on *every* page (2 is below the floor, so no page can invert them);
 # the Recensor's audit, which now infers the same background this stage does,
@@ -151,7 +150,7 @@ def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: 
     return ink
 
 
-# The labeller itself moved to `common/components.py` on 2026-09-06, and only
+# The labeller itself lives in `common/components.py`, and only
 # the labeller: the ink set above, the two sensitivity presets and the two scans
 # below are still this stage's own. It moved because the Recensor's
 # outside-coverage audit now has to name the page-spanning component this stage

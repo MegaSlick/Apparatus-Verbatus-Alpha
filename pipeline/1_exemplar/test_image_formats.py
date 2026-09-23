@@ -3,8 +3,8 @@
 Every fixture here is built in memory by `synthetic_sources.py`, never a checked-in
 binary: the ingress guard only allows png/jpeg/tiff media types under
 `proof/fixtures/`, this module also needs to prove corrupt and PDF/GIF/HEIC bytes,
-and nothing here is register material in the first place — GOVERNANCE's
-synthetic-fixture rule applies to bytes that stand for a page, and these do not.
+and nothing here is register material in the first place — the synthetic-fixture
+rule (principle 12) applies to bytes that stand for a page, and these do not.
 
 The structural walkers distinguish malformed bytes from documented decoder limits.
 Their errors become closed admission alarms; no test below permits a format-policy
@@ -801,8 +801,8 @@ def test_a_conforming_lossless_jpeg_carries_no_quantization_table_and_is_admitte
 def test_a_frame_with_more_components_than_this_door_decodes_is_unsupported_not_corrupt():
     """T.81 permits up to 255 components; four is the baseline convention and the
     limit of what anything here handles. A genuine instance of a variant this door
-    does not decode is "unsupported"; calling it corruption would tell Tyrel a real
-    scan was damaged when the truth is that we cannot read that flavour of it."""
+    does not decode is "unsupported"; calling it corruption would tell the operator
+    a real scan was damaged when the truth is that we cannot read that flavour of it."""
     with pytest.raises(FormatRefusal, match="unsupported JPEG: 5 components"):
         validate_jpeg(jpeg(components=5))
 
@@ -919,11 +919,10 @@ def test_bigtiff_leaves_its_page_count_to_the_decoder():
 
 # --- what a sealed page can carry, and what reads it back ------------------------
 #
-# From an outside review of `common/imaging.py` (GPT-6 review kit, 2026-09-06,
-# Tyrel; kit under Apache-2.0 at `workbench/raw/gpt6-review-2026-09-06/`). The kit
-# named helper-level defects and said plainly that it could not show an admitted
-# source reaching them. These two tests are that missing half, and they belong
-# beside the door because the door is what decides the answer.
+# An outside review of `common/imaging.py` named helper-level defects and said
+# plainly that it could not show an admitted source reaching them. These two
+# tests are that missing half, and they belong beside the door because the door
+# is what decides the answer.
 
 
 def test_a_16bit_tiff_seals_samples_a_grayscale_read_does_not_clip():
@@ -931,7 +930,7 @@ def test_a_16bit_tiff_seals_samples_a_grayscale_read_does_not_clip():
     reads its sealed page through `common.imaging.grayscale_rows`
     (`pipeline/2_designator/run.py::page_pixels`). The whole-page render keeps
     `I;16` samples, so a reader that converted straight to `L` returned almost
-    pure white for a page full of ink: a blank page, and a missed act (GOALS 1),
+    pure white for a page full of ink: a blank page, and a missed act (goal 2),
     manufactured by the reader rather than present in the scan."""
     from common.imaging import grayscale_rows
 

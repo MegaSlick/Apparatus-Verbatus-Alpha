@@ -12,7 +12,7 @@ run digests for nothing.
 
 What must not appear here, ever: a size comparison, an overlap fraction, an act
 ordering, or any other way of preferring one of the two claims.  That would be a
-picker over one witness's text (GOVERNANCE 3, hard rule 8) wearing an alignment's
+picker over one witness's text (principle 1) wearing an alignment's
 clothes.
 """
 

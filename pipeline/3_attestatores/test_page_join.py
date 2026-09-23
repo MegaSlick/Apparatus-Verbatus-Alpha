@@ -180,7 +180,7 @@ def test_no_testimonium_is_sealed_before_the_declaration_is_validated():
     constraint is that the accessor runs on the near side of the write.
     A recording context answers it: the refusal must arrive with the publish
     list still empty, because a Testimonium sealed carrying a silently wrong
-    `page_witness` flag is immutable (GOVERNANCE 4) and nothing later can take
+    `page_witness` flag is immutable (principle 4) and nothing later can take
     it back.
     """
     published: list = []
@@ -563,7 +563,7 @@ def _reason(*pairs) -> str:
 
 
 def test_a_structured_reading_the_join_cannot_carry_is_not_called_unread():
-    """CodeRabbit, PR #63. The defect this replaces, stated exactly.
+    """A structured native reading must not be reported as unread text.
 
     An empty textual reading joins; a structured native reading does not, because
     the synthetic page join concatenates text only. The old reason counted the
@@ -602,7 +602,7 @@ def test_an_act_read_as_empty_beside_a_failure_is_the_partly_unread_page():
 
 
 def test_a_page_where_nothing_joined_is_unread_not_read_and_empty():
-    """CodeRabbit CLI, PR #63 — the defect the previous fix introduced.
+    """A page where nothing joined must not be described as empty readings.
 
     Every attempt failed, so the join carried nothing at all. The reason said "the
     page join carried only empty readings", which names readings that do not exist:
