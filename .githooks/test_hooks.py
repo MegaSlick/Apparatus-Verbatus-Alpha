@@ -365,10 +365,11 @@ def test_install_configures_local_hooks_after_prerequisites(tmp_path):
 
 def test_install_creates_every_drawer_the_contract_declares(tmp_path):
     """The test above pre-creates six drawers and asserts only `core.hooksPath`, so
-    it cannot see the installer dropping one. `quarantine/` was added on 2026-08-02
-    without the installer following, and a fresh clone silently lacked the one-way
-    staging drawer while `tidy.py` read its absence as empty. Nothing here is
-    pre-created: the installer is the only thing that can make these appear.
+    it cannot see the installer dropping one. A new drawer was once added
+    without the installer following, and a fresh clone silently lacked the
+    one-way staging drawer while `tidy.py` read its absence as empty. Nothing
+    here is pre-created: the installer is the only thing that can make these
+    appear.
     """
     repo = init_repo(tmp_path / "repo")
     shutil.copytree(HOOKS, repo / ".githooks")

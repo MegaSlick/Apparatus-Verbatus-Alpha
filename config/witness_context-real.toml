@@ -4,7 +4,7 @@
 # for the same reason the serving catalogue is: the fixture declaration at
 # `config/witness_context.toml` describes every chair as a synthetic fixture, and
 # under the `named` regime that sentence is what the Perlector is told about the
-# witness whose testimony it is reading (GOVERNANCE 7: feed it completely and
+# witness whose testimony it is reading (principle 3: feed it completely and
 # honestly). `common/stage.py::validate_witness_context_bindings` refuses a
 # non-fixture roster that leaves this file at the fixture default.
 #

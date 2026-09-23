@@ -41,7 +41,7 @@ def load_tidy(tmp_path):
     # `QUARANTINE` was the one drawer left pointing at the real tree: with
     # `main()` now called directly by several tests, `QUARANTINE` was read out of this
     # machine's own `workbench/quarantine`, so a test's result depended on what the
-    # last session happened to stage there. Found by CodeRabbit on pull request 15.
+    # last session happened to stage there.
     mod.QUARANTINE = wb / "quarantine"
     mod.MEMORY = tmp_path / "memory"
     for d in (
@@ -260,7 +260,7 @@ def test_a_missing_standing_drawer_is_reported_loudly(tmp_path, capsys):
 def test_an_unreadable_suspension_ledger_is_reported_not_passed(tmp_path, capsys):
     # is_file() is true for a ledger this process cannot open, and a report that
     # exits clean over an unreadable safety ledger has measured nothing
-    # (GOVERNANCE 10). A reviewer found the stat where a read belongs.
+    # (principle 8): a stat is not a read.
     tidy = load_tidy(tmp_path)
     (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
     ledger = tidy.STANDING / "SUSPENSIONS.md"
