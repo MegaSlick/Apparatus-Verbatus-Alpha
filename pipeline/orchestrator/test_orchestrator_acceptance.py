@@ -187,7 +187,7 @@ def _perlector_dissent():
 # every non-image entry remains byte-bound.
 #
 # Moved once more, same pattern as the two entries above: a stage-09 pre-push
-# CodeRabbit pass dropped a `door.py:278-300` line-number citation from
+# A later pass dropped a `door.py:278-300` line-number citation from
 # `config/hard_failure.toml`'s comments (a stable reference stays; a line range
 # that drifts as the file is edited does not). File counts and scenario
 # behaviour are unchanged; only the sealed config digest moved.
@@ -264,7 +264,7 @@ def _perlector_dissent():
 # page-render blobs decode through Pillow in that helper; the project's minimal
 # filter-0 decoder still covers every fixture page.
 #
-# Moved once more by the pre-push CodeRabbit round: the Lectio nuda dossier's
+# Moved once more, pre-push: the Lectio nuda dossier's
 # region rows no longer carry `witness_covered` (coverage is witness-derived and
 # the baseline saw no witnesses), `builder_sha256` binds the whole prompt module
 # rather than one function's source, and the witness-context declaration gate
@@ -298,7 +298,7 @@ def _perlector_dissent():
 # index.json per run -- and both digests were re-measured from real orchestrator
 # runs under `semantic_snapshot_digest`.
 #
-# Moved once more by the pre-push CodeRabbit round: the index's count field is
+# Moved once more, pre-push: the index's count field is
 # now named `record_count` for what it actually holds (records summarized, with
 # `validate_index` proving the tie to the Recensor's accepted set), which
 # changes `index.json`'s bytes under both scenarios. Counts unchanged at 46 and
@@ -359,14 +359,14 @@ def _perlector_dissent():
 # structure-failure), which enters `config_digest` and moves every
 # downstream artifact digest with it.
 #
-# Re-pinned for CodeRabbit round 1 on the stage-06 candidate. Every conservation
+# Re-pinned for review round 1 on the stage-06 candidate. Every conservation
 # record now attributes its independent scan's background source and value. A
 # held structure pass can therefore keep null structure evidence while the later
 # conservation measurement states the threshold it actually used. Counts stay
 # 53/57; both digests were re-measured from real orchestrator runs through this
 # module's `orchestrate` and `semantic_snapshot_digest` helpers.
 #
-# Re-pinned for CodeRabbit round 2. The padding calibration harness now makes
+# Re-pinned for review round 2. The padding calibration harness now makes
 # its caller state whether the supplied gold set belongs to this corpus, and
 # the shipped padding config's generation note records that requirement. The
 # config is sealed byte-for-byte, so this explanatory correction deliberately
@@ -374,7 +374,7 @@ def _perlector_dissent():
 # Both values below were measured from fresh real runs through this module's
 # `orchestrate` and `semantic_snapshot_digest` helpers.
 #
-# Re-pinned for CodeRabbit round 3 after adding the scenario-only ink-free page
+# Re-pinned for review round 3 after adding the scenario-only ink-free page
 # that drives a minted page-fallback act through the real witness and Perlector
 # programs. The full parsed fixture is part of `config_digest`, so declaring the
 # new page and scenario moves every artifact in happy and review even though that
@@ -442,7 +442,7 @@ def _perlector_dissent():
 # Fresh real orchestrator runs measured 54 files for happy (exit 0) and 58 files
 # for review (exit 3); the counts and digests below came from those same trees.
 #
-# Re-pinned for Stage SM CodeRabbit round 1 after correcting
+# Re-pinned for Stage SM review round 1 after correcting
 # `pod_placement.toml`'s square-image arithmetic. Its 1344, 1792 and 2304 are
 # longest-edge pixel caps, not total counts; the corrected comment says that
 # misread as totals they would describe roughly 37x37, 42x42 and exactly 48x48
@@ -483,13 +483,13 @@ def _perlector_dissent():
 # 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
 # established, unmoved by R6.
 #
-# Re-pinned for R6 CodeRabbit round 3 because every Recensor review's testimony
+# Re-pinned for R6 review round 3 because every Recensor review's testimony
 # coverage fact replaces per-character uncovered offsets with lossless half-open
 # ranges plus their explicit count. That field-shape change moves recorded bytes
 # but writes no new files: fresh real runs through this module's own helpers held
 # at 64 files for happy (exit 0) and 71 for review (exit 3).
 #
-# Re-measured for R6 CodeRabbit round 4 finding A after an unmeasured page's
+# Re-measured for R6 review round 4 finding A after an unmeasured page's
 # testimony content coverage changed from the measured-clean shape to None-valued
 # `by_chair`/`shortfall` plus a reason. Neither acceptance scenario exercises that
 # unavailable shape -- every reviewed page has reported page-witness text -- so
@@ -503,7 +503,7 @@ def _perlector_dissent():
 # 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
 # established, unmoved by R6 and R8 alike.
 #
-# Re-pinned for R8 CodeRabbit round 2 finding 2. The acts.sqlite column named
+# Re-pinned for R8 review round 2 finding 2. The acts.sqlite column named
 # `uncertainty_spans_json` actually stores the complete canonical uncertainty
 # layer, so it is now truthfully named `uncertainty_json`. Only that SQLite
 # schema identifier changed; fresh runs through this module's own helpers held
@@ -637,7 +637,7 @@ def _perlector_dissent():
 # changed — through this module's own `orchestrate` and `semantic_snapshot_digest`
 # helpers, per the Tier-0 loop lesson that a pin measured mid-branch is a pin
 # measured against a tree nobody pushed. They moved a second time when the
-# CodeRabbit round reworded `config/designator_geometry.toml`'s caveat, which is
+# A later round reworded `config/designator_geometry.toml`'s caveat, which is
 # that lesson arriving on schedule: the first measurement was taken before the
 # review, and a review that changes a sealed configuration file changes the pins
 # with it.)
