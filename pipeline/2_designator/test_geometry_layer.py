@@ -1124,7 +1124,7 @@ def test_chandra_bbox_at_a_one_pixel_page_collapses_to_too_few_distinct_points_a
     """S5 breaker battery, x1=1000/page_w=1 edge: the floor-left and ceil-right
     formulas both round to the page's only column, so a full-range bbox on a
     degenerate 1px page yields fewer than three distinct corners. That is a
-    correct fail-closed refusal (GOVERNANCE 2: never silently accepted as a real
+    correct fail-closed refusal (principle 2: never silently accepted as a real
     crop), not a coverage loss -- a 1px page is not a real corpus case."""
     policy = load_geometry_policy()
     with pytest.raises(SchemaRefusal, match="fewer than three distinct points"):

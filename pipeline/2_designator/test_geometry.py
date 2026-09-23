@@ -145,7 +145,7 @@ def test_a_round_trip_never_loses_a_pixel_of_the_original_rectangle(page, model)
     A round trip through a coarser model space cannot be lossless — the forward
     conversion genuinely discards information. What it can be is *one-sided*:
     `from_model_space` rounds low edges down and far edges up, so the recovered
-    rectangle always contains the original. That is the direction GOALS 1 asks
+    rectangle always contains the original. That is the direction goal 2 asks
     for. A recovered rectangle a pixel too wide costs a sliver of neighbouring
     paper; a recovered rectangle a pixel too narrow costs the far edge of a
     signature, which is the "clipped signatures" class the capture padding
@@ -419,7 +419,7 @@ def test_load_padding_config_refuses_a_missing_field(tmp_path, missing_field):
     passed with the missing-field check deleted entirely. Built through
     `_write_padding_toml` it carries a valid provenance table, so the parameterized
     field is the only thing wrong with the file, and the message is matched so the
-    refusal has to be the one this test is named for. Found by CodeRabbit.
+    refusal has to be the one this test is named for.
     """
 
     fields = dict(PADDING)
@@ -553,8 +553,8 @@ def test_load_padding_config_refuses_a_non_boolean_calibrated_flag(tmp_path):
 def test_this_project_has_exactly_one_basis_point_rounding_rule():
     """`geometry._pad_amount` and `common.background.round_half_up_bp` are one.
 
-    They stopped being one module's business on 2026-09-06: the background
-    band `[grouping.background] band_bp` resolves is now read by the Ink Map and
+    They are not one module's business: the background
+    band `[grouping.background] band_bp` resolves is also read by the Ink Map and
     the Recensor as well, through `common/background.py`, which may not import a
     stage. `_pad_amount` delegates there rather than keeping a second copy, and
     this pins both halves of that -- the same denominator and the same answer,

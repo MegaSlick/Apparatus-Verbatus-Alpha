@@ -184,7 +184,7 @@ def test_the_frame_is_published_by_name_on_the_conservation_record(framed_pass):
     """The decision is on the record, not inferable from a group that is missing.
 
     One component, its bounds the whole page, its pixel count the frame's own.
-    GOVERNANCE 2: a page-sized region the grouping pass declined to claim may
+    principle 2: a page-sized region the grouping pass declined to claim may
     not reach a reader as an unexplained residual.
     """
     _designator, context, _held = framed_pass

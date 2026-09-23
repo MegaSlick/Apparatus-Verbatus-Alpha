@@ -3,7 +3,7 @@
 The door owns no directory. It writes its admissions and refusals into the
 Exemplar's, so the record of what arrived and the record of what was sealed sit
 together — a refusal filed somewhere nothing downstream reads is a refusal that has
-been lost, which GOVERNANCE 2 does not allow.
+been lost, which principle 2 does not allow.
 
 The one decoder-routing module (`admission.py`) decides from source bytes, never a
 declared extension. Its configuration names how a source is read, not formats to
@@ -21,20 +21,19 @@ output.
 **Two ways in, and the difference between them is not a flag.** The fixture path
 runs the walking skeleton on the repository's own declared synthetic pages, and it
 refuses to treat any other folder as a fixture — fixture status comes from the
-declared fixture root and the `load_fixture` manifest, never from a caller's word
-(ruling 2026-08-04, item 1). Everything else is real input: it must live inside an
+declared fixture root and the `load_fixture` manifest, never from a caller's word.
+Everything else is real input: it must live inside an
 approved storage location, and which of the two routes created a run is sealed into
 `run.json`'s own self-hashed authority as the run's `ingress`, so a later reader
 asks the run authority rather than an optional field on a stage artifact that could
 simply be absent.
 
-**Cut 2026-08-09, per Tyrel's ruling that session.** Real input used to also need a
-current data-gate approval-record artifact before this door would admit it. His
-ruling: none of this material ever reaches git regardless of any such sign-off — it
-runs through the pipeline on a GPU host, `workbench/` is gitignored, and an ingress
-check plus CI's full-history payload scan already cover that mechanically — so the
-requirement bought nothing and is gone. `operations.submit.gate`'s storage-root check
-is untouched; only the approval artifact and its currency check are cut.
+**Real input needs no data-gate approval-record artifact.** None of this material
+ever reaches git regardless of any such sign-off — it runs through the pipeline on
+a GPU host, `workbench/` is gitignored, and an ingress check plus CI's full-history
+payload scan already cover that mechanically — so the requirement would buy
+nothing. `operations.submit.gate`'s storage-root check still applies; only the
+approval artifact and its currency check are absent.
 
 Invoked as a program:
 
@@ -1035,7 +1034,7 @@ def content_aware_shards(
                     "content-aware shard refusal: every legal seam within the configured "
                     "page cap would cut a split pair or re-shoot cluster; no shard plan was "
                     "returned because those units must remain whole; place the whole unit in a "
-                    "shard within the sealed cap, or stop for Tyrel if the cap itself conflicts"
+                    "shard within the sealed cap, or stop for the project lead if the cap itself conflicts"
                 )
         shards.append(ordered[start:end])
         start = end
@@ -1074,7 +1073,7 @@ def process_sources(
     page ordinals or filename ledger link, and prevents a pathname replacement
     from separating the digest from the pixels that are sealed.
 
-    Per-file, never per-folder (harvest #2): one unreadable or refused source does
+    Per-file, never per-folder: one unreadable or refused source does
     not stop the rest from being decided. Byte-identical pages within one PDF remain
     distinct pages. A second source path with the same bytes is admitted under its
     own ordinal and records the first path as a duplicate fact; it never loses a
@@ -1498,7 +1497,7 @@ def publish_duplicate_report(context: StageContext) -> str | None:
         # on it made a legal admission fatal here — and fatal *after* the run had
         # already published every admission, which is the worst moment to discover it.
         # The door computes this one for everything it admits, so its absence really
-        # is a contract breach and stays loud rather than being skipped (GOVERNANCE 2).
+        # is a contract breach and stays loud rather than being skipped (principle 2).
         source_digest = payload.get("admitted_source_sha256")
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise ContractError(
@@ -1658,12 +1657,13 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
     submission cannot be read correctly, and this is where it is stopped.
 
     **The whole submission is refused, and never a file.** Dropping the second
-    copy is an automated exclusion, and GOVERNANCE reserves exclusions to Tyrel
-    — `ArmariumCategory.EXCLUDED_WITH_APPROVAL` exists because exclusion is
+    copy is an automated exclusion, and excluding material is the project
+    lead's decision, not the pipeline's —
+    `ArmariumCategory.EXCLUDED_WITH_APPROVAL` exists because exclusion is
     approval-bound. Nor may the door choose the other way and read the merged
     page once: identical bytes are one page shot twice *or* an export that wrote
     one scan under two names, and nothing in the bytes tells the two apart. The
-    operator is asked instead, which is what GOVERNANCE 2 is for.
+    operator is asked instead, which is what principle 2 is for.
 
     Ordinals only, never filenames. `run_stage` prints every `ContractError` to
     stderr, and the data-handling logging rule excludes a declared path from
@@ -1675,8 +1675,8 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
 
     There is deliberately no `--allow-duplicate-sources`. A flag that opts past
     this would let a session wave through a refusal that exists to stop a
-    downstream lie about how many pages were read; if that escape hatch is
-    wanted, it is Tyrel's to add.
+    downstream lie about how many pages were read; adding that escape hatch is
+    the project lead's decision, not this door's.
 
     **What this sees is the submitted bytes, which is not every route to one
     page identity.** The duplicate report groups on `admitted_source_sha256`,
@@ -1740,12 +1740,12 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
         "excluded here and nothing is dropped: the submission is refused whole, and "
         f"the sealed duplicate report at {duplicate_report} names each "
         "filename. Re-submit with a --submission-manifest naming each distinct scan "
-        "once, or ask Tyrel if a repeated scan is genuinely two pages"
+        "once, or ask the project lead if a repeated scan is genuinely two pages"
     )
 
 
 def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | None) -> None:
-    """An empty or wholly refused input set is a loud failure (harvest #3).
+    """An empty or wholly refused input set is a loud failure.
 
     The terminal carries the count and private report location, while the report
     itself names every source and reason. This preserves filenames as citation links
@@ -1760,7 +1760,7 @@ def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | No
         f"{sum(census.values())} refused ({named or 'no refusal was recorded either'}). "
         f"Private named refusal report: {refusal_report or 'unavailable'}. "
         "An empty or wholly unreadable input set is a loud failure, never a green run with no "
-        "output (harvest #3)"
+        "output"
     )
 
 
@@ -1771,7 +1771,7 @@ def _refusal_census(tree: RunTree) -> tuple[int, dict[str, int]]:
     failure that has already happened, and an exception from reading a damaged
     artifact would replace "the door admitted nothing" with something about JSON —
     the primary failure masked by a secondary one, which is a worse answer to
-    GOVERNANCE 2 than a partial census. So an artifact that cannot be read or whose
+    principle 2 than a partial census. So an artifact that cannot be read or whose
     reason is outside the closed set is counted under a name that says so, and the
     loud failure still says what it is.
     """
@@ -1803,7 +1803,7 @@ def _refusal_census(tree: RunTree) -> tuple[int, dict[str, int]]:
 def declared_synthetic_fixture_root(requested_root: str) -> Path:
     """The one root in this repository whose contents are declared synthetic.
 
-    Ruling 2026-08-04, item 1: fixture status comes from the declared fixture
+    Fixture status comes from the declared fixture
     manifest, never from a caller flag, a filename suffix, or a folder name. A
     caller pointing `--fixture-root` at its own directory is pointing at real
     input, and this is what says so instead of believing it.
@@ -1912,7 +1912,7 @@ def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
     open `pdf_render.toml` again for its digest, so a rewrite between the two
     reads sealed a run whose `render_settings` recorded one target while its
     `config_digest` bound the bytes of another — a run claiming a configuration it
-    did not execute (audit S6). The digest travels into `config_digest` and into
+    did not execute. The digest travels into `config_digest` and into
     the run's `sealed_config_digests`, and the door proves at its point of use
     that the settings it renders with are the ones the run sealed.
     """
@@ -2410,7 +2410,7 @@ def _real_bindings(
     routing is a different run wearing an old name, and `RunTree.create` refuses
     it before anything is written.
 
-    **Cut 2026-08-09, rebound for provenance under CF01.** The per-run APPROVAL
+    **Real input needs no per-run approval record.** The per-run APPROVAL
     record and its currency check are gone and stay gone: real input is no
     longer approval-gated. The data-handling policy's byte digest is bound
     again — `data_handling_policy_sha256` above and the `data-handling` sealed
@@ -2422,7 +2422,7 @@ def _real_bindings(
     # them on the fixture path. Without these a real submission reusing one run
     # id under a different `--serving-recipes-config` produced the same
     # `config_digest`, so `RunTree.create` saw no change and the run authority
-    # could not say which catalogue governed the run (GOVERNANCE 6).
+    # could not say which catalogue governed the run (principle 6).
     try:
         serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
     except OSError as error:
@@ -2505,7 +2505,7 @@ def _real_bindings(
                 "submission_ledger_sha256": ledger["self_hash"],
                 "format_policy": format_policy,
                 "pdf_render_config_sha256": pdf_render_config_sha256,
-                # CodeRabbit CF01. Not an approval record and not a gate: the door
+                # Not an approval record and not a gate: the door
                 # still admits real material on the storage-root check alone. This
                 # binds *which* caller-selected policy performed that check, so a
                 # run can be reconciled against the policy that governed it instead
@@ -2568,8 +2568,8 @@ def _real_bindings(
         # `context.require_sealed_config("designator-padding", ...)`
         # (`pipeline/2_designator/run.py`) over real ingress would have refused
         # with "this context sealed no digest for the designator-padding
-        # configuration" on every real run, unconditionally, the day R2 lands.
-        # Found in audit (S5); F-S5.
+        # configuration" on every real run, unconditionally -- the defect
+        # named F-S5.
         "sealed_config_digests": {
             "designator-padding": designator_padding_config_sha256,
             "designator-geometry": designator_geometry_config_sha256,

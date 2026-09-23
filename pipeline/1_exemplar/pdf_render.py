@@ -175,8 +175,8 @@ def _refuse_implausible_page_count(pages: int, container_size: int) -> None:
     A blind audit built a *valid* PDF 1.5 — 10,000 distinct page objects, true
     `/Count`, no shared kids, packed into a Flate object stream — at 9.4 bytes per
     page, and PDFium opens and renders it. So this ratio does not establish damage,
-    and `CORRUPT` would tell Tyrel his original is broken when it is not: the one
-    thing ruling 2 says a refusal must never do. What it does establish is that this
+    and `CORRUPT` would tell the operator their original is broken when it is not: the one
+    thing a refusal must never do. What it does establish is that this
     reader cannot yet distinguish that file from the page-tree bomb it is here to
     stop, which is a gap in this pipeline and is recorded as one.
     """
@@ -247,8 +247,8 @@ def _open_failure_code(error: Exception) -> RefusalReason:
     Lane B's distinction, kept — nothing in this pipeline can prompt for or supply
     a password, so a password-protected scan is a real, named thing this project
     cannot yet read, the same shape as a format with no reader. Calling it `CORRUPT`
-    would tell Tyrel his original was damaged when it is intact and merely locked,
-    which is a different decision for him entirely.
+    would tell the operator their original was damaged when it is intact and merely
+    locked, which is a different fact entirely.
 
     **Read from the error code, not from the error text.** Lane B matched the words
     "password" or "encrypt" in the message. PDFium has two locked-document codes and

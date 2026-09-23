@@ -219,7 +219,7 @@ def test_an_oversized_page_is_an_alarm_before_a_bitmap_is_returned():
 def test_a_large_legitimate_page_renders_at_reduced_resolution_rather_than_refusing():
     """A page too big for the target DPI is captured, not lost.
 
-    GOALS 1: a poorly read act can be corrected later, a missed one cannot. So the
+    goal 2: a poorly read act can be corrected later, a missed one cannot. So the
     resolution is capped downward toward the floor and the page still seals, and
     the contract records what it was actually rendered at — a recipe naming only
     the target would describe pixels these are not.
@@ -271,7 +271,7 @@ def test_a_page_tree_that_shares_one_leaf_declares_no_more_pages_than_its_bytes_
     A blind audit built a *valid* PDF 1.5 at 9.4 bytes per page -- 10,000 distinct
     page objects, true `/Count`, packed into a Flate object stream -- which PDFium
     opens and renders. So this ratio cannot establish damage, and `CORRUPT` is the
-    code that tells Tyrel his original is broken. What the ratio does establish is
+    code that tells the operator their original is broken. What the ratio does establish is
     that this reader cannot yet tell the two apart, which is a gap in this pipeline.
     """
     data, declared = page_tree_bomb_pdf(19, fanout=2)
@@ -432,8 +432,8 @@ def test_a_locked_pdf_is_a_gap_we_own_and_a_broken_one_is_damage(code, expected)
     """The two facts a failed open can carry, and they are different decisions.
 
     Nothing here can supply a password, so a locked document is work this project
-    owes rather than a damaged original — telling Tyrel an intact scan is corrupt
-    is the wrong sentence about his own file.
+    owes rather than a damaged original — telling the operator an intact scan is
+    corrupt is the wrong sentence about their own file.
 
     Both locked codes are checked because only one of them says "password":
     PDFium renders code 5 as "Unsupported security scheme error", which contains

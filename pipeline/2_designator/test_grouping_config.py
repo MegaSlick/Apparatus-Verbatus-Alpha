@@ -100,7 +100,7 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     assert config["page_area_bp"]["page_spanning_area_bp"] == 5000
     assert config["page_area_bp"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["page_area_bp"]["provenance"]["sample_count"] == 17
-    # The third and fourth measured blocks, both from 2026-09-06 and both on the
+    # The third and fourth measured blocks, both on the
     # same 44 real pages. `[coverage_audit]` is not this stage's policy at all --
     # it is the outside-coverage audit's, validated here and applied nowhere in
     # this stage -- and it is pinned here because this loader is what refuses a
@@ -112,7 +112,7 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     assert config["coverage_audit"]["edge_band_bp"] == 100
     assert config["coverage_audit"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["coverage_audit"]["provenance"]["sample_count"] == 44
-    # The noise floor and fraction gate, sealed beside the gates on 2026-09-14
+    # The noise floor and fraction gate, sealed beside the gates
     # under their own, truthfully unmeasured, provenance.
     assert config["coverage_audit"]["minimum_ink_pixels"] == 24
     assert config["coverage_audit"]["minimum_fraction_outside_bp"] == 200
@@ -158,8 +158,8 @@ def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(wi
     """The load-bearing claim: at each measured fixture page size, every
     resolved threshold equals what the retired hardcoded constant was.
 
-    **`page_edge_reach_px` left this claim on 2026-09-06 and it is asserted
-    below instead of here.** It was 4 pixels on this page because `154` was a
+    **`page_edge_reach_px` is asserted below instead of here.**
+    It was 4 pixels on this page because `154` was a
     conversion of `DEFAULT_PAGE_EDGE_REACH_PX` against it; measured on 44 real
     pages that reach passed on none of them, so the value is now 280 and
     resolves to 7 here. Every OTHER field in this table is still the retired
@@ -667,7 +667,7 @@ def test_a_fallback_band_count_that_cuts_nothing_is_refused(tmp_path, value):
     """The one count with a floor of one, and the reason it has one.
 
     Zero bands is a page the structure pass found nothing on reaching the
-    witnesses as no crop at all -- the loss Tyrel's predetermined-crop ruling
+    witnesses as no crop at all -- the loss the predetermined-crop ruling
     exists to prevent -- so this field refuses at the loader rather than
     resolving to a grid that cuts nothing.
     """
