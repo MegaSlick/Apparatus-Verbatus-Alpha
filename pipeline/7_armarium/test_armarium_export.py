@@ -3771,7 +3771,7 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
 
 # --- The damage record: text_status and the transcription annotation layer ------
 #
-# Opus-F1 / Sol-S4 (T0 export honesty). The Archetypus knew an act was damaged; nothing here read
+# F1 / Sol-S4 (T0 export honesty). The Archetypus knew an act was damaged; nothing here read
 # the field, so a partial act was exported and aggregated exactly like a whole one
 # and the run said `complete` with an empty reason list. These are the projection-
 # layer half of that repair; the end-to-end demonstration through the real CLIs is

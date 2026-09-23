@@ -957,7 +957,7 @@ def test_an_empty_receipt_may_not_claim_to_be_complete():
 
 # --- Audit-and-repair regression (F-new-2, mutation-of-mechanisms pass) ----------
 #
-# Sonnet audit-and-repair seat 1, R0. Mutation check: `pipeline/5_recensor/run.py
+# Audit-and-repair seat 1, R0. Mutation check: `pipeline/5_recensor/run.py
 # ::validate_chair_coverage` wires `act_attachment_facts(context, act_id)` into
 # `witness_coverage(...)` as its `attachments=` argument -- the one production call
 # site for D2/D3's act-granularity floor accounting (S3's audit question: "can any
@@ -1044,7 +1044,7 @@ def test_v2_receipt_cannot_omit_its_granularity_measurement_basis(tmp_path):
 
 # --- Audit-and-repair regression (F-O4) -----------------------------------------
 #
-# Opus audit-and-repair seat 3, R0. `page_granularity_only` is subtracted from the
+# Audit-and-repair seat 3, R0. `page_granularity_only` is subtracted from the
 # completed count before the v2 block that typed it ever runs, so a non-integer
 # value left `_validate_coverage` through a raw TypeError -- not a ContractError,
 # and so not something a caller that refuses malformed evidence by name can catch.
@@ -1062,7 +1062,7 @@ def test_a_non_integer_page_granularity_count_is_a_named_refusal(value):
 
 # --- Audit-and-repair regression (F-O3) -----------------------------------------
 #
-# Opus audit-and-repair seat 3, R0. `witness_coverage` counts a chair toward the
+# Audit-and-repair seat 3, R0. `witness_coverage` counts a chair toward the
 # act floor only when its outcome IS a reading, but `_validate_coverage`
 # rederived the same number from the ATTESTATORES COMPLETED class -- which is
 # wider, because it also holds `excluded`, an approval-bound exclusion that never

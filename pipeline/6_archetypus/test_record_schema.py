@@ -622,7 +622,7 @@ def test_a_completed_reading_is_not_refused_by_that_guard():
 
 # --- The act-attachment view is required, not merely checked when present -------
 #
-# Opus audit-and-repair seat 3, R0. F-O2: `accepted_primed_perlectio` checked the
+# Audit-and-repair seat 3, R0. F-O2: `accepted_primed_perlectio` checked the
 # R0 act-attachment dossier view only `if attachment is not None`, so a resealed
 # reading that had simply dropped the field walked past the whole page-witness
 # custody chain -- reference shape, direct-input binding, and the digest-checked

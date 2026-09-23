@@ -111,7 +111,7 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
     # through `outside_ink_requests`) correctly refuses it a second recovery
     # round; a2 goes straight to held-for-review instead
     # (`pipeline/orchestrator/test_orchestrator_acceptance.py`'s "Unit 14B
-    # Sonnet audit" REVIEW_RUN_TREE_DIGEST re-pin measures the same tree).
+    # audit" REVIEW_RUN_TREE_DIGEST re-pin measures the same tree).
     # Spending an unconfirmed witness pointer here would be exactly the
     # picker principle 1 forbids.
     assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]

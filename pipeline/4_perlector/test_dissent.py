@@ -480,7 +480,7 @@ def test_this_module_pins_equality_only_and_takes_no_similarity_parameter():
     )
 
 
-# --- F-X4 (R4 audit, Opus seat 3): the comparison deadline owns its own alarm ---
+# --- F-X4 (R4 audit, seat 3): the comparison deadline owns its own alarm ---
 
 
 @pytest.mark.skipif(

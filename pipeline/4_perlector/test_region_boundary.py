@@ -844,7 +844,7 @@ def test_unpresented_geometry_is_not_misreported_as_uncovered_when_another_witne
 
 
 def test_the_refusal_names_the_cause_it_used_to_swallow(real_region):
-    """Opus-F3(c). Every distinct fault the shared boundary can find — a missing
+    """F3(c). Every distinct fault the shared boundary can find — a missing
     blob, a transform outside the page, a crop relabelled onto another act,
     pixels that are not the crop — reached the operator as the same nine words,
     because the `ContractError` carrying the specific cause was left on
@@ -885,7 +885,7 @@ def test_the_refusal_names_the_cause_it_used_to_swallow(real_region):
 
 
 def test_a_crop_written_by_another_encoder_is_not_refused_as_untraceable(real_region):
-    """The composed half of Opus-F3, at the stage that reported it. The audit's
+    """The composed half of F3, at the stage that reported it. The audit's
     demonstration ended `exit=2, SchemaRefusal: a Designator region does not
     trace to its Exemplar page. Every crop in the run is refused.` — with every
     pixel reproducing exactly from the Exemplar and the recorded transform."""

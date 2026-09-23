@@ -559,7 +559,7 @@ def _perlector_dissent():
 # with the reproof and export themes merged plus this theme — fresh runs
 # through this module's own helpers; counts and exits held at 64/0 and 71/3.)
 #
-# Re-pinned for Opus-F3: act crops are evidence written during a run, and
+# Re-pinned for F3: act crops are evidence written during a run, and
 # `common/imaging.py::crop_png` now writes them through this project's own
 # deterministic encoder on both paths instead of `zlib.compress(level=9)` and
 # Pillow's PNG writer. The pixels are unchanged — `semantic_snapshot` already
@@ -726,7 +726,7 @@ def _perlector_dissent():
 # repair records held, refused-page, and absent-chair paths as `presented: {}` /
 # `observed: []`, rather than inventing an image no chair saw; that moves the
 # review tree but no artifact kind. Counts remain 84/0 and 97/3.
-# Sonnet audit seat (10B, seat 2 of 4): the absence repair's page-scope gate
+# Audit seat (10B, seat 2 of 4): the absence repair's page-scope gate
 # (`reading`, i.e. WITNESS_READING_OUTCOMES) was narrower than its act-scope
 # twin (`attempted`, i.e. ATTEMPTED_WITNESS_OUTCOMES) and collapsed a page
 # witness that was genuinely shown pixels and returned an unusable response
@@ -741,7 +741,7 @@ def _perlector_dissent():
 # has every contributing act fail for a page-scoped chair). Counts unchanged at
 # 84/0 and 97/3. Re-measured through this module's own `orchestrate` and
 # `semantic_snapshot_digest` helpers at canonical run id "r".
-# Opus audit seat (10B, seat 3 of 4): the fixture's disagreeing native
+# Audit seat (10B, seat 3 of 4): the fixture's disagreeing native
 # observation moves, so the sealed fixture/config authority moves with it. The
 # box was x 0..20 by y 230..250, which overlapped act a2's own page-1 crop by
 # eight pixels each way — genuinely proposed ink, reported as unaccounted only
@@ -808,9 +808,9 @@ def _perlector_dissent():
 # Re-measured through this module at canonical run id "r": 88/0. Review has no
 # native captures, so its 109 files and digest remain unchanged.
 #
-# Opus audit seat (10C, seat 3 of 4): the declared fixture gains one scenario,
+# Audit seat (10C, seat 3 of 4): the declared fixture gains one scenario,
 # `coverage-recovery`, and the single native observation that scenario needs.
-# Sonnet's recorded gap was that the coverage-triggered recovery origin had no
+# The recorded gap was that the coverage-triggered recovery origin had no
 # isolated test: in `review` that stimulus sits beside a scenario-declared
 # recrop on a1 and a scenario hold on a2, so no assertion there can tell the
 # two origins apart. The new scenario declares neither, which makes the
@@ -830,7 +830,7 @@ def _perlector_dissent():
 # unrouted observation for coverage recovery. Fresh canonical-id `r` runs
 # measured 86 files/exit 0 for happy and 111 files/exit 3 for review through
 # this module's `orchestrate` and `semantic_snapshot_digest` helpers.
-# Unit 11 Sonnet re-pin: `ink-free-page`'s minted `page-fallback:3` act declared
+# Unit 11 re-pin: `ink-free-page`'s minted `page-fallback:3` act declared
 # a whole-page Chandra `raw_response` (previous re-pin, below) whose native
 # block quantized to a box that both (a) fell outside the sealed page by one
 # pixel, holding the run before the Perlector ever established a reading for
@@ -856,7 +856,7 @@ def _perlector_dissent():
 # Measured twice from fresh final-candidate runs at canonical run id "r": 86/0
 # for happy and 111/3 for review.
 #
-# Unit 11 Opus re-pin (final seat), and the last one in this unit: the durable
+# Unit 11 re-pin (final seat), and the last one in this unit: the durable
 # page Testimonium now names the retained responses its own derived geometry was
 # quantized from, and the rule that quantized them (`raw_response_refs`,
 # `adapter_metadata`). The act-scoped Testimonia already carried both, but they
@@ -976,7 +976,7 @@ def _perlector_dissent():
 # canonical run id `r` in two independent roots through the same helpers after
 # this final semantic byte: happy reproduced its existing digest and review
 # reproduced the replacement below.
-# Unit 14B Opus audit: the Armarium's edge hold is now derived, on both sides,
+# Unit 14B audit: the Armarium's edge hold is now derived, on both sides,
 # from one recorded ink-map row per sealed page carried in `sources.json`
 # (`armarium-sources.v3`), so the clean-machine verifier recomputes the held set
 # from the package's own source graph instead of reading it back out of the
@@ -987,7 +987,7 @@ def _perlector_dissent():
 # (happy 97/0, review 106/3). Measured twice in independent temporary roots at
 # canonical run id "r" through this module's own `orchestrate` and
 # `semantic_snapshot_digest` helpers.
-# Unit 14B Opus audit, again in both trees: an audit draft's
+# Unit 14B audit, again in both trees: an audit draft's
 # `flag_location_basis` named every chair that reported, not the chairs whose
 # retained text departs from the reading. On this very fixture both acts raise
 # two `testimony-diff` flags and the basis named three chairs -- attestator_1
@@ -1000,7 +1000,7 @@ def _perlector_dissent():
 # placement seal): both sides above measured trees missing the other's
 # change; the value below is measured on THIS tree, twice, independent
 # roots, rid "r", via this module's own helpers.
-# Unit 19B Sonnet audit round 2: consult §3.2 step 7 and §7 forbidden shape 19
+# Unit 19B audit round 2: consult §3.2 step 7 and §7 forbidden shape 19
 # named `page_id = page_ids[0]` a representative-singular picker shape and
 # required its removal from the audit draft/finding payload; it is now gone
 # from `common/perlector_audit.py`'s closed field sets, so the byte this
@@ -1027,7 +1027,7 @@ def _perlector_dissent():
 # (review). Measured twice in independent temporary roots at canonical run id
 # "r" through this module's own `orchestrate` and `semantic_snapshot_digest`
 # helpers.
-# Unit 19B Opus audit: the lectio-prior and lectio-nuda dossiers no longer
+# Unit 19B audit: the lectio-prior and lectio-nuda dossiers no longer
 # carry `witness_covered` on their region rows. `build_dossier` omits that key
 # entirely when it is handed no testimonia, and the pre-19B path built each
 # unprimed pass with `testimonia=[]`; the combined path builds one dossier with
@@ -1108,7 +1108,7 @@ def _perlector_dissent():
 # (118 -> 106); happy holds 95 files. Measured twice at two independent run
 # roots through this module's own helpers at canonical run id "r".
 # Union re-pin: see the Unit 17 seam entry above the happy digest.
-# Unit 14B Sonnet audit: fix pass 2's "restoration" above was the regression,
+# Unit 14B audit: fix pass 2's "restoration" above was the regression,
 # not the fix. Unit 10C's own `unclaimed_observations` is a witness's report --
 # a native/derived box the Attestatores reported, with no ink evidence behind
 # it -- and consult §4.5 (`/out/CONSULT_REPORT.md`, BINDING) requires Unit 9's
@@ -1131,7 +1131,7 @@ def _perlector_dissent():
 # temporary roots at canonical run id "r" through this module's own
 # `orchestrate` and `semantic_snapshot_digest` helpers: happy reproduced its
 # existing digest and review reproduced the value below.
-# Unit 14B Opus audit: Sonnet's ink gate above is confirmed and unchanged -- the
+# Unit 14B audit: The ink gate above is confirmed and unchanged -- the
 # marginal box still sits over measured-zero ink, so review keeps 106 files at
 # exit 3 and no recovery round returns. This digest moved once for the Armarium
 # source-graph byte named above the happy digest, and once more here: review's
@@ -1147,7 +1147,7 @@ def _perlector_dissent():
 # placement seal): both sides above measured trees missing the other's
 # change; the value below is measured on THIS tree, twice, independent
 # roots, rid "r", via this module's own helpers.
-# Unit 19B Sonnet audit round 2: same `page_id` removal as the happy digest
+# Unit 19B audit round 2: same `page_id` removal as the happy digest
 # above. Review's own recovery/audit chains lose the same one key per act;
 # no file count or exit change (106 files, exit 3). Measured twice in
 # independent temporary roots at canonical run id "r" through this module's
@@ -1159,7 +1159,7 @@ def _perlector_dissent():
 # stays 3 and file count moves 106 -> 107. Measured twice in independent
 # temporary roots at canonical run id "r" through this module's own
 # `orchestrate` and `semantic_snapshot_digest` helpers.
-# Unit 19B Opus audit: same `witness_covered` removal from the unprimed
+# Unit 19B audit: same `witness_covered` removal from the unprimed
 # dossiers as the happy digest above. Review publishes a lectio-prior for
 # every act it reads, including the recovered ones, so the same one key leaves
 # each of them; file count stays 107 and the exit stays 3. Measured twice in
@@ -6051,7 +6051,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     before = snapshot(root)
 
     # Unit 11 adds the same two retained Chandra-response blobs before review's
-    # recovery loop; its append-only invariant is unchanged. Unit 14B Sonnet
+    # recovery loop; its append-only invariant is unchanged. Unit 14B
     # audit: fewer than 118 -- the ink-confirmation gate (consult §4.5) removes
     # the second recovery round a2's unconfirmed witness box used to spend
     # (see the REVIEW_RUN_TREE_DIGEST comment above).
@@ -6348,7 +6348,7 @@ def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(r
 
 
 def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
-    """Unit 14B Sonnet audit: a2 no longer requests a spurious second recovery.
+    """Unit 14B audit: a2 no longer requests a spurious second recovery.
 
     Before the correction, a2 (which `hold_acts` declares should go straight
     to a hold) independently satisfied `wants_recovery` from the same page's
@@ -6421,7 +6421,7 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
     particular region; it is not permission to omit a continuation region from
     the Perlector's image basis.  Both sides must remain there even where a2 is
     never recovered at all -- exactly the case `review` now exercises (Unit
-    14B Sonnet audit: a2's own second reading here used to come from the same
+    14B audit: a2's own second reading here used to come from the same
     unconfirmed marginal witness box `REVIEW_RUN_TREE_DIGEST` above documents;
     it is refused there for the same lack of ink evidence). The stronger claim
     -- that a genuine recovery recrop keeps the far side of a real continuation
@@ -6453,7 +6453,7 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
 
 
 def test_recovery_stayed_inside_its_budget(review_run):
-    """Unit 14B Sonnet audit: one request, not two -- see the comment on
+    """Unit 14B audit: one request, not two -- see the comment on
     `test_the_recovery_request_and_both_reading_attempts_survive`."""
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")

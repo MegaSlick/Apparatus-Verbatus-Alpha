@@ -360,7 +360,7 @@ def test_shard_size_knob_is_sealed_with_a_point_of_use_recheck_entry():
 
 # --- 3. Audit-and-repair regression tests (F-S1, F-S2) ---------------------------
 #
-# Sonnet audit-and-repair seat 1, R0. Both reproduced against the real orchestrator
+# Audit-and-repair seat 1, R0. Both reproduced against the real orchestrator
 # over the real fixture on the pre-fix candidate before being fixed -- not merely
 # unit-level constructions -- per the s11-audit brief's "real fixture runs...  test
 # first, then fix" rule.
@@ -989,7 +989,7 @@ def test_perlector_refuses_an_act_scoped_testimonium_wearing_a_page_witness_flag
 
 # --- 4. Audit-and-repair regression (F-O1): the derived act-attachment ----------
 #
-# Opus audit-and-repair seat 3, R0. Every consumer of these artifacts collapses
+# Audit-and-repair seat 3, R0. Every consumer of these artifacts collapses
 # each chair to its latest attempt on purpose -- `testimonia_of` says so in its own
 # docstring ("cannot see a superseded attempt as though it were still live"), and
 # `chair_outcomes` says the two derivations are shared so consumers "cannot drift
