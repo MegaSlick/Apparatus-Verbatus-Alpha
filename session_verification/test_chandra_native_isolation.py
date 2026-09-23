@@ -205,8 +205,16 @@ def test_parse_failure_retains_received_bytes_and_aborts_retry(tmp_path):
     assert (tmp_path / "research" / "reading-01-response.raw").read_bytes() == raw_body
 
 
-@pytest.mark.parametrize("failure", ["shape", "detector"])
-def test_classification_failure_retains_received_bytes_and_aborts_retry(tmp_path, failure):
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("shape", "could not be classified normally"),
+        ("detector", "could not retain native response evidence"),
+    ],
+)
+def test_classification_failure_retains_received_bytes_and_aborts_retry(
+    tmp_path, failure, message
+):
     ledger = ReadingLedger.create(tmp_path / "research")
     admission = _DeadlineAdmission(
         ledger,
@@ -238,7 +246,7 @@ def test_classification_failure_retains_received_bytes_and_aborts_retry(tmp_path
         admission,
         refuse_classification,
     )
-    with pytest.raises(DurabilityRefusal, match="could not retain native response evidence"):
+    with pytest.raises(DurabilityRefusal, match=message):
         proxy.create(model="attestator-1-chandra", messages=[])
 
     retained = json.loads((tmp_path / "research" / "reading-ledger.json").read_text())
@@ -523,7 +531,15 @@ def test_pinned_upstream_retries_real_rgb_request_with_fake_sdk(tmp_path, monkey
 
     assert result == 2
     assert len(attempts) == 7
-    assert [item["temperature"] for item in attempts] == [0.0, 0.2, 0.4, 0.6, 0.8, 0.8, 0.8]
+    assert [item["temperature"] for item in attempts] == [
+        0.0,
+        0.2,
+        0.4,
+        0.6000000000000001,
+        0.8,
+        0.8,
+        0.8,
+    ]
     repeated_summary = json.loads(
         (tmp_path / "repeated-evidence" / "summary.json").read_text()
     )
