@@ -96,7 +96,7 @@ parse-failure branch, so the two cannot drift apart again. An act-scoped chair
 is evidence of the same kind as a page-scoped one; a truncation fact the
 provider actually reported has no reason to survive on one path's summary and
 vanish from the other's; Recensor coverage reading a provider-truncated act as
-plain "failed" with no truncation flag was the silent loss GOVERNANCE 2 rules out.
+plain "failed" with no truncation flag was the silent loss principle 2 rules out.
 Regression coverage lives beside the page-path original:
 `test_live_attempt_from_response_cut_off_and_parser_failure_names_both` and
 `test_live_attempt_from_response_parser_failure_without_cut_off_keeps_verbatim_reason`
@@ -131,7 +131,7 @@ rather than carried as envelope inputs, because the tally re-derives an act
 record's inputs from its regions and presentation alone.
 
 **Chandra is a served witness like the others, reading its vendor's own
-grammar.** Tyrel's ruling (2026-09-02): every witness runs its own full pass,
+grammar.** Every witness runs its own full pass:
 Chandra reads the page for the Designator and separately as Attestator 1, and
 nothing is captured from one call into another. The capture-as-Testimonium
 intake the structure-chair design had half built (`feeding.chandra_capture_intake`,
@@ -179,7 +179,7 @@ line and substitutes `[0, 0, 1, 1]`; a `Blank-Page` block is retained without
 text or geometry where the vendor drops it; a nested `data-bbox` is recorded
 rather than stripped; and the block count the reader returns is reconciled
 against the raw HTML's own top-level `div` count as a finding. Those findings
-travel on the capture beside the reading (GOVERNANCE 2), because they are the
+travel on the capture beside the reading (principle 2), because they are the
 whole of what the vendor's parser would have printed to a stdout nobody
 retains. A body the reader can place in no shape at all lands in the
 `unrecognized-shape` state naming what it saw in `outcome`, with its bytes
@@ -314,8 +314,8 @@ characters: the whole reading against the second act, or the shared opening
 against the first act plus the remainder against the second. Only the first says
 what the witness did.
 
-**RapidFuzz's Indel/LCS opcodes were tried in that seat and refused on
-measurement (hostile review C, 2026-09-07).** They are four orders of magnitude
+**RapidFuzz's Indel/LCS opcodes were tried and refused on
+measurement.** They are four orders of magnitude
 faster -- the slowest input the sealed pair bound admits, 283.9 s below, takes
 0.011 s under them -- and
 on identical or near-identical page text they return byte-for-byte the same
@@ -331,15 +331,15 @@ objective is the wrong objective for attaching a reading to an anchor.
 blind, alongside the fidelity and monotonicity properties the same work
 established.
 
-What hostile review C got right is the deadline, and that is what changed. An
+The deadline is what changed. An
 unaligned page witness is not `comparable`, so it leaves the act's witness floor
 -- which means a deadline short enough to fire on real work records a *slow
-comparison* as coverage that is missing (GOALS 1). `config/alignment.toml` now
+comparison* as coverage that is missing (goal 2). `config/alignment.toml` now
 carries 25 s rather than 5 s.
 
 The number is chosen from the legitimate ceiling, not from the pathological one,
-because measurement showed the pathological one cannot be cleared. Timings on
-this laptop, `align_to_anchor` through the shipped bounds:
+because measurement showed the pathological one cannot be cleared. Timings
+measured, `align_to_anchor` through the shipped bounds:
 
 | Input, at or near the sealed ceiling | Wall clock |
 |---|---|
@@ -356,13 +356,13 @@ deadline could fire on a page that had been read perfectly well, and record it
 as an act nobody corroborated. Twenty-five seconds puts real material safely
 inside with load headroom.
 
-The 284-second row is the one that decides what is still open.
-TIMING_REPORT_2026-09-05 put the worst admissible input at 17.5 s, but its
+The 284-second row is the one that decides what is still open. An earlier
+measurement put the worst admissible input at 17.5 s, but its
 degenerate cases were all *self*-similar (and one of its two rows was
 accidentally the same single-character string, from a generator that rebuilt its
 `random.Random(1)` on every draw). Two different low-entropy responses are far
 worse, and 284 s is what the sealed pair ceiling actually admits. **No deadline
-value closes hostile review C**: raising it far enough to never fire would mean
+value closes this case**: raising it far enough to never fire would mean
 minutes per (page, chair) on a billing pod, and lowering `max_character_pairs`
 far enough to exclude the case would refuse legitimate pages, since a real page
 at 10,000 x 10,000 already sits at the ceiling. The deadline is now honest about
@@ -380,7 +380,7 @@ well defined anyway. It needs a `matcher` key on the aligned attachment record
 and a widening of the closed-set check in `pipeline/5_recensor/run.py`, which is a
 published record shape, so it is named here rather than made.
 
-The hole hostile review C named off the main thread is unchanged and still open:
+One related gap is unchanged and still open:
 where `SIGALRM` cannot arm, `max_character_pairs` is the only guard, and it
 admits a 284-second comparison.
 
@@ -388,7 +388,7 @@ A fired deadline is `alignment-deadline-exceeded`, deliberately not `timeout`.
 The name has to say that this module's own backstop gave up, because nothing may
 read it as a measurement of the witness. The Recensor holds the act rather than
 counting the chair, which is the right direction -- no comparison was made, so
-none may be claimed (GOVERNANCE 10) -- but
+none may be claimed (principle 8) -- but
 `common/contracts/outcomes.py::witness_coverage` still counts it in the same
 `shortfalls["unaligned"]` bucket as a measured non-overlap. Separating the two is
 a change to a published coverage record and is not made here.
@@ -528,7 +528,7 @@ say.
 **Every chair derives a generation-bound decision from the sealed row, sending
 `max_tokens` only where the declared bound requires it, and the image part
 goes before the text part.** Two corrections to what this seam feeds, landed
-together (`workbench/active/CORRECTION_PLAN_2026-09-06.md`, group (i)).
+together.
 
 *Part order.* All three occupants were fine-tuned with the vision block before
 the instruction — DAI's model-card snippet and this project's own old
@@ -626,7 +626,7 @@ it. The Designator, asked the same question, held the single page and published
 the rest. That asymmetry is closed: `run.py::capacity_refusal_attempt` records
 the refusal as this attempt's own `outcome="failed"`, in the same shape an
 empty or malformed response takes, and the pass moves to the next unit. A
-missed act is worse than a poorly read one (GOALS 1), and one page's arithmetic
+missed act is worse than a poorly read one (goal 2), and one page's arithmetic
 is no reason to lose another page's reading.
 
 What that record says, and what it refuses to say: the **no-response** health,
@@ -730,7 +730,7 @@ real span.
 model was never trained on, and those rectangles were what attached it. The
 coordinate channel is retired with the prompt that asked for it, because a
 `box_1000` per block is a channel Churro-3B's weights were never taught to fill
-(GOVERNANCE 10). What closed the hold is U12, admitting the Perlector's existing
+(principle 8). What closed the hold is U12, admitting the Perlector's existing
 `anchor-line` basis for a page witness whose alignment for an act is `aligned`
 with a located span.
 
@@ -747,10 +747,10 @@ asserted through the other.
 
 **What that does and does not claim.** One scripted run over a fixture whose
 page text is exactly its two acts reaches `delivered`. Nothing follows about a
-real page (GOVERNANCE 10, hard rule 1). A real register carries headers, folio
+real page (principle 8, hard rule 1). A real register carries headers, folio
 numbers and marginalia no proposal covers; Churro will transcribe them, and that
-page will hold on content coverage. That is the rule working (GOALS 1,
-GOVERNANCE 2), not a regression to repair by loosening a floor.
+page will hold on content coverage. That is the rule working (goal 2,
+principle 2), not a regression to repair by loosening a floor.
 
 **The offline posture still delivers, and the two diverge on one declared row.**
 `proof/skeleton_fixture.toml`'s `[[native_observation]]` for `attestator_3`
@@ -780,10 +780,9 @@ does not read. `run.py::real_ingress(context)` is this stage's one reading of
 the route, off `context.run`; nothing here branches on `context.scenario` or on
 the shape of a fixture.
 
-**The only real posture is every witness served.** Tyrel's ruling
-(2026-09-02): every witness runs its own full pass, with no capture and no
-slicing, and a roster where every configured witness row is served is the only
-real posture. `require_every_witness_served` refuses, by chair name and before
+**The only real posture is every witness served.** Every witness runs its own
+full pass, with no capture and no slicing, and a roster where every configured
+witness row is served is the only real posture. `require_every_witness_served` refuses, by chair name and before
 any act is read, a real run whose sealed catalogue gives a configured witness a
 fixture row, and a real run in which no witness serves at all; there is no
 fixture to answer for a chair on a real submission, so a fixture row there is
@@ -1143,8 +1142,9 @@ Every configured chair has one explicit outcome per act per attempt:
   refused proposal. It retains the resolved pin but no invented receipt.
 - `excluded` is never produced by this writer. Generic envelope validation
   refuses a missing reference but checks only that the identifier is non-empty;
-  Stage 3 does not yet resolve that identifier to verified Tyrel approval-record
-  bytes. The positive approved-exclusion path is therefore not implemented.
+  Stage 3 does not yet resolve that identifier to verified, project-lead-approved
+  exclusion-record bytes. The positive approved-exclusion path is therefore not
+  implemented.
 
 A Designator page-fallback act is witnessed exactly like any other proposed act.
 This used to be the one exception: the stage recognized the minted identity
@@ -1223,7 +1223,7 @@ Designator-held act (no witness was shown a reading there), an absent chair
 (a dead chair asked again is not a second attempt), a chair with no first attempt
 to follow, a **page witness** (below), and an act whose **witness layer is
 closed** (below). The orchestrator never invokes it, and that is a decision
-rather than a gap: GOVERNANCE 11 gives recovery to *coverage* — a missed region,
+rather than a gap: principle 7 gives recovery to *coverage* — a missed region,
 a cut crop, a continuation — while a witness reread recovers *priming*, so
 driving it from the recovery loop would make witness quality a loop variable.
 `RECOVERY_KINDS` is unchanged. This is an operator repair with a documented
@@ -1249,7 +1249,7 @@ Archetypus and Armarium each enforce). Witness testimony never moves it.
 That is a decision, not an omission. A Testimonium is a clue that primes a
 reading, never the ink the reading is established from (ARCHITECTURE; GOVERNANCE
 3), so a second look by a witness does not make a second reading exist — and
-re-reading an act because a witness spoke again is the re-roll GOVERNANCE 11
+re-reading an act because a witness spoke again is the re-roll principle 7
 refuses. The alternatives were weighed and rejected: advancing the ordinal on any
 new current evidence makes witness quality a loop variable at the four stages that
 decide whether text may be established, and deleting the reread outright leaves
@@ -1267,7 +1267,7 @@ reading can be pending even on a closed act): it is that a witness is only ever
 shown the act's *original proposal crop* (`proposed_regions`; the Perlector
 refuses testimony naming a recovery crop), so a second look can only ever add
 priming, never coverage — and re-reading because a witness spoke again is
-GOVERNANCE 11's re-roll. Mechanically, the Perlector would also recompute the
+principle 7's re-roll. Mechanically, the Perlector would also recompute the
 same ordinal, build a different payload, and meet its own immutable record. A held act's or an
 absent chair's `not-run` reading cites no testimony and closes nothing. A pass
 that only repeats attempts already sealed is a resume and is untouched.
@@ -1351,7 +1351,7 @@ pages come from the sealed proposal facts instead — its own `page_ordinal` plu
 the fixture's declared continuation page. A refused crop was never shown to a
 witness, but the page-level non-reading Testimonium is still published for every
 page it covered: turning an isolated crop failure into a page that vanishes from
-the denominator is the silent loss GOALS 1 is about.
+the denominator is the silent loss goal 2 is about.
 
 `page_role` is written by a producer that holds one page's whole act list, and
 read back by two stages that hold different amounts of it. The Perlector holds
@@ -1378,7 +1378,7 @@ beside disclosed omissions claim less, not more). Separators are placed only *be
 Joining every payload including the empty ones and calling the result `read`
 whenever the list was non-empty gave a page of genuinely-empty acts
 `payload="\n"` under a reading outcome — characters no act delivered, retained
-as testimony to them (CodeRabbit W44). An act whose reading the join could not
+as testimony to them. An act whose reading the join could not
 carry is disclosed in `unjoined_act_attempts`; an act it carried as empty is not,
 because it was carried.
 
@@ -1559,44 +1559,3 @@ attempts it describes are still on disk*. Over a folder whose attempts are gone,
 re-deriving the manifest discards the last record that they existed, and the
 pass that follows restarts the history at ordinal 1. That is a decision someone
 may legitimately take; it is not one to take without reading the manifest first.
-
-## Who wrote what
-
-The live reading seam this stage sits in was built by several seats across eight
-units. The record of which seat wrote which unit is the dispatch record — the
-workflow scripts each seat was launched from (`seam-u1-*`, `seam-u2-*`,
-`seam-u3-u5-u7p-*`, `seam-u4-u6-*`, `seam-u8-u7e-*`), which name the model each
-seat was dispatched as. **The commit trailers on this branch are self-reported
-and several are wrong**: some Opus and Sonnet seats copied the host's own
-`Co-Authored-By` line. Where a trailer and this table disagree, this table is
-the record. The Fable seat was the host orchestrator and wrote no unit code.
-
-| unit | built by | verified by | fixed by |
-|---|---|---|---|
-| U1 contract and parser | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U2 client and fakes | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U3 Perlector live reader | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U5 Attestatores live boundary | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U7p placement-tier plumbing | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U4 Perlector wiring | Opus 5 | Opus 5 | Sonnet 5 |
-| U6 Attestatores wiring | Opus 5 | Opus 5 | Sonnet 5 |
-| U8 cross-file seams | Opus 5 | Opus 5 | Sonnet 5 |
-| U7-e2e end to end | Opus 5 | Opus 5 | Sonnet 5 (host committed) |
-
-This stage's own live boundary is U5, its wiring into the stage is U6, and the
-cross-file seams described under "The cross-file seams that let a live pass carry
-every chair" are U8. U7-e2e is the whole-run proof recorded at the end of that
-section.
-
-The final native-retry evidence audit corrections were implemented by GPT-5.6
-Sol (OpenAI). An exhausted repeat retains Chandra observation geometry across a
-resume only when its sealed native capture says the vendor layout parse reached
-`parsed`; retained but unrecognized bytes therefore remain visible without being
-promoted into geometry. A post-response application refusal remains the outcome
-of that physical attempt even when the vendor repeat/error predicate authorizes
-the next request, so the retry trace does not rewrite failed evidence as a
-reading. `FatalAccounting` from native capture now escapes before terminal
-publication or another request because that exception means the attempt itself
-cannot be accounted safely. Focused live-fake regressions pin all three boundaries,
-including the parsed exhausted-repeat recovery case and its unrecognized-shape
-counterpart after crash and resume.
