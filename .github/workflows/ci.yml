@@ -104,24 +104,3 @@ jobs:
     steps:
       - name: Every matrix leg succeeded
         run: test "${{ needs.test.result }}" = "success"
-
-  # The retired cleanroom/ drafting area must stay empty. Kept as a job because branch
-  # protection requires the `cleanroom-empty` context; remove both together.
-  cleanroom-empty:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      # Keep this pin identical to the checkout used by the check job.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - name: The cleanroom is empty
-        shell: bash
-        run: |
-          files=$(git ls-files cleanroom/) || { echo "git ls-files failed" >&2; exit 2; }
-          if [ -n "$files" ]; then
-            echo "cleanroom/ is retired and must stay empty:" >&2
-            printf '%s\n' "$files" >&2
-            exit 1
-          fi

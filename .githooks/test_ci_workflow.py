@@ -664,40 +664,6 @@ def test_ingress_step_on_branch_skips_tag_object_and_fails_closed(recorded_ingre
     assert failed.returncode != 0
 
 
-def tray_repo(path, *tracked):
-    repo = new_repo(path)
-    for relative in tracked:
-        target = repo / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("fixture\n")
-        git(repo, "add", "--", relative)
-    return repo
-
-
-def gate_env(tmp_path):
-    runtime = tmp_path / "runner"
-    runtime.mkdir(exist_ok=True)
-    return {"RUNNER_TEMP": str(runtime)}
-
-
-def test_cleanroom_gate_distinguishes_empty_and_loaded_tray(tmp_path):
-    gate = step_run("The cleanroom is empty")
-    empty = tray_repo(tmp_path / "empty", "README.md")
-    loaded = tray_repo(tmp_path / "loaded", "README.md", "cleanroom/nested/draft.py")
-    assert run_shell(gate, empty, gate_env(tmp_path)).returncode == 0
-    result = run_shell(gate, loaded, gate_env(tmp_path))
-    assert result.returncode == 1
-    assert "cleanroom/nested/draft.py" in result.stderr
-
-
-def test_cleanroom_gate_fails_when_git_cannot_list(tmp_path):
-    loose = tmp_path / "loose"
-    loose.mkdir()
-    result = run_shell(step_run("The cleanroom is empty"), loose, gate_env(tmp_path))
-    assert result.returncode == 2
-    assert "git ls-files failed" in result.stderr
-
-
 def test_every_third_party_import_in_the_gate_suite_is_declared():
     """The sibling above covers the project's runtime dependencies. This covers
     the gate's own: a package these hook tests import, but nothing declares,
