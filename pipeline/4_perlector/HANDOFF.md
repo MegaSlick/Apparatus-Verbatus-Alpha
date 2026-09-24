@@ -102,8 +102,8 @@ produce the same bytes, and be reused rather than rewritten.
 
 Testimony is deliberately absent from the derivation. A Testimonium is a clue that
 primes a reading, never the ink the reading is established from (ARCHITECTURE;
-GOVERNANCE 3), so a second look by a witness does not make a second reading exist,
-and re-reading an act because a witness spoke again is the re-roll GOVERNANCE 11
+principle 1), so a second look by a witness does not make a second reading exist,
+and re-reading an act because a witness spoke again is the re-roll principle 7
 refuses. The consequence for the upstream stage is that an act's witness layer
 closes when this stage reads it, enforced at the Attestatores' own entry
 (`pipeline/3_attestatores/HANDOFF.md`, "The one attempt model") rather than
@@ -114,7 +114,7 @@ the other three stages ask — and the regions are read once, before the ordinal
 derived from them. A private `origin == "recovery"` comparison scored every
 unrecognized origin as zero, so a resealed Designator tree could be read and
 published here at the wrong attempt and become fatal only at the next stage, over
-a Perlectio that is already immutable (Sol-S5). An unplaceable origin is now
+a Perlectio that is already immutable. An unplaceable origin is now
 refused here, before any model call or publication, and named for what it is: a
 region whose place in the recovery denominator is unknown.
 
@@ -123,7 +123,7 @@ Recensor, Archetypus and Armarium each pass the current reading back through
 `common/stage.py::require_current_witness_basis` before accepting, establishing or
 exporting it, so a Testimonium appended after the reading was established cannot
 be structurally invisible at the point where the export decides to say `complete`
-(GOVERNANCE 2; audit Opus-F2, 2d).
+(principle 2).
 
 ## `kind="perlectio"`
 
@@ -169,12 +169,12 @@ uncertainty_assessment -- {state, problem}: the reader's doubt-report state for
                     `malformed` (a report the annotation schema could not anchor,
                     retained as its problem; the Recensor holds). An empty
                     `uncertain_spans` under `not-assessed` is an absence, never
-                    confidence (independent audit of 2026-09-10, F2). Travels
+                    confidence. Travels
                     into the canonical uncertainty layer as `assessment`.
                     Carried on the three instrument records too (Lectio nuda,
                     `lectio-prior`, `primed-without-prior`): a reader answers the
                     same way on an instrument call, and a doubt reported on a
-                    nuda reading is a measurement (GOVERNANCE 2).
+                    nuda reading is a measurement (principle 2).
 audit            -- {draft_ref, finding_ref, finding_digest, unresolved,
                     examination, reproofs, request_digest}: the R5b Pass-C
                     chain, which re-proof instrument was actually delivered,
@@ -391,14 +391,14 @@ character count, and the floor from the run's own sealed
 `config/perlector_protocol.toml` `[truncation]` table — every term of
 `characters * page_pixels < floor * region_pixels`, so a reader holding the
 record and nothing else re-derives `length_suspicious` instead of trusting it
-(GOVERNANCE 6: configuration protects reproducibility going forward, the record
+(principle 6: configuration protects reproducibility going forward, the record
 protects the past). The shared validator does re-derive it, and refuses a record
 whose signal disagrees with its own geometry; where the caller also holds the
 reading the record was measured over it binds `characters` to that text as well.
 The floor is dimensionless on purpose — an absolute pixels-per-character ratio
 held every ordinary 300-DPI act as truncated while clearing this repository's
-fixture pages (pre-launch review, F082) — and it is sealed rather than a module
-constant so a change between two runs moves their `config_digest` (F088).
+fixture pages — and it is sealed rather than a module
+constant so a change between two runs moves their `config_digest`.
 
 Computed by `truncation.py` for every attempted reading, primed or nuda,
 regardless of what outcome it ends up producing — so the record is never
@@ -430,7 +430,7 @@ characters regardless of what `witness_evidence` says. `witness_evidence`
 attaches witness variants as linked, displayable evidence, never as text.
 Each evidence row is `{chair, testimonium_id, reference, variant}` — the
 digest-checked reference to the witness's own sealed record, not just a chair
-name a reader would then have to go looking for (GOALS 5).
+name a reader would then have to go looking for (goal 5).
 `position` is one of `leading | internal | trailing | whole-act`, each with its
 own bound (leading starts at 0, internal is strictly inside the text, trailing
 ends at `len(text)`, whole-act requires
@@ -461,7 +461,7 @@ carries the same regions and page renders a primed pass would.
 Sampled by a predeclared, run-sealed design: `--nuda-per-mille` (0–1000,
 `nuda.py`), a deterministic hash-threshold rule over `(run_id, act_id)` — never
 `random`, so the identical command samples the identical acts. Default `0`
-(off) for every scenario that predates this build.
+(off) for every scenario that predates it.
 `lectio-nuda-sampling-design.v1` denotes this exact experimental condition:
 an act-level, unprimed Lectio with no testimony or prior draft, selected by
 `digest-threshold-over-run-id-and-act-id.v1`. Changing the condition or rule
@@ -474,7 +474,7 @@ subject travels with its typed reference to `nuda.sampling_design`, which refuse
 an approval for the other arm before publication. Each record carries
 `sampling = {nuda_per_mille, selection_rule, approval_ref}`, with
 `approval_ref` as the approval artifact's path and digest, because a sample of
-unknown design measures nothing (GOVERNANCE 10). The same reference is an
+unknown design measures nothing (principle 8). The same reference is an
 envelope input, so an ordinary artifact read compares the approval digest to
 the retained receipt bytes instead of merely displaying an unchecked hash.
 
@@ -532,7 +532,7 @@ input and is digest-checked whenever the control artifact is read.
 
 The Pass-B dossier contains a digest-checked reference to the Pass-A draft and
 records whether its text was `fed` or `withheld`. The `--draft-fed` default is
-fed; B5a remains Tyrel's routed production decision.
+fed; B5a remains the project lead's routed production decision.
 
 **Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
 built from identical dossier arguments — page context, no Testimonia, no prior
@@ -543,19 +543,19 @@ chair, nuda against lectio-prior measures sampling variance; the
 witness-dependence contrast is lectio-prior, or the sampled control, against
 the production Perlectio. Whether the approval-gated nuda arm still earns its
 second model call once Pass A is universal belongs to B4's three-condition
-matrix and to Tyrel — this build claims no answer.
+matrix and to the project lead — no answer is claimed here.
 
 **One thing about nuda did change, and it is not in the list above.**
 `common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`
-as well as the two new kinds, so a failed Lectio nuda no longer spends Tyrel's
-ruled production hard-failure cap; before this branch it did, because the
+as well as the two new kinds, so a failed Lectio nuda no longer spends the
+ruled production hard-failure cap; before this it did, because the
 policy is written per (stage, outcome) and nuda is a Perlector artifact. That
 is the right disposition — the cap is a circuit breaker on the production
 reading path, and an instrument arm tripping it would halt a run over a
 measurement nothing downstream consumes — and the failures stay visible in the
 tally's `instrument_by_kind` and on the orchestrator's checkpoint line. It is
 recorded here rather than left to be rediscovered, because it is a change to
-the meaning of a ruled threshold and Tyrel is the one who ruled it.
+the meaning of a ruled threshold.
 
 ## R5b Pass-C audit, and the request the reader actually receives
 
@@ -596,7 +596,7 @@ itself. `unresolved` is derived from `examination` alone:
 naming which. **Text equality plays no part.** A v1 record equated "unresolved" with
 "flags and a zero cap", so a re-proof cut off by its engine that returned the frozen
 text byte for byte was sealed as resolved and its act delivered under a `complete`
-aggregate (independent audit of 2026-09-10, F1). Consumers refuse a v1 record by
+aggregate. Consumers refuse a v1 record by
 name (`RETIRED_SCHEMAS`) rather than read it forward; the act is re-read in a new
 run and the old bytes stay as written.
 
@@ -609,9 +609,9 @@ byte-identical for every flag class. A `testimony-diff` flag's *location* is
 witness-derived, though, and now that the instrument is actually delivered the
 reader is directed to the exact spans where it disagreed with witnesses while
 the tree measures movement toward them — whether that is compatible with
-GOVERNANCE 3 ("never picks") and 10 ("the instrument may not constrain what it
-measures") is an open interpretation question routed to Tyrel with the Tier-0
-reproof change, not settled by this sentence.
+principle 1 ("never picks") and principle 8 ("the instrument may not constrain what it
+measures") is an open interpretation question routed to the project lead with
+the Tier-0 reproof change, not settled by this sentence.
 
 **The re-proof plan is a delivered instrument, not a claim about one.** One
 function, `perlector_audit.reproof_plan`, turns the frozen flags into one
@@ -646,14 +646,14 @@ drift.
 **Neutrality and the `pass_kind` rule both hold, in the same mechanism.** Every
 prompt in a request and in the sealed copy must equal `neutral_prompt` for its
 location exactly — not merely avoid forbidden words — so nothing can tell the
-reader which way to argue (GOVERNANCE 10). And because the instrument travels
+reader which way to argue (principle 8). And because the instrument travels
 as input, a reader still may not condition generation on `pass_kind`: a
 re-proof pass arriving with no request is refused by
 `reader.validate_audit_delivery`, as is a request delivered to any other pass,
 or one naming a different act than the dossier beside it. `FixtureReader`
 branches on the request, never on the pass label.
 
-This is the post-stack Tier-0 repair of audit finding **Sol-S2**. Before it, Pass C computed
+This is the Tier-0 repair of a finding in the re-proof plan. Before it, Pass C computed
 the plan, sealed it under `payload.audit.reproofs`, and then called `read` with
 the Pass-B dossier plus a spliced `semi_final_text` — no flags, no locations,
 no prompts, and a `dossier_digest` that no longer covered the object carrying
@@ -737,7 +737,7 @@ tree exactly as the invocation found it — no orphaned `lectio-prior`, no engin
 spent on a reading that would be discarded, and no opaque `IncompatibleReuse` on the
 operator's retry. It refuses this way rather than letting a declared `no-readable-text`
 blank real transcribed ink, or a declared `truncated` overwrite a real `complete`, which
-would be a declared value standing where a measurement belongs (GOVERNANCE 10). The
+would be a declared value standing where a measurement belongs (principle 8). The
 guard is one branch that never executes in fixture mode, so it does not move the
 acceptance pin. Proven end to end in
 `test_live_perlector.py::test_a_live_pass_refuses_a_fixture_declared_reading_failure`
@@ -779,7 +779,7 @@ served_model_id}`, and the envelope binds both blobs as direct inputs, re-derive
 disk and compared to what the reader claimed. The field names *the call the published
 text came from*: on an act whose Pass-C re-proof changed the text, it moves to the
 re-proof's own call, beside `truncation` and `self_revision`, which move for the same
-reason (audit finding H6). A re-proof reading that ran and changed nothing is still
+reason. A re-proof reading that ran and changed nothing is still
 bound as an input — it is the second thing that looked at this act's pixels and it is
 what the `change_record` reports on — but it does not become the named call. The field
 widens the closed field set for the record that carries it (`with_engine_call`, the
@@ -792,7 +792,7 @@ bare `KeyError` or publishing two digests for one response.
 
 **`_distinct_inputs` narrows what this stage *expects*; it never widens what a record
 may claim.** The envelope refuses a repeated path outright, even at an identical digest
-(`validate_input_refs`) — that is the double-count guard GOVERNANCE 5's "one text" rests
+(`validate_input_refs`) — that is the double-count guard principle 5's "one text" rests
 on, and nothing here touches it: a duplicate inside a published `inputs` list still
 reaches that refusal unchanged. It is used at exactly two seams, both of them places
 where one content-addressed blob is honestly reachable by two names.
@@ -896,7 +896,7 @@ those artifacts the interrupted attempt got to, and the pass answers for that pr
   is dropped is only the reader call whose bytes the immutable record would refuse. The
   resumed act therefore pays for the arms it has not run and no more, and the record pair
   that proves it is a Perlectio carrying the *second* engine answer beside a `prior_draft`
-  still holding the *first*. GOVERNANCE 4: evidence is layered, never overwritten.
+  still holding the *first*. principle 4: evidence is layered, never overwritten.
 - **An attempt interrupted inside its audit round is held, not read again.** `audit-draft`
   freezes the establishing reading's own text into immutable bytes. A live chair cannot
   reproduce that text, and the draft cannot be reused either, because the Perlectio it
@@ -920,7 +920,7 @@ fails with the exact `IncompatibleReuse` above when the handling it covers is re
 
 **One live-resume limit remains, named rather than hidden.** Every re-invocation of a live
 pass starts and stops the service, so an `--act` recovery loop pays a full model load per
-act (`pipeline/orchestrator/run.py`'s per-act dispatch). Ruling 16 permits a server that
+act (`pipeline/orchestrator/run.py`'s per-act dispatch). Serving policy permits a server that
 outlives one stage, but no cross-process handle exists; that is the next serving item.
 
 **A response refusal exits in this stage's own vocabulary.** `ChairResponseRefusal` is a
@@ -1040,32 +1040,3 @@ the fixture-path claim `with_engine_call` and the mode selector rest on.
   is the instrument's *content*. A real serving path registers a re-proof builder and
   binds its rendered bytes at this same seam; nothing about the record's shape has to
   move for it.
-
-## Who wrote what
-
-The live reading seam this stage sits in was built by several seats across eight
-units. The record of which seat wrote which unit is the dispatch record — the
-workflow scripts each seat was launched from (`seam-u1-*`, `seam-u2-*`,
-`seam-u3-u5-u7p-*`, `seam-u4-u6-*`, `seam-u8-u7e-*`). These are session-local
-dispatch scripts kept outside the repository (in the workbench, gitignored),
-not tracked paths this record can point to; they name the model each
-seat was dispatched as. **The commit trailers on this branch are self-reported
-and several are wrong**: some Opus and Sonnet seats copied the host's own
-`Co-Authored-By` line. Where a trailer and this table disagree, this table is
-the record. The Fable seat was the host orchestrator and wrote no unit code.
-
-| unit | built by | verified by | fixed by |
-|---|---|---|---|
-| U1 contract and parser | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U2 client and fakes | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U3 Perlector live reader | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U5 Attestatores live boundary | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U7p placement-tier plumbing | Sonnet 5 | Opus 5 | Sonnet 5 |
-| U4 Perlector wiring | Opus 5 | Opus 5 | Sonnet 5 |
-| U6 Attestatores wiring | Opus 5 | Opus 5 | Sonnet 5 |
-| U8 cross-file seams | Opus 5 | Opus 5 | Sonnet 5 |
-| U7-e2e end to end | Opus 5 | Opus 5 | Sonnet 5 (host committed) |
-
-This stage's own live reader is U3, its wiring into the stage is U4, and the
-cross-file seams that let its reader and the Attestatores' chairs share one card
-are U8. U7-e2e is the whole-run proof recorded under "Live reader" above.

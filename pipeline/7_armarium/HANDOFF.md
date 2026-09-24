@@ -135,13 +135,13 @@ projection configuration. The bundle may contain these plainly specified formats
   source digest, retaining the literal `canonical_clean_text` value, and beside it a
   `display:` rendering under the **proposed** convention named on the line above it.
   The rendering never replaces the canonical field: the clean verifier strips it and
-  requires the canonical value back exactly. Tyrel has not chosen a convention, and
+  requires the canonical value back exactly. No convention has been chosen, and
   `claims.display.status` says so on the face of every bundle.
 - `acts.sqlite` — an `acts` table with the literal Archetypus field, and a
   separate `act_search` / FTS5 layer whose search fold is visibly derived and
   revision-marked. Metadata schema `armarium-acts-sqlite.v2`
   (`PRAGMA user_version=2`): v2 covers R8's `annotations_json` →
-  `uncertainty_json` rename (CR W15, which kept v1 — a real versioning miss)
+  `uncertainty_json` rename (which kept v1 — a real versioning miss)
   and this change's damage-record columns.
 - `acts.jsonl` — one record per expected act, with canonical text only for a
   delivered act, provenance, source regions, its established-text status and
@@ -206,7 +206,7 @@ says whether the reading that left carries ink the Perlector knew was there and
 could not read. Neither that field nor the record's `annotations` layer used to be
 read here at all, so an act the pipeline itself knew was damaged was exported and
 aggregated exactly like a whole one, and the run reported `complete` with an empty
-reason list — GOVERNANCE 2 failing at the last boundary in the case Tyrel expects to
+reason list — principle 2 failing at the last boundary in a case expected to
 be ordinary ("many of our records are damaged").
 
 Both now travel, and neither is taken on trust:
@@ -244,7 +244,7 @@ fields are now `semantic_annotations` / `semantic_annotation_status` and
 carriage claim, like `claims.uncertainty`). Neither takes the bare word.
 
 **What this deliberately does not do is render the damage.** Whether a gap is shown
-inside the `display:` reading remains Tyrel's choice of convention (spec 11), and
+inside the `display:` reading remains a choice of convention not yet made (spec 11), and
 `claims.display.renders_canonical_uncertainty` still says `false` on the face of every
 bundle. Counting damage is this stage's business; showing it is not.
 
@@ -257,7 +257,7 @@ and none of them, before this, qualifying the word on the deliverable:
 
 | instrument | what is unmeasured | where the record lives |
 |---|---|---|
-| `page-testimony-content-coverage` | a page whose coverage was recorded `shortfall: null` — a continuation page, most often — by the F2 ruling | each act's Recensor review, `testimony_content_coverage` and `testimony_content_coverage_continuation` |
+| `page-testimony-content-coverage` | a page whose coverage was recorded `shortfall: null` — a continuation page, most often | each act's Recensor review, `testimony_content_coverage` and `testimony_content_coverage_continuation` |
 | `page-ink-conservation` | a page whose `ink_measurable: false` was never reconciled | the Designator's per-page conservation records |
 | `act-visibility-survey` | the Designator occlusion instrument, which no stage publishes, so every capture row carries a named absence code | each act's Recensor review, `cross_capture_coverage` |
 | `perlector-uncertain-spans` | `uncertain_spans` is empty while the sealed `round_cap = 1` leaves a re-proof round; a cap of zero is the exhausted-cap path that can mint a span | `config/perlector_audit.toml` and each act's uncertainty layer |
@@ -346,8 +346,8 @@ The *semantic* annotation boundary in `annotation_boundary.py` — a different l
 from the transcription annotations above, and the reason neither of them keeps the
 bare word — is not wired into this
 stage, configuration, or orchestrator, and is built only as the contract a future
-`annotator` chair would occupy — spec 11 gates the build itself on Tyrel approving
-the ARCHITECTURE wording that gives the layer its home. It carries the five fields
+`annotator` chair would occupy — spec 11 gates the build itself on the project
+lead approving the ARCHITECTURE wording that gives the layer its home. It carries the five fields
 spec 11 names (`act_type`, `date` with a normalized form, `person` spans with roles,
 `kinship` edges, flags), whose semantic values are drawn from closed vocabularies fixed
 in that file. Record and producer identifiers remain strings, but no writer maps them
