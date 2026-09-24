@@ -25,7 +25,10 @@ def docstring_lines(source: str) -> int:
 
 def main(root: Path) -> None:
     listed = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "-z", "*.py"], capture_output=True, text=True, check=True
+        ["git", "-C", str(root), "ls-files", "-z", "*.py"],
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.split("\0")
     rows = {"src": dict.fromkeys(("files", "lines", "comments", "docstrings", *MARKERS), 0)}
     rows["test"] = dict(rows["src"])
