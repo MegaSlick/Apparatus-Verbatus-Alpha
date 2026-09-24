@@ -81,7 +81,7 @@ behave; the deferral table rewritten per unit above; the v1/v2 paragraph replace
 name Tyrel's 2026-08-11 ruling and the 2026-11-15 v1 retirement date, with the current
 v1 code named as a session decision that predates and contradicts that ruling; two new
 checklist rows (the drill boot, and the account-balance-observer gap); a
-`~/.claude/WAKE_PLAYBOOK.md` line under the supervisor description; and this file.
+line under the supervisor description treating it as unattended long-running work; and this file.
 
 **After U6 — `test_launch_drill.py`.** Two further commits landed on this branch
 after U6's record was written, adding `operations/pod/test_launch_drill.py`: seven
@@ -210,10 +210,10 @@ a spin CodeRabbit found in the run loop:
   the ruling and the retirement date, and leaving the code as the code, is the
   accurate record; the migration itself is out of scope per `SPEC_POD.md` §4.0's own
   section boundary.
-- **`~/.claude/WAKE_PLAYBOOK.md` is referenced, not summarized.** The instruction was
-  to add "one line under the supervisor" naming that the playbook applies; the README
-  now says so once, in the `supervise.py` bullet, rather than duplicating the
-  playbook's content into a governed path it does not belong in.
+- **The long-running-work note names no private path.** The instruction was
+  to add "one line under the supervisor"; the README says once, in the `supervise.py`
+  section, that it is unattended long-running work, without citing a path outside
+  the repository.
 
 ## Verification run
 

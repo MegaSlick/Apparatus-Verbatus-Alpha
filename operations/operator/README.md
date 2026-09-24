@@ -1,31 +1,25 @@
 # Verbatus — the operator surface
 
-The pod-lifecycle rehearsal verbs use fixtures and do not start, adopt, or bill a real
-pod; local verbs may read and write operator-supplied files. `upload --network-volume`
-is the explicitly named transfer exception: it sends only the files named by the sealed
-submission record to the named RunPod network volume
-(`operations/pod/transfer.py:94-150`).
-
 **You do not need Terminal, SSH, Python, or an AI assistant for a normal run.**
-Double-click [Verbatus.command](Verbatus.command) and answer one question at a time.
-The sections below document each word and its prompts. The program always tells you what
-happened, what it means, and what to do next.
+Double-click [Verbatus.command](Verbatus.command) and answer one question at a time. The
+program always tells you what happened, what it means, and what to do next.
 
 If you would rather type, `python3 -m operations.operator.entry <word>` from the project
-folder does exactly the same thing, and so does `verbatus <word>` once the project is
-installed. All three run the same code.
+folder, or `verbatus <word>` once the project is installed, runs the same code.
+`verbatus <word> --help` lists every flag.
 
 ## Read this first: what this is today
 
-This is a **rehearsal**. It refuses to start, inspect, or pay for a pod — the prices, the
+This is a **rehearsal**. It refuses to start, inspect, or pay for a pod: the prices, the
 pod, the boot checks and the default upload target are local stand-ins, so you can
-practise the whole flow without a bill. Nothing here has ever started, inspected or paid
-for a real machine. The one exception is the explicitly named
-`upload --network-volume`, which really does send files to a RunPod network volume (and
-only that): see the upload section below.
+practise the whole flow without a bill. Every screen says "fixture" where a real run
+would name a real resource. The first real run needs the project lead's approval.
 
-Every screen says "fixture" where a real run would name a real resource. The first real
-run requires separate approval.
+Two words really reach a RunPod network volume:
+
+- `upload --network-volume` sends only the files named by the sealed submission record.
+- `fetch-run` brings back a pod-written run tree and the launch evidence you name; it never
+  fetches the uploaded images or their manifest.
 
 ## The fifteen words
 
@@ -41,495 +35,327 @@ any time to check on things.
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
 | `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the trio `--models-config config/models-real.toml`, `--serving-recipes-config config/serving_recipes_real.toml`, and `--witness-context-config config/witness_context-real.toml`; all three are sealed into the run and a partial trio is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
-| `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. It is the one word besides `upload --network-volume` that talks to the volume, so you have to name the volume. |
+| `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. You have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
-| `review` | Opens one run tree read-only, before or after export, and says in plain words which stages ran, what each act's latest reading and review say, which acts are held and why, the exact page and crop images behind them, and the one supported next action. `--json` prints the whole projection instead. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
-| `advance` | Appends Tyrel's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record it appends is permanent and is never retracted. |
-| `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every published run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded RunTree publication temporaries in the snapshot. |
+| `review` | Opens one run tree read-only, before or after export, and says which stages ran, what each act's latest reading and review say, which acts are held and why, the page and crop images behind them, and the one supported next action. `--json` prints the whole projection instead. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
+| `advance` | Appends the project lead's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record is permanent and never retracted. |
+| `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded publication temporaries in the snapshot. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
 | `spend show` | Shows the reviewed ceilings and hard-stop floor, then saved balance observations and notification-only alert outcomes. | No — it reads the policy and immutable local receipts only; it does not contact a provider or edit the policy. |
 
+**The normal order.** `ingest` and `upload` need no rented machine, so do them first:
+`ingest` the submitted folder, work its queue with `triage`, `upload` the images.
+
+- **On this computer:** `run`, then `export` and `backup`.
+- **On a pod:** `launch`, `boot`; the pod runs `python -m operations.pod.pod_run`, which
+  writes its tree to the volume; `fetch-run` brings that tree home (`export` reads only a
+  local tree); then `export`, `backup`, and `close` the moment you are done. Use `review` to read
+a run tree without changing it, `advance` only once you have decided to pass a sealed
+boundary, and `status` whenever you are unsure what is happening or costing money.
+
+`run`, `boot`, `ingest`, `triage`, `launch` and `spend` read configuration, stage code or
+proof material from the workspace, and refuse (`not-a-checkout`) when the folder they run
+in, or the one named with `--workspace`, lacks the `pipeline/`, `config/` or `proof/` they
+need. The other words never read those and run from anywhere.
+
 ## `ingest`: prepare a folder before the Door
 
-Choose **ingest** in the double-click window to prepare source masters before any pod
-exists. It asks for the submitted folder, an **existing empty approved output folder**,
-the corpus ID, triage mode, and (only when you have made one) the canonical Unit 6B
-cluster-confirmation file. First it shows the sealed submission ledger, data-gate result,
-instrument candidates, and every file it will write. Only then does it write the ready
-folder: the ledger, producer recipe, proxies, candidate evidence, triage documents, and a
-final `ingest-ready.json` handoff record.
+It asks for the submitted folder, an **existing empty output folder**, the corpus ID, the
+triage mode and, only when you have made one, the cluster-confirmation file. It first
+shows the sealed submission ledger, the data-gate result, the instrument candidates and
+every file it will write; only then does it write the ledger, producer recipe, proxies,
+candidate evidence, triage documents and a final `ingest-ready.json`.
 
-The confirmation file is the operator act. Verbatus never makes one and never promotes an
-instrument verdict on its own. It repeats a Unit 6B refusal exactly, including evidence or
-membership failures. Leaving the confirmation path blank is valid: no cluster is written
-and every cluster field stays null. This is podless; no provider credential enters either
-confined child and no pod is started, confirmed, or billed.
+- **The confirmation file is your act.** Verbatus never makes one and never promotes an
+  instrument verdict on its own; it repeats the confirmation check's refusal word for
+  word. A blank confirmation path is valid: no cluster is written.
+- **The write is pinned to the preview.** Preview and write are two separate confined
+  launches. If any source file, the confirmation, the instrument settings, the policy or
+  the output folder changes in between, the write refuses rather than commit something
+  other than what you approved.
+- **The output folder goes beside the submitted folder, never inside it.** Anything
+  written inside would count as a submitted file, and the Door would refuse the
+  submission.
+- **Every submitted file must be a decodable image.** A stray `.DS_Store`, text file or
+  PDF refuses the whole folder, and the message says how many files failed and where they
+  sit in the ledger order. Send PDFs and other containers through `upload`, which needs
+  no triage.
+- **Size ceilings:** at most 1,500 masters and 20,000 candidate pairs per ingest, so a
+  large or dense pass refuses by name before memory grows without bound. Split larger
+  material into smaller folders.
 
-The preview and the write are two separate confined launches, so each reads the submitted
-folder, the confirmation file, the triage instrument settings, and the caller-selected
-data-handling policy fresh. The write is pinned
-to the exact digests and output-folder identity the preview just showed: if any of them
-changes underneath it — a source file rewritten, a confirmation swapped for a different
-one, the instrument settings edited, the policy replaced, or the selected empty folder
-exchanged for another directory at the same path — the write refuses rather than commit
-something other than what was shown and approved on screen.
-
-The output folder must be **beside** the submitted folder, never inside it. Records written
-inside a submitted folder would be counted as submitted files by the next thing that reads
-it, and the Door refuses a submission on exactly those grounds; ingest refuses first, before
-writing anything.
-
-Every submitted file must be an image the triage instrument can decode. A stray `.DS_Store`,
-a text file, or a PDF makes ingest refuse the whole folder — and say how many files could not
-be decoded and where they sit in the ledger's path order, so you can find and move them. A
-PDF or other container reaches the Door through `upload`, which needs no triage pass.
-One ingest accepts at most 1,500 masters and 20,000 reached candidate pairs. Those ceilings
-sit above the instrument suite's 1,200-frame corpus-order case and turn a larger or unusually
-dense pass into a named refusal before proxy retention or full comparisons can grow without
-a bound; prepare that material as smaller submitted folders.
-
-**Neither `ingest` nor `upload` needs a rented machine**, so a normal order is: `ingest`
-the submitted folder if you are preparing source masters, work its queue with `triage`,
-`upload` your images (zero machine cost while you do any of that), then `launch` when you
-are ready to actually process
-them, `boot`, `run`, `fetch-run` to bring a pod-written run tree home -- until it
-does, that tree is on the volume and `export` reads a local one -- then `export`,
-`backup` your run tree to keep a local copy, and `close`
-the moment you are done. Use `review` to read one run tree without changing anything in
-it, and `advance` only once you have decided to pass a sealed boundary. Run `status` any
-time you are unsure what is happening or costing money.
+## `run`, `export` and holds
 
 Every `run` ends by printing the exact `verbatus review --run-root … --run-id …` line for
-its tree, whether it completed, was held, failed or was interrupted; `status` prints the
-same line under every run it lists. `export` names the run it is about to export before
-it does anything -- with no `--run-id` it takes the run recorded most recently and says
-so -- and it is only called a success when the run's own recorded state is `complete`:
-over a held or partial run it still copies what was delivered, prints every recorded
-reason, and then exits with `export-partial` rather than 0. A hold is not cleared by
-running the same run name again; that republishes the same sealed hold. It is resolved
-only by a new authorized run over the same sealed source, which is what the `run-held`
-message and `review` both say. A record that claims `complete` but whose delivered and
-non-delivered acts do not reconcile to its own declared total is refused outright, with
-no bundle written at all: that is `export-unreconciled`, distinct from a record `export`
-could not read (`export-missing`) -- the record was found and read, only its "complete"
-claim does not hold up, and `review` is where to look into why.
+its tree, whatever its end state; `status` prints the same line under every run.
 
-`run`, `boot`, `ingest`, `triage`, `launch` and `spend` read configuration, stage code
-or proof material from the workspace, so each refuses in one sentence (`not-a-checkout`)
-when the folder it was started in -- or the one named with `--workspace` -- has no
-`pipeline/`, `config/` or `proof/` that word needs. `status`, `export`, `fetch-run`,
-`review`, `backup`, `advance` and `close` do not read those, and are never refused for
-running elsewhere.
+`export` names the run first (with no `--run-id` it takes the most recent and says so) and
+succeeds only when the run's recorded state is `complete`. Over a held or partial run it
+copies what was delivered, prints every reason, and exits `export-partial`. A record that
+claims `complete` but whose acts do not reconcile to its own total is refused with no
+bundle written (`export-unreconciled`, distinct from an unreadable record,
+`export-missing`); use `review` to see why.
+
+**A hold is not cleared by running the same run name again**: that republishes the same
+sealed hold. Only a new authorized run over the same sealed source resolves it.
 
 ## `review` on a run that has not finished
 
 A run stops before the Armarium for ordinary reasons — a manual boundary, a hold, an
-interruption — and that is exactly when a person needs to see the images, the readings
-and the reason. `review` opens such a run and reads out what the stages that did run have
-sealed; it used to refuse the whole tree until an export existed (a finding of the
-independent audit of 2026-09-10).
+interruption — and that is exactly when you need to see the images, readings and reasons.
 
 ```sh
 .venv/bin/python -m operations.operator.cli review --run-root <folder> --run-id <run>
 ```
 
-What it shows, in order:
+It shows, in order:
 
-- **Stages** — each of the nine, as `sealed`, `unsealed` (records written and no completion
-  seal: interrupted, or still running), `not-run` (nothing written: it has not run, which is
-  not damage), or `seal-invalid` (a stored seal that no longer verifies against the disk,
-  which is never reported as "not run").
-- **Export** — one of three states, and what it means for the rows that follow. `present and
-  complete` is an export whose record says `delivered` over a bundle claiming `complete`;
-  `present but partial` is that record saying `held-for-review` over a bundle that does not,
-  which is a real export of some of the acts and not a finished result; and an export record
-  under an Armarium that never sealed is named as exactly that, because the record is written
-  before the boundary is. Before export, nothing shown is a delivered result.
-- **What you can do next** — every stage's state said out loud, then the one supported
-  continuation: `verbatus run --run-id <run>`, naming the stage it picks up from; or a warning
-  not to resume while a writer may still be active; or, where a seal no longer verifies, that
-  this is evidence to preserve and investigate rather than a run to resume. When acts are held
-  it says plainly that a hold is resolved only by a new authorized run over the same sealed
-  source, that `advance` records permission to pass one sealed stage boundary and neither
-  certifies a reading nor clears a hold, and that any correction of the text happens outside
-  the pipeline.
-- **Held or unresolved acts** — every act the Designator or the Recensor left unresolved,
-  with the recorded reason and the record it came from. A re-proof that did not complete
-  appears here with its audit examination named. One act can produce two rows — the
-  Designator's hold and the Recensor's review of that hold — and each row says which it is;
-  the count is of acts, and the sentence above says how many records they came from.
-- **Pages** and **Acts** — every page the Exemplar accounted for (sealed with its image and
-  digest, or refused with its reason), counted against the number of pages the run itself
-  declared, and every act the Designator's proposal seal expects. An act the Designator ended
-  — `excluded by the Designator`, `failed at the Designator`, `held by the Designator` — says
-  so and is not left waiting for a witness. Otherwise the label names the stage that has not
-  spoken (`marked out, awaiting witnesses`, `witnessed, awaiting the Perlector`, `read: …,
-  awaiting the Recensor`, `accepted, awaiting establishment`, `established, awaiting export`)
-  or, where the Recensor has spoken and not accepted, is that stage's own outcome word —
-  today `held-for-review`, `recovery-requested`, `confirmed-blank`, `failed`. That last family
-  is the Recensor's closed vocabulary rather than a list kept here, so a word added there
-  appears on this screen without this paragraph being rewritten. Each act carries the
-  Perlector's machine reading where one exists, its witnesses with the attempt each reported
-  on, and every crop's image file and digest. After an export, a delivered act is described by
-  the export's own accounting; an act it did not deliver carries no crops and no witness basis
-  in that record, so those are read from the sealed Designator and Attestatores records instead
-  and the crop line says where they came from. An act count with no proposal seal behind it
-  says so, rather than reading as a run with no acts.
-- **Review queue** — only after an export, because the queue is a member of the export bundle.
-  Before one, and where a run exported without that format configured, the line says which of
-  those two silences this is.
+- **Stages** — each as `sealed`, `unsealed` (records but no completion seal: interrupted
+  or still running), `not-run` (nothing written; not damage), or `seal-invalid` (a stored
+  seal that no longer verifies against the disk).
+- **Export** — `present and complete`, `present but partial` (a real export of some acts,
+  not a finished result), or an export record under an Armarium that never sealed. Before
+  export, nothing shown is a delivered result.
+- **What you can do next** — the one supported continuation (`verbatus run --run-id <run>`
+  and the stage it resumes from), or a warning not to resume while a writer may be active,
+  or, for an invalid seal, that this is evidence to preserve, not a run to resume.
+- **Held or unresolved acts** — every act the Designator or Recensor left unresolved, with
+  its reason and source record. One act can give two rows (the Designator's hold and the
+  Recensor's review of it); each row says which.
+- **Pages** and **Acts** — every page counted against the pages the run declared, and
+  every act the Designator's proposal seal expects, labelled by the stage that has not yet
+  spoken or, once the Recensor has declined to accept, by that stage's own outcome word.
+  Each act carries its Perlector reading, its witnesses, and every crop's file and digest.
+- **Review queue** — only after an export, since the queue is part of the bundle.
 
-Every image named is re-read and re-digested as the view is built; a page or crop whose
-bytes moved is refused by name, and a record that changes while the view is being built is
-refused as well. Opening a run changes nothing in it. After export the same command shows
-the export's own accounting, verified the same way.
+Every image named is re-read and re-digested as the view is built; moved bytes, or a
+record that changes mid-build, are refused by name. Opening a run changes nothing.
 
-Two limits of this screen, stated here rather than discovered at it:
+Two limits:
 
-- **Long text is cut in the plain view.** A reading or delivered text longer than 300
-  characters is shown to 300, and the line then says `(first 300 characters as shown, of an
-  N-character value)` -- two lengths, because a control character occupies six characters on
-  screen and one in the value. Newlines become ` / ` before anything is escaped, so one act
-  stays one line. Add `--json` for the whole value, or open the record the line already names.
-- **It is bounded to small runs.** Every sealed page and every crop is read whole and
-  re-digested in one pass before anything is shown, under a single 256 MiB allowance, so a
-  parish-sized run refuses this surface by name rather than exhausting the machine. That
-  allowance is a carried limitation, not the eventual answer: a console for real volumes has
-  to verify one image at a time as the renderer asks for it, which is a change to what the
-  confined child receives.
+- **Long text is cut in the plain view** to 300 characters, and the line says
+  `(first 300 characters as shown, of an N-character value)`. Use `--json` for the whole
+  value.
+- **It handles small runs only.** Every page and crop is read and digested in one pass
+  under a 256 MiB allowance, so a parish-sized run is refused by name. A console for real
+  volumes has to verify one image at a time as it renders.
 
 ## The ScanTailor seam
 
-**ScanTailor Advanced is a separate desktop program; Verbatus does not pretend it is built in.**
-Choose `scantailor`, give the saved project XML, and Verbatus tells you exactly which
-project to open and what to do there. After you save it, give a geometry folder that
-already exists to the same screen to import its split geometry — the console writes into a
-folder, it never makes one, and it says so rather than failing at the boundary. The imported
-document is immutable and bound to the exact project-file digest shown before the write. It records geometry only: it does
-not choose a preferred page, apply a crop, or submit ScanTailor's output images. The original
-submitted masters remain the Exemplar.
+**ScanTailor Advanced is a separate desktop program; Verbatus does not pretend it is built
+in.** Choose `scantailor`, give the saved project XML, and Verbatus tells you which project
+to open and what to do there. After you save it, give an existing geometry folder (the
+console never creates one) to import the split geometry. The imported document is
+immutable and bound to the project-file digest shown before the write. It records geometry
+only: no preferred page, no crop, no ScanTailor output images. The submitted masters remain
+the Exemplar.
 
 ## Before anything bills, it asks
 
-`launch` is the only word that starts a bill. Before it rents anything it shows you:
+`launch` is the only word that starts a bill. Before it rents anything it shows the
+machine's and the volume's price per hour, their total over the booked lifetime, every
+configured spending limit, and **a line of text to type back exactly**. That line is built
+from the prices just shown, so it cannot be typed from memory or pasted from an old note.
+Get it wrong or close the window and nothing happened.
 
-- the machine's price per hour, and the attached volume's price per hour,
-- what those two add up to over the whole booked lifetime,
-- every configured spending limit,
-- and **a line of text to type back exactly, character for character.**
+It refuses:
 
-That line is built out of the prices you were just shown, on purpose: it cannot be typed
-from memory or pasted from an old note by someone who has not read what is about to bill.
-Get it wrong, or close the window, and nothing happened — run `launch` again.
-
-`launch` will not proceed at all without a reviewed pod-request file and a reviewed
-spending-policy file. Do not invent a GPU class or a limit to get past that message: those
-are Tyrel's to set, and the refusal is the tool working.
-
-It also refuses to start or adopt a second machine while one is still recorded as open.
-Run `close` for that one first.
-
-It refuses in two more cases, both of which mean a machine may be running that this tool
-cannot see:
-
-- **A launch that never came back.** If a launch reached the provider and then lost the
-  answer — the network dropped, the window was closed — no machine record was saved, but
-  the safety lease that was armed just before it is still on file. A machine may be
-  billing. `launch` refuses and names that lease; `status` shows it. The safety timers
-  keep that machine until its booked deadline, which is what they are for. Do not start
-  another one on top of it: tell Tyrel, and check the provider's own console.
-- **Two windows at once.** Only one window may be part-way through a paid launch. The
-  second is told so straight away rather than left waiting, and it spent nothing: the
-  challenge remains unspent. Wait for the first window to finish, then run `verbatus
-  status` to see whether it created a machine. If it did, a verified close is required
-  before you preview again. If it did not — the first launch simply refused or failed —
-  nothing needs closing; preview again so the price and request are current.
+- **without a reviewed pod-request file and spending-policy file.** Do not invent a GPU
+  class or a limit to get past this: those are the project lead's to set.
+- **while another machine is recorded as open.** Run `close` for that one first.
+- **after a launch that never came back.** If a launch reached the provider and lost the
+  answer, no machine record exists but the safety lease armed before it does, and a
+  machine may be billing. `launch` names that lease and `status` shows it. Do not start
+  another machine: tell the project lead and check the provider's own console. The safety
+  timers hold that machine only until its booked deadline.
+- **in a second window** while the first is part-way through a paid launch. The second
+  spent nothing. When the first finishes, run `verbatus status`: if it created a machine,
+  close it (verified) before previewing again; if not, preview again so the price is
+  current.
 
 ## `fetch-run`: bring a pod's run tree home
 
-`verbatus fetch-run --run-id <id> --into <local root> --network-volume DATACENTER:VOLUME_ID`
-lists everything under `runs/<id>/` on the named volume (where the pod's own run writes
-its tree) and fetches each object into `<local root>/<id>/`. It needs the same two
-storage-key environment variables as `upload --network-volume`, and nothing else: no
-pod, no GPU-hours, no provider API key.
+```sh
+verbatus fetch-run --run-id <id> --into <local root> --network-volume DATACENTER:VOLUME_ID
+```
 
-Every object is checked the way the run tree checks itself before it counts as fetched: a
-blob must hash to its own name, a receipt to its own name, an artifact to the digest its
-stage manifest recorded, `run.json` to its own self-hash, and each stage manifest must
-equal the one the fetched artifacts rebuild. The authority is fetched first and the
-inventories second, so a bad object stops the fetch at itself rather than after a folder
-of them. An object under the prefix that no stage of a run tree accounts for is refused
-by name. A publication temporary a crashed pod left beside a manifest is skipped and its
-name is in the receipt. A stage that never reached a `manifest.json` cannot be checked
-against a stored manifest at all; its artifacts are checked by envelope alone, and the
-receipt records `"state": "verified-partial"` instead of `"verified"` — a partial run
-never appears complete.
+It lists everything under `runs/<id>/` on the volume and fetches it into
+`<local root>/<id>/`. It needs the same two storage-key environment variables as
+`upload --network-volume`, and no pod or provider API key.
 
-**One class of object in the tree cannot be checked, and is named rather than counted.**
-A stage that served a chair leaves the engine's launch log under `<stage>/serving-logs/`.
-No manifest records an engine log and nothing ever digested one, so each comes home as
-side evidence: fetched, digested on arrival, listed in the receipt under
-`unverified_serving_logs`, and left out of every claim about what was verified. This is
-not a softening of the refusal above — it is the one path the run tree's own inventory
-scope names for it. While the scope did not name it, a real served run tree was refused
-whole at the first log listed, and a run that had already billed a card brought home
-nothing at all.
+**Every object is checked as the run tree checks itself**: blobs and receipts hash to
+their own names, artifacts to their stage manifest, `run.json` to its self-hash, and each
+manifest must equal the one its fetched artifacts rebuild. An object no stage accounts for
+is refused by name; a publication temporary left by a crashed pod is skipped and named in
+the receipt. A stage with no `manifest.json` is checked by envelope only, and the receipt
+says `"state": "verified-partial"`, so a partial run never looks complete.
 
-It is also the one file in the tree that is still being written, so it is the one object
-whose failure to arrive is **refused by itself** rather than fatally. A chair serving right
-now appends to its log: an operator who fetches a held run mid-flight and again at the end
-meets bytes that have grown, and the never-replace rule below would otherwise take the
-whole verified tree down for it — as would a debug-level log grown past the 256 MiB
-per-object bound. Each such log is named in the receipt's `refused_serving_logs` and on the
-screen, with the run tree still brought home and verified: if the local copy is an earlier,
-shorter fetch of the same log, fetch into a fresh `--into`; a log past the bound is read on
-the volume. Every other object in the tree is immutable evidence,
-and a changed one still refuses the fetch as a whole.
+**Engine logs are the one unverifiable object.** A stage that served a chair leaves its
+engine log under `<stage>/serving-logs/`. No manifest records it, so each is fetched,
+digested on arrival, listed under `unverified_serving_logs`, and left out of every
+verification claim. Because a serving chair may still be appending to it, a log that has
+grown since an earlier fetch, or passed the 256 MiB per-object bound, is refused **on its
+own** (listed under `refused_serving_logs`) without taking the verified tree down. Fetch
+into a fresh `--into` for the longer log, or read an oversized one on the volume.
 
-A file that already exists locally is compared, never replaced: identical bytes are reused
-and counted, different bytes refuse by name and leave the local run untouched. Nothing an
-attempt fetched is kept when it refuses; only files an earlier fetch already verified
-survive to be reused. Run it again after a refusal — it safely reuses those files. The
-receipt records counts, the stages verified and the excluded temporaries; `status` shows
-it. The listing and `GetObject` path has never run against a real endpoint.
+**Local files are compared, never replaced.** Identical bytes are reused; different bytes
+refuse by name and leave the local run untouched. A refused attempt keeps nothing it
+fetched, so running it again is safe. The listing and `GetObject` path has not yet run
+against a real endpoint.
 
-**The launch's evidence comes home with it.** The run tree is not the whole record of a
-run that billed a card: the launch's `preflight/` tree — the golden page, the serving
-logs, and the content-addressed serving receipts, launch audits and evidence manifests —
-is written beside `runs/` on the volume and says which chairs were preflighted, against
-which catalogue digests, at what measured tier. It is fetched into `<local root>/evidence/`
-in the same call, each object recorded in the receipt with the digest of the bytes that
-arrived and the content-addressed ones checked against their own names. An evidence
-object that cannot be fetched is named in the receipt and never takes the verified run
-tree down with it.
+### The launch's evidence
 
-**Ten records lie under neither prefix**, and `operations/pod/README.md` §"What a launch
-writes on the volume, and how each part comes home" lists them with the derivation of each
-key, so the `--evidence-key` list is assembled from a document rather than from memory.
-Six of them are records an operator or a program named directly. Five of those carry the
-launch token at paths an operator chose — the bootstrap **report**, the
-pod-run **report**, that report's **`-hold` liveness sibling** (the pod-run key with
-`-hold` before its suffix, and the only record that the pod stayed alive to the hard
-deadline), the pod-timer **runtime report**, and the bootstrap **journal** — and finding
-them would mean listing the whole volume, which holds the submission's own page images.
-The sixth, **`pod-transfer-journal.json`**, sits at the volume root under a fixed name and
-is the only durable record of which submission rows were verified against target-observed
-bytes. `--evidence-key <key>` (repeatable) brings each one home by its exact key — a
-volume-root-relative key, the volume path with the mount prefix removed, never a leading
-`/` — and the double-click route prompts for all ten by name. The other four are the
-token-named siblings the derivation below adds to those paths: the pod timer's
-`-terminating.json` breadcrumb, and `pod_run`'s `-liveness.json`, `-timings.json` and
-`-transcript.log`. They are keys in their own right, so the prompt route asks for each of
-them too rather than leaving them reachable only through a saved receipt.
+A run that billed a card has more record than its run tree:
 
-The receipt states that limit and how many keys the call named — it does not claim they
-went unfetched when the operator named them — and `objects` and `refusals` say which of
-the named keys arrived. Nothing is left to be inferred from an empty folder.
+- **`preflight/`** on the volume says which chairs were preflighted, against which
+  catalogue digests, at what measured tier. It is fetched into `<local root>/evidence/`
+  in the same call. The volume is reused across launches, so `preflight/` holds one
+  subtree per launch; pass `--evidence-prefix preflight/<bootstrap report stem>`
+  (repeatable) to fetch only this run's.
+- **Ten records lie under neither prefix** — the bootstrap report and journal, the
+  pod-timer runtime report and its `-terminating.json` breadcrumb, the pod-run report and
+  its `-hold.json`, `-liveness.json`, `-timings.json` and `-transcript.log` siblings, and
+  `pod-transfer-journal.json` at the volume root (the only durable record of which
+  submission rows were verified against bytes on the target). Finding them otherwise
+  would mean listing the whole volume, which holds the page images.
+  `operations/pod/README.md` §"What a launch writes on the volume, and how each part comes
+  home" lists each key and its derivation.
 
-**You do not have to retype the token.** The launch receipt this computer saved carries
-the sealed `docker_start_cmd`, and that command already names the bound report paths, so
-`--launch-receipt <path>` derives every key from it and prints each one before the fetch.
-The derivation rule, if you want to check it by hand: take each `--report-path` in that
-command (the outer one is the pod timer's, the one nested inside
-`--bootstrap-command-json` is the bootstrap child's), make it relative to the request's
-`volume_mount_path`, and add its siblings — `-terminating.json` for the timer's report,
-and `-hold.json`, `-liveness.json`, `-timings.json` and `-transcript.log` for `pod_run`'s.
-A receipt that cannot be read refuses by name rather than quietly deriving nothing, and so
-does one for a different network volume, a different run, or one that proves no run at all
-(a hold-only boot's receipt, asked for while fetching a named run) — deriving from it would
-name, or store evidence beside, records that were never this fetch's; name the receipt for
-this run, or pass `--evidence-key`/`--evidence-prefix` explicitly instead.
+Name them with `--evidence-key <key>` (repeatable; volume-root-relative, no leading `/`),
+or pass `--launch-receipt <path>` to derive the nine token-bound keys from the saved launch
+receipt's sealed `docker_start_cmd`; the keys are printed before the fetch. The receipt
+cannot derive `pod-transfer-journal.json`: when the launch transferred a submission, also
+pass `--evidence-key pod-transfer-journal.json`. The double-click route
+prompts for all ten. A receipt for a different volume or run, or one that proves no run (a
+hold-only boot), is refused by name. An evidence object that cannot be fetched is named in
+the receipt and never fails the run tree. The receipt records the prefixes and keys the
+call used and which arrived.
 
-**Name this run's own preflight tree.** A volume is reused across launches, so
-`preflight/` accumulates one subtree per launch and a later reader of `evidence/` cannot
-say which one measured the chairs for *this* run. `--evidence-prefix <prefix>`
-(repeatable) replaces the default `preflight` with exactly the prefixes you want;
-this run's is `preflight/<its bootstrap report stem>`, and that stem carries the launch
-token. The receipt records the prefixes the call used, so the choice is in the record.
+**Reading the evidence:**
 
-**What the fetched evidence looks like.** Beside the run tree you will find, per launch:
-the pod timer's report (`pod-runtime-report-<token>.json`, with `bootstrap`, `close` and
-`green`); its `-terminating.json` breadcrumb, written immediately before the DELETE —
-if it is present and the report still says `close: null`, the close *was* attempted and
-the container was destroyed mid-verification, which is the normal shape, not a fault;
-`pod_run`'s report (`state`, `exit_code`, `detail`, `orchestrator_argv`, the measured
-`placement_tier`, and the paths of the three records below); its `-liveness.json` tick
-(`pid`, `tick`, `last_seen`, `alive`) — a tick reading `alive: true` stamped long before
-the hard deadline means the supervisor stopped while its child was still running;
-its `-hold.json` line for the paid idle time after a finished run; its
-`-timings.json` journal, one entry per stage invocation with the duration, the exit code
-and the commit that ran it — two entries naming two commits is how a resume at a
-different commit shows itself, since `run.json` names only the commit that *created* the
-run; and its `-transcript.log`, the orchestrator's and every stage's merged output,
-head-first with a named truncation marker before the final window if it outgrew its
-bound.
+- `pod-runtime-report-<token>.json` — the pod timer's `bootstrap`, `close` and `green`. If
+  its `-terminating.json` breadcrumb exists and the report says `close: null`, the close
+  was attempted and the container was destroyed mid-verification: the normal shape.
+- `pod_run`'s report — `state`, `exit_code`, `detail`, `orchestrator_argv`, the measured
+  `placement_tier`, and the paths of its siblings.
+- `-liveness.json` — `alive: true` stamped long before the hard deadline means the
+  supervisor stopped while its child was still running.
+- `-hold.json` — the paid idle time after a finished run, and the only proof the pod stayed
+  alive to the hard deadline.
+- `-timings.json` — one entry per stage invocation with duration, exit code and commit.
+  Two commits means a resume at a different commit (`run.json` names only the creating
+  commit).
+- `-transcript.log` — merged orchestrator and stage output, with a named truncation marker
+  if it outgrew its bound.
 
 ## `spend show`: inspect the reviewed guard
 
-Choose **spend** in the double-click window, or run `verbatus spend show`. It shows a
-configured policy's ceilings, hard-stop balance floor, and notification-only alert
-threshold with the policy's SHA-256 digest. It also shows every recorded preview balance,
-its source and present staleness, plus each saved notification delivery outcome with the
-immutable receipt digest that recorded it. Where a receipt saved a different number of
-alerts and delivery outcomes, the screen says the two cannot be paired and shows both
-sides unattributed rather than guessing which outcome belongs to which alert. One receipt
-puts at most 64 saved alert or delivery entries on the screen; anything beyond that is
-counted on a final line against the same receipt digest rather than printed or dropped. A
-name in the receipt folder that is a link rather than a file this tool wrote is named as
-unreadable and lends its name to no digest. It does not
-fetch a fresh balance and it never changes `config/spend.toml`. The deliberately
-unconfigured checked-in policy refuses through the ordinary three-part console message
-rather than inventing values.
+`verbatus spend show` shows the policy's ceilings, hard-stop balance floor and
+notification-only alert threshold with the policy's SHA-256, then every recorded preview
+balance (source and staleness) and saved notification outcome with its receipt digest.
+Where a receipt's alert and outcome counts differ, both sides are shown unpaired rather
+than guessed; past 64 entries per receipt the rest are counted, not printed. It never
+fetches a balance or edits `config/spend.toml`. The checked-in policy is deliberately
+unconfigured and refuses rather than inventing values.
 
 ## Shutting down, and what "closed" actually means
 
-In a live-capable build, `close` asks for its own separate confirmation and then does
-three things, whether or not the shutdown could be confirmed. This rehearsal exercises
-the same report shape with fixture provider and billing evidence:
+`close` asks for its own confirmation, then (this rehearsal uses fixture evidence):
 
-1. It tells you whether the machine is **confirmed gone** — proved by the provider saying
-   so twice, independently, *and* by non-empty, exact-pod billing records inside a
-   declared window through the requested cutoff — and what it cost through that point.
-   Those records do **not** yet prove that returned billing buckets fill the whole
-   declared window; that remains unproven until real RunPod lifecycle output is
-   recorded. If it could not prove the observations it does require, it says
-   **UNVERIFIED CLOSE** and tells you exactly what to go and check yourself.
-2. It reminds you that **the storage volume keeps costing money on its own**. Closing the
-   machine does not delete your storage and does not stop that charge.
-3. It saves a record, so `status` can show it to you later.
+1. says whether the machine is **confirmed gone** — the provider saying so twice,
+   independently, *and* non-empty billing records for that exact pod inside a declared
+   window — and what it cost to that point. Those records do not yet prove the billing
+   buckets fill the whole window; that stays unproven until real RunPod output is
+   recorded. Anything short of this is **UNVERIFIED CLOSE**, with what to check yourself;
+2. reminds you that **the storage volume keeps costing money** — closing the machine does
+   not delete or stop it;
+3. saves a record for `status`.
 
-If you ever see **UNVERIFIED CLOSE**, that is the one message in this whole tool to stop
-and act on: open the provider's console and look. The tool never tells you there will be
-no future charge — it only ever tells you what it could actually see.
+**UNVERIFIED CLOSE is the one message to stop and act on:** open the provider's console
+and look. The tool never promises no future charge; it reports only what it could see.
+
+Close timing comes from the workspace's `config/spend.toml`; if that is missing, unreadable
+or still unconfigured (the checked-in state), close says so and uses the built-in
+operational deadline. It never reads the
+policy a `launch --spend` named, because no record keeps that path.
 
 ## When something goes wrong
 
-Every failure message says three things, always in the same order:
+Every failure message says **what happened**, **what it means** (including what was and
+was not started or spent) and **what to do next**. A raw error with no explanation is a
+defect in this tool: save the text and pass it on.
 
-1. **What happened.**
-2. **What it means** — including what was and was not started or spent.
-3. **What to do next**, and whether it is safe to just do it.
-
-You will never see a raw error with no explanation. If you ever do, that is a defect in
-this tool and not something you did — save the text and pass it on.
-
-A failed `run` names its cause on the screen (the last line the pipeline wrote) beside the
-path of its saved run record, and that record keeps the run's output, exit status,
-arguments, start and end times, the repository commit, and the path and SHA-256 of every
-configuration file named on the command line -- for every end state, including a hold.
-A run that is interrupted (Ctrl+C or a termination signal) writes an
-`interrupted-recoverable` record and tells you to run it again with the same name; a run
-that is killed outright still leaves the `started` record written before the pipeline
-began, so `status` can name the run and its tree rather than report an empty machine.
-A failure the tool could not classify (`unexpected`) writes an `unexpected` record
-carrying the exception, its technical trace, the command and the working directory, and
-the message names that record; only when even that cannot be written is the screen the
-sole record, and the message says so.
+A failed `run` names its cause (the pipeline's last line) and its saved run record, which
+keeps output, exit status, arguments, times, commit, and the path and SHA-256 of every
+configuration file named. An interrupted run (Ctrl+C or a signal) writes
+`interrupted-recoverable`: run it again with the same name. A killed run still leaves the
+`started` record, so `status` can name it. An unclassified failure writes an `unexpected`
+record with the trace, command and directory; if even that cannot be written, the message
+says the screen is the only record.
 
 ## `status`: the one you can run any time
 
-`status` never starts, spends or changes anything. It reads records this tool already
-saved and repeats them **exactly as recorded** — it does not recalculate anything, so what
-it shows you and what is on file cannot drift apart. Run it whenever you are unsure.
+`status` never starts, spends or changes anything. It repeats saved records **exactly as
+recorded**, so it cannot drift from what is on file. Each run shows its id, root, state,
+failure or hold reasons, last output lines, the `verbatus review` line and its record path;
+exports, fetches, uploads, backups and `unexpected` records show what they touched.
 
-Every run it lists is named -- the run id, its run root, its recorded state, the reason it
-failed or every reason it is held, the last lines of its recorded output, the
-ready-to-paste `verbatus review` line, and the path of the record itself. Exports show
-the run and the bundle; `fetch-run` and `upload` records show the volume and datacenter
-they named; `backup` records show which run root was copied where and the verified
-snapshot; `unexpected` records show the failure and the command that met it.
-
-It also lists any **safety lease** with no verified close recorded against it, because that
-is the one place a machine can be billing without a machine record to show you. A lease it
-cannot read is listed as unreadable and never counted as closed.
+It also lists every **safety lease** with no verified close, because that is where a
+machine can bill without a machine record. An unreadable lease is listed as such, never
+counted as closed.
 
 ## Phone notifications
 
-Off unless you ask. Add `--notify` and this tool will send you one line when a `run` or an
-`export` finishes, and one line when a run is **held** and needs you to decide something.
-Those are the only two moments it may ever send. The terminal always tells you whether the
-message actually arrived — a notification is an extra, never the only place a result
-appears.
+Off unless you add `--notify`. Then it sends one line when a `run` or `export` finishes and
+one when a run is **held** for a decision, and nothing else. The terminal always says
+whether the message arrived.
 
 ## Where it keeps its own records
 
-Everything this tool writes for itself lives in `~/.local/state/verbatus/` by default (or
-`$XDG_STATE_HOME/verbatus/` when that variable holds an absolute path outside the
-project checkout; a relative value, or an absolute one that lands inside the
-checkout, is ignored), outside the project checkout; `--state-dir` moves it.
-Each record is written once and named after a
-checksum of its own contents, so a record cannot be quietly edited afterwards and still
-read back. You do not need to look in there — `status` shows you what matters.
-
-The whole directory is portable: the index names each record by that checksum name, and
-every reference a record makes to something under the directory -- a run root, a lease,
-an export bundle, another record -- is kept relative to it. Copy or move the directory, or
-restore it from a backup at a different path, and `status`, `export`, `run` and `close`
-read it there unchanged.
+`~/.local/state/verbatus/` by default, or `$XDG_STATE_HOME/verbatus/` when that is an
+absolute path outside the checkout; `--state-dir` moves it. Each record is written once
+and named by the checksum of its contents, so it cannot be edited and still read back.
+Every reference inside is relative, so the directory can be copied, moved or restored
+elsewhere and still read.
 
 ## Alpha shortcuts this surface ships
 
-Named here because they are real, and because
-`workbench/standing/ALPHA_SHORTCUTS.md` — where they are logged — is local-only and
-cannot travel in a commit.
-
-1. **No live provider path exists.** The surface refuses any provider that is not the
-   in-memory fake. Every price, pod, volume and billing record below is a stand-in.
-2. **`boot` measures no real machine.** The cache check, the proof-page read and the GPU
-   profile are fixtures. A green boot means the local wiring is sound, not that a GPU
-   exists.
-3. **`upload` writes to a local folder by default** through the same checksum-verified,
-   resumable transfer a network volume uses. `--network-volume DATACENTER:VOLUME_ID`
-   selects the S3-compatible target. The first real endpoint test transferred an image
-   whose bytes hashed correctly after download, but RunPod discarded the custom SHA-256
-   metadata supplied on upload. The adapter therefore verifies missing-metadata objects
-   by streaming their bytes under the sealed size bound; that fallback is locally tested
-   and still awaits a second live endpoint run.
+1. **No live provider path exists.** Every price, pod, volume and billing record is the
+   in-memory fake's.
+2. **`boot` measures no real machine.** A green boot means the local wiring is sound, not
+   that a GPU exists.
+3. **`upload` writes to a local folder by default**, through the same checksum-verified,
+   resumable transfer a network volume uses; `--network-volume DATACENTER:VOLUME_ID`
+   selects the S3-compatible target. RunPod's S3 endpoint discards custom SHA-256
+   metadata on upload, so objects without it are verified by streaming their bytes under
+   the sealed size bound; that path has run against a live endpoint once.
 
    One immutable manifest owns each object prefix. The default `submission` writes images
-   under `submission/` and its ledger beside them as `submission-manifest.json`, matching
-   Boot B. Use `--prefix batch-02` for another retained batch on the same volume; it writes
-   `batch-02/` and `batch-02-manifest.json`. Reusing the same manifest is idempotent. A
-   different manifest at an occupied prefix is refused before any of its images are written.
-   A non-default batch must be paired with matching submission paths in its pod request.
-4. **`run` runs on this computer, not on a pod.** With no submission it processes the
-   declared synthetic fixture; with `--submission-folder` and `--submission-manifest` it
-   sends a real approved submission to the Door. The `--models-config` /
-   `--serving-recipes-config` / `--witness-context-config` trio seals the real roster,
-   serving catalogue, and factual witness declaration — but no chair is served here,
-   so a real-roster run on this computer stops where a stage first needs one. Use the
-   shipped real trio together. For a custom roster, provide an operator-authored
-   witness declaration; a local repository path alone does not establish that a chair
-   is one of the shipped fixtures.
-   The pod's run is `python -m operations.pod.pod_run`, and `fetch-run` is how its tree
-   comes back.
-5. **`export` produces a base Armarium evidence bundle**, not Spec 11's product export,
-   and says so on screen every time.
-6. **The fixture pod is given a fixed cost at close** so the captured-cost line has
-   something real to show. It is not a measurement of anything.
+   under `submission/` and the ledger as `submission-manifest.json`; `--prefix batch-02`
+   writes `batch-02/` and `batch-02-manifest.json`, and its pod request must name matching
+   submission paths. Re-sending the same manifest is idempotent; a different manifest at
+   an occupied prefix is refused before any image is written.
+4. **`run` runs on this computer, not on a pod**, so a real-roster run stops where a stage
+   first needs a served chair. Use the shipped real trio together; a custom roster needs
+   an operator-authored witness declaration. The pod's run is
+   `python -m operations.pod.pod_run`, and `fetch-run` brings its tree home.
+5. **`export` produces a base Armarium evidence bundle**, not the product export,
+   and says so on screen.
+6. **The fixture pod is given a fixed cost at close.** It measures nothing.
 
 ## For whoever maintains this tool
 
-- `cli.py` parses; `surface.py` is the whole behaviour; `entry.py` is a boundary thin
-  enough to turn even an import failure into the three-part message.
-- `errors.py` holds every operator-facing state as a closed `ErrorCode` table, checked at
-  import time for the three parts, and checked by `test_errors.py` against the modules
-  that actually raise — so a code with copy but no caller cannot pass as coverage.
-- `records.py` owns the receipts (content-addressed, verified against their own filename
-  digest on read) and the descriptor that names which receipt each verb last wrote.
-  `status` uses the read paths only.
-- `notify_bridge.py` allows exactly `milestone` and `decision`, and can never raise out of
-  the verb that called it.
-- `volume_cost.py` holds the ongoing-storage note, with the documentation it was read from
-  and the date it was read.
-- Close timing comes from the workspace's own `config/spend.toml`, and falls back to the
-  pod runtime's operational defaults if that file is missing, unreadable, or
-  unconfigured. When the file cannot be read, close says that the reviewed spend policy
-  could not be read and that it is using its built-in operational deadline instead; the
-  fallback is not silent. This is always the workspace default, **not** whatever path a `launch
-  --spend` used — nothing records which policy path a launch was given, so close has no
-  way to read it back even if it wanted to. A drill that needs a close to give up
-  quickly injects a fast clock (`monotonic=`, `sleeper=`); it never shortens the shipped
-  deadline.
-- Nothing in this package's tests makes a live call of any kind.
+- `cli.py` parses; `surface.py` is the whole behaviour; `entry.py` is thin enough to turn
+  even an import failure into the three-part message.
+- `errors.py` holds every operator-facing state as a closed `ErrorCode` table;
+  `test_errors.py` checks it against the modules that raise, so unused copy cannot pass as
+  coverage.
+- `records.py` owns the content-addressed receipts and the descriptor naming each verb's
+  latest receipt. `status` uses its read paths only.
+- `notify_bridge.py` allows exactly `milestone` and `decision` and never raises into the
+  calling verb.
+- `volume_cost.py` holds the storage-cost note and the documentation it came from.
+- A drill that needs close to give up quickly injects a fast clock (`monotonic=`,
+  `sleeper=`); it never shortens the shipped deadline.
+- Nothing in this package's tests makes a live call.
