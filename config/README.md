@@ -41,7 +41,7 @@ clears it with load headroom, and does not pretend to clear everything the pair
 ceiling admits -- two different low-entropy chair responses there measure 283.9
 seconds, a case no deadline value closes. A faster matcher was tried and refused
 because it attached witness text to the wrong act. Both measurements and the
-design that would close the case are in `pipeline/3_attestatores/HANDOFF.md`.
+design that would close the case are in `pipeline/3_attestatores/CONTRACT.md`.
 
 ## R5a toggle register
 
