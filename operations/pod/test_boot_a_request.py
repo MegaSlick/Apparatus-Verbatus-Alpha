@@ -136,7 +136,7 @@ def test_a_card_above_the_hourly_ceiling_is_named_as_a_coming_refusal() -> None:
     assert "above max_hourly_usd $0.10" in rendered.text
 
 
-def test_the_pod_request_validates_once_tyrel_supplies_his_four_values() -> None:
+def test_the_pod_request_validates_once_the_project_lead_supplies_four_values() -> None:
     """``hard_deadline`` is a value the project lead supplies too -- ``pod_request``
 
     carries no runtime that fills it in, unlike ``metadata``'s billing-cutoff
@@ -343,7 +343,7 @@ def test_main_exits_zero_on_a_configured_policy(
     assert "--record-fixture" in out
 
 
-def test_the_drill_request_names_the_timer_capability_as_tyrels_to_deliver() -> None:
+def test_the_drill_request_names_the_timer_capability_as_the_project_leads_to_deliver() -> None:
     """The one thing that stops the drill dead, said where the reader decides.
 
     The pod-side timer refuses to construct without its provider capability,
