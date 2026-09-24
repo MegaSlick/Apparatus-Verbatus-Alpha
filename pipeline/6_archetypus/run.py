@@ -1384,7 +1384,7 @@ def establish_logical_record(
     text = payload["text"]
     # Normalized before it is sealed, as the image-local constructor does: an
     # `illegible` note may legally arrive without `witness_evidence` (the
-    # Perlector's HANDOFF says so), and `validate_logical_record` compares the
+    # Perlector's contract says so), and `validate_logical_record` compares the
     # stored layer against the validated form of itself. Storing the raw layer
     # would refuse the first joint reading that annotates unread ink, and the
     # act would establish nothing. `witnesses=None` because this constructor is
@@ -1445,7 +1445,7 @@ def _no_readable_text_evidence(
 ) -> dict[str, str] | None:
     """Return the Recensor's retained blank proof; never manufacture one here.
 
-    `HANDOFF.md`'s whole argument for this field is that an accepted review is
+    `CONTRACT.md`'s whole argument for this field is that an accepted review is
     evidence the Recensor accepted a reading, not evidence the page was blank.
     No `blank-proof` artifact kind exists yet to check this reference's kind
     against, so the one class checkable today without inventing that contract is
@@ -1487,7 +1487,7 @@ def _validate_region_fields(region, label: str) -> None:
     is the field-set closure for that sub-object, the shape that stopped
     `consolidated_literal` at construction (`_crop_references`) and now also
     stops it surviving a reseal past `validate_record`, the function every later
-    stage-local read and `HANDOFF.md` both rely on.
+    stage-local read and `CONTRACT.md` both rely on.
     """
     if not isinstance(region, dict):
         raise SchemaRefusal(f"{label} is not an object")
@@ -1777,7 +1777,7 @@ def validate_index(context, index, *, on_disk=None, accepted=None) -> dict:
     and never quietly repaired underneath a reader.
 
     `on_disk` and `accepted` are derived from the immutable records when
-    omitted — the one-argument consumer form HANDOFF.md documents. The stage's
+    omitted — the one-argument consumer form CONTRACT.md documents. The stage's
     own finishing step passes both, because it reconciles twice back to back
     and re-reading a parish of records for the same answer buys nothing.
     """

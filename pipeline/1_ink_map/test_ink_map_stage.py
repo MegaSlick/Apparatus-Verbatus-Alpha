@@ -114,7 +114,7 @@ def test_unclaimed_edge_ink_is_named_and_bounded_but_not_held():
     assert finding["edge_band_pixels"] == _coverage(200, 200)["edge_band_px"] == 2
     assert classify(INK_MAP, "unclaimed-edge-ink") is OutcomeClass.UNRESOLVED
     assert terminal_category(INK_MAP, "unclaimed-edge-ink") is None
-    handoff = (ROOT / "pipeline/1_ink_map/HANDOFF.md").read_text(encoding="utf-8")
+    handoff = (ROOT / "pipeline/1_ink_map/CONTRACT.md").read_text(encoding="utf-8")
     assert "Unit 14 owns the explicit hold outcome" in handoff
 
 
@@ -138,7 +138,7 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
 
     source = " ".join((ROOT / "common/residual_ink.py").read_text(encoding="utf-8").split())
     handoff = " ".join(
-        (ROOT / "pipeline/1_ink_map/HANDOFF.md").read_text(encoding="utf-8").split()
+        (ROOT / "pipeline/1_ink_map/CONTRACT.md").read_text(encoding="utf-8").split()
     ).lower()
 
     assert "PROPOSED, NOT YET MEASURED" in source
@@ -159,7 +159,7 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     assert noise_floor["calibrated_for_this_corpus"] is False
     assert noise_floor["sample_count"] == 0
     assert "PROPOSED, NOT YET MEASURED" in noise_floor["caveat"]
-    # The handoff must keep saying which two moved and which three did not,
+    # The contract must keep saying which two moved and which three did not,
     # so a reader of the stage interface is not left to infer it from the file
     # the gates now live in.
     assert "sample_count = 44" in handoff
@@ -605,7 +605,7 @@ def test_the_fixture_pages_stop_flagging_because_the_band_stopped_being_the_page
     the release travelling from the Ink Map through the Designator's cuts to the
     Armarium on a real scenario. It is a real gap and it belongs to the fixture,
     which has no page with ink near its edge; it is written into the Ink Map's
-    HANDOFF.md beside this test.
+    CONTRACT.md beside this test.
     """
     from common.imaging import dimensions
     from common.residual_ink import page_edge_ink

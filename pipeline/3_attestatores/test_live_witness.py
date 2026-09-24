@@ -1687,7 +1687,7 @@ def test_live_attempt_from_response_real_dai_adapter_round_trip(tmp_path: Path):
 
 
 def test_a_no_resize_dai_act_is_carried_rather_than_refused_after_its_answer(tmp_path: Path):
-    """U8, the HANDOFF's second owed gap: the identity transform, closed.
+    """U8, the contract's second owed gap: the identity transform, closed.
 
     Every act crop in the reference fixture is small enough that DAI needs no
     resize, so this was not an edge case -- it was the ordinary DAI act, and

@@ -1,4 +1,4 @@
-"""Guards against the identity-bearing-structure risk class named in HANDOFF.md.
+"""Guards against the identity-bearing-structure risk class named in CONTRACT.md.
 
 Two hand-written constructions of one structure that then feeds an identity or
 a comparison fail *silently*: the two copies diverge, the identity computed

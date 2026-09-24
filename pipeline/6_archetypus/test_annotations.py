@@ -463,7 +463,7 @@ def test_the_export_carries_a_partial_acts_damage(tmp_path):
     were whole and the run still aggregated to `complete`. `strict=True` made the
     day it started passing a suite failure naming exactly what to clean up. That
     day is this change — the marker is gone, the assertions below run for real,
-    and `pipeline/6_archetypus/HANDOFF.md`'s consumer-obligations section no
+    and `pipeline/6_archetypus/CONTRACT.md`'s consumer-obligations section no
     longer says the Armarium ignores these fields.
     """
     root = tmp_path / "runs"
@@ -900,7 +900,7 @@ def test_a_joint_reading_that_omits_witness_evidence_still_establishes(monkeypat
     """The clustered constructor must normalise before it seals, as the local one does.
 
     `validate_annotations` NORMALISES: an `illegible` note may legally arrive on
-    the wire without `witness_evidence` (the Perlector's HANDOFF says so), and
+    the wire without `witness_evidence` (the Perlector's contract says so), and
     the validated form always carries it. `validate_logical_record` then
     requires the stored layer to equal the validated form of itself. So a
     clustered constructor that stored `payload["annotations"]` raw refused the

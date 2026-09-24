@@ -453,7 +453,7 @@ def dai_model_view(
     `_dai_present` re-derives the same crop from the same sealed page on that
     path, so equal digests here are equal pixels and not a coincidence. Held to
     the whole dict instead, this rule refused every genuine no-resize DAI act
-    after its response had already come back — the Attestatores HANDOFF's
+    after its response had already come back — the Attestatores contract's
     second owed gap. Refusing on digest keeps the invariant that mattered (the
     model saw the source bytes) and drops only the one that never did (both
     stages spell the same bytes' location the same way).

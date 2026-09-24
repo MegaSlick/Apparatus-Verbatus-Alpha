@@ -7,7 +7,7 @@ no coverage gap anywhere in that fixture to detect). The point of this module is
 exactly the geometry a hand-built canvas can prove without touching pipeline
 wiring at all; `test_confirmed_blank.py`-style end-to-end proof belongs to a
 scenario the Designator can genuinely miss something on, which the walking
-skeleton's synthetic proposer does not yet support (see HANDOFF.md).
+skeleton's synthetic proposer does not yet support (see CONTRACT.md).
 """
 
 import random

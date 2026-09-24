@@ -96,7 +96,7 @@ manifest, acts, pages, and aggregate basis and seals the bundle into the run tre
 (`pipeline/7_armarium/run.py:1497-1523`), and `bundle.py` publishes that sealed blob to a
 chosen destination after re-verifying it from the outside (`pipeline/7_armarium/bundle.py:97-137`).
 The remaining Spec 11 semantic-annotation contract has no producer, so its refusal cannot
-yet be recorded (`pipeline/7_armarium/HANDOFF.md:279-283`).
+yet be recorded (`pipeline/7_armarium/CONTRACT.md:279-283`).
 
 **The operator's `export` verb is not that bundle.** It copies `run.json` and the
 `7_armarium` directory out of the run tree as a base Armarium evidence bundle

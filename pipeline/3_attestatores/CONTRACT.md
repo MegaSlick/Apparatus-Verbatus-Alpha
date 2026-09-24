@@ -1,4 +1,4 @@
-# Attestatores — handoff
+# Attestatores — contract
 
 The Attestatores retains one immutable `kind="testimonium"` for every configured
 chair and every Designator act, on every attempted read. It does not merge, rank,

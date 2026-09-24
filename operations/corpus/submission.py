@@ -18,7 +18,7 @@ path; a page naming a record absent from the row snapshot is refused
 supplied bytes is refused `page-not-fetched`; two identifiers whose fetched bytes
 are byte-identical are refused `duplicate-page-bytes` on the second occurrence,
 per §5.1's dedupe-before-submit rule — a merged page is unrecoverable at the
-Exemplar boundary (`HANDOFF.md:177-183`), so this is the last place it can be
+Exemplar boundary (`CONTRACT.md:177-183`), so this is the last place it can be
 caught cheaply — and a page is only registered against later duplicates once it
 is fully admitted, so a page refused for an unrelated reason can never be named as
 the "original" of someone else's `duplicate-page-bytes` refusal; and a page whose

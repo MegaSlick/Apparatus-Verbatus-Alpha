@@ -1571,7 +1571,7 @@ def test_a_fixture_reading_carries_no_engine_call_field():
 def test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written(
     live_run, tmp_path, monkeypatch
 ):
-    """HANDOFF.md: 'One chair, started late, stopped before the seal.' A
+    """CONTRACT.md: 'One chair, started late, stopped before the seal.' A
     mutation probe deleting `service.close()` ahead of `context.seal_boundary()`
     left the rest of this module green, so nothing else here pins the ordering.
     This makes the shutdown itself fail and checks the seal was never reached:
@@ -1700,7 +1700,7 @@ def test_default_serving_factory_logs_under_the_run_tree_and_leases_off_it(live_
 # Both were unreachable while no page witness parsed live: the fixture posture
 # declares no geometry on a continuation page, and a fixture page record's
 # partition and its capture never name one blob twice. A served Chandra reaches
-# both (`pipeline/3_attestatores/HANDOFF.md`), which is why they are fixed here
+# both (`pipeline/3_attestatores/CONTRACT.md`), which is why they are fixed here
 # rather than left described.
 
 

@@ -956,7 +956,7 @@ def terminal_report(export: dict) -> tuple[str, list[str]]:
     Deriving it again from `payload["aggregate"]` was a second, weaker derivation of
     a question the last stage had already answered: the Armarium reports its terminal
     ledger's status, which subsumes the aggregate's and is partial in one case the
-    aggregate is not (7_armarium/HANDOFF.md). A run whose bundle said `partial` on its
+    aggregate is not (7_armarium/CONTRACT.md). A run whose bundle said `partial` on its
     own face would have printed `complete` and exited 0 here.
 
     The reasons stay the aggregate's, because they are the ones an operator acts on

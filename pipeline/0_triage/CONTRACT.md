@@ -1,4 +1,4 @@
-# Triage — handoff
+# Triage — contract
 
 `manifest.py` defines the pre-door `triage-decision-manifest-v1` contract. A
 manifest names one non-blank `corpus_id`, and each submitted frame has exactly one

@@ -1420,7 +1420,7 @@ def test_a_deeply_nested_native_payload_becomes_failed_not_a_recursion_crash():
 def test_a_float_in_a_native_payload_is_a_failed_attempt_not_a_coerced_number(
     native, expected_type, where
 ):
-    """HANDOFF names this gap; nothing exercised it.
+    """The contract names this gap; nothing exercised it.
 
     The shared canonical writer refuses floating-point numbers, so a witness
     returning one — bare, or buried in an otherwise ordinary object — cannot be

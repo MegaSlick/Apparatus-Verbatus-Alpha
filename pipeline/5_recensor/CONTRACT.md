@@ -1,4 +1,4 @@
-# Recensor — handoff
+# Recensor — contract
 
 The Recensor establishes no text. It writes append-only review history under
 `5_recensor/artifacts/`, using `skeleton.v1` envelopes with a derived attempt
@@ -299,7 +299,7 @@ measurement nobody took.
 
 **The occlusion instrument has no producer today.** The survey reads
 Designator `kind="occlusion"` artifacts; no stage publishes that kind (see the
-Designator handoff's closing section), so every capture row on every current run
+Designator contract's closing section), so every capture row on every current run
 records `act-visibility-survey-absent` and no visibility measurement exists
 anywhere in a run. The consumer obligation that follows: this field may be read
 as "measured and visible" only when a row carries a visibility state, never
@@ -337,7 +337,7 @@ independently report the same absence, and this was not always verified: the
 Attestatores could mint a completed `genuinely-empty` for every
 chair from a Designator page-fallback act's identity, without asking anything,
 and this stage read the three artifacts as three independent completed reads.
-Stage 3 no longer produces such a record (`pipeline/3_attestatores/HANDOFF.md`,
+Stage 3 no longer produces such a record (`pipeline/3_attestatores/CONTRACT.md`,
 "Outcomes and provenance") — that upstream deletion closed the gap, and
 this gate is defence in depth against a resealed or foreign artifact rather
 than a second catch for the same defect (whose fabricated records carried both

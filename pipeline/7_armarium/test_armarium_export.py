@@ -2131,7 +2131,7 @@ def _ink_map_run_module():
 
 
 def test_export_run_identity_never_touches_the_refusing_fixture_accessor_on_a_real_run():
-    """The unit's central claim, pinned rather than asserted only in prose and HANDOFF.md.
+    """The unit's central claim, pinned rather than asserted only in prose and CONTRACT.md.
 
     `StageContext.fixture` refuses on a real run (`common/stage.py`); if
     `export_run_identity` read it unconditionally instead of deciding the route

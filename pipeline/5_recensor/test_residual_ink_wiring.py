@@ -21,7 +21,7 @@ evidence list before Recensor ever runs, which is a working guard, not a gap
 to route around. So this exercises every function `main()` actually calls,
 against a real tree, with the one input the walking skeleton cannot yet
 supply (a genuinely short covered set) provided directly -- exactly the
-boundary named in HANDOFF.md.
+boundary named in CONTRACT.md.
 """
 
 import copy
@@ -401,7 +401,7 @@ def test_a_second_recensor_pass_that_clears_a_flag_does_not_collide_with_the_fir
     """F132: a review's identity must survive a page-wide fact changing for an act
     that never itself recovered.
 
-    `page_coverage_for` is deliberately page-wide (HANDOFF.md: "a flagged page
+    `page_coverage_for` is deliberately page-wide (CONTRACT.md: "a flagged page
     holds every act that touches it ... a successful recovery crop that reaches
     the missed ink clears the finding on the very next Recensor pass"), but
     before this fix a review's identity (`attempt_id(act_id, "recense",

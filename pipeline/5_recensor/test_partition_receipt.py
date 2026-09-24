@@ -843,7 +843,7 @@ def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path)
     reached) and the self-hash check (`test_a_tampered_partition_receipt_is_
     refused_by_its_self_hash`, which tampers the receipt after publication).
     This is the one that catches a testimonium edited after its review was
-    written -- HANDOFF.md's own stated worry for what this receipt exists to
+    written -- CONTRACT.md's own stated worry for what this receipt exists to
     make refutable."""
     from common.contracts.canonical import self_hash
 

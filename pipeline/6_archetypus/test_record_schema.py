@@ -259,7 +259,7 @@ def test_record_validation_refuses_a_bad_nested_self_hash():
 
 # --- The rest of the resealed-record refusals, each exercised ------------------
 #
-# `validate_record` runs on every later stage-local read, and HANDOFF.md offers
+# `validate_record` runs on every later stage-local read, and CONTRACT.md offers
 # it to any consumer wanting to prove a record before relying on it. So each of
 # its refusals gets a case that fails without it: a refusal no test can kill is
 # a claim nobody has measured.
@@ -294,7 +294,7 @@ def test_record_validation_refuses_a_resealed_region_outside_the_closed_schema()
     stopped `consolidated_literal`, the first name in the old pipeline's dead
     fallback chain, from travelling sealed into the record and out through the
     export. But `validate_record`, the function every later stage-local read and
-    `HANDOFF.md` both rely on, checked only that `regions` was a non-empty list:
+    `CONTRACT.md` both rely on, checked only that `regions` was a non-empty list:
     a record resealed on disk with the same dead field smuggled inside a region
     passed it. `_validate_region_fields` now runs on both paths.
     """

@@ -59,7 +59,7 @@ from common.contracts.errors import ContractError
 # photographed page, whose tones spread over dozens of levels, so a fixed 20
 # counted a median of 39% of a real page as ink -- 23% in the historical
 # dark-excluded derived statistic, which is not a paper-region measurement
-# (see `pipeline/2_designator/HANDOFF.md` under "The ink margin, derived on 127
+# (see `pipeline/2_designator/CONTRACT.md` under "The ink margin, derived on 127
 # pages"). On this repository's synthetic pages the two are indistinguishable:
 # paper is one flat tone and ink is another, 140 grey levels below it on both
 # pages that carry any, so the floor threshold and the derived one select the
@@ -132,7 +132,7 @@ def _derived_ink_margin(paper: int, dark_mode: int, ink_margin_bp: int) -> int:
     page below the ink threshold. In that historical 127-page calculation,
     subtracting the measured page-wide dark population from both counts produced
     a **median 23% dark-excluded statistic**. It is not a paper-region or
-    ground-truth writing fraction (see the tables in HANDOFF.md). The distance between
+    ground-truth writing fraction (see the tables in CONTRACT.md). The distance between
     the page's own two population modes is the scale that fixed offset was
     missing: it is large on a photograph with a black surround and small on a
     flat scan, exactly as the paper's own spread is.
@@ -206,7 +206,7 @@ class BackgroundPolicy(TypedDict):
     Two bounds, not three. `min_border_dark_bp` used to be here and is
     gone on measurement: over 127 real pages it refused 52 of them and refused
     no control the interior bound did not already refuse (the calibration table
-    in `pipeline/2_designator/HANDOFF.md`). `max_ink_bp` replaces it, and it
+    in `pipeline/2_designator/CONTRACT.md`). `max_ink_bp` replaces it, and it
     asks a different question -- not where this page's dark is, but whether the
     value inferred as paper is a background of this page at all.
 
