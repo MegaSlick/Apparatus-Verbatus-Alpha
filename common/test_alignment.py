@@ -487,7 +487,7 @@ def test_the_page_that_set_the_deadline_still_aligns_under_the_sealed_limits():
     What no deadline value can claim is that nothing reaches it: two different
     low-entropy chair responses at the pair ceiling measure 283.9 s, so the
     deadline still fires on degenerate output and is still an honest non-verdict
-    when it does. `pipeline/3_attestatores/HANDOFF.md` carries that measurement
+    when it does. `pipeline/3_attestatores/CONTRACT.md` carries that measurement
     and the design that would close it.
     """
     act = (

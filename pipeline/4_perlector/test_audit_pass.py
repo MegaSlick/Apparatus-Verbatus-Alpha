@@ -1657,7 +1657,7 @@ def test_the_chain_refuses_a_gap_an_unassessed_reader_could_not_have_reported(tm
         audit.validate_chain(tree, invented, final["subject_id"])
 
     # Under `assessed` the same gap is the reader's own report and is admitted;
-    # what the chain cannot prove about that tail is stated in the HANDOFF.
+    # what the chain cannot prove about that tail is stated in the contract.
     assessed = copy.deepcopy(invented)
     assessed["payload"]["uncertainty_assessment"] = {"state": "assessed", "problem": None}
     audit.validate_chain(tree, assessed, final["subject_id"])

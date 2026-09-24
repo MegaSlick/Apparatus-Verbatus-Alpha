@@ -296,7 +296,7 @@ def test_a_truncated_classification_cannot_publish_as_a_completed_read(published
 
 def test_a_complete_classification_cannot_publish_as_a_truncated_outcome(published_payload):
     """The reverse direction of the check above. `outcome == 'truncated'` means
-    'not established complete' (HANDOFF.md, verbatim); a published record
+    'not established complete' (CONTRACT.md, verbatim); a published record
     claiming both at once is the exact self-contradiction the truncation field
     exists to rule out, whichever direction it is written in."""
     payload = copy.deepcopy(published_payload)

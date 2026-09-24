@@ -3,7 +3,7 @@
 `SPEC.md` §5.1 fixes this shape and one hard rule about it: **never store the
 submission ordinal.** The join key back to the sealed Exemplar page is
 `page.sha256` — which for a single-frame JPEG on the `admit-or-fan-out` route
-equals the admitted source digest (`pipeline/1_exemplar/HANDOFF.md`) — and that
+equals the admitted source digest (`pipeline/1_exemplar/CONTRACT.md`) — and that
 digest survives re-sharding. An ordinal does not: it is assigned from sorted
 `relative_path` at admission time (`door.py:719`), so a folder rebuilt with a
 different partition would silently rebind which sidecar names which page. This

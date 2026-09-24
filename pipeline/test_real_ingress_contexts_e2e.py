@@ -22,7 +22,7 @@ the records this module puts in its place are built by
 pages, `region_id` binding each act to its transform, and `raw_bounds` equal to
 the rectangle the act identity was minted from -- which is the exact contract
 `common.stage.expected_acts` recomputes a real denominator against, and which
-`pipeline/2_designator/HANDOFF.md` now records as what the real pass must meet.
+`pipeline/2_designator/CONTRACT.md` now records as what the real pass must meet.
 
 **Where a real run stops today, and why, is the measurement this module is
 for.** The witness pass and the reading pass complete. The Recensor then asks

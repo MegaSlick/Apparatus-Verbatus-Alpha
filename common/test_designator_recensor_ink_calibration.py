@@ -110,7 +110,7 @@ def test_the_sealed_ink_bound_still_sits_at_the_level_it_was_measured_at():
     whole-page ink distribution the bound sits in was measured there and nowhere
     else: 127 real pages, a continuum from 281 to 8502 bp with no gap wider than
     505, and 7000 placed in the 6595-7077 one, 405 bp above the highest page it
-    admits and 77 bp below the lowest it refuses (HANDOFF.md, "The background
+    admits and 77 bp below the lowest it refuses (CONTRACT.md, "The background
     inference, calibrated on 127 pages"). Move the level and every one of those
     numbers is about a different statistic, while the bound goes on refusing 13
     pages for a reason nobody re-measured. Measured at the *derived* margin

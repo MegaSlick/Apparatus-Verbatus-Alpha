@@ -752,7 +752,7 @@ def test_the_exemplar_refuses_a_run_the_door_never_wrote(tmp_path):
 
 
 def test_a_real_ingress_run_whose_door_refused_seals_no_exemplar_page(tmp_path):
-    """The real-ingress boundary gap named in this file's own HANDOFF, closed.
+    """The real-ingress boundary gap named in this stage's own contract, closed.
 
     `common.stage.open_context` cannot serve a real submission -- its
     fixture/scenario comparison has nothing to compare on a real run -- so the
@@ -1167,7 +1167,7 @@ def test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_comple
 
     The real Exemplar used to build its context by hand and never asked for the
     Door's completion seal, so a hand-driven Exemplar after a refusing Door still
-    sealed pages -- the gap the HANDOFF recorded. The operator case is the one
+    sealed pages -- the gap the contract recorded. The operator case is the one
     the Door's duplicate refusal exists for: one scan under two filenames. The
     Door seals its duplicate report, refuses the run at `EXIT_FATAL`, and never
     seals its boundary; the Exemplar must then refuse by name over that missing

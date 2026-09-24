@@ -32,7 +32,7 @@ neither omit its caveats nor report the same ones whatever happened.
 destination outside, verifying it again on the way out. Nothing else takes a
 product out of this stage.
 
-Read [HANDOFF.md](HANDOFF.md) for what this stage writes and where. That document
+Read [CONTRACT.md](CONTRACT.md) for what this stage writes and where. That document
 is the interface — no other stage reads this one's code.
 
 See the root [ARCHITECTURE.md](../../ARCHITECTURE.md) for how this fits the flow,

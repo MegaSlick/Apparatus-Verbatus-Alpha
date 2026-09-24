@@ -1,6 +1,6 @@
 # contracts
 
-The one executable authority for `skeleton.v1`. Every stage's `HANDOFF.md`
+The one executable authority for `skeleton.v1`. Every stage's `CONTRACT.md`
 describes what that stage owns and links here; none of them carries a second copy
 of the schema, because two copies of a contract is one contract and one thing that
 goes stale.

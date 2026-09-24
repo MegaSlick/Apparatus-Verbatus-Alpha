@@ -1,4 +1,4 @@
-# Armarium — handoff
+# Armarium — contract
 
 The Armarium's two boundary records carry the same non-terminal `sealed` and
 `recorded` outcomes as every other stage. They are completed bookkeeping, never

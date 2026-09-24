@@ -12,5 +12,5 @@ max_character_pairs = 100000000
 # headroom. It does NOT clear everything the pair bound admits: two different
 # low-entropy chair responses at 100,000,000 pairs measure 283.9 s. That case is
 # reported as a named non-verdict, and closing it needs the matcher, not this
-# number. See pipeline/3_attestatores/HANDOFF.md.
+# number. See pipeline/3_attestatores/CONTRACT.md.
 timeout_seconds = 25

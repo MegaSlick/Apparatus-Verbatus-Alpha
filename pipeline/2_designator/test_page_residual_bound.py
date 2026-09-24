@@ -381,7 +381,7 @@ def test_the_shipped_bound_holds_no_fixture_page(tmp_path, monkeypatch):
 def test_an_a4_page_at_three_percent_scatter_is_held_as_one_item(tmp_path, monkeypatch):
     """The measured regression, at the size it was measured at.
 
-    `pipeline/2_designator/HANDOFF.md` records a synthetic A4 page at 300 dpi
+    `pipeline/2_designator/CONTRACT.md` records a synthetic A4 page at 300 dpi
     with 3% scattered ink reconciling to roughly sixty thousand residual
     components in about three seconds of labelling, and states plainly that the
     Designator would mint that many held acts, hold records and seal rows for

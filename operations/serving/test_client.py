@@ -1069,7 +1069,7 @@ _DAI_GENERATION: dict[str, object] = {
 def test_a_vendors_float_generation_values_are_recorded_as_the_wire_carried_them(
     tmp_path: Path,
 ) -> None:
-    """The whole of the Attestatores HANDOFF's first owed gap, closed and proven.
+    """The whole of the Attestatores contract's first owed gap, closed and proven.
 
     A live `dai.v1` request could not be recorded at all: the call record goes
     through `canonical_bytes`, which refuses floats outright, so writing it

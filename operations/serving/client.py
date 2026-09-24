@@ -145,7 +145,7 @@ def _refuse_generation_that_cannot_be_recorded_as_sent(
 ) -> None:
     """Prove the recorded view re-encodes to the exact JSON the wire carried.
 
-    Not a formality: it is the whole claim gap 1 of the Attestatores HANDOFF
+    Not a formality: it is the whole claim gap 1 of the Attestatores contract
     turns on. The record may say what was sent only if it can be shown to say
     it, so the client checks its own transcription on every call — before the
     record is written — and refuses rather than filing a request it cannot

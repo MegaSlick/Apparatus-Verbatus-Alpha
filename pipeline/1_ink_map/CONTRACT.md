@@ -1,4 +1,4 @@
-# Ink map — handoff
+# Ink map — contract
 
 The ink map runs after the Exemplar seal and before the Designator. It writes one
 `kind="ink-map"` record per sealed page, including zero-ink pages, with the shared

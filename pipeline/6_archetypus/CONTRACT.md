@@ -1,4 +1,4 @@
-# Archetypus — handoff
+# Archetypus — contract
 
 The Archetypus is the first and only current stage that calls one machine reading
 established. It is not a correction, a witness consensus, or a truth claim. It writes
