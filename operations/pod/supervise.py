@@ -4,7 +4,8 @@ This is the tracked runtime for `controllers.LaptopSupervisor` that Stage 04's
 deferral 04-1 named missing: a process that restarts safely across a laptop
 crash, refuses to run twice over the same lease, and treats a provider
 lifecycle state other than ``RUNNING`` as a close condition even while its
-own heartbeat is perfectly fresh -- the fix for 04-4's real harm, an
+own heartbeat is perfectly fresh (a pod still provisioning or starting is
+waited for only while its launch is arming) -- the fix for 04-4's real harm, an
 ``EXITED`` pod billing volume disk at double rate under a supervisor that
 never looked past presence.
 
@@ -57,7 +58,7 @@ from typing import Callable, Sequence
 from . import durable
 from .controllers import LaptopSupervisor, record_from_lease
 from .lease import LeaseStore, PodLease
-from .models import Presence, ProviderStatus, require_utc, utc_now
+from .models import PRE_RUNNING_STATES, Presence, ProviderStatus, require_utc, utc_now
 from .notify_bridge import Notifier, shell_notifier, silent
 from .provider import PodProvider
 from .shutdown import CloseReport, VerifiedShutdown
@@ -71,6 +72,14 @@ FINAL_RECORD_SCHEMA = "pod-supervise-final.v1"
 # `LaptopSupervisor.run_once`, spelled the same kebab-case way.
 PROVIDER_EXITED = "provider-exited"
 PROVIDER_UNREACHABLE = "provider-unreachable"
+PROVIDER_STARTING = "provider-starting"
+"""The pod reports a pre-running word while its launch is still arming.
+
+Not green and not a close: the launch owner is heartbeating inside its own
+bounded container-start and channel waits, and `LaptopSupervisor.run_once`
+closes the lease the moment that heartbeat goes stale. Once the lease is armed
+the same word is a restarted container, and it is closed like any other word
+that is not RUNNING."""
 
 # `close_lease_now`'s own outcomes, spelled the same kebab-case way. The close
 # itself is `_close_lease`, unchanged and shared with the tick above; these
@@ -93,7 +102,13 @@ the more expensive mistake.
 # Ticks that keep the loop going rather than end it: the lease is still
 # active and there is nothing here for a human to look at yet.
 _CONTINUE_STATES = frozenset(
-    {"active", "owner-heartbeat-fresh", "controller-unarmed", PROVIDER_UNREACHABLE}
+    {
+        "active",
+        "owner-heartbeat-fresh",
+        "controller-unarmed",
+        PROVIDER_UNREACHABLE,
+        PROVIDER_STARTING,
+    }
 )
 
 # A floor under the sleep between ticks: `sleep_for` below is `min(...)` of two
@@ -571,7 +586,10 @@ def supervise_tick(
     volume at double rate (04-4) even while this driver's own heartbeat is
     perfectly fresh. So every tick that finds the lease otherwise healthy
     reads `provider.status` once more and closes on anything but `RUNNING`,
-    naming the observed state in the close reason.
+    naming the observed state in the close reason. The one exception is a
+    pre-running word (`models.PRE_RUNNING_STATES`) on a lease that is still
+    unarmed while its launch owner heartbeats: that pod is still being
+    scheduled or pulled inside the launch's bounded arming wait.
 
     A provider that cannot answer `status` this tick is not read as
     `RUNNING` and not read as a reason to close either -- it is reported
@@ -610,7 +628,25 @@ def supervise_tick(
     # pod on its first tick; the word itself, not its case or any surrounding
     # whitespace a provider or a non-adapter caller supplies, is what 04-4
     # needs distinguished.
-    if status.provider_state is not None and status.provider_state.strip().upper() != "RUNNING":
+    state = None if status.provider_state is None else status.provider_state.strip().upper()
+    if (
+        state in PRE_RUNNING_STATES
+        and result.state == "controller-unarmed"
+        and lease.controller_record is None
+    ):
+        # Bounded without a clock of its own: this branch is reachable only
+        # while `run_once` found the launch owner's heartbeat fresh, and the
+        # launcher heartbeats only inside its bounded arming waits.
+        return SuperviseResult(
+            PROVIDER_STARTING,
+            (
+                f"provider reports pod lifecycle state {status.provider_state!r} while its "
+                "launch is still arming; waiting inside the launch's own bounded arming "
+                "window, and closing if its heartbeat goes stale"
+            ),
+            lease=lease,
+        )
+    if state is not None and state != "RUNNING":
         reason = (
             f"provider observed pod lifecycle state {status.provider_state!r}, not RUNNING -- "
             "closing now rather than leaving an EXITED pod billing its attached volume unobserved"

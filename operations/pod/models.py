@@ -98,6 +98,18 @@ def as_decimal(value: Decimal | str | int | float, label: str) -> Decimal:
 BILLING_CUTOFF_MARGIN_ENV = "VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"
 """The sealed pod environment key shared by both shutdown controllers."""
 
+PRE_RUNNING_STATES = frozenset({"PROVISIONING", "STARTING"})
+"""Lifecycle words for a pod that exists and bills but has not run yet.
+
+An adapter reports a provider's lifecycle word verbatim; these two are the ones
+the runtime treats as "wait" rather than "close". A create answered in one of
+them proceeds to arming, whose container-start and channel bounds are what
+limit the wait, and the laptop supervisor tolerates them only while the lease
+is still unarmed (its launch owner heartbeating inside those bounds). Every
+other word except RUNNING -- an exited, errored or terminated pod -- is closed
+at once.
+"""
+
 BILLING_BUCKET_WIDTH = timedelta(hours=1)
 """One provider billing bucket, shared by the RunPod adapter (which always
 requests ``bucketSize=hour``) and the generic verifier's window bound, so the
@@ -932,6 +944,12 @@ class PodRecord:
     created_at: datetime
     state: str = "running"
     runtime_contract: PodRuntimeContract | None = None
+    contract_refusal: str | None = None
+    """Why ``runtime_contract`` is ``None``, when the adapter knows.
+
+    An adapter that can identify a pod but cannot prove its effective shape
+    returns the record anyway, so the pod can be bound to its lease and closed,
+    and names the reason here for the close record to carry."""
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -942,6 +960,11 @@ class PodRecord:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} must be a non-blank string")
         require_utc(self.created_at, "pod created_at")
+        if self.contract_refusal is not None:
+            if self.runtime_contract is not None:
+                raise ValueError("a pod record with a runtime contract carries no contract refusal")
+            if not isinstance(self.contract_refusal, str) or not self.contract_refusal.strip():
+                raise ValueError("contract_refusal must be non-blank when supplied")
 
 
 @dataclass(frozen=True, slots=True)
@@ -979,8 +1002,8 @@ class ProviderStatus:
     ran, or ``None`` when it has not run yet or the provider reports no such
     moment.  It is a different fact from ``provider_state`` and it is the only
     one of the two that can separate "still pulling the image" from "started
-    and silent": a lifecycle word like RunPod's ``desiredStatus`` says what the
-    pod was asked to be, not what it has become, and reads RUNNING from the
+    and silent": a lifecycle word like RunPod v1's ``desiredStatus`` says what
+    the pod was asked to be, not what it has become, and reads RUNNING from the
     instant create returns.  ``None`` here is therefore never evidence that the
     container failed to start — only that no start has been *observed* — and a
     consumer that waits on it must bound its wait and say what it saw.

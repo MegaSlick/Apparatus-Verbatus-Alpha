@@ -7021,6 +7021,73 @@ def test_a_created_pod_that_arrives_not_running_is_closed_not_green(tmp_path: Pa
     assert provider.status(result.record.pod_id).presence.value == "absent"
 
 
+@pytest.mark.parametrize("word", ["PROVISIONING", "STARTING"])
+def test_a_created_pod_still_starting_proceeds_to_the_bounded_arming_wait(
+    tmp_path: Path, word: str
+) -> None:
+    """A REST v2 create answers before the pod runs; arming's bounds limit that wait."""
+
+    clock = Clock()
+
+    class StartingOnCreateFake(FakeProvider):
+        def create(self, create_request: PodCreateRequest) -> PodRecord:
+            return replace(super().create(create_request), state=word)
+
+    provider = StartingOnCreateFake(now=clock.now)
+    provider.price_sheet = {"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}
+
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.CREATED_GUARDED
+    assert provider.terminate_calls == []
+
+
+def test_a_created_pod_in_error_is_closed_now_naming_the_word(tmp_path: Path) -> None:
+    clock = Clock()
+
+    class ErrorOnCreateFake(FakeProvider):
+        def create(self, create_request: PodCreateRequest) -> PodRecord:
+            return replace(super().create(create_request), state="ERROR")
+
+    provider = ErrorOnCreateFake(now=clock.now)
+    provider.price_sheet = {"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}
+
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.REFUSED_RUNTIME_CONTRACT
+    assert "'ERROR'" in result.detail
+    assert result.record is not None
+    assert provider.terminate_calls == [result.record.pod_id]
+
+
+def test_an_unproven_contract_close_carries_the_adapters_reason(tmp_path: Path) -> None:
+    class ReasonedContractBlindFake(FakeProvider):
+        def create(self, create_request: PodCreateRequest) -> PodRecord:
+            return replace(
+                super().create(create_request),
+                runtime_contract=None,
+                contract_refusal="the rental type cannot be shown",
+            )
+
+    clock = Clock()
+    provider = ReasonedContractBlindFake(
+        {"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}, now=clock.now
+    )
+
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.REFUSED_RUNTIME_CONTRACT
+    assert "the rental type cannot be shown" in result.detail
+    assert result.record is not None
+    assert provider.status(result.record.pod_id).presence.value == "absent"
+
+
 def test_cli_exit_code_three_when_a_pod_may_exist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
