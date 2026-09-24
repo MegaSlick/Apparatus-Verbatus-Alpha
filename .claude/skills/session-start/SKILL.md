@@ -18,6 +18,7 @@ disable-model-invocation: true
    task — but only after a successful fetch, and if `git status` shows uncommitted work,
    stop and find out whose it is before switching.
 4. **Check the workspace and usage.** Run `python3 .githooks/tidy.py` as a report, and
-   check plan usage; note it if the weekly limit is close.
+   check plan usage; note it if the weekly limit is close. Optional: if `graphify-out/`
+   exists, refresh it with `graphify update .` (code only; never `graphify .`).
 5. **Begin.** Read the goal back in one line, name anything in it that needs the lead's
    decision, and start.

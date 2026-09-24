@@ -1,0 +1,44 @@
+# Only code is indexed. Real register material must never reach Graphify's
+# document path (which sends files to a model), so every local working area,
+# data folder and non-code format is excluded here; .gitignore alone does not
+# exclude files git already tracks.
+.venv/
+build/
+gold/
+private/
+workbench/
+scriptorium/
+raw/
+quarantine/
+graphify-out/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+uv.lock
+proof/fixtures/
+operations/triage/measured/
+*.md
+!/ARCHITECTURE.md
+!/GLOSSARY.md
+*.txt
+*.rst
+*.html
+*.yaml
+*.yml
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.heic
+*.webp
+*.svg
+*.docx
+*.xlsx
+*.sqlite
+*.jsonl
+*.zip
+*.mp4
+*.mov

@@ -35,3 +35,6 @@ private/*
 !private/README.md
 scriptorium/*
 !scriptorium/README.md
+
+# graphify output: local, holds absolute paths and code-derived text.
+graphify-out/
