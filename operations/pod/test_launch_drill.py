@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -746,6 +746,50 @@ def test_c_a_report_that_never_appears_closes_the_pod_inside_the_create_that_mad
     assert closed.phase == "closed-verified"
     assert closed.controller_record is None
     assert closed.close_record is not None and closed.close_record["pod_id"] == pod_id
+
+
+# -- (c2) a pod that never leaves PROVISIONING --------------------------------
+
+
+def test_c2_a_pod_stuck_provisioning_is_waited_for_then_closed_when_arming_expires(
+    build_drill: Callable[..., Drill],
+) -> None:
+    """REST v2 answers create while a pod is still PROVISIONING.
+
+    The supervisor, ticking while the launch arms, reports ``provider-starting``
+    and does not close; the pod never runs, so it never writes the report the
+    armer waits for, and the armer's own bound is what ends the wait and
+    closes the pod inside the create that made it.
+    """
+
+    lifetime = 60
+    drill = build_drill(lifetime=lifetime)
+    created = drill.provider.create
+
+    def create_provisioning(ask: PodCreateRequest):  # type: ignore[no-untyped-def]
+        record = created(ask)
+        drill.provider.set_pod_state(record.pod_id, "PROVISIONING")
+        return replace(record, state="PROVISIONING")
+
+    drill.provider.create = create_provisioning  # type: ignore[method-assign]
+    observed: list[str] = []
+
+    def tick_while_arming(key: str, seen: int) -> None:
+        if drill.starter.started:  # a preflight probe reads before any supervisor exists
+            observed.append(drill.supervisor.tick().state)
+
+    drill.channel.on_read = tick_while_arming
+
+    result = drill.launch()
+
+    assert observed and set(observed) == {supervise.PROVIDER_STARTING}
+    assert result.state is LaunchState.CONTROLLERS_UNARMED
+    pod_id = drill.pod_id()
+    assert result.close_report is not None and result.close_report.verified
+    assert drill.provider.terminate_calls == [pod_id]
+    assert drill.clock.seconds < lifetime
+    closed = drill.store.load()
+    assert closed is not None and closed.phase == "closed-verified"
 
 
 # -- (d) the pod reaches EXITED under the supervisor --------------------------

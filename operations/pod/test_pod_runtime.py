@@ -4449,6 +4449,33 @@ def test_a_later_close_reason_never_renames_the_breadcrumb_already_on_the_volume
     assert breadcrumb["close_attempts_allowed"] == _CLOSE_ATTEMPTS
 
 
+def test_a_close_the_provider_refused_is_not_re_entered(tmp_path: Path) -> None:
+    """Another DELETE gets the same refusal while the pod bills; the remedy is a person's."""
+
+    from .models import TerminateRefused
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.inject_failure(
+        "terminate", TerminateRefused("pod belongs to a cluster; use the console"), times=5
+    )
+    store = LeaseStore(tmp_path / "timer-refused.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    result, attempts, _ = _close_with_retries(
+        context, "pod dead-man hard lifetime expired", clock.sleep, 1, attempts=_CLOSE_ATTEMPTS
+    )
+
+    assert _CLOSE_ATTEMPTS > 1
+    assert attempts == 1
+    assert result.close_report is not None and result.close_report.terminate_refused
+    assert result.close_report.state is CloseState.FAILED_SHUTDOWN
+    assert result.close_report.to_record()["terminate_refused"] is True
+    assert [verb for verb, _ in provider.calls].count("terminate") == 1
+
+
 def test_a_breadcrumb_that_cannot_be_written_never_blocks_the_close(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -7017,6 +7044,73 @@ def test_a_created_pod_that_arrives_not_running_is_closed_not_green(tmp_path: Pa
     assert result.state is LaunchState.REFUSED_RUNTIME_CONTRACT
     assert "EXITED" in result.detail and "RUNNING" in result.detail
     assert result.close_report is not None
+    assert result.record is not None
+    assert provider.status(result.record.pod_id).presence.value == "absent"
+
+
+@pytest.mark.parametrize("word", ["PROVISIONING", "STARTING"])
+def test_a_created_pod_still_starting_proceeds_to_the_bounded_arming_wait(
+    tmp_path: Path, word: str
+) -> None:
+    """A REST v2 create answers before the pod runs; arming's bounds limit that wait."""
+
+    clock = Clock()
+
+    class StartingOnCreateFake(FakeProvider):
+        def create(self, create_request: PodCreateRequest) -> PodRecord:
+            return replace(super().create(create_request), state=word)
+
+    provider = StartingOnCreateFake(now=clock.now)
+    provider.price_sheet = {"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}
+
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.CREATED_GUARDED
+    assert provider.terminate_calls == []
+
+
+def test_a_created_pod_in_error_is_closed_now_naming_the_word(tmp_path: Path) -> None:
+    clock = Clock()
+
+    class ErrorOnCreateFake(FakeProvider):
+        def create(self, create_request: PodCreateRequest) -> PodRecord:
+            return replace(super().create(create_request), state="ERROR")
+
+    provider = ErrorOnCreateFake(now=clock.now)
+    provider.price_sheet = {"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}
+
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.REFUSED_RUNTIME_CONTRACT
+    assert "'ERROR'" in result.detail
+    assert result.record is not None
+    assert provider.terminate_calls == [result.record.pod_id]
+
+
+def test_an_unproven_contract_close_carries_the_adapters_reason(tmp_path: Path) -> None:
+    class ReasonedContractBlindFake(FakeProvider):
+        def create(self, create_request: PodCreateRequest) -> PodRecord:
+            return replace(
+                super().create(create_request),
+                runtime_contract=None,
+                contract_refusal="the rental type cannot be shown",
+            )
+
+    clock = Clock()
+    provider = ReasonedContractBlindFake(
+        {"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}, now=clock.now
+    )
+
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.REFUSED_RUNTIME_CONTRACT
+    assert "the rental type cannot be shown" in result.detail
     assert result.record is not None
     assert provider.status(result.record.pod_id).presence.value == "absent"
 

@@ -31,6 +31,7 @@ from .lease import LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     NESTED_LAUNCH_BOUND_FLAGS,
+    PRE_RUNNING_STATES,
     AccountBalanceObservation,
     PendingCreateIntent,
     PodCreateRequest,
@@ -893,19 +894,21 @@ class PodRuntime:
                 owner_token=owner_token,
                 preview=preview_result.preview,
             )
-        if record.state.upper() != "RUNNING":
+        state = record.state.upper()
+        if state != "RUNNING" and state not in PRE_RUNNING_STATES:
             # `adopt` refuses a non-RUNNING pod outright; a create response in
-            # EXITED or TERMINATED is the same dead-but-billing shape and must
-            # end in a close, not a green launch.  Case-insensitive because
-            # `PodRecord.state` carries the provider's spelling verbatim.
+            # EXITED, ERROR or TERMINATED is the same dead-but-billing shape
+            # and must end in a close, not a green launch.  Case-insensitive
+            # because `PodRecord.state` carries the provider's spelling
+            # verbatim.
             #
-            # This gate catches a pod that arrived dead; it is not evidence
-            # that one arrived *started*.  RunPod's `desiredStatus` is what the
-            # pod was asked to be and reads RUNNING from the instant create
-            # returns, with the image still to pull -- so nothing here says the
-            # container exists.  That wait belongs to the armer, which bounds
-            # and records it separately from the channel bound
-            # (`controller_armer._await_container`).
+            # A pre-running word is let through, and so is RUNNING, but neither
+            # is evidence that the container exists: a provider may answer
+            # create before scheduling or pulling anything. That wait belongs
+            # to the armer, which bounds and records it separately from the
+            # channel bound (`controller_armer._await_container`), and a pod
+            # that never runs never writes the report arming waits for, so it
+            # is closed when those bounds expire.
             close, detail = self._close_and_record(
                 record=record,
                 reason=f"created pod arrived in state {record.state!r}, not RUNNING",
@@ -979,7 +982,11 @@ class PodRuntime:
             return LaunchResult(
                 LaunchState.REFUSED_RUNTIME_CONTRACT,
                 record=record,
-                detail="adopted pod does not prove the requested on-demand image/template/volume/timer contract",
+                detail=(
+                    "adopted pod does not prove the requested on-demand image/template/volume/timer "
+                    "contract"
+                    + ("" if record.contract_refusal is None else f": {record.contract_refusal}")
+                ),
             )
         try:
             # The same gate-shaped refusal as preview_create: no traceback on
@@ -2075,12 +2082,15 @@ class PodRuntime:
     ) -> LaunchResult:
         """A created pod with an unproven effective shape is never a green launch."""
 
+        situation = "effective runtime contract was unproven"
+        if record.contract_refusal is not None:
+            situation = f"{situation}: {record.contract_refusal}"
         close, detail = self._close_and_record(
             record=record,
             reason=f"{action} effective runtime contract was unproven",
             store=store,
             owner_token=owner_token,
-            situation="effective runtime contract was unproven",
+            situation=situation,
         )
         return LaunchResult(
             LaunchState.REFUSED_RUNTIME_CONTRACT,

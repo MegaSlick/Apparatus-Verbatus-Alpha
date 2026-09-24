@@ -1,5 +1,75 @@
 """RunPod's own API — the only module in this package that knows it.
 
+Two REST routes live here side by side, behind one seam: `RunPodV2Provider`
+(the default, `live_runpod_provider`) and `RunPodProvider` (v1, kept until the
+first live run under v2 is green, then deleted in its own commit).
+`operations/pod/V2_MIGRATION.md` maps one to the other field by field.
+
+**Route: REST v2 (`https://api.runpod.io/v2`), documentation read online on
+2026-09-24.** Each page, and what it settles for this adapter (`V2_MIGRATION.md`
+records the 2026-09-02 reading of the rest):
+
+- `docs.runpod.io/api-reference-v2/pods/create-a-pod` — `CreatePodRequest`:
+  `name`, `cloud` ("Defaults to `SECURE` when omitted"), `gpu.{id,count}`,
+  `image`, `args`, `disk`, `env`, `mounts.network[]` (at most one),
+  `templateId`, `startJupyter`, `startSsh`. **No `interruptible`, bid or
+  rental-type field**, and no wording about on-demand or spot anywhere on the
+  page. `201` on success; `400` "malformed or conflicts with request rules" or
+  capacity unavailable, `402` "Insufficient balance", `403`, `413`, `422`
+  validation, `429`. The Pod object: `status` (`PROVISIONING`, `STARTING`,
+  `RUNNING`, `EXITED`, `ERROR`, `TERMINATED`), `cost` ("Current cost in USD per
+  hour (0.0 when EXITED or TERMINATED)"), `createdAt`, `startedAt`, `cloud`,
+  `gpu`, `mounts`, `env`, `args`, `template` — and **no rental-type field**.
+- `https://api.runpod.io/v2/openapi.json` (read as a static document) — none
+  of "interruptible", "spot", "on-demand", "bid", "rental", "reserved" or
+  "savings" refers to pod rental type anywhere ("reserved" occurs once, in a
+  secret-name prefix; "on demand" once, for serverless workers); `Cloud` is
+  only `SECURE` ("Runpod-owned
+  datacenter hardware") or `COMMUNITY`. `args` is "The container's command, as
+  a single raw string", accepting a bare shell string "treated as CMD and split
+  into arguments" or a JSON object `{"entrypoint":[...],"cmd":[...]}`;
+  "Responses always return both representations: `args` exactly as stored,
+  plus the deconstructed `entrypoint` and `cmd`". The Pod schema carries
+  `entrypoint` and `cmd` only as optional properties inherited through
+  `ContainerConfig` → `BaseContainerConfig`: neither is in its `required` list
+  or in any example. `CreatePodRequest` accepts them as top-level arrays too.
+- `docs.runpod.io/api-reference-v2/templates/create-a-template` — no start
+  command field beyond the same `args`; no rental-type field.
+- `docs.runpod.io/api-reference-v2/pods/get-a-pod` — the same Pod object; its
+  example body carries `args` and neither `entrypoint` nor `cmd`.
+- `docs.runpod.io/api-reference-v2/pods/list-pods` — `{"pods": [...],
+  "pagination": {"nextCursor", "hasNextPage"}}`, both pagination fields
+  required, `nextCursor` "Null on the last page"; `cursor` and `limit`
+  (1–1000, default 1000) query parameters. **Pagination is new since the
+  2026-09-02 reading**, so the list is followed to its last page.
+- `docs.runpod.io/api-reference-v2/pods/terminate-a-pod` — `204` "Deleted.
+  Response has no body."; `404`; `409` "Pod belongs to a cluster and cannot be
+  terminated via the pod endpoints."; a network volume is only detached.
+- `docs.runpod.io/api-reference-v2/billing/get-pod-billing-history` —
+  `{"records": [...], "metadata": {...}}`; each record's `startTime`,
+  `endTime`, `podId`, `totalAmount`, `gpuAmount`, `cpuAmount`, `diskAmount`;
+  `metadata.query` described as "Resolved query window and granularity (routes
+  without a filter)." yet marked required and shown, with `podId` "The podId
+  filter applied, if any", in a podId-filtered example; `recordCount`
+  "Number of records returned". `bucketSize` accepts `hour`.
+- `docs.runpod.io/api-reference-v2/catalog/list-gpu-types` — `GET
+  /v2/catalog/gpus` → `{"gpus": [...]}` with `id`, `secure`, and
+  `price.secure` "List price in USD per hour for a **single** GPU".
+- `docs.runpod.io/api-reference-v2/migrate-from-v1` — nested create body, RFC
+  9457 error bodies; it maps no field for `interruptible` or `dockerStartCmd`.
+- `docs.runpod.io/pods/pricing` — the only pricing options are "On-demand"
+  ("Resources are dedicated to your Pod and cannot be displaced by other
+  users") and "Savings plans"; neither "spot" nor "interruptible" appears.
+- `docs.runpod.io/api-reference/pods/POST/pods` (v1, same day) — still
+  documents `interruptible`: "Set to true to create an interruptible or spot
+  Pod", default `false`. So spot pods still exist on the platform, and no page
+  says what a v2 create without the field produces. **That is why
+  `V2_ON_DEMAND_BASIS` is unset and a v2 create refuses** (`RunPodV2Provider`).
+- `docs.runpod.io/pods/templates/environment-variables` (the old
+  `pods/references/environment-variables` URL redirects there) — `RUNPOD_POD_ID`
+  "Unique Pod identifier." and `RUNPOD_API_KEY` "Pod-scoped API key.", with no
+  route named; whether that key is accepted by v2 is a live-run observation.
+
 **Route: REST v1 (`https://rest.runpod.io/v1`), documentation re-checked online
 on 2026-08-09.**
 Spec 04 named this route from the 2026-07-30 track-B research; the four pages
@@ -17,18 +87,18 @@ because a routing decision on a money path should not rest on a month-old note:
   endpointId}`, with `podId`, `startTime`, `endTime`, `bucketSize` and `grouping`
   query parameters.
 
-REST **v2** (`api.runpod.io/v2`) was fetched the same day and its own overview
-still says: "The REST API v2 is currently in beta. Endpoints and behavior may
-change before general availability." It is therefore not the route, and no v2
-response shape is assumed anywhere in this file. Nor is the `runpod` PyPI
-package used: it wraps the deprecating GraphQL API.
+On 2026-08-09 v2's own overview still said it was in beta, which is why v1
+was chosen then; by 2026-09-02 the beta wording was gone and v1 carried its
+retirement date (`V2_MIGRATION.md` §1). The `runpod` PyPI package is not
+used: it wraps the deprecating GraphQL API.
 
 **Not the vendor SDK, a plain injected HTTP transport.** Every call goes through
 `HttpTransport`, so the whole adapter is exercised offline against an in-memory
-fake. **No live RunPod call has been made from this module.** Every field name
-above comes from the published documentation, never from an observed response,
-so the exact accepted `gpuTypeIds` string and the provider's real post-DELETE
-timing are confirmed at the first authorised live run, not here.
+fake. **No live RunPod call has been made from this module, on either
+route.** Every field name above comes from the published documentation, never
+from an observed response, so the exact accepted GPU id strings and the
+provider's real post-DELETE timing are confirmed at the first authorised live
+run, not here.
 
 **Account balance: GraphQL, documentation read online on 2026-09-02.** Neither
 REST route publishes the account balance; only the GraphQL `myself` object
@@ -105,6 +175,7 @@ from .models import (
     Presence,
     ProviderFailure,
     ProviderStatus,
+    TerminateRefused,
     as_decimal,
     looks_like_credential_field,
     parse_billing_cutoff_margin_seconds,
@@ -115,6 +186,44 @@ from .pod_timer import TimerContext
 from .shutdown import VerifiedShutdown
 
 RUNPOD_REST_ROOT = "https://rest.runpod.io/v1"
+"""REST v1, `RunPodProvider`'s root. RunPod retires it on 2026-11-15."""
+
+RUNPOD_V2_ROOT = "https://api.runpod.io/v2"
+"""REST v2, `RunPodV2Provider`'s root; paths below it carry no ``/v2`` prefix."""
+
+RUNPOD_ROUTES: Final = ("v1", "v2")
+RUNPOD_DEFAULT_ROUTE: Final = "v2"
+"""The route `live_runpod_provider` and the pod-side timer use unless told otherwise."""
+
+RUNPOD_ROUTE_ENV: Final = "VERBATUS_RUNPOD_ROUTE"
+"""The pod environment key that seals the route a pod was created through.
+
+Each adapter's create adds it to the pod's ``env`` with its own ``ROUTE``, and
+`timer_context_from_environment` requires it, so the pod-side timer closes its
+pod through the same route -- and the same credential scope -- the launch used.
+A timer that guessed a default could be the one controller that cannot
+terminate its own pod at the hard deadline."""
+
+V2_ON_DEMAND_BASIS: Final[str | None] = None
+"""The documented basis on which a v2 pod is on-demand, or ``None`` while there is none.
+
+REST v2 has no ``interruptible`` field on create and no rental-type field on the
+pod (module docstring), so the adapter cannot request on-demand or read it
+back. While this is ``None``, `RunPodV2Provider.create` refuses before any POST
+and every v2 pod record carries no runtime contract. Setting it is the project
+lead's decision, and it is set only in a reviewed commit that names the page or
+vendor answer that settles it."""
+
+V2_ON_DEMAND_REFUSAL: Final = (
+    "RunPod REST v2 cannot show that a pod is on-demand: its create body has no "
+    "interruptible field and its pod object reports no rental type, and a spot reclaim "
+    "mid-run is a silent-loss machine. Launch through REST v1 "
+    '(live_runpod_provider(..., route="v1")) until the project lead records a documented '
+    "basis in provider_runpod.V2_ON_DEMAND_BASIS"
+)
+
+_V1_BILLING_SOURCE: Final = "RunPod REST v1 GET /billing/pods"
+_V2_BILLING_SOURCE: Final = "RunPod REST v2 GET /billing/pods"
 
 RUNPOD_GRAPHQL_ROOT = "https://api.runpod.io"
 GRAPHQL_PATH = "/graphql"
@@ -135,6 +244,14 @@ pod's `env`, which `GET /pods` returns, so a crashed client can find the exact
 pod its own POST may have created without guessing from the name alone."""
 
 _POD_STATES = frozenset({"RUNNING", "EXITED", "TERMINATED"})
+"""v1's ``desiredStatus`` vocabulary."""
+
+_V2_POD_STATES = frozenset({"PROVISIONING", "STARTING", "RUNNING", "EXITED", "ERROR", "TERMINATED"})
+"""v2's ``PodStatus`` enum. `models.PRE_RUNNING_STATES` names the two the runtime waits on."""
+
+_MAX_POD_LIST_PAGES: Final = 20
+"""v2 pages the pod list at up to 1000 pods a page. Twenty pages is far past
+any account this runtime serves; beyond it the list refuses rather than stops."""
 
 _BUCKET_WIDTH = BILLING_BUCKET_WIDTH
 """Matches the `bucketSize=hour` this adapter always requests; the shared
@@ -458,18 +575,40 @@ def _first_error(errors: object) -> str:
     return "unreadable error payload"
 
 
-class RunPodProvider:
-    """RunPod REST v1 implementation of the seven provider verbs.
+def _pod_environment(request: PodCreateRequest, route: str) -> dict[str, str]:
+    """The request's metadata plus the sealed route, refusing a conflicting one."""
+
+    environment = dict(request.metadata)
+    stated = environment.get(RUNPOD_ROUTE_ENV)
+    if stated is not None and stated != route:
+        raise ProviderFailure(
+            f"RunPod create request carries {RUNPOD_ROUTE_ENV}={stated!r} but is being sent "
+            f"through REST {route}; the pod-side timer must close through the route that "
+            "created it. No create request was issued"
+        )
+    environment[RUNPOD_ROUTE_ENV] = route
+    return environment
+
+
+class _RunPodAdapter:
+    """What both REST routes share: prices, balance, fixture recording, token lookup.
 
     `pod_price` / `volume_price` are injected resolvers rather than a live quote
-    call, because v1 publishes no "quote this GPU" endpoint independent of
-    actually creating a pod. `operations.pod.preflight.PlacementTable.price_for`
-    is the price sheet, read from `config/pod_placement.toml`'s reviewed
-    `card_profile` table. A stale
-    sheet can drift: `launch.py` re-assesses the provider-observed undiscounted
-    `costPerHr` from `create`/`adopt` against the same ceilings before a launch
-    is ever green.
+    call, because neither route prices a pod independent of creating it (v2's
+    catalogue lists prices, but `config/pod_placement.toml`'s reviewed sheet
+    stays the authority; `RunPodV2Provider.cross_check_catalogue` compares the
+    two). `operations.pod.preflight.PlacementTable.price_for` is the price
+    sheet. A stale sheet can drift: `launch.py` re-assesses the
+    provider-observed hourly rate from `create`/`adopt` against the same
+    ceilings before a launch is ever green.
+
+    Each route subclass names its ``ROOT``, and a live transport pointed at a
+    different root is refused at construction: v1 paths sent to the v2 root, or
+    the reverse, would read documented-looking 404s as absence.
     """
+
+    ROOT: str = ""
+    ROUTE: str = ""
 
     def __init__(
         self,
@@ -483,6 +622,12 @@ class RunPodProvider:
         balance_notify: Callable[[Decimal, Decimal | None], notify_hooks.NotifyOutcome]
         | None = None,
     ) -> None:
+        if isinstance(transport, UrllibRunPodTransport) and transport.root != self.ROOT:
+            raise ValueError(
+                f"{type(self).__name__} speaks RunPod REST {self.ROUTE} at {self.ROOT}; this "
+                f"transport points at {transport.root}. Build the transport with "
+                f"root={self.ROOT!r}, or use live_runpod_provider, which pairs them"
+            )
         self.transport = transport
         self.pod_price = pod_price
         self.volume_price = volume_price
@@ -670,6 +815,59 @@ class RunPodProvider:
             with self._balance_lock:
                 self._balance_in_flight = False
 
+    def _find_by_launch_token(self, name: str, token: str) -> PodRecord | None:
+        """Exactly one pod carrying this exact launch token, or nothing.
+
+        The token is matched on **every** listed pod, not only name-matched
+        ones: a provider- or console-side rename must not make the pod this
+        client already paid for invisible, because an invisible pod means a
+        second POST for one authorised launch.  The name still scopes the
+        no-env refusal below -- a pod sharing this launch name whose `env` the
+        provider did not return refuses outright rather than falling back to
+        matching on the name alone: two pods can share a name, and paying twice
+        for one authorised launch is the failure this whole path exists to
+        prevent.
+        """
+
+        candidates: list[dict[str, object]] = []
+        for row in self._pod_rows():
+            env = row.get("env")
+            if isinstance(env, dict):
+                if env.get(LAUNCH_TOKEN_ENV) == token:
+                    candidates.append(row)
+                continue
+            if row.get("name") == name:
+                raise ProviderFailure(
+                    f"RunPod pod {row.get('id')!r} shares this launch name but returned no env; "
+                    "the exact launch token cannot be correlated and no create request was issued"
+                )
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            raise ProviderFailure(
+                "RunPod reports more than one pod carrying this exact launch token; "
+                "review the console rather than creating or terminating anything"
+            )
+        return self._record(candidates[0])
+
+    def _pod_rows(self) -> list[dict[str, object]]:
+        raise NotImplementedError
+
+    def _record(self, payload: Mapping[str, object]) -> PodRecord:
+        raise NotImplementedError
+
+
+class RunPodProvider(_RunPodAdapter):
+    """RunPod REST v1 implementation of the seven provider verbs.
+
+    Kept beside `RunPodV2Provider` until the first live run under v2 is green,
+    then deleted in its own commit (`V2_MIGRATION.md`). Selected by
+    ``live_runpod_provider(..., route="v1")``.
+    """
+
+    ROOT = RUNPOD_REST_ROOT
+    ROUTE = "v1"
+
     def create(self, request: PodCreateRequest) -> PodRecord:
         """Correlate an existing launch token first, then POST — never both.
 
@@ -696,7 +894,7 @@ class RunPodProvider:
                 "RunPod recovery lookup found no pod carrying this exact launch token; "
                 "no create request was issued"
             )
-        response = self.transport.request("POST", "/pods", _create_payload(request))
+        response = self.transport.request("POST", "/pods", _create_payload(request, self.ROUTE))
         if response.status not in {200, 201}:
             raise ProviderFailure(
                 f"RunPod create returned HTTP {response.status}: {_body_summary(response.body)}"
@@ -919,7 +1117,7 @@ class RunPodProvider:
             BillingState.CAPTURED,
             cutoff,
             lines=tuple(lines),
-            source="RunPod REST v1 GET /billing/pods",
+            source=_V1_BILLING_SOURCE,
             window_start_at=started,
         )
 
@@ -943,41 +1141,6 @@ class RunPodProvider:
             _text(row.get("id"), f"RunPod pod-list entry {index} id")
             result.append(row)
         return result
-
-    def _find_by_launch_token(self, name: str, token: str) -> PodRecord | None:
-        """Exactly one pod carrying this exact launch token, or nothing.
-
-        The token is matched on **every** listed pod, not only name-matched
-        ones: a provider- or console-side rename must not make the pod this
-        client already paid for invisible, because an invisible pod means a
-        second POST for one authorised launch.  The name still scopes the
-        no-env refusal below -- a pod sharing this launch name whose `env` the
-        provider did not return refuses outright rather than falling back to
-        matching on the name alone: two pods can share a name, and paying twice
-        for one authorised launch is the failure this whole path exists to
-        prevent.
-        """
-
-        candidates: list[dict[str, object]] = []
-        for row in self._pod_rows():
-            env = row.get("env")
-            if isinstance(env, dict):
-                if env.get(LAUNCH_TOKEN_ENV) == token:
-                    candidates.append(row)
-                continue
-            if row.get("name") == name:
-                raise ProviderFailure(
-                    f"RunPod pod {row.get('id')!r} shares this launch name but returned no env; "
-                    "the exact launch token cannot be correlated and no create request was issued"
-                )
-        if not candidates:
-            return None
-        if len(candidates) > 1:
-            raise ProviderFailure(
-                "RunPod reports more than one pod carrying this exact launch token; "
-                "review the console rather than creating or terminating anything"
-            )
-        return self._record(candidates[0])
 
     def _record(self, payload: Mapping[str, object]) -> PodRecord:
         pod_id = _text(payload.get("id"), "RunPod pod id")
@@ -1057,6 +1220,12 @@ def _runtime_contract(
     if not isinstance(command, list) or not all(isinstance(part, str) and part for part in command):
         raise ProviderFailure(f"RunPod pod {pod_id} reports no dockerStartCmd to verify against")
     template = payload.get("templateId")
+    environment = payload.get("env")
+    if not isinstance(environment, Mapping) or environment.get(RUNPOD_ROUTE_ENV) != "v1":
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} env does not seal {RUNPOD_ROUTE_ENV}=v1; its pod-side "
+            "timer could not close it through the route that created it"
+        )
     return PodRuntimeContract(
         interruptible=False,
         gpu_type=gpu_type,
@@ -1079,7 +1248,7 @@ provisioned the pod are checked against each other rather than left independent.
 """
 
 
-def _create_payload(request: PodCreateRequest) -> dict[str, object]:
+def _create_payload(request: PodCreateRequest, route: str = "v1") -> dict[str, object]:
     """The v1 `PodCreateInput` body. `interruptible` is always explicitly false.
 
     Spec 04: on-demand only — "a spot reclaim mid-run is a silent-loss machine".
@@ -1108,11 +1277,767 @@ def _create_payload(request: PodCreateRequest) -> dict[str, object]:
         "networkVolumeId": request.volume_id,
         "volumeMountPath": request.volume_mount_path,
         "dockerStartCmd": list(request.docker_start_cmd),
-        "env": dict(request.metadata),
+        "env": _pod_environment(request, route),
     }
     if request.template is not None:
         payload["templateId"] = request.template
     return payload
+
+
+class RunPodV2Provider(_RunPodAdapter):
+    """RunPod REST v2 implementation of the seven provider verbs.
+
+    The route new launches use by default (``live_runpod_provider``). Every
+    field, status code and lifecycle word here comes from the v2 pages the
+    module docstring names; none has been observed from a live response.
+
+    **A v2 create is refused until on-demand can be shown.** The v2 create
+    body and pod object carry no rental-type field at all (module docstring),
+    so this adapter cannot request `interruptible=false` or read it back.
+    `create` therefore refuses before any POST while `V2_ON_DEMAND_BASIS` is
+    ``None``, and every pod record it builds carries no runtime contract --
+    which `launch.py` closes on a create and refuses on an adopt -- naming the
+    reason. Correlation, status, terminate, absence and billing are unaffected,
+    so a pod found or guarded through this route can always be closed.
+    """
+
+    ROOT = RUNPOD_V2_ROOT
+    ROUTE = "v2"
+
+    def create(self, request: PodCreateRequest) -> PodRecord:
+        """Correlate an existing launch token first, then POST — never both.
+
+        The same recovery contract as the v1 class. The on-demand refusal comes
+        after the lookup on purpose: a pod this launch already paid for is
+        returned (without a runtime contract) so it can be bound and closed,
+        and only a *new* POST is refused.
+        """
+
+        metadata = request.metadata
+        token = metadata.get(LAUNCH_TOKEN_ENV)
+        if not isinstance(token, str) or not token:
+            raise ProviderFailure(
+                f"RunPod create requires a {LAUNCH_TOKEN_ENV} metadata value to stay recoverable"
+            )
+        existing = self._find_by_launch_token(request.name, token)
+        if existing is not None:
+            return existing
+        if request.recovery_only:
+            raise ProviderFailure(
+                "RunPod recovery lookup found no pod carrying this exact launch token; "
+                "no create request was issued"
+            )
+        if V2_ON_DEMAND_BASIS is None:
+            raise ProviderFailure(V2_ON_DEMAND_REFUSAL + "; no create request was issued")
+        response = self.transport.request("POST", "/pods", _v2_create_payload(request, self.ROUTE))
+        if response.status == 201:
+            return self._record(_object(response.body, "RunPod create"))
+        # None of these is retried, here or by any caller: a create is never
+        # re-issued, and each refusal says what the operator does instead.
+        problem = _problem_summary(response.body)
+        if response.status == 402:
+            raise ProviderFailure(
+                "RunPod refused create with HTTP 402, insufficient account balance -- the "
+                "provider's own floor, beneath this runtime's. Nothing was created and the "
+                f"request is not retried; add credit before launching again ({problem})"
+            )
+        if response.status == 400:
+            raise ProviderFailure(
+                "RunPod rejected a well-formed create with HTTP 400: a cross-field rule, or no "
+                "placement for this GPU in the data centers allowed. The body was not malformed "
+                f"(that is 422); not retried. Choose another card or retry later ({problem})"
+            )
+        if response.status == 422:
+            raise ProviderFailure(
+                "RunPod refused create with HTTP 422: the body does not match the v2 contract. "
+                f"This adapter's create payload needs fixing; not retried ({problem})"
+            )
+        raise ProviderFailure(f"RunPod create returned HTTP {response.status}: {problem}")
+
+    def adopt(self, pod_id: str) -> PodRecord:
+        response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}")
+        if response.status == 404:
+            raise ProviderFailure(
+                f"RunPod cannot adopt pod {pod_id!r}: the provider reports it absent"
+            )
+        if response.status != 200:
+            raise ProviderFailure(
+                f"RunPod adopt returned HTTP {response.status}: {_problem_summary(response.body)}"
+            )
+        record = self._record(_object(response.body, "RunPod adopt"))
+        if record.pod_id != pod_id:
+            raise ProviderFailure("RunPod adopt response names a different pod id")
+        if record.state != "RUNNING":
+            raise ProviderFailure(
+                f"RunPod cannot adopt pod {pod_id!r}: status is {record.state!r}, not RUNNING"
+            )
+        return record
+
+    def status(self, pod_id: str) -> ProviderStatus:
+        """The exact-pod GET, reported verbatim: an observation, never a gate.
+
+        v2's ``status`` is what the pod *is* (``PROVISIONING`` while it is
+        allocated, ``STARTING`` while the container starts), unlike v1's
+        ``desiredStatus``; ``startedAt`` is still surfaced separately because it
+        is the provider's own container-start instant, which the armer's
+        liveness probe records. Unfamiliar words and malformed values are
+        reported rather than raised, for the reasons the v1 method gives.
+        """
+
+        response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}")
+        observed = self.now()
+        if response.status == 404:
+            return ProviderStatus(
+                pod_id, Presence.ABSENT, observed, "RunPod exact-pod GET returned 404", 404
+            )
+        if response.status != 200:
+            raise ProviderFailure(
+                f"RunPod status GET returned HTTP {response.status}: "
+                f"{_problem_summary(response.body)}"
+            )
+        row = _object(response.body, "RunPod status")
+        if _text(row.get("id"), "RunPod status id") != pod_id:
+            raise ProviderFailure("RunPod status response id does not equal the requested pod id")
+        raw_state = row.get("status")
+        usable_state = isinstance(raw_state, str) and bool(raw_state.strip())
+        provider_state = raw_state.strip() if isinstance(raw_state, str) and usable_state else None
+        detail = "RunPod exact-pod GET returned 200"
+        if raw_state is not None and not usable_state:
+            detail = f"{detail}; unusable status {raw_state!r}"
+        raw_started = row.get("startedAt")
+        started_at: datetime | None = None
+        if isinstance(raw_started, str) and raw_started.strip():
+            try:
+                started_at = _timestamp(raw_started, f"RunPod pod {pod_id} startedAt")
+            except ProviderFailure as error:
+                detail = f"{detail}; unusable startedAt ({error})"
+        return ProviderStatus(
+            pod_id,
+            Presence.PRESENT,
+            observed,
+            detail,
+            200,
+            provider_state=provider_state,
+            started_at=started_at,
+        )
+
+    def terminate(self, pod_id: str) -> None:
+        """Terminate, never stop: a stopped pod bills volume disk at double rate.
+
+        ``204`` is the documented success and ``404`` an idempotent repeat of an
+        earlier delete; neither is proof of absence, which only the later
+        GET-404 plus list-absence pair establishes. ``409`` means the pod
+        belongs to a cluster and the pod endpoint will never terminate it, so
+        it is a named refusal with its remedy, never tolerated or retried.
+        """
+
+        response = self.transport.request("DELETE", f"/pods/{_path_id(pod_id)}")
+        if response.status in {204, 404}:
+            return
+        if response.status == 409:
+            raise TerminateRefused(
+                f"RunPod refused to terminate pod {pod_id!r} with HTTP 409: it belongs to a "
+                "cluster and cannot be terminated through the pod endpoint. It is still "
+                "billing; terminate its cluster from the RunPod console now "
+                f"({_body_summary(response.body)})"
+            )
+        # `_body_summary`, never `_problem_summary`: DELETE's body is never
+        # parsed, so no answer to it can raise before the refusal is built.
+        raise ProviderFailure(
+            f"RunPod terminate returned HTTP {response.status}: {_body_summary(response.body)}"
+        )
+
+    def verify_absent(self, pod_id: str) -> AbsenceObservation:
+        rows = self._pod_rows()
+        listed = any(row.get("id") == pod_id for row in rows)
+        return AbsenceObservation(
+            pod_id,
+            Presence.PRESENT if listed else Presence.ABSENT,
+            self.now(),
+            "RunPod pod list (every page) still contains the exact pod id"
+            if listed
+            else "RunPod pod list (every page) omits the exact pod id",
+        )
+
+    def capture_cost(self, pod_id: str, started_at: datetime, cutoff_at: datetime) -> CostCapture:
+        """The provider's own billed amounts for this pod, bound to a window it declares.
+
+        v2 wraps the records in an envelope whose ``metadata.query`` is the
+        window and granularity the provider says it resolved. When it is
+        present it must name this pod, the ``hour`` bucket, and a window that
+        covers the requested one (it may only be wider: the start snaps down
+        and the end up to a bucket edge), and its start becomes the capture's
+        declared window start -- the provider's statement, not this adapter's
+        echo. Only then may an empty answer be ``PENDING_RECONCILIATION``:
+        the provider resolved exactly the window asked for and has posted
+        nothing in it yet, which `shutdown.py`'s bounded retry waits out.
+
+        The field's documentation is not settled: the page describes it as
+        "(routes without a filter)" while also marking it required and showing
+        it in a ``podId``-filtered example. So its absence is not a refusal;
+        the capture then falls back to the v1 standard (attribution and
+        containment against the requested window) and never reports pending.
+        A ``metadata.query`` that is present but carries no ``podId`` (the
+        field is optional in ``PodBillingQuery``) is different: it does not
+        fall back, it reports the cost unavailable, because a resolved window
+        that does not name this pod cannot attribute the records to it.
+        """
+
+        started = require_utc(started_at, "billing start")
+        cutoff = require_utc(cutoff_at, "billing cutoff")
+        if started >= cutoff:
+            raise ProviderFailure("billing window start must precede its cutoff")
+        query = urllib.parse.urlencode(
+            {
+                "podId": pod_id,
+                "startTime": _rfc3339(started),
+                "endTime": _rfc3339(cutoff),
+                "bucketSize": "hour",
+            }
+        )
+        response = self.transport.request("GET", f"/billing/pods?{query}")
+        if response.status != 200:
+            raise ProviderFailure(
+                f"RunPod pod billing returned HTTP {response.status}: "
+                f"{_problem_summary(response.body)}"
+            )
+        envelope = _object(response.body, "RunPod billing")
+        records = envelope.get("records")
+        metadata = envelope.get("metadata")
+        if not isinstance(records, list) or not isinstance(metadata, Mapping):
+            raise ProviderFailure(
+                "RunPod billing response is not the documented v2 envelope "
+                "{records: [...], metadata: {...}}"
+            )
+
+        def unavailable(reason: str, window_start: datetime = started) -> CostCapture:
+            return _unavailable(pod_id, window_start, cutoff, reason, source=_V2_BILLING_SOURCE)
+
+        resolved = metadata.get("query")
+        window_start = started
+        window_end: datetime | None = None
+        if resolved is not None:
+            if not isinstance(resolved, Mapping):
+                return unavailable("RunPod billing metadata.query is not an object")
+            if resolved.get("podId") != pod_id:
+                return unavailable(
+                    "RunPod billing metadata.query does not name the requested podId filter; "
+                    "cost attribution is unverifiable"
+                )
+            if resolved.get("bucketSize") != "hour":
+                return unavailable(
+                    "RunPod billing resolved a bucketSize other than the hour requested: "
+                    f"{resolved.get('bucketSize')!r}"
+                )
+            try:
+                resolved_start = _timestamp(resolved.get("startTime"), "billing resolved startTime")
+                resolved_end = _timestamp(resolved.get("endTime"), "billing resolved endTime")
+            except ProviderFailure as error:
+                return unavailable(f"RunPod billing metadata.query is unreadable: {error}")
+            if resolved_start > started or resolved_end < cutoff:
+                return unavailable(
+                    f"RunPod billing resolved the window {_rfc3339(resolved_start)} to "
+                    f"{_rfc3339(resolved_end)}, narrower than the {_rfc3339(started)} to "
+                    f"{_rfc3339(cutoff)} requested; the charge window is narrowed"
+                )
+            window_start, window_end = resolved_start, resolved_end
+        record_count = metadata.get("recordCount")
+        if record_count is not None and (
+            not isinstance(record_count, int)
+            or isinstance(record_count, bool)
+            or record_count != len(records)
+        ):
+            return unavailable(
+                f"RunPod billing metadata.recordCount {record_count!r} does not equal the "
+                f"{len(records)} records returned",
+                window_start,
+            )
+        lines: list[CostLine] = []
+        for row in records:
+            if not isinstance(row, dict):
+                return unavailable("RunPod billing returned a non-object record", window_start)
+            row_pod = row.get("podId")
+            if not isinstance(row_pod, str) or row_pod != pod_id:
+                return unavailable(
+                    "RunPod billing returned a record that does not name the requested pod; "
+                    "cost attribution is unverifiable",
+                    window_start,
+                )
+            try:
+                bucket = _timestamp(row.get("startTime"), "billing record startTime")
+                bucket_end = _timestamp(row.get("endTime"), "billing record endTime")
+                amount = as_decimal(row.get("totalAmount"), "RunPod billing totalAmount")
+            except (ProviderFailure, ValueError) as error:
+                return unavailable(
+                    f"RunPod billing record is structurally unverifiable: {error}", window_start
+                )
+            if bucket_end <= bucket:
+                return unavailable(
+                    "RunPod billing record ends at or before it starts", window_start
+                )
+            # `startTime` is the bucket start, so the hour containing creation
+            # legitimately begins before the requested window; one bucket of
+            # slack before it, and nothing after the cutoff. A resolved window,
+            # when the provider declared one, bounds every record as well.
+            outside = bucket < started - _BUCKET_WIDTH or bucket > cutoff
+            if window_end is not None:
+                outside = outside or bucket < window_start or bucket_end > window_end
+            if outside:
+                return unavailable(
+                    "RunPod billing record lies outside the requested window by more than one "
+                    "bucket; cost attribution is unverifiable",
+                    window_start,
+                )
+            lines.append(
+                CostLine(
+                    amount,
+                    f"RunPod pod billing bucket {_rfc3339(bucket)} to {_rfc3339(bucket_end)}"
+                    f"{_cost_breakdown(row)}",
+                    bucket,
+                )
+            )
+        if not lines:
+            if window_end is not None:
+                return CostCapture(
+                    pod_id,
+                    BillingState.PENDING_RECONCILIATION,
+                    cutoff,
+                    reason=(
+                        "RunPod resolved the requested window for this exact pod and has posted "
+                        "no records in it yet; zero was not inferred"
+                    ),
+                    source=_V2_BILLING_SOURCE,
+                    window_start_at=window_start,
+                )
+            return unavailable(
+                "RunPod billing returned no records for a pod that ran, and declared no resolved "
+                "window that would tell not-yet-posted from nothing-to-post; zero was not inferred"
+            )
+        return CostCapture(
+            pod_id,
+            BillingState.CAPTURED,
+            cutoff,
+            lines=tuple(lines),
+            source=_V2_BILLING_SOURCE
+            + ("" if window_end is not None else " (no resolved window declared)"),
+            window_start_at=window_start,
+        )
+
+    def cross_check_catalogue(self, reviewed: Mapping[str, Decimal]) -> tuple[str, ...]:
+        """Compare the reviewed price sheet with RunPod's GPU catalogue; read-only, free.
+
+        ``reviewed`` maps each `gpu_type_id` in `config/pod_placement.toml` to
+        its reviewed ``hourly_usd``. Returns one finding per disagreement --
+        an id the catalogue does not list, a card not offered on Secure cloud,
+        or a Secure list price other than the reviewed one -- and an empty
+        tuple when every row agrees. It changes nothing: the sheet stays the
+        sealed authority, and a finding is for the project lead to review
+        before the first paid create under v2 (the README's checklist).
+        """
+
+        response = self.transport.request("GET", "/catalog/gpus")
+        if response.status != 200:
+            raise ProviderFailure(
+                f"RunPod GPU catalogue returned HTTP {response.status}: "
+                f"{_problem_summary(response.body)}"
+            )
+        gpus = _object(response.body, "RunPod GPU catalogue").get("gpus")
+        if not isinstance(gpus, list):
+            raise ProviderFailure(
+                "RunPod GPU catalogue response is not the documented {gpus: [...]} envelope"
+            )
+        listed: dict[str, Mapping[str, object]] = {}
+        for index, entry in enumerate(gpus):
+            if not isinstance(entry, Mapping):
+                raise ProviderFailure(f"RunPod GPU catalogue entry {index} is not an object")
+            listed[_text(entry.get("id"), f"RunPod GPU catalogue entry {index} id")] = entry
+        findings: list[str] = []
+        for gpu_id, reviewed_price in sorted(reviewed.items()):
+            entry = listed.get(gpu_id)
+            if entry is None:
+                findings.append(f"{gpu_id!r} is not in the RunPod GPU catalogue")
+                continue
+            if entry.get("secure") is not True:
+                findings.append(f"{gpu_id!r} is not offered on Secure cloud")
+            price = entry.get("price")
+            secure = price.get("secure") if isinstance(price, Mapping) else None
+            try:
+                listed_price = as_decimal(secure, f"{gpu_id} secure price")  # type: ignore[arg-type]
+            except ValueError:
+                findings.append(f"{gpu_id!r} has no readable Secure list price: {secure!r}")
+                continue
+            if listed_price != as_decimal(reviewed_price, f"{gpu_id} reviewed price"):
+                findings.append(
+                    f"{gpu_id!r} lists {listed_price} USD/h on Secure cloud; the reviewed sheet "
+                    f"says {reviewed_price}"
+                )
+        return tuple(findings)
+
+    def _pod_rows(self) -> list[dict[str, object]]:
+        """Every page of the pod list, or a refusal: a partial list is not absence.
+
+        A list cut short reads as a false absence at close, or as "no pod
+        carries this launch token" before a second POST, so every page is
+        followed, an inconsistent or repeated cursor refuses, and more pages
+        than `_MAX_POD_LIST_PAGES` refuses rather than stopping early.
+        """
+
+        rows: list[dict[str, object]] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        for _ in range(_MAX_POD_LIST_PAGES):
+            # Cluster member pods are left out unless asked for. A pod this
+            # runtime created is standalone, but a list that hides any pod in
+            # the account is not one absence can be read from.
+            query: dict[str, str] = {"includeClusterPods": "true"}
+            if cursor is not None:
+                query["cursor"] = cursor
+            path = f"/pods?{urllib.parse.urlencode(query)}"
+            response = self.transport.request("GET", path)
+            if response.status != 200:
+                raise ProviderFailure(
+                    f"RunPod pod-list GET returned HTTP {response.status}: "
+                    f"{_problem_summary(response.body)}"
+                )
+            page = _object(response.body, "RunPod pod-list")
+            pods = page.get("pods")
+            pagination = page.get("pagination")
+            if not isinstance(pods, list):
+                raise ProviderFailure(
+                    "RunPod pod-list response is not the documented {pods: [...]} envelope"
+                )
+            if not isinstance(pagination, Mapping) or not isinstance(
+                pagination.get("hasNextPage"), bool
+            ):
+                raise ProviderFailure(
+                    "RunPod pod-list response carries no readable pagination.hasNextPage; this "
+                    "page cannot be shown to be the last"
+                )
+            for index, row in enumerate(pods):
+                if not isinstance(row, dict):
+                    raise ProviderFailure(f"RunPod pod-list entry {index} is not an object")
+                _text(row.get("id"), f"RunPod pod-list entry {index} id")
+                rows.append(row)
+            next_cursor = pagination.get("nextCursor")
+            if not pagination["hasNextPage"]:
+                if next_cursor is not None:
+                    raise ProviderFailure(
+                        "RunPod pod-list says there is no next page but still names a cursor"
+                    )
+                return rows
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen:
+                raise ProviderFailure(
+                    "RunPod pod-list says there is a next page but gives no new cursor to it"
+                )
+            seen.add(next_cursor)
+            cursor = next_cursor
+        raise ProviderFailure(
+            f"RunPod pod list ran past {_MAX_POD_LIST_PAGES} pages; absence cannot be read "
+            "from a list this adapter did not finish"
+        )
+
+    def _v2_rate(
+        self, pod_id: str, state: str, payload: Mapping[str, object]
+    ) -> tuple[Decimal, str, str | None]:
+        """The hourly rate a record carries, its source, and a contract refusal if any.
+
+        A RUNNING pod must report a positive ``cost``; anything else raises,
+        as the v1 adapter does. Any other state never refuses an identified pod
+        on its rate: v2 documents 0.0 for EXITED and TERMINATED and says
+        nothing for PROVISIONING, STARTING or ERROR, and a record that raised
+        here after a POST would leave a billing pod unbound. So a missing or
+        non-positive rate there is replaced by the reviewed sheet's price for
+        the reported GPU, with a source that says so; when even that cannot be
+        resolved the rate is zero and the record carries a contract refusal,
+        so the pod is bound and closed rather than launched on an unknown rate.
+        """
+
+        observed_source = (
+            "RunPod observed pod cost; volume rate supplied at launch, not observed from the "
+            "provider"
+        )
+        raw = payload.get("cost")
+        if state == "RUNNING":
+            hourly = as_decimal(raw, f"RunPod pod {pod_id} cost")  # type: ignore[arg-type]
+            if hourly <= 0:
+                raise ProviderFailure(
+                    f"RunPod pod {pod_id} reports a non-positive cost while RUNNING"
+                )
+            return hourly, observed_source, None
+        try:
+            hourly = as_decimal(raw, f"RunPod pod {pod_id} cost")  # type: ignore[arg-type]
+        except ValueError:
+            hourly = Decimal("0")
+        if hourly > 0:
+            return hourly, observed_source, None
+        gpu = payload.get("gpu")
+        gpu_id = gpu.get("id") if isinstance(gpu, Mapping) else None
+        try:
+            if not isinstance(gpu_id, str) or not gpu_id:
+                raise ValueError("the pod reports no gpu.id")
+            reviewed = as_decimal(self.pod_price(gpu_id), "RunPod reviewed pod price")
+        except Exception as error:  # noqa: BLE001 - any failure here is a named refusal below
+            return (
+                Decimal("0"),
+                f"RunPod reported no pod rate while {state}, and no reviewed price resolved",
+                f"RunPod pod {pod_id} reported no hourly rate while {state} and the reviewed "
+                f"price sheet could not supply one ({error}); its cost cannot be bounded",
+            )
+        return (
+            reviewed,
+            f"RunPod reported no pod rate while {state}; the reviewed price sheet's rate for "
+            f"{gpu_id} stands in; volume rate supplied at launch",
+            None,
+        )
+
+    def _record(self, payload: Mapping[str, object]) -> PodRecord:
+        """Identity, lifecycle, rate, volume and creation instant; then the contract.
+
+        The first five must parse or this raises: without them no lease can
+        be bound. The runtime contract is different -- a pod whose effective
+        shape cannot be proven is still returned, with no contract and the
+        reason, so `launch.py` binds it and closes it rather than leaving a
+        pod the provider did create unbound and billing.
+        """
+
+        pod_id = _text(payload.get("id"), "RunPod pod id")
+        state = payload.get("status")
+        if state not in _V2_POD_STATES:
+            raise ProviderFailure(f"RunPod pod {pod_id} reports an unrecognised status: {state!r}")
+        volume_id, mount_path = _v2_network_mount(pod_id, payload)
+        hourly, rate_source, rate_refusal = self._v2_rate(pod_id, str(state), payload)
+        created_at = _timestamp(payload.get("createdAt"), f"RunPod pod {pod_id} createdAt")
+        contract: PodRuntimeContract | None = None
+        refusal: str | None = rate_refusal
+        if refusal is None:
+            try:
+                contract = _v2_runtime_contract(pod_id, payload, volume_id, mount_path)
+            except ProviderFailure as error:
+                refusal = str(error)
+        return PodRecord(
+            pod_id=pod_id,
+            name=_text(payload.get("name"), f"RunPod pod {pod_id} name"),
+            estimate=PodEstimate(
+                hourly,
+                as_decimal(self.volume_price(volume_id), "RunPod volume price"),
+                rate_source,
+                self.now(),
+            ),
+            volume_id=volume_id,
+            # v2's own creation instant, so the close window starts where the
+            # provider's charges can (04-7). No fallback: a pod without one
+            # cannot anchor a billing window, and an observation instant
+            # would narrow it.
+            created_at=created_at,
+            state=str(state),
+            runtime_contract=contract,
+            contract_refusal=refusal,
+        )
+
+
+def _v2_network_mount(pod_id: str, payload: Mapping[str, object]) -> tuple[str, str]:
+    mounts = payload.get("mounts")
+    network = mounts.get("network") if isinstance(mounts, Mapping) else None
+    if not isinstance(network, list) or len(network) != 1 or not isinstance(network[0], Mapping):
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} reports no single attached network volume in mounts.network; "
+            "volumes attach only at creation"
+        )
+    return (
+        _text(network[0].get("volumeId"), f"RunPod pod {pod_id} mounts.network[0].volumeId"),
+        _text(network[0].get("path"), f"RunPod pod {pod_id} mounts.network[0].path"),
+    )
+
+
+def _v2_runtime_contract(
+    pod_id: str, payload: Mapping[str, object], volume_id: str, mount_path: str
+) -> PodRuntimeContract:
+    """The effective shape a v2 pod reports, refused by name on every doubt.
+
+    Checked beyond what `PodRuntimeContract` carries: ``cloud`` must be the
+    ``SECURE`` this adapter requests, and ``gpu.count`` the one GPU. The start
+    command is read back from ``args``, the only form the pod object is
+    documented to carry, and must be the exec-form object this adapter sends.
+    The rental type comes last, because no field can show it.
+    """
+
+    if payload.get("cloud") != "SECURE":
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} reports cloud {payload.get('cloud')!r}, not the SECURE requested"
+        )
+    gpu = payload.get("gpu")
+    if not isinstance(gpu, Mapping):
+        raise ProviderFailure(f"RunPod pod {pod_id} reports no gpu object to verify against")
+    gpu_type = _text(gpu.get("id"), f"RunPod pod {pod_id} gpu.id")
+    if gpu.get("count") != REQUESTED_GPU_COUNT:
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} reports gpu.count {gpu.get('count')!r}, not the "
+            f"{REQUESTED_GPU_COUNT} requested"
+        )
+    command = _v2_start_argv(pod_id, payload)
+    margin = _billing_cutoff_margin_from_environment(pod_id, payload)
+    environment = payload.get("env")
+    if not isinstance(environment, Mapping) or environment.get(RUNPOD_ROUTE_ENV) != "v2":
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} env does not seal {RUNPOD_ROUTE_ENV}=v2; its pod-side "
+            "timer could not close it through the route that created it"
+        )
+    image = _text(payload.get("image"), f"RunPod pod {pod_id} image")
+    template = payload.get("template")
+    if V2_ON_DEMAND_BASIS is None:
+        raise ProviderFailure(f"RunPod pod {pod_id}: {V2_ON_DEMAND_REFUSAL}")
+    return PodRuntimeContract(
+        interruptible=False,
+        gpu_type=gpu_type,
+        image=image,
+        volume_id=volume_id,
+        volume_mount_path=mount_path,
+        docker_start_cmd=command,
+        billing_cutoff_margin_seconds=margin,
+        template=template if isinstance(template, str) and template else None,
+    )
+
+
+def _v2_start_argv(pod_id: str, payload: Mapping[str, object]) -> tuple[str, ...]:
+    """The argv a v2 pod will run, only when ``args`` states it exactly.
+
+    ``args`` is "The container's command, as a single raw string", returned
+    "exactly as stored", and accepts two shapes: a bare shell string the
+    provider splits into CMD (by rules the page does not give), or a JSON
+    object ``{"entrypoint": [...], "cmd": [...]}``. This adapter sends only
+    the second, so the argv is exact and the image's own ENTRYPOINT cannot
+    wrap the pod timer; anything else read back refuses. The page also says
+    responses carry the deconstructed ``entrypoint`` and ``cmd``; the pod
+    schema has them only as optional inherited properties, in no ``required``
+    list and no example, so they are checked when present and not required.
+    """
+
+    raw = payload.get("args")
+    if not isinstance(raw, str) or not raw.strip():
+        raise ProviderFailure(f"RunPod pod {pod_id} reports no args to verify its start command")
+    try:
+        stored = json.loads(raw)
+    except json.JSONDecodeError:
+        stored = None
+    if not isinstance(stored, dict) or set(stored) != {"entrypoint", "cmd"}:
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} reports args that are not the exec-form "
+            '{"entrypoint": [...], "cmd": [...]} object this adapter sends; the pod timer '
+            "cannot be shown to be its primary process"
+        )
+    parts: dict[str, list[str]] = {}
+    for key in ("entrypoint", "cmd"):
+        value = stored[key]
+        if not isinstance(value, list) or not all(isinstance(part, str) and part for part in value):
+            raise ProviderFailure(
+                f"RunPod pod {pod_id} args.{key} is not a list of non-blank strings"
+            )
+        echoed = payload.get(key)
+        if echoed is not None and echoed != value:
+            raise ProviderFailure(
+                f"RunPod pod {pod_id} reports a {key} that disagrees with its args"
+            )
+        parts[key] = value
+    if not parts["entrypoint"]:
+        raise ProviderFailure(f"RunPod pod {pod_id} args carries an empty entrypoint")
+    return tuple(parts["entrypoint"] + parts["cmd"])
+
+
+def _v2_start_args(command: tuple[str, ...]) -> str:
+    """The exec-form ``args`` string for ``command``: interpreter as ENTRYPOINT, rest as CMD.
+
+    Both halves are stated so neither the image's ENTRYPOINT nor its CMD can
+    add to the argv `models._assert_pod_timer_is_primary_process` checked.
+    """
+
+    return json.dumps({"entrypoint": [command[0]], "cmd": list(command[1:])}, separators=(",", ":"))
+
+
+def _v2_create_payload(request: PodCreateRequest, route: str = "v2") -> dict[str, object]:
+    """The v2 `CreatePodRequest` body: nested where v1 was flat.
+
+    No ``interruptible`` is sent because v2 has no such field; that is why
+    `RunPodV2Provider.create` refuses while `V2_ON_DEMAND_BASIS` is unset.
+    ``startJupyter`` and ``startSsh`` are sent false explicitly because a
+    template's own defaults may enable both and body fields override the
+    template; this pod has no ports or SSH.
+    """
+
+    payload: dict[str, object] = {
+        "name": request.name,
+        "cloud": "SECURE",
+        "image": request.image,
+        "gpu": {"id": request.gpu_type, "count": REQUESTED_GPU_COUNT},
+        "disk": request.container_disk_gb,
+        "mounts": {"network": [{"volumeId": request.volume_id, "path": request.volume_mount_path}]},
+        "args": _v2_start_args(request.docker_start_cmd),
+        "env": _pod_environment(request, route),
+        "startJupyter": False,
+        "startSsh": False,
+    }
+    if request.template is not None:
+        payload["templateId"] = request.template
+    return payload
+
+
+def _cost_breakdown(row: Mapping[str, object]) -> str:
+    """The per-component split v2 reports, as text on the line; never totalled."""
+
+    parts = [
+        f"{name}={row[name]}"
+        for name in ("gpuAmount", "cpuAmount", "diskAmount")
+        if isinstance(row.get(name), (int, Decimal)) and not isinstance(row.get(name), bool)
+    ]
+    return f" ({', '.join(parts)})" if parts else ""
+
+
+def _problem_summary(body: bytes) -> str:
+    """v2's RFC 9457 problem body as one line, or the raw summary when it is not one."""
+
+    try:
+        problem = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return _body_summary(body)
+    if not isinstance(problem, dict) or not isinstance(problem.get("title"), str):
+        return _body_summary(body)
+    text = str(problem["title"])
+    if isinstance(problem.get("detail"), str) and problem["detail"].strip():
+        text = f"{text}: {problem['detail'].strip()}"
+    errors = problem.get("errors")
+    if isinstance(errors, list) and errors:
+        text = f"{text}; errors: {json.dumps(errors, separators=(',', ':'), default=str)}"
+    return text[:300]
+
+
+def live_runpod_provider(
+    capability: str,
+    *,
+    pod_price: Callable[[str], Decimal],
+    volume_price: Callable[[str], Decimal],
+    route: str = RUNPOD_DEFAULT_ROUTE,
+    timeout_seconds: float = 30.0,
+    **options: object,
+) -> "RunPodProvider | RunPodV2Provider":
+    """The adapter for ``route`` over a live transport at that route's root.
+
+    The one place the route is chosen: ``"v2"`` by default, ``"v1"`` while v1
+    is still kept (until the first live v2 run is green). An untracked
+    ``--provider-factory`` calls this rather than pairing a class and a root
+    by hand; ``options`` are passed to the adapter unchanged.
+    """
+
+    if route == "v1":
+        adapter: type[RunPodProvider] | type[RunPodV2Provider] = RunPodProvider
+    elif route == "v2":
+        adapter = RunPodV2Provider
+    else:
+        raise ValueError(f"RunPod route must be one of {RUNPOD_ROUTES}, not {route!r}")
+    return adapter(
+        UrllibRunPodTransport(capability, timeout_seconds=timeout_seconds, root=adapter.ROOT),
+        pod_price=pod_price,
+        volume_price=volume_price,
+        **options,  # type: ignore[arg-type]
+    )
 
 
 def timer_context_from_environment(environment: Mapping[str, str] | None = None) -> TimerContext:
@@ -1143,12 +2068,20 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
         _required_environment(env, BILLING_CUTOFF_MARGIN_ENV), BILLING_CUTOFF_MARGIN_ENV
     )
     launch_identity = _required_environment(env, LAUNCH_TOKEN_ENV)
-    provider = RunPodProvider(
-        UrllibRunPodTransport(capability),
+    # Required, never defaulted: the route is sealed into the pod's env by the
+    # adapter that created it (`_pod_environment`).
+    route = _required_environment(env, RUNPOD_ROUTE_ENV)
+    if route not in RUNPOD_ROUTES:
+        raise RuntimeError(
+            f"RunPod pod timer is not armed: {RUNPOD_ROUTE_ENV} must be one of {RUNPOD_ROUTES}"
+        )
+    provider = live_runpod_provider(
+        capability,
         # The timer never estimates or creates. Sealed launch-time rates are
         # only retained for the close report's ongoing-volume disclosure.
         pod_price=lambda gpu: pod_rate,
         volume_price=lambda volume: volume_rate,
+        route=route,
     )
     lease = PodLease(
         # The launch token is also the durable local lease identity. Deriving a
@@ -1230,13 +2163,20 @@ def _timestamp(value: object, label: str) -> datetime:
         raise ProviderFailure(f"RunPod {label} is invalid: {error}") from error
 
 
-def _unavailable(pod_id: str, window_start: datetime, cutoff: datetime, reason: str) -> CostCapture:
+def _unavailable(
+    pod_id: str,
+    window_start: datetime,
+    cutoff: datetime,
+    reason: str,
+    *,
+    source: str = _V1_BILLING_SOURCE,
+) -> CostCapture:
     return CostCapture(
         pod_id,
         BillingState.UNAVAILABLE,
         cutoff,
         reason=reason,
-        source="RunPod REST v1 GET /billing/pods",
+        source=source,
         window_start_at=window_start,
     )
 

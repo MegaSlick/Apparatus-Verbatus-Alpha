@@ -966,6 +966,175 @@ def test_an_unarmed_lease_closes_when_its_pod_is_observed_exited(tmp_path: Path)
     assert provider.terminate_calls == [record.pod_id]
 
 
+# -- REST v2: a pod still provisioning or starting while its launch arms
+
+
+def _unarmed_lease(store: LeaseStore, record, *, owner: str, clock: Clock) -> None:
+    store.create(
+        PodLease(
+            lease_id=LEASE_ID,
+            launch_token="d" * 32,
+            provider_name="fake",
+            pod_id=record.pod_id,
+            volume_id=record.volume_id,
+            pod_hourly_usd=record.estimate.pod_hourly_usd,
+            volume_hourly_usd=record.estimate.volume_hourly_usd,
+            created_at=clock.now(),
+            started_at=record.created_at,
+            hard_deadline=clock.now() + timedelta(seconds=3600),
+            owner_token=owner,
+            heartbeat_at=clock.now(),
+            phase="active",
+            controller_record=None,
+        )
+    )
+
+
+@pytest.mark.parametrize("word", ["PROVISIONING", "STARTING", " starting "])
+def test_a_pre_running_pod_is_waited_for_while_its_launch_is_still_arming(
+    tmp_path: Path, word: str
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = _store(tmp_path)
+    ident = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
+    _unarmed_lease(store, record, owner=ident.owner_token, clock=clock)
+    provider.set_pod_state(record.pod_id, word)
+
+    result = supervise.supervise_tick(
+        store=store,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        owner_token=ident.owner_token,
+        heartbeat_timeout=timedelta(seconds=30),
+        now=clock.now,
+    )
+
+    assert result.state == supervise.PROVIDER_STARTING
+    assert not result.green
+    assert provider.terminate_calls == []
+
+
+def test_a_pre_running_pod_whose_launch_stopped_heartbeating_is_closed(tmp_path: Path) -> None:
+    """The wait has no clock of its own: the launch owner's heartbeat bounds it."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.02")
+    store = _store(tmp_path)
+    ident = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
+    _unarmed_lease(store, record, owner=ident.owner_token, clock=clock)
+    provider.set_pod_state(record.pod_id, "PROVISIONING")
+
+    result = supervise.supervise_tick(
+        store=store,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        owner_token=ident.owner_token,
+        heartbeat_timeout=timedelta(seconds=30),
+        now=lambda: clock.now() + timedelta(seconds=31),
+    )
+
+    assert result.state != supervise.PROVIDER_STARTING
+    assert provider.terminate_calls == [record.pod_id]
+
+
+def _armed_tick(store, provider, clock, owner, previous=None):  # type: ignore[no-untyped-def]
+    return supervise.supervise_tick(
+        store=store,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        owner_token=owner,
+        heartbeat_timeout=timedelta(seconds=900),
+        now=clock.now,
+        previous=previous,
+    )
+
+
+def _armed_starting(tmp_path: Path):  # type: ignore[no-untyped-def]
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.02")
+    store = _store(tmp_path)
+    ident = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
+    make_lease(store, record, owner=ident.owner_token, clock=clock)
+    provider.set_pod_state(record.pod_id, "STARTING")
+    return clock, provider, record, store, ident.owner_token
+
+
+def test_an_armed_pod_still_starting_within_the_grace_is_waited_on(tmp_path: Path) -> None:
+    """The timer arms from inside the container; RUNNING may come only once it is healthy."""
+
+    clock, provider, record, store, owner = _armed_starting(tmp_path)
+
+    first = _armed_tick(store, provider, clock, owner)
+    clock.seconds = supervise.CONTAINER_START_TIMEOUT_SECONDS - 5
+    second = _armed_tick(store, provider, clock, owner, previous=first)
+
+    assert first.state == second.state == supervise.PROVIDER_STARTING_ARMED
+    assert provider.terminate_calls == []
+
+
+def test_an_armed_pod_still_starting_past_the_grace_closes_on_the_second_tick(
+    tmp_path: Path,
+) -> None:
+    clock, provider, record, store, owner = _armed_starting(tmp_path)
+
+    inside = _armed_tick(store, provider, clock, owner)
+    clock.seconds = supervise.CONTAINER_START_TIMEOUT_SECONDS + 1
+    first_past = _armed_tick(store, provider, clock, owner, previous=inside)
+    clock.seconds += 15
+    second_past = _armed_tick(store, provider, clock, owner, previous=first_past)
+
+    assert inside.state == supervise.PROVIDER_STARTING_ARMED
+    assert first_past.state == supervise.PROVIDER_STARTING_PAST_GRACE
+    assert second_past.state == supervise.PROVIDER_EXITED
+    assert "STARTING" in second_past.detail
+    assert provider.terminate_calls == [record.pod_id]
+
+
+def test_an_armed_pod_that_reaches_running_is_never_closed(tmp_path: Path) -> None:
+    clock, provider, record, store, owner = _armed_starting(tmp_path)
+
+    clock.seconds = supervise.CONTAINER_START_TIMEOUT_SECONDS + 1
+    past = _armed_tick(store, provider, clock, owner)
+    provider.set_pod_state(record.pod_id, "RUNNING")
+    clock.seconds += 15
+    running = _armed_tick(store, provider, clock, owner, previous=past)
+
+    assert past.state == supervise.PROVIDER_STARTING_PAST_GRACE
+    assert running.state == "active"
+    assert provider.terminate_calls == []
+
+
+def test_an_errored_pod_closes_now_even_while_its_launch_is_arming(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.02")
+    store = _store(tmp_path)
+    ident = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
+    _unarmed_lease(store, record, owner=ident.owner_token, clock=clock)
+    provider.set_pod_state(record.pod_id, "ERROR")
+
+    result = supervise.supervise_tick(
+        store=store,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        owner_token=ident.owner_token,
+        heartbeat_timeout=timedelta(seconds=30),
+        now=clock.now,
+    )
+
+    assert result.state == supervise.PROVIDER_EXITED
+    assert "ERROR" in result.detail
+    assert result.close_report is not None and result.close_report.verified
+    assert provider.terminate_calls == [record.pod_id]
+
+
 # -- finding 5: the owner token must never reach telemetry
 
 

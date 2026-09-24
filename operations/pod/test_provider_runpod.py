@@ -325,7 +325,11 @@ def pod_payload(**overrides: object) -> dict[str, object]:
         "dockerStartCmd": list(request().docker_start_cmd),
         "networkVolume": {"id": "volume-1"},
         "machine": {"gpuTypeId": "NVIDIA RTX 6000 Ada Generation"},
-        "env": {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        "env": {
+            "VERBATUS_LAUNCH_TOKEN": TOKEN,
+            BILLING_CUTOFF_MARGIN_ENV: "3600",
+            "VERBATUS_RUNPOD_ROUTE": "v1",
+        },
         "lastStartedAt": "2026-08-08T11:59:00Z",
     }
     payload.update(overrides)
@@ -380,7 +384,12 @@ def test_create_correlates_the_launch_token_before_it_posts() -> None:
     assert body["networkVolumeId"] == "volume-1"
     assert body["volumeMountPath"] == "/workspace/private"
     assert body["gpuTypeIds"] == ["NVIDIA RTX 6000 Ada Generation"]
-    assert body["env"] == {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"}
+    # The adapter seals its own route into the pod's env for the pod-side timer.
+    assert body["env"] == {
+        "VERBATUS_LAUNCH_TOKEN": TOKEN,
+        BILLING_CUTOFF_MARGIN_ENV: "3600",
+        "VERBATUS_RUNPOD_ROUTE": "v1",
+    }
     # The create body used to name no container disk at all, so the pod took
     # whatever the image or the account defaulted to while the bootstrap
     # downloaded the serving stack onto it twice over.
@@ -526,6 +535,20 @@ def test_a_missing_interruptible_field_is_never_read_as_on_demand() -> None:
 
     with pytest.raises(ProviderFailure, match="on-demand cannot be assumed"):
         provider(transport).create(request())
+
+
+@pytest.mark.parametrize("route", [None, "v2"])
+def test_a_pod_whose_env_does_not_seal_v1_is_refused(route: str | None) -> None:
+    payload = pod_payload()
+    env = dict(payload["env"])  # type: ignore[arg-type]
+    if route is None:
+        del env["VERBATUS_RUNPOD_ROUTE"]
+    else:
+        env["VERBATUS_RUNPOD_ROUTE"] = route
+    transport = ScriptedTransport([json_response(payload | {"env": env})])
+
+    with pytest.raises(ProviderFailure, match="does not seal VERBATUS_RUNPOD_ROUTE=v1"):
+        provider(transport).adopt("pod-1")
 
 
 def test_a_pod_with_no_attached_volume_is_refused() -> None:
@@ -750,6 +773,7 @@ def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:
             "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
             BILLING_CUTOFF_MARGIN_ENV: "3600",
             "VERBATUS_LAUNCH_TOKEN": TOKEN,
+            "VERBATUS_RUNPOD_ROUTE": "v1",
         }
     )
 
@@ -772,6 +796,7 @@ def test_pod_timer_refuses_an_unbounded_or_noncanonical_sealed_cutoff_margin(
         "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
         BILLING_CUTOFF_MARGIN_ENV: margin,
         "VERBATUS_LAUNCH_TOKEN": TOKEN,
+        "VERBATUS_RUNPOD_ROUTE": "v1",
     }
 
     with pytest.raises(ProviderFailure, match="VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"):

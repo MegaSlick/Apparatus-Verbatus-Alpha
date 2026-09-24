@@ -30,6 +30,15 @@ class ProviderFailure(PodRuntimeError):
     """The provider failed a requested observation or action."""
 
 
+class TerminateRefused(ProviderFailure):
+    """The provider refused to terminate this pod in a way no retry can change.
+
+    Its message names the remedy (for RunPod v2, a pod that belongs to a
+    cluster). `VerifiedShutdown.close` stops at once on it and reports a failed
+    shutdown carrying that message, rather than re-issuing the same refused
+    request for the rest of its window while the pod bills."""
+
+
 class LeaseOwnershipError(PodRuntimeError):
     """A lease owner attempted to overwrite another controller's record."""
 
@@ -97,6 +106,28 @@ def as_decimal(value: Decimal | str | int | float, label: str) -> Decimal:
 
 BILLING_CUTOFF_MARGIN_ENV = "VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"
 """The sealed pod environment key shared by both shutdown controllers."""
+
+PRE_RUNNING_STATES = frozenset({"PROVISIONING", "STARTING"})
+"""Lifecycle words for a pod that exists and bills but has not run yet.
+
+An adapter reports a provider's lifecycle word verbatim; these two are the ones
+the runtime treats as "wait" rather than "close". A create answered in one of
+them proceeds to arming, whose container-start and channel bounds are what
+limit the wait, and the laptop supervisor tolerates them only while the lease
+is still unarmed (its launch owner heartbeating inside those bounds). Every
+other word except RUNNING -- an exited, errored or terminated pod -- is closed
+at once.
+"""
+
+CONTAINER_START_TIMEOUT_SECONDS = 600.0
+"""The bound on waiting for a pod's container to start, shared by both controllers.
+
+`controller_armer.CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS` is this value (its
+docstring says why it is generous); the laptop supervisor reuses it as the
+grace in which an armed pod may still report a pre-running word, because a
+provider may call the container RUNNING only once it is healthy, after the pod
+timer inside it has already armed. Defined here so the two cannot drift and
+neither module imports the other for it."""
 
 BILLING_BUCKET_WIDTH = timedelta(hours=1)
 """One provider billing bucket, shared by the RunPod adapter (which always
@@ -932,6 +963,12 @@ class PodRecord:
     created_at: datetime
     state: str = "running"
     runtime_contract: PodRuntimeContract | None = None
+    contract_refusal: str | None = None
+    """Why ``runtime_contract`` is ``None``, when the adapter knows.
+
+    An adapter that can identify a pod but cannot prove its effective shape
+    returns the record anyway, so the pod can be bound to its lease and closed,
+    and names the reason here for the close record to carry."""
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -942,6 +979,11 @@ class PodRecord:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} must be a non-blank string")
         require_utc(self.created_at, "pod created_at")
+        if self.contract_refusal is not None:
+            if self.runtime_contract is not None:
+                raise ValueError("a pod record with a runtime contract carries no contract refusal")
+            if not isinstance(self.contract_refusal, str) or not self.contract_refusal.strip():
+                raise ValueError("contract_refusal must be non-blank when supplied")
 
 
 @dataclass(frozen=True, slots=True)
@@ -979,8 +1021,8 @@ class ProviderStatus:
     ran, or ``None`` when it has not run yet or the provider reports no such
     moment.  It is a different fact from ``provider_state`` and it is the only
     one of the two that can separate "still pulling the image" from "started
-    and silent": a lifecycle word like RunPod's ``desiredStatus`` says what the
-    pod was asked to be, not what it has become, and reads RUNNING from the
+    and silent": a lifecycle word like RunPod v1's ``desiredStatus`` says what
+    the pod was asked to be, not what it has become, and reads RUNNING from the
     instant create returns.  ``None`` here is therefore never evidence that the
     container failed to start — only that no start has been *observed* — and a
     consumer that waits on it must bound its wait and say what it saw.

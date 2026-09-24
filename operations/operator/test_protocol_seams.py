@@ -30,6 +30,7 @@ from operations.pod.provider_runpod import (
 )
 from operations.pod.provider_runpod import (
     RunPodProvider,
+    RunPodV2Provider,
     UrllibRunPodTransport,
 )
 from operations.pod.transfer import TransferTarget
@@ -74,6 +75,7 @@ SEAMS = (
     (ControllerArmer, FixtureControllerArmer),
     (PodProvider, FakeProvider),
     (PodProvider, RunPodProvider),
+    (PodProvider, RunPodV2Provider),
     (TransferTarget, LocalFixtureObjectStore),
     (TransferTarget, S3VolumeTarget),
     (ChairCacheVerifier, FixtureCache),

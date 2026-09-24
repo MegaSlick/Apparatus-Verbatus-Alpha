@@ -40,14 +40,15 @@ A shutdown that cannot be verified is not a tidy-up for next session: say so now
 
 Two known gaps in that proof wait on the first live run:
 
-- **The anchor is not proven to be pod creation (04-7).** `PodRecord.created_at` comes
-  from RunPod's `lastStartedAt` (or the observation instant when that is null), and the
-  capture query is built from the same value, so the narrowed-window check compares a value
-  with itself. If RunPod charges between creation and first start, a close can read
-  `verified` over a total that omits it.
-- **Coverage is not proven (04-9).** The verifier refuses records outside the declared
-  window but does not prove the returned buckets *fill* it, and the window is the runtime's
-  own echo of what it sent.
+- **The anchor (04-7).** Under REST v2 `PodRecord.created_at` is the pod's own `createdAt`,
+  so the close window starts at creation, not at first container start. Under v1 it is still
+  `lastStartedAt` (or the observation instant when that is null), which can omit charges
+  between creation and first start. What no offline test shows is that RunPod bills nothing
+  before `createdAt`.
+- **Coverage (04-9).** The verifier refuses records outside the declared window. Under v2 the
+  declared window is the provider's own resolved `metadata.query` when it is present, not the
+  runtime's echo; under v1 it is still the echo. Neither proves the returned buckets *fill*
+  the window.
 
 ## What exists here
 
@@ -59,16 +60,45 @@ the [first gated live-pod checklist](#first-gated-live-pod-checklist).
 
 ### Provider seam and RunPod adapter
 
-`provider.py` is the seven-verb provider seam; `provider_runpod.py` is the only RunPod
-adapter. It speaks **REST v1** (`rest.runpod.io/v1`), the only route whose published create
-schema proves the two facts this runtime needs before it spends: an explicit
-`interruptible=false` and a primary `dockerStartCmd`. DELETE's body is never parsed.
+`provider.py` is the seven-verb provider seam; `provider_runpod.py` holds the only RunPod
+adapters, one per REST route, behind that seam and one `HttpTransport`.
 
-**v1 is not the long-term route.** The project lead has directed a move to v2, and RunPod
-retires v1 on 2026-11-15. `V2_MIGRATION.md` maps every v1 endpoint, field, status code and
-lifecycle word to v2 and ends with the migration plan. The v2 create body has **no
-`interruptible` field and no `dockerStartCmd`** (only an `args` string), so both facts need
-another source under v2. No v2 code is in this tree.
+- **`RunPodV2Provider`** (`api.runpod.io/v2`) is the default. RunPod retires v1 on
+  2026-11-15. `V2_MIGRATION.md` maps every v1 endpoint, field, status code and lifecycle word
+  to v2, and says what is done and what waits on a live run.
+- **`RunPodProvider`** (`rest.runpod.io/v1`) stays selectable until the first live run under
+  v2 is green, then is deleted in its own commit.
+- **Choosing a route.** An untracked `--provider-factory` calls
+  `provider_runpod.live_runpod_provider(key, pod_price=..., volume_price=..., route=...)`;
+  `route` defaults to `"v2"` and `"v1"` selects the old adapter. Each adapter refuses a live
+  transport pointed at the other route's root.
+- **The pod-side timer uses the route that created its pod.** Each adapter's create adds
+  `VERBATUS_RUNPOD_ROUTE` (its own route) to the pod's `env`, refusing a request that names
+  another, and `timer_context_from_environment` requires it: a timer that guessed a route
+  could be the one controller unable to terminate its pod at the hard deadline.
+
+**A v2 create is refused today, by name, before any POST.** v2 has no `interruptible` field
+on create and no rental-type field on the pod, and no RunPod page read on 2026-09-24 says
+what a v2 create produces, while v1 still documents spot pods. The runtime needs
+`interruptible=false` proven before it spends, so until the project lead records a basis in
+`provider_runpod.V2_ON_DEMAND_BASIS`, a paid create goes through v1. Every other v2 verb
+works, and a v2 pod record without that proof carries no runtime contract, so `launch.py`
+closes it on create and refuses it on adopt, naming the reason.
+
+**The start command under v2** is sent as `args` in the documented exec-form JSON object,
+`{"entrypoint": [interpreter], "cmd": [rest of argv]}`, so the argv is exact and the image's
+own ENTRYPOINT cannot wrap the timer. The contract check reads `args` back and refuses
+anything else, including the shell-string form the provider splits by undocumented rules.
+
+**Other v2 behaviour:** a create answers `PROVISIONING` or `STARTING` before the pod runs
+(`models.PRE_RUNNING_STATES`), which arming's bounded waits absorb; `ERROR` closes at once.
+`402`, `400` and `422` on create are named refusals, never retried; `400` is a placement or
+cross-field refusal, not a malformed body. `409` on terminate (a pod that belongs to a
+cluster) is a `TerminateRefused`: `VerifiedShutdown.close` stops on it at once and reports
+`failed-shutdown` with the console remedy instead of re-sending the DELETE for its whole
+window, and the pod timer does not re-enter a close the provider refused. The pod list is asked
+for cluster member pods too (`includeClusterPods=true`), paged and followed to its last
+page, and a list that cannot be shown complete refuses. DELETE's body is never parsed.
 
 **Account balance.** `GraphQLBalanceObserver` POSTs the one documented query,
 `myself { clientBalance currentSpendPerHr }`, through the same redirect-refusing,
@@ -117,8 +147,15 @@ acknowledgement is durably bound to the exact lease, pod and hard deadline.
   supervision of a pod still billing. The identity file `supervisors/supervisor-<lease>.json`
   carries the owner token a restart resumes once it holds the lock.
 - **Every tick re-reads `provider.status()`** and closes on any lifecycle word other than
-  `RUNNING`, naming it. A provider that cannot answer is neither `RUNNING` nor a reason to
-  close; the heartbeat rule still holds and the loop keeps ticking.
+  `RUNNING`, naming it. The exception is `PROVISIONING` or `STARTING` on a lease that is still
+  unarmed while its launch owner heartbeats: that tick reports `provider-starting` and
+  waits, bounded by the launch's own arming waits and its heartbeat. On an armed lease the
+  same word is waited on for the container-start bound (600 s) after the arming receipt,
+  because the timer arms from inside the container and RunPod may report RUNNING only once
+  it is healthy; past that, it closes when two consecutive ticks still see it. `ERROR`
+  closes at once. A provider that cannot answer is neither
+  `RUNNING` nor a reason to close; the heartbeat rule still holds and the loop keeps
+  ticking.
 - **The operator's `status` shows a supervisor block per open lease**: running, absent or
   unknown (it peeks the lock without creating it; only `BlockingIOError` counts as a
   holder), identity-file age, last tick, last close record and the volume's hourly price.
@@ -608,17 +645,36 @@ Record the pod id, timestamps, provider responses, and whether each item is **ve
   pod. Do not infer either from a successful create or GET.
 - [ ] Record whether the API version used offers any pod-side TTL / `maxRuntime` on create
   (none is documented in v1 or v2; `V2_MIGRATION.md` §3).
+- [ ] **Before the first paid create under v2**, run the free catalogue read
+  `RunPodV2Provider.cross_check_catalogue` with every `gpu_type_id` and `hourly_usd` from
+  `config/pod_placement.toml`, and record its findings. It confirms the exact `gpu.id`
+  strings and the reviewed Secure prices. A finding goes to the project lead; the sheet is
+  not edited from it.
+- [ ] **Confirm before early 2027 whether REST v2 has grown an account-balance field.** The
+  balance observer reads GraphQL, which RunPod retires in early 2027; without a replacement
+  the balance floor loses its live source (`V2_MIGRATION.md` §1).
 - [ ] Exercise **a pod that fails field validation and cannot be auto-terminated**: record
   any returned identity, the launch-token recovery, whether automatic close could act, and
   the manual console recovery if not.
-- [ ] Verify REST-v1 create accepts the real `gpuTypeIds`, attaches the volume at the
-  requested path, and returns id, name, `desiredStatus`, `costPerHr`, `networkVolume`,
-  `volumeMountPath`, `machine.gpuTypeId`, image, `dockerStartCmd`, template and
-  `interruptible=false` matching the sealed request.
+- [ ] On the route the run uses, verify create accepts the real GPU id, attaches the volume
+  at the requested path, and returns what the contract check reads, matching the sealed
+  request. v1: id, name, `desiredStatus`, `costPerHr`, `networkVolume`, `volumeMountPath`,
+  `machine.gpuTypeId`, image, `dockerStartCmd`, template and `interruptible=false`. v2: id,
+  name, `status`, `cost`, `createdAt`, `startedAt`, `cloud`, `gpu.id`, `gpu.count`,
+  `mounts.network`, image, template, and **`args` exactly as sent** — record whether it
+  comes back as the exec-form JSON object, re-serialized, or as a shell string, and whether
+  the deconstructed `entrypoint` and `cmd` appear.
+- [ ] Under v2, record every `status` word the pod passes through and how long each lasted,
+  whether `pod.cost` is non-zero while `PROVISIONING`, and whether RUNNING is reported
+  before or after the pod timer's arming receipt.
+- [ ] On the route the run uses (v1 as well as v2), record whether the pod-scoped
+  `RUNPOD_API_KEY` is accepted by the routes the pod-side timer calls (status, terminate,
+  list, billing), and that the pod's env carries `VERBATUS_RUNPOD_ROUTE` naming that route.
 - [ ] Verify launch-token recovery from the pod list after a deliberately lost create
   response, without confusing a same-name pod.
-- [ ] Confirm whether `GET /pods` paginates; a truncated list would mean a false absence or
-  a second POST for one launch.
+- [ ] Confirm the pod list's paging: v1 documents none; v2 documents `pagination.nextCursor`
+  and the adapter follows it. A truncated list would mean a false absence or a second POST
+  for one launch.
 - [ ] Rerun the checksummed transfer end to end. RunPod's S3 endpoint drops custom metadata
   on HeadObject and GetObject, so the adapter hashes target bytes under the manifest's size
   bound; that path is proven only by injected-client tests.
@@ -665,8 +721,10 @@ Record the pod id, timestamps, provider responses, and whether each item is **ve
   artifact on the volume before requesting the next; interrupt it and read it back. Repeat
   for every live witness and Perlector reading. A final export does not satisfy this.
 - [ ] Verify shutdown: GET-404, list absence, and non-empty exact-pod `GET /billing/pods`
-  rows from creation through the cutoff; lag or empty records are **unverified**. Confirm
-  the close report names the volume's hourly price and that no volume was deleted.
+  rows from creation through the cutoff; lag or empty records are **unverified** (v2 may
+  report `pending-reconciliation` inside a resolved window). Under v2, record whether
+  `metadata.query` is present on the `podId`-filtered route and what window it resolved.
+  Confirm the close report names the volume's hourly price and that no volume was deleted.
 
 ## Deferred items
 
@@ -680,10 +738,10 @@ these IDs.
 | 04-3 | No runnable bootstrap entrypoint | **Closed** by `bootstrap_main.py`, which holds rather than exits. |
 | 04-4 | A timer startup failure leaves nothing on the pod able to terminate it; the `EXITED` pod bills volume disk at double rate | **Mitigated.** The laptop supervisor closes it on its next status read. No provider-side TTL exists in the v1 or v2 documentation. |
 | 04-5 | Untested seams | **Open**: the success paths of `sync_uv_environment`, `pod_timer.main`/`load_timer_context`, `cli.main` end to end through real `module:callable` factories (tests monkeypatch them), and `UrllibRunPodTransport`. |
-| 04-6 | Every RunPod field name is documented, not observed | **Open** until the first live run; `--record-fixture` captures its exchanges to rebuild the offline suite on observed shapes. |
-| 04-7 | The close billing window is anchored on `lastStartedAt`, not creation | **Open.** v2 carries `createdAt` and a provider-resolved billing window (`V2_MIGRATION.md` §2.3–2.4); §5 step 4 plans the re-anchor. |
+| 04-6 | Every RunPod field name is documented, not observed | **Open** until the first live run on each route in use; `--record-fixture` captures its exchanges to rebuild the offline suite on observed shapes. |
+| 04-7 | The close billing window was anchored on `lastStartedAt`, not creation | **Anchor closed under v2**: `created_at` is the pod's `createdAt`. **Still open**: that RunPod bills nothing before `createdAt` is unobserved, and v1 still anchors on `lastStartedAt` until it is deleted. |
 | 04-8 | The at-most-one same-pin cache re-fetch does not ship | **Partly closed.** Constructed with `refetch_same_pin=None` (no cache-clear verb); `_build_cache` is untested. |
-| 04-9 | Nothing proves billing buckets cover the declared window | **Open** until a live run observes real bucket posting; a coverage check written before that would guess, and a wrong guess turns every close red. |
+| 04-9 | Nothing proves billing buckets cover the declared window | **Window half closed under v2** when `metadata.query` is present: the declared window is the provider's resolved one, must cover the request, and an empty answer inside it reads `pending-reconciliation`. **Still open**: whether `metadata.query` appears on the `podId`-filtered route, and whether the buckets *fill* the window, wait on a live run; a coverage check written before that would guess, and a wrong guess turns every close red. |
 | 04-10 | The real serving stack could not be locked | **Closed**; see "The serving stack, re-planned and locked". |
 
 ## The boot plan: Boot A, the drill, before Boot B, the real thing
@@ -703,8 +761,9 @@ key, after how long, and does the pod-scoped key hold delete and billing rights.
 `pod-arming-drill.v2`): first until the provider reports the container started
 (`CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS`, 600 s), then the channel bound
 (`CONTROLLER_ARMING_TIMEOUT_SECONDS`, 300 s), so the image pull does not eat the propagation
-budget. The start signal is `ProviderStatus.started_at` from RunPod's `lastStartedAt`,
-null until the pod first runs (`desiredStatus` reads RUNNING as soon as `create` returns).
+budget. The start signal is `ProviderStatus.started_at` from RunPod's `startedAt` (v2) or
+`lastStartedAt` (v1), null until the pod first runs (v1's `desiredStatus` reads RUNNING as
+soon as `create` returns).
 The untracked armer factory supplies the probe (`started_at()` returning
 `provider.status(pod_id).started_at`); without one the receipt says
 `container_start_probe: none`.
