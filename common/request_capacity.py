@@ -1,102 +1,27 @@
 """Whether one reading request fits the sealed serving row it would be sent to.
 
-The failure this closes is arithmetic, not a pod question.  A served Qwen-VL
-chair spends prompt tokens on the *image* before a single word of the prompt is
-counted, and the number is decided by the model's own ``smart_resize`` against
-the row's ``min_pixels``/``max_pixels``.  At 300 dpi an A4 page is 2480x3508,
-and against the shipped rows that is between 1,715 and 6,693 image tokens on
-its own.  A row whose ``max_model_len`` cannot hold image + prompt + a real
-answer does not fail slowly: vLLM answers **HTTP 400** before it generates
-anything, on a card that bills by the hour.
+A Qwen-VL chair spends prompt tokens on the image before the text, decided by
+its own ``smart_resize`` against the row's ``min_pixels``/``max_pixels``.  A
+row whose ``max_model_len`` cannot hold image + prompt + answer makes vLLM
+answer HTTP 400 before generating anything, on a card that bills by the hour.
+This module computes the exact count and refuses locally instead; it never
+downscales, clamps or reserves.
 
-Nothing here downscales, clamps, or reserves.  It computes the exact count and
-says whether the row can hold it, so the refusal happens on this laptop rather
-than on rented silicon (principle 8: the number is measured, and what is not
-measured is named as such).
+:func:`smart_resize` is a rewrite of the published formula (source named in
+:data:`SMART_RESIZE_SOURCE`); the token count is the processor's own
+``image_grid_thw.prod() // merge_size**2``.  Patch and merge sizes differ by
+chair (784 px per token on Qwen2.5-VL, 1,024 on Qwen3-VL), so they are never
+defaulted.
 
-Where the arithmetic comes from
--------------------------------
-:func:`image_prompt_tokens` is a rewrite of ``smart_resize`` from
-``transformers/models/qwen2_vl/image_processing_qwen2_vl.py``, read at the
-``transformers`` 5.16.1 installed on the measuring host.  The recipes pin
-5.14.1; that source has never been on this disk, so nothing here claims the
-function is unchanged between the two -- what is claimed is the version that
-was actually read, and a pod running 5.14.1 is where the two could first be
-compared.  **It is a rewrite of a published formula, not
-carried code** -- eleven lines of integer arithmetic, retyped here so this
-repository owns what it runs, with the source named so a reader can check it
-line for line.  The token count is then the processor's own formula from
-``Qwen2_5VLProcessor.replace_image_token`` / ``Qwen3VLProcessor.replace_image_token``:
-``image_grid_thw.prod() // merge_size**2``, which for one image is
-``(h_bar // factor) * (w_bar // factor)`` where ``factor = patch_size * merge_size``.
+No tokenizer runs here (no ``torch`` wheel for this host), so fixed prompts
+carry a measured constant sealed to a digest of the prompt text, and editing
+the prompt invalidates it.  The Perlector's prompt is built at run time, so it
+is admitted on a measured upper bound (:func:`perlector_prompt_bound`); its
+measured floor is recorded beside it but never admits, because admitting on a
+lower bound admits exactly the requests that overflow.
 
-The patch and merge sizes are **per chair**, never a default: the Qwen2.5-VL
-chairs (DAI, Churro) use patch 14 / merge 2 -- 784 px per image token -- and the
-Qwen3-VL chairs (Chandra, the Perlector) use patch 16 / merge 2 -- 1,024 px per
-image token.  A default here would silently mis-count by 30%, so
-:func:`row_image_geometry` refuses by name when the sealed row does not state
-them rather than guessing (the same posture as
-``row_context_length`` below).
-
-Prompt tokens
--------------
-The honest way to count a prompt is the chair's own tokenizer.  It is not
-available offline in this frozen environment: the tokenizer files are not in
-this repository, and ``transformers``' image processors import ``torch`` at
-module load, for which this host (an Intel Mac) has no wheel at the required
-floor.  So the fixed prompts carry a **sealed measured constant per prompt
-version**, taken from the per-chair measurement in
-``TOKEN_COST_REPORT.md`` section 5 -- each rendered through the repository's real
-chat template with the repository's real tokenizer at the pinned revision -- and
-each constant is stored beside a digest of the exact prompt text it was measured
-over.  :func:`sealed_prompt_tokens` recomputes that digest and refuses when it
-differs, so **editing a prompt invalidates its measurement** instead of leaving
-a stale number in force.
-
-The Perlector's prompt is built from run-time dossier content and has no fixed
-text to digest, so it carries measured facts rather than one constant.  Two of
-them describe a **floor**: the measured cost of a representative dossier at this
-prompt shape, and the measured tokens-per-word ratio of its own tokenizer on
-18th-century French register prose.  :func:`perlector_prompt_tokens` takes the
-larger of those two and is a lower bound on any real prompt -- the 790 was
-measured over a pass-A dossier with no fed prior draft and no reproof
-instrument, and the 1.644 tokens per word over plain prose, where a dossier is
-prose plus JSON scaffolding and costs more per word.
-
-**A floor cannot decide admission, and it no longer does.**  A check that admits
-on a lower bound admits exactly the requests it should have refused: a real
-dossier carrying five witnesses' full act texts, or a pass-B prompt with reproof
-instruments appended, passes a check measured over a 73-word pass-A dossier and
-is then answered with the HTTP 400 the check exists to prevent.  So a second,
-**upper** bound was measured, and it is the one
-:func:`refuse_unless_it_fits` admits on: :func:`perlector_prompt_bound`.  The
-floor is still computed and still travels on the capacity record beside it, with
-both bases named, because it is what says the request was refused by a
-measurement rather than by a margin.
-
-The bound is measured, not padded.  168 Perlector prompts were rendered through
-this repository's own builder -- one, three and five testimonia; 0, 5, 25, 100,
-400, 800 and 1,200 words of register French per testimonium; with and without a
-fed prior draft; with and without five appended reproof prompts; at one and two
-capture views -- tokenized with the chair's pinned tokenizer through its own
-chat template, and measured for tokens per character.  The ratio falls
-monotonically with dossier size (0.4126 at the densest scaffolding, 0.2641 over
-1,200-word acts), so the **maximum observed** ratio is the one sealed, with a
-stated 5% margin over it: see :data:`PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS`.
-It is sealed the way a fixed prompt's constant is -- digested against the
-template it was measured over, so an edit to the prompt builder invalidates the
-measurement rather than leaving a stale rate in force -- and reconciled against
-the pinned revision by the same test as the rest.
-
-**What the bound is not.**  It bounds this repository's rendering of the prompt.
-Whether vLLM's own assembly agrees with these counts token for token has never
-been observed, here or anywhere in this tree, so the bound is an upper bound on
-a measurement rather than a guarantee of admission (principle 8).
-
-**What only a pod can settle**: whether vLLM's own prompt assembly agrees with
-these counts token for token.  vLLM's OpenAI server applies the same chat
-template from the same repository files, so they should; that agreement has
-never been observed.
+Whether vLLM's own prompt assembly agrees with these counts token for token has
+never been observed; only a pod can settle it (principle 8).
 """
 
 from __future__ import annotations
@@ -112,8 +37,6 @@ from common.imaging import dimensions
 
 SCHEMA: Final = "verbatus-request-capacity.v1"
 
-# The exact source the arithmetic below was read off, named so a reader can
-# check the rewrite rather than take its word for it.
 SMART_RESIZE_SOURCE: Final = (
     "transformers/models/qwen2_vl/image_processing_qwen2_vl.py::smart_resize "
     "(read at transformers 5.16.1, the version installed on the measuring host; "
@@ -121,20 +44,15 @@ SMART_RESIZE_SOURCE: Final = (
     "not been compared)"
 )
 
-# ``smart_resize`` refuses an image this far from square before it resizes it.
-# Kept as its own name because the refusal is the library's, not ours.
+# The library's own aspect-ratio refusal, mirrored.
 MAX_ASPECT_RATIO: Final = 200
 
 
 class RequestCapacityRefusal(SchemaRefusal):
     """A request cannot be sent as shaped: the sealed row cannot hold it.
 
-    A refusal about the request, before anything goes on the wire -- the same
-    scope as ``operations.serving.errors.ChairRequestRefusal``, raised here
-    because it is decided by stage-side arithmetic over the sealed row rather
-    than by the client's own wire checks.  ``capacity`` carries the closed
-    record (:data:`SCHEMA`) so the caller can publish the arithmetic beside
-    whatever it holds or refuses, and never has to restate it from the message.
+    ``capacity`` carries the closed record (:data:`SCHEMA`) so the caller can
+    publish the arithmetic rather than restate it from the message.
     """
 
     def __init__(self, message: str, *, capacity: Mapping[str, Any] | None = None) -> None:
@@ -150,12 +68,8 @@ def smart_resize(
 ) -> tuple[int, int]:
     """The resized ``(height, width)`` a Qwen-VL image processor would use.
 
-    A rewrite of ``smart_resize`` (see :data:`SMART_RESIZE_SOURCE`), argument
-    order and rounding included: ``round`` is Python's own banker's rounding in
-    both, and ``math.floor``/``math.ceil`` land on the same integers.  Three
-    conditions, in the library's own order: both sides divisible by ``factor``;
-    total pixels inside ``[min_pixels, max_pixels]``; aspect ratio held as
-    closely as the first two allow.
+    A line-for-line rewrite of :data:`SMART_RESIZE_SOURCE`, rounding included:
+    ``round`` is banker's rounding in both.
     """
 
     if height <= 0 or width <= 0:
@@ -194,10 +108,8 @@ def image_prompt_tokens(
 ) -> int:
     """Exactly how many prompt tokens one image of this size costs this chair.
 
-    Not an estimate and not a bound: this is the processor's own count, from
-    the resized grid ``smart_resize`` produces.  ``width``/``height`` are the
-    pixels actually embedded in the request -- an adapter that crops or resizes
-    before sending (DAI) has already done so by the time this is asked.
+    ``width``/``height`` are the pixels actually embedded, after any crop or
+    resize the adapter does.
     """
 
     factor = _positive(patch_size, "patch_size") * _positive(merge_size, "merge_size")
@@ -258,19 +170,9 @@ class RowImageGeometry:
 def row_image_geometry(profile: Any) -> RowImageGeometry:
     """The sealed row's own image geometry, or a refusal naming the row.
 
-    ``min_pixels``/``max_pixels`` are what the manager passes to vLLM as
-    ``--mm-processor-kwargs``; ``patch_size``/``merge_size`` are the chair's
-    vision-encoder geometry, declared on the row because they decide the token
-    cost of every image sent under it.  They are read from the pinned
-    revision's own processor configuration -- ``preprocessor_config.json``
-    where the repository ships one, ``processor_config.json`` (under its
-    ``image_processor`` object) where it does not -- and recorded on the row;
-    a row that states none of them is refused here rather than counted against
-    a default that would be wrong for two of the four chairs.  Which of the
-    two files exists differs by chair, and
-    ``operations/serving/manager.py::assert_processor_geometry`` is what
-    proves the row's declaration against the file the verified snapshot
-    actually carries, wherever that snapshot exists.
+    No field is defaulted: any default would be wrong for two of the four
+    chairs.  ``operations/serving/manager.py::assert_processor_geometry``
+    checks the row against the model snapshot's own processor configuration.
     """
 
     values: dict[str, int] = {}
@@ -300,12 +202,8 @@ def row_image_geometry(profile: Any) -> RowImageGeometry:
 def image_token_costs(row: Any, images: Sequence[tuple[int, int]]) -> list[int]:
     """What each image costs this sealed row, in the order it was given.
 
-    The same arithmetic :func:`request_fits` totals, exposed one image at a
-    time for a caller that must decide something *about* an image before the
-    record is built -- the Perlector's answer reserve is decided by whether the
-    act's own crop costs what a whole-page render costs, and that comparison
-    has to happen before ``answer_budget`` is passed in.  Reads the row's
-    geometry once, through the same refusal :func:`row_image_geometry` gives.
+    For a caller that must compare image costs before choosing an
+    ``answer_budget`` (the Perlector's act crop against a whole page).
     """
 
     geometry = row_image_geometry(row)
@@ -323,15 +221,7 @@ def image_token_costs(row: Any, images: Sequence[tuple[int, int]]) -> list[int]:
 
 
 def row_context_length(profile: Any) -> int:
-    """The sealed row's ``max_model_len``, or a refusal naming the row.
-
-    The one field in the serving contract that says how long a request the
-    engine will accept -- there is no separate answer-budget field, and
-    ``operations/serving/smoke.py`` sends no bound at all.  Asked here for both
-    of the two questions that need it: whether a request fits at all
-    (:func:`request_fits`) and what generation bound it may carry
-    (:func:`sendable_max_tokens`).
-    """
+    """The sealed row's ``max_model_len``, or a refusal naming the row."""
 
     value = getattr(profile, "max_model_len", None)
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -377,17 +267,12 @@ CAPACITY_RECORD_FIELDS: Final = frozenset(
     }
 )
 
-# What ``prompt_tokens`` rests on, as a closed vocabulary, so a receipt says
-# how the number was arrived at rather than leaving a reader to assume it was
-# counted by a tokenizer that never ran here.
+# How ``prompt_tokens`` was arrived at; no tokenizer runs here, so a receipt
+# must say.
 PROMPT_TOKENS_MEASURED_CONSTANT: Final = "measured-constant-for-this-prompt-version"
 PROMPT_TOKENS_MEASURED_FLOOR: Final = "measured-floor-for-this-prompt-shape"
 PROMPT_TOKENS_MEASURED_RATE: Final = "measured-tokens-per-word-extrapolation"
-# The one basis a *dossier-built* prompt may be admitted on: the maximum
-# tokens-per-character ratio measured over this prompt shape, plus a stated
-# margin, over the measured chat-template overhead.  Named apart from the two
-# floors above so a receipt can never be read as though a lower bound had been
-# treated as an admission.
+# The only basis a dossier-built prompt may be admitted on.
 PROMPT_TOKENS_MEASURED_BOUND: Final = "measured-upper-bound-for-this-prompt-shape"
 PROMPT_TOKENS_BASES: Final = frozenset(
     {
@@ -398,10 +283,7 @@ PROMPT_TOKENS_BASES: Final = frozenset(
     }
 )
 
-# The bases a capacity record may admit a request on.  A floor names how a
-# request was *refused*; it may never be the number a request was let through
-# on.  `request_fits` holds this, so a call site cannot admit on a floor by
-# passing one in.
+# A floor may explain a refusal but never admit a request.
 PROMPT_TOKENS_ADMITTING_BASES: Final = frozenset(
     {PROMPT_TOKENS_MEASURED_CONSTANT, PROMPT_TOKENS_MEASURED_BOUND}
 )
@@ -419,36 +301,14 @@ def request_fits(
 ) -> dict[str, Any]:
     """The closed capacity record for one request against one sealed row.
 
-    ``images`` is every image the request carries, in the order it carries
-    them, as ``(width, height)`` in the pixels actually embedded.
-    ``prompt_tokens`` is the request's text cost and ``answer_budget`` the
-    tokens the answer must be able to occupy -- both are the caller's to
-    supply, because only the caller knows which prompt and which answer shape
-    this call is.
+    ``images`` are ``(width, height)`` in the pixels actually embedded.
+    ``prompt_tokens`` decides admission, so its basis must be in
+    :data:`PROMPT_TOKENS_ADMITTING_BASES`.  ``prompt_tokens_floor`` is recorded
+    only, never compared with the bound: a prompt shorter than the
+    representative dossier can record a floor above its own bound.
 
-    ``prompt_tokens`` is the number admission is decided on, so it must rest on
-    a basis in :data:`PROMPT_TOKENS_ADMITTING_BASES` -- a measured constant for
-    a fixed prompt, or a measured upper bound for a dossier-built one.  A floor
-    is refused here rather than accepted quietly: a check that admits on a lower
-    bound admits exactly the requests it should have refused.
-
-    ``prompt_tokens_floor``/``prompt_tokens_floor_basis`` are the *other* number
-    a chair with no fixed prompt has -- what this repository has measured of the
-    prompt from below.  They are recorded, never used to decide anything, so a
-    receipt shows both what the request was admitted on and what was measured of
-    it, each with its basis named.
-
-    The two are independent measurements and are not cross-checked here.  The
-    Perlector's floor is the larger of a rate over this prompt's own words and
-    the measured cost of a *representative* dossier, and that second term is a
-    claim about real dossiers rather than about arbitrarily short text -- so a
-    prompt smaller than that dossier can record a floor above its own bound.
-    Nothing turns on it either way: admission is the bound and only the bound.
-
-    Never raises on a request that simply does not fit: that is a ``fits:
-    False`` record with a reason, which the caller publishes and then acts on.
-    It raises only when the row cannot state what it would take to compute the
-    answer at all.
+    A request that does not fit returns ``fits: False`` with a reason; this
+    raises only when the row cannot state what the check needs.
     """
 
     geometry = row_image_geometry(row)
@@ -561,14 +421,7 @@ def refuse_unless_it_fits(
 ) -> dict[str, Any]:
     """The capacity record, or :class:`RequestCapacityRefusal` carrying it.
 
-    The one-line form for a call site whose contract is a refusal rather than a
-    hold.  A site that holds instead reads ``record["fits"]`` and publishes the
-    record either way.
-
-    Admits on ``prompt_tokens`` and on nothing else, and :func:`request_fits`
-    refuses a ``prompt_tokens_basis`` that names a floor, so the number a
-    request gets through on is always a measured constant or a measured upper
-    bound.
+    For call sites that refuse; a site that holds reads ``record["fits"]``.
     """
 
     record = request_fits(
@@ -606,18 +459,10 @@ def _nonnegative(value: object, field: str) -> int:
 class SealedPromptTokens:
     """One chair's measured prompt cost, bound to the exact text it was measured over.
 
-    ``prompt_digest`` is :func:`prompt_digest` of the prompt's own message
-    texts at the moment of measurement.  It is what makes the constant expire:
-    edit the prompt and :func:`sealed_prompt_tokens` refuses rather than
-    carrying a number that describes text nobody sends any more.
-
-    ``repo`` and ``revision`` are the tokenizer the count was taken with, as
-    two structured fields rather than one sentence, because they are
-    reconciled against ``config/models-real.toml``'s own pins by a test --
-    the way ``common/chairs/model_store.py``'s inventory is reconciled against
-    ``config/models.toml``.  A repointed chair invalidates its measurement
-    exactly as an edited prompt does: the tokenizer that produced the number
-    is no longer the tokenizer the chair would use.
+    ``prompt_digest`` expires the constant when the prompt is edited.
+    ``repo``/``revision`` name the tokenizer and are kept structured because a
+    test reconciles them with ``config/models-real.toml``, so repointing the
+    chair expires the measurement too.
     """
 
     tokens: int
@@ -638,41 +483,17 @@ def prompt_digest(*texts: str) -> str:
     return digest_bytes("\x00".join(texts).encode("utf-8"))
 
 
-# Measured on the session host against each chair's own tokenizer and chat
-# template at the revision `config/models-real.toml` pins
-# (`TOKEN_COST_REPORT.md` sections 1 and 5).  No weights were fetched and no
-# tokenizer runs here: these are the recorded results, bound to the prompt text
-# they were taken over.
-#
-# **A chair carries one measurement per prompt it can be asked in, matched by
-# digest.**  Churro can be asked in either of two declared framings
-# (`pipeline/3_attestatores/churro.py::FRAMINGS`), and a framing whose cost
-# nobody measured is a framing no run can send: `sealed_prompt_tokens` would
-# refuse it at the capacity check, which would make the selector a choice
-# between one option and an error.  So the value is a tuple, every entry sealed
-# to its own text exactly as a single entry was, and the digest still expires a
-# measurement the moment its prompt is edited.  A chair with one prompt has a
-# one-entry tuple and nothing else changes.
+# Each chair's prompt cost, rendered through the model's own chat template with
+# the real tokenizer at the pinned revision (`transformers` 5.16.1, the
+# measuring host's; the lock pins 5.14.1), image placeholder expanded and image
+# tokens subtracted.  One entry per prompt the chair can send, matched by
+# digest: Churro has two framings (`pipeline/3_attestatores/churro.py::FRAMINGS`).
+# Message order does not change the count.
 MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = MappingProxyType(
     {
-        # Re-measured for `verbatus-structure-prompt.v3` -- the carried vendor
-        # prompt (`common/chandra_layout.py::OCR_LAYOUT_PROMPT`) replacing this
-        # repository's own v2 instruction, under the ruling that each witness
-        # is asked in its developers' own bytes. **325 -> 593**, measured
-        # at the same pinned revision, in the message shape
-        # `structure_pass.page_request` builds (one `user` turn, image part
-        # first). The same run reproduces the superseded 325 exactly over the
-        # superseded v2 text, which is what says the two numbers are comparable
-        # rather than merely both present.
-        #
-        # The prompt is 268 tokens dearer because it is a different and larger
-        # instruction: 2,161 characters against v2's 1,192, carrying the
-        # vendor's 36-tag and 14-attribute lists and its nineteen labels. That
-        # cost is not a regression to be tuned away -- trimming the carried
-        # bytes is exactly what would stop them being the vendor's -- and it is
-        # weighed where it belongs, in `request_fits` against the row's own
-        # `max_model_len` (`page_capacity`), on every page, before anything is
-        # sent.
+        # Chandra's own `OCR_LAYOUT_PROMPT` (`common/chandra_layout.py`).  Its
+        # size is the vendor's and is not to be trimmed: trimmed bytes would no
+        # longer be the vendor's prompt.
         "designator_structure": (
             SealedPromptTokens(
                 tokens=593,
@@ -681,29 +502,7 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
                 revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
             ),
         ),
-        # Re-measured for the carried vendor prompt: Chandra's own
-        # `OCR_LAYOUT_PROMPT` (`common/chandra_layout.py`) replaces the
-        # repository's retired `_LIVE_INSTRUCTION` at this chair, so the number
-        # this chair is admitted on is the cost of the text it now actually
-        # sends -- **256 -> 593**, over a prompt that is 2,161 characters where
-        # the retired one was 934.
-        #
-        # Measured by `TOKEN_COST_REPORT.md` section 3's own method and its own
-        # arithmetic (`total = render(...)` with the image expanded, minus the
-        # image tokens): the repository's message list rendered through
-        # `chat_template.jinja` with the real tokenizer at the revision below,
-        # `transformers 5.16.1`, the same version that report used. The control
-        # is what makes it a measurement of the same thing rather than a new
-        # number in the same units: the identical harness re-renders the retired
-        # `_LIVE_INSTRUCTION` and reproduces **256 exactly**. Message order does
-        # not enter it -- image-first and text-first render to the same count --
-        # so the landed image-before-text change moves nothing here, as its own
-        # docstring says.
-        #
-        # The single retired entry is not kept beside this one. Churro carries
-        # two because it can be *asked* in either framing; this chair has one
-        # prompt, and a second entry would seal a cost for text no code can
-        # send.
+        # The same Chandra prompt as `designator_structure`.
         "attestator_1": (
             SealedPromptTokens(
                 tokens=593,
@@ -720,34 +519,9 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
                 revision="e371095d4ffe585f31f4974462931ddbac61ff64",
             ),
         ),
-        # Re-measured for the two vendor-attested framings this
-        # chair can now be asked in (`common/churro_document.py`), which
-        # replace the two this repository wrote for it. Both are system-only
-        # single-sentence instructions where the retired pair were a two-message
-        # transcription brief, so the cost collapses by an order of magnitude:
-        # **441 -> 27** for the framing a run sends by default
-        # (`registry-v0.3.0`, `CHURRO_3B_XML_TEMPLATE.system_message` at tag
-        # `v0.3.0`) and **281 -> 29** for its arm (`paper-harness-ed09bc7`,
-        # `finetuned_ocr.py::SYSTEM_MESSAGE`, whose two spelling errors cost the
-        # two extra tokens).
-        #
-        # Measured by `TOKEN_COST_REPORT.md` section 3's own method and its own
-        # arithmetic: the repository's message list -- a system turn of one
-        # `{type: text}` part and an image-only user turn, which is what
-        # `live_witness._page_messages` builds for this shape -- rendered
-        # through the model's own `chat_template.json` with the real tokenizer
-        # at the revision below, `transformers 5.16.1`, the same version that
-        # report used, with the image placeholder expanded and the image tokens
-        # subtracted back out. The control is what makes it a measurement of the
-        # same thing rather than a new number in the same units: the identical
-        # harness re-renders the two retired framings and reproduces **441 and
-        # 281 exactly**, over the exact digests this table sealed for them.
-        # Message order does not enter it -- the retired two-message framing
-        # renders to 281 image-first and text-first alike.
-        #
-        # The retired entries are not kept beside these. A framing no code can
-        # send is a cost for text nobody sends, which is the one thing this
-        # table refuses to carry.
+        # The two vendor framings (`common/churro_document.py`): 27 for the
+        # default `registry-v0.3.0`, 29 for `paper-harness-ed09bc7`, whose two
+        # spelling errors cost the extra tokens.
         "attestator_3": (
             SealedPromptTokens(
                 tokens=27,
@@ -765,70 +539,37 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
     }
 )
 
-# The Perlector's prompt is rendered from run-time dossier content, so it has no
-# fixed text to seal.  Two measured facts stand in for one constant: the floor
-# is `TOKEN_COST_REPORT.md` section 5's measurement of a representative
-# single-view dossier (witness regime, three testimonia, no fed prior draft),
-# and the ratio is section 6's measurement of that chair's own tokenizer over
-# 18th-century French register prose -- 120 tokens for 73 words.  Kept as the
-# measured integer pair rather than a rounded rate so the arithmetic stays exact.
+# The Perlector's floor: a representative three-testimonia dossier, and its
+# tokenizer's rate over register French (120 tokens for 73 words), kept as the
+# measured integer pair so the arithmetic is exact.
 PERLECTOR_PROMPT_FLOOR_TOKENS: Final = 790
 PERLECTOR_TOKENS_PER_WORD: Final = (120, 73)
 
 # --- and the upper bound admission actually rests on ---------------------------
 #
-# Measured offline, with the pinned Perlector
-# tokenizer and its own chat template: 168 prompts rendered through
-# `pipeline/4_perlector/prompts.py::build_prompt` for recipe
-# `unproven-real-perlector` -- 1/3/5 testimonia x 0/5/25/100/400/800/1,200 words
-# of 18th-century register French per testimonium x fed and withheld prior draft
-# x zero and five appended reproof prompts x one and two capture views -- and
-# measured for tokens per character of the rendered text.
-#
-# The harness reproduces `TOKEN_COST_REPORT.md` section 5 exactly on that
-# section's own dossier (790 text tokens at one capture view, 794 at two), which
-# is what says it is measuring the same thing the floor was measured with.
-#
-# The ratio falls monotonically as the dossier grows -- 0.4126 where the acts are
-# empty and the JSON scaffolding is all there is, 0.2641 over 1,200-word acts --
-# so the maximum is at the *small* end and it is the maximum that is sealed:
-# 0.4126394 tokens per character, rounded up at the fourth decimal.
+# Tokens per character over 168 prompts rendered through `build_prompt` with the
+# pinned tokenizer and chat template (1/3/5 testimonia, 0-1,200 words each, with
+# and without prior draft, reproofs and a second view).  The ratio falls as the
+# dossier grows, so the sealed value is the maximum, 0.4126394, rounded up.
 PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS: Final = 4127
-# Over the maximum, not over a mean: 5%, stated rather than folded into the
-# ratio so a reader can see the measurement and the margin apart. The tightest
-# measured case clears its own bound by 13.7% with it.
+# Kept apart from the ratio so measurement and margin stay visible.
 PERLECTOR_BOUND_SAFETY_MARGIN: Final = (105, 100)
-# The chat template's own cost, which no per-character rate can carry: 52 tokens
-# for the turn plus 2 for each image in it, both measured exactly (the per-image
-# cost is 2 at every count from 0 to 8 images). Charged at
-# `config/perlector_protocol.toml`'s `max_images` ceiling of 32 rather than at
-# the images this request happens to carry, so the constant is an upper bound
-# for any request this seam can build; `test_live_reader.py` reconciles the 32
-# against that file, so raising the ceiling expires this number.
+# Chat-template cost: 52 per turn plus 2 per image, charged at the protocol's
+# `max_images` ceiling so it bounds any request; a test reconciles the 32 with
+# `config/perlector_protocol.toml`.
 PERLECTOR_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * 32
 PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS: Final = 32
-# The builder the ratio was measured through, as `prompts.py`'s own module
-# digest -- the same value `prompts.prompt_evidence` records as
-# `builder_sha256`. `perlector_prompt_bound` refuses when the caller's builder
-# does not match it, so an edited prompt template expires this measurement
-# exactly as an edited fixed prompt expires its sealed constant.
+# `prompts.py`'s module digest (`builder_sha256`): editing the builder expires
+# the measured ratio.
 PERLECTOR_PROMPT_TEMPLATE_DIGEST: Final = (
     "ad623c7d0fd379816c471f21bda00cd7dbf1f0ecfabed00ccc2e8f8a29dbf783"
 )
-# The representative dossier of `TOKEN_COST_REPORT.md` section 5 -- three
-# testimonia, one 73-word act each, pass A, no reproof -- as its measured
-# character count and the bound over it. Sealed so the shipped-row check
-# (`operations/serving/test_serving_catalogue_capacity.py`) can weigh the rows
-# against the number the seam admits on rather than against the floor it no
-# longer admits on; `test_request_capacity.py` re-derives the second from the
-# first, so the pair cannot drift from the arithmetic.
+# The representative dossier's size and bound, for weighing the shipped rows
+# against what is admitted on; a test re-derives the bound from the size.
 PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS: Final = 2269
 PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS: Final = 1100
-# The tokenizer all of the Perlector's measured numbers were taken with, in the
-# same two structured fields a sealed prompt carries, and reconciled against
-# `config/models-real.toml` by the same test: this chair has no fixed prompt to
-# digest, so the pinned revision is the only thing that can expire its
-# measurement.
+# Reconciled with `config/models-real.toml`: with no fixed prompt to digest, the
+# pinned revision is what expires the Perlector's measurements.
 PERLECTOR_MEASURED_TOKENIZER: Final = (
     "Qwen/Qwen3.8-27B",
     "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
@@ -836,12 +577,7 @@ PERLECTOR_MEASURED_TOKENIZER: Final = (
 
 
 def sealed_prompt_tokens(chair: str, *texts: str) -> int:
-    """The measured prompt-token count for this chair's fixed prompt, digest-checked.
-
-    Refuses when the chair has no measurement, and refuses when the prompt text
-    has changed since the measurement was taken -- a stale constant would report
-    the cost of a prompt nobody sends.
-    """
+    """The measured prompt-token count for this chair's fixed prompt, digest-checked."""
 
     entries = MEASURED_PROMPT_TOKENS.get(chair)
     if entries is None:
@@ -868,19 +604,9 @@ def sealed_prompt_tokens(chair: str, *texts: str) -> int:
 def perlector_prompt_tokens(text: str) -> tuple[int, str]:
     """``(tokens, basis)`` for one rendered Perlector prompt: a floor, not a count.
 
-    The larger of the measured floor and the measured tokens-per-word ratio
-    applied to this prompt's own word count.  The ratio was measured over
-    French register prose rather than over this dossier, so a count that rests
-    on it is named an extrapolation in the record it lands in; the floor is a
-    measurement of this prompt shape and is named as such.
-
-    **Both inputs are lower bounds, so the result is one too.**  The floor was
-    measured over a pass-A dossier with no fed prior draft and no appended
-    reproof prompts, and every richer dossier is larger; the rate was measured
-    over prose, and the JSON scaffolding a dossier carries costs more per word.
-    A request this returns a number for is not thereby proved to fit -- it is
-    proved not to fit when even the floor overruns the row.  Nothing pads it:
-    a margin nobody measured is not a measurement (principle 8).
+    The larger of the measured floor and the per-word rate.  Both are lower
+    bounds (richer dossiers and JSON scaffolding cost more), so this can prove
+    a request does not fit but never that it does.
     """
 
     words = len(text.split())
@@ -894,33 +620,10 @@ def perlector_prompt_tokens(text: str) -> tuple[int, str]:
 def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str]:
     """``(tokens, basis)`` for one rendered Perlector prompt: the upper bound.
 
-    The number this chair's requests are admitted on.  The measured chat-template
-    overhead at the protocol's own image ceiling, plus the maximum measured
-    tokens-per-character ratio with its stated margin, applied to this prompt's
-    own characters.  Every one of the 168 measured prompts is below what this
-    returns for it, the tightest by 13.7%.
-
-    Characters rather than words, deliberately.  A dossier is prose *and* JSON
-    scaffolding, and the scaffolding has few whitespace words for the tokens it
-    costs: the same measurement gives 1.65 tokens per word over 1,200-word acts
-    and 8.16 over a dossier whose acts are empty, a five-fold spread, against
-    0.264 and 0.413 per character.  A per-word rate would need a margin five
-    times the size to cover the same set, which is a margin standing in for a
-    measurement nobody took.
-
-    ``template_digest`` is the builder the caller is rendering through --
-    ``prompts.py``'s module digest, the same value ``prompt_evidence`` records
-    as ``builder_sha256``.  It is checked rather than trusted: the ratio
-    describes the bytes that builder produces, and an edited builder produces
-    other bytes.  This is :func:`sealed_prompt_tokens`'s discipline for a prompt
-    that has no fixed text to digest -- what expires the measurement is the
-    template rather than the rendering.
-
-    **An upper bound on a measurement, not a guarantee of admission.**  vLLM's
-    own prompt assembly has never been observed by this repository.  What this
-    closes is the failure of admitting on a *floor*: a real five-witness dossier
-    or a pass-B prompt with reproofs appended no longer passes a check that was
-    measured over a 73-word pass-A dossier.
+    Per character, not per word: JSON scaffolding has few words for its tokens,
+    so the per-word rate spreads five-fold across dossiers where the
+    per-character rate spreads 1.6-fold.  ``template_digest`` is ``prompts.py``'s
+    module digest, checked because the ratio describes only that builder's bytes.
     """
 
     if template_digest != PERLECTOR_PROMPT_TEMPLATE_DIGEST:
@@ -943,84 +646,16 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
     return PERLECTOR_PROMPT_OVERHEAD_TOKENS + body, PROMPT_TOKENS_MEASURED_BOUND
 
 
-# What an answer costs on a dense page, per chair, in that chair's own declared
-# response shape: `TOKEN_COST_REPORT.md` section 8's 800-word measurement, which
-# is the larger of the two it took.  DAI's is its whole-page fallback act (its
-# ordinary act answer is 230); the Perlector's is likewise its page-fallback
-# act's reading rather than an ordinary act's 216.  Both are the demanding case,
-# because a row that cannot hold the demanding case cannot serve a dense page.
+# What a dense page's answer costs, per chair, in the chair's own response
+# grammar: the same 800-word `FRENCH_ACT` body for every row, so the rows stay
+# comparable.  DAI and the Perlector use their page-fallback act, the demanding
+# case.  A row holds only for its chair's current response grammar, and nothing
+# checks that.
 #
-# **"Its own declared response shape" is what makes this expire with a prompt,
-# and two of these five rows were expired until U14.**  Both witness page
-# chairs were moved to their vendor's own output grammar by the vendor systems
-# units, so neither number was still the cost of the shape a served chair
-# actually answers in: `attestator_1`'s 1,520 was a Chandra page JSON and its
-# grammar is now HTML (U9), and `attestator_3`'s 1,631 was the closed JSON
-# object this repository invented for Churro, whose coordinate channel is
-# retired (U10).  U14 re-runs both with the same harness and the same
-# `FRENCH_ACT` body -- the same 800 words `designator_structure`'s row below
-# was re-taken over -- which is what keeps all five rows comparable with each
-# other; sealing a chair here over a body the others were not measured on
-# would make the rows mean different things. Reproducing the superseded 1575
-# and 1520 exactly as its control is what says the new numbers were taken by
-# the same measurement rather than a different one in the same units.
-#
-# **`attestator_1`, 1520 -> 1645.**  It shares one prompt and one grammar with
-# `designator_structure` -- both send `chandra_layout.OCR_LAYOUT_PROMPT` and
-# are read by `chandra_layout.parse_layout_html` -- so the same fixture (six
-# `<div data-bbox=... data-label="Text"><p>...</p></div>` blocks, apostrophes
-# entity-escaped to `&#x27;`, the spelling the parser accepts and the dearer
-# of the two the grammar admits) costs the two chairs the same: **1645**,
-# identical to `designator_structure`'s own re-measurement
-# below because it is the same text tokenized by the same tokenizer.
-#
-# **`attestator_3`, 1631 -> 1905.**  Churro's grammar carries `Line` elements
-# per physical line, not one block per act, so the comparable convention is
-# the one the same 800-word `FRENCH_ACT` page fills at twelve words a line --
-# 67 lines, the density `answer_shapes.py` used for its own, differently-worded
-# exploration -- wrapped `<HistoricalDocument><Page><Body>...</Body></Page>
-# </HistoricalDocument>`, tokenized by `stanford-oval/churro-3B`'s own
-# tokenizer at the pinned revision: **1905**.  This retires the earlier
-# recorded-but-not-sealed finding of "1,644 over a non-comparable ACT text,
-# +208 against the retired JSON" -- that number used a different sentence than
-# `TOKEN_COST_REPORT.md`'s own `FRENCH_ACT` and was explicitly not comparable
-# with the other four rows (`answer_shapes.py`'s own docstring says so); this
-# measurement is, and it is what is sealed. Both changes are why
-# `operations/serving/test_serving_catalogue_capacity.py`'s former "shortfall,
-# not re-pinned" workaround (`CHURRO_VENDOR_GRAMMAR_ANSWER_SHORTFALL_TOKENS`)
-# is retired with U14: the budget itself now carries the corrected cost, so
-# re-weighing it against a separately-tracked shortfall would double the
-# correction.
-#
-# `designator_structure` moved with `verbatus-structure-prompt.v3`, for the
-# same reason as `attestator_1`: its declared response shape is no longer the
-# `verbatus-structure-answer.v1` JSON object but Chandra's own layout HTML
-# (`common/chandra_layout.py`). Re-measured by this section's own
-# harness -- the same `FRENCH_ACT` to 800 words in the same six blocks, the same
-# tokenizer at the same pinned revision -- at **1575 -> 1645**.
-#
-# **The 70 tokens are the fixture's escaping, not the grammar's tags**, and that
-# is measured rather than assumed. Written literally, the same six blocks in
-# `<div data-bbox=... data-label=...><p>` measure 1506 -- sixty-nine tokens
-# *fewer* than the JSON object they replace, because the layout grammar's
-# scaffolding is the cheaper of the two. The 1645 is measured over a fixture
-# whose prose is entity-escaped, where the act's thirty-two apostrophes are
-# `&#x27;` at five tokens each rather than `'` at one; that is where all 139
-# tokens of the gap between the two spellings live.  139 rather than 4 x 32
-# because the escape also breaks the merge with the word around it -- "L'an" is
-# two tokens and "L&#x27;an" is seven.
-#
-# **The escaped fixture is what is sealed, deliberately.**
-# `chandra_layout.parse_layout_html` resolves character references
-# (`html.parser` with `convert_charrefs=True`), so a body that spells its
-# apostrophes `&#x27;` is a valid answer under the grammar this chair is read
-# by, and a reserve covering only the cheaper spelling would under-reserve a
-# body the parser accepts -- a cut-off answer is a missed act (goal 2). 1645 is
-# therefore an upper bound over the two spellings the grammar admits, and both
-# measurements are recorded here so a later reader can see which was sealed and
-# why. Neither number changes what any shipped row does: a whole 300-dpi page
-# is admitted on all three `designator_structure` tiers at either value, and
-# the same is true of `attestator_1`'s row (U15).
+# Chandra's two rows (1645) are measured with apostrophes escaped as `&#x27;`
+# (1506 written literally): the parser resolves character references, so the
+# dearer spelling is a valid answer, and under-reserving for it would cut off
+# an act (goal 2).  Churro's (1905) is 67 `Line` elements at twelve words each.
 MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "designator_structure": 1645,
@@ -1032,18 +667,9 @@ MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 )
 
 
-# What one *act*'s answer costs, for the two chairs that are asked for one act
-# rather than for a page: `TOKEN_COST_REPORT.md` section 8's 800-word figures
-# again, but the ordinary-act rows.  These are the budgets an act-scoped
-# request reserves, because reserving a whole page's answer for a request that
-# asked for one act would refuse calls that measurably work -- DAI on an
-# ordinary crop is the one chair sound at every tier, and refusing it would
-# cost acts (goal 2) to protect against an overrun that cannot happen.
-#
-# A *page-fallback* act -- an act whose bounds are the whole page -- is not
-# admitted by the back door here: its crop is a whole 300-dpi page, so it is
-# caught by its own image cost, which is between four and thirty times the
-# difference between these two budgets.
+# One ordinary act's answer, for the act-scoped chairs.  Reserving a page's
+# answer here would refuse calls that fit and cost acts (goal 2); a
+# page-fallback act is still caught by its whole-page image cost.
 MEASURED_ACT_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "attestator_2": 230,
@@ -1052,35 +678,17 @@ MEASURED_ACT_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 )
 
 
-# What each occupant's *own* pipeline asks for as a generation bound, per chair.
+# The generation bound each vendor's own inference code asks for; unlike the
+# tables above, not a measured cost.
 #
-# Distinct from the two tables above and not interchangeable with them.  Those
-# are measurements this repository took of what an answer *costs*; this one is
-# what the vendor's own inference code *asks for*, carried as a fact about
-# upstream with its source named.  Nothing here is a claim that a longer answer
-# would be worse -- it is the bound the model was run under wherever its
-# publisher ran it, and, on a card that bills by the hour, the bound that stops
-# an unbounded generation.
+# * Chandra, 12,384: `chandra/settings.py::MAX_OUTPUT_TOKENS`.
+# * DAI, 1,024: the model card's `max_new_tokens`.  It is not in the vendor's
+#   `generation_config.json`, which `feeding.dai_generation()` carries byte for
+#   byte, so it lives here.
+# * Churro, 20,000: the CHURRO paper (arXiv:2509.19768), section B.2.
 #
-# * `designator_structure` / `attestator_1` -- Chandra, 12,384:
-#   `chandra/settings.py::MAX_OUTPUT_TOKENS`, passed as `max_tokens` by
-#   `chandra/model/vllm.py` on every request inside an 18,000-token context.
-# * `attestator_2` -- DAI, 1,024: the model card's own inference snippet calls
-#   `model.generate(max_new_tokens=1024)`.  It is *not* in the carried
-#   `generation_config.json`, which is why it is declared here rather than
-#   added to `feeding.dai_generation()`: that function returns the vendor's
-#   file byte-for-byte under a digest, and an inference-script value is a
-#   different kind of evidence than a shipped configuration.
-# * `attestator_3` -- Churro, 20,000: the CHURRO paper section B.2, "chosen to
-#   allow generation of all gold outputs".  This replaces a 24,000 that this
-#   repository had described as Churro's "carried HuggingFace-generate
-#   `max_new_tokens`"; the model's own `generation_config.json` at the pinned
-#   revision carries no such field, so that description named a source that
-#   does not exist and the number belonged to nobody.
-#
-# The Perlector is deliberately absent.  Its occupant is a stock base model
-# with no vendor inference script to carry a bound from, and
-# `pipeline/4_perlector/live_reader.py` states its own reason for sending none.
+# The Perlector is a stock base model with no vendor bound;
+# `pipeline/4_perlector/live_reader.py` sends none.
 DECLARED_ANSWER_BOUND_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "designator_structure": 12_384,
@@ -1094,45 +702,12 @@ DECLARED_ANSWER_BOUND_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 def sendable_max_tokens(chair: str, capacity: Mapping[str, Any]) -> dict[str, int]:
     """The ``max_tokens`` this request may carry, or nothing where the row binds.
 
-    The bound is ``min(the chair's declared upstream bound, max_model_len -
-    image tokens - prompt tokens)``, both terms taken from
-    :data:`DECLARED_ANSWER_BOUND_TOKENS` and from *this request's own* capacity
-    record -- so it is derived from the same arithmetic the request was
-    admitted on, against the same sealed row, never from a second and looser
-    reading of either.
-
-    **The row term is expressed by sending no field at all, and that is not a
-    shortcut.** With no ``max_tokens`` vLLM sets the answer budget to
-    ``max_model_len - input_length`` computed from *its own* prompt assembly,
-    which is the same quantity the row term names but measured by the component
-    that actually holds the tokenizer and the image. Ours is a **measured
-    floor**: this repository has never observed vLLM's assembly agree with it
-    (module docstring). Putting our number on the wire would therefore turn any
-    undercount, by even one token, into ``prompt + max_tokens > max_model_len``
-    -- HTTP 400, before a token is generated, on a card that bills by the hour,
-    which is precisely the failure this module exists to keep off rented
-    silicon. Sending nothing cannot fail that way, and it is what every chair
-    was already doing.
-
-    So a value goes on the wire only where the *declared* bound is what binds,
-    strictly below what the row leaves. That is the case the vendor's number is
-    for and the only one where it changes anything: DAI's act crops would
-    otherwise be free to generate some 7,700 tokens where its own publisher
-    runs it at 1,024. The slack between the two terms is then also the margin
-    against an undercount, and it is thousands of tokens wide at every shipped
-    row rather than a number anyone chose.
-
-    Strictly below, not at or below: at exact equality the sent bound would
-    leave zero slack, which is the one case where a one-token disagreement with
-    vLLM is a refusal rather than a shorter answer.
-
-    **What a ``"length"`` stop means afterwards.** The vendor's own bound was
-    reached wherever a bound was sent, and the context was exhausted wherever
-    none was -- and which of the two applied is on the retained chair-call
-    record, because the value travels on ``generation_sent``.
-
-    Never guesses: a chair with no declared bound, or a capacity record that is
-    not this module's own closed shape, is refused by name.
+    The bound is ``min(declared vendor bound, max_model_len - prompt cost)``
+    from this request's own capacity record.  The row term is sent as no field:
+    vLLM then computes it from its own prompt assembly, whereas our count, if
+    one token low, would make vLLM answer HTTP 400.  So a value is sent only
+    when the declared bound is strictly below the row's remainder, leaving
+    slack against an undercount.
     """
 
     declared = DECLARED_ANSWER_BOUND_TOKENS.get(chair)
@@ -1150,8 +725,7 @@ def sendable_max_tokens(chair: str, capacity: Mapping[str, Any]) -> dict[str, in
         )
     recorded_chair = capacity["chair"]
     if recorded_chair != chair:
-        # Exact match or refusal: a missing or non-string chair is not "unknown,
-        # so probably fine" -- it is a record this request was not admitted on.
+        # A missing chair is a mismatch too, never "probably fine".
         raise RequestCapacityRefusal(
             f"a generation bound for chair {chair!r} was asked for against a capacity "
             f"record admitted for chair {recorded_chair!r}; the row and the prompt cost "
@@ -1199,10 +773,8 @@ def _answer_budget(chair: str, table: Mapping[str, int], what: str) -> int:
 def image_sizes(images: Iterable[bytes]) -> list[tuple[int, int]]:
     """``(width, height)`` for each PNG a request is about to carry.
 
-    Read off the bytes themselves rather than off a presentation record, because
-    the pixels the chair is charged for are the pixels actually embedded --
-    ARCHITECTURE invariant 3 read forwards: the exact image shown decides the
-    exact cost.
+    Read off the bytes, because the embedded pixels are what the chair is
+    charged for.
     """
 
     return [dimensions(image) for image in images]
