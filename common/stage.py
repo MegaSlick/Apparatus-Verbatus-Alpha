@@ -1,15 +1,9 @@
 """What every stage program needs, and nothing a stage should decide for itself.
 
-Stages are programs, not libraries: the orchestrator invokes them by file path and
-they exchange versioned artifacts on disk. So this module holds the plumbing they
-all share — argument shape, opening the run tree, publishing an artifact with the
-envelope filled in correctly — and deliberately holds no pipeline logic at all. A
-stage that found its behaviour here would be importing another stage through a
-side door.
-
-The fixture is read as *data*, with tomllib, not imported as code. That keeps the
-import boundary honest while still letting the deterministic fakes be driven by a
-declared fixture rather than by hard-coded strings scattered through seven files.
+Stages are programs that exchange versioned artifacts on disk, so this module
+holds only shared plumbing (arguments, opening the run tree, publishing with a
+correct envelope) and no pipeline logic: logic here would let one stage import
+another through a side door.  The fixture is read as TOML data, not imported.
 """
 
 import argparse
@@ -110,19 +104,14 @@ from common.runtree.store import PublishResult, RunTree
 from common.witness_adapters import validate_witness_adapter_bindings
 from common.witness_context import validate_witness_context_configuration
 
-# Exit codes carry cause, per harvest invariant #11. The old contract worth
-# keeping: 0 = complete, 2 = structural or fatal, 3 = accounted but holdable.
-# A stage that failed structurally and exited 0 is how a run reports success over
-# work it never did.
+# Exit codes carry cause: a structural failure that exits 0 reports success over
+# work never done.
 EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
 
-# A stage returns this only when it refuses to start a run whose durable failure
-# evidence already breaches the cap.  The orchestrator also returns it when a
-# checkpoint after a completed member breaches the cap.  Defined beside the three
-# ordinary stage exits so direct invocation cannot silently choose a colliding
-# fourth value.
+# The run-level hard-failure cap is breached.  Defined beside the other exits so
+# none can collide with it.
 EXIT_RUN_HALTED = 4
 
 
@@ -141,55 +130,35 @@ DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "perlector_audit.toml"
 )
 
-# Spec 08's run-level blind/named toggle. Named here once, so the CLI flag, the
-# config-digest binding, every stage's shared parser and the Perlectio schema
-# agree on the closed set: a value added in one place and missed in another
-# would let a run start under a regime every Perlectio it produced is then
-# refused for. It is provenance, so invariant #42 governs it.
+# The run-level blind/named toggle, named once so the CLI, the config digest and
+# the Perlectio schema cannot disagree about the closed set.
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 MAX_NUDA_PER_MILLE: Final = 1000
 MAX_PERLECTOR_INSTRUMENT_PER_MILLE: Final = 1000
-# These sealed CLI values identify experiments, not approval evidence. A changed
-# condition or selection algorithm needs a new `.v1` subject; a changed rate or
-# run configuration needs a new approval targeting the resulting `config_digest`.
-# Resolution happens after the run authority exists to avoid circularly including
-# an approval record's own content address in the configuration it approves.
+# Experiment identities, not approval evidence: a changed design needs a new
+# subject; a changed rate needs a new approval of the resulting `config_digest`.
+# Approvals resolve after the run authority exists, so an approval is never part
+# of the configuration it approves.
 NUDA_APPROVAL_SUBJECT: Final = "lectio-nuda-sampling-design.v1"
 PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT: Final = "perlector-prior-draft-instrument-design.v1"
 
-# The one scenario name a real submission runs under. A constant, never argv:
-# the fixture path seals `--scenario` into `config_digest` and refuses a resumed
-# run under another, but the real `config_digest` binds no scenario at all, so
-# an argv value there would be the one run-shaping fact nothing ever checked.
-# Every real-ingress context carries this and nothing else.
+# A constant, never argv: the real `config_digest` binds no scenario, so an argv
+# value would be a run-shaping fact nothing checks.
 REAL_SCENARIO: Final = "real-submission"
 
-# The real Exemplar Door decodes/renders bytes; it is not the walking skeleton's
-# fake adapter. Bumped deliberately whenever source behaviour changes so a real
-# run cannot resume under pixels made by a different Door implementation. Named
-# here rather than in `pipeline/1_exemplar/door.py`, because the downstream
-# open-time recheck (`_refuse_incompatible_real_reuse`) has to compare the run
-# authority's Door recipe against it, and `common/` may never import a stage.
-# The Door imports it from here.
+# Bump whenever the real Door's output can change, so a real run cannot resume
+# under pixels from another Door.  Lives here because `common/` rechecks it and
+# may not import a stage.
 REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v5"
 
-# The Designator's capture padding decides how many pixels a witness is actually
-# shown around each act, so two runs under different padding produce different
-# crop bytes. Sealing its digest here is what makes reusing one run id across a
-# padding change a refusal rather than a silent second geometry — the same
-# reason `pdf_render.toml` is sealed.
+# Padding changes the crop bytes a witness sees, so it is sealed into the run.
 DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_padding.toml"
 )
 DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_geometry.toml"
 )
-# The grouping and reconciliation thresholds the Designator's structure pass runs
-# under: which marks join into one act, how far a chain reaches, and which
-# residual components receive individual held acts rather than retained page-level
-# presentation. They decide what is marked out and what is held,
-# so two runs under different thresholds produce different acts from identical
-# pixels — the same reason padding is sealed, one step earlier in the same stage.
+# Grouping thresholds decide which acts exist, so they are sealed too.
 DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
 )
@@ -226,13 +195,8 @@ def _read_triage_modes_config(path: str | Path) -> bytes:
 def _validate_triage_modes_config(raw: bytes, path: str | Path) -> None:
     """The closed triage-mode schema, checked in one place.
 
-    `run_config_bindings` seals the digest of these bytes into `config_digest` and
-    `require_triage_modes` rechecks them at the point of use; before this was
-    shared, only the second one parsed. A file declaring `[automatic]` therefore
-    sealed cleanly into `run.json` and the run walked several stages before the
-    first triage recheck refused it — a run tree that looks legitimate and can
-    never complete. The same validator on both sides means the binding cannot
-    admit a vocabulary the recheck will reject.
+    Used at binding and at the point of use, so a run cannot seal a vocabulary
+    that a later stage then refuses.
     """
     try:
         text = raw.decode("utf-8")
@@ -253,55 +217,26 @@ def _validate_triage_modes_config(raw: bytes, path: str | Path) -> None:
         raise ContractError("triage modes configuration has the wrong closed schema")
 
 
-# The witness outcomes that mean a chair actually served, and therefore that a
-# serving receipt exists for the reading. Named once, here, because both halves
-# of the handoff need it and they must not drift: the Attestatores decides
-# whether to write a receipt, and the Perlector decides whether to demand one.
-# A producer and a consumer disagreeing about this set would refuse a record
-# that is in fact correct — `dead` and `not-run` are unresolved or unattempted,
-# and inventing a serving moment for either would be a receipt for nothing.
+# Outcomes where a chair actually served, so a serving receipt exists.  Shared
+# by the Attestatores (writes receipts) and the Perlector (demands them).
 ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 
-# A failed call was attempted but produced no usable reading, so it must not
-# certify that its regions were witnessed.  A genuinely-empty Testimonium is
-# different: the chair did read the pixels and found no reportable text.  The
-# Perlector uses this narrower set when it records region coverage.
-#
-# Re-exported from the vocabulary module rather than spelled a second time.  R0's
-# floor arithmetic (`common/contracts/outcomes.py::witness_coverage`) and this
-# module's writers and consumers have to agree on this exact set or an act is
-# attached without being read; two identical literals in two files agreed only by
-# coincidence.  Found in audit; F-O3.
+# Outcomes that certify the region was read (a failed call does not).
+# Re-exported so it cannot drift from `outcomes.witness_coverage`.
 WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
 
-# One manifest per stage per pass, for the stages a pass only reads.
-#
-# `RunTree.build_manifest` is uncached on purpose -- "derived from the tree every
-# time it is called, so it cannot drift from what the tree holds" -- and that
-# property is bought by walking, validating and digesting every artifact in the
-# stage. Consumers ask for it per *act*, and the cost is then acts × artifacts
-# with a SHA-256 in the inner step. Measured on a four-page live run:
-# 1.31 s per Designator build over 554 artifacts, 1.59 s per
-# Attestatores build over 2114, and a Recensor pass over 516 held acts spending
-# three quarters of an hour on nothing else. The Armarium had already reached
-# the same conclusion for itself (`_cached_manifest`, "against a stated scale of
-# tens of thousands of acts"); this is that remedy where every stage can reach it.
-#
-# Sound for exactly one reason: a stage is sealed before its consumers open, so
-# within a single pass an upstream inventory cannot change. The stage a pass is
-# itself writing is therefore never cached, which `stage_manifest` decides from
-# the context rather than from each caller remembering to say so.
+# One manifest per upstream stage per pass.  `build_manifest` digests every
+# artifact and consumers ask per act, so the cost is acts x artifacts, each
+# digested.  Safe because an upstream stage is sealed before its consumers open;
+# the stage being written is never cached.
 _PASS_MANIFESTS: dict[tuple[str, str, str], dict[str, Any]] = {}
 
 
 def stage_manifest(context, stage: str) -> dict[str, Any]:
     """`context.tree.build_manifest(stage)`, built once per pass where that is safe.
 
-    Falls through to a fresh build whenever this cannot prove it is safe: for the
-    stage the context is writing to, and for any tree that cannot say which tree
-    it is. Keying an anonymous tree on `id()` would reuse an address and serve
-    one run's inventory for another's, which is the drift `build_manifest`
-    refuses to allow.
+    Not cached for the stage being written, or for a tree without a root and
+    run id: keying on `id()` could serve one run's inventory for another's.
     """
     writing = getattr(context, "stage", None)
     tree = context.tree
@@ -321,27 +256,16 @@ def stage_manifest(context, stage: str) -> dict[str, Any]:
 # presents them.  Selection remains an invocation choice, never run-tree bytes.
 RUN_MODES: Final = TRIAGE_MODES
 
-# Attestatores can return EXIT_HELD before the driver consults `mode`, after it
-# has written its completion seal. Armarium's own terminal report can do the
-# same: `run_sequence`'s tail returns `EXIT_HELD` for any non-complete report
-# whenever the selection's last member is armarium, with no reference to
-# `mode` at all -- found in this unit's own security review, F-R21C1, because
-# the very AST scan this comment used to cite for "cannot drift silently" only
-# recognises an `if name == ...: return EXIT_HELD` branch and had no shape for
-# a bare tail ternary, so armarium had silently drifted out of this set.
-# `test_advance_modes.py` derives the branch-shaped half of this set from the
-# driver's own syntax and asserts the ternary shape by source literal for the
-# other half, so both halves of this cross-module claim stay checked.
+# Stages that can return EXIT_HELD after sealing whatever the mode.
+# `test_advance_modes.py` checks this against the driver's source.
 ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES, ARMARIUM})
 
 
 def _named_boundary(name: str, role: str) -> str:
     """Refuse a selection endpoint that owns no stage completion boundary.
 
-    `recovery` is a legal driver member (`--from designator --to recovery`
-    parses) and owns no stage program and no seal, so it is refused here by the
-    same sentence a typo is: what matters to a person at the console is which
-    names *do* carry a boundary, not which list the name failed to be in.
+    `recovery` is a legal driver member but has no seal, so it gets the same
+    refusal as a typo.
     """
 
     if name not in STAGES:
@@ -359,11 +283,7 @@ def held_advance_boundaries(
     from_stage: str | None = None,
     to_stage: str | None = None,
 ) -> frozenset[str]:
-    """Return every boundary a selected invocation can stop at, judging no evidence.
-
-    This is a claim about the *driver*, not about the run tree: it says where a
-    person can be waiting, never whether one is or whether they should advance.
-    """
+    """Return every boundary a selected invocation can stop at, judging no evidence."""
 
     if mode not in RUN_MODES:
         raise ContractError(f"unknown staged run mode {mode!r}")
@@ -376,10 +296,7 @@ def held_advance_boundaries(
         if from_stage is not None or to_stage is not None:
             raise ContractError("manual mode names one stage, not a range")
         return frozenset({stage})
-    # Named, not reached by falling through. `RUN_MODES` is `TRIAGE_MODES`, a
-    # vocabulary that grows in `common/contracts/stages.py` for the triage
-    # manifest's sake; a mode added there would arrive here as a range mode and
-    # the operator would be told semi mode needs a range it never had.
+    # Explicit, because a mode added to `TRIAGE_MODES` must not fall through as semi.
     if mode != "semi":
         raise ContractError(f"staged run mode {mode!r} names no held-boundary rule")
     if from_stage is None or to_stage is None:
@@ -392,13 +309,8 @@ def held_advance_boundaries(
     return frozenset({to_stage}) | (ALWAYS_HELD_BOUNDARIES & span)
 
 
-# Every top-level field a reading's model provenance may carry. A closed set,
-# because invariant #42 refuses *wrong-schema* provenance rather than a list of
-# fields we already know are wrong: a denylist passes anything a later stage
-# invents, and an unvalidated field inside a sealed reading is exactly what #42
-# exists to stop. `absence` appears only on an absent chair and the identity
-# fields only on a configured one; which combination is legal is decided in
-# `validate_serving_provenance`, not here.
+# Closed, because a denylist would pass any field a later stage invents.  Which
+# combination is legal is decided in `validate_serving_provenance`.
 _PROVENANCE_FIELDS = frozenset(
     {
         "chair",
@@ -413,41 +325,20 @@ _PROVENANCE_FIELDS = frozenset(
     }
 )
 
-# The structure chair's serving posture, carried on every artifact the
-# structural pass produces. It is the one provenance field that says a model was
-# *asked something* rather than that a chair was resolved: `receipt_ref` names
-# the serving moment a chair was launched under, and on the fixture path that
-# receipt is a declared value over a chair nothing called
-# (`fixture_serving_details`). A run whose Designator actually served
-# `designator_structure` says so here, once, in a closed shape.
-#
-# Not a per-page call record. The structure pass makes one call per sealed page
-# and each page's own `structure-answer` record names that call
-# (`call_record_ref`, SPEC_D §1.3); what travels on provenance is the posture
-# every one of those calls ran under, which is the part a consumer can check
-# without opening any of them.
+# The structure chair's serving posture, on every structural-pass artifact: the
+# one provenance field saying a model was actually asked, since a fixture
+# receipt names a chair nothing called.  Per-page calls are named by each page's
+# `structure-answer` record.
 STRUCTURE_CALL_SCHEMA: Final = "structure-chair-call.v1"
 STRUCTURE_CALL_FIELDS: Final = frozenset(
     {"schema", "call_kind", "decoding_policy", "decoding_config_sha256"}
 )
-# The one wire kind a vision chair is served through
-# (`operations/serving/client.py` refuses anything else by name). Recorded so a
-# later reader can tell what the chair was asked through without inferring it
-# from the shape of what came back.
 STRUCTURE_CALL_KIND: Final = "chat-completions"
-# The `config/decoding.toml` section the structure pass runs under. The
-# Designator's structure pass may run at a variable temperature, sealed and
-# recorded per run, so its re-run variance is a clue
-# beside the witnesses, while every Attestator keeps `reading_of_record`. The
-# two postures are different sealed sections, so naming the wrong one is a
-# posture reported rather than executed.
+# The structure pass may run at a sampled temperature, unlike the witnesses'
+# `reading_of_record`, so its section is named explicitly.
 STRUCTURE_DECODING_POLICY: Final = "structure"
 
-# The Designator's per-page record of what the structure chair answered, and the
-# two words a consumer needs to reach one: the artifact kind and the payload
-# schema. Named here, beside the verifier that recomputes against them, for the
-# reason `fallback_page_act_key` is — the producer writes them and this module
-# reads them back, so the two may not spell them differently.
+# Named once for the Designator, which writes them, and the verifier here.
 STRUCTURE_ANSWER_KIND: Final = "structure-answer"
 STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
 STRUCTURE_ANSWER_RECORD_SCHEMA_V2: Final = "designator-structure-answer.v2"
@@ -466,23 +357,15 @@ STRUCTURE_ANSWER_PARSED: Final = "parsed"
 class StageChairProtocol(ChairProtocol, Protocol):
     """The small additional config surface a calling stage needs.
 
-    A stage receives this explicitly rather than knowing which registry
-    implementation made it.  The production default is ``ChairRegistry``; the
-    deterministic fake beside the tests is a separate implementation of this
-    protocol, not a subclass or import of it.
+    ``ChairRegistry`` in production; the test fake implements it separately.
     """
 
     config: ModelsConfig
 
 
-# The name every run authority records its point-of-use recheck digests under.
-# Recorded rather than only folded into `config_digest`, because a digest that
-# exists only inside a hash can be *verified* against a candidate file and never
-# *named*: a later reader holding the run tree alone could not say which
-# data-handling policy governed admission, a limitation of the run authority
-# rather than of the reader. The map is small, immutable, self-hashed with the rest of the
-# authority, and every entry in it is already bound into `config_digest`, so it
-# adds a readable name for a fact the run was already sealed to.
+# Recorded as well as folded into `config_digest`: a digest inside a hash can be
+# verified but not named, so a reader of the run tree could not say which policy
+# governed it.
 SEALED_CONFIG_DIGESTS_FIELD: Final = "sealed_config_digests"
 
 
@@ -494,14 +377,7 @@ def require_sealed_config(
 ) -> None:
     """Refuse a configuration whose bytes changed after this run bound them.
 
-    The one comparison behind every point of use in the sealing family. A stage
-    holds it through `StageContext.require_sealed_config`; the orchestrator, which
-    is not a stage and has no context, holds it through the digests `run.json`
-    itself recorded (`run_sealed_config_digests`).
-
-    An absent name is a different fault from a changed file and says so: one means
-    the binding step never sealed this policy, the other means the file moved
-    under a run that did.
+    An absent name (never sealed) and a changed file are reported differently.
     """
     sealed = sealed_config_digests.get(name)
     if sealed is None:
@@ -520,10 +396,8 @@ def require_sealed_config(
 def run_sealed_config_digests(run: Mapping[str, Any]) -> dict[str, str]:
     """The point-of-use recheck digests a run authority recorded for itself.
 
-    Refused rather than defaulted to an empty map: "this run sealed nothing" and
-    "this run sealed something I have not read" must not resolve the same way,
-    and an empty map would turn every `require_sealed_config` below it into the
-    absent-name refusal with a message pointing at the wrong step.
+    Never defaulted to empty, which would misreport every later check as a
+    policy the binding step forgot.
     """
     recorded = run.get(SEALED_CONFIG_DIGESTS_FIELD)
     if not isinstance(recorded, dict) or not recorded:
@@ -579,44 +453,25 @@ class StageContext:
     ):
         self.tree = tree
         self.run = run
-        # `None` on a real submission, behind the refusing `fixture` property
-        # below; a loaded declaration on the fixture path. The parameter keeps
-        # its name so every existing construction is untouched.
+        # `None` on a real submission; see the `fixture` property.
         self._fixture = fixture
         self.scenario = scenario
         self.stage = stage
         self.adapter_revision = adapter_revision
         self.args = args
         self.registry = registry
-        # The digest of each configuration file's bytes *as they were when this
-        # context checked them against `run.json`*. A stage that later re-reads
-        # one of those files to get its values reads it a second time, and the
-        # two reads are not the same act: between them the file can change, and
-        # the stage would then work under a policy the run never sealed while
-        # every other check still passed. `require_sealed_config` is the
-        # point-of-use comparison that makes the second read prove it saw the
-        # first read's bytes. Both ingress routes carry it: `open_context` on a
-        # fixture run and `_open_real_context` on a real one, where five stages
-        # require these names before their first line of work.
+        # Digests as checked against `run.json`, so a later re-read of a config
+        # file can prove the file did not change in between.
         self.sealed_config_digests = dict(sealed_config_digests or {})
-        # A stage that opens a fixture run receives the already-parsed values
-        # from the exact bytes that participated in its sealed config digest.
-        # In particular Armarium must not reopen formats.toml after this point.
+        # Parsed from the sealed bytes; Armarium must not reopen formats.toml.
         self.armarium_formats = armarium_formats
         self.serving_config_inputs = (
             MappingProxyType(_serving_config_inputs(serving_config_inputs, "StageContext"))
             if serving_config_inputs is not None
             else None
         )
-        # The bounded recovery policy, already parsed from the exact bytes whose
-        # digest went into this run's `config_digest`. Carried rather than re-read
-        # for the reason the whole sealing family exists: the Recensor and the
-        # Designator recovery pass used to open `config/recovery.toml` a second
-        # time for the budget they published, and a rewrite landing between
-        # `open_context`'s binding read and theirs sealed reviews and requests
-        # under an allowance the run never bound (audit S3). One read, one
-        # policy, and `require_sealed_config("recovery", ...)` at each point of
-        # use so a reintroduced second read cannot pass silently.
+        # Parsed once from the sealed bytes: a second read of
+        # `config/recovery.toml` could see a rewrite the run never bound.
         self._recovery_policy = dict(recovery_policy) if recovery_policy is not None else None
         self.sealed = False
 
@@ -624,13 +479,8 @@ class StageContext:
     def fixture(self) -> dict[str, Any]:
         """The declared synthetic fixture, or a named refusal on a real submission.
 
-        `None`, not `{}` and not a Mapping-shaped sentinel: the failure this
-        guards against is `context.fixture.get("act", [])` returning `[]` on a
-        real run and a fixture-shaped check *passing* over it. Anything that
-        supports `.get` reproduces exactly that. Refusing at first touch turns
-        every unconverted fixture reader in the pipeline into a refusal that
-        names the stage, and makes the audit mechanical: `rg 'context\\.fixture'`
-        is the complete list of readers a real-mode branch had to decide about.
+        Refuses rather than returning `{}`, because `fixture.get("act", [])`
+        would quietly pass a fixture-shaped check on a real run.
         """
         if self._fixture is None:
             raise ContractError(
@@ -652,10 +502,7 @@ class StageContext:
     def recovery_policy(self) -> dict[str, Any]:
         """This run's sealed bounded-recovery policy, parsed once at binding.
 
-        A context built without one refuses rather than handing back a `None` a
-        caller would index into: a missing budget must not read as a zero budget,
-        which is exactly the value the S3 policy swap produced in published
-        reviews before the file was read only once.
+        Refuses when absent, so a missing budget never reads as zero.
         """
         if self._recovery_policy is None:
             raise ContractError(
@@ -678,24 +525,9 @@ class StageContext:
     def witness_context(self) -> str:
         """The sealed named/blinded regime this run's Perlector reads under.
 
-        Read straight off this process's own parsed CLI flag rather than off
-        `run.json`, because on both routes something already refuses a resume
-        that supplied a different value, so there is no separate run-authority
-        copy for this property to disagree with. Which check that is differs:
-
-        - fixture ingress: the flag is folded into `config_digest` by
-          `run_config_bindings`, and `open_context`'s IncompatibleReuse check
-          refuses the moved value;
-        - real ingress: `open_context` does not run at all, and the real
-          `config_digest` is not recomputable downstream. What stands here
-          instead is the `run-policy` sealed digest -- the Door seals
-          `real_run_policy_digest` over this flag and its six siblings, and
-          `_refuse_incompatible_real_reuse` recomputes it from this process's
-          argv at every stage open.
-
-        Naming only the first was how this docstring read before, on a branch
-        that had just built the second; a reader checking the claim on the real
-        route would have found the check absent and the argv read unbacked.
+        Read from argv, which is safe because a resume with a different value is
+        refused: on fixture runs by `config_digest`, on real runs by the
+        `run-policy` digest `_refuse_incompatible_real_reuse` recomputes.
         """
         return self.args.witness_context
 
@@ -716,12 +548,9 @@ class StageContext:
     def nuda_approval_ref(self) -> str:
         """The sealed selector for the sampling design this run draws nuda under.
 
-        Empty when nothing is sampled. `run_config_bindings` requires the exact
-        recognized selector for a non-zero rate; the Perlector later resolves
-        that selector to the typed approval-record reference in the run tree.
-
-        Argv on both routes, backed by `config_digest` on the fixture route and
-        by the `run-policy` digest on the real one. See `witness_context`.
+        Empty when nothing is sampled.  Argv on both routes, backed by
+        `config_digest` on the fixture route and by the `run-policy` digest on
+        the real one. See `witness_context`.
         """
         return self.args.nuda_approval_ref
 
@@ -796,9 +625,8 @@ class StageContext:
     def seal_boundary(self) -> PublishResult:
         """Witness this stage's complete on-disk boundary exactly once per change.
 
-        The manifest is deliberately only an input to the calculation: the
-        stored seal is the evidence, and a missing stored seal named by a prior
-        manifest is a refusal rather than an invitation to recreate history.
+        The stored seal is the evidence; a missing seal that a prior manifest
+        names is refused, never recreated.
         """
         if self.sealed:
             raise SchemaRefusal(f"{self.stage} completion boundary is already sealed")
@@ -811,8 +639,7 @@ class StageContext:
         )
         ordinal = 1 if prior is None else prior["payload"]["attempt_ordinal"] + 1
         attempt = attempt_id(self.stage, "seal", ordinal)
-        # A restart that did not change any stage-owned evidence reuses the
-        # previous witnessed statement instead of manufacturing a new attempt.
+        # An unchanged restart reuses the previous seal rather than minting one.
         if prior is not None:
             if prior["payload"] == _stage_seal_payload(
                 self.tree,
@@ -833,8 +660,7 @@ class StageContext:
             attempt=attempt,
             payload=environment,
         )
-        # Decode environment is excluded from the deterministic inventory, so
-        # it is safe to publish before the seal and does not create a fixpoint.
+        # Excluded from the inventory, so publishing it first is not circular.
         payload = _stage_seal_payload(self.tree, self.stage, ordinal, attempt)
         result = self.publish(
             kind="stage-seal",
@@ -851,13 +677,9 @@ class StageContext:
     ) -> dict[str, str]:
         """Reverify one identity, then write this serving moment's receipt.
 
-        A receipt is deliberately outside stage artifacts because it contains the
-        serving endpoint and start moment. The stage receives only this immutable
-        reference plus the resolved identity it already holds. Reverification and
-        receipt construction come first on every reading. The run-tree writer
-        reuses only byte-identical receipts; it never looks up an older receipt by
-        model identity, because a restarted endpoint can have different serving
-        facts even when the model pin is unchanged.
+        Receipts live outside stage artifacts because they hold the endpoint and
+        start moment.  Only byte-identical receipts are reused, never one found by
+        model identity: a restarted endpoint has different serving facts.
         """
         self.registry.ensure(identity)
         receipt = self.registry.receipt(identity, serving)
@@ -867,10 +689,7 @@ class StageContext:
     def write_serving_launch_audit(self, audit: dict[str, Any]) -> dict[str, str]:
         """Store serving-manager operational evidence as a run-local blob.
 
-        ``chair-serving-receipt.v1`` is a deliberately closed record. The
-        serving manager therefore writes PID/profile/package/readiness/adapter
-        facts separately, under the current stage's content-addressed blob area,
-        and passes only this immutable reference beside the receipt.
+        Kept apart from the receipt, whose schema is closed.
         """
 
         if not isinstance(audit, dict) or not audit:
@@ -963,19 +782,9 @@ class StageContext:
     def _write_serving_blob(self, value: dict[str, Any], label: str) -> dict[str, str]:
         """Canonical content-addressed storage shared by serving evidence records.
 
-        Guarded after the seal for the same reason `publish` is, and it is the
-        same directory at stake: this writes through `tree.put_blob` into the
-        stage's own blob directory, which `_stage_blob_inventory` walks and whose
-        digest the seal payload carries. One serving-evidence write afterwards
-        changes the inventory the seal witnessed — and the symptom lands on the
-        wrong stage, because the *next* consumer refuses with "its named inventory
-        no longer matches disk". A producer that did honest work would be reported
-        as a tree whose evidence was altered, indistinguishable from real
-        tampering. Ordering discipline was already judged insufficient for
-        artifacts; blobs are no different.
-
-        Serving *receipts* need no such guard: they are run receipts written under
-        `receipts/`, outside any stage's inventory.
+        Refused after the seal, like `publish`: the blob directory is in the
+        sealed inventory, and a late write would look like tampering to the
+        next consumer.  Receipts need no guard; they live outside any stage.
         """
         if self.sealed:
             raise SchemaRefusal(
@@ -1035,11 +844,8 @@ def _boundary_outcome(stage: str, kind: str) -> str:
 def _manifest_artifact(tree: RunTree, stage: str, entry: Mapping[str, Any]) -> dict[str, Any]:
     """Read the exact artifact bytes one manifest snapshot witnessed.
 
-    ``build_manifest`` records a content digest, but a later consumer used to
-    discard it and reopen the path by identity.  A replacement between those two
-    reads was therefore valid evidence in isolation yet not the evidence the
-    manifest and completion seal had checked.  Compare the bytes represented by
-    the validated record to the snapshot digest before returning the record.
+    Rechecked against the snapshot digest, so a file replaced after the
+    manifest was built is refused.
     """
     record = tree.read_artifact(stage, entry["kind"], entry["artifact_id"])
     if digest_bytes(canonical_bytes(record)) != entry.get("sha256"):
@@ -1068,17 +874,8 @@ def _stage_records(
 def _refuse_deleted_seal(tree: RunTree, stage: str, present: set[str]) -> None:
     """A manifest can expose deletion; it must never repair a witnessed seal.
 
-    Compared as the SET of seals the stored inventory names against the set on
-    disk, never as "some seal is still there". Attempts are the contiguous run
-    1..N, so removing the *latest* of several leaves a prefix `latest_attempt`
-    reads as whole: the earlier statement then answers for a boundary it never
-    witnessed, and the ordinal the deletion vacated is minted a second time over
-    a different inventory. Refusing only total deletion misses every case where
-    an earlier seal remains to answer in the deleted seal's place.
-
-    `present` is passed in rather than walked here: both callers have already
-    built the seal records they are about to reason about, and a second walk of
-    the same directory is the per-boundary cost this check does not need to add.
+    Compares the full set: deleting only the latest seal leaves a prefix that
+    looks whole, and the earlier seal would answer for a boundary it never saw.
     """
     path = tree.resolve(tree.manifest_path(stage))
     if not path.exists():
@@ -1123,19 +920,14 @@ def _decode_environment(stage: str) -> dict[str, Any]:
     jpg = features.version_codec("jpg") or "unavailable"
     turbo = features.version_feature("libjpeg_turbo")
     heif = pillow_heif.libheif_info().get("libheif", "unavailable")
-    # Stages that only pass evidence through record `none`; readers/croppers
-    # record the closed route family they use. The Door can take both library
-    # routes, which is deliberately visible rather than guessed from suffixes.
+    # Pass-through stages record `none`; the Door names both library routes it
+    # can take.
     paths = {
         "door": {"pillow", "pdfium"},
         "exemplar": {"project-png"},
-        # `grayscale_rows` owns its Pillow fallback inside the project-PNG route.
-        # Naming that fallback as a second route would manufacture decoder drift
-        # at both boundaries around the Ink Map.
+        # `grayscale_rows`'s Pillow fallback is part of the project-PNG route.
         "ink-map": {"project-png"},
         "designator": {"project-png"},
-        # Decode paths name the project-owned deterministic codec route; the
-        # executable presentation transform separately names its resampler.
         "attestatores": {"project-png"},
         "perlector": {"project-png"},
         "recensor": {"project-png"},
@@ -1158,7 +950,7 @@ def _decode_environment(stage: str) -> dict[str, Any]:
 
 
 def _validate_decode_environment(value: Any, owner: str) -> dict[str, Any]:
-    """Require the consult's closed decode-environment record before comparing it."""
+    """Require the closed decode-environment record before comparing it."""
     if not isinstance(value, dict) or set(value) != _DECODE_ENVIRONMENT_FIELDS:
         raise SchemaRefusal(f"{owner} decode-environment does not have the closed field set")
     decoders = value["decoders"]
@@ -1200,16 +992,9 @@ def _stage_seal_payload(
     verify_blob_addresses: bool = True,
     manifest: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # A completion boundary is the last point at which this producer can prove
-    # every link it records still reaches the bytes it consumed.  Skipping input
-    # verification here let a changed upstream blob be sealed into a locally
-    # self-consistent inventory: the artifact bytes had not changed, only the
-    # evidence their input digest named had.
-    #
-    # `manifest` is the caller's already-built inventory, passed so one reader
-    # does not walk the same stage twice. A supplied manifest carries whatever
-    # verification its builder asked for; `verify_inputs` governs the one built
-    # here, and its default stays the verifying one.
+    # Inputs are verified by default: the seal is the last chance to prove each
+    # recorded input still matches.  A supplied `manifest` carries whatever
+    # verification its builder chose.
     if manifest is None:
         manifest = tree.build_manifest(stage, verify_inputs=verify_inputs)
     artifacts = [
@@ -1231,15 +1016,8 @@ def _stage_seal_payload(
             f"{stage} cannot seal its boundary: decode-environment "
             f"{decode_environment_artifact_id!r} is unreadable: {error}"
         ) from error
-    # Read the authority once, and refuse a missing binding by name. `read_run`
-    # proves a run authority's self-hash, schema, and run id; it does not require
-    # any particular field, so an authority not written by `RunTree.create` can
-    # reach here whole and still be missing one. Subscripting it raised a bare
-    # KeyError, which is neither a ContractError nor a RunHalted — so `run_stage`
-    # did not turn it into one of the four honest exit codes, and the operator was
-    # handed a traceback naming a dict key instead of a refusal naming the run.
-    # The verifier at `_verify_stage_seal` already reads both fields with `.get`
-    # and tolerates their absence; this side now agrees with it.
+    # `read_run` requires no particular field, so a missing one is refused by
+    # name rather than as a KeyError that escapes the exit-code mapping.
     run = tree.read_run()
     missing = [field for field in ("config_digest", "register_digest") if field not in run]
     if missing:
@@ -1269,11 +1047,8 @@ def _stage_blob_inventory(
 ) -> list[dict[str, str]]:
     """Read canonical blob files through stable, no-follow descriptors.
 
-    Blob names are claims about their content.  The inventory therefore refuses
-    an unexpected spelling, a symlink or hard link, a name/content mismatch, and
-    a file whose identity or metadata changes while it is hashed.  Hashing the
-    descriptor in chunks also keeps a large but legitimate image from being
-    copied wholesale into memory merely to witness it.
+    Refuses odd spellings, links, name/content mismatches and files that change
+    while hashed.  Hashed in chunks so a large image is not read into memory.
     """
     if not hasattr(os, "O_NOFOLLOW"):
         raise SchemaRefusal("this platform cannot enforce no-follow blob inventory reads")
@@ -1300,10 +1075,8 @@ def _stage_blob_inventory(
         inventory = []
         folded_names: dict[str, str] = {}
         for name in names:
-            # Case-fold collisions are judged before anything else: two names that
-            # differ only by case give one tree two different inventories on a
-            # case-sensitive and a case-insensitive filesystem, and neither name can
-            # be trusted once both are present.
+            # Names differing only by case give different inventories on case-
+            # sensitive and case-insensitive filesystems.
             folded = name.casefold()
             previous = folded_names.get(folded)
             if previous is not None:
@@ -1319,13 +1092,8 @@ def _stage_blob_inventory(
                 )
             if not is_sha256(name):
                 if _is_unpublished_blob_temporary(name):
-                    # `RunTree.put_blob` writes `.<digest>.tmp-<unique>` and then
-                    # hard-links it to its evidence name. SIGKILL between the two
-                    # leaves the private name behind. That orphan is interrupted
-                    # writer state, not published evidence for a completion seal to
-                    # witness -- but it is skipped only after it is proven to be a
-                    # plain regular file, so the exception is never a way to smuggle
-                    # a link past the no-follow rule.
+                    # A writer killed mid-publish leaves its temporary; skipped
+                    # only once proven a plain regular file, never a link.
                     _refuse_unpublishable_temporary(directory_fd, name, stage)
                     continue
                 raise SchemaRefusal(
@@ -1353,14 +1121,7 @@ def _stage_blob_inventory(
 
 
 def _is_unpublished_blob_temporary(name: str) -> bool:
-    """True only for the store's private, same-directory blob-write name.
-
-    ``RunTree.put_blob`` publishes a sha256-named file through
-    ``.<digest>.tmp-<unique>`` and an atomic hard link.  SIGKILL can leave the
-    private name behind before the link gives those bytes their evidence name.
-    Every other unexpected name stays a refusal, so this exception can never be
-    the route by which something unexplained sits in the evidence directory.
-    """
+    """True only for ``RunTree.put_blob``'s ``.<digest>.tmp-<unique>`` name."""
     if not name.startswith("."):
         return False
     target, separator, unique = name[1:].partition(".tmp-")
@@ -1391,17 +1152,9 @@ def _publisher_link_allowance(
 ) -> int:
     """Extra links to `name` that its own interrupted publisher explains.
 
-    `RunTree._atomic_create` publishes by hard-linking `.<digest>.tmp-<unique>`
-    onto the digest name and then unlinking the temporary. SIGKILL between those
-    two steps leaves the published blob with a second link, and the only other
-    name holding it is that temporary. The bytes are complete, the digest matches
-    the name, and the inventory already skips the temporary itself — so refusing
-    the blob for its link count meant a run killed at the wrong microsecond could
-    never seal again, with the message accusing evidence that was in fact intact.
-
-    Each same-inode temporary bearing this blob's own digest explains exactly one
-    link. Every other link is still unexplained and still a refusal: this widens
-    the rule by precisely the state the publisher can leave and by nothing else.
+    A kill between hard-linking and unlinking the temporary leaves a second
+    link to an intact blob.  Only a same-inode temporary with this blob's own
+    digest explains a link; any other link is still refused.
     """
     explained = 0
     for other in siblings:
@@ -1433,8 +1186,6 @@ def _digest_regular_file_at(
             opened = os.fstat(handle.fileno())
             named_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             identity = (opened.st_dev, opened.st_ino)
-            # One link for the evidence name, plus any the interrupted publisher
-            # left behind under its own private temporary name.
             allowed_links = 1 + _publisher_link_allowance(directory_fd, siblings, name, identity)
             if (
                 not stat.S_ISREG(opened.st_mode)
@@ -1474,10 +1225,9 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
 
 
 def verify_final_seal(tree: RunTree) -> dict[str, Any]:
-    """Prove the Armarium boundary, whose lack of a successor leaves no stage reader.
+    """Prove the Armarium boundary, which has no successor stage to check it.
 
-    ``SEAL_PREDECESSORS`` is consumer-keyed, so asking it about Armarium would
-    re-prove the Archetypus boundary instead of reading Armarium's own seal.
+    ``SEAL_PREDECESSORS`` is consumer-keyed, so it cannot be used here.
     """
     manifest = tree.build_manifest(ARMARIUM, verify_inputs=False)
     _verify_stage_seal(tree, ARMARIUM, "the orchestrator", "final boundary", manifest=manifest)
@@ -1510,11 +1260,7 @@ def _verify_stage_seal(
             f"{reader} refuses: {role} {producer} has no stage-seal; "
             "a missing witnessed statement is never re-derived"
         )
-    # The producer refuses a seal its own stored inventory names and disk no
-    # longer holds; so must the consumer, which is the side an attacker with the
-    # tree reaches without ever invoking the producer again. Without this,
-    # deleting the latest of several seals and reverting the change it witnessed
-    # leaves the earlier seal answering for a boundary it never saw.
+    # The consumer checks too: tampering need never re-invoke the producer.
     _refuse_deleted_seal(tree, producer, {record["artifact_id"] for record in seals})
     seal = latest_attempt(seals, f"{producer} stage seal", operation="seal")
     payload = seal["payload"]
@@ -1523,10 +1269,7 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: wrong decode environment name"
         )
-    # One read, both comparisons. Two reads can straddle a rewrite, and a seal
-    # that matched no single run authority would pass this boundary -- the same
-    # two-read fault this file already names for `pdf_render.toml` and
-    # `recovery.toml`.
+    # One read for both comparisons, so they cannot straddle a rewrite.
     run_authority = tree.read_run()
     if payload.get("config_digest") != run_authority.get("config_digest"):
         raise SchemaRefusal(
@@ -1571,17 +1314,14 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: its named inventory no longer matches disk"
         )
-    # Reconstruct the producer's environment on the consumer's machine.  The
-    # stage argument describes which decode work the record speaks for; using
-    # the reader here compares two different jobs by construction (for example,
-    # Attestatores passes pixels through while Perlector decodes them).
+    # The producer's environment, rebuilt here: the reader's own decode work
+    # differs by construction.
     current_environment = _validate_decode_environment(
         _decode_environment(producer), f"{reader} current for {producer}"
     )
     differences = _decode_difference(previous_environment, current_environment)
     if differences:
-        # This is intentionally an observation only. Unit 17 decides when a
-        # decoder difference becomes fatal; silently omitting it is not allowed.
+        # Reported, not refused: no rule yet says when a difference is fatal.
         print(
             f"decode environment differs by name from {producer}: {differences}",
             file=sys.stderr,
@@ -1589,14 +1329,7 @@ def _verify_stage_seal(
 
 
 def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
-    """Every field difference the binding consult requires reported by name.
-
-    Both values describe the producer's work, observed at production and again
-    by its consumer.  Role fields remain in the comparison: changing either one
-    is a real change to the producer environment, not a reason to weaken the
-    field-by-field contract. Reporting is not refusal; Unit 17 alone decides
-    whether any valid difference becomes fatal.
-    """
+    """Every decode-environment field that differs, by name."""
     changes = []
     previous_decoders = {row["name"]: row["version"] for row in previous["decoders"]}
     current_decoders = {row["name"]: row["version"] for row in current["decoders"]}
@@ -1612,12 +1345,8 @@ def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> lis
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
     """Validate a content-addressed reference before sealing it into evidence.
 
-    The traversal check below is a shape check on the reference string, not
-    the run tree's own containment guard: nothing here reads a file with this
-    path, and every reader that eventually does must still go through
-    ``RunTree.resolve()`` (``common/runtree/store.py``), which additionally
-    resolves the path and checks it against the tree root — catching, for
-    example, a symlink component this string-only check would miss.
+    A string-shape check only; containment (including symlinks) is
+    ``RunTree.resolve()``'s job when the path is read.
     """
 
     if not isinstance(value, Mapping) or set(value) != {"relative_path", "sha256"}:
@@ -1664,10 +1393,8 @@ def _serving_config_inputs(value: object, label: str) -> dict[str, str]:
 class _StageArgumentParser(argparse.ArgumentParser):
     """Shared operation-argument refusal for stage programs.
 
-    ``--chair`` remains in the common argv vocabulary so orchestration can pass
-    one stable shape, but only the Attestatores opts into implementing it. A
-    stage that does not opt in must refuse the value before opening or writing a
-    run, rather than silently succeeding at its ordinary operation.
+    ``--chair`` is shared argv so orchestration passes one shape, but only the
+    Attestatores implements it; other stages refuse it before touching the run.
     """
 
     def __init__(self, *args, accepts_chair: bool, **kwargs) -> None:
@@ -1688,9 +1415,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     parser = _StageArgumentParser(description=description, accepts_chair=accepts_chair)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--run-id", required=True)
-    # No `choices` here: the fixture declares which scenarios exist, and a
-    # hard-coded list in a second place is a drift surface. `scenario_for`
-    # refuses an undeclared name after the fixture is loaded.
+    # No `choices`: the fixture declares scenarios, and `scenario_for` refuses others.
     parser.add_argument("--scenario", default="happy")
     parser.add_argument("--fixture-root", default="proof")
     parser.add_argument(
@@ -1835,11 +1560,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
 
 
 def load_fixture(fixture_root: str) -> dict[str, Any]:
-    """Read the declared fixture as data.
-
-    Refused loudly when absent: harvest invariant #3 in spirit — an empty or
-    missing input is a loud failure, never a green run with no output.
-    """
+    """Read the declared fixture as data; a missing one is a failure, not an empty run."""
     path = Path(fixture_root) / "skeleton_fixture.toml"
     if not path.exists():
         raise ContractError(
@@ -1870,13 +1591,10 @@ def validate_witness_context_bindings(
     perlector_instrument_per_mille: int,
     perlector_instrument_approval_ref: str,
 ) -> str:
-    """Refuse a bad spec-08 binding before a run tree exists, on every path.
+    """Refuse a bad witness-context binding before a run tree exists, on every path.
 
-    One function on purpose: the fixture path (`run_config_bindings`) and the
-    real-submission path (`door._real_bindings`) must refuse the same things,
-    or a defect the fixture path catches at run creation costs a real corpus
-    the whole pre-Perlector leg before the Perlector finally refuses it.
-    Returns the declaration's sha256, which both paths seal.
+    Shared by fixture and real ingress so a real run cannot get as far as the
+    Perlector before a defect is caught.  Returns the declaration's sha256.
     """
     if witness_context not in WITNESS_CONTEXT_REGIMES:
         raise ContractError(
@@ -1892,11 +1610,8 @@ def validate_witness_context_bindings(
         )
     if not isinstance(nuda_approval_ref, str):
         raise ContractError("nuda_approval_ref must be a string")
-    # Spec 08: Lectio nuda "runs on a predeclared, project-lead-approved
-    # sampling design... fixed before the run". The sampling design needs the
-    # project lead's approval, and a run that draws an unapproved sample has
-    # decided something nobody asked it to. The reference is sealed beside the
-    # rate, so a run cannot later claim an approval it was not started under.
+    # A nuda sample needs the project lead's predeclared design, sealed beside
+    # the rate so no run can later claim an approval it did not start under.
     if nuda_per_mille and nuda_approval_ref != NUDA_APPROVAL_SUBJECT:
         raise ContractError(
             f"a Lectio nuda rate of {nuda_per_mille}/1000 needs the project lead's predeclared "
@@ -1945,19 +1660,9 @@ def real_run_policy_digest(
 ) -> str:
     """The digest a real run seals its run-level reading knobs under.
 
-    On the fixture path these seven facts live inside `config_digest`, and
-    `open_context`'s reuse check refuses a resumed run that supplies a different
-    value. The real `config_digest` cannot be recomputed downstream
-    (`_open_real_context` says why), so on that path they need a *named* seal of
-    their own, or `--witness-context blinded` on a resume would reach the
-    Perlector unchecked while every other refusal stayed green. One function,
-    called by `door._real_bindings` when the run is created and by
-    `real_run_bindings` at every later stage's open, so the two sides cannot
-    drift on which fields the name covers. The field set is closed: a knob added
-    to one caller and not the other is a run-policy digest that never moves.
-
-    Values are validated by `validate_witness_context_bindings` on both paths
-    before this is called; this only closes the set and hashes it.
+    The real `config_digest` cannot be recomputed downstream, so these argv
+    knobs need their own seal or a resume could change them unchecked.  Called
+    at creation and at every stage open, so both sides hash the same set.
     """
     if not isinstance(draft_fed, bool):
         raise ContractError(f"draft_fed must be a bool, got {draft_fed!r}")
@@ -1974,10 +1679,7 @@ def real_run_policy_digest(
             "perlector_instrument_per_mille": perlector_instrument_per_mille,
             "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
             "draft_fed": draft_fed,
-            # A behaviour-changing mode, sealed like every other one. Without it
-            # a run created ordinarily could be resumed under
-            # `--mechanics-qualification` and pass both reuse checks, mixing
-            # ordinary and mechanics-only artefacts in one tree.
+            # Sealed so a run cannot mix ordinary and mechanics-only artefacts.
             "mechanics_qualification": mechanics_qualification,
         }
     )
@@ -2016,34 +1718,13 @@ def run_config_bindings(
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
-    Since spec 02 `config/models.toml` owns the roster, the witness floor and
-    the adapter recipes, so two of the three come straight off it. The third,
-    `config_digest`, is the digest of *everything* that shapes this run's
-    behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    Designator padding, geometry and grouping policy, Armarium projection configuration,
-    recovery policy, decoding policy, the run-level hard-failure policy,
-    serving-recipe catalogue, and pod-placement catalogue. The synthetic fixture
-    declares byte-backed pages only, so
-    it does not claim to bind the real Door's PDFium/Pillow/libheif execution
-    recipe; ``door._real_bindings`` binds that recipe on actual ingress.
-
-    All three parts are load-bearing, and the scenario is the one easiest to
-    drop by accident. Spec 01's third acceptance test reuses one run id under a
-    second scenario and requires the refusal *before any write*; the two
-    scenarios declare identical source pages, so with the scenario out of this
-    digest nothing in `run.json` distinguishes them and the run gets four
-    stages in before artifact immutability catches it. A late incidental
-    refusal is not the sealed-tree guarantee spec 01 landed.
+    `config_digest` covers everything that shapes the run's behaviour.  The
+    scenario must stay in it: two scenarios can declare identical pages, and
+    reusing a run id under another must be refused before any write.  The real
+    Door's decoder recipe is bound by ``door._real_bindings`` instead.
     """
-    # The Door parses `PdfRenderSettings` out of this file and then needed its
-    # digest; reading it here a second time is what let a rewrite between the two
-    # reads produce a run whose `render_settings` recorded one target DPI while
-    # `config_digest` bound the bytes of another (audit S6). The Door now reads
-    # once (`render_config.load_pdf_render_binding`) and hands the digest of the
-    # exact bytes it parsed down here. A stage that only needs the binding — every
-    # `open_context` caller — has nothing parsed to carry and reads the file
-    # itself; that read is proven against the run by the `config_digest`
-    # comparison in `open_context`.
+    # The Door passes the digest of the bytes it parsed, so a rewrite between
+    # two reads cannot seal one DPI and record another.
     if pdf_render_config_sha256 is not None:
         if not is_sha256(pdf_render_config_sha256):
             raise ContractError(
@@ -2089,23 +1770,8 @@ def run_config_bindings(
             "the Designator geometry configuration binding at "
             f"{designator_geometry_config_path} could not be read"
         ) from error
-    # Hashed here and parsed at the point of use — geometry's shape exactly, and
-    # deliberately not `triage_modes`', which is validated here as well.
-    #
-    # The schema this file has to satisfy lives in
-    # `pipeline/2_designator/grouping_config.py::load_grouping_config`, and
-    # `common/` may never import a stage module: `common/README.md` says "it never
-    # imports back" and `common/chairs/test_chairs_import_boundary.py` reads every
-    # file under `common/` through `ast` to enforce it. Reaching that loader from
-    # here — or from the Door, which `pipeline/test_stage_import_boundaries.py`
-    # holds to the same rule across stage directories — would buy a bind-time
-    # refusal by breaking two live guards, so the refusal for a *malformed* file
-    # sits where the loader already is: the Designator's structure pass,
-    # loading it in `initial_pass` and proving it against this digest through
-    # `require_sealed_config("designator-grouping", ...)`, with
-    # `load_grouping_config` refusing loudly there, before the stage marks
-    # anything out. An *unreadable* file still refuses right here, at run
-    # creation, exactly as geometry's does.
+    # Hashed only: its schema lives in a stage module `common/` may not import,
+    # so a malformed file is refused when the Designator loads it.
     try:
         grouping_config_digest = digest_bytes(Path(designator_grouping_config_path).read_bytes())
     except OSError as error:
@@ -2118,13 +1784,7 @@ def run_config_bindings(
         corpus_frame_config_path
     )
     _decoding_policy, decoding_config_digest = load_decoding_policy(decoding_config_path)
-    # The parameter, not the module default: every other sealed configuration here
-    # binds the path its caller named, and `require_triage_modes` already accepts
-    # one at the point of use. Sealing the default while the recheck read a caller's
-    # file would have reported drift on two files that had each never changed.
-    # Validated, not merely hashed. Sealing bytes the point-of-use recheck will
-    # refuse produces a run whose `run.json` is well formed and which cannot reach
-    # triage; the refusal belongs at run creation, where nothing has been written.
+    # Validated, not merely hashed, so a bad file is refused before any write.
     triage_modes_raw = _read_triage_modes_config(triage_modes_config_path)
     _validate_triage_modes_config(triage_modes_raw, triage_modes_config_path)
     triage_modes_config_digest = digest_bytes(triage_modes_raw)
@@ -2181,13 +1841,7 @@ def run_config_bindings(
                 "armarium_formats": armarium_formats.to_record(),
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
-                # Spec 08's run-level toggle and its sampling design. Sealed
-                # here exactly like `pdf_target_dpi_override` above: a stage
-                # never stores its own copy of "what regime did this run use",
-                # it re-derives the same config_digest from its own CLI flags
-                # and `open_context`'s existing IncompatibleReuse check refuses
-                # a resumed run that supplies a different value than the one
-                # the tree was sealed under.
+                # Argv knobs: a resume under different values fails the digest.
                 "witness_context_regime": witness_context,
                 "witness_context_declaration_sha256": witness_context_config_digest,
                 "nuda_per_mille": nuda_per_mille,
@@ -2203,29 +1857,10 @@ def run_config_bindings(
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
         "serving_config_inputs": serving_config_inputs,
-        # The record of which bytes each digest above was taken over, so a stage
-        # that re-reads one of these files for its values can prove it read what
-        # was bound (`StageContext.require_sealed_config`). Every caller writing a
-        # run records this map in the run authority as well, so a later reader
-        # holding only the tree can name the policies that governed it rather than
-        # merely re-derive them.
-        #
-        # Every name here is bound into `config_digest` above, and every name here
-        # has a point of use that requires it: padding, geometry and grouping at
-        # the Designator's crop and structure pass, alignment at the
-        # Attestatores, the shard limit at run creation, the two Perlector
-        # policies at the reading, `recovery` at the Recensor, the Designator
-        # recovery pass and the orchestrator's dispatch, `pdf-render` at the Door
-        # that parsed it, and `hard-failure` at the orchestrator's own
-        # checkpoint. A name sealed with no point of use would read as a closed
-        # window that nothing actually shuts.
-        #
-        # `hard-failure` is the family's fourth member and the last to be sealed.
-        # It is the one the orchestrator reads BEFORE the run exists — the tally
-        # threshold has to be known to decide whether a resumed run may re-enter a
-        # stage at all — and then holds for the whole run, so its point of use is
-        # the first moment a run authority exists to prove it against, not the
-        # read itself.
+        # For point-of-use rechecks (`require_sealed_config`).  Every name has a
+        # point of use; one without would promise a check nothing makes.
+        # `hard-failure` is read before the run exists, so it is proven at the
+        # first moment a run authority does.
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
             "designator-geometry": geometry_config_digest,
@@ -2241,51 +1876,30 @@ def run_config_bindings(
             "triage-modes": triage_modes_config_digest,
         },
         "armarium_formats": armarium_formats,
-        # Parsed from the bytes `recovery_policy["config_sha256"]` names, and
-        # carried into `StageContext` so the Recensor and the Designator recovery
-        # pass never open the file a second time (audit S3).
+        # Carried so no stage re-reads the file.
         "recovery_policy": recovery_policy,
     }
 
 
 def _read_config_digest(path: str | Path, description: str) -> str:
-    """Digest one configuration file's bytes, refusing an unreadable one by name.
-
-    The same read-and-name shape `run_config_bindings` spells out inline for
-    each file; shared here by the real path so its refusals say the same thing
-    about the same file. `run_config_bindings` is deliberately left as written:
-    the fixture path's bytes are pinned by the acceptance digests, and a
-    behaviour-neutral rewrite of it buys nothing those pins can measure.
-    """
+    """Digest one configuration file's bytes, refusing an unreadable one by name."""
     try:
         return digest_bytes(Path(path).read_bytes())
     except OSError as error:
         raise ContractError(f"the {description} binding at {path} could not be read") from error
 
 
-# The names a real run seals that no stage after the Door can recompute. The
-# data-handling policy gated admission and is named by the Door alone
-# (`--data-gate-policy` is a Door-only flag the orchestrator forwards to no
-# other stage), so a later stage can require the name to be *present* — the
-# run was gated — but cannot say which bytes it should carry.
+# Sealed by the Door from a Door-only flag: later stages can require the name
+# but not recompute its value.
 _REAL_DOOR_ONLY_SEALED_NAMES: Final = ("data-handling",)
 
 
 def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
     """The downstream-relevant subset of a real run's bindings, recomputed at open.
 
-    Reads the same files `run_config_bindings` reads, under the same names, and
-    returns what a stage after the Door needs: the sealed digest map to recheck
-    `run.json` against and to carry as `StageContext.sealed_config_digests`, the
-    parsed Armarium formats and recovery policy, the serving configuration
-    inputs, and the roster facts. It computes no `config_digest`: the real one
-    binds the submission ledger and the Door machine's decoder versions, which
-    this stage does not hold and must not bind to (`_open_real_context`).
-
-    Three names here exist only on the real path — `models`, `armarium-formats`
-    and `run-policy` — because on the fixture path the same facts are inside
-    `config_digest` and already rechecked whole. Here they are what stands in
-    for that check, name by name.
+    No `config_digest`: the real one binds the Door machine's ledger and
+    decoders.  `models`, `armarium-formats` and `run-policy` exist only here,
+    standing in for what the fixture path's `config_digest` rechecks whole.
     """
     validate_witness_adapter_bindings(models)
     witness_context_declaration_sha256 = validate_witness_context_bindings(
@@ -2367,7 +1981,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
 
 
 def load_corpus_frame_policy(path: str | Path) -> tuple[dict[str, int], str]:
-    """Read R0's bounded corpus-frame policy from the bytes a run seals."""
+    """Read the bounded corpus-frame policy from the bytes a run seals."""
     try:
         raw = Path(path).read_bytes()
         record = tomllib.loads(raw.decode("utf-8"))
@@ -2392,9 +2006,7 @@ def require_corpus_frame_shard(
     policy, observed = load_corpus_frame_policy(path)
     bound = sealed_config_digests.get("corpus-frame-shard")
     if bound is None:
-        # A run that sealed no shard digest at all is a different fault from one
-        # whose config changed after binding; naming them apart tells an operator
-        # whether to look at the binding step or at the file.
+        # Unsealed and changed are different faults with different fixes.
         raise ContractError(
             "this run sealed no digest for the corpus-frame shard configuration; "
             "a shard may not be created under an unbound policy"
@@ -2424,9 +2036,7 @@ def require_triage_modes(
         raise ContractError("this run sealed no digest for the triage modes configuration")
     observed = digest_bytes(raw)
     if bound != observed:
-        # Check the binding before parsing. A malformed replacement is still
-        # first and foremost bytes this run never sealed, and must not mask that
-        # security refusal behind a TOML diagnostic.
+        # Before parsing, so a TOML error cannot mask the unsealed-bytes refusal.
         raise ContractError(
             "the triage modes configuration changed between run binding and its "
             f"point-of-use check: this run sealed {bound}, and {path} now hashes to {observed}"
@@ -2434,48 +2044,23 @@ def require_triage_modes(
     _validate_triage_modes_config(raw, path)
 
 
-# The roles the pipeline addresses by name, beside the Attestator witnesses.
-# Here rather than in the stage modules because `unaddressed_chairs` below has to
-# know the whole set of roles the pipeline ever asks for, and a second spelling in
-# `2_designator/run.py` or `4_perlector/run.py` would be a set that could drift
-# from the check that depends on it.
-#
-# `PERLECTOR_CHAIR` exists even though its value equals the stage name, because a
-# stage and a chair are two vocabularies: `config/models.toml` says roles "are
-# configuration keys, not concepts". The Perlector reading through the stage
-# constant worked only because the two words happen to coincide, and repinning the
-# chair to a differently named role would have quietly broken it.
+# The roles addressed by name beside the witnesses, kept here so
+# `unaddressed_chairs` sees the whole set.  `PERLECTOR_CHAIR` equals the stage
+# name only by coincidence: chairs and stages are separate vocabularies.
 DESIGNATOR_CHAIR = "designator_structure"
 PERLECTOR_CHAIR = PERLECTOR
 
-# `config/models.toml` already carries `secondary_proposer`, absent by default
-# ("no secondary proposer is configured for the offline walking skeleton") —
-# but an absence is only a recorded decision if something actually resolves the
-# role and writes that decision down. Naming it here, in the one set
-# `unaddressed_chairs` checks against, is what stops the day someone flips the
-# roster to a real detector from silently turning every run `partial`: the
-# resolution path has to exist *before* that flip, not be discovered by it.
+# Absent by default, and named here so the absence is resolved and recorded:
+# enabling a real detector must not silently turn every run `partial`.
 SECONDARY_PROPOSER_CHAIR = "secondary_proposer"
 
 
 def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     """Configured roles no stage in this pipeline will ever ask for.
 
-    `models.toml` accepts a new role without a code change, which is the point —
-    and the cost is that a misspelt one is still a perfectly valid configured
-    chair. `attestor_4` for `attestator_4` fails the `attestator_` prefix, so it
-    never enters `witness_chairs`, no stage resolves it, and no artifact anywhere
-    names it: a configured model was silently never asked for anything and the run
-    still reported `complete`. Principle 2 refuses complete unless everything
-    reconciles, and a chair in the roster is something to reconcile.
-
-    Absences count as addressed: an absent chair is a decision already recorded.
-
-    So does the configured base of an addressed adapter. No stage resolves a base by
-    name — the adapter is what a stage asks for — but the base artifact genuinely
-    participates in the reading and its identity travels in the serving receipt as
-    `adapter_identity`. Reporting it unaddressed forced a perfectly valid adapter
-    roster to `partial` for a chair that *is* accounted for, one indirection away.
+    A misspelt role is still valid configuration, and would otherwise be
+    silently never asked (principle 2).  Absent chairs, and the base of an
+    addressed adapter (recorded in its receipt), count as addressed.
     """
     addressed = set(models.witness_chairs) | {
         DESIGNATOR_CHAIR,
@@ -2513,20 +2098,8 @@ def adapter_recipe_for(run: dict[str, Any], stage: str) -> str:
 def fixture_serving_details(identity: ChairIdentity) -> ServingDetails:
     """The declared serving details of the walking skeleton's offline seam.
 
-    Declared, not observed: nothing here served anything, so these are fixture
-    values in the same sense as the synthetic pages, and they say so —
-    `fixture://` for an endpoint, `fixture` for a dtype. Reading them as a
-    measurement of a real serving moment would be exactly the confusion
-    principle 8 forbids.
-
-    Two consequences worth knowing until the pipeline adopts spec 04's real
-    serving-manager callback. Endpoint and start time are confined to the run
-    receipt, so a stage payload carries only the content-addressed reference to one. And
-    `started_at` is a constant *because* the skeleton's receipts sit inside the
-    tree the determinism tests hash; a real receipt is honestly
-    non-deterministic, and the run at which that becomes true is the run at which
-    `receipts/` has to leave those snapshots. Neither test is loosened for it
-    now, while every receipt in the tree is still a declared fixture value.
+    Declared, not observed, and marked so (`fixture://`, `fixture`).
+    `started_at` is constant because the determinism tests hash these receipts.
     """
     return ServingDetails(
         tokenizer_revision=identity.receipt_revision,
@@ -2551,11 +2124,8 @@ def validate_serving_provenance(
 ) -> ChairIdentity | None:
     """Validate the identity/receipt projection a downstream stage consumes.
 
-    The receipt holds serving-time facts, so endpoint and timestamp must never be
-    copied into a stage artifact. A configured identity must still agree exactly
-    with the named role in the sealed models config, its explicit revision, and
-    the digest-checked receipt reference. This validates evidence; it never asks
-    the registry for a neighbouring role, revision, recipe, or cache.
+    Endpoint and start time stay in the receipt.  A configured identity must
+    match the sealed models config, its revision and the receipt exactly.
     """
     if not isinstance(provenance, dict):
         raise SchemaRefusal("model provenance is not an object")
@@ -2564,24 +2134,14 @@ def validate_serving_provenance(
         raise SchemaRefusal(
             f"model provenance leaks serving-only field(s) {leaked}; use the run receipt reference"
         )
-    # **An allowlist, because #42 refuses wrong-schema provenance rather than
-    # known-bad provenance.** Naming `endpoint` and `started_at` above catches the
-    # two leaks we have already made and nothing else: any field a later stage
-    # invents travels into a sealed reading unexamined, which is precisely the
-    # tampering the invariant is about. The check above stays because it names the
-    # two by name and says why; this one closes the rest.
+    # The check above names the known leaks; this allowlist closes the rest.
     unexpected = sorted(set(provenance) - _PROVENANCE_FIELDS)
     if unexpected:
         raise SchemaRefusal(
             f"model provenance carries unknown field(s) {unexpected}; a reading's provenance "
             "is a closed schema, and a field nothing validates is a field nothing can trust"
         )
-    # **Required of the Perlector, forbidden of everyone else.** Checking the value
-    # only when it happened to be present left the clause it cites unenforced from
-    # both directions: a Perlectio that stopped recording its regime validated all
-    # the way into the export, and a stage that does not own the field could attach
-    # one and nothing objected. Which producer owns a field is part of the closed
-    # schema, not a separate question.
+    # Required of the Perlector, forbidden of everyone else.
     regime = provenance.get("witness_regime")
     if producer_stage == PERLECTOR:
         if regime not in WITNESS_CONTEXT_REGIMES:
@@ -2603,18 +2163,8 @@ def validate_serving_provenance(
     chair = provenance.get("chair")
     if not isinstance(chair, str) or not chair:
         raise SchemaRefusal("model provenance has no chair name")
-    # **Owned by one producer and one chair, checked from both directions.** The
-    # same reasoning `witness_regime` above is held to: a field validated only
-    # when it happens to be present is a field any stage may attach, and an
-    # unvalidated field inside a sealed reading is exactly what invariant #42
-    # exists to stop. Only the Designator's structure pass calls a chair to mark
-    # out structure (ARCHITECTURE: the Designator marks out; the Attestatores
-    # bear witness), and only `designator_structure` sits in that chair
-    # (`unaddressed_chairs` names the whole role set). A witness Testimonium
-    # carrying a structure-chair call, or a structure call attributed to a
-    # witness role, would be a reading claiming a serving moment that was not
-    # its own — principle 6, and the same fabricated-moment refusal spec D §7
-    # names.
+    # Only the Designator's structure chair records an engine call; anywhere
+    # else it claims a serving moment that was not its own (principle 6).
     if provenance.get("engine_call") is not None:
         if producer_stage != DESIGNATOR:
             raise SchemaRefusal(
@@ -2656,12 +2206,7 @@ def validate_serving_provenance(
 
     if state != "configured":
         raise SchemaRefusal(f"model provenance has unknown chair state {state!r}")
-    # **The allowlist above says which fields may exist; only here is it known which
-    # may exist *together*.** `absence` is legal provenance — on an absent chair — so
-    # the closed schema admits it, and the absent branch returned before this line.
-    # Without this check a configured chair carried an unread `absence` record beside
-    # a full identity: two contradictory claims about the same chair, sealed into a
-    # reading, and the reading still verified.
+    # `absence` is allowed only on absent chairs, which returned above.
     if "absence" in provenance:
         raise SchemaRefusal(
             f"configured chair {chair!r} carries an absence record; a chair is configured "
@@ -2730,25 +2275,10 @@ def validate_serving_provenance(
 def _validate_structure_chair_call(context: StageContext, call: Any) -> None:
     """The closed record of the posture the structure chair was served under.
 
-    Two facts, and only the two a consumer can check without opening a per-page
-    call record: the wire kind the chair was asked through, and the decoding
-    policy this run sealed for the structural pass.
-
-    `decoding_policy` is a *name*, not a value. The Designator's structure pass
-    runs under `config/decoding.toml`'s `[structure]` section while every
-    Attestator reads at `reading_of_record`, so provenance naming the wrong
-    section would report a posture the pass did not run under — principle 8's
-    confusion of a claim with a measurement, and the reason the
-    temperature itself is deliberately *not* copied here: a number beside the
-    name could disagree with the sealed bytes, and then two artifacts in one run
-    would say different things about one run's decoding.
-
-    `decoding_config_sha256` binds that name to the exact bytes. It is checked
-    through `require_sealed_config` against the digest this run bound at
-    `open_context`, so a `config/decoding.toml` edited between the binding read
-    and the structure call refuses here rather than travelling into a sealed
-    reading unnoticed — the point-of-use recheck the whole sealing family
-    exists for, applied to the one policy the structural pass is free to vary.
+    The policy is recorded by name and digest, never by copying the
+    temperature, which could then disagree with the sealed bytes.  The digest
+    is held to the run's sealed `decoding` entry, so a `config/decoding.toml`
+    edited after binding is refused here rather than sealed into a reading.
     """
     if not isinstance(call, Mapping) or set(call) != STRUCTURE_CALL_FIELDS:
         named = sorted(call) if isinstance(call, Mapping) else type(call).__name__
@@ -2783,12 +2313,7 @@ def _validate_structure_chair_call(context: StageContext, call: Any) -> None:
 
 
 def scenario_for(fixture: dict[str, Any], name: str) -> dict[str, Any]:
-    """The declared scenario, refused loudly when the fixture does not name it.
-
-    The fixture is the authority on which scenarios exist; a misspelt scenario
-    that fell through to `happy` behaviour would be a run wearing the wrong
-    configuration with a green exit code.
-    """
+    """The declared scenario, refused loudly when the fixture does not name it."""
     for scenario in fixture.get("scenario", []):
         if scenario["name"] == name:
             return scenario
@@ -2799,11 +2324,8 @@ def scenario_for(fixture: dict[str, Any], name: str) -> dict[str, Any]:
 def expected_acts(context) -> list[dict[str, Any]]:
     """Every act the proposal seal expects, each with a validated Designator outcome.
 
-    One reader for all five consumers, because the seal is the downstream
-    expected-act authority and this is the handoff contract: every entry carries
-    the Designator's outcome for that act, and an entry whose outcome is missing
-    or outside the closed vocabulary is invariant #10's imbalance — fatal at the
-    first consumer, never a `.get` that quietly reads as marked-out.
+    The one reader for every consumer; a missing or unknown outcome is fatal,
+    never read as marked-out.
     """
     seal = context.tree.read_artifact(
         DESIGNATOR,
@@ -2863,22 +2385,8 @@ def expected_acts(context) -> list[dict[str, Any]]:
         act_ids.add(act["act_id"])
         act_keys.add(act["act_key"])
         classify(DESIGNATOR, act.get("outcome"))
-    # Gated on the run authority's ingress record by name, never on the shape of
-    # the fixture. With `fixture={}` on a real run the synthetic floor did not
-    # skip: it read `[]`, found nothing missing, and sent every row to the
-    # minted-row check, which admits only a residual hold and a page-fallback --
-    # so a real Designator's ordinary structural act was refused with a sentence
-    # about a fixture the run never had. Real mode classifies each row from its
-    # own Designator evidence instead (`_verify_real_act_denominator`).
-    #
-    # Ingress is no longer the only thing that opens that route. Which pass
-    # produced this seal is a fact about the sealed serving catalogue, not about
-    # where the pages came from: the offline end-to-end run drives a *served*
-    # structure chair over fixture pages, and a real submission may be marked out
-    # by a fixture chair over no chair at all. The two questions are independent,
-    # so the seal's own provenance is asked as well as the run's ingress, and a
-    # seal produced by a served structure chair takes the recomputing route
-    # whichever ingress it ran under.
+    # A seal from a served structure chair, or any real run, is recomputed from
+    # its own evidence; ingress and serving are independent.
     structure_call = _structure_chair_call(context, payload)
     if structure_call is not None or is_real_ingress(context.run):
         by_subject = _proposal_evidence_by_subject(context, act_ids)
@@ -2893,32 +2401,9 @@ def expected_acts(context) -> list[dict[str, Any]]:
 def _structure_chair_call(context, payload: Mapping[str, Any]) -> dict[str, Any] | None:
     """The served structure chair's posture, or `None` when no chair was called.
 
-    **Why the artifact and not the catalogue.** `common/` may never import
-    `operations/` (`common/contracts/serving.py`'s own docstring says why: both
-    sides import the shared shapes, and neither may depend on the other), so
-    this module cannot call `serving_mode_for` over the bound recipes the way
-    the Designator's own `main` does when it chooses which pass to run. What it
-    reads instead is the decision that choice already wrote down: on the live
-    path the structure chair's provenance carries an `engine_call`, and
-    `validate_serving_provenance` binds that record to the run's registry, its
-    sealed adapter recipe, its sealed decoding digest and a digest-checked
-    serving receipt before a single row is admitted on the strength of it. The
-    catalogue decides; this reads what the catalogue decided, and refuses a
-    claim the run cannot support.
-
-    **What a seal cannot escape by staying silent.** Omitting `engine_call` does
-    not buy a forged seal an easier check. On real ingress the route is taken
-    anyway. On fixture ingress the fixture floor is the *stronger* check —
-    every act the sealed fixture declares must appear, with the identity the
-    fixture derives — so a seal that drops the field is measured against a
-    declaration instead of against its own evidence. The one seal both routes
-    would admit is one whose rectangles are exactly the fixture's own, which is
-    the same act at the same identity by either name.
-
-    The refusal is `validate_serving_provenance`'s own, deliberately not
-    rewrapped: it names which field of the provenance is wrong, and a
-    `FatalAccounting` about the denominator would hide that behind a sentence
-    about act counts.
+    Read from the seal's validated provenance because `common/` may not import
+    the serving catalogue.  Omitting `engine_call` gains nothing: real runs are
+    recomputed anyway, and fixture runs face the stricter fixture floor.
     """
     provenance = payload.get("provenance")
     if not isinstance(provenance, Mapping) or provenance.get("engine_call") is None:
@@ -2932,13 +2417,7 @@ def _structure_chair_call(context, payload: Mapping[str, Any]) -> dict[str, Any]
 def is_real_ingress(run: Mapping[str, Any]) -> bool:
     """Whether a run authority names the real route.
 
-    An absent ingress record reads as the synthetic walking skeleton, exactly as
-    `refuse_halted_run` reads it: the hand-built trees in this module's own unit
-    tests predate the record, and a present one must still parse or it refuses.
-
-    The single reader behind this check: each stage's own `real_ingress(context)`
-    calls straight through to this function rather than restating the read, so a
-    change to how the ingress record is parsed lands once.
+    An absent ingress record means synthetic (older test trees lack it).
     """
     return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
 
@@ -2952,30 +2431,13 @@ def _verify_real_act_denominator(
 ) -> None:
     """Every expected-act row on a real run, proven against its own evidence.
 
-    There is no declaration to check a real seal against, so the fixture floor
-    does not run. What replaces it is not trust: each row is classified by which
-    Designator record exists for it -- a `hold` naming `residual_bounds`, a
-    `hold` naming `page_bounds`, a `page-fallback` record, or a proposal-origin
-    `region` on the row's own page -- and then recomputed against that record
-    exactly as the fixture path recomputes its minted rows. The three minted
-    classes go through `_verify_minted_act_rows` unchanged. The fourth, the
-    structural proposal, is the one class the fixture path never had to
-    recompute (its declaration was the stronger check) and here is checked
-    against the producer's own crop rectangle (`_verify_proposal_act_row`,
-    which adds the hop to the retained structure answer when a chair was
-    actually served).
-
-    A row matching more than one minted class is refused as ambiguous, and a
-    row matching none and carrying no region is refused as unevidenced. Nothing
-    tries the classes in turn until one verifies: the evidence decides the
-    class, or nothing does (principle 1).
+    Each row's class comes from which Designator record exists for it (residual
+    hold, page hold, page-fallback, or own-page region), then is recomputed.
+    Ambiguous or unevidenced rows are refused; classes are never tried in turn
+    until one passes (principle 1).
     """
     fallbacks_by_subject = _designator_records_by_subject(context, "page-fallback")
-    # One index of this run's own pages, built once. A region's page is checked
-    # against it rather than against the row that cites the region: the row is
-    # the thing under test, so "the transform does not name the row's page"
-    # cannot distinguish a genuine continuation from a transform that names no
-    # page at all, or a page belonging to some other run.
+    # Regions are placed against this run's pages, not the row under test.
     page_ordinals = {page_id: ordinal for ordinal, page_id in exemplar_page_ids(context).items()}
     holds_by_subject: dict[str, dict[str, Any]] = {}
     minted_rows: dict[str, dict[str, Any]] = {}
@@ -3023,12 +2485,7 @@ def _verify_real_act_denominator(
             if hold is not None and isinstance(hold.get("payload"), dict)
             else {}
         )
-        # A hold whose payload names neither rectangle matches no minted class,
-        # so a row carrying one alongside a region used to fall through to the
-        # structural pass -- reclassified as a proposal, its hold never
-        # examined, on the one route where the hold is the only evidence that
-        # the act was held at all. The fixture route refuses the same row by
-        # name; so does this one now.
+        # Otherwise such a row would fall through as a proposal, its hold unread.
         if hold is not None and not {"residual_bounds", "page_bounds"} & set(hold_payload):
             raise FatalAccounting(
                 f"act {act_id} carries a hold record naming neither residual_bounds nor "
@@ -3038,22 +2495,14 @@ def _verify_real_act_denominator(
             )
         proposal_regions = [record for record in records if record["kind"] == "region"]
         for record in proposal_regions:
-            # Refused, never filtered out. A region whose transform is not an
-            # object names no page, so it lands in neither the own-page nor the
-            # far-page list -- and dropping it silently would let a published
-            # continuation crop vanish beneath a `has_continuation=False` row,
-            # which is the loss `_verify_structural_act_row` exists to catch.
+            # Refused, not filtered: a dropped region could hide a continuation.
             if not isinstance(record["payload"].get("transform"), Mapping):
                 raise FatalAccounting(
                     f"act {act_id}'s proposal region {record['artifact_id']!r} carries no "
                     "transform object, so the page it was cut from cannot be read; a region "
                     "the denominator cannot place is not a region it may pass over"
                 )
-            # And the page it names must be a page this run has. Without this,
-            # "not the row's own page" was the whole far-page test, so a
-            # transform naming no page at all, or a page id from some other
-            # run, counted as a continuation -- satisfying `has_continuation`
-            # against a crop nothing downstream could ever open.
+            # A foreign or missing page must not count as a continuation.
             source_page_id = record["payload"]["transform"].get("source_page_id")
             if source_page_id not in page_ordinals:
                 raise FatalAccounting(
@@ -3075,12 +2524,7 @@ def _verify_real_act_denominator(
             classes.append("page-residual")
         if act_id in fallbacks_by_subject:
             classes.append("page-fallback")
-        # A structural proposal is the row with regions and no minted-class
-        # record at all. Regions alone do not name a class: a page-fallback act's
-        # predetermined crops are proposal regions too (`_publish_page_fallback`
-        # cuts them through `cut_minted_region`), and what says which unit they
-        # belong to is the `page-fallback` record beside them, whose own
-        # rectangle and premise `_verify_page_fallback_act_row` then recomputes.
+        # Regions alone do not make a proposal: page-fallback acts have regions too.
         if regions and not classes:
             classes.append("proposal")
         if len(classes) > 1:
@@ -3126,9 +2570,7 @@ def _verify_structure_attempt_chain(
 ) -> None:
     """Follow and reconcile every versioned terminal structure-attempt reference.
 
-    Full-denominator callers pass one manifest index and one decoding read for
-    the whole run.  Standalone callers may omit them and retain the original
-    closed, self-sufficient verification path.
+    Whole-run callers pass a shared attempt index and decoding read.
     """
     if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
         return
@@ -3590,76 +3032,18 @@ def _verify_proposal_act_row(
 ) -> None:
     """A structural act, recomputed and then held to the answer it came from.
 
-    `_verify_structural_act_row` proves the row against the rectangle its own
-    region record was cut over: identity, act key, page ordinal, continuation.
-    That is everything a consumer can check when the rectangle has no earlier
-    author — the walking skeleton's crops come from the sealed fixture, and the
-    region record is the first place they exist as evidence.
+    With a served chair, the rectangle must appear exactly in the chair's
+    published answer for a scanned page, or the act would carry the chair's
+    provenance over ink it never proposed (principles 6, 8).  Exact match only:
+    a nearest match would be a selection (principle 1).  Presence, not
+    uniqueness: identical rectangles on one page are one act.
 
-    When a chair was actually served, the rectangle *does* have an earlier
-    author, and one more thing becomes checkable: the answer that chair returned
-    was retained, parsed and published per page (`structure-answer`, SPEC_D
-    §1.3), so a rectangle no answer names is a crop this run cannot attribute to
-    the model it says marked it out. Without this hop a Designator could mint a
-    perfectly self-consistent act over any rectangle at all: identity
-    recomputes, the act key agrees with the region that carries it, and every
-    downstream stage reads, witnesses and establishes text over ink no model
-    ever proposed. Principle 8 is the rule that forbids it (the claim is "the
-    structure chair marked this out"), and principle 6 is the rule it would
-    break next, since the reading would carry the chair's provenance for a
-    rectangle the chair never returned.
-
-    **What this hop does not prove.** The rectangle is checked against
-    `payload["acts"]` — the Designator's own published record of what the chair
-    answered — reached on a digest-checked reference, so the record cannot have
-    changed since the status cited it. It is not checked against the retained
-    response bytes, which this function never reads or re-parses. A producer
-    that published a doctored act list beside its own status therefore passes
-    here; what it cannot do is publish one rectangle and mint a different one.
-    Re-deriving the acts from the retained blob would close that gap and is a
-    design change, not a correction: it would make `common/stage.py` a second
-    parser of the chair's wire contract, which today has exactly one. That
-    contract is Chandra's layout HTML since `verbatus-structure-prompt.v3`, and
-    its one reader is `common/chandra_layout.py::parse_layout_html`, shared with
-    the page witness; `common/structure_answer.py::parse` reads the retired
-    `verbatus-structure-answer.v1` JSON and has no live caller.
-
-    Three claims, and each is refused separately so the refusal says which one
-    failed. The **page** must have been scanned: the page's own
-    `structure-status` is read at its identity-derived address — a page id is
-    not a producer's choice of string but this act's own binding, already
-    recomputed above — and it must record `state="scanned"` for this row's page
-    and page **ordinal**. The **answer** is then reached through that record's
-    `structure_answer_ref` on the digest-checked hop rather than by address, the
-    same "prove its premise" step `_verify_page_fallback_act_row` makes, so a
-    status pointing at bytes that have since changed refuses instead of
-    resolving. And the **rectangle** must appear in that answer's own act list,
-    exactly — no nearest match, no containment, no tolerance (principle 1: a
-    "nearest" rectangle is a selection among candidates dressed as arithmetic).
-
-    Two smaller bindings sit alongside. The answer's own `engine_call` must be
-    the seal's, so a page answered under one sealed decoding posture cannot
-    supply rectangles for a seal that claims another. And the answer must name
-    the per-page `call_record_ref` it was derived from: a `parsed` answer citing
-    no call is a record of a reading with no reading behind it.
-
-    A rectangle may legitimately appear more than once. Two identical rectangles
-    on one page are one crop and mint one act (SPEC_D §2.2 — the class-and-bounds
-    identity has no ordinal namespace), with the second recorded as a
-    `duplicate-rectangle` finding rather than refused. So this asks that the
-    rectangle be *present*, never that it be unique; requiring uniqueness would
-    turn a recorded, deliberate merge into a fatal accounting error.
+    The published act list is checked, not the retained response bytes, so a
+    doctored list published beside its status still passes.
     """
     _verify_structural_act_row(act_id, row, regions, far_regions, page_ordinals)
     if structure_call is None:
-        # A structural proposal with no served chair is only reachable here on
-        # real ingress (`expected_acts` takes this route on a fixture run only
-        # when the seal itself names a call; without one, a fixture run falls
-        # to the stronger fixture floor instead). Omitting `engine_call` must
-        # not buy a real proposal an easier check than the one its own
-        # docstring above promises: staying silent skips not just the answer
-        # hop but the geometry recompute's only counterparty, so a forger's
-        # self-consistent rectangle would be admitted on its own say-so.
+        # On real ingress, omitting `engine_call` must not skip the answer check.
         if is_real_ingress(context.run):
             raise FatalAccounting(
                 f"act {act_id} is a structural proposal on real ingress, but the proposal "
@@ -3730,10 +3114,7 @@ def _verify_proposal_act_row(
     answer_provenance = (
         payload.get("provenance") if isinstance(payload.get("provenance"), Mapping) else {}
     )
-    # The answer's own provenance is the premise the minted act rests on, and it
-    # is held to the same closed schema, registry, sealed recipe and
-    # digest-checked receipt the seal's provenance is -- not compared only on
-    # the one field (`engine_call`) this hop happens to need next.
+    # Validated in full, not only on `engine_call`.
     validate_serving_provenance(
         context, dict(answer_provenance), producer_stage=DESIGNATOR, require_receipt=True
     )
@@ -3812,48 +3193,12 @@ def _verify_structural_act_row(
 ) -> None:
     """A real structural act, recomputed from the rectangle it was minted over.
 
-    `cut_minted_region` publishes `raw_bounds` beside every proposal region: the
-    structural rectangle the act identity was bound to, before capture padding.
-    That is the one producer-independent fact a consumer can recompute the
-    identity against, so a real run's denominator is *verified* rather than
-    trusted. Exactly one proposal-origin region may sit on the row's own page; a
-    continuation is a second region on a far page and is not counted here, but
-    it is not ignored either.
-
-    Act identity binds only page, class and bounds (`act_bindings`), so the
-    identity check above proves none of `act_key`, `page_ordinal` or
-    `has_continuation` -- a seal row is free to *name* a different page ordinal
-    or a foreign act key for the very region whose bounds it verified against,
-    and stages 3-7 index and join by those named fields, not by identity.
-    `cut_minted_region` publishes `act_key` and `transform.source_page_ordinal`
-    beside every region, so both are recomputable and are recomputed here.
-
-    `has_continuation` is the same kind of belief otherwise: nothing before this
-    reconciled it against the regions the Designator actually cut. A row
-    claiming a continuation with no far-page region names one that was never
-    cut; a row denying one while a far-page region exists would drop a
-    published continuation crop silently downstream (the Attestatores append
-    the far page only when the flag is set) -- exactly the loss goal 2 calls
-    worse than a poorly read act. So the far-page count is checked against the
-    flag in both directions.
-
-    The far region is then recomputed as far as it can be. Its page is already
-    known to be a page of this run (the denominator walk refuses one that is
-    not, so "far" now means *another page of this run* rather than merely "not
-    the row's"), and beside that its `act_key` must be the row's and its
-    `source_page_ordinal` must be the ordinal this run's own Exemplar gives
-    that page -- both the same facts recomputed for the near region, against
-    the run's page index rather than the row, since no seal-row field names the
-    far page.
-
-    The one fact that cannot be recomputed for a far region is the act
-    identity. `act_bindings` binds one page id, one class and one rectangle,
-    and the rectangle it binds is the near one; a continuation crop is a second
-    cut whose bounds enter no identity anywhere, so there is no digest to
-    reproduce it against. What is required instead is that it carry the
-    `raw_bounds` a consumer needs to open it at all: a continuation region
-    whose rectangle cannot be read is refused, not passed over, because the
-    flag beside it has already promised a downstream reader that crop.
+    Identity binds only page, class and `raw_bounds`, so `act_key`,
+    `page_ordinal` and `has_continuation` are recomputed separately: later
+    stages join on them.  `has_continuation` is checked both ways, since a
+    false negative silently drops a continuation crop (goal 2).  A continuation
+    region's bounds enter no identity, so it need only carry readable
+    `raw_bounds`.
     """
     if len(regions) != 1:
         raise FatalAccounting(
@@ -3923,28 +3268,9 @@ def _verify_structural_act_row(
 def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> None:
     """Bind the skeleton's discovered-act denominator to its sealed fixture input.
 
-    This check belongs only to the declared synthetic walking skeleton: its fake
-    Designator derives every act from fixture data, and the run configuration
-    seals those fixture bytes.  Two other routes exist now and neither reaches
-    here — a real submission, whose rows are classified from their own Designator
-    evidence (`_verify_real_act_denominator`), and a seal produced by a served
-    structure chair, whose rows are additionally held to the answers that chair
-    returned (`_verify_proposal_act_row`). What is prescribed below is therefore
-    the fixture path alone, and a run arriving here has a fixture to be measured
-    against.
-
-    The fixture's own acts are a *floor*, never a ceiling: every one must
-    appear, and the seal may also carry acts the fixture never declared. Three
-    kinds exist, and none is fixture data, so none can be checked against
-    it — `_verify_minted_act_rows` checks each against the one thing it *can*
-    be checked against: its own Designator evidence record, recomputed rather
-    than trusted. A **residual** act (`_publish_residual_holds`) is ink
-    conservation found that structural grouping never claimed, and is `held`. A
-    **page-fallback** act (`_publish_page_fallback`) is the predetermined crop
-    grid cut over a page the structure pass found nothing on, and is `proposed`,
-    because the whole point of cutting it is that it goes downstream to be read.
-    A **page-residual** act is the whole page held in place of more residuals
-    than the sealed bound allows to be minted separately, and is `held`.
+    The fixture's acts are a floor: each must appear.  Extra acts (residual,
+    page-fallback, page-residual) are not fixture data and are recomputed from
+    their own Designator evidence instead.
     """
     fixture_acts = context.fixture.get("act", [])
     expected = {
@@ -3979,17 +3305,8 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
             raise FatalAccounting(
                 f"proposed act {act_id} does not account for its declared continuation"
             )
-    # Sorted, because `_verify_residual_act_rows` raises on the *first* row that
-    # fails and a set of strings has no stable order: CPython randomises string
-    # hashing per process, so a seal carrying more than one bad extra row named a
-    # different act in the refusal on every run. The refusal was always correct
-    # and always fired; which act it accused was a coin flip, which is the kind of
-    # evidence nobody can act on twice.
-    # One read of the hold artifacts for both directions. Each
-    # `_designator_records_by_subject` call walks the stage's whole manifest and
-    # opens every record of its kind, and a page held for over-bound residuals is
-    # by construction a run with many holds — the case where reading them twice
-    # costs most is the one the second direction was added for.
+    # Sorted so the first refused row is the same on every run.  Holds are read
+    # once for both checks: each read walks the whole manifest.
     holds_by_subject = _designator_records_by_subject(context, "hold")
     _verify_minted_act_rows(
         context,
@@ -4006,33 +3323,10 @@ def _verify_every_conservation_residual_is_accounted(
 ) -> None:
     """Every residual a conservation record found must reach the denominator.
 
-    `_verify_minted_act_rows` reads seal row -> conservation record: an extra row
-    must prove itself against the reconciliation that found it. That direction
-    alone still trusts the producer completely for the rows it did *not* write.
-    A `conservation` record may declare unclaimed ink on a page while the seal
-    names no act for it, and nothing then disagrees: `_verify_proposal_seal_evidence`
-    only reconciles `region` and `hold` artifacts, so a residual that never became
-    a hold leaves no artifact to be unaccounted for, every consumer reconciles
-    perfectly, and the Designator's own `EXIT_COMPLETE` — which reads the seal's
-    rows, not the reconciliation — reports 0 over ink the stage itself measured
-    and no crop claimed.
-
-    Principle 2 is a rule about the missing row as much as the forged one, and
-    the Designator's own docstring already promises the stronger reading: a run
-    that "found ink no crop claimed has not completed". This is that promise
-    checked at the first consumer rather than asserted by the producer.
-
-    Position within `residual_components` orders evidence only; identity binds
-    the residual class and its bounds, so a new component cannot rename one.
-
-    A record may also decline to enumerate, and that is the one case where the
-    list's absence is not a gap: a page whose reconciliation exceeded the sealed
-    residual bound is held as a single `page-residual` review item instead of as
-    that many held acts, and the components are then recomputable from the sealed
-    page bytes rather than carried. The tolerance is exactly as wide as the thing
-    that earns it — one page-residual hold, naming this page, judged against the
-    same bound this record recorded. A withheld record with no such row is the
-    silent loss this check exists to prevent, wearing a policy's name.
+    The reverse of `_verify_minted_act_rows`: a residual the seal never named
+    leaves no artifact to miss, so without this it vanishes silently
+    (principle 2).  A page over the sealed residual bound may withhold its
+    list only if it is held as exactly one page-residual item.
     """
     if holds_by_subject is None:
         holds_by_subject = _designator_records_by_subject(context, "hold")
@@ -4252,11 +3546,8 @@ def _page_residual_holds_by_page(
 ) -> dict[str, list[Mapping[str, Any]]]:
     """Every page-residual hold in the run, indexed by the page it holds.
 
-    Read from the Designator's own artifacts rather than from the seal rows, so
-    that a hold the denominator never accounted for is a refusal here instead of
-    an absence nothing notices. `_verify_minted_act_rows` has already proven each
-    of these against the sealed page and its conservation record; what this index
-    is for is the other direction — finding the page that has no hold at all.
+    Read from the Designator's artifacts, not the seal, so a hold the seal
+    never accounted for is refused.
     """
     by_page: dict[str, list[Mapping[str, Any]]] = {}
     for act_id, hold in holds_by_subject.items():
@@ -4280,11 +3571,7 @@ def _verify_withheld_page_is_held_as_one_item(
 ) -> None:
     """A record that withheld its components owes exactly one page-residual row.
 
-    And that row must have been judged against the bound this record itself
-    names. A hold carrying a laxer bound than the reconciliation applied would
-    describe a decision the run never took, which is the same class of untruth
-    as the missing row: both leave a reviewer reading a policy that was not the
-    one in force.
+    That row must name the same bound the record applied.
     """
     if len(holds) != 1:
         raise FatalAccounting(
@@ -4311,19 +3598,13 @@ def _verify_withheld_page_is_held_as_one_item(
 def fallback_page_act_key(page_ordinal: int) -> str:
     """The human-readable label of the one act a page's fallback crops belong to.
 
-    For a reviewer's eye and for `expected_acts`'s duplicate-key refusal; what
-    keeps this act's *identity* from colliding with anything is
-    the closed ``page-fallback`` act class, not this string. Named here so the
-    producer and verifier cannot spell it differently.
+    A label only; identity comes from the ``page-fallback`` act class.
     """
     return f"page-fallback:{page_ordinal}"
 
 
-# How much of a page's residual reconciliation its conservation record actually
-# enumerates. A closed pair, named once, because the whole point of the withheld
-# value is that a consumer must be able to tell "this page had no residual" from
-# "this page's residuals were counted and not listed" — and a third spelling
-# appearing on one side of that distinction is how the two become one again.
+# How much of a page's residuals its conservation record lists, so "no
+# residual" and "counted but not listed" stay distinguishable.
 RESIDUAL_ENUMERATION_COMPLETE: Final = "complete"
 RESIDUAL_ENUMERATION_AGGREGATED: Final = "aggregate-page-held"
 RESIDUAL_ENUMERATION_WITHHELD: Final = "withheld-page-held"
@@ -4333,12 +3614,7 @@ RESIDUAL_ENUMERATIONS: Final = (
     RESIDUAL_ENUMERATION_WITHHELD,
 )
 
-# Why a page held in place of its residual components was held. The Designator
-# declares the closed hold vocabulary and imports this name into it, and this
-# module checks a page-residual hold against the same constant, so the producer
-# and the verifier cannot spell the one machine-readable statement of the cause
-# differently -- the same reason `page_residual_act_key` is defined here and
-# recomputed there.
+# Page-residual hold causes, shared by the Designator and this verifier.
 PAGE_RESIDUAL_REASON_CODE: Final = "residual-components-over-page-bound"
 PAGE_RESIDUAL_AGGREGATE_REASON_CODE: Final = "residual-components-below-presentation-threshold"
 
@@ -4346,10 +3622,7 @@ PAGE_RESIDUAL_AGGREGATE_REASON_CODE: Final = "residual-components-below-presenta
 def page_residual_act_key(page_ordinal: int) -> str:
     """The label of the one act a page held for over-bound residual scatter becomes.
 
-    The same presentation-only role `fallback_page_act_key` has, and named here
-    for the same reason: the Designator writes it and this module recomputes it,
-    so the two may not spell it differently. Identity is carried by the closed
-    ``page-residual`` act class over the page rectangle, never by this string.
+    A label only; identity comes from the ``page-residual`` act class.
     """
     return f"page-residual:{page_ordinal}"
 
@@ -4364,59 +3637,18 @@ def _verify_minted_act_rows(
 ) -> None:
     """Every expected-act row beyond the fixture's own denominator.
 
-    `beyond` names what a row is being checked against in refusal sentences.
-    The synthetic caller has a fixture denominator to name; the real caller has
-    none, so it passes "the structural pass" instead -- a malformed real-mode
-    row must never be told it "extends the denominator beyond the fixture",
-    the exact sentence a real run never had a fixture to be measured against.
-    Every refusal here therefore says `beyond` and none names a fixture in its
-    own words: the neither-held-nor-proposed refusal used to open "is not
-    declared in the sealed fixture", which told a real operator to go and look
-    at a declaration their run does not have.
+    `beyond` names the baseline in refusals, so a real run is never told about
+    a fixture it does not have.  Three kinds may be added, each recomputed from
+    its own Designator record rather than trusted:
 
-    Two units the Designator may add beyond what the fixture declares, and no
-    others. Both exist for goal 2's "a missed act is worse than a poorly read
-    act", and neither may be trusted merely because the seal's own producer
-    wrote it down — that is the same reasoning `expected_acts` already applies
-    to every fixture-derived row above.
+    * a conservation residual: `held`, no continuation; its `page_ordinal` and
+      `act_key` are checked too, since identity does not bind them;
+    * a page-fallback act: `proposed`, premised on the page's `structure-status`
+      saying the structure pass found nothing;
+    * a page-residual act: `held`, one review item for a page over the residual
+      bound.  Holds route by which rectangle they name.
 
-    A **conservation residual** is ink no structural pass claimed at all. It is
-    `held` from the moment it exists, never `proposed`: nothing witnessed it and
-    nothing read it, so it may not carry a continuation either, and its identity
-    must recompute from facts a reviewer can check against the conservation
-    record that found it.
-
-    That identity binds page, class and rectangle alone (`act_bindings`), so
-    re-deriving it proves nothing about the `page_ordinal` and `act_key` the
-    seal row *names* -- the same gap `_verify_structural_act_row` closes for a
-    structural row, and stages 3-7 index and join by those named fields rather
-    than by identity. A residual row naming another page's ordinal would file
-    its review item under a page whose ink it is not. `hold_residual_act`
-    records both beside the rectangle, so both are recomputable, and both are
-    held to the row here. The two page-wide classes below already do the same
-    against their own records.
-
-    A **page-fallback** act is the predetermined crop grid cut over a page the
-    structure pass found no ink on: when the designator sees no text, it
-    defaults to predetermined crops and sends them downstream to be read by
-    everything. It is `proposed`, because cutting crops
-    nothing will read would be the pointless half of that policy, and its
-    identity must recompute against the page's own `structure-status` record,
-    which is what independently says the structure pass found nothing there.
-
-    A **page-residual** act is the third, and it is a *held* row like the first:
-    a page whose conservation reconciled more unclaimed components than the
-    sealed bound allows becomes one review item instead of that many. Both held
-    kinds arrive here as a `hold` record, so the routing between them is the
-    rectangle the hold names — `residual_bounds` for one component, `page_bounds`
-    for the whole page — and a hold naming both is refused by name rather than
-    resolved in either direction.
-
-    The evidence index is built once for the whole set rather than per row, and
-    the caller may hand in the hold index it already holds. Every residual
-    component on a page mints one of these rows, and a speckled or foxed page
-    reconciles to tens of thousands of them, so a per-row walk of the stage's
-    whole artifact tree makes ordinary input quadratic in itself.
+    Indexes are built once: a foxed page can mint tens of thousands of rows.
     """
     if holds_by_subject is None:
         holds_by_subject = _designator_records_by_subject(context, "hold") if extra_rows else {}
@@ -4448,10 +3680,7 @@ def _verify_minted_act_rows(
                 "published no hold record for it"
             )
         payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
-        # Presence, not shape: a hold whose `page_bounds` is malformed is still a
-        # page-residual hold making a malformed claim, and must be refused as one
-        # rather than fall through to the component path and be accused of
-        # carrying no residual bounds.
+        # Presence, not shape, so a malformed page hold is refused as one.
         if "page_bounds" in payload:
             _verify_page_residual_act_row(context, act_id, row, hold)
             continue
@@ -4487,13 +3716,8 @@ def _prove_page_wide_act_rectangle(
 ) -> None:
     """The read/re-derive proof both page-wide act rows share, parameterized by class.
 
-    Recomputes the sealed page's own rectangle from its sealed bytes rather than
-    trusting the bounds a record claims, refuses a rectangle that is not the
-    whole page, and re-derives the act's identity against the reserved
-    ``act_class`` and that rectangle. Shared verbatim by
-    `_verify_page_fallback_act_row` and `_verify_page_residual_act_row` — the
-    two rows differ only in which act class they mint and which premise gates
-    them, both handled by their own callers before and after this proof.
+    The whole-page rectangle comes from the sealed page bytes, never from the
+    record's own claim.
     """
     sources = [
         source
@@ -4533,17 +3757,8 @@ def _verify_page_fallback_act_row(
 ) -> None:
     """The one extra row that may be `proposed`, checked against its own evidence.
 
-    A page-fallback act is the only unit outside the fixture that reaches the
-    witnesses and the Perlector, so it is the one whose provenance most needs to
-    be recomputed rather than believed. Two independent things are checked, and
-    the second is what stops a fabricated one: the identity must derive from
-    this page and the one reserved `page-fallback` act class over the page
-    rectangle its own record declares, and that record's single input must be the page's
-    `structure-status` — read through the digest-checked hop, not by address —
-    saying the structure pass genuinely fell back to tiles on that page. A
-    fallback act minted over a page whose structure pass *did* detect something
-    therefore refuses here, which is exactly the claim-about-what-was-measured
-    principle 8 forbids.
+    Besides identity, its premise is checked: the page's `structure-status`
+    must say the structure pass fell back to tiles (principle 8).
     """
     record = fallbacks_by_subject.get(act_id)
     if record is None:
@@ -4597,38 +3812,11 @@ def _verify_page_residual_act_row(
 ) -> None:
     """The held row that stands for a whole page, checked against its own evidence.
 
-    A page-residual act presents one page-level residual partition. Current
-    records retain the below-threshold components in full; legacy withheld
-    records carry only their count and historical bound. The enumeration names
-    which contract applies, and neither is trusted without its premise.
-
-    Five things are recomputed rather than read. The rectangle comes from the
-    sealed page bytes, so a hold naming a rectangle that is not the whole page —
-    or naming a page it was not minted over — refuses however self-consistent its
-    own identity is. The identity is re-derived against the reserved
-    ``page-residual`` class and that rectangle. The premise is followed to the
-    page's own `conservation` record through the digest-checked hop, never by
-    address, and that record has to support the exact enumeration the hold names.
-
-    The bound itself is not merely internally consistent, it is bound to the run.
-    This run sealed a `designator-grouping` digest at `open_context`; the hold's
-    `grouping_config_sha256` is checked against
-    `run_sealed_config_digests(context.run)["designator-grouping"]` so the bound
-    is bound to the policy this run actually sealed, not merely to itself.
-
-    The hold's own `residual_component_count` is held to the record's. It is the
-    number a reviewer reads off the review item, and a hold free to name a
-    different one would put a figure in front of a person that no artifact in the
-    run supports. Principle 8: the count is a measurement, so it is checked
-    against the thing that measured it.
-
-    The `reason_code` and `blocking_page_ordinal` are checked too, and they are
-    the cheapest checks here for the field that carries the most: the hold
-    vocabulary is closed so that a consumer can branch on the cause without
-    parsing prose, and this is the one hold whose evidence a reviewer cannot open
-    and count for themselves. A page-residual hold arriving under another cause's
-    code, or blaming another page, would be routed by everything downstream as
-    that other thing.
+    Aggregated records keep their components; legacy withheld records keep only
+    a count and bound.  Rectangle, identity, premise (the page's conservation
+    record), grouping digest (against the run's seal), component count
+    (principle 8) and cause are all recomputed; consumers route on the cause
+    code.
     """
     payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
     if "residual_bounds" in payload:
@@ -4672,10 +3860,7 @@ def _verify_page_residual_act_row(
         )
     sealed_grouping_digest = run_sealed_config_digests(context.run).get("designator-grouping")
     if sealed_grouping_digest is None:
-        # Named apart from drift below, the way `require_sealed_config` names
-        # them apart: a run that never sealed the policy and a hold that names
-        # the wrong one need different things done about them, and one message
-        # printing `None` as the digest sends both operators to the same place.
+        # Unsealed and mismatched are different faults with different fixes.
         raise FatalAccounting(
             f"act {act_id}'s page-residual hold names grouping configuration digest "
             f"{grouping_digest!r}, but this run sealed no designator-grouping digest at all "
@@ -4724,10 +3909,7 @@ def _verify_page_residual_premise(
             "a page may not be held as one review item over a reconciliation that separately "
             "presents every component"
         )
-    # Checked only once the record has already proven it means to aggregate: a
-    # record that enumerated its components is refused above for that alone,
-    # whatever its outcome says, and folding this check in ahead of that one
-    # would report the wrong reason for the same wrong record.
+    # After the enumeration check, so that refusal takes precedence.
     outcome = conservation.get("outcome")
     if outcome != "held":
         raise FatalAccounting(
@@ -4797,17 +3979,8 @@ def _verify_residual_traces_to_conservation(
 ) -> None:
     """A residual's declared bounds must exist in the reconciliation that found it.
 
-    The check above only proves the hold is *internally* self-consistent — its
-    own `residual_bounds` recompute the act id they sit beside. That alone
-    would pass a residual invented from nothing, provided
-    whoever invented it also recomputed the identity correctly: nothing yet
-    opens the `conservation` artifact the hold's own `inputs` already
-    reference and confirms a residual component with those bounds is actually
-    in it. `hold_residual_act` publishes every residual hold with exactly one
-    input, the conservation record it was minted from; reading through that
-    reference — not by address, but through the digest-checked hop
-    `RunTree.read_artifact_reference` provides — is what makes "checked
-    against the conservation record that found it" true rather than aspirational.
+    Identity alone would pass an invented residual; the hold's one input, its
+    conservation record, must carry a component at those bounds.
     """
     inputs = hold.get("inputs")
     if not isinstance(inputs, list) or len(inputs) != 1:
@@ -4818,10 +3991,8 @@ def _verify_residual_traces_to_conservation(
     conservation = context.tree.read_artifact_reference(
         inputs[0], stage=DESIGNATOR, kind="conservation", subject_id=page_id
     )
-    # Malformed payloads and rows must reach the named refusal below rather than
-    # escape as attribute errors. Bounds are the residual's identity within its
-    # class, so the Designator refuses coincident component boxes before minting;
-    # this lookup can therefore match by bounds without an ordinal tie-breaker.
+    # Bounds are unique within a record (the Designator refuses coincident
+    # boxes), so matching by bounds needs no tie-breaker.
     payload = conservation.get("payload")
     components = payload.get("residual_components") if isinstance(payload, Mapping) else None
     if not isinstance(components, list) or not any(
@@ -4838,17 +4009,8 @@ def _verify_residual_traces_to_conservation(
 def _designator_records_by_subject(context, kind: str) -> dict[str, dict[str, Any]]:
     """Every Designator record of one kind, by the act it is evidence for.
 
-    Read the same way `_verify_proposal_seal_evidence` reads every act's
-    evidence below, but ahead of it: the denominator check runs first, so an
-    extra row must already name its own real evidence record before that later,
-    more general evidence check ever sees it.
-
-    A subject named twice refuses, exactly as the duplicate-hold rule in
-    `_verify_real_act_denominator` does. Two records of one kind for one act
-    differ in their attempt, so both reach the manifest, and a dict built by
-    comprehension kept whichever the manifest order visited last -- one act
-    verified against a rectangle chosen by artifact-hash ordering, which is a
-    picker with no one at the controls (principle 1).
+    A subject with two records is refused; keeping either would pick by
+    manifest order (principle 1).
     """
     records: dict[str, dict[str, Any]] = {}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
@@ -4867,13 +4029,7 @@ def _designator_records_by_subject(context, kind: str) -> dict[str, dict[str, An
 def _proposal_evidence_by_subject(
     context, expected_ids: set[str]
 ) -> dict[str, list[dict[str, Any]]]:
-    """Every proposal-origin region and every hold, by the act it is evidence for.
-
-    The one walk of the Designator's region and hold records. It is the walk
-    `_verify_proposal_seal_evidence` reconciles the seal against, and on a real
-    run it is also what `_verify_real_act_denominator` classifies each row from,
-    so the two share it rather than reading the stage twice.
-    """
+    """Every proposal-origin region and every hold, by the act it is evidence for."""
     by_subject: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in expected_ids}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] not in {"region", "hold"}:
@@ -4900,10 +4056,7 @@ def _verify_proposal_seal_evidence(
 ) -> None:
     """Reconcile the immutable expected-act denominator to Designator evidence.
 
-    The proposal seal is the sole downstream denominator, so it cannot be a
-    shorter producer-authored list than the regions and holds actually published.
-    Only original proposal regions belong to it; recovery regions are later,
-    append-only evidence and must not rewrite the denominator.
+    Recovery regions are later evidence and do not change the denominator.
     """
     if by_subject is None:
         by_subject = _proposal_evidence_by_subject(context, {act["act_id"] for act in acts})
@@ -4958,11 +4111,8 @@ def open_context(
 ) -> StageContext:
     """Open an existing run for a stage that is not the first to write.
 
-    The synthetic-ingress branch of `open_stage_context`, which passes in the
-    tree and the run authority it already read to decide the branch. Supplied
-    together or not at all: a branch decided on one read and a binding checked
-    on another would be the two-read fault `_verify_stage_seal` names, with a
-    mode switch in it.
+    `tree` and `run` come together or not at all, so the route and the binding
+    check use one read of `run.json`.
     """
     if (tree is None) != (run is None):
         raise ContractError(
@@ -5008,35 +4158,18 @@ def open_context(
         run = tree.read_run()
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
-    # `sealed_config_digests` is compared as a field of its own, not left to be
-    # implied by `config_digest`. Every digest in it is inside `config_digest`, so
-    # an equal digest already proves the *bytes*; what it does not prove is that
-    # this build files those bytes under the same names the run recorded. A name
-    # wired to the wrong digest — the F-S5 shape, where the real Door's map was
-    # missing an entry the fixture path had — would otherwise be invisible until a
-    # stage reached the point of use and refused with "sealed no digest".
+    # Compared separately: an equal `config_digest` proves the bytes, not that
+    # they are filed under the names the run recorded.
     fields = ("config_digest", "adapter_recipes", "witness_chairs", SEALED_CONFIG_DIGESTS_FIELD)
     differing = [
         field
         for field in fields
-        # A run authority written before this map existed is not "differing" and
-        # is not rejected here: `StageContext.require_sealed_config` also
-        # tolerates it per-name only in the sense that an absent name refuses
-        # with "sealed no digest" at the point of use, and the orchestrator's
-        # `run_sealed_config_digests` is the one reader that refuses such an
-        # authority outright. Rejecting it here instead would name a
-        # configuration nobody changed.
+        # A run authority older than the map is not called changed here.
         if (field != SEALED_CONFIG_DIGESTS_FIELD or field in run)
         and run.get(field) != bindings[field]
     ]
     if differing:
-        # Name the sealed policies that actually moved, not only the field that
-        # holds them. "different config_digest, sealed_config_digests" is true of
-        # every one of the family's members and sends an operator to read ten
-        # files to find the one that changed; a resume refused because
-        # `config/decoding.toml` was edited should say `decoding`. Unit 2's
-        # definition of done asks for exactly this by name, and the sentence it
-        # asks for is the same sentence every other sealed policy needs.
+        # Name the policies that moved, not just the field holding them.
         named = ", ".join(differing)
         if SEALED_CONFIG_DIGESTS_FIELD in differing and isinstance(
             run.get(SEALED_CONFIG_DIGESTS_FIELD), Mapping
@@ -5063,9 +4196,7 @@ def open_context(
         fixture=fixture,
         scenario=args.scenario,
         stage=stage,
-        # No stage names its own recipe any more: once a run exists, the sealed
-        # `run.json` is the only source for the producer revision, so a stage
-        # program and the run authority cannot drift on what answered.
+        # From `run.json` only, so stage and run cannot disagree.
         adapter_revision=adapter_recipe_for(run, stage),
         args=args,
         registry=registry,
@@ -5084,13 +4215,7 @@ def open_stage_context(
 ) -> StageContext:
     """Open an existing run for any stage after the Door, on either ingress route.
 
-    One read of the run authority decides the route and is then passed down,
-    never re-read: the ingress record is inside `run.json`'s own self-hash, so
-    which of the two routes created a run cannot be quietly switched, and a
-    branch decided on one read with a binding checked on another would be the
-    "two reads can straddle a rewrite" fault with a mode switch in it. The
-    synthetic route is `open_context`, unchanged; the real route is
-    `_open_real_context`.
+    One read of `run.json` decides the route and is passed down, never re-read.
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
@@ -5108,27 +4233,10 @@ def _open_real_context(
 ) -> StageContext:
     """Open a real submission's run for a stage after the Door.
 
-    Mirrors `open_context` step for step, so the two routes refuse the same
-    things in the same order: the register snapshot, the roster, the binding
-    recheck, the predecessor seal, the run-level cap, then construction.
-
-    **The real `config_digest` is not recomputed here, and must not be.** The
-    Door composes it over the submission ledger's file list and self-hash, the
-    format policy, the data-handling policy that gated admission, the triage
-    documents, and `_door_execution_recipe` -- the PDFium and Pillow versions of
-    the machine that ran the Door. A later stage holds none of those inputs, and
-    for the execution recipe it must not: recomputing it would bind the
-    Armarium to the Door's decoder build and refuse a sound run after a library
-    upgrade. So `open_context`'s whole-digest comparison has no counterpart on
-    this route, and what stands in for it is the name-by-name recheck of the
-    sealed map (`_refuse_incompatible_real_reuse`), which is why the Door seals
-    `models`, `armarium-formats` and `run-policy` on the real path alone: they
-    are the facts stages 3-7 act on that the whole digest would otherwise have
-    been the only thing covering.
-
-    The context carries `fixture=None` (behind the refusing accessor) and
-    `REAL_SCENARIO`, never `args.scenario`: the real digest binds no scenario,
-    so an argv value there would be unchecked.
+    Mirrors `open_context`'s checks in the same order.  The real
+    `config_digest` is not recomputed: it binds the Door's inputs and decoder
+    versions, and re-binding those would refuse a sound run after a library
+    upgrade.  The sealed map is rechecked name by name instead.
     """
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
@@ -5139,8 +4247,7 @@ def _open_real_context(
         else registry_factory(args.models_config)
     )
     bindings = real_run_bindings(registry.config, args)
-    # Before any write and before the seal check, so a moved policy is named as
-    # a policy and not as a missing boundary.
+    # Before the seal check, so a moved policy is named as one.
     _refuse_incompatible_real_reuse(run, bindings, run_id=args.run_id)
     verify_predecessor_seal(tree, stage)
     refuse_halted_run(tree, stage, args.hard_failure_config)
@@ -5165,14 +4272,8 @@ def _refuse_incompatible_real_reuse(
 ) -> None:
     """Refuse a real run resumed under inputs other than the ones it sealed.
 
-    The same class `open_context` raises, so operators and the operator console
-    see one shape; the same closing sentence, because on this route the promise
-    that nothing was written is the whole value of checking at open time. Every
-    fact that moved is named in one sentence, and an absent name is named apart
-    from a changed one -- `require_sealed_config`'s distinction -- because they
-    need different operator actions: restore the file, versus create the run
-    again on a build that seals the name. A real run created before the three
-    real-only names existed therefore cannot be resumed under this build.
+    Absent and changed names are reported apart: one needs a new run, the
+    other the original file.
     """
     differing: list[str] = []
     if list(run.get("witness_chairs", [])) != sorted(bindings["witness_chairs"]):
@@ -5191,12 +4292,7 @@ def _refuse_incompatible_real_reuse(
     absent.extend(name for name in _REAL_DOOR_ONLY_SEALED_NAMES if name not in sealed)
     if not differing and not moved and not absent:
         return
-    # Three independent sentences, not three clauses spliced into one frame. The
-    # frame was "run X is bound to different {clauses} than the currently loaded
-    # run inputs", which reads correctly only for the roster clause: an absent
-    # name produced "bound to different this run sealed no digest for the
-    # data-handling configuration ... than the currently loaded run inputs".
-    # This is the sentence an operator acts on, so it says one thing at a time.
+    # One sentence per fault, so each reads correctly on its own.
     named: list[str] = []
     if differing:
         named.append(
@@ -5219,11 +4315,7 @@ def _refuse_incompatible_real_reuse(
 def submission_identity(run: Mapping[str, Any]) -> str | None:
     """The one identity a real submission carries: its filename ledger's self-hash.
 
-    Every real source row carries `ledger_sha256`, it is one value across the
-    run, and `pipeline/1_exemplar/run.py::_verify_source_ledger` already proves
-    it reproduces the self-hashed ledger that admitted the submission. `None` on
-    the fixture route, which has a fixture id instead; the two are different
-    concepts and are never written under one name.
+    `None` on the fixture route, whose fixture id is a different concept.
     """
     if not is_real_ingress(run):
         return None
@@ -5248,19 +4340,9 @@ def submission_identity(run: Mapping[str, Any]) -> str | None:
 def exemplar_page_ids(context) -> dict[int, str]:
     """Every Exemplar page by submitted ordinal, sealed and refused alike.
 
-    The one index of "which page is ordinal N" for both ingress routes: the
-    Exemplar's own `page` artifacts are the only correct source, because a
-    fanned container page binds its container digest, page index and render
-    contract into its identity, which neither the fixture declaration nor the
-    run authority's manifest row carries. A refused page keeps its ordinal so a
-    reader can tell "refused" from "never submitted". This is the Ink Map's
-    census generalised, minus the pixel verification that belongs to the Ink
-    Map: it says which page an ordinal names, not that the page's bytes are
-    sound.
-
-    A sealed page citing more than one submitted row would leave the other
-    rows' ordinals with no entry, so it refuses by name rather than dropping
-    them; the Door refuses such a submission before the Exemplar ever runs.
+    Read from the Exemplar's `page` artifacts, the only source that carries a
+    container page's full identity.  Says which page an ordinal names, not
+    that its bytes are sound.
     """
     submitted = {
         row.get("ordinal")
@@ -5308,10 +4390,7 @@ def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str |
     """Apply the sealed run-level cap when no orchestrator guards stage entry."""
     run = tree.read_run()
     sealed_digests = run.get(SEALED_CONFIG_DIGESTS_FIELD)
-    # Hand-built stage-seal fixtures predate named policies and carry no ingress;
-    # synthetic-ingress fixtures may also construct one narrow boundary by hand.
-    # A real run always names this policy: losing that name is a failed proof,
-    # never permission to continue without the cap.
+    # Hand-built test trees may lack the policy; a real run never may.
     if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
         if "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS:
             raise ContractError(
@@ -5321,11 +4400,8 @@ def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str |
         return
     policy = load_hard_failure_policy(hard_failure_config_path)
     require_sealed_config(run_sealed_config_digests(run), "hard-failure", policy["config_sha256"])
-    # An unreadable tally record is a failed measurement, not permission to
-    # enter. Input-byte consistency belongs to each stage's consumer boundary,
-    # though: recursively checking every tally artifact here can intercept
-    # unrelated lineage damage before the owning boundary names it. The tally
-    # still validates every record whose outcome and subject it measures.
+    # Inputs are not verified here, so lineage damage is reported by the
+    # boundary that owns it.
     tally = tally_hard_failures(tree, policy, verify_inputs=False)
     if tally["breached"]:
         raise RunHalted(
@@ -5335,12 +4411,7 @@ def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str |
 
 
 def run_stage(main) -> int:
-    """Run a stage's main and turn a contract refusal into an honest exit code.
-
-    A stage that crashed with a traceback and a zero exit would be the vacuous
-    green this project exists to notice, so the only paths out of here are an
-    explicit code or a non-zero one.
-    """
+    """Run a stage's main and turn a contract refusal into an honest exit code."""
     try:
         return int(main() or EXIT_COMPLETE)
     except RunHalted as error:
@@ -5354,39 +4425,12 @@ def run_stage(main) -> int:
 def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) -> dict[str, Any]:
     """The current record for a subject: the latest attempt, with its honest status.
 
-    "Current" is derived, never stored as a pointer, so this is the one place
-    that derivation happens and the only place it can be got wrong.
-
-    A record with no attempt ordinal is FATAL rather than treated as ordinal zero.
-    Defaulting a missing ordinal to 0 lets `>` never fire, so whichever record the
-    filesystem lists first wins by accident — for example, a stale
-    "recovery-requested" read as current, dispatching a second recrop over the
-    top of the first. An evidence channel that cannot be read makes the answer
-    unknown; it never resolves in the run's favour.
-
-    **`operation` is what binds the ordinal to the sealed identity, and it is why
-    this function cannot be called without naming one.** The envelope proves that
-    `artifact_id` derives from `attempt_id`, and stops there: it takes the attempt
-    token as an opaque well-formed string and never re-derives it from the
-    subject/operation/ordinal it is supposed to bind. `attempt_ordinal` lives in the
-    payload, outside that derivation, and this function used to select on it alone.
-    So the field that decides which reading is current was the one field in the
-    chain nothing recomputed: a second `perlectio` for one act, carrying different
-    text and `attempt_ordinal: 99`, would validate as an envelope and become the
-    current reading over the record that had actually read the ink.
-
-    The caller knows its own operation — the Perlector reads `perlegere`, the
-    Recensor recenses, a chair reads `read:<chair>` — so the identity can be
-    recomputed here without the envelope growing a field, and `skeleton.v1` does not
-    have to become `skeleton.v2` to close it. A richer envelope carrying the
-    operation and the ordinal would be the more general answer, and it stays open;
-    this is the reader-side half of it, which needs no migration.
-
-    Ordinals must also be the contiguous run 1..N. Attempts are append-only and
-    never reused, so a gap means an attempt that existed is no longer here — which
-    is the one thing principle 2 does not allow to pass quietly — and it is also
-    what stops an honestly-derived attempt 99 from being manufactured beside
-    attempt 1 and outranking it.
+    The one place "current" is derived.  A missing ordinal is fatal, never 0:
+    a default 0 lets listing order pick the current record.
+    `operation` lets the attempt id be re-derived from subject and ordinal: the
+    envelope does not bind the payload's ordinal, so a forged high ordinal would
+    otherwise become current.  Ordinals must run 1..N; a gap is a lost attempt
+    (principle 2).
     """
     if not records:
         raise FatalAccounting(f"no {what} to derive a current outcome from")
@@ -5432,12 +4476,9 @@ def current_recovery_request(
 ) -> dict[str, Any]:
     """Return the exact request named by an act's current Recensor review.
 
-    A recovery request is not self-authorizing merely because its own envelope is
-    well formed.  The Recensor review is the decision that makes it current; the
-    request, review, Perlectio, and run-bound policy must therefore form one
-    closed, digest-checked chain.  Both the dispatcher and the sole crop author
-    use this one check so a direct Designator invocation cannot bypass the
-    orchestrator's view of the recovery loop.
+    The review, not the request, makes it current, so request, review,
+    Perlectio and policy must form one digest-checked chain.  Shared by the
+    dispatcher and the Designator so neither can bypass it.
     """
     recensor_artifacts = tree.build_manifest(RECENSOR)["artifacts"]
     reviews = []
@@ -5455,10 +4496,7 @@ def current_recovery_request(
         raise ContractError(f"recovery-requested review of {act_id} has no payload")
     request_ref = review_payload.get("recovery_request_ref")
     reading_ref = review_payload.get("perlectio_ref")
-    # The request's own position among this act's requests -- distinct from
-    # the review's `attempt_ordinal`, which is a function of the review's
-    # content rather than this act's recovery count (F132: a review's own
-    # ordinal and its named request's ordinal are no longer the same number).
+    # Not the review's own `attempt_ordinal`; the two differ.
     ordinal = review_payload.get("recovery_request_ordinal")
     if (
         not isinstance(request_ref, dict)
@@ -5514,10 +4552,8 @@ def current_recovery_request(
         raise ContractError(
             f"recovery-requested review of {act_id} does not carry one exact recovery kind"
         )
-    # The Recensor performs the fuller request/recrop/reread reconciliation, but a
-    # non-Recensor consumer reads a current request directly, so its counters are
-    # rebuilt here too: the self-hash proves the payload was not edited after
-    # publication, not that its numbers ever agreed with the requests before it.
+    # Counters rebuilt: a self-hash proves no later edit, not that they ever
+    # agreed with earlier requests.
     reconcile_recovery_requests(
         [
             tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
@@ -5550,13 +4586,7 @@ def current_recovery_request(
 
 
 def reading_basis_regions(reading: dict[str, Any], what: str) -> list[dict[str, Any]]:
-    """Return a completed Perlectio's regions without trusting an untyped payload.
-
-    An artifact envelope closes transport shape, not every stage payload.  The
-    three consumers of a completed Perlectio must therefore refuse a resealed
-    `basis=[]` (or malformed region) as accounting evidence, rather than indexing
-    into it and escaping through an accidental traceback.
-    """
+    """Return a completed Perlectio's regions without trusting an untyped payload."""
     payload = reading.get("payload")
     if not isinstance(payload, dict):
         raise FatalAccounting(f"{what} has no object payload")
@@ -5578,15 +4608,7 @@ def reading_basis_regions(reading: dict[str, Any], what: str) -> list[dict[str, 
 def recovery_region_count(act_id: str, regions: list[dict[str, Any]]) -> int:
     """How many recovery crops one act carries, refusing an unplaceable origin.
 
-    One accounting rule with three consumers, so it lives here beside
-    `latest_attempt`, `reading_basis_regions` and `expected_acts` for the reason
-    those do: the three had drifted. `pipeline/5_recensor/run.py::recovery_state`
-    refuses a region whose `origin` is outside `{"proposal", "recovery"}`, while
-    the Archetypus and Armarium copies asked only whether it equalled `"recovery"`
-    and counted anything else as zero. The same tree was therefore fatal at the
-    Recensor and reconciled at the Archetypus — a region with an unrecognized
-    origin silently left the recovery denominator at exactly the two stages that
-    decide whether a recrop was reread before its text is established.
+    Shared by three stages so they cannot disagree about an unknown origin.
     """
     count = 0
     for region in regions:
@@ -5594,10 +4616,7 @@ def recovery_region_count(act_id: str, regions: list[dict[str, Any]]) -> int:
         if not isinstance(payload, dict):
             raise FatalAccounting(f"Designator region of {act_id} has no object payload")
         origin = payload.get("origin")
-        # `isinstance` first: `origin not in {...}` raises `TypeError` on an
-        # unhashable value, so a resealed region carrying a list or an object where
-        # its origin belongs escaped as a traceback out of the very check written to
-        # name it. All three copies of this rule had that hole.
+        # `isinstance` first: an unhashable origin would raise TypeError.
         if not isinstance(origin, str) or origin not in {"proposal", "recovery"}:
             raise FatalAccounting(
                 f"Designator region of {act_id} has unrecognized origin {origin!r}; its "
@@ -5611,16 +4630,8 @@ def recovery_region_count(act_id: str, regions: list[dict[str, Any]]) -> int:
 def latest_per_chair(records: list[dict[str, Any]], what: str) -> list[dict[str, Any]]:
     """One record per chair: each chair's own latest attempt, honest status kept.
 
-    Attestatores attempts are append-only per (act, chair) — a failed re-read shows
-    as `failed` with the earlier success intact as history (principle 4) — so any
-    consumer of a flat list of testimonium records for one act has to collapse each
-    chair's own history down to its current attempt before treating the group as
-    evidence. `pipeline/5_recensor/run.py` did this collapsing inline;
-    `pipeline/4_perlector/run.py` read the same artifacts unfiltered, so once a
-    chair gained a second attempt the two consumers of one upstream contract would
-    disagree about what "current" means — one dissent row per attempt instead of
-    per chair, and a since-superseded `read` still marking a region witness-covered.
-    One derivation, reused by both, is what keeps that from recurring.
+    Attempts are append-only per (act, chair), so consumers must collapse each
+    chair's history before treating the group as evidence.
     """
     by_chair: dict[str, list[dict[str, Any]]] = {}
     for record in records:
@@ -5642,34 +4653,15 @@ def require_current_witness_basis(
 ) -> None:
     """Refuse a reading whose witness basis is no longer each chair's current attempt.
 
-    The counterpart, on the testimony side, of the newer-Perlectio check the
-    Archetypus and Armarium already make on the reading side. Both stages derive
-    everything they say about an act from the *latest* Recensor review and from
-    the reading's own basis references, and neither route passes back through
-    `latest_per_chair`. So a Testimonium appended after the reading was
-    established is structurally invisible at the point where the export decides
-    whether to say `complete`, and the sealed export keeps saying it.
-
-    Principle 2 is the rule this serves and it is unconditional: "'complete' is
-    refused unless everything reconciles." A basis citing an attempt that has
-    since been superseded has not reconciled, whatever the reading itself says.
-    `pipeline/3_attestatores/run.py::require_open_witness_layer` closes the door
-    that makes this state reachable through the stage programs at all; this is the
-    structural refusal for a folder assembled, resumed or resealed some other way,
-    and it is deliberately independent of that one.
-
-    Held and absent-chair readings cite no testimony and are passed over: their
-    bytes do not depend on any Testimonium, so nothing about them can be
-    superseded.
+    A Testimonium appended after the reading would otherwise be invisible to
+    the export's `complete` (principle 2).  Independent of the Attestatores'
+    own guard, for trees assembled some other way.
     """
     basis = reading.get("payload", {}).get("basis")
     cited = basis.get("testimonia") if isinstance(basis, dict) else None
     if not cited:
         return
     if not isinstance(cited, list):
-        # A truthy non-list would either iterate its fragments into the
-        # per-entry refusal below or crash as a bare TypeError; a malformed
-        # basis is refused as itself instead.
         raise FatalAccounting(f"{what} has a malformed witness basis: testimonia is not a list")
     current = {
         record["payload"]["chair"]: record["artifact_id"]
