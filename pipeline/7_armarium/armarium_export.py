@@ -1,25 +1,16 @@
 """Deterministic, read-only Armarium product projections.
 
-This is deliberately a projection module rather than a second pipeline stage.  Its
-only text-bearing input is ``canonical_clean_text``, a field the Armarium obtains
-from the established Archetypus record after it has checked that exact lineage.
-Every writer below receives that same field from one projection object; no writer
-reads a witness, Perlectio, or alternate text-shaped field.
+The only source of delivered act text is ``canonical_clean_text`` from the checked
+Archetypus record; every writer receives it from one projection object and none reads
+a witness, Perlectio or other text-shaped field. Salvage records carry their own
+harvested ``content``, written only as salvage, never as act text.
 
-The package has one required first member, ``EXPORT_MANIFEST.json``.  Companion
-formats are selected by the run-sealed ``formats.toml`` configuration.  ZIP is
-stored (not compressed) with fixed metadata, so the container adds no
-nondeterminism of its own.
-
-**That is not the same as identical bytes, and this docstring used to claim it
-was.**  The bundle embeds a SQLite database, and bytes 96-99 of every SQLite file
-are ``SQLITE_VERSION_NUMBER`` for the library that last wrote it
-(https://www.sqlite.org/fileformat.html#the_database_header).  So an identical
-sealed projection produces identical bytes *for a given SQLite build*, and
-different bytes across builds: measured at 3.46.1 in a Linux chamber against
-3.53.4 on the maintainer's machine, with the same rows, schema and page size.
-Content-addressing it in the run tree therefore binds the toolchain as well as
-the data, which is carried to the project lead rather than settled here.
+``EXPORT_MANIFEST.json`` is always the first member. The ZIP is stored with fixed
+metadata, so the container adds no nondeterminism. The bytes are still not
+identical across SQLite builds: bytes 96-99 of a SQLite file hold the writing
+library's ``SQLITE_VERSION_NUMBER``
+(https://www.sqlite.org/fileformat.html#the_database_header), so the bundle's
+content address binds the toolchain as well as the data.
 """
 
 from __future__ import annotations
@@ -74,39 +65,16 @@ _atomic_replace = os.replace
 _unlink_at = os.unlink
 
 EXPORT_MANIFEST_NAME: Final = "EXPORT_MANIFEST.json"
-# The one name for the published archive, shared by run.py (which records it in the
-# export payload) and bundle.py (which writes the file under it), so the two cannot
-# drift into naming two different files the same product.
+# Shared by run.py and bundle.py so the recorded name and the written file agree.
 ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
-# v2: `claims.annotations` was renamed apart into `claims.semantic_annotations`
-# beside the new measured `claims.transcription_annotations` — a rename under
-# one id is the versioning miss the act-row bump below refuses, so the
-# manifest's id moves with its claims.
-# v3 adds required `claims.ink_map`; v2 readers and writers cannot consume that
-# closed shape without an explicit schema boundary.
-# v5 added required `claims.not_measured`: the export's own list of what this
-# run did not measure. A v3 reader has no field for it and would present a
-# bundle that names five unmeasured instruments as one that names none, which
-# is the silent-shape-change under one id these ids exist to prevent.
-# v7 adds `claims.ink_map.unmeasurable_pages`. The source citation already
-# carried each Ink Map refusal, but a v5 reader had no claim-level field for
-# that audit gap and could present a complete bundle without naming it.
+# Every change to the manifest's closed shape moves the id, so an older reader
+# refuses a new field instead of silently presenting a bundle without it.
 EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v7"
-# v4 introduced the clustered act-partition claim: `denominator` names logical
-# acts, and `local_proposal_rows`/`logical_membership` join the claim. At that
-# historical boundary an image-local bundle remained v3 while a clustered one
-# declared v4, so a reader could not mistake logical acts for proposal-seal rows.
-# v6 is v5's clustered counterpart; v8 is v7's clustered counterpart. The
-# current shapes gained `claims.ink_map.unmeasurable_pages` together.
-# `verify_export_bundle` accepts the current v7/v8 shapes and refuses
-# a schema id that disagrees with its own claim's shape.
+# A clustered run's manifest counts logical acts, not proposal-seal rows, so it
+# carries its own id and a reader cannot mistake one count for the other.
 EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v8"
-# v2: the damage record. `text_status` and `transcription_annotations` joined
-# the row, and the bare `annotations`/`annotation_status` pair was renamed
-# apart into `semantic_annotations`/`semantic_annotation_status`. A consumer
-# keying on the schema id must not read a v1 shape out of a v2 row — the
-# silent-rename-under-one-id miss (CR W15, on the sqlite id below) is the
-# defect a version bump exists to prevent, so both ids move with the shape.
+# The act row and SQLite ids move with the row shape, so a consumer keying on the
+# id never reads an old shape out of a new row.
 ACT_RECORD_SCHEMA: Final = "armarium-act.v2"
 _ACT_RECORD_FIELDS: Final = frozenset(
     {
@@ -138,10 +106,7 @@ _REVIEW_ITEM_FIELDS: Final = frozenset(
 )
 _SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v2"
 _SQLITE_USER_VERSION: Final = 2
-# v2: every act-outcome row now REQUIRES `text_status` (exact-field-set
-# checked), so a v1 sources file and a v2 reader are mutually unreadable.
-# v3 adds required `ink_map_pages`, which lets a verifier derive the hold from
-# source evidence instead of trusting the manifest claim it is checking.
+# Field sets are checked exactly, so each shape change needs a new id.
 SOURCES_SCHEMA: Final = "armarium-sources.v3"
 SALVAGE_RECORD_SCHEMA: Final = "armarium-salvage-item.v1"
 CANONICAL_TEXT_FIELD: Final = "canonical_clean_text"
@@ -151,37 +116,23 @@ _SOURCE_ACCESS_REQUIRED: Final = "requires-source-access"
 _RUN_ACCESS_REQUIRED: Final = "requires-retained-run-access"
 _EMBEDDED: Final = "embedded"
 _UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
-# The other half of the same declaration. An act with no established text, or a
-# package with no literal-text format, has no offsets for a layer to anchor to or
-# carry, so it says so in the one vocabulary every reader can compare.
+# An act with no established text, or a package with no literal-text format, has
+# no offsets to anchor to.
 _UNCERTAINTY_NOT_APPLICABLE: Final = "not-applicable"
 _SEMANTIC_ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
-# The manifest-level claim, distinct from the per-row status above since R8:
-# a row saying "annotations not produced" beside a carried uncertainty layer
-# needed to say *which* annotations, and the package claim says it once.
+# The package-level claim; it names the semantic layer so it is not read as
+# "no annotations of any kind".
 _SEMANTIC_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
-# **Two layers, two words, because they are two things** (GLOSSARY: one concept
-# per word). The *semantic* layer is `annotation_boundary.py`'s unbuilt
-# person/date/kinship apparatus, and `not-produced` is true of it. The
-# *transcription* layer is the Archetypus record's own `annotations` -- the
-# `uncertain`/`illegible` marks over the established text, sealed at stage 6 and
-# real. Every row here carried the first one's `annotations: []` and
-# `annotation_status: not-produced` and nothing at all of the second, so an act
-# whose record sealed a genuine illegible gap left the pipeline carrying a
-# positive claim that no annotations were produced for it. Naming them apart is
-# what stops one word answering for both again; neither takes the bare name.
+# Two annotation layers with separate names: the semantic layer
+# (`annotation_boundary.py`, not yet built) and the transcription layer (the
+# Archetypus record's sealed uncertain/illegible marks, which are real). Neither
+# takes the bare name "annotations", so one cannot answer for the other.
 _TRANSCRIPTION_ANNOTATIONS_CARRIED: Final = "archetypus-sealed-uncertain-and-illegible-marks"
 _TRANSCRIPTION_ANNOTATIONS_NOT_APPLICABLE: Final = "not-applicable"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
-# Real-ingress act keys are `proposal:<page ordinal>:<block ordinal>`
-# (structure_pass.proposal_act_key); both ordinals are plain decimal integers,
-# not zero-padded. Sorting the key as a string therefore reads block 10 before
-# block 2 once a page passes ten blocks (F079) -- every list this module
-# orders "by act_key" for a human or a diff to read must instead read in page
-# and block order. `act_key_sort_key` gives every such site the same order:
-# reading order for a parsed proposal key, else the key's own string, so a key
-# this pattern was never meant to describe (a minted `logical:<id>` row, a
-# fixture key) keeps exactly the ordering it had before.
+# Proposal act keys are `proposal:<page>:<block>` with unpadded ordinals, so a
+# string sort puts block 10 before block 2. Other keys (`logical:<id>`, fixtures)
+# sort as strings after them.
 _PROPOSAL_ACT_KEY_PATTERN: Final = re.compile(r"^proposal:(\d+):(\d+)$")
 
 
@@ -205,20 +156,16 @@ _SOURCE_GRANULARITY: Final = (
     "one unit per source page or frame ordinal bound into run.json at admission, door "
     "refusals and duplicates included"
 )
-# Spec 11 asks the denominator to start at "every submitted file". It cannot: run.json
-# binds one ordinal per page, so this is the gap, published on the bundle's own face
-# rather than left for a reader to hit.
+# run.json binds one ordinal per page, not per file, so the ledger cannot count
+# submitted files; the bundle states that gap.
 _CONTAINER_GRANULARITY_LIMIT: Final = (
     "a multi-page PDF/TIFF container is represented by one unit per page or frame rather "
     "than one unit for the submitted file; the file's own single terminal category is not "
     "represented and cannot be counted off this ledger"
 )
 _ACT_PARTITION_DENOMINATOR: Final = "proposal-seal expected acts"
-# The clustered spelling of the same claim. A logical act over two captures is
-# two proposal-seal rows and one terminal category, so a bundle that counted it
-# under the name above would be reporting a number nobody measured. Named as its
-# own denominator, with the seal's own row count carried beside it, exactly as
-# `_SALVAGE_CLAIM_FIELDS` keeps its two shapes apart rather than unioning them.
+# A logical act over two captures is two proposal-seal rows but one terminal
+# category, so a clustered run names its denominator separately.
 _LOGICAL_ACT_PARTITION_DENOMINATOR: Final = "physical-act-partition logical acts"
 _PAGE_CENSUS_DENOMINATOR: Final = "run.json source-page/frame rows"
 _SALVAGE_PROMOTION_CLAIM: Final = (
@@ -237,9 +184,8 @@ _COMPLETED_CATEGORIES: Final = frozenset(
         ArmariumCategory.CONFIRMED_BLANK.value,
     }
 )
-# Presence of any one of these marks a record as salvage-tier whatever else it
-# carries. Checked on every act the projection accepts, so a salvage item cannot enter
-# the acts namespace by resembling one.
+# Any one of these marks a record as salvage-tier, so a salvage item cannot pass
+# as an act.
 _SALVAGE_DISCRIMINANT_FIELDS: Final = frozenset(
     {"salvage_id", "harvested_content", "harvest_kind", "content", "promotion"}
 )
@@ -263,19 +209,13 @@ _SALVAGE_RESERVED_FIELDS: Final = frozenset(
 class ArmariumProjection:
     """The one checked record every product writer is allowed to see.
 
-    ``acts`` contains one record per expected act, each with a closed Armarium
-    category.  Delivered records alone have a literal ``canonical_clean_text``;
-    all other records explicitly carry ``None`` rather than an invented empty
-    reading.  ``salvage_items`` is deliberately a separate collection, and the
-    writer refuses any record that resembles an act.
+    Only delivered acts have a literal ``canonical_clean_text``; every other act
+    carries ``None`` rather than an invented empty reading. Salvage items are kept
+    apart from acts.
     """
 
-    # Exactly one of ``fixture_id``/``submission_id`` is a non-blank string, never
-    # both and never neither -- ``_validate_projection`` requires it and the
-    # manifest's own ``run`` block carries whichever one is set, under its own
-    # name. A corpus identity stamped into the field named ``fixture_id`` would
-    # travel in every export forever and read as a fixture run; GLOSSARY's "one
-    # concept per word" is why the two are never overloaded onto one field.
+    # Exactly one of ``fixture_id``/``submission_id`` is set, so a real corpus
+    # never travels under a field that reads as a fixture run.
     fixture_id: str | None
     scenario: str
     config_digest: str
@@ -286,43 +226,21 @@ class ArmariumProjection:
     expected_acts: int
     witness_chairs: tuple[str, ...]
     witness_floor: int
-    # The non-text inputs from which ``run_aggregate`` measured the status and
-    # reasons.  Carrying this basis lets the exported claim be recomputed rather
-    # than merely checked for a plausible-looking nonempty reason list.
+    # Carried so a verifier can recompute ``aggregate`` rather than trust it.
     aggregate_basis: dict[str, Any]
-    # A real submission's identity: the filename ledger's self-hash
-    # (``common.stage.submission_identity``). ``None`` on a fixture run, which
-    # carries ``fixture_id`` instead.
+    # The filename ledger's self-hash (``common.stage.submission_identity``).
     submission_id: str | None = None
-    # ``None`` means this run has no sealed salvage inventory at all.  That is
-    # materially different from a sealed, empty inventory: the former must not
-    # be exported as a reassuring count of zero.
+    # ``None`` (no sealed inventory) must not be exported as a count of zero.
     salvage_items: tuple[dict[str, Any], ...] | None = None
-    # One row per sealed page retains the initial map outcome and any later
-    # re-measurement. The held set is derived, never stored beside this evidence.
+    # The held set is derived from these rows, never stored beside them.
     ink_map_pages: tuple[dict[str, Any], ...] = ()
-    # How many rows the Designator's proposal seal actually held, when this run's
-    # acts are logical acts over a `physical-act-partition.v1` rather than the
-    # image-local acts the seal names one-for-one.
-    #
-    # `expected_acts` is the act *terminal* denominator, and consult §5.2 makes
-    # it `logical_expected_count` for a clustered run -- one terminal category
-    # per logical act. But the manifest's fixed claim calls that denominator
-    # "proposal-seal expected acts", and for a cluster the two numbers differ:
-    # a two-capture physical act is two seal rows and one logical act. Exporting
-    # the logical count under the local count's name is a claim about something
-    # that was not measured (principle 8), and dropping the local count
-    # entirely loses the evidence a reader needs to reconcile the bundle against
-    # the seal (principle 2). So a clustered run carries both, and the ledger
-    # says which is which -- consult §5.2's "the terminal ledger reports both
-    # counts explicitly". `None` is the ordinary image-local run, where the two
-    # numbers are the same number and the claim already says so.
+    # A clustered run's proposal-seal row count. There `expected_acts` counts
+    # logical acts, so the seal's own count travels beside it for a reader to
+    # reconcile against the seal (principles 2 and 8). `None` for an image-local
+    # run, where the two counts are equal.
     local_proposal_rows: int | None = None
-    # What this run's own records say about the instruments that did not
-    # measure. `None` is not "nothing was unmeasured": it is a projection built
-    # without the basis, and `_validate_projection` refuses it, because a bundle
-    # whose `not_measured` block was derived from nothing would be exactly the
-    # reassuring silence the block exists to break.
+    # `None` means the basis is missing, not that everything was measured;
+    # `_validate_projection` refuses it.
     not_measured_basis: dict[str, Any] | None = None
 
 
@@ -347,13 +265,8 @@ def _uncertainty_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
 def _transcription_annotations_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
     """Measure which selected formats carry the Archetypus's own annotation layer.
 
-    A measurement rather than a constant, exactly like the uncertainty claim it
-    sits beside and unlike the semantic-annotation claim below it: this layer is
-    produced, it rides in the literal-text formats with the text it marks up, and
-    a package that named a format it does not carry it in would be describing a
-    different package. Published so that `claims` cannot be read as saying no
-    annotations of any kind exist -- which is what it said while the only
-    annotation claim in it was the semantic layer's `not-produced`.
+    The layer rides with the text in the literal-text formats, so the claim is
+    measured from the selection rather than fixed.
     """
     carried_by = sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
     return {
@@ -419,18 +332,14 @@ def build_armarium_bundle(
         "witness_chairs": list(projection.witness_chairs),
         "witness_floor": projection.witness_floor,
         "salvage_regions": _salvage_regions(projection.salvage_items),
-        # Source evidence must travel with the claim so a clean-machine
-        # verifier can derive the page-level hold independently.
+        # Lets a clean-machine verifier derive the page-level hold itself.
         "ink_map_pages": list(projection.ink_map_pages),
     }
     memberships = _logical_membership_map(projection.acts)
     if memberships:
-        # The clustered claim's source evidence. Without it a verifier could
-        # only field-check `local_proposal_rows` and `logical_membership`, so a
-        # rebuilt package reporting fewer seal rows than the run produced would
-        # pass -- the exact self-consistent edit `_verify_honest_status_claims`
-        # exists to refuse. An image-local bundle omits the key and stays
-        # byte-identical to what this build wrote before the clustered shape.
+        # Source evidence for the clustered claim, so a rebuilt package cannot
+        # report fewer seal rows than the run produced. An image-local bundle
+        # omits the key.
         sources_record["logical_accounting"] = {
             "local_proposal_rows": projection.local_proposal_rows,
             "memberships": memberships,
@@ -456,10 +365,8 @@ def build_armarium_bundle(
     manifest = _export_manifest(projection, formats, members)
     archive_members = {EXPORT_MANIFEST_NAME: canonical_bytes(manifest), **members}
     data = _zip_bytes(archive_members)
-    # Validate the fully assembled object before its caller can make it a
-    # content-addressed run-tree blob.  A product whose own manifest, references,
-    # or embedded pixels do not survive a clean extraction is not an export to
-    # publish and must fail before the atomic store writer is reached.
+    # A package that does not survive a clean extraction must fail before it
+    # becomes a run-tree blob.
     with tempfile.TemporaryDirectory(prefix="armarium-verify-") as directory:
         clean_root = Path(directory)
         manifest_report = verify_export_bundle(data, clean_root)
@@ -481,8 +388,6 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     root = Path(clean_root)
     root_fd = _prepare_clean_root(root)
     try:
-        # "These bytes are not an archive at all" is one of the refusals this function
-        # exists to make, not an exception for its caller to work out.
         try:
             archive = ZipFile(BytesIO(data))
         except (BadZipFile, LargeZipFile, OSError) as error:
@@ -492,10 +397,8 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
             if not names or names[0] != EXPORT_MANIFEST_NAME:
                 raise SchemaRefusal("an Armarium package must begin with EXPORT_MANIFEST.json")
             _validate_archive_member_names(names)
-            # A stored member's extracted size cannot exceed the archive's own physical
-            # size, so refusing every other compression method -- before a byte is
-            # decompressed -- is what bounds a decompression bomb by construction rather
-            # than by an arbitrary cap. `_zip_bytes` never writes anything but stored.
+            # A stored member cannot be larger than the archive, so refusing every
+            # other method before decompression rules out a decompression bomb.
             for info in archive.infolist():
                 if info.compress_type != ZIP_STORED:
                     raise SchemaRefusal(
@@ -519,8 +422,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
         raise SchemaRefusal("the package has no recognized EXPORT_MANIFEST schema")
     if manifest.get("self_hash") != self_hash(manifest):
         raise SchemaRefusal("EXPORT_MANIFEST.json fails its self-hash")
-    # Before any claim is read: a self-hash proves the manifest was not edited after
-    # it was written, never that what it says is a thing this build writes.
+    # A self-hash proves the manifest is unedited, not that this build writes it.
     _verify_manifest_field_closure(manifest)
     run = manifest["run"]
     _require_sha256(run.get("config_digest"), "EXPORT_MANIFEST.json run configuration digest")
@@ -580,12 +482,11 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
 
 
 def _prepare_clean_root(root: Path) -> int:
-    """Permit a reusable extraction root, but no link or special-file branch.
+    """Open a reusable extraction root that holds no link or special file.
 
-    Ordinary files may remain after a refusal; extraction replaces them atomically
-    so even a pre-existing hard link cannot redirect a write outside this tree. The
-    returned directory descriptor pins the root inode across preflight and extraction;
-    callers must close it.
+    Leftover ordinary files are replaced atomically, so a pre-existing hard link
+    cannot redirect a write. The returned descriptor pins the root inode; callers
+    must close it.
     """
     try:
         if root.is_symlink():
@@ -716,12 +617,11 @@ def _temporary_member(parent_fd: int, target_name: str) -> tuple[int, str]:
 def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -> None:
     """Replace validated members atomically, never through an existing file link.
 
-    The preflight walk has refused symlinks and special entries in every existing
-    directory. Every later traversal is descriptor-relative and no-follow, so swapping
-    a checked directory path to a symlink cannot redirect the write. A new temporary
-    regular file plus descriptor-relative replace also breaks a pre-existing hard link
-    instead of modifying the inode it shares outside the tree. The caller has already
-    bounded every member by requiring stored ZIP entries.
+    Traversal is descriptor-relative and no-follow, so swapping a checked directory
+    for a symlink cannot redirect the write, and writing a new file then replacing
+    breaks any pre-existing hard link instead of writing through it. Members are
+    copied with no size cap because the caller has already refused every
+    non-stored ZIP entry.
     """
     for name in names:
         parts = PurePosixPath(name).parts
@@ -759,26 +659,13 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
 
 # --- What this run did not measure ------------------------------------------
 #
-# `DELIVERED` and `aggregate.status == "complete"` are reachable over five
-# things nothing in this run measured: a page whose testimony content coverage
-# was recorded unmeasured rather than clean, a page whose ink was never
-# reconciled, two instruments with no producer, and geometry thresholds no
-# sample was ever taken for. Every one of them is recorded somewhere in the run
-# tree or in a sealed configuration; none of them qualified the word on the
-# deliverable. This block is where the export says so, in its own voice, on
-# every bundle -- principle 8's "a metric that cannot be measured is a
-# failure, not a pass", carried to the last boundary.
-#
-# Derived, never constant: every entry's `status` and `detail` come from the
-# run's own records through `ArmariumProjection.not_measured_basis`. A row that
-# said "not measured" whatever happened could not distinguish the run that
-# measured something from the run that did not, which is the distinction the
-# block exists to keep.
+# A run can be `DELIVERED` and `complete` over instruments that never measured.
+# Every bundle names them (principle 8), with each status derived from the run's
+# own records so a run that measured reads differently from one that did not.
 NOT_MEASURED_SCHEMA: Final = "armarium-not-measured.v1"
 NOT_MEASURED_BASIS_SCHEMA: Final = "armarium-not-measured-basis.v1"
-# The instrument names, fixed and closed. Every one is emitted on every bundle,
-# with its measured status -- never omitted when it happens to have measured
-# something, because an absent row and a measured row would then read alike.
+# Every instrument is emitted on every bundle, so an absent row never reads as a
+# measured one.
 _TESTIMONY_COVERAGE: Final = "page-testimony-content-coverage"
 _PAGE_INK_CONSERVATION: Final = "page-ink-conservation"
 _ACT_VISIBILITY_SURVEY: Final = "act-visibility-survey"
@@ -791,11 +678,9 @@ NOT_MEASURED_INSTRUMENTS: Final = (
     _PERLECTOR_UNCERTAIN_SPANS,
     _GEOMETRY_CALIBRATION,
 )
-# `declared-unproduced` is not a softer `not-measured`. It is the contract's own
-# word for an instrument no stage in this build publishes at all: the reader was
-# never uncertain and nobody surveyed the page, and a bundle that said only
-# "not measured" there would invite the reading that a measurement was attempted
-# and came back empty.
+# `declared-unproduced` means no stage in this build publishes the instrument, so
+# nothing was attempted; `not-measured` would suggest an attempt that came back
+# empty.
 _NOT_MEASURED_STATUSES: Final = frozenset({"measured", "not-measured", "declared-unproduced"})
 _NOT_MEASURED_ENTRY_FIELDS: Final = frozenset({"instrument", "status", "detail", "recorded_in"})
 _NOT_MEASURED_FIELDS: Final = frozenset({"schema", "count", "entries"})
@@ -825,7 +710,7 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
 _GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
     {"configuration", "calibrated_for_this_corpus", "sample_count"}
 )
-# Where a reader goes to check each row against the evidence itself (goal 4).
+# Where a reader checks each row against the evidence.
 _NOT_MEASURED_RECORDED_IN: Final = {
     _TESTIMONY_COVERAGE: (
         "each act's Recensor review, fields `testimony_content_coverage` and "
@@ -849,12 +734,10 @@ _NOT_MEASURED_RECORDED_IN: Final = {
         "this run's `config_digest` binds"
     ),
 }
-# Every sealed configuration this survey reports, in canonical order. The
-# instrument's name is older than the list: `perlector-protocol` carries the
-# truncation instrument's length floor, which is not Designator geometry, and it
-# is here because the survey is the one surface on which an export discloses a
-# threshold nobody calibrated (pre-launch review, F082/F088). Extend the list
-# rather than the name -- the name is on every bundle already.
+# In canonical order. `perlector-protocol` is not Designator geometry, but its
+# truncation length floor is an uncalibrated threshold and this is where an
+# export discloses those. The instrument name is already on every bundle, so
+# extend the list rather than rename it.
 _GEOMETRY_CONFIGURATION_NAMES: Final = (
     "designator-padding",
     "designator-geometry",
@@ -878,11 +761,7 @@ _MANIFEST_FIELDS: Final = frozenset(
         "self_hash",
     }
 )
-# Two closed shapes, not one field set with an optional member: a fixture run's
-# manifest names `fixture_id` and a real run's names `submission_id`, and a
-# manifest naming both or neither is refused rather than treated as "the other
-# one is just absent". `_verify_manifest_field_closure` picks the shape by which
-# key the manifest actually carries.
+# Two closed shapes: a manifest naming both identities or neither is refused.
 _MANIFEST_RUN_FIELDS_FIXTURE: Final = frozenset({"fixture_id", "scenario", "config_digest"})
 _MANIFEST_RUN_FIELDS_REAL: Final = frozenset({"submission_id", "scenario", "config_digest"})
 _MANIFEST_MEMBER_FIELDS: Final = frozenset({"path", "sha256", "bytes"})
@@ -946,9 +825,8 @@ _CLAIM_SUBFIELDS: Final = {
         }
     ),
 }
-# Two shapes, because an unproduced salvage tier says why and an accounted one has
-# nothing to explain.  Named as two closed sets rather than one union: a package
-# claiming `accounted` while carrying the absence reason is describing neither.
+# Two closed sets, not a union: an `accounted` claim carrying an absence reason is
+# refused.
 _SALVAGE_CLAIM_FIELDS: Final = {
     "accounted": frozenset({"namespace", "status", "count", "promotion"}),
     "not-produced-no-sealed-salvage-inventory": frozenset(
@@ -1109,9 +987,8 @@ def _validate_not_measured_detail(
 def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     """Reject unmeasured claims hidden in otherwise self-consistent JSON.
 
-    Blocks compared wholesale against recomputed values are already closed. Only
-    blocks read field by field need explicit key sets here; duplicating the other
-    shapes would create a second schema that could drift from their recomputation.
+    Only blocks read field by field are closed here; blocks compared wholesale
+    against a recomputation are closed by that comparison.
     """
     _require_exact_fields(manifest, _MANIFEST_FIELDS, subject="EXPORT_MANIFEST.json")
     raw_run = manifest.get("run")
@@ -1144,10 +1021,8 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
             f"the manifest run binding has no non-blank {subject} and scenario identities"
         )
     if has_submission:
-        # Mirrors `_validate_projection`'s tightening: the manifest boundary must
-        # not be looser than the projection boundary that fed it, or a resealed
-        # package could carry a hand-typed corpus label under the field
-        # documented as a filename ledger's self-hash.
+        # As strict as `_validate_projection`, so a resealed package cannot carry
+        # a hand-typed label where a ledger hash belongs.
         _require_sha256(run["submission_id"], "the manifest run binding submission identity")
     claims = _require_exact_fields(
         manifest["claims"], _MANIFEST_CLAIM_FIELDS, subject="the manifest claims block"
@@ -1158,10 +1033,8 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     if not isinstance(act_partition, dict):
         raise SchemaRefusal("the manifest act_partition claim is not an object")
     declared_denominator = act_partition.get("denominator")
-    # isinstance before the lookup, exactly as the salvage status below and
-    # `_require_damage_record` do: package JSON can put an unhashable list or
-    # object here, and a TypeError out of the key lookup would be a crash where
-    # the contract owes a named refusal.
+    # Package JSON can put an unhashable value here; check the type before the
+    # lookup so it is refused rather than raising TypeError.
     act_partition_fields = (
         _ACT_PARTITION_CLAIM_FIELDS.get(declared_denominator)
         if isinstance(declared_denominator, str)
@@ -1240,9 +1113,6 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
                 "canonical evidence location"
             )
         named.append(instrument)
-    # Every instrument, every time: an omitted row and a measured row would
-    # otherwise read alike, which is the reassuring silence this block exists
-    # to break.
     if named != list(NOT_MEASURED_INSTRUMENTS):
         raise SchemaRefusal(
             "the manifest not_measured block does not name this build's instruments exactly "
@@ -1259,10 +1129,8 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
 def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
     """Prove every selected literal-text format carries identical clean text.
 
-    This is intentionally distinct from package-digest verification.  A package
-    can be internally self-consistent while one product writer has transformed
-    the literal differently; this compares the values and their UTF-8 hashes
-    across the text bundle, SQLite literal column, and JSONL hand-off.
+    A package can pass digest verification while one writer transformed the
+    literal differently; this compares the values themselves.
     """
     manifest = verify_export_bundle(data, clean_root)
     formats = _manifest_formats(manifest)
@@ -1270,20 +1138,11 @@ def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
 
 
 def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
-    """Package integrity *and* principle 5's one text, in a single extraction.
+    """Package integrity and principle 5's one text, in a single extraction.
 
-    ``verify_export_bundle`` deliberately answers only "is this package internally
-    whole", and a package can pass it with two literal formats carrying different
-    readings of the same act -- ``verify_projection_identity`` is the separate
-    question, and separating them is what lets each refusal name its own defect.
-    But ``EXPORT_MANIFEST.json`` asserts ``canonical_text.identity_verified_across``
-    as a *fact about the package*, and the publish path is the last gate before a
-    recipient who has only these bytes. A gate that leaves the manifest's own
-    one-text claim unchecked is asserting it rather than verifying it, so the two
-    questions are asked together here and the answer to each is reported.
-
-    The identity comparison reads the members already extracted by the integrity
-    pass rather than unpacking the archive a second time.
+    The manifest asserts ``canonical_text.identity_verified_across``, and this is
+    the last gate before a recipient, so the publish path checks that claim as
+    well as the package's integrity.
     """
     manifest = verify_export_bundle(data, clean_root)
     formats = _manifest_formats(manifest)
@@ -1292,9 +1151,6 @@ def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
         _compare_literal_projections(clean_root, formats)
         identity = {"status": "verified", "compared_formats": compared}
     else:
-        # Said rather than left as a silent absence: with fewer than two literal
-        # formats there is nothing to compare, and a reader must be able to tell
-        # that from a comparison that was made.
         identity = {
             "status": "not-applicable-fewer-than-two-literal-formats",
             "compared_formats": compared,
@@ -1306,15 +1162,9 @@ def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
 def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[str, str]:
     """Compare already-verified literal members without extracting the package again.
 
-    Each format's rows carry ``(text, digest, uncertainty, text_status,
-    transcription_annotations)``: every layer rides in the same equality check as
-    the text it describes, so a format that silently diverged on one of them --
-    present, well-formed, but *different* from what the other formats say -- fails
-    identity exactly as a diverging literal would (U3: these are projected
-    readings like the text they sit beside, and principle 5 does not stop at the
-    characters). A `text_status` that read `partial` in one product and
-    `established` in another would be two deliverables disagreeing about whether
-    the same act is damaged.
+    Uncertainty, text status and transcription annotations are compared with the
+    text, so formats that disagree about whether an act is damaged fail as a
+    diverging literal would (principle 5).
     """
     projections: dict[str, dict[str, tuple]] = {}
     selected_literal_formats = [name for name in _LITERAL_TEXT_FORMATS if name in formats.formats]
@@ -1329,11 +1179,8 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
         elif name == "jsonl":
             projections[name] = _jsonl_literals(root / "acts.jsonl")
         else:
-            # `_LITERAL_TEXT_FORMATS` gaining a fourth member with no branch here
-            # is exactly the failure the projection-identity guard exists to
-            # catch (F090): without this arm the format is silently dropped from
-            # `projections` and the comparison below passes over it rather than
-            # comparing it, reporting "identical" about a format nobody checked.
+            # A new literal format with no branch here would otherwise be skipped
+            # and reported identical.
             raise SchemaRefusal(
                 f"projection identity has no comparison built for literal format {name!r}"
             )
@@ -1350,15 +1197,8 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
 
 INK_MAP_DENOMINATOR: Final = "Unit 9 ink-map sealed pages"
 _INK_MAP_ROW_FIELDS: Final = frozenset({"ordinal", "initial_outcome", "remeasured"})
-# `substantial_ink_pixels` joined this set on 2026-09-06, when the absolute
-# outside-coverage gate stopped being a module constant and became a fraction of
-# each page's own area sealed in `[coverage_audit]`. It has to be recorded here
-# because this verifier's whole point is to recompute the hold from the counts
-# alone, on a clean machine, with no config to read: a gate it had to fetch from
-# somewhere else would make it a different instrument from the one that measured.
-# `minimum_ink_pixels` and `minimum_fraction_outside_bp` joined on 2026-09-14
-# for the same reason, when the noise floor and the fraction gate stopped being
-# module constants and became `[coverage_audit.noise_floor]`.
+# The gates travel with the counts because a clean-machine verifier recomputes
+# the hold without the run's configuration.
 _INK_MAP_REMEASURE_FIELDS: Final = frozenset(
     {
         "total_ink_pixels",
@@ -1374,31 +1214,18 @@ _INK_MAP_REMEASURE_GATES: Final = frozenset(
     {"substantial_ink_pixels", "minimum_ink_pixels", "minimum_fraction_outside_bp"}
 )
 _UNCLAIMED_EDGE_INK: Final = "unclaimed-edge-ink"
-# `ink-not-measurable` joined this set on 2026-09-06, when the Ink Map began
-# inferring each page's paper value through `common.background` and gained a way
-# to refuse one. **No schema id moves for it**, and the reason is the one the ids
-# above exist for: a bump exists to stop a reader silently misreading a renamed
-# shape under an unchanged id, and an older verifier meeting this value refuses it
-# by name at the check below. A new value in a closed vocabulary fails loudly on
-# an old reader; a renamed field does not, which is why one moves the id and the
-# other does not.
+# A new value in this closed vocabulary needs no schema bump: an older verifier
+# refuses it by name, whereas a renamed field would be misread silently.
 _INK_MAP_OUTCOMES: Final = frozenset({"mapped", _UNCLAIMED_EDGE_INK, INK_NOT_MEASURABLE})
 
 
 def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
     """Close the ink-map source rows before anything derives a hold from them.
 
-    A `mapped` page carries `remeasured: None`, not a zeroed measurement: this
-    stage re-measures only the pages Unit 9 actually flagged, and writing zeros
-    for the rest would put a measurement nobody took into the record
-    (principle 8). The absence is recorded as absence.
-
-    An `ink-not-measurable` page carries `remeasured: None` for a stronger
-    version of the same reason: the Ink Map could not infer its paper value, so
-    it cut no threshold, retained no runs and took no measurement at all. It is
-    in these rows because it is in the page census — dropping it would break the
-    denominator this file reconciles — and it can never be a held page, because
-    a hold here is derived from counts and this row has none.
+    Only pages the Ink Map flagged are re-measured; the rest carry
+    `remeasured: None` rather than zeros nobody measured (principle 8). An
+    `ink-not-measurable` page stays in the rows because it is in the page census,
+    and can never be held because it has no counts.
     """
     if not isinstance(rows, list | tuple):
         raise SchemaRefusal(
@@ -1466,15 +1293,9 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                 "inventing a re-measurement for a mapped page."
             )
         validated.append(row)
-    # `minimum_ink_pixels`/`minimum_fraction_outside_bp` are, unlike
-    # `substantial_ink_pixels`, the run's single sealed
-    # `[coverage_audit.noise_floor]` passed through unchanged for every page
-    # (`common.residual_ink.resolve_coverage_audit_policy` never scales
-    # them) -- so every flagged page's row must carry the same pair. Checked
-    # here, once, across the whole bundle, rather than trusted per row: a
-    # producer bug or a tampered bundle that inflated one page's noise floor
-    # would otherwise pass `_edge_hold_pages_from_validated_rows`'s per-row
-    # `coverage_flag` call and silently release that page's edge-ink hold.
+    # The noise floor is one sealed value for the whole run (never scaled per
+    # page), so every flagged row must agree; otherwise one inflated row could
+    # silently release that page's hold.
     noise_floors = {
         (row["remeasured"]["minimum_ink_pixels"], row["remeasured"]["minimum_fraction_outside_bp"])
         for row in validated
@@ -1520,8 +1341,7 @@ def _unmeasurable_ink_map_pages_from_validated_rows(
 def edge_hold_pages_from_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
     """The held set, recomputed from the recorded counts by the shared gate.
 
-    The held state is not stored: using the measurement predicate prevents a
-    row's counts from disagreeing with a separate asserted boolean.
+    Not stored, so a row's counts cannot disagree with an asserted boolean.
     """
     return _edge_hold_pages_from_validated_rows(
         _validate_ink_map_pages(rows, "an ink-map hold derivation")
@@ -1529,13 +1349,8 @@ def edge_hold_pages_from_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
 
 
 def _logical_membership_map(acts) -> dict[str, dict[str, list[Any]]]:
-    """One shape for the claim and its source evidence, so equality is the check.
-
-    The manifest's `logical_membership` claim and the `logical_accounting`
-    block in `sources.json` are both built here; verification then re-derives
-    the claim from the source graph and compares, exactly as the terminal
-    ledger is recomputed rather than believed.
-    """
+    """One shape for the manifest claim and its `sources.json` evidence, so
+    verification can compare them by equality."""
     return {
         act["act_id"]: {
             "member_local_act_ids": list(act["logical_membership"]["member_local_act_ids"]),
@@ -1554,12 +1369,9 @@ def _act_partition_claim(
 ) -> dict[str, Any]:
     """The act denominator, under the name of the thing that was actually counted.
 
-    An image-local run counts proposal-seal rows and says so. A clustered run
-    counts logical acts, which is a different denominator with a different
-    number, and the seal's own row count travels beside it with the membership
-    that reconciles the two -- so a reader holding the bundle and the Designator
-    seal can see why 2 became 1, instead of finding a bundle that claims to have
-    counted seal rows and reports the wrong total for them (principle 8).
+    A clustered run counts logical acts and carries the seal's row count and the
+    membership beside it, so a reader can reconcile the bundle with the seal
+    (principle 8).
     """
     claim = {
         "denominator": _ACT_PARTITION_DENOMINATOR,
@@ -1596,25 +1408,9 @@ def _validate_logical_act_conservation(
 ) -> None:
     """Every local proposal row is counted once: under a logical act, or alone.
 
-    Two things a clustered export could otherwise do silently.
-
-    **Double-count (consult §7.15).** A projection carrying a logical act *and*
-    its own member local acts as separate rows passes every other check in this
-    file -- distinct ids, distinct keys, one terminal category each -- and the
-    same ink leaves the pipeline as three delivered acts. The check is
-    exact-identity, not heuristic: a member act_id or act_key that also names a
-    row of this projection is the duplicate.
-
-    **Vanish (principle 2, invariant 8).** A clustered run's act denominator
-    is `logical_expected_count`, which is smaller than the proposal seal's row
-    count by construction. Without `local_proposal_rows` beside it, a member act
-    that never reached any logical act is invisible -- the arithmetic still
-    closes, because the number it closes against already shrank. So a clustered
-    projection must declare how many seal rows it is accounting for, and the
-    members it retains plus the acts it carries alone must be exactly that many.
-
-    Neither check reads a member as text or identity; the logical row's own
-    `act_id`/`act_key` stay derived from `logical_act_id` alone.
+    Refuses a logical act exported beside its own members (the same ink counted
+    twice), and a member that reached no logical act, which would vanish because
+    the logical denominator is smaller than the seal's row count (principle 2).
     """
     logical_rows = [act for act in projection.acts if "logical_membership" in act]
     if not logical_rows:
@@ -1674,32 +1470,18 @@ def _validate_logical_act_conservation(
             )
         member_ids_seen.update(ids)
         member_keys_seen.update(keys)
-        # Consult §5.2: attribution becomes `logical_act_id -> all source page
-        # ordinals`, and it is what keeps "a silent page cannot hide beside a
-        # busy page" true once several captures answer for one act. The basis
-        # supplies that attribution as a caller's assertion; the member rows are
-        # where the pages were actually marked out. A logical act attributed to
-        # fewer pages than its own members were cut on would leave the missing
-        # page looking silent -- or, worse, looking accounted for by a busy
-        # sibling. Superset, not equality: a continuation legitimately reaches a
-        # page no member proposal was cut on.
+        # A logical act's page attribution must cover every page its members were
+        # cut on, or a missing page looks silent or covered by a sibling. A
+        # superset is allowed: a continuation can reach a page no member was cut
+        # on. The ledger builds page categories from this, so absence is refused.
         attributed = (projection.aggregate_basis.get("act_pages") or {}).get(act["act_key"])
         if attributed is None:
-            # Absent attribution is not vacuous compliance: the terminal ledger
-            # builds its page categories from act_pages, so a logical act with
-            # no entry lets a member page be classified as covered by a sibling
-            # or as having no act at all -- the silent-page failure the check
-            # above exists to keep impossible.
             raise SchemaRefusal(
                 f"logical act {act['act_id']} has no page attribution in the aggregate "
                 "basis; its member pages cannot enter the run's page accounting"
             )
-        # Element types before `set(...)`: this basis is a caller's assertion and
-        # is not validated until `_aggregate_from_basis`, which runs after this
-        # check. A number here would raise TypeError out of the dedupe and end
-        # the export unnamed; a string would dedupe into its own characters and
-        # report a page missing that never was. Same shape as the package-side
-        # re-derivation in `_verify_logical_partition_claim`.
+        # The basis is not validated until `_aggregate_from_basis`, so check types
+        # before `set()`: a string would dedupe into its characters.
         if not isinstance(attributed, list) or any(
             not isinstance(ordinal, int) or isinstance(ordinal, bool) for ordinal in attributed
         ):
@@ -1733,10 +1515,8 @@ def _validate_logical_act_conservation(
 def _validate_not_measured_basis(basis: object) -> dict[str, Any]:
     """Refuse a not-measured basis that is not this build's closed shape.
 
-    Checked at the projection boundary rather than inside the claim builder so
-    a missing sub-record is named before any product byte is written. The field
-    sets are the claim's own detail sets, so the basis and the block it becomes
-    cannot drift.
+    Checked before any product byte is written, against the claim's own detail
+    field sets so the two cannot drift.
     """
     if not isinstance(basis, dict):
         raise SchemaRefusal(
@@ -1782,33 +1562,21 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
     if instrument == _PAGE_INK_CONSERVATION:
         return "not-measured" if detail["pages_not_reconciled"] else "measured"
     if instrument == _ACT_VISIBILITY_SURVEY:
-        # No capture presentation anywhere means the survey had nothing to run
-        # on; every capture row carrying a named absence code means it ran on
-        # nothing. Both are the instrument declaring itself unproduced, and the
-        # Recensor's own handoff says why: no stage publishes the Designator
-        # occlusion records the survey reads.
+        # No capture rows, or every row a named absence, means the survey had no
+        # input: no stage yet publishes the Designator occlusion records it reads.
         if detail["capture_rows"] == 0:
             return "declared-unproduced"
         if detail["rows_with_named_absence"] == detail["capture_rows"]:
             return "declared-unproduced"
         return "not-measured" if detail["rows_with_named_absence"] else "measured"
     if instrument == _PERLECTOR_UNCERTAIN_SPANS:
-        # Measured exactly when every delivered reading was assessed for doubt
-        # by its reader, and unproduced only when nothing at all was measured.
-        # An empty list under `not-assessed` is an absence, never a reading's
-        # confidence (F2).
+        # An empty span list under `not-assessed` is an absence, not confidence.
         if detail["acts_assessed"] == detail["acts_delivered"] != 0:
             return "measured"
-        # Nobody assessed and no span published: the instrument never ran, and
-        # the block says so rather than reporting a `[]` as a clean result.
         if detail["acts_assessed"] == 0 and detail["acts_with_uncertain_spans"] == 0:
             return "declared-unproduced"
-        # Otherwise something was measured and not everything was: either some
-        # readers were asked and others were not, or -- the live configuration
-        # under a sealed cap of 0 -- no reader was asked and the exhausted-cap
-        # projection minted real spans onto delivered acts anyway. Calling that
-        # second case unproduced would deny a measurement that partly happened
-        # (principle 8; the independent review of 2026-09-11).
+        # Partly measured: some readers assessed, or a sealed cap of 0 let the
+        # exhausted-cap projection mint spans with no reader assessing (principle 8).
         return "not-measured"
     if instrument == _GEOMETRY_CALIBRATION:
         return (
@@ -1834,8 +1602,6 @@ def _not_measured_claim(projection: ArmariumProjection) -> dict[str, Any]:
     ]
     return {
         "schema": NOT_MEASURED_SCHEMA,
-        # The number a reader acts on, beside the rows it counts: how many of
-        # this build's instruments did not measure on this run.
         "count": sum(1 for entry in entries if entry["status"] != "measured"),
         "entries": entries,
     }
@@ -1855,12 +1621,8 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             "identifier; a run's export must be identified by exactly one, never both"
         )
     if has_submission:
-        # `fixture_id` is a human-chosen label with no fixed shape; `submission_id`
-        # is documented (dataclass comment above, HANDOFF.md) as the filename
-        # ledger's own self-hash, and `common.stage.submission_identity` refuses
-        # to produce one that is not a sha256. The export boundary must be at
-        # least as strict as the thing that produces the value, or a hand-typed
-        # corpus label could ride out of the pipeline under this field forever.
+        # `common.stage.submission_identity` only produces a sha256; be as strict,
+        # so a hand-typed corpus label cannot leave under this field.
         _require_sha256(projection.submission_id, "an Armarium projection submission identity")
     if not isinstance(projection.scenario, str) or not projection.scenario:
         raise SchemaRefusal("an Armarium projection has no scenario")
@@ -1937,8 +1699,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
                 raise SchemaRefusal("a delivered act has no provenance")
             if not regions:
                 raise SchemaRefusal("a delivered act has no source-region provenance")
-            # `utf8_round_trip` runs `validate_uncertainty` itself, on exactly
-            # these arguments, before it asks its own question.
+            # `utf8_round_trip` also runs `validate_uncertainty`.
             utf8_round_trip(act.get("uncertainty"), literal)
             _require_damage_record(
                 act.get("text_status"),
@@ -1950,15 +1711,10 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         elif literal is not None:
             raise SchemaRefusal("a non-delivered act may not carry purported clean text")
         elif act.get("uncertainty") is not None:
-            # The same rule as the line above, for the layer that anchors to that
-            # text: offsets into a text this act does not have are not a reading
-            # the export may carry, and no writer would have anywhere to put them.
+            # Offsets into a text the act does not have.
             raise SchemaRefusal("a non-delivered act may not carry an uncertainty layer")
         elif act.get("text_status") is not None or act.get("transcription_annotations") is not None:
-            # And the same rule again for what a record says *about* its text. An
-            # act with no Archetypus record has no status and no annotation layer;
-            # a projection carrying either would be describing a reading that does
-            # not exist.
+            # An act with no Archetypus record has no status or annotation layer.
             raise SchemaRefusal(
                 "a non-delivered act may not carry an established-text status or a "
                 "transcription annotation layer"
@@ -1976,13 +1732,10 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         and bool(act["uncertainty"].get("uncertain_spans"))
         for act in projection.acts
     )
-    # Counted by state, never by subtraction. `acts_not_assessed` used to be
-    # "everything that is not assessed", so a delivered act whose reader's
-    # report was broken would have been counted as one with no doubt channel --
-    # two different facts under one number. A delivered `malformed` act is a
-    # broken tree rather than a count: the Recensor holds one, so it can only
-    # reach here through a projection that did not come from a run
-    # (an independent review found the same site).
+    # Counted by state, never by subtraction, so a broken doubt report is not
+    # counted as "no doubt channel". Any other state (the Recensor's `malformed`,
+    # for one) is refused: the Recensor holds those, so a delivered one means the
+    # projection did not come from a run.
     assessed_count = 0
     not_assessed_count = 0
     for act in projection.acts:
@@ -2013,10 +1766,8 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             "with its delivered act projection"
         )
     _validate_logical_act_conservation(projection, act_ids, act_keys)
-    # The basis is the copy the run's verdict is computed from, and it was the
-    # one copy of the damage record nothing compared to the acts it describes —
-    # the repaired defect's own shape, one level up. Delivered acts and the
-    # basis must state the damage identically, key for key.
+    # The run's verdict is computed from the basis, so its damage record must
+    # match the delivered acts key for key.
     recorded_basis_status = projection.aggregate_basis.get("act_text_status")
     delivered_status = {
         act["act_key"]: act.get("text_status")
@@ -2048,21 +1799,11 @@ def _require_damage_record(
 ) -> None:
     """Recompute a delivered act's text status from the layers carried beside it.
 
-    The status is never merely carried. `established | partial | no_readable_text`
-    is the one field that says whether the reading leaving the pipeline is whole,
-    and a value read out of a row and believed is an assertion, not a check: a
-    package could say `established` over an act whose own gap list records ink the
-    Perlector could not read, which is exactly the shape principle 2 refuses. The
-    two damage layers travel in every literal format, so every reader of one --
-    the projection boundary and each product verifier on a clean machine -- can
-    derive the word for itself and refuse the row if it disagrees.
-
-    An empty annotation layer is ordinary and is not an absent one: `[]` says the
-    reader marked no damage, and `None` would say this act has no record at all.
+    A carried status is never believed: a package must not say `established` over
+    an act whose own gap list records unread ink (principle 2).
+    `annotations == []` means no damage was marked; `None` means no record.
     """
-    # `isinstance` before membership: package-sourced JSON can put an
-    # unhashable value here, and a TypeError out of the membership test would
-    # be a crash where the contract owes a named refusal.
+    # Type before membership, so an unhashable JSON value is refused, not raised.
     if not isinstance(text_status, str) or text_status not in TEXT_STATUSES:
         raise SchemaRefusal(
             f"a delivered {subject} carries established-text status {text_status!r}, which is "
@@ -2070,12 +1811,9 @@ def _require_damage_record(
         )
     if not isinstance(annotations, list):
         raise SchemaRefusal(f"a delivered {subject} carries no transcription annotation layer")
-    # The carried layer is the one exported layer that legitimately holds free
-    # text (a reader's alternatives, a witness's quoted variant), so it gets the
-    # producer's own validator on the clean machine too — closed kinds, closed
-    # field sets, offsets inside this row's own literal. `witnesses=None`: the
-    # roster lives in the retained run, so attribution and quotation were checked
-    # where the layer was sealed and cannot be re-checked from the package alone.
+    # This layer holds free text, so it gets the producer's own validator.
+    # `witnesses=None`: the roster stays in the retained run, where attribution
+    # was checked at sealing.
     try:
         validate_annotations(annotations, literal, None, f"{subject} transcription annotation")
     except SchemaRefusal as error:
@@ -2194,11 +1932,8 @@ def _aggregate_from_basis(
             act_text_status=act_text_status,
             edge_hold_pages=edge_hold_pages,
         )
-    # `KeyError`/`TypeError` as well as the refusals: `run_aggregate` reaches inside a
-    # coverage record for `by_class['completed']` and `floor`, which nothing above
-    # proves are there, and this basis was read back out of a package somebody else
-    # assembled. Every hole in it has the same one answer. The original is chained, so
-    # a genuine defect inside `run_aggregate` stays visible in the traceback.
+    # The basis may come from an untrusted package and `run_aggregate` reads
+    # coverage-record keys nothing above checks. The cause stays chained.
     except (ContractError, KeyError, TypeError) as error:
         raise SchemaRefusal("an Armarium aggregate basis cannot be reconciled") from error
 
@@ -2227,14 +1962,9 @@ def _validate_salvage_items(items: tuple[dict[str, Any], ...]) -> None:
 def _reject_act_salvage_namespace(act: dict[str, Any]) -> None:
     """The salvage firewall in the other direction: no salvage record becomes an act.
 
-    `_reject_salvage_act_namespace` stops a salvage item reaching into the acts
-    namespace. This stops the reverse -- a salvage-shaped record arriving where an act
-    is expected, and its harvested scrap becoming established text through a writer
-    that only ever asked whether a `canonical_clean_text` field was present. Spec 11
-    test 4 is that "no code path from this stage writes act text under any
-    circumstance": promotion is a pipeline re-entry the project lead approves, never an export
-    act, so a record carrying any of these discriminants is refused by name rather
-    than left to fail on a missing key somewhere downstream.
+    A salvage record arriving as an act would have its harvested scrap written as
+    established text. This stage never writes act text; promotion is a pipeline
+    re-entry the project lead approves.
     """
     reached = sorted(set(act) & _SALVAGE_DISCRIMINANT_FIELDS)
     if reached:
@@ -2249,12 +1979,8 @@ def _reject_salvage_act_namespace(value: Any, *, subject: str) -> None:
     try:
         _reject_salvage_act_namespace_walk(value, subject=subject)
     except RecursionError as error:
-        # Both call sites (`_validate_salvage_items`, `_validate_salvage_region`)
-        # run this screen on harvested, caller-supplied content before any of
-        # its own shape checks, so an unvalidated salvage item can nest past
-        # Python's recursion limit. A record this machine cannot walk is
-        # refused, never crashed on -- the same boundary `self_hash` already
-        # holds for the digests this package seals.
+        # Runs on unvalidated harvested content, which can nest past the
+        # recursion limit.
         raise SchemaRefusal(
             f"a salvage-tier {subject} nests too deeply for this machine to walk, so its "
             "acts-namespace screen was never computable"
@@ -2329,9 +2055,8 @@ def _pages_by_ordinal(
 def _manifest_run_binding(projection: ArmariumProjection) -> dict[str, str]:
     """The manifest's `run` block, under whichever identity name this run carries.
 
-    `_validate_projection` has already required exactly one of `fixture_id` /
-    `submission_id` to be a non-blank string before this is ever called, so the
-    branch here only projects that decision; it does not make a second one.
+    `_validate_projection` has already required exactly one identity, so the
+    fallback needs no second check.
     """
     if isinstance(projection.submission_id, str) and projection.submission_id:
         return {
@@ -2381,8 +2106,7 @@ def _source_rows(
 ) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
     rows: list[dict[str, Any]] = []
     embedded: dict[str, bytes] = {}
-    # `_validate_projection_region_bindings` has already put every row through
-    # `_pages_by_ordinal`, so the ordinal is read here rather than re-proved.
+    # Ordinals were already checked by `_validate_projection_region_bindings`.
     for page in sorted(pages, key=lambda item: item["ordinal"]):
         ordinal = page["ordinal"]
         declared_path, declared_sha256 = page.get("declared_path"), page.get("declared_sha256")
@@ -2435,10 +2159,8 @@ def _text_bundle_members(
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
 
-    A folder with only holds or refusals still gets a file.  It contains no
-    invented empty reading, but it does not disappear from a format whose shape
-    is promised by the manifest either.  The wrapper names below deliberately
-    distinguish the source root from a real ``_source_root`` directory.
+    A folder with only holds or refusals still gets a file, with no invented
+    reading in it.
     """
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     folders: set[str] = set()
@@ -2450,10 +2172,8 @@ def _text_bundle_members(
     for act in acts:
         if act["category"] != ArmariumCategory.DELIVERED.value:
             continue
-        # A delivered act reached here with at least one region, each already carrying a
-        # validated `declared_path`. A logical act may cite captures in several source
-        # folders; copy its one unchanged text into every cited folder rather than allowing
-        # region order to choose one capture's folder as its representative.
+        # A logical act may cite captures in several folders; its text goes into
+        # each rather than letting region order pick one.
         source_folders = sorted(
             {
                 _source_folder_for_declared_path(region["declared_path"])
@@ -2484,17 +2204,13 @@ def _text_bundle_members(
                     json.dumps(act[CANONICAL_TEXT_FIELD], ensure_ascii=False),
                     "uncertainty:",
                     json.dumps(act["uncertainty"], ensure_ascii=False, sort_keys=True),
-                    # What the record says about its own text, and the older
-                    # annotation layer the status is partly derived from. The
-                    # readable bundle is the format a person actually reads, so a
-                    # damaged act saying so in words belongs here first.
                     f"text_status: {act['text_status']}",
                     "transcription_annotations:",
                     json.dumps(
                         act["transcription_annotations"], ensure_ascii=False, sort_keys=True
                     ),
-                    # Beside the canonical field, never instead of it: the clean
-                    # verifier strips this back and requires the line above exactly.
+                    # Beside the canonical field, never instead of it: the verifier
+                    # strips it back and requires the canonical text exactly.
                     f"display_convention: {DISPLAY_CONVENTION}",
                     "display:",
                     json.dumps(render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False),
@@ -2517,7 +2233,6 @@ def _acts_with_source_references(
         record = dict(act)
         regions: list[dict[str, Any]] = []
         for region in act.get("source_regions", []):
-            # Every field the rest of this loop reads is checked here and nowhere else.
             _validate_cited_region(region, subject="exported act")
             copied = dict(region)
             image_path, image_sha256, region_id = (
@@ -2606,11 +2321,8 @@ _UNSAFE_PATH_CHARACTERS: Final = frozenset({"\\", "\x00"})
 def _is_line_safe_identity(value: object) -> bool:
     """Whether an identity may be spliced unescaped into a line-oriented format.
 
-    `act_id`/`act_key` are written raw into the text bundle's ``## key (id)`` header
-    and ``act-id: id`` line, which the clean verifier then parses line by line. The
-    canonical text beside them is JSON-escaped onto one line; these are not, so this
-    is the boundary's own answer rather than relying on the downstream cross-checks
-    that happen to catch a forged line today.
+    Act ids and keys are written raw into the text bundle's headers, which the
+    verifier parses line by line.
     """
     if not isinstance(value, str) or not value:
         return False
@@ -2618,14 +2330,7 @@ def _is_line_safe_identity(value: object) -> bool:
 
 
 def _is_safe_path_segment(value: object) -> bool:
-    """Whether an identity may be spliced into a member path as one whole component.
-
-    A region identity and a salvage identity each become exactly one path component of
-    an embedded pixel member -- ``pixels/crops/<region_id>.img``,
-    ``pixels/salvage/<salvage_id>/<region_id>.img``. Same question
-    ``_reject_unsafe_relative_path`` answers for a whole path, narrowed to one
-    component, so that the two identities cannot answer it differently.
-    """
+    """Whether an identity may be spliced into a member path as one whole component."""
     if not isinstance(value, str) or not value or "/" in value or value in (".", ".."):
         return False
     return not any(character in value for character in _UNSAFE_PATH_CHARACTERS)
@@ -2634,13 +2339,9 @@ def _is_safe_path_segment(value: object) -> bool:
 def _reject_unsafe_relative_path(value: object, *, subject: str) -> PurePosixPath:
     """The one 'is this a safe POSIX-relative path' check every path-shaped field shares.
 
-    The raw-character rejection is the part that looks removable and is not.
-    ``PurePosixPath`` splits only on ``/``, so ``PurePosixPath("a/..\\..\\evil").parts``
-    is one opaque component rather than three and ``PurePosixPath("C:\\evil")`` is not
-    absolute: a backslash traversal passes an ``is_absolute()``/``".." in parts`` check
-    completely untouched. POSIX tooling shrugs at that, but a bundle exists to be opened
-    by whatever tool its recipient has, including Windows-native tooling that does treat
-    a backslash in a ZIP entry name as a separator.
+    Backslashes are refused because ``PurePosixPath`` does not split on them, so
+    ``a/..\\..\\evil`` passes the ``..`` check, yet Windows tools treat a backslash
+    in a ZIP entry name as a separator.
     """
     if not isinstance(value, str) or not value:
         raise SchemaRefusal(f"{subject} is unsafe")
@@ -2668,9 +2369,7 @@ def _require_sha256(value: object, label: str) -> str:
 def _retained_run_reference(reference: dict[str, Any]) -> dict[str, str]:
     """Label a reference that only the retained run tree can resolve.
 
-    The product is not the separate evidence package: it carries provenance and
-    digest citations, but it never silently pretends to include the Testimonium,
-    receipt, or intermediate artifact those citations name.
+    The product cites evidence by path and digest but never includes it.
     """
     path, digest = reference.get("relative_path"), reference.get("sha256")
     if not isinstance(path, str):
@@ -2688,9 +2387,7 @@ def _mark_retained_references(value: Any) -> Any:
     """Recursively make opaque run-tree evidence honest in a product projection."""
     if isinstance(value, dict):
         if "relative_path" in value:
-            # Artifact references sometimes carry useful non-text metadata beside
-            # their path and digest.  Preserve it, but never let an added field
-            # make the raw retained-run reference evade its availability label.
+            # Keep any extra metadata, but always relabel the path and digest.
             marked = {
                 key: _mark_retained_references(item)
                 for key, item in value.items()
@@ -2731,15 +2428,10 @@ def _verify_retained_references(value: Any) -> None:
 
 
 def _verify_retained_references_bounded(value: Any) -> None:
-    """`_verify_retained_references`, refusing by name instead of escaping when
-    a citation nests past what this machine's Python recursion limit can walk
-    — the same untrusted-parse-boundary hardening G13 (2026-09-14) applied to
-    every other reader here, missed at five of this walker's six call sites
-    (only :567's had its own inline guard; a 2000-level-deep `provenance`
-    field, for one, reached `_jsonl_act_records` as a bare `RecursionError`
-    instead of a `SchemaRefusal`). Every external call site uses this
-    instead of the bare recursive function, once, here, so a future added
-    call site inherits the guard rather than needing to remember it."""
+    """`_verify_retained_references`, refusing a citation nested past the recursion limit.
+
+    Every external call site uses this wrapper, never the bare walker.
+    """
     try:
         _verify_retained_references(value)
     except RecursionError as error:
@@ -2751,9 +2443,8 @@ def _verify_retained_references_bounded(value: Any) -> None:
 def _verify_evidence_refs(evidence_refs: Any, *, subject: str) -> None:
     """Require each act to retain its Recensor review and only real citations.
 
-    The generic retained-reference walk permits non-reference dictionaries. This
-    field is narrower: every entry must name a retained-run path, and production
-    guarantees at least the review reference even when no reading was established.
+    Stricter than the generic walk: every entry must be a retained-run citation,
+    and there is always at least the review.
     """
     if not isinstance(evidence_refs, list) or not evidence_refs:
         raise SchemaRefusal(
@@ -2786,19 +2477,13 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
             connection.execute("PRAGMA page_size=4096")
             connection.execute("PRAGMA journal_mode=OFF")
             connection.execute("PRAGMA synchronous=OFF")
-            # 2, with the schema id: the row shape changed (damage-record columns
-            # in, the bare annotations pair renamed apart), and a version the
-            # id moved without is the CR W15 miss wearing a different hat.
+            # Moves with `_SQLITE_SCHEMA`.
             connection.execute(f"PRAGMA user_version={_SQLITE_USER_VERSION}")
             connection.executescript(_ACTS_DATABASE_DDL)
             metadata = {
                 "canonical_text_encoding": CANONICAL_TEXT_ENCODING,
                 "canonical_text_field": CANONICAL_TEXT_FIELD,
                 "normalizer_revision": TEXTNORM_REVISION,
-                # v2 covers two accumulated shape changes under what was one id:
-                # R8's `annotations_json` → `uncertainty_json` rename (CR W15, a
-                # real versioning miss) and this change's damage-record columns
-                # (text_status, transcription_annotations_json, semantic_* pair).
                 "schema": _SQLITE_SCHEMA,
                 "unidata_version": unicodedata.unidata_version,
             }
@@ -2865,10 +2550,8 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                         (cursor.lastrowid, derived),
                     )
             connection.commit()
-            # SQLite refuses VACUUM while the inserts are still in its implicit
-            # transaction.  Closing that transaction first also makes the page
-            # layout a deterministic post-insert state before it becomes package
-            # bytes.
+            # SQLite refuses VACUUM inside the open transaction; VACUUM makes the
+            # page layout deterministic.
             connection.execute("VACUUM")
             connection.commit()
         except sqlite3.DatabaseError as error:
@@ -2904,9 +2587,6 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 "transcription_annotations": act.get("transcription_annotations")
                 if literal is not None
                 else None,
-                # The *other* annotation layer, named apart from the one above so
-                # that "not produced" can never again be read as a statement about
-                # the transcription marks an Archetypus record really did seal.
                 "semantic_annotations": [],
                 "semantic_annotation_status": _SEMANTIC_ANNOTATION_NOT_PRODUCED,
                 "witnesses": act.get("witnesses", []),
@@ -2935,10 +2615,7 @@ def _act_evidence(act: dict[str, Any]) -> dict[str, Any]:
 def _export_reason(act: dict[str, Any]) -> str | None:
     """Make a held/refused review reason explicit without inventing one for other outcomes.
 
-    The fallback names the gap itself ("upstream recorded no reason") rather than
-    describing the outcome ("no usable reading was exported"): the two are
-    distinguishable only by this sentence, and a reader should be able to tell an
-    upstream stage that recorded nothing meaningful from one that never ran.
+    The fallback names the gap ("upstream recorded no reason"), not the outcome.
     """
     if act["category"] in {
         ArmariumCategory.HELD_FOR_REVIEW.value,
@@ -2988,14 +2665,9 @@ def _jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
 def _package_lines(path, subject: str) -> list[str]:
     r"""Split one package member on exactly the separator its writer used.
 
-    Not ``str.splitlines``, which also breaks on U+0085, U+2028 and U+2029 -- and this
-    project serializes with ``ensure_ascii=False`` on purpose (``canonical.py``: "the
-    stored bytes should be the text itself"), so ``json.dumps`` emits those three raw
-    inside a JSON string instead of escaping them. An established reading carrying one
-    cut its own record in half in every line-oriented member. Decoding raw bytes is
-    the same principle: no universal-newline translation, because the writers join
-    on ``\n`` and nothing else. (Not ``read_text(newline="")``: that keyword reached
-    ``pathlib`` in Python 3.13, and CI runs 3.12.)
+    Not ``str.splitlines``: with ``ensure_ascii=False`` JSON strings carry U+0085,
+    U+2028 and U+2029 raw, and splitting on them would cut a record in half. Raw
+    bytes avoid newline translation (``read_text(newline="")`` needs Python 3.13).
     """
     try:
         return path.read_bytes().decode("utf-8").split("\n")
@@ -3029,10 +2701,8 @@ def _text_bundle_records(
         tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list, str],
     ] = {}
     record_locations: set[tuple[str, str]] = set()
-    # The source graph authenticates the complete folder census, and the exact-member
-    # check has already proved these are the package's only text files. Enumerating
-    # those derived names is both directions of the promise; an `rglob` walk could
-    # silently omit a linked or unreadable subtree and has no additional authority.
+    # Enumerate the folders from the authenticated source graph, not an `rglob`
+    # walk, which could silently skip a linked or unreadable subtree.
     for folder in sorted(source_folders):
         path = root / _text_member_path(folder)
         lines = _package_lines(path, "text bundle")
@@ -3085,14 +2755,9 @@ def _text_bundle_records(
             elif line == "canonical_clean_text:":
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal("a text-bundle section has no act identity or literal")
-                # One literal per section, so the literal `uncertainty:` anchored
-                # to below is the literal this section ends up recording. A second
-                # `canonical_clean_text:` after the layer would replace `pending`
-                # while `pending_uncertainty` kept the offsets checked against the
-                # first -- an act recorded beside a layer that anchors to a text it
-                # no longer carries. Two or more literal formats catch that drift
-                # as a projection-identity mismatch; the text bundle is a legal
-                # single literal format, where nothing else would.
+                # A second literal would keep offsets validated against the first.
+                # When the text bundle is the only selected literal format, nothing
+                # else would catch that.
                 if pending is not None:
                     raise SchemaRefusal("a text-bundle section carries more than one literal")
                 try:
@@ -3109,11 +2774,6 @@ def _text_bundle_records(
                     raise SchemaRefusal("a text-bundle literal identity or hash is invalid")
                 pending = (literal, digest, tuple(citations))
             elif line == "uncertainty:":
-                # Read back beside the literal it anchors to, exactly like
-                # `canonical_clean_text:` above -- a text-bundle uncertainty
-                # layer that cannot re-validate against its own act's literal
-                # text is not a member `_compare_literal_projections` may treat
-                # as this act's one uncertainty record.
                 if current_id is None or pending is None or index + 1 >= len(lines):
                     raise SchemaRefusal(
                         "a text-bundle uncertainty layer has no literal to anchor to"
@@ -3127,10 +2787,8 @@ def _text_bundle_records(
                 except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal("a text-bundle uncertainty layer is not JSON") from error
                 try:
-                    # The round trip, not merely the shape: the text bundle is the
-                    # one format whose layer arrives as decoded UTF-8 text lines, so
-                    # this is where an encoding that changed offset meaning would
-                    # have to be caught.
+                    # The round trip, not just the shape: this is the one format
+                    # whose layer arrives as decoded text, where offsets could shift.
                     utf8_round_trip(uncertainty, pending[0])
                     pending_uncertainty = uncertainty
                 except SchemaRefusal as error:
@@ -3138,10 +2796,6 @@ def _text_bundle_records(
                         "a text-bundle uncertainty layer does not anchor to its own act's literal"
                     ) from error
             elif line.startswith("text_status: "):
-                # Anchored to a literal exactly as the layers around it are: a
-                # status with no reading to describe is not this act's record of
-                # its own damage, and a second one would leave the earlier value
-                # unread beside the layer it was derived from.
                 if current_id is None or pending is None:
                     raise SchemaRefusal(
                         "a text-bundle established-text status has no literal to describe"
@@ -3167,26 +2821,16 @@ def _text_bundle_records(
                         "a text-bundle transcription annotation layer is not JSON"
                     ) from error
             elif line == "display:":
-                # Spec 11 test 2's second half, checked on the written product:
-                # render -> strip -> hash. The rendered display is a reading aid and
-                # stripping it must return the canonical field exactly, so a display
-                # convention can never become characters in the hashed text.
+                # Stripping the display must return the canonical text exactly, so
+                # display markup never enters the hashed text.
                 if current_id is None or pending is None or index + 1 >= len(lines):
                     raise SchemaRefusal("a text-bundle display has no literal to render")
-                # Its own refusal rather than the one above: a section that reaches
-                # its display with no `uncertainty:` line has a literal and is
-                # missing the layer, which is the opposite defect and the one a
-                # reader of the message has to act on.
                 if pending_uncertainty is None:
                     raise SchemaRefusal(
                         "a text-bundle section carries a literal with no uncertainty layer"
                     )
-                # And its own refusal again for the damage record, for the same
-                # reason: a section that reaches its display with no status, or
-                # with no annotation layer, is missing the fields that say whether
-                # the reading about to be rendered is whole. Recomputed rather than
-                # read: the readable bundle is a legal single literal format, where
-                # cross-format identity would catch nothing.
+                # Recomputed here because the text bundle may be the only literal
+                # format, where cross-format identity catches nothing.
                 if pending_text_status is None or pending_annotations is None:
                     raise SchemaRefusal(
                         "a text-bundle section carries a literal with no established-text "
@@ -3206,8 +2850,6 @@ def _text_bundle_records(
                     rendered = json.loads(lines[index + 1])
                 except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal("a text-bundle display is not JSON") from error
-                # `strip_display` raises `ValueError` on markup it cannot parse, and
-                # every such rendering is something a package can carry.
                 try:
                     stripped = strip_display(rendered) if isinstance(rendered, str) else None
                 except ValueError as error:
@@ -3269,8 +2911,8 @@ def _text_bundle_literals(root) -> dict[str, tuple]:
 
 _STORED_ACTS_TABLES: Final = ("acts", "act_search", "export_metadata")
 _SQLITE_PRODUCT_TABLES: Final = (*_STORED_ACTS_TABLES, "acts_fts")
-# Writer and verifier share this DDL so the schema check includes FTS bindings,
-# shadow tables, and implicit indexes without maintaining a second schema spelling.
+# Writer and verifier share this DDL, so the schema check covers FTS shadow
+# tables and implicit indexes without a second spelling.
 _ACTS_DATABASE_DDL: Final = """
                 CREATE TABLE export_metadata (
                     key TEXT PRIMARY KEY NOT NULL,
@@ -3332,8 +2974,7 @@ def _verify_acts_schema(connection: sqlite3.Connection) -> None:
     """Require the exact object graph and FTS content binding the writer declares.
 
     FTS integrity alone cannot detect an index consistently repointed at a decoy
-    content table. Exact declarations close that gap; the runtime-derived schema
-    also closes shadow tables and implicit indexes without hard-coding them.
+    content table.
     """
     try:
         expected = _expected_acts_schema()
@@ -3369,19 +3010,10 @@ def _verify_acts_schema(connection: sqlite3.Connection) -> None:
 def _open_acts_database(path) -> sqlite3.Connection:
     """Open a package's acts database read-only, as stored rows and not as a program.
 
-    **A table is not a view.** Every read below names ``acts``, ``act_search`` or
-    ``export_metadata``, and SQLite is perfectly happy for any of them to be a
-    *view* -- which is a program. A view over a recursive CTE turns a few
-    kilobytes of package member into an unbounded result set: built one, and
-    watched this function's caller allocate until the kernel killed the process.
-    Same amplification the ``ZIP_STORED`` check refuses in the archive reader,
-    and closed the same way -- a stored table's row count is bounded by the
-    member's own physical bytes, a view's by nothing.
-
-    **A path is not a URI.**  ``f"file:{path}?mode=ro"`` makes a directory named ``x?y``
-    into a query string, and ``bundle.py`` derives its staging directory from the
-    operator's own ``--out`` name, so a good package gets refused with a message
-    blaming the package.  ``as_uri`` percent-encodes.
+    The product names must be tables, not views: a view over a recursive CTE turns
+    a few kilobytes into an unbounded result set, while a table is bounded by the
+    member's size. ``as_uri`` percent-encodes the path, so a directory named
+    ``x?y`` does not become a query string.
     """
     uri = f"{Path(path).resolve().as_uri()}?mode=ro"
     try:
@@ -3474,8 +3106,7 @@ def _jsonl_literals(path) -> dict[str, tuple]:
     for line in _package_lines(path, "acts JSONL"):
         if not line:
             continue
-        # This reader is independently callable, so malformed JSON must remain a
-        # named package refusal regardless of validation order.
+        # Independently callable, so it cannot rely on earlier validation.
         try:
             record = json.loads(line)
         except (UnicodeDecodeError, ValueError, RecursionError) as error:
@@ -3516,15 +3147,9 @@ def _page_ledger_category(
 ) -> tuple[str, str | None]:
     """One sealed page's terminal category, derived from the acts cut on it.
 
-    Every rule here errs toward `held-for-review`, the category that means a human
-    must look.  A sealed page nobody marked an act out on is held, never
-    `confirmed-blank`: silence cannot tell a genuinely blank page from a detection
-    failure, and `run_aggregate` already refuses to infer blank from silence. This
-    function itself never *infers* blank -- a page whose acts are all themselves
-    `confirmed-blank` simply inherits that proof from them, the same way it
-    inherits `delivered` when any act on it is delivered; what artifact would let
-    this stage *prove* a page blank on its own, with no acts to inherit the
-    category from, is open (HANDOFF.md).
+    Every rule errs toward `held-for-review`. A page with no acts is held, never
+    `confirmed-blank`, because silence cannot tell a blank page from a detection
+    failure; a page is blank only when all its acts are.
     """
     if edge_hold:
         return (
@@ -3555,27 +3180,15 @@ def _terminal_ledger(
 ) -> dict[str, Any]:
     """The honesty ledger: one closed category for every unit the run accounted for.
 
-    Spec 11 test 1 is a *total partition*: every submitted source, every sealed page and
-    every proposed act lands in exactly one of the five categories, and a unit in no set
-    is invariant #10's imbalance. So all three unit types are enumerated here, and a unit
-    outside the five sets, a repeated unit identity, or a count that does not reconcile
-    stops the export rather than being reported.
-
-    A source unit inherits the category of the page it sealed into: they are two
-    questions with one answer, and giving the source its own vocabulary would mean
-    inventing a sixth meaning for `delivered`. `by_unit_type` is published beside
-    `by_category` because the three populations overlap by design -- an act, the page it
-    was cut from, and the source that sealed that page are three units describing one
-    piece of material, so a reader adding the category counts up is counting units, not
-    acts.
+    Every source, sealed page and act lands in exactly one of the five categories
+    (a total partition); anything else stops the export. A source inherits its
+    page's category. The three unit types describe overlapping material, so
+    `by_unit_type` shows that category totals count units, not acts.
     """
     by_act_id: dict[str, dict[str, Any]] = {}
     categories_by_key: dict[str, str] = {}
     for record in act_outcomes:
-        # Today's two callers both deduplicate before calling, so this cannot fire from
-        # inside the module. It stays because the total-partition claim above is made by
-        # this function about itself: a duplicate act id collapsing silently into the
-        # dict below is the very "unit in no set at all" the claim forbids.
+        # Callers deduplicate, but the partition must not depend on that.
         if record["act_id"] in by_act_id:
             raise SchemaRefusal(
                 f"terminal ledger act outcomes repeat act identity {record['act_id']!r}"
@@ -3736,9 +3349,6 @@ def _export_manifest(
         edge_hold_pages,
     )
     manifest: dict[str, Any] = {
-        # The schema id moves with the claim shape (see the constants): a
-        # clustered bundle's act-partition claim is a different contract than
-        # the image-local one, whose schema id must never describe clustered claims.
         "schema": (
             EXPORT_MANIFEST_CLUSTERED_SCHEMA
             if any("logical_membership" in act for act in projection.acts)
@@ -3749,10 +3359,7 @@ def _export_manifest(
             "field": CANONICAL_TEXT_FIELD,
             "hash": "sha256-utf-8",
             "derived_columns_are_marked": True,
-            # `verify_projection_identity` only runs when two or more literal
-            # formats are selected -- with one selected (or zero) there is
-            # nothing to compare, and this says so on the bundle's own face
-            # rather than leaving a reader to infer it from `formats`.
+            # Empty when fewer than two literal formats leave nothing to compare.
             "identity_verified_across": sorted(set(_LITERAL_TEXT_FORMATS) & set(formats.formats))
             if len(set(_LITERAL_TEXT_FORMATS) & set(formats.formats)) >= 2
             else [],
@@ -3760,10 +3367,6 @@ def _export_manifest(
         "run": _manifest_run_binding(projection),
         "formats": formats.to_record(),
         "claims": {
-            # Measured, not constant. A status that says `partial` on every run
-            # whatever happened cannot distinguish the run that lost something from
-            # the run that did not, which is the distinction principle 2 exists to
-            # keep visible.
             "status": ledger["status"],
             "partial_reasons": ledger["unresolved_reasons"],
             "terminal_ledger": ledger,
@@ -3799,19 +3402,11 @@ def _export_manifest(
                 "status": _SEMANTIC_ANNOTATIONS_CLAIM,
                 "text_writable": False,
             },
-            # Named beside it rather than folded into it: the package carries a
-            # real annotation layer, and a `claims` block whose only annotation
-            # entry said "not produced" was a true statement about one layer read
-            # by every recipient as a statement about both.
             "transcription_annotations": _transcription_annotations_claim(formats.formats),
             "uncertainty": _uncertainty_claim(formats.formats),
-            # Labelled a proposal because it is one: spec 11 leaves the choice of
-            # convention to the project lead at this gate, and nothing hashed depends on it.
-            # `renders_canonical_uncertainty` is the declaration R8 owes: the
-            # record DOES carry the layer now, the `uncertainty:` field beside each
-            # literal carries it into the product, and this rendering deliberately
-            # does not -- said here rather than left for a reader to infer from a
-            # `display:` line that looks like a complete reading.
+            # A proposal: the display convention is the project lead's choice, and
+            # nothing hashed depends on it. The rendering does not show uncertainty;
+            # the `uncertainty:` field beside each literal carries it.
             "display": {
                 "convention": DISPLAY_CONVENTION,
                 "status": "proposed-pending-tyrels-choice",
@@ -3821,9 +3416,6 @@ def _export_manifest(
                 "reason": _DISPLAY_REASON,
             },
             "salvage": salvage_claim,
-            # Last in `claims` and required by the schema: a bundle cannot be
-            # produced, or re-verified on a clean machine, without saying what
-            # this run did not measure.
             "not_measured": _not_measured_claim(projection),
         },
         "aggregate": projection.aggregate,
@@ -3861,9 +3453,6 @@ def _load_sources(root) -> dict[str, Any]:
     try:
         record = json.loads((root / "sources.json").read_text(encoding="utf-8"))
     except RecursionError as error:
-        # Package data is untrusted input; a pathologically nested sources.json
-        # is well-formed JSON whose depth defeats the parser, and it must be a
-        # named refusal rather than an unnamed recursion failure.
         raise SchemaRefusal(
             "the package sources citation nests too deeply for this parser to read"
         ) from error
@@ -3964,12 +3553,9 @@ def _required_format_members(
 
 
 def _all_pixel_references(sources: dict[str, list[dict[str, Any]]]) -> list[Any]:
-    """Every page and crop pixel reference in the source graph, one place to gather.
+    """Every page and crop pixel reference in the source graph.
 
-    Shared by every reader that needs "all of them regardless of namespace" --
-    a future pixel-bearing collection, or a rename of one of these three keys,
-    now only has to be added here to stay visible to both the embedded-member
-    inventory and the pixel-claim verifier below.
+    The one place both the member inventory and the pixel-claim check gather them.
     """
     references: list[Any] = [
         page.get("page_image") for page in sources["pages"] if isinstance(page, dict)
@@ -4100,13 +3686,8 @@ def _verify_logical_partition_claim(
 ) -> None:
     """Re-derive the clustered act-partition claim from its source evidence.
 
-    `local_proposal_rows` and `logical_membership` are claims about how many
-    Designator seal rows the bundle's smaller act denominator stands for. A
-    self-hash proves the manifest was not edited after it was written, not that
-    what it says was measured -- so both are recomputed here from the package's
-    own `logical_accounting` source block, exactly as the terminal ledger is,
-    and a rebuilt package reporting fewer seal rows than the run produced is a
-    refusal rather than an accepted bundle with a hidden act.
+    Recomputed from `logical_accounting` rather than read from the manifest, so a
+    claim that disagrees with the package's own accounting is refused.
     """
     claim = manifest["claims"]["act_partition"]
     accounting = sources.get("logical_accounting")
@@ -4169,13 +3750,8 @@ def _verify_logical_partition_claim(
             or ordinals != sorted(set(ordinals))
         ):
             raise SchemaRefusal("a package logical membership row is not canonical")
-        # Both vocabularies, as the producer's twin tracks both: ids are the
-        # counted unit, so a key repeated across logical acts with unique ids
-        # still balances the row arithmetic while asserting that two logical
-        # acts descend from one proposal row. Keys are also held against the
-        # exported act keys themselves: one proposal row exported once as a
-        # standalone act and once as a member -- different ids, one key --
-        # balances every count while one act of the register leaves twice.
+        # Keys as well as ids: a repeated key with distinct ids balances the counts
+        # while one proposal row leaves twice.
         repeated = (set(ids) & member_ids_seen) | (set(keys) & member_keys_seen)
         if repeated or set(ids) & set(categories) or set(keys) & set(act_keys.values()):
             raise SchemaRefusal(
@@ -4184,10 +3760,7 @@ def _verify_logical_partition_claim(
             )
         member_ids_seen.update(ids)
         member_keys_seen.update(keys)
-        # The producer requires every member ordinal to appear in the act's own
-        # page attribution (superset, for continuations); re-derive it here so
-        # a rebuilt package cannot drop a member capture's page out of the
-        # page-coverage check.
+        # As in the producer: the attribution must cover every member page.
         basis = sources.get("aggregate_basis")
         attributed = (
             (basis.get("act_pages") or {}).get(act_keys[act_id])
@@ -4225,11 +3798,8 @@ def _verify_honest_status_claims(
 ) -> None:
     """Refuse a self-hashed package that changes a measured partial result to green.
 
-    The top-level claim is the terminal ledger's own status, and the ledger is
-    recomputed here from the package's source graph rather than read out of the
-    manifest -- a self-hash proves the manifest was not edited after it was written,
-    not that what it says was ever true. The internal run aggregate is a separate
-    measurement and is recomputed the same way.
+    The terminal ledger and the run aggregate are recomputed from the source graph,
+    since a self-hash proves only that the manifest is unedited.
     """
     claims = manifest.get("claims")
     if not isinstance(claims, dict):
@@ -4309,18 +3879,12 @@ def _verify_honest_status_claims(
             "from the intact run tree."
         )
     must_be_partial = must_be_partial or bool(derived_edge_holds)
-    # The third way a run can be incomplete, and the one a category-only reading
-    # could never see: an act that reached `delivered` carrying a reading its own
-    # Perlector recorded a gap in. The full recomputation below covers it too;
-    # this states it directly, so the refusal a tampered green package meets names
-    # the damaged act rather than only "the aggregate does not match its basis".
+    # A delivered act with a recorded gap also makes the run partial. The full
+    # recomputation below covers it too; checking it here gives a specific refusal.
     basis = sources["aggregate_basis"]
     recorded_status = basis.get("act_text_status") if isinstance(basis, dict) else None
-    # The basis is the copy the verdict is computed from, so it is held to the
-    # rows before it is believed: editing ONLY `aggregate_basis.act_text_status`
-    # to `established` while every row honestly says `partial` would otherwise
-    # pass every check on a clean machine and report `complete` — the repaired
-    # defect's own shape, one level up.
+    # Hold the basis to the rows first, or editing only the basis to
+    # `established` would verify as `complete`.
     expected_status = {
         outcome["act_key"]: outcome["text_status"]
         for outcome in sources.get("act_outcomes", [])
@@ -4428,12 +3992,8 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             or act_id in records
         ):
             raise SchemaRefusal("a source act-outcome record has no valid terminal identity")
-        # Delivered means an Archetypus record exists, which means a status exists.
-        # Any other category means there is no record, so a status would describe a
-        # reading that is not there.
-        # isinstance folded into the delivered-iff-status equivalence: a
-        # package-supplied unhashable value must be a named refusal, not a
-        # TypeError out of the membership test.
+        # Only a delivered act has an Archetypus record, and so a status. The type
+        # check comes first so an unhashable value is refused, not raised.
         has_status = isinstance(text_status, str) and text_status in TEXT_STATUSES
         if has_status is not (category == ArmariumCategory.DELIVERED.value):
             raise SchemaRefusal(
@@ -4483,8 +4043,7 @@ def _act_citation_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str,
         if not isinstance(record.get("evidence"), dict):
             raise SchemaRefusal("a source act-citation has no witness evidence")
         _verify_retained_references_bounded(record["evidence"])
-        # sources.json is the only evidence-citation carrier common to every format
-        # selection, including a text-bundle-only package.
+        # sources.json is the one evidence carrier in every format selection.
         _verify_evidence_refs(
             record["evidence"].get("evidence_refs"), subject="a source act-citation"
         )
@@ -4600,15 +4159,8 @@ def _verify_carried_uncertainty(
 ) -> None:
     """Read one act row's uncertainty declaration and its payload as one statement.
 
-    Cross-format identity (``_compare_literal_projections``) only compares the
-    layers of two or more selected literal formats against each other, so on its
-    own it leaves two things unasked: a package that selects exactly ONE literal
-    format never has its layer read back at all, and ``uncertainty_status`` --
-    the field a recipient reads to learn whether the layer is there -- is
-    compared against nothing in any package. A row may not say
-    ``not-applicable`` while carrying a layer, or claim canonical offsets while
-    carrying none: the declaration and the payload are the same claim said twice,
-    and a verifier that checks only one of them is asserting the other.
+    Cross-format identity never reads a single-format package's layer, nor
+    ``uncertainty_status`` at all, so both are checked here per row.
     """
     if literal is None:
         if layer is not None:
@@ -4636,16 +4188,8 @@ def _verify_carried_damage(
 ) -> None:
     """Read one act row's established-text status and the layer it derives from.
 
-    Sits beside `_verify_carried_uncertainty` and asks the question that one
-    cannot: uncertainty is checked for *anchoring*, and a well-anchored gap list
-    beside a row claiming `established` is exactly the dishonesty this repairs. So
-    the status is recomputed here, on a clean machine, from the row's own two
-    damage layers -- the transcription annotations carried beside it and the
-    canonical uncertainty that `_verify_carried_uncertainty` has just validated.
-
-    A non-delivered row has no Archetypus record and therefore neither field. `[]`
-    on a delivered row is a real answer -- no damage marked -- and is not the same
-    claim as `None`.
+    A well-anchored gap list can still sit beside a row claiming `established`, so
+    the status is recomputed from the row's own damage layers.
     """
     if literal is None:
         if text_status is not None or annotations is not None:
@@ -4658,15 +4202,9 @@ def _verify_carried_damage(
 
 
 def _verify_semantic_annotation_row(layer: Any, status: Any, *, subject: str) -> None:
-    """The other annotation layer, checked as the fixed claim it still is.
+    """Require the fixed "not produced" semantic-annotation claim on every row.
 
-    Nothing in this repository produces a semantic annotation, so every row says
-    so. That was already true; what was not true is that the row said it under the
-    bare name `annotations`, beside no mention of the transcription layer at all,
-    so a reader met one word answering for two things and the sealed one lost.
-    Checked here rather than assumed, for the same reason the manifest claim is:
-    a row claiming a produced semantic layer must be refused by the verifier that
-    knows none exists, not accepted because nothing disproves it.
+    Nothing produces a semantic annotation yet, so a row claiming one is refused.
     """
     if layer != [] or status != _SEMANTIC_ANNOTATION_NOT_PRODUCED:
         raise SchemaRefusal(
@@ -4945,9 +4483,8 @@ def _verify_fts_index_integrity(path: Path) -> None:
     """Verify every FTS term in both directions against ``act_search``.
 
     External-content FTS5 does not constrain its index to the content table, and a
-    per-row MATCH probe cannot detect extra terms, ghost rowids, or tokenless rows.
-    SQLite's integrity command covers the whole index but writes through its handle,
-    so it must run on a private copy rather than mutate the delivered member.
+    per-row MATCH probe misses extra terms and ghost rowids. The integrity command
+    writes through its handle, so it runs on a private copy.
     """
     with tempfile.TemporaryDirectory(prefix="armarium-fts-") as directory:
         writable = Path(directory) / "acts.sqlite"
@@ -4973,18 +4510,9 @@ def _verify_fts_index_integrity(path: Path) -> None:
 def _verify_search_fold_claim(path: Path, literals: dict[str, tuple[str, str]]) -> dict[str, str]:
     """Recompute the derived search column when its Unicode database is ours.
 
-    A digest-checked SQLite member proves the package was not edited after
-    sealing; it proves nothing about whether ``act_search.derived_search_text``
-    was ever actually a fold of its own act's canonical clean text -- a build
-    defect or a package rebuilt around a tampered column would pass every
-    other check in this file with the search projection carrying unrelated
-    text. Unlike ``claims.canonical_text``/``claims.semantic_annotations`` above, this
-    one *does* have a source graph to recompute against: the literal each row's
-    own ``act_id`` already carries in ``acts``. That recomputation is meaningful
-    only under the Unicode database version that created the fold. A different
-    verifier version keeps checking row identity and digests, but records that
-    the fold calculation itself was not run instead of accusing a good package
-    of tampering.
+    Digests do not prove the search column is a fold of its act's literal. The
+    fold depends on the Unicode database version, so under a different version
+    the recomputation is reported as not run rather than as tampering.
     """
     connection: sqlite3.Connection | None = None
     try:
@@ -5040,9 +4568,7 @@ def _verify_search_fold_claim(path: Path, literals: dict[str, tuple[str, str]]) 
     finally:
         if connection is not None:
             connection.close()
-    # After the read-only pass and outside it: the index check needs a writable
-    # handle, and the rows it is checked against have to be the ones already
-    # proved to be folds of their own literals.
+    # After the read-only pass, so the index is checked against proven folds.
     _verify_fts_index_integrity(path)
     if recompute:
         return {
@@ -5221,17 +4747,9 @@ def _verify_retained_run_claim(manifest: dict[str, Any]) -> None:
 def _verify_canonical_text_claim(manifest: dict[str, Any]) -> None:
     """The one field name and hash convention every literal projection is built from.
 
-    Unlike every other ``claims.*`` section, this one and ``claims.semantic_annotations``
-    below describe a fixed contract of this build rather than something computed
-    from the package's own source graph -- there is nothing in ``sources.json`` to
-    recompute them against. That is not a reason to leave them unchecked: without
-    this, a tampered manifest could claim a different authority field, or a
-    text-writable annotation layer, and every other check in this function would
-    still accept the package.
-
-    ``identity_verified_across`` is the one field in this claim that does vary by
-    build, so it is recomputed from the manifest's own ``formats`` selection
-    rather than compared to a constant.
+    A fixed contract with nothing in ``sources.json`` to recompute it from, so it
+    is compared to constants; ``identity_verified_across`` is recomputed from the
+    selected formats.
     """
     canonical_text = manifest.get("canonical_text")
     if not isinstance(canonical_text, dict):
@@ -5255,16 +4773,8 @@ def _verify_canonical_text_claim(manifest: dict[str, Any]) -> None:
 def _verify_annotations_claims(manifest: dict[str, Any]) -> None:
     """Two annotation layers, two claims, neither allowed to answer for the other.
 
-    The *semantic* annotator is unbuilt and unwired (HANDOFF.md), so its claim is
-    a fixed constant today, not a measurement -- but a tampered manifest claiming
-    ``text_writable: true`` must still be refused here rather than accepted
-    because nothing yet exists to disprove it.
-
-    The *transcription* claim beside it is a measurement, like the uncertainty
-    claim: the Archetypus's own `uncertain`/`illegible` marks are produced, and
-    they ride in exactly the literal-text formats this package selected. Checked
-    against the recomputed carriage rather than a constant, so a manifest naming a
-    format it does not carry them in is describing a different package.
+    The semantic claim is a fixed constant because no semantic annotator exists
+    yet; the transcription claim is recomputed from the selected formats.
     """
     claims = manifest.get("claims")
     semantic = claims.get("semantic_annotations") if isinstance(claims, dict) else None
@@ -5282,13 +4792,7 @@ def _verify_annotations_claims(manifest: dict[str, Any]) -> None:
 
 
 def _verify_uncertainty_claim(manifest: dict[str, Any]) -> None:
-    """The carriage claim is a measurement, and is checked as one.
-
-    Unlike the annotations claim beside it, ``carried_by`` is not a constant: it
-    is exactly the literal-text formats this package selected, so a manifest that
-    named a format it does not carry the layer in -- or omitted one it does --
-    would be describing a different package.
-    """
+    """The carriage claim is recomputed from the selected literal-text formats."""
     claims = manifest.get("claims")
     selected = manifest.get("formats")
     format_rows = selected.get("formats") if isinstance(selected, dict) else None
@@ -5302,12 +4806,8 @@ def _verify_manifest_source_counts(
 ) -> None:
     """A source-page census claim must be no larger or smaller than its citations.
 
-    `claims.submission_inventory`'s fields are named "submission" but counted here
-    from `sources["pages"]`, the page census. The two populations are always equal
-    because `run.py::page_census` refuses any submitted source with no page outcome
-    and any page outcome with no submitted source before either can diverge -- so
-    this is, in practice, a *stronger* check that source and page counts agree, not
-    a weaker one that happens to read the wrong field.
+    The submission counts are checked against the page census, which
+    `run.py::page_census` keeps equal to the submitted sources.
     """
     ordinals: set[int] = set()
     paths: set[str] = set()
@@ -5402,11 +4902,8 @@ def _verify_salvage_region_references(sources: dict[str, list[dict[str, Any]]], 
 def _act_outcomes(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     """Keep the non-text terminal reason that review-items must reproduce exactly.
 
-    `text_status` rides here beside `reason` because it is the same kind of fact:
-    a closed word about how the act ended, carrying no characters of the reading.
-    Putting it in the text-free source graph is what lets `_verify_exact_product_
-    outcomes` require every selected format to retain it, rather than each format
-    being trusted to have written it.
+    `text_status` carries no characters of the reading, so it travels here too and
+    every format is checked against it.
     """
     return [
         {
@@ -5486,8 +4983,6 @@ def _verify_reference(reference: Any, root) -> None:
         except ValueError as error:
             raise SchemaRefusal("an embedded package source pixel does not open") from error
     elif availability == _SOURCE_ACCESS_REQUIRED:
-        # The digest was already required above, for every availability. Only the
-        # path is this branch's own question.
         _validate_run_relative_path(reference.get("run_relative_path"))
     else:
         raise SchemaRefusal("a package source reference has no honest availability status")
@@ -5501,20 +4996,15 @@ def _validate_member_name(name: str) -> None:
     if isinstance(name, str) and name.endswith("/"):
         raise SchemaRefusal(f"{subject} is unsafe")
     path = _reject_unsafe_relative_path(name, subject=subject)
-    # Extraction builds parents iteratively, but `_ordinary_member_names` walks
-    # the result with a recursive helper, so a deep enough member reached
-    # `RecursionError` -- which nothing converts, making a traceback the answer
-    # to a hostile archive instead of a named refusal. Real packages nest a few
-    # levels; this is far above them and far below the interpreter's limit.
+    # `_ordinary_member_names` walks recursively. Real packages nest a few levels;
+    # this bound is far above them and far below the interpreter's limit.
     if len(path.parts) > _MAXIMUM_MEMBER_DEPTH:
         raise SchemaRefusal(
             f"{subject} nests {len(path.parts)} levels deep, past the "
             f"{_MAXIMUM_MEMBER_DEPTH}-component package member bound"
         )
     if path.as_posix() != name:
-        # `PurePosixPath` removes `.` components and repeated separators. Distinct
-        # archive spellings that normalize to one filesystem path would otherwise
-        # replace one another during extraction.
+        # Two spellings of one path would overwrite each other on extraction.
         raise SchemaRefusal(f"{subject} is not in canonical POSIX spelling")
 
 
