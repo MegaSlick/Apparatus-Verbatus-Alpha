@@ -1,4 +1,4 @@
-# Designator — handoff
+# Designator — contract
 
 The Designator turns sealed Exemplar pages into the act denominator for the
 walking skeleton. It writes only ordinary `skeleton.v1` artifacts below
@@ -10,7 +10,7 @@ Spec 01 fixed the run-tree shape as `<stage>/artifacts/<kind>/<artifact-id>.json
 for every stage; there is no per-page `crops/`, `acts/` or `conservation/`
 directory anywhere in this tree. Spec 06's contracts section names those as
 concepts — a crop, an act-to-crop grouping, a coverage reconciliation — and
-this handoff expresses each as an artifact *kind* below rather than a path.
+this contract expresses each as an artifact *kind* below rather than a path.
 
 ## Neutral dark-distribution evidence
 
@@ -967,7 +967,7 @@ is a property of the chair rather than only of the scripted body -- its
 `HistoricalDocument` grammar has no coordinate vocabulary anywhere, so it
 reports no geometry in any framing it can be asked in, and
 `pipeline/test_live_reading_seam_e2e.py` reaches the same held export over
-declared acts (`pipeline/3_attestatores/HANDOFF.md`); U12 closes it at the
+declared acts (`pipeline/3_attestatores/CONTRACT.md`); U12 closes it at the
 Perlector, on the `anchor-line` basis. The envelope is kept in this suite on
 purpose: pinning the witness floor to a shape this suite does not vary keeps
 "which acts exist" and "how many witnesses reach them" apart. Either way it is a
@@ -1373,7 +1373,7 @@ This stage's proposal-seal `has_continuation` flag is therefore a proposal, and
 on `act-group` as `continuation.geometric_corroboration` — evidence for whoever
 reads the act, never a gate here.
 
-## What this handoff does not settle
+## What this contract does not settle
 
 **RecordGold cannot close padding calibration, and `calibrated_for_this_corpus`
 stays `false` regardless of how many of its pages are fetched.**
@@ -1408,7 +1408,7 @@ independent coverage proof passed by construction.
 The inference now lives in `common/background.py` and all three stages call it
 on the same page bytes: this stage's `structure.py` re-exports it, and
 `pipeline/1_ink_map/run.py` and `pipeline/5_recensor/run.py` reach it through
-`common/residual_ink.py`. The decision the handoff left open was whether the
+`common/residual_ink.py`. The decision the contract left open was whether the
 audit should share this inference and lose its independence, or grow its own on
 the same real material. **It shares the background and keeps its own contrast.**
 Paper is a property of the page, not of the stage looking at it — two stages

@@ -1,4 +1,4 @@
-# Perlector — handoff
+# Perlector — contract
 
 The Perlector writes one append-only `kind="perlectio"` record for each reading
 attempt under `4_perlector/artifacts/`, plus one append-only `kind="lectio-nuda"`
@@ -106,7 +106,7 @@ principle 1), so a second look by a witness does not make a second reading exist
 and re-reading an act because a witness spoke again is the re-roll principle 7
 refuses. The consequence for the upstream stage is that an act's witness layer
 closes when this stage reads it, enforced at the Attestatores' own entry
-(`pipeline/3_attestatores/HANDOFF.md`, "The one attempt model") rather than
+(`pipeline/3_attestatores/CONTRACT.md`, "The one attempt model") rather than
 discovered here as an immutability refusal on a reading identity nothing can move.
 
 The count comes from `common/stage.py::recovery_region_count` — the shared reader
@@ -848,7 +848,7 @@ surviving rule says exactly that, refusing any alignment other than
 attached-but-unaligned entry is a shape the branches below already admit: a
 `geometric-overlap` basis, a null span, an explicit unaligned reason. The contradiction
 was unreachable while the fixture declared no geometry on a continuation page
-(`pipeline/3_attestatores/HANDOFF.md`).
+(`pipeline/3_attestatores/CONTRACT.md`).
 
 **The receipt is the live one.** `provenance_for(..., receipt_ref=…)` takes the receipt
 the serving manager published and `ChairClient.__enter__` re-read through the tree and
@@ -951,7 +951,7 @@ Archetypus and Armarium. Nothing here refused it: every act reaches a Perlectio
 whose `engine_call` names a retained blob holding exactly the bytes the engine
 put on the wire, the live receipt is on every reading's provenance, and the run
 seals a terminal export. The export is held for review rather than delivered,
-for a witness-coverage reason recorded in `pipeline/3_attestatores/HANDOFF.md`
+for a witness-coverage reason recorded in `pipeline/3_attestatores/CONTRACT.md`
 and not for anything this stage did. The same driver in fixture mode reproduces
 the orchestrator's own tree byte for byte, `--placement-tier` supplied, which is
 the fixture-path claim `with_engine_call` and the mode selector rest on.
@@ -990,7 +990,7 @@ the fixture-path claim `with_engine_call` and the mode selector rest on.
   readiness probe with named failure signatures) was built during this stage's
   second lane and is deliberately **not** carried here: it is spec 04's
   territory and the serving-manager branch's file, and two implementations of
-  one serving path is the drift this handoff exists to prevent. It is worth
+  one serving path is the drift this contract exists to prevent. It is worth
   reading before that lane writes its own.
 - Spec 10's `text_status` is now an Archetypus field, distinct from that record's
   fixed `status = "established"` literal. Archetypus re-derives it from the text,

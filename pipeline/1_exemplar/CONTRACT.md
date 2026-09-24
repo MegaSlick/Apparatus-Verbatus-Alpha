@@ -1,4 +1,4 @@
-# Exemplar — handoff
+# Exemplar — contract
 
 The Exemplar is the immutable source of pixels for the rest of the run. The door
 writes its admissions into `1_exemplar/`; the Exemplar then seals one `kind="page"`

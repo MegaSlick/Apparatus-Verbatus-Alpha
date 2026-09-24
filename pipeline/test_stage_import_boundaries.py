@@ -1,7 +1,7 @@
 """Every numbered stage after the Exemplar communicates only through common/ and
-the files its own HANDOFF.md declares. `pipeline/README.md`'s own rule: "the
+the files its own CONTRACT.md declares. `pipeline/README.md`'s own rule: "the
 repository rule is that stages communicate only through the files declared in
-their HANDOFF.md. Boundary tests must accompany the first implementation of each
+their CONTRACT.md. Boundary tests must accompany the first implementation of each
 stage." Only `pipeline/1_exemplar/test_import_boundaries.py` existed, and it
 guards a narrower thing (which of 1_exemplar's own sibling modules are
 door-private) rather than "does any stage reach into a different stage's

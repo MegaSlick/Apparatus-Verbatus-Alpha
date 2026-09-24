@@ -1202,7 +1202,7 @@ def test_the_interior_dark_bound_actually_decides_the_outcome():
     There is one bound here now, not two. `min_border_dark_bp` sat beside it
     and is gone on measurement: over 127 real pages it refused
     52 of them, and it refused no control the interior bound does not
-    (`pipeline/2_designator/HANDOFF.md`, the calibration tables).
+    (`pipeline/2_designator/CONTRACT.md`, the calibration tables).
     """
     width, height = 400, 300
     rows = photographed_page(width, height)

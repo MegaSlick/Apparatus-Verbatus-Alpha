@@ -63,5 +63,5 @@ Two things that are not this chair's own:
   from, digested where they are carried, and re-checked against the vendor by
   `common/test_vendor_parity.py`. Not one word of either is this repository's.
 
-`pipeline/3_attestatores/HANDOFF.md` carries the contract; this file only says
+`pipeline/3_attestatores/CONTRACT.md` carries the contract; this file only says
 what sits in the chair.

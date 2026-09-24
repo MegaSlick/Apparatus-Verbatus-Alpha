@@ -21,7 +21,7 @@ consumer that establishes text — a different artifact kind entirely, never
 one clean `text`; a gap is zero-width by construction, so testimony evidence is
 always linked beside the text and never inside it.
 
-Read [HANDOFF.md](HANDOFF.md) for what this stage writes and where. That document
+Read [CONTRACT.md](CONTRACT.md) for what this stage writes and where. That document
 is the interface — no other stage reads this one's code.
 
 See the root [ARCHITECTURE.md](../../ARCHITECTURE.md) for how this fits the flow,

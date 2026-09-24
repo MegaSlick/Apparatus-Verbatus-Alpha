@@ -839,7 +839,7 @@ def test_a_churro_capture_admits_the_live_unreported_stop_reason():
 
 
 def test_an_unreported_churro_boundary_publishes_unknown_truncation_not_false():
-    """U8, the HANDOFF's third owed gap: three states, not two.
+    """U8, the contract's third owed gap: three states, not two.
 
     The shared page contract re-derived a Churro page record's health from its
     capture by asking one question -- "is this word a cut-off word" -- and an
@@ -911,7 +911,7 @@ def test_a_reported_natural_stop_is_unchanged_by_the_third_state():
 
 
 def test_a_capture_may_record_a_shape_its_parser_ran_over_and_could_not_place():
-    """U8, the HANDOFF's fourth owed gap: `unrecognized-shape` is admitted.
+    """U8, the contract's fourth owed gap: `unrecognized-shape` is admitted.
 
     `pipeline/3_attestatores/chandra.py` has produced this state since it was
     written -- the vendor publishes no response specimen, so a real Chandra

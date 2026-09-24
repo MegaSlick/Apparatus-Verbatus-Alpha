@@ -169,7 +169,7 @@
 # many pages each just inside these bounds still meets that refusal at the
 # console. What these two values buy is that no *single* page can make a run
 # unopenable on its own. See the provenance block and
-# `pipeline/2_designator/HANDOFF.md` for the reasoning and the remainder.
+# `pipeline/2_designator/CONTRACT.md` for the reasoning and the remainder.
 #
 # **Two constants deliberately do NOT live here and never will:**
 # `structure.PRIMARY_MARGIN` (20) and `structure.SECONDARY_MARGIN` (2) are
@@ -264,7 +264,7 @@ max_ink_bp = 7000
 ink_margin_bp = 3333
 
 [grouping.background.provenance]
-source = "measured on this Mac, 2026-09-06, over 127 real pages: 60 RecordGold pages (24 teklia_dai_cretdhi, 32 recordgold_production_train_v1, 4 recordgold_evaluation_val_v1), 60 parish master pages (15 each from Embrun, Oka, Montebello and the Histoire de Saint-Jacques book), and the seven review proxies under private/triage/measured/2026-08-22_005469606_62-68 as a control, sampled by the fixed seed designator-survey-2026-09-06. The per-page 256-bin histograms and the border/interior histograms at band widths 250, 500 and 1000 bp were dumped once and every candidate rule scored offline against them; those dumps reproduce the 127-page survey's own mode, mean, border and interior figures on all 127 pages at all three band widths, which is what ties these numbers to that survey's material. Four SYNTHETIC control pages, built the way pipeline/2_designator/test_structure.py builds them, were scored beside them and are marked SYNTHETIC wherever their numbers are quoted. The calibration tables are in pipeline/2_designator/HANDOFF.md under 'The background inference, calibrated on 127 pages'"
+source = "measured on this Mac, 2026-09-06, over 127 real pages: 60 RecordGold pages (24 teklia_dai_cretdhi, 32 recordgold_production_train_v1, 4 recordgold_evaluation_val_v1), 60 parish master pages (15 each from Embrun, Oka, Montebello and the Histoire de Saint-Jacques book), and the seven review proxies under private/triage/measured/2026-08-22_005469606_62-68 as a control, sampled by the fixed seed designator-survey-2026-09-06. The per-page 256-bin histograms and the border/interior histograms at band widths 250, 500 and 1000 bp were dumped once and every candidate rule scored offline against them; those dumps reproduce the 127-page survey's own mode, mean, border and interior figures on all 127 pages at all three band widths, which is what ties these numbers to that survey's material. Four SYNTHETIC control pages, built the way pipeline/2_designator/test_structure.py builds them, were scored beside them and are marked SYNTHETIC wherever their numbers are quoted. The calibration tables are in pipeline/2_designator/CONTRACT.md under 'The background inference, calibrated on 127 pages'"
 corpus = "127 real photographed and scanned pages, 1.2 to 27.7 megapixels, from four parish registers and one expert OCR corpus, in three capture conditions -- photographed register openings with a black surround, flatbed-style scans, and a printed book. It is the first sample this project has taken that is not one capture session, and it is still not the corpus the pipeline will run on: no page here passed through pipeline/1_exemplar, 54 of the 127 carry no DPI tag, and the three RecordGold sets overlap heavily (575 of 688 teklia filenames also appear in recordgold_production_train_v1), so the 60 RecordGold pages are 60 draws from one corpus and not from three"
 sample_unit = "page"
 sample_count = 127

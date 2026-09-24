@@ -137,7 +137,7 @@ def test_a_declared_truncated_reading_never_carries_a_complete_truncation_record
     not the engine's stop-reason), over text that looks clean by every computed
     signal -- nothing about *why* the fixture declares this reading failed is
     expressed in its shape. The published record must not say the opposite of
-    what it declares: HANDOFF.md is explicit that "outcome == 'truncated'
+    what it declares: CONTRACT.md is explicit that "outcome == 'truncated'
     therefore means 'not established complete'", and the truncation field is
     where a confirmed cut-off and an honest ambiguity are told apart, never
     where the record contradicts its own outcome."""

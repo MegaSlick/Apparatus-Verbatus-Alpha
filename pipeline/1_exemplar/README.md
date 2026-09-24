@@ -16,4 +16,4 @@ is bound into `run.json`'s self-hash, checked again at the Exemplar/Designator
 boundary, and carried to the Armarium export. No transfer, pod, or real source data
 is part of this stage.
 
-Read [HANDOFF.md](HANDOFF.md) for the artifact contract.
+Read [CONTRACT.md](CONTRACT.md) for the artifact contract.

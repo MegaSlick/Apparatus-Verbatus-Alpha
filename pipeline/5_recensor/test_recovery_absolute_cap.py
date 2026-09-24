@@ -4,7 +4,7 @@ Spec 09's third test: "loop 4 cannot be requested (cap enforced at the request
 boundary, not by convention)". The walking skeleton's scenario driver cannot
 exercise this directly -- `wants_recovery` in `run.py::main` only ever wants a
 recovery on an act's very first pass (`used_total == 0`), by construction
-(HANDOFF.md: "the walking skeleton's synthetic proposer always agrees with the
+(CONTRACT.md: "the walking skeleton's synthetic proposer always agrees with the
 declared fixture"), so no scenario ever drives a real act to a second, third,
 or fourth recovery request through the ordinary pipeline. `recovery_state`'s
 own accounting (`pipeline/5_recensor/run.py`, the `len(ordered_requests) >

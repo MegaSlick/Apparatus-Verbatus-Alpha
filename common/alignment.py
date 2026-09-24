@@ -355,7 +355,7 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
     now carries. Two *different* low-entropy chair responses at exactly
     `max_character_pairs` measure 283.9 s and still reach the deadline; no value
     closes that without costing minutes per (page, chair). Closing it needs the
-    matcher, and `pipeline/3_attestatores/HANDOFF.md` records both the
+    matcher, and `pipeline/3_attestatores/CONTRACT.md` records both the
     measurements and the design that would.
     """
     witness = markup_text_view(witness_raw)

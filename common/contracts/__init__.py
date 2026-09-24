@@ -1,6 +1,6 @@
 """The one executable authority for `skeleton.v1`.
 
-Each stage's HANDOFF.md describes what that stage owns and links here; none of them
+Each stage's CONTRACT.md describes what that stage owns and links here; none of them
 carries a competing copy of the schema, because two copies of a contract is one
 contract and one thing that goes stale. The canonical DATA_CONTRACT.md is reserved
 until specs 01-03 have stabilized and can be written from observed behaviour rather

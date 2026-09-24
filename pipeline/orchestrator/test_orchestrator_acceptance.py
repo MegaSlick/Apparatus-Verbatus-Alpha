@@ -137,8 +137,8 @@ def _perlector_dissent():
 # second recovery round.
 HAPPY_SNAPSHOT_FILES = 100
 REVIEW_SNAPSHOT_FILES = 111
-HAPPY_RUN_TREE_DIGEST = "94c4c489af807e84079809cdda7251a3a9481db310772cfd41923e8b6c9da016"
-REVIEW_RUN_TREE_DIGEST = "f433020ff35348a85acb0d66ba9dcb7ffc267caa715ea2aa2eb4cd9a45e31fc5"
+HAPPY_RUN_TREE_DIGEST = "2d99333da1fa44ac7112ada80ef3918fbbcbcbf448eeb69ddc66185a38f376fb"
+REVIEW_RUN_TREE_DIGEST = "1b73711af12fbedc482ed294dd4c80c67a47bc11da69b1ae1d63e8e1c5f08d45"
 
 
 def orchestrate(
@@ -3827,7 +3827,7 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     """The success path `_no_readable_text_evidence` exists for, exercised for real.
 
     No producer in this build writes `no_readable_text_evidence_ref` today
-    (HANDOFF.md's named cross-stage gap), so this forges a blank proof onto an
+    (CONTRACT.md's named cross-stage gap), so this forges a blank proof onto an
     accepted review's own inputs the same way the sibling refusal test above
     forges an empty reading -- standing in for whatever real blank-proof
     artifact a future Recensor contract produces.
@@ -3908,10 +3908,10 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
 
     Unlike `perlectio_ref` and `recensor_ref`, `evidence_ref` is never read,
     stage-checked or kind-checked -- no `blank-proof` artifact kind exists yet
-    to check it against (HANDOFF.md's named gap). Without this refusal, naming
+    to check it against (CONTRACT.md's named gap). Without this refusal, naming
     the accepted (now-emptied) Perlectio itself as `no_readable_text_evidence_ref`
     passes: the reading whose silence is in question stands in as proof of it,
-    defeating HANDOFF.md's whole argument for the field ("An accepted review is
+    defeating CONTRACT.md's whole argument for the field ("An accepted review is
     evidence that the Recensor accepted a reading; it is not evidence that the
     page was blank"). Reproduces audit-d finding F4's measurement.
     """
@@ -5600,7 +5600,7 @@ def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_
     that no region was cut -- and no page reason mentions edge ink any more.
     If a future fixture page gains ink near its edge, this test fails and the
     edge path's end-to-end proof comes back with it. The gap is written into
-    `pipeline/1_ink_map/HANDOFF.md`.
+    `pipeline/1_ink_map/CONTRACT.md`.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "structure-failure")
