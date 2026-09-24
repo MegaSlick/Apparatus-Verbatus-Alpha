@@ -15,9 +15,11 @@ pod, the boot checks and the default upload target are local stand-ins, so you c
 practise the whole flow without a bill. Every screen says "fixture" where a real run
 would name a real resource. The first real run needs the project lead's approval.
 
-The one exception is `upload --network-volume`, which really sends files to a RunPod
-network volume — only the files named by the sealed submission record — and
-`fetch-run`, which reads them back.
+Two words really reach a RunPod network volume:
+
+- `upload --network-volume` sends only the files named by the sealed submission record.
+- `fetch-run` brings back a pod-written run tree and the launch evidence you name; it never
+  fetches the uploaded images or their manifest.
 
 ## The fifteen words
 
@@ -43,9 +45,12 @@ any time to check on things.
 | `spend show` | Shows the reviewed ceilings and hard-stop floor, then saved balance observations and notification-only alert outcomes. | No — it reads the policy and immutable local receipts only; it does not contact a provider or edit the policy. |
 
 **The normal order.** `ingest` and `upload` need no rented machine, so do them first:
-`ingest` the submitted folder, work its queue with `triage`, `upload` the images. Then
-`launch`, `boot`, `run`, `fetch-run` to bring the pod-written tree home (`export` reads a
-local tree), `export`, `backup`, and `close` the moment you are done. Use `review` to read
+`ingest` the submitted folder, work its queue with `triage`, `upload` the images.
+
+- **On this computer:** `run`, then `export` and `backup`.
+- **On a pod:** `launch`, `boot`; the pod runs `python -m operations.pod.pod_run`, which
+  writes its tree to the volume; `fetch-run` brings that tree home (`export` reads only a
+  local tree); then `export`, `backup`, and `close` the moment you are done. Use `review` to read
 a run tree without changing it, `advance` only once you have decided to pass a sealed
 boundary, and `status` whenever you are unsure what is happening or costing money.
 
@@ -218,8 +223,10 @@ A run that billed a card has more record than its run tree:
   home" lists each key and its derivation.
 
 Name them with `--evidence-key <key>` (repeatable; volume-root-relative, no leading `/`),
-or pass `--launch-receipt <path>` to derive every key from the saved launch receipt's
-sealed `docker_start_cmd`; the keys are printed before the fetch. The double-click route
+or pass `--launch-receipt <path>` to derive the nine token-bound keys from the saved launch
+receipt's sealed `docker_start_cmd`; the keys are printed before the fetch. The receipt
+cannot derive `pod-transfer-journal.json`: when the launch transferred a submission, also
+pass `--evidence-key pod-transfer-journal.json`. The double-click route
 prompts for all ten. A receipt for a different volume or run, or one that proves no run (a
 hold-only boot), is refused by name. An evidence object that cannot be fetched is named in
 the receipt and never fails the run tree. The receipt records the prefixes and keys the

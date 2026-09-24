@@ -646,8 +646,10 @@ Record the pod id, timestamps, provider responses, and whether each item is **ve
   receipt bound to lease, pod and deadline with no capability material.
 - [ ] Demonstrate the timer-startup backstop: with the timer unable to construct a
   provider, the laptop supervisor detects and closes the `EXITED` pod.
-- [ ] Run the real preflight (GPU, driver, capability, VRAM, disk, chair cache, smoke read)
-  once each real row is stamped proven. **Record `nvidia-smi`'s driver and CUDA version
+- [ ] Run the real preflight (GPU, driver, capability, VRAM, disk, chair cache, smoke read).
+  The smoke preflight may launch the still-unproven rows for qualification; afterwards run
+  `python -m operations.serving.qualify` on its report and evidence, review the candidates,
+  and stamp only the measured tier's rows proven. **Record `nvidia-smi`'s driver and CUDA version
   before `uv sync --group pod`**: `torch 2.13.0` needs CUDA 13, so an older driver should
   be refused before the download. Record whether the sync completed and how long it took,
   whether each chair loaded under `vllm 0.27.1`, and per chair whether the witness was read
