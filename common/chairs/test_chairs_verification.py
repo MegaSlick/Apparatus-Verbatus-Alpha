@@ -131,7 +131,7 @@ def test_a_complete_match_verifies_and_fetches_exactly_the_pinned_paths(hf_world
 def test_a_second_ensure_hashes_each_complete_cache_file_once_and_fetches_nothing(
     hf_world, monkeypatch
 ):
-    """The re-verification GOVERNANCE 6 asks for has to be survivable.
+    """The re-verification principle 6 asks for has to be survivable.
 
     A registry that leaves its own bookkeeping inside the snapshot directory
     passes the first verification and then refuses every one after it, because

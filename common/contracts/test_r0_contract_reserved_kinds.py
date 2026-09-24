@@ -159,8 +159,8 @@ def test_a_witness_confidence_value_outside_the_closed_ordinal_set_is_refused():
         "ordinal validation rule for confidence and none is wired into the Attestatores "
         "self-report path yet"
     )
-    # Strengthened at the chain-end CodeRabbit pass: the refusal must be the
-    # confidence rule's own, not some unrelated recording problem.
+    # The refusal must be the confidence rule's own, not some unrelated
+    # recording problem.
     assert "confidence" in recording_problem
 
 

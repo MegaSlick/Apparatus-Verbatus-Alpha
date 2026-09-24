@@ -213,7 +213,7 @@ def test_a_variance_pass_can_never_become_an_act_s_reading_of_record():
     A variance experiment and a reading of record can look at the very same act.
     What must never happen is that one of the experiment's passes is read back
     as the act's established reading -- that would be a picker assembled out of
-    identities (GOVERNANCE 3), and it would be one nobody wrote on purpose.
+    identities (principle 1), and it would be one nobody wrote on purpose.
 
     `common.stage.latest_attempt` is the one place "current" is derived, and it
     recomputes the attempt identity from the subject, the operation and the

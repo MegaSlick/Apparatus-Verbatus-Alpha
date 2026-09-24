@@ -16,7 +16,7 @@ from common.contracts.identities import attempt_id
 
 DEFAULT_RECOVERY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "recovery.toml"
 
-# Tyrel's ruled ceiling. The configuration may choose a lower run budget, but it
+# The project lead's ruled ceiling. The configuration may choose a lower run budget, but it
 # may not turn three bounded recovery rounds into a larger one.
 RULED_ABSOLUTE_CAP: Final = 3
 

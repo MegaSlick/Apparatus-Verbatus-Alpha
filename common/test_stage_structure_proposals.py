@@ -27,7 +27,7 @@ moment (`fixture_serving_details`), since nothing was served. That is honest for
 what is under test — the verifier checks the binding between a seal, a receipt,
 a page's status and the answer a chair returned, and it never claims to check
 that an endpoint existed. Endpoint and start moment are receipt-only fields
-(GOVERNANCE 6) and no stage artifact carries them.
+(principle 6) and no stage artifact carries them.
 
 **The mutation-checked happy path.** One builder produces the honest tree; every
 refusal test below is that same builder with exactly one element changed, so a
@@ -870,7 +870,7 @@ def test_the_same_fixture_ingress_seal_without_a_call_falls_to_the_fixture_floor
 
 
 def test_a_seal_attributing_the_structural_call_to_a_witness_chair_is_refused(real_root):
-    """No chair but the structure chair marks out structure (hard rule 8, GOVERNANCE 6)."""
+    """No chair but the structure chair marks out structure (principle 1, principle 6)."""
     designator = _real_designator(real_root)
     witness = designator.registry.resolve("attestator_1")
     assert isinstance(witness, ChairIdentity)
@@ -963,7 +963,7 @@ def test_the_engine_call_is_a_closed_record_bound_to_the_runs_sealed_decoding(
     `reading_of_record` is the interesting one: it is a perfectly valid sealed
     decoding section — the one every Attestator reads under — and naming it here
     would report a posture the structure pass did not run under, which is
-    GOVERNANCE 10's confusion of a claim with a measurement rather than a
+    principle 8's confusion of a claim with a measurement rather than a
     malformed field.
     """
     designator = _real_designator(real_root)

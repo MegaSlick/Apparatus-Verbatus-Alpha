@@ -15,7 +15,7 @@ ink. `DATA_CONTRACT.md` is written later, from what specs 01–03 actually taugh
 | `identities.py` | the six identities, derived from their bindings and therefore verifiable |
 | `outcomes.py` | the outcome algebra — three classes, nine vocabularies, one total transition table |
 | `envelope.py` | what every artifact wears, and what a consumer refuses at a handoff |
-| `approval.py` | the one shape a Tyrel-approval is recorded in |
+| `approval.py` | the one shape an approval is recorded in |
 | `stages.py` | the stage names and the eight handoffs |
 | `errors.py` | the refusals, kept separate so a stage can catch what it means to catch |
 
@@ -30,7 +30,7 @@ derivation is able to do, rather than something code has to remember.
 record and never into a manifest category or a character of text. An act whose
 every chair is `failed` still reaches the Perlector, which reads the ink. If you
 ever find yourself giving a witness outcome a terminal category, you are building a
-picker under an accounting name — GOVERNANCE 3, and CLAUDE.md's eighth hard rule.
+picker under an accounting name — principle 1.
 
 **An outcome with no class is fatal, not a warning.** Harvest invariant #10.
 `check_algebra_is_total()` proves both mappings total rather than trusting them, so

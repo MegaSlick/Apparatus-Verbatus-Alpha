@@ -349,7 +349,7 @@ def load_model_card_metadata(path: Path) -> dict[str, object] | None:
 class ChairRegistry:
     """Resolve only the requested role, then verify only its pinned artifact.
 
-    GOVERNANCE 6 applies to the values returned here as well as their consumers.
+    Principle 6 applies to the values returned here as well as their consumers.
     """
 
     def __init__(
@@ -402,8 +402,7 @@ class ChairRegistry:
         the base's revision and digest be checked — and without that a receipt could
         name the right base role at a stale revision, losing the identity of the base
         artifact that actually answered. `_cache_descriptor` already refuses that exact
-        drift for the cache; this was the weaker door on the same fact. Found by
-        CodeRabbit on pull request 16.
+        drift for the cache; this was the weaker door on the same fact.
         """
 
         self._require_current_identity(identity)

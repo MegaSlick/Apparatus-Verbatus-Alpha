@@ -65,7 +65,7 @@ namespace and its own extractor strips the prefix before comparing.
 envelope, which the prompt this pipeline now sends never asks for.  It is
 accepted so that retained history still parses, and it carries the finding
 `retired-output-envelope` so that a live response arriving in a shape nobody
-asked for is visible rather than silent (GOVERNANCE 2).
+asked for is visible rather than silent (principle 2).
 
 ## Departures from the vendor's own flattener, and why each
 
@@ -77,7 +77,7 @@ reading.
 1. **Marked-up text is kept, not deleted.**  The vendor removes `Description`,
    `Deletion`, `Illegible` and `Gap` elements *with their contents* by regex
    before parsing.  Deleting a struck-out or damaged word from the reading
-   loses ink this project exists to capture (GOALS 1).  Every one of the six
+   loses ink this project exists to capture (goal 2).  Every one of the six
    markup kinds in `MARKED_SPAN_KINDS` is instead kept as ordinary text, and
    the code-point range it occupies in the returned text is recorded in
    `marked_spans`, so a consumer that wants the vendor's flattening can
@@ -109,7 +109,7 @@ reading.
    response readable, the finding `stray-markup-escaped` counts the characters,
    because `&c.` is a routine abbreviation in these registers and refusing a
    whole page over one ampersand loses ink this project exists to capture
-   (GOALS 1).  Everything structural is still refused: nothing here reorders,
+   (goal 2).  Everything structural is still refused: nothing here reorders,
    trims, closes, or defaults a malformed answer, and a response that still
    will not parse is `failed` with the parser's own reason for what survived
    the escape and the count of what it escaped, its bytes retained under their
@@ -128,11 +128,11 @@ reading.
    draw: a section inside a nested `Page` belongs to that page's own walk, and
    a section inside another section is walked by the section enclosing it.  The
    vendor's `.//` queries emit each of those twice, and a doubled reading is
-   ink the response never wrote (GOALS 2).  Text a `Page` carries outside every
+   ink the response never wrote (goal 1).  Text a `Page` carries outside every
    section of its own is outside the vendor's transcription and stays outside
    it -- but the page says so, through the finding
    `page-text-outside-sections` and its page ordinal, so ink the response put
-   out of the walk's reach is visible rather than simply absent (GOVERNANCE 2).
+   out of the walk's reach is visible rather than simply absent (principle 2).
 
 Kept from the vendor unchanged: the walk scope (`Page` descendants, then their
 `Header`, `Body` and `Footer` descendants in that fixed order regardless of the
@@ -203,14 +203,14 @@ DOCUMENT_SHAPES: Final = frozenset({"historical-document", "plain-text", "output
 # `xml.etree`'s own parser is iterative and will happily build a tree thousands
 # of elements deep; this flattener is recursive, so without a declared bound a
 # deeply nested answer would exhaust the interpreter stack and leave a
-# `RecursionError` where a named `failed` record belongs (GOVERNANCE 2). The
+# `RecursionError` where a named `failed` record belongs (principle 2). The
 # grammar's own deepest legal path -- HistoricalDocument > Page > Body >
 # RecordEntry > List > Item > Line > Above > Emphasis -- is nine.
 _MAX_DOCUMENT_DEPTH: Final = 256
 # Whitespace, for the purpose of collapsing an indented answer, means ASCII
 # whitespace and nothing else. A non-breaking space or any other Unicode space
 # a model writes is a character it wrote, and this parser does not rewrite it
-# into a plain space (GOALS 2).
+# into a plain space (goal 1).
 _ASCII_WHITESPACE: Final = " \t\n\r\f\v"
 _WHITESPACE_RUN: Final = re.compile(f"[{re.escape(_ASCII_WHITESPACE)}]+")
 # What this parser can conclude.  `not-requested` and `pending` are states of
@@ -292,7 +292,7 @@ def churro_prompt_view(variant: str) -> dict[str, str]:
 
 
 def churro_prompt_provenance(variant: str) -> dict[str, Any]:
-    """The vendor code identity to record beside the model identity (GOVERNANCE 6)."""
+    """The vendor code identity to record beside the model identity (principle 6)."""
     entry = _variant(variant)
     provenance: dict[str, Any] = {"prompt_variant": variant}
     provenance.update({field: entry[field] for field in _PROVENANCE_FIELDS})
@@ -525,7 +525,7 @@ def _flatten_document(root: ET.Element) -> dict[str, Any]:
         if outside:
             # Text no section of this page encloses is outside the vendor's
             # transcription; saying so is what keeps it from disappearing
-            # behind a successful state (GOVERNANCE 2, departure 5).
+            # behind a successful state (principle 2, departure 5).
             findings.append({"kind": "page-text-outside-sections", "page_ordinal": page_index})
         for section_name in PAGE_SECTIONS:
             for section in [element for name, element in owned if name == section_name]:

@@ -44,9 +44,9 @@ class IdentityRefusal(SchemaRefusal):
 
 
 class ApprovalRefusal(SchemaRefusal):
-    """An action that requires Tyrel's approval-record artifact does not carry one.
+    """An action that requires the project lead's approval-record artifact does not carry one.
 
-    GOVERNANCE: only Tyrel approves an exclusion. A claimed approval with no
+    Only the project lead approves an exclusion. A claimed approval with no
     artifact is no approval, so the schema refuses rather than trusting the claim.
     """
 

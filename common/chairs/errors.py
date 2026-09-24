@@ -1,6 +1,6 @@
 """Closed refusals for the model-chair boundary.
 
-GOVERNANCE 6: Every stored reading carries the resolved identity and revision of the
+Principle 6: Every stored reading carries the resolved identity and revision of the
 model that produced it, at the moment it was produced.  The registry therefore
 refuses a mismatch rather than changing a role, revision, cache, adapter, or recipe
 to make a request succeed.

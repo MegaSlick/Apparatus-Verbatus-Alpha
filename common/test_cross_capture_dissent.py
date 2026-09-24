@@ -8,7 +8,7 @@ eight claims for exactly this surface (tests 44-51), of which the composed
 fixture pinned parts of two.  "No variance number", "every unordered pair
 including failures", and "the caveat says instability is not accuracy" were
 sentences in a report rather than properties anything measured -- which is
-GOVERNANCE 10's own distinction between a goal and a claim.
+principle 8's own distinction between a goal and a claim.
 
 Named for what each proves rather than for its consult number, since the
 numbering is the consult's index and this file is the repository's evidence.
@@ -110,7 +110,7 @@ def test_the_caveat_says_instability_is_not_accuracy_and_agreement_is_not_proof(
 
 
 def test_the_caveat_cannot_be_replaced_reworded_or_dropped_by_a_consumer_path():
-    """The instrument may not soften its own warning (GOVERNANCE 10)."""
+    """The instrument may not soften its own warning (principle 8)."""
     with pytest.raises(SchemaRefusal):
         _record(caveat="Cross-capture disagreement indicates a likely misreading.")
     # Omitted rather than contradicted: the builder supplies the one wording.
