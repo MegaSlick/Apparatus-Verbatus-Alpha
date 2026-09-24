@@ -96,13 +96,14 @@ def test_the_undamaged_page_and_its_own_ledger_row_verify(sealed):
 
 
 def test_a_page_checked_against_another_filename_ledger_row_refuses(sealed):
-    """The filename is the citation link (ruling 1), so it is checked, not carried.
+    """The filename is the citation link, so it is checked, not carried.
 
     A stage that walks its own list of sources and its own list of pages, and pairs
     them up wrongly, produces exactly this: a sealed page verified against a row
     naming a different file. Everything downstream of it still validates, because
-    every digest in the chain is intact — it is only the *link back to Tyrel's own
-    file* that is now wrong, which is the one thing no later check looks at.
+    every digest in the chain is intact — it is only the *link back to the
+    submitter's own file* that is now wrong, which is the one thing no later
+    check looks at.
     """
     tree, run, source, page = sealed
     other_name = dict(source, relative_path="a-different-scan.png")
@@ -569,7 +570,7 @@ def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it()
 
     Refusing on version drift would make every archived run unverifiable on the
     next routine Pillow upgrade, so the byte comparison stays the property and
-    the versions stay provenance (GOVERNANCE 6). But an operator reading "not
+    the versions stay provenance (principle 6). But an operator reading "not
     reproducible" alone would go looking for forgery, and a decoder upgrade is
     the ordinary cause — so when the recorded versions differ from this host's,
     the refusal says which ones.
@@ -617,8 +618,7 @@ def test_an_embedded_triage_row_is_bounded_before_its_pairwise_geometry_check():
     """This boundary restates the pre-door row schema because `common/` may not
     import the numbered pipeline, and the restatement had dropped the part cap. The
     overlap check below it compares every pair, so an unbounded parts list bought
-    quadratic work on a record this boundary exists in order not to trust. Found by
-    CodeRabbit."""
+    quadratic work on a record this boundary exists in order not to trust."""
     from common.contracts.stages import MAX_TRIAGE_SPLIT_PARTS
     from common.exemplar_boundary import verify_triage_derivative
 
@@ -650,7 +650,7 @@ def test_the_boundarys_restated_triage_row_schema_matches_the_pre_door_contract(
 
     # Anchored to the function, not to the first `required = ` in the file: there
     # are two, and an unanchored search would quietly compare the wrong one if they
-    # ever changed places. Found by CodeRabbit.
+    # ever changed places.
     assert field_set(
         boundary_source, r"def _validate_embedded_triage_row.*?    required = "
     ) == field_set(manifest_source, r"_ROW_FIELDS: Final = ")

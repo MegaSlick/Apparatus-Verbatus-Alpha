@@ -952,7 +952,7 @@ def build_correspondence_proposal(
             # The whole component is withheld. Each member is named for what the
             # register says of it, and a member this run leaves without any
             # correspondence is named too -- an unnamed member is a lost one
-            # (GOVERNANCE 2). A member that already resolves keeps the
+            # (principle 2). A member that already resolves keeps the
             # correspondence it has and needs no finding.
             plans.append(
                 {

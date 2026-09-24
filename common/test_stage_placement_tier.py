@@ -2,7 +2,7 @@
 
 SPEC_A §5: the flag defaults to ``None`` and is not sealed into ``config_digest``
 or ``sealed_config_digests`` — the receipt records the caps that actually bound
-the serving moment (GOVERNANCE 6, "the record itself protects the past"), it
+the serving moment (principle 6, "the record itself protects the past"), it
 does not fold that fact into the reproducibility contract those digests exist
 to protect. `serving_mode_for` (operations/serving/client.py) is what actually
 requires it when a live catalogue is selected; this suite covers only the

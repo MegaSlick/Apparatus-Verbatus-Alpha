@@ -13,7 +13,7 @@ from common.contracts.errors import SchemaRefusal
 
 _FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment"})
 # The reader's own report state, carried beside its layers so an empty list can
-# never be read as confidence (independent audit of 2026-09-10, F2). Mirrors
+# never be read as confidence (finding F2). Mirrors
 # pipeline/4_perlector/annotations.py's ASSESSMENT_STATES exactly, for the same
 # dependency-direction reason as `_CONFIDENCE` and `_GAP_POSITIONS` above.
 _ASSESSMENT_STATES = frozenset({"assessed", "not-assessed", "malformed"})
@@ -77,8 +77,7 @@ def validate_assessment_record(assessment: Any, subject: str = "canonical uncert
     two keys out of it, and `common/perlector_audit.validate_chain` read the
     state without asking anything -- so a record saying `assessed` while
     carrying a problem chose the relaxed span rule in one place and was refused
-    in another (found by CodeRabbit reading against the project's own
-    configuration).
+    in another.
     """
     if not isinstance(assessment, dict) or set(assessment) != _ASSESSMENT_FIELDS:
         raise SchemaRefusal(f"{subject} has no closed assessment record")

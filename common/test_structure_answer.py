@@ -77,7 +77,7 @@ def test_a_huge_json_integer_literal_is_invalid_json_not_an_escaping_value_error
     caller can raise or disable (`-X int_max_str_digits`, `PYTHONINTMAXSTRDIGITS`),
     and under a raised one the 4,301-digit body this used to hard-code decodes
     cleanly and the parser answers `unverified-response-schema` -- a failure
-    with no production defect behind it (CodeRabbit on PR #117). The positive
+    with no production defect behind it. The positive
     control below proves the limit this test relies on is the one in force.
     """
     original = sys.get_int_max_str_digits()
@@ -211,7 +211,7 @@ def test_malformed_act_when_label_is_explicit_json_null():
     """`label` is an optional *string*: present-as-string, or absent. An
     explicit `null` is neither, and is refused rather than read as a synonym
     for absent -- SPEC_D §1.2 declares the shape, and this module does not
-    normalize a value it does not contain (GOVERNANCE 7)."""
+    normalize a value it does not contain (principle 3)."""
     body = json.dumps(
         {
             "schema": STRUCTURE_ANSWER_SCHEMA,
@@ -362,7 +362,7 @@ def test_spans_locate_each_act_including_zero_width_empty_ones():
 
 
 def test_a_page_of_only_empty_acts_never_produces_a_bare_separator():
-    """The exact defect `page_join`'s own docstring names (CodeRabbit W44):
+    """The exact defect `page_join`'s own docstring names:
     joining every payload including the empty ones gave `payload="\\n"` under
     a claimed reading of characters nobody delivered."""
     body = _answer(

@@ -1,6 +1,6 @@
 """Chandra's own layout grammar: the vendor's prompt bytes, and a reader for its answer.
 
-Tonight's ruling (Tyrel, 2026-09-06) is that each witness runs as its developers
+The ruling in force is that each witness runs as its developers
 intended: the vendor's preprocessing, prompt bytes, message shape, generation
 values and output grammar are adopted verbatim and pinned by digest, and the
 vendor's harness is not. This module is the Chandra half of the grammar end of
@@ -26,10 +26,10 @@ that line. It carries two things and nothing else:
    `common/test_vendor_parity.py` pins that). It is a re-expression, not a
    copy, and it departs from the vendor in five recorded places -- see
    **Departures** below. Every departure moves in one direction: the vendor
-   drops or substitutes, and we retain and name (GOVERNANCE 2).
+   drops or substitutes, and we retain and name (principle 2).
 
 **What this module does not do.** It establishes no text and selects nothing
-(GOVERNANCE 3, hard rule 8). It is a grammar: bytes in, one named reading of
+(principle 1). It is a grammar: bytes in, one named reading of
 those bytes out, with every fact it could not resolve carried beside the
 reading as a finding rather than resolved for it. The adapter that decides
 what a chair is asked and what a Testimonium records is
@@ -55,7 +55,7 @@ condition and it is discharged here and in the commit that adds this file
   of a few pixels in the page's top-left corner, not the full image the message
   claims. Either way a value the model never reported would be published as
   though it had been, and the print goes to a stdout nobody retains. Under
-  GOVERNANCE 2 and 10 the block is retained with its geometry unresolved and
+  principle 2 and principle 8 the block is retained with its geometry unresolved and
   the fact named. `block_page_bounds` returns `None` for it, so no caller can
   reach a substituted rectangle by accident.
 * **A `Blank-Page` block is retained.** The vendor `continue`s past it in both
@@ -77,8 +77,8 @@ condition and it is discharged here and in the commit that adds this file
   `<table>`, or a line of ink it left between two divs, would otherwise yield
   a page that parsed cleanly -- `findings == []`, `parse` complete -- with
   those words absent from `page_text` and from every span. That is a missed
-  act arriving under a successful status, which GOALS 1 rates worst and
-  GOVERNANCE 2 forbids. It is a `content-outside-blocks` finding carrying the
+  act arriving under a successful status, which goal 2 rates worst and
+  principle 2 forbids. It is a `content-outside-blocks` finding carrying the
   number of non-whitespace characters that were outside. The count and not the
   text, for the reason the `malformed-bbox` finding quotes under a bound: the
   response bytes are retained whole upstream and are where the words live,
@@ -462,7 +462,7 @@ def _quoted(value: str | None) -> dict[str, Any]:
 # been read as a number by a rule whose refusal says it is not a plain decimal
 # integer. `int("7\n")` is 7, so nothing was ever misread; the claim in the
 # record was simply false, and a check that does not enforce what it states is
-# the kind of thing GOVERNANCE 10 is about.
+# the kind of thing principle 8 is about.
 #
 # The digit count is bounded too. A valid component is at most four digits
 # (`BBOX_SCALE` is 1000), so a cap of 16 is already generous headroom; without
@@ -494,7 +494,7 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
     component above `BBOX_SCALE` means the model is not scaling to the
     denominator the prompt gave it, and a box quietly clamped to the page edge
     would publish a plausible rectangle for a reading that had already gone
-    wrong -- the failure GOALS 2 rates worst.
+    wrong -- the failure goal 1 rates worst.
 
     Each refusal names which rule it failed, so a page of malformed boxes says
     whether the model is scaling wrongly or formatting wrongly.
@@ -859,7 +859,7 @@ def _count_top_level_divs(html: str) -> int:
 def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
     """Chandra's layout answer, read whole -- or one named refusal.
 
-    Nothing here repairs, reorders, trims or defaults an answer (GOVERNANCE 7).
+    Nothing here repairs, reorders, trims or defaults an answer (principle 3).
     A block whose geometry cannot be resolved is still a block, and the fact
     that it could not be resolved is a finding beside it; the caller decides
     what an unplaced block means for its own record, and the retained bytes
@@ -995,7 +995,7 @@ def _seal() -> None:
     means a tag, attribute or label was edited in one of the two places it
     appears. The `0-1000` sentence and `BBOX_SCALE` disagreeing means every
     reported box is scaled by a denominator the model was never told about,
-    which is the silent wrong reading GOALS 2 rates worst. An `AssertionError`
+    which is the silent wrong reading goal 1 rates worst. An `AssertionError`
     would vanish under `python -O`; these raise.
     """
     if len(ALLOWED_TAGS) != 36:

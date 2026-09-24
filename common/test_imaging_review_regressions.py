@@ -1,10 +1,8 @@
 """Regressions from an outside review of `common/imaging.py`.
 
-Source: "GPT-6 review kit, 2026-09-06, Tyrel" — proposed by an outside reviewer
-reading `main` on the web, with no checkout, and delivered as
-`workbench/raw/gpt6-review-2026-09-06/`. The kit records its own licence as
-Apache-2.0 (`ATTRIBUTION.md`, `LICENSE-APACHE-2.0.txt`), which permits this
-carry; `cleanroom/README.md` is why it is named here rather than merged in
+Source: "GPT-6 review kit" — proposed by an outside reviewer reading `main`
+on the web, with no checkout. The kit records its own licence as
+Apache-2.0, which permits this carry, named here rather than merged in
 silently. The fixtures, the independent PNG writer and the case list are the
 reviewer's; the assertions below were re-run against the real module and the
 ones the fix answered differently are adjusted here, each with its reason.
@@ -142,8 +140,8 @@ def test_grayscale_crop_preserves_a_profile_with_no_system_profile_to_borrow() -
     The reviewer's case skips wherever no valid grayscale profile happens to be
     installed, which on a CI worker is most of the time — and a regression that
     skips on the machine that gates the merge is not a regression test
-    (GOVERNANCE 10: a metric that cannot be measured is a failure, not a pass).
-    Found by CodeRabbit. The profile here is a minimal, synthetic, structurally
+    (principle 8: a metric that cannot be measured is a failure, not a pass).
+    The profile here is a minimal, synthetic, structurally
     valid grayscale ICC header rather than a vendored system asset: what is
     under test is that the crop carries the bytes it was given, not that any
     colour management interprets them.
@@ -218,7 +216,7 @@ def test_grayscale_rows_refuses_a_transparent_page_rather_than_counting_it_as_in
     sits under it — usually zero, which every reader in this pipeline counts as
     ink. Compositing against white instead would be this module deciding what
     colour the paper is. Both are policy, so the page is held with a named
-    refusal instead. Found by CodeRabbit reviewing the transparency fix.
+    refusal instead.
     """
     tRNS_page = _png(2, 1, 0, b"\0\0\xff", _chunk(b"tRNS", struct.pack(">H", 0)))
     with pytest.raises(ValueError, match="not settled"):
@@ -233,7 +231,7 @@ def test_grayscale_rows_refuses_a_transparent_page_rather_than_counting_it_as_in
 def test_grayscale_rows_still_reads_a_page_whose_alpha_channel_says_nothing() -> None:
     """The refusal is about transparency, not about the presence of a channel: a
     fully opaque alpha channel loses nothing, and refusing it would cost a page
-    for no reading at all (GOALS 1)."""
+    for no reading at all (goal 2)."""
     opaque = BytesIO()
     Image.new("RGBA", (2, 1), (10, 10, 10, 255)).save(opaque, format="PNG")
 
@@ -295,7 +293,7 @@ def _invalid_png(case: str) -> bytes:
         ("invalid-compression-method", "compression method 1"),
         ("invalid-filter-method", "filter method 1"),
         ("trailing-data", "follow IEND"),
-        # Two cases beyond the kit's list, found by CodeRabbit reviewing the fix.
+        # Two cases beyond the kit's list.
         ("image-data-before-ihdr", "before its IHDR"),
         ("bytes-after-the-zlib-stream", "past the end of its own stream"),
         ("second-ihdr", "more than one IHDR"),
@@ -313,7 +311,7 @@ def test_native_decoder_rejects_invalid_internal_png(case: str, message: str) ->
     Adjusted from the reviewer's version in one way: each case asserts the
     *named* refusal rather than any ValueError, because a decoder that refused
     all seven with one message would pass the original test while telling an
-    operator nothing about which fault it found (GOVERNANCE 2).
+    operator nothing about which fault it found (principle 2).
     """
     with pytest.raises(ValueError, match=message):
         decode_grayscale_png(_invalid_png(case))
@@ -349,7 +347,7 @@ def test_every_16bit_mode_scales_rather_than_refusing_the_page(mode: str, byte_o
     Pillow 12.3.0 compiles a callable `point` for `I`, `I;16` and `F` only; the
     three byte-order spellings raise `ValueError("point operation not supported
     for this mode")` before a pixel is read, which `grayscale_rows` re-worded as
-    "not a decodable image" and turned into a dropped page (GOALS 1). Measured,
+    "not a decodable image" and turned into a dropped page (goal 2). Measured,
     not assumed: this parametrisation failed on `I;16L`, `I;16B` and `I;16N`
     before the fix and passes on all four after it.
 
@@ -464,7 +462,7 @@ def test_a_16bit_record_outside_its_own_range_is_refused_rather_than_clamped() -
 
     A record no 16-bit sample can hold was clamped to 0 or 255, which marks a
     pixel the file never named — a reading change made silently, where the two
-    conversions beside it refuse by name. Found by CodeRabbit reviewing this fix.
+    conversions beside it refuse by name.
     """
     image = Image.frombytes("I;16", (2, 1), struct.pack("<2H", 0, 65535))
     image.info["transparency"] = 70000
@@ -476,9 +474,9 @@ def test_a_16bit_record_outside_its_own_range_is_refused_rather_than_clamped() -
 def test_an_index_the_palette_does_not_describe_is_refused_not_counted_as_ink() -> None:
     """`convert("L")` reads an undescribed index as 0, which readers count as ink.
 
-    Found by CodeRabbit reviewing the palette check: skipping such an entry
-    would leave the one silent path through a function whose whole purpose is
-    that nothing on the page is measured without being recorded.
+    Skipping such an entry would leave the one silent path through a function
+    whose whole purpose is that nothing on the page is measured without being
+    recorded.
     """
     page = _palette_page((255, 255), (0, 1))
     page.putdata([0, 7])
@@ -509,7 +507,7 @@ def test_a_palette_that_hides_its_alpha_is_refused_by_name() -> None:
     purpose: no decoder in this stack was measured to produce an RGBA palette
     from a file (PNG, GIF, BMP, TIFF and WebP all return an `RGB` palette, with
     any alpha in `info["transparency"]`), so claiming a reachable page here would
-    be a claim the measurement does not support (GOVERNANCE 10). The guard is
+    be a claim the measurement does not support (principle 8). The guard is
     defence in depth beside the two crop-side callers that already ask the
     palette the same question.
     """
@@ -521,7 +519,7 @@ def test_a_palette_whose_used_entries_are_opaque_still_reads() -> None:
     """The refusal is about a transparent entry the page actually draws with.
 
     An opaque palette reads, and so does a page whose transparent entry nothing
-    on it references — refusing either would cost an act (GOALS 1) for a byte
+    on it references — refusing either would cost an act (goal 2) for a byte
     that changes no pixel.
     """
     assert list(_grayscale_samples(_palette_page((255,) * 4, (0, 1, 2, 3))).tobytes()) == [

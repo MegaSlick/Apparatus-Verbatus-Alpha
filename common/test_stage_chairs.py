@@ -652,8 +652,7 @@ def test_a_field_nothing_validates_is_refused_rather_than_carried(tmp_path):
     # An allowlist says which fields may exist, never which may exist together.
     # `absence` is legal provenance on an absent chair, so the closed schema admits
     # it — and a configured chair carrying one is two contradictory claims about the
-    # same chair, sealed into a reading that still verified. Found by the Terra
-    # review seat, which reproduced it with an absence for a chair that never existed.
+    # same chair, sealed into a reading that still verified.
     with pytest.raises(SchemaRefusal, match="carries an absence record"):
         validate_serving_provenance(
             context,
@@ -667,9 +666,7 @@ def test_a_field_nothing_validates_is_refused_rather_than_carried(tmp_path):
 
 
 def test_a_witness_regime_that_cannot_be_true_is_refused(tmp_path):
-    """Tyrel's 2026-07-30 ruling (courtroom_doctrine.md, formalized in the
-    unbuilt spec_08_perlector.md — this is not in ARCHITECTURE.md, which names
-    no regime/toggle anywhere): the named/blinded toggle is run-level and every
+    """The named/blinded toggle is run-level and every
     Perlectio records its regime. The Perlector writes the field; until this
     check nothing read it back, so a Perlectio claiming a regime that does not
     exist travelled sealed and provenance-checked. Binding it to a real

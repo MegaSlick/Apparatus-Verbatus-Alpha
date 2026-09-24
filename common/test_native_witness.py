@@ -172,7 +172,7 @@ def test_a_span_past_the_end_of_the_retained_text_is_refused():
     """A span is an address into text this record actually holds. Shape alone
     validated `{"start": 0, "end": 10_000}` over a seventeen-character reading:
     a consumer resolving it either crashes or silently quotes less than the
-    witness said, and neither is a retained report (GOALS 5)."""
+    witness said, and neither is a retained report (goal 4)."""
     value = payload()
     value["observed"][0]["span"] = {"start": 0, "end": len(value["payload"]) + 1}
     with pytest.raises(SchemaRefusal, match="runs past the end"):
@@ -621,7 +621,7 @@ def test_the_public_page_seam_actually_reaches_the_retained_response_check():
     re-hashed against their recorded digests. A stray `return` above that call
     made the whole check unreachable while the unit tests stayed green: the
     record then reported a verified retained response nobody had verified
-    (GOVERNANCE 10). This case goes through the public function, so the dead
+    (principle 8). This case goes through the public function, so the dead
     path fails loudly rather than quietly.
     """
     raw = b"retained native response"
@@ -845,7 +845,7 @@ def test_an_unreported_churro_boundary_publishes_unknown_truncation_not_false():
     capture by asking one question -- "is this word a cut-off word" -- and an
     engine that reported *nothing* answered it "no", which the record then
     published as `truncated: false`: a completed boundary nobody observed
-    (GOVERNANCE 10). The live boundary measures three states, and this is the
+    (principle 8). The live boundary measures three states, and this is the
     third: unknown, said so in the basis. Before the fix this payload was
     refused by name, so a live Churro chair whose wire carried no
     `finish_reason` could not publish a page record at all.
@@ -1380,7 +1380,7 @@ def test_native_capture_accepts_a_genuine_blob_reference():
 def test_native_capture_refuses_a_raw_response_reference_that_is_not_a_real_sha256(sha256):
     """A shape check alone (any two non-empty strings) let a malformed or
     forged digest stand as this record's claim to trace back to retained
-    bytes (ARCHITECTURE invariant 2, GOALS 5) -- the same gap `is_sha256`
+    bytes (ARCHITECTURE invariant 2, goal 4) -- the same gap `is_sha256`
     closes everywhere else this pipeline validates a blob reference.
     """
     value = _native_capture()
@@ -1433,7 +1433,7 @@ def test_a_plain_reading_is_the_shape_the_paper_era_harness_expected_and_still_p
 
 
 def test_the_retired_output_envelope_still_reads_and_says_that_it_is_retired():
-    """Retained history parses; a shape nobody asked for is visible (GOVERNANCE 2)."""
+    """Retained history parses; a shape nobody asked for is visible (principle 2)."""
     result = parse_churro_response(b"<output>plain reading</output>")
     assert result["state"] == "parsed"
     assert result["shape"] == "output-element"
@@ -1572,7 +1572,7 @@ def test_a_finding_kind_from_neither_half_is_still_refused_by_name():
 
 
 def test_the_parse_outcome_wins_over_a_repeated_tail_and_the_repetition_is_still_recorded():
-    """As `failed` already did, and the finding stays in `findings` (GOVERNANCE 2).
+    """As `failed` already did, and the finding stays in `findings` (principle 2).
 
     Pinned on the record rather than on a contrived body. What the validator
     must refuse is a capture that carries both facts and lets the repetition
@@ -1904,7 +1904,7 @@ def test_the_vendors_minimum_area_is_not_a_bound_its_own_output_obeys():
     *then* rounds each side to the nearest 28-pixel block, which can land back
     under it. The fixture is the vendor's own answer for a 100x80 crop; a
     minimum-area rule here would refuse a presentation Chandra actually
-    produces, and a refusal that costs a legal act is the one failure GOALS 1
+    produces, and a refusal that costs a legal act is the one failure goal 2
     ranks worst.
     """
     resize = _vendor_presentation("chandra-scale-to-fit.v1")["transform"]["resize"]
@@ -2142,7 +2142,7 @@ def test_a_sealed_page_carrying_alpha_still_has_a_legal_churro_presentation(mode
     `ensure_rgb` drops the band, this replay drops the same band, and the record
     says `rgb`. Refusing the conversion instead would leave a page the Exemplar
     legitimately admitted with no presentation Churro could ever be given --
-    a lost act, which GOALS 1 ranks below a poorly read one.
+    a lost act, which goal 2 ranks below a poorly read one.
     """
     page = (
         Image.new("L", (100, 80), 200)
@@ -2274,7 +2274,7 @@ def test_a_capture_naming_a_parser_no_grammar_answers_to_is_refused_by_name(pars
 
     Left as "any non-empty string" it surfaced as a `KeyError` from inside
     `verify_native_capture_bytes` -- from a stage whose whole contract is that
-    a fault arrives with its cause attached (GOVERNANCE 2).
+    a fault arrives with its cause attached (principle 2).
     """
     capture = _native_capture()
     capture["adapter"] = "chandra.v1"

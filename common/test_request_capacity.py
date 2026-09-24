@@ -497,7 +497,7 @@ def test_dais_ordinary_act_stays_admissible_at_the_smallest_row():
 
     Reserving a whole page's answer for a request that asked for one act would
     put 702 + 84 + 1,426 against a 2,048-token row and refuse a call that
-    measurably works. GOALS 1: a refused act is a missed act.
+    measurably works. goal 2: a refused act is a missed act.
     """
 
     row = _row(chair="attestator_2", max_model_len=2048, max_pixels=TIER_MAX_PIXELS["generic-24gb"])

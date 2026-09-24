@@ -22,7 +22,7 @@ from common.contracts.uncertainty import from_perlectio, utf8_round_trip, valida
 
 ROOT = Path(__file__).resolve().parents[2]
 # Every layer below carries the reader's own assessment, which the canonical
-# schema closed over on 2026-09-11 (independent audit of 2026-09-10, F2): the
+# schema closed over (finding F2): the
 # two span layers alone cannot say whether an empty list is "no doubt" or "no
 # doubt was ever asked for". `assessed` is the state these shape tests want,
 # because it is the only one under which spans and gaps may be non-empty.
