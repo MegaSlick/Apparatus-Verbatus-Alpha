@@ -73,10 +73,10 @@ def test_an_unknown_action_is_refused():
         approval(action="not-a-real-action")
 
 
-def test_an_approval_naming_someone_other_than_tyrel_is_refused():
+def test_an_approval_naming_someone_other_than_the_project_lead_is_refused():
     record = approval()
     record["approver"] = "an agent"
-    with pytest.raises(ApprovalRefusal, match="only Tyrel approves"):
+    with pytest.raises(ApprovalRefusal, match="only the project lead"):
         validate_approval_record(record)
 
 

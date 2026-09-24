@@ -88,7 +88,7 @@ witness_scope = "page"
 # project lead, not a config edit.
 [chairs.secondary_proposer]
 state = "absent"
-reason = "kept absent by ruling of 2026-08-12: the optional YOLO secondary proposer is not part of the first real roster"
+reason = "the optional YOLO secondary proposer is not part of the first real roster"
 
 [chairs.perlector]
 state = "configured"

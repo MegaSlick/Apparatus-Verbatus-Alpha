@@ -2769,7 +2769,7 @@ def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(tmp_pat
         ApprovalRecordReference(reference["relative_path"], reference["sha256"])
     )
     assert record["action"] == "advance"
-    assert record["approver"] == "Tyrel"
+    assert record["approver"] == "project-lead"
     assert record["subject_ids"] == ["stage-boundary:armarium"]
 
 

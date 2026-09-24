@@ -16,14 +16,6 @@ approval, which is the honest behaviour.
 Deterministic artifacts carry no timestamps, because two identical runs must
 produce identical bytes. An approval is not deterministic output — it is a record
 of a human act at a moment — so the moment is the point.
-
-`data-gate` used to be a third action here, backing a per-run approval-record
-requirement for real input: none of this pipeline's material ever reaches git
-(it runs on a GPU host, `workbench/` is gitignored, and an ingress check plus
-CI's full-history payload scan already cover that mechanically), so the extra
-sign-off bought nothing and is gone. `exclusion` and `salvage-promotion`
-remain — principle 9 still requires the project lead's approval for an
-exclusion, and that is governance, not something this cut touches.
 """
 
 from typing import Any, Final
@@ -31,9 +23,9 @@ from typing import Any, Final
 from .canonical import self_hash, self_hash_refusal, verify_self_hash
 from .errors import ApprovalRefusal
 
-# The only human in these rules. Recorded as a value rather than assumed, so an
-# artifact naming anyone else is refused by the schema rather than by convention.
-APPROVER: Final = "Tyrel"
+# The only approver, recorded as a role rather than a person's name, and as a value
+# rather than assumed, so an artifact naming anyone else is refused by the schema.
+APPROVER: Final = "project-lead"
 
 # ``advance`` is deliberately distinct from ``other``. It is the one operator
 # decision that can move a staged run forward, and readers must be able to find
@@ -250,8 +242,8 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
         raise ApprovalRefusal("approval record approver is not an exact string")
     if approver != APPROVER:
         raise ApprovalRefusal(
-            f"approval record names approver {approver!r}; only "
-            f"{APPROVER} approves, and no agent stands in for them"
+            f"approval record names approver {approver!r}; only the project lead "
+            f"({APPROVER!r}) approves, and no agent stands in for them"
         )
     action = record["action"]
     if type(action) is not str:
