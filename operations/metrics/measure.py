@@ -52,7 +52,7 @@ def main(root: Path) -> None:
             if tok.type == tokenize.COMMENT
         ]
         for marker in MARKERS:
-            row[marker] += sum(marker in comment for comment in comments)
+            row[marker] += sum(comment.count(marker) for comment in comments)
     print("| | " + " | ".join(rows["src"]) + " |")
     print("|---" * (len(rows["src"]) + 1) + "|")
     for kind, row in rows.items():
