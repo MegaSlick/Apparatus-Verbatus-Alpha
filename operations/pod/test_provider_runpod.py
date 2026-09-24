@@ -325,7 +325,11 @@ def pod_payload(**overrides: object) -> dict[str, object]:
         "dockerStartCmd": list(request().docker_start_cmd),
         "networkVolume": {"id": "volume-1"},
         "machine": {"gpuTypeId": "NVIDIA RTX 6000 Ada Generation"},
-        "env": {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        "env": {
+            "VERBATUS_LAUNCH_TOKEN": TOKEN,
+            BILLING_CUTOFF_MARGIN_ENV: "3600",
+            "VERBATUS_RUNPOD_ROUTE": "v1",
+        },
         "lastStartedAt": "2026-08-08T11:59:00Z",
     }
     payload.update(overrides)
@@ -531,6 +535,20 @@ def test_a_missing_interruptible_field_is_never_read_as_on_demand() -> None:
 
     with pytest.raises(ProviderFailure, match="on-demand cannot be assumed"):
         provider(transport).create(request())
+
+
+@pytest.mark.parametrize("route", [None, "v2"])
+def test_a_pod_whose_env_does_not_seal_v1_is_refused(route: str | None) -> None:
+    payload = pod_payload()
+    env = dict(payload["env"])  # type: ignore[arg-type]
+    if route is None:
+        del env["VERBATUS_RUNPOD_ROUTE"]
+    else:
+        env["VERBATUS_RUNPOD_ROUTE"] = route
+    transport = ScriptedTransport([json_response(payload | {"env": env})])
+
+    with pytest.raises(ProviderFailure, match="does not seal VERBATUS_RUNPOD_ROUTE=v1"):
+        provider(transport).adopt("pod-1")
 
 
 def test_a_pod_with_no_attached_volume_is_refused() -> None:

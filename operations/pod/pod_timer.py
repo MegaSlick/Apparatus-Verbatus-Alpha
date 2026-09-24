@@ -196,7 +196,8 @@ def _close_with_retries(
     ``report`` is the durable report path; when it is given, a terminating
     breadcrumb is written beside it before the first DELETE goes out, so the
     volume distinguishes "never tried" from "tried and was destroyed
-    mid-verification".
+    mid-verification". A close the provider refused outright
+    (`CloseReport.terminate_refused`) is not re-entered either.
 
     Returned as a triple: the close result, how many attempts it took, and the
     breadcrumb write's own failure detail or ``None``. The third is what the
@@ -216,6 +217,10 @@ def _close_with_retries(
         result.close_report is not None and result.close_report.verified
     ):
         if result.state in unimprovable:
+            break
+        if result.close_report is not None and result.close_report.terminate_refused:
+            # The provider has said it will not terminate this pod; another
+            # DELETE gets the same answer. The report carries the remedy.
             break
         sleeper(max(0.01, min(wait_seconds, _MAX_CLOSE_RETRY_WAIT_SECONDS)))
         result = context.timer.close_now(reason)

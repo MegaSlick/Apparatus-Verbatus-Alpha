@@ -96,7 +96,7 @@ anything else, including the shell-string form the provider splits by undocument
 cross-field refusal, not a malformed body. `409` on terminate (a pod that belongs to a
 cluster) is a `TerminateRefused`: `VerifiedShutdown.close` stops on it at once and reports
 `failed-shutdown` with the console remedy instead of re-sending the DELETE for its whole
-window; the pod timer's fixed close retries may each send one more. The pod list is asked
+window, and the pod timer does not re-enter a close the provider refused. The pod list is asked
 for cluster member pods too (`includeClusterPods=true`), paged and followed to its last
 page, and a list that cannot be shown complete refuses. DELETE's body is never parsed.
 

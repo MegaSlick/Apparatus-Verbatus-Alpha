@@ -1220,6 +1220,12 @@ def _runtime_contract(
     if not isinstance(command, list) or not all(isinstance(part, str) and part for part in command):
         raise ProviderFailure(f"RunPod pod {pod_id} reports no dockerStartCmd to verify against")
     template = payload.get("templateId")
+    environment = payload.get("env")
+    if not isinstance(environment, Mapping) or environment.get(RUNPOD_ROUTE_ENV) != "v1":
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} env does not seal {RUNPOD_ROUTE_ENV}=v1; its pod-side "
+            "timer could not close it through the route that created it"
+        )
     return PodRuntimeContract(
         interruptible=False,
         gpu_type=gpu_type,

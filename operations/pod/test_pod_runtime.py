@@ -4449,6 +4449,33 @@ def test_a_later_close_reason_never_renames_the_breadcrumb_already_on_the_volume
     assert breadcrumb["close_attempts_allowed"] == _CLOSE_ATTEMPTS
 
 
+def test_a_close_the_provider_refused_is_not_re_entered(tmp_path: Path) -> None:
+    """Another DELETE gets the same refusal while the pod bills; the remedy is a person's."""
+
+    from .models import TerminateRefused
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.inject_failure(
+        "terminate", TerminateRefused("pod belongs to a cluster; use the console"), times=5
+    )
+    store = LeaseStore(tmp_path / "timer-refused.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    context = TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now))
+
+    result, attempts, _ = _close_with_retries(
+        context, "pod dead-man hard lifetime expired", clock.sleep, 1, attempts=_CLOSE_ATTEMPTS
+    )
+
+    assert _CLOSE_ATTEMPTS > 1
+    assert attempts == 1
+    assert result.close_report is not None and result.close_report.terminate_refused
+    assert result.close_report.state is CloseState.FAILED_SHUTDOWN
+    assert result.close_report.to_record()["terminate_refused"] is True
+    assert [verb for verb, _ in provider.calls].count("terminate") == 1
+
+
 def test_a_breadcrumb_that_cannot_be_written_never_blocks_the_close(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -393,7 +393,8 @@ def _render(
         "",
         "```",
         "python -m operations.pod.cli \\",
-        "  --provider-factory <untracked module:callable returning provider_runpod.live_runpod_provider(...)> \\",
+        "  --provider-factory <untracked module:callable returning "
+        'provider_runpod.live_runpod_provider(..., route="v1")> \\',
         "  --controller-armer-factory <untracked module:callable returning ObservingControllerArmer> \\",
         "  --spend config/spend.toml --leases <lease root for this account> \\",
         "  --provider-name runpod --notify \\",

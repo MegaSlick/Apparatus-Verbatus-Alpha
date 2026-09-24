@@ -54,9 +54,16 @@ class CloseReport:
     volume_ongoing_hourly_usd: Decimal
     last_detail: str
     manual_action: str | None
+    terminate_refused: bool = False
+    """The provider refused termination in a way no retry changes (`TerminateRefused`).
+
+    A caller that would re-enter the close stops instead: another DELETE gets
+    the same refusal while the pod bills, and the remedy is a person's."""
 
     def __post_init__(self) -> None:
         require_utc(self.cutoff_at, "close report cutoff")
+        if self.terminate_refused and self.state is not CloseState.FAILED_SHUTDOWN:
+            raise ValueError("a refused terminate can only end in a failed shutdown")
         if not isinstance(self.pod_id, str) or not self.pod_id.strip():
             raise ValueError("close report pod_id must be non-blank")
         if not isinstance(self.reason, str) or not self.reason.strip():
@@ -136,6 +143,7 @@ class CloseReport:
             },
             "last_detail": self.last_detail,
             "manual_action": self.manual_action,
+            "terminate_refused": self.terminate_refused,
         }
 
 
@@ -353,6 +361,7 @@ class VerifiedShutdown:
             record.estimate.volume_hourly_usd,
             f"terminate refused: {refusal}",
             f"The provider refused termination and the pod is still billing: {refusal}",
+            terminate_refused=True,
         )
 
     def _status(self, pod_id: str, budget_seconds: float) -> ProviderStatus:

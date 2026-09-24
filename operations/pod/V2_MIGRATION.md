@@ -250,6 +250,16 @@ called.
    refuses it on adopt. **This needs the project lead:** a RunPod page or
    vendor answer that says a v2 create with `cloud: "SECURE"` and no bid is
    on-demand, recorded in a reviewed commit that sets `V2_ON_DEMAND_BASIS`.
+   **That commit must also re-observe the pod's rate once it runs.** A v2 pod
+   that reports no `cost` before it runs is given the reviewed sheet's rate
+   (`RunPodV2Provider._v2_rate`), and the launch's ceiling re-assessment then
+   checks that sheet rate, not an observed one; nothing re-reads the rate once
+   the pod is RUNNING. While the gate is unset no v2 pod can be created, so
+   this cannot happen today. Before it is set, either the launch re-reads the
+   pod after arming and re-runs the ceiling assessment on the observed `cost`
+   (closing on a breach), or the adapter refuses a contract for a pod whose
+   rate was substituted. That is a change to the paid launch path, so it
+   belongs with the gate, not before it.
 2. **`RunPodV2Provider` is built beside `RunPodProvider`**, sharing a base
    class for prices, balance, fixture recording and launch-token lookup.
    `RUNPOD_REST_ROOT` is the v1 constant and `RUNPOD_V2_ROOT` sits beside it.
@@ -290,16 +300,16 @@ called.
 The start command is sent as `args` in the exec-form object, interpreter as
 `entrypoint` and the rest of the argv as `cmd`, and read back strictly.
 
-**Top-level `entrypoint`/`cmd` versus the `args` object (not yet changed).**
-The adapter should send the top-level `entrypoint` and `cmd` arrays instead of
-the `args` object: they are typed exec-form arrays in the schema, the fields
-`args` itself "encodes into", so the request carries no JSON inside a string
-and the provider's own validation sees the argv. The read-back stays as it
-is until the first live v2 run: the response's `entrypoint` and `cmd` are
-optional, so `args` "exactly as stored" is the only form the schema
-guarantees, and whether it comes back as the object, re-serialized, is
-exactly what that run observes. Sending one form and reading the other is
-consistent, since the docs call them two representations of one command.
+**Decision: the start command is sent as `args` until the first live v2 run
+shows its echo, then as top-level `entrypoint`/`cmd`.** The top-level arrays
+are the better request form: they are typed exec-form arrays in the schema,
+the fields `args` itself "encodes into", so the request carries no JSON inside
+a string and the provider's own validation sees the argv. They are not sent
+yet because that run is the first time any echo is seen: switching the
+request before it would change the one variable the run measures. The
+read-back stays on `args` in both cases, since the response's `entrypoint`
+and `cmd` are optional and `args` "exactly as stored" is the only form the
+schema guarantees; the docs call them two representations of one command.
 
 Each adapter seals its own route into the pod's env as `VERBATUS_RUNPOD_ROUTE`,
 and the pod-side timer requires it, so it closes through the route that created
