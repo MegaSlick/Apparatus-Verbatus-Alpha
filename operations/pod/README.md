@@ -70,9 +70,12 @@ adapters, one per REST route, behind that seam and one `HttpTransport`.
   v2 is green, then is deleted in its own commit.
 - **Choosing a route.** An untracked `--provider-factory` calls
   `provider_runpod.live_runpod_provider(key, pod_price=..., volume_price=..., route=...)`;
-  `route` defaults to `"v2"` and `"v1"` selects the old adapter. The pod-side timer uses the
-  same default unless its environment carries `VERBATUS_RUNPOD_ROUTE=v1`. Each adapter
-  refuses a live transport pointed at the other route's root.
+  `route` defaults to `"v2"` and `"v1"` selects the old adapter. Each adapter refuses a live
+  transport pointed at the other route's root.
+- **The pod-side timer uses the route that created its pod.** Each adapter's create adds
+  `VERBATUS_RUNPOD_ROUTE` (its own route) to the pod's `env`, refusing a request that names
+  another, and `timer_context_from_environment` requires it: a timer that guessed a route
+  could be the one controller unable to terminate its pod at the hard deadline.
 
 **A v2 create is refused today, by name, before any POST.** v2 has no `interruptible` field
 on create and no rental-type field on the pod, and no RunPod page read on 2026-09-24 says
@@ -89,10 +92,13 @@ anything else, including the shell-string form the provider splits by undocument
 
 **Other v2 behaviour:** a create answers `PROVISIONING` or `STARTING` before the pod runs
 (`models.PRE_RUNNING_STATES`), which arming's bounded waits absorb; `ERROR` closes at once.
-`402`, `400`, `422` on create and `409` on terminate are named refusals, never retried; `400`
-is a placement or cross-field refusal, not a malformed body. The pod list is paged and
-followed to its last page, and a list that cannot be shown complete refuses. DELETE's body
-is never parsed.
+`402`, `400` and `422` on create are named refusals, never retried; `400` is a placement or
+cross-field refusal, not a malformed body. `409` on terminate (a pod that belongs to a
+cluster) is a `TerminateRefused`: `VerifiedShutdown.close` stops on it at once and reports
+`failed-shutdown` with the console remedy instead of re-sending the DELETE for its whole
+window; the pod timer's fixed close retries may each send one more. The pod list is asked
+for cluster member pods too (`includeClusterPods=true`), paged and followed to its last
+page, and a list that cannot be shown complete refuses. DELETE's body is never parsed.
 
 **Account balance.** `GraphQLBalanceObserver` POSTs the one documented query,
 `myself { clientBalance currentSpendPerHr }`, through the same redirect-refusing,
@@ -657,8 +663,9 @@ Record the pod id, timestamps, provider responses, and whether each item is **ve
   the deconstructed `entrypoint` and `cmd` appear.
 - [ ] Under v2, record every `status` word the pod passes through and how long each lasted,
   and whether `pod.cost` is non-zero while `PROVISIONING`.
-- [ ] Under v2, record whether the pod-scoped `RUNPOD_API_KEY` is accepted by the v2 routes
-  the pod-side timer calls (status, terminate, list, billing).
+- [ ] On the route the run uses (v1 as well as v2), record whether the pod-scoped
+  `RUNPOD_API_KEY` is accepted by the routes the pod-side timer calls (status, terminate,
+  list, billing), and that the pod's env carries `VERBATUS_RUNPOD_ROUTE` naming that route.
 - [ ] Verify launch-token recovery from the pod list after a deliberately lost create
   response, without confusing a same-name pod.
 - [ ] Confirm the pod list's paging: v1 documents none; v2 documents `pagination.nextCursor`

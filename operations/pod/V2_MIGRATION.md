@@ -299,9 +299,12 @@ is until the first live v2 run: the response's `entrypoint` and `cmd` are
 optional, so `args` "exactly as stored" is the only form the schema
 guarantees, and whether it comes back as the object, re-serialized, is
 exactly what that run observes. Sending one form and reading the other is
-consistent, since the docs call them two representations of one command. The
-pod-side timer uses v2 by default; `VERBATUS_RUNPOD_ROUTE=v1` in its
-environment selects v1.
+consistent, since the docs call them two representations of one command.
+
+Each adapter seals its own route into the pod's env as `VERBATUS_RUNPOD_ROUTE`,
+and the pod-side timer requires it, so it closes through the route that created
+the pod. A `409` on terminate is a `TerminateRefused`, on which the verified
+close stops at once. The pod list asks for cluster member pods too.
 
 ### What waits on the first live v2 run
 
@@ -314,8 +317,8 @@ environment selects v1.
 - That RunPod bills nothing before `createdAt` (04-7).
 - The `status` sequence a real pod passes through, and whether `cost` is
   non-zero while `PROVISIONING`.
-- Whether the pod-scoped `RUNPOD_API_KEY` is accepted by the v2 routes the
-  pod-side timer calls.
+- Whether the pod-scoped `RUNPOD_API_KEY` is accepted by the routes the
+  pod-side timer calls, on v1 as well as v2.
 - Every field name (04-6); the catalogue cross-check confirms the GPU ids for
   free before the first paid create.
 
