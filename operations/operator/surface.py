@@ -1,7 +1,9 @@
 """The safe, plain-language façade for the operator's seven words.
 
-It has no live provider or S3 adapter: it joins the fake seams into an offline
-rehearsal and records what the operator confirmed before each action.
+Pod actions run against a fake provider, so they are an offline rehearsal;
+network-volume transfers the operator asks for go through S3
+(`S3VolumeTarget` in upload, `S3VolumeObjectReader` in `fetch_run`). It records
+what the operator confirmed before each action.
 """
 
 from __future__ import annotations
