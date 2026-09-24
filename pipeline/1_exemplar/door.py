@@ -1,39 +1,18 @@
 """The door: what may enter at all, decided by bytes alone.
 
-The door owns no directory. It writes its admissions and refusals into the
-Exemplar's, so the record of what arrived and the record of what was sealed sit
-together — a refusal filed somewhere nothing downstream reads is a refusal that has
-been lost, which principle 2 does not allow.
+Admissions and refusals are written into the Exemplar's directory, so no refusal
+is filed where nothing downstream reads it (principle 2).
 
-The one decoder-routing module (`admission.py`) decides from source bytes, never a
-declared extension. Its configuration names how a source is read, not formats to
-decline: ordinary rasters are decoder-backed; PDF and TIFF page containers fan out
-and render once. PDFium paints the complete visible PDF page rather than extracting
-an image XObject, so text beside an image stays in the sealed pixels.
+`admission.py` routes each source by its decoded bytes, never its extension.
+Ordinary rasters are decoded; PDF and TIFF containers fan out, one ordinal per page.
+PDFium paints the whole visible PDF page, so text beside an image stays in the
+sealed pixels. Every refusal is an artifact with a reason from
+`admission.RefusalReason`, and an input set that admits nothing fails loudly.
 
-Two invariants from the harvest still shape this. **#1: only images enter, verified
-by decoding, not by extension** — now the real structural decode, not a magic-byte
-check. **#3: a refused file is never silently omitted** — every refusal is an
-artifact with a reason drawn from `admission.RefusalReason`'s closed set, and an
-input set that admitted nothing is a loud failure rather than a green run with no
-output.
-
-**Two ways in, and the difference between them is not a flag.** The fixture path
-runs the walking skeleton on the repository's own declared synthetic pages, and it
-refuses to treat any other folder as a fixture — fixture status comes from the
-declared fixture root and the `load_fixture` manifest, never from a caller's word.
-Everything else is real input: it must live inside an
-approved storage location, and which of the two routes created a run is sealed into
-`run.json`'s own self-hashed authority as the run's `ingress`, so a later reader
-asks the run authority rather than an optional field on a stage artifact that could
-simply be absent.
-
-**Real input needs no data-gate approval-record artifact.** None of this material
-ever reaches git regardless of any such sign-off — it runs through the pipeline on
-a GPU host, `workbench/` is gitignored, and an ingress check plus CI's full-history
-payload scan already cover that mechanically — so the requirement would buy
-nothing. `operations.submit.gate`'s storage-root check still applies; only the
-approval artifact and its currency check are absent.
+A run is created either from the repository's declared synthetic fixture or from
+real input inside an approved storage location; the route is sealed into
+`run.json` as `ingress`. Real input needs no per-run approval record: it never
+enters git, so the storage-root check in `operations.submit.gate` is the only gate.
 
 Invoked as a program:
 
@@ -141,19 +120,17 @@ class SourceEntry(NamedTuple):
     triage_row: dict[str, Any] | None = None
     triage_part_index: int | None = None
     source_frame_index: int | None = None
-    # Computed during expansion so membership binds inspected bytes before the
-    # run seals. Unreadable and oversized sources retain None and their ordinal.
+    # Set during expansion so membership binds inspected bytes before the run
+    # seals; None for unreadable and oversized sources.
     computed_sha256: str | None = None
 
 
 def _membership_sha256(source: SourceEntry) -> str | None:
     """The digest one page binds into shard membership.
 
-    Membership prefers inspected bytes because ledger declarations remain
-    untrusted until admission, after the run authority seals. Container pages
-    additionally bind their index because they share one whole-file digest and
-    their decoded page digests do not exist yet. Unreadable and oversized
-    sources fall back to their declaration so their ordinals remain visible.
+    Inspected bytes win because the ledger is untrusted until admission, after the
+    run seals. Container pages also bind their index, since they share one file
+    digest. Sources never inspected fall back to their declaration.
     """
     inspected = source.computed_sha256 or source.declared_sha256
     if inspected is None or source.container_page_index is None:
@@ -182,18 +159,13 @@ DOOR_DUPLICATE_REPORT_SUBJECT: Final = "duplicate-report"
 DOOR_CLUSTER_REPORT_SCHEMA: Final = "door-re-shoot-cluster-report.v1"
 _SOURCE_HASH_CHUNK: Final = 1024 * 1024
 _SNIFF_BYTES: Final = 4096
-# Triage JSON is untrusted ingress too. The real Door can create at most one
-# 1,000-page shard (the corpus-frame validator refuses any configured maximum
-# above 1,000), so a larger decision document or derivative census cannot shape
-# this run. Bound both before JSON-controlled lists reach Unit 5's pairwise
-# partition validation.
+# Triage JSON is untrusted input. A run holds at most one 1,000-page shard (the
+# corpus-frame validator's ceiling), so bound both before the triage manifest's
+# pairwise validation walks attacker-sized lists.
 MAX_TRIAGE_DOCUMENT_BYTES: Final = 64 * 1024 * 1024
 MAX_TRIAGE_DERIVATIVE_PAGES: Final = 1_000
-# `REAL_DOOR_ADAPTER_REVISION` -- the real Door's own implementation revision,
-# bumped deliberately whenever source behaviour changes so a real run cannot
-# resume under pixels made by a different Door -- is defined in `common/stage.py`
-# and imported above, because every later stage's open-time recheck compares the
-# run authority's Door recipe against it and `common/` may not import this file.
+# `REAL_DOOR_ADAPTER_REVISION` lives in `common/stage.py` because every later
+# stage rechecks it and `common/` may not import this file.
 
 
 def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
@@ -219,9 +191,8 @@ def _sniff_source_stream(handle: BinaryIO) -> str | None:
 def fixture_pages_for_scenario(fixture: dict, scenario: str) -> list[dict]:
     """Return the synthetic pages active in one declared fixture scenario.
 
-    A scenario restriction is fixture data, never a real-ingress filter. It
-    exists so an additional proof page can exercise a narrow integration path
-    without silently changing the input of every established acceptance run.
+    A scenario restriction lets a proof page exercise a narrow path without
+    changing the input of every other acceptance run.
     """
     scenario_for(fixture, scenario)
     declared_scenarios = {row["name"] for row in fixture["scenario"]}
@@ -255,10 +226,8 @@ def fixture_pages_for_scenario(fixture: dict, scenario: str) -> list[dict]:
 def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     """The digest each page is declared to have, per ordinal, for this scenario.
 
-    A `page_refusal` row substitutes a declared digest the checked-in bytes cannot
-    match, so the refusal scenarios exercise the door's real inspection path — the
-    same comparison, the same refusal artifact — rather than any scenario-aware
-    branch that a real door would not have.
+    A `page_refusal` row declares a digest the bytes cannot match, so refusal
+    scenarios run the door's real inspection path, not a test-only branch.
     """
     declared = {
         page["ordinal"]: page["sha256"] for page in fixture_pages_for_scenario(fixture, scenario)
@@ -277,16 +246,12 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
 def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
     """Read one bounded regular file without following or reopening its path.
 
-    Returns the same bytes parsed, so digest and decisions cannot straddle a
-    rewrite; JSON objects refuse duplicate member names at parse time.
+    Returns the bytes with their parse, so a digest and the decisions cannot
+    straddle a rewrite; duplicate JSON member names are refused.
 
-    These documents cross the pre-Door producer boundary and are parsed wholly in
-    memory. A checked pathname is not an anchored input: its leaf can become a
-    symlink or FIFO between a check and ``read_bytes()``, and an intermediate
-    directory can redirect the same spelling. An unbounded regular file can make
-    JSON parsing itself the denial of service. Open every component relative to
-    its no-follow directory descriptor, then decide from the one leaf descriptor
-    and prove its byte-bearing identity stayed stable across the bounded read.
+    A checked pathname can be swapped for a symlink or FIFO, and an unbounded file
+    makes JSON parsing a denial of service. So each component opens no-follow
+    relative to its parent descriptor, and the leaf must not change during the read.
     """
     no_follow = getattr(os, "O_NOFOLLOW", None)
     directory_flag = getattr(os, "O_DIRECTORY", None)
@@ -308,7 +273,7 @@ def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
             parent_descriptors.append(parent)
         descriptor = os.open(components[-1], file_flags, dir_fd=parent)
     except FileNotFoundError as error:
-        # Keep the established exact refusal for an absent requested document.
+        # An absent file is a plain read failure, not a redirect.
         raise ContractError(f"the {label} could not be read") from error
     except OSError as error:
         raise ContractError(
@@ -375,15 +340,11 @@ def load_triage_decisions(
     clusters_path: str | Path | None = None,
     producer_recipe_path: str | Path | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
-    """Read the closed triage decision manifest without inventing another shape.
+    """Read the closed triage decision manifest, its clusters and producer recipe.
 
-    The third return value is the byte digest of each document read, for the same
-    reason `_real_bindings` digests every configuration it acts on: geometry that
-    shaped a run's pixels is bound into `config_digest`, so a re-entry under a
-    re-run triage pass is refused by name as a different run wearing an old
-    id — rather than left to be caught incidentally, one ordinal at a time, by the
-    run tree's write-once artifacts. Digested from the same bytes that were
-    parsed, because two reads can straddle a rewrite.
+    Also returns each document's byte digest, taken from the parsed bytes. The
+    decisions shape pixels, so the digests enter `config_digest` and re-entering a
+    run id after a re-run triage pass is refused by name.
     """
     manifest_bytes, document = _read_triage_document(manifest_path, "triage decision manifest")
     if clusters_path is not None:
@@ -446,7 +407,7 @@ def load_triage_decisions(
 
 
 def _refuse_triage_amplification(document: Any, clusters: Any) -> None:
-    """Bound split and cluster fan-out before Unit 5 validates attacker-sized lists."""
+    """Bound split and cluster fan-out before triage validation walks attacker-sized lists."""
     if isinstance(document, dict) and isinstance(document.get("records"), list):
         derivative_pages = 0
         for row in document["records"]:
@@ -490,10 +451,9 @@ def decide(
 ) -> _Decision:
     """Decide one raster or one source-container page by its actual bytes.
 
-    ``data`` is present for ordinary rasters and synthetic PDFs. A real PDF is
-    deliberately represented by an already-open PDFium document plus a digest
-    streamed from the same anchored descriptor, so PDFium does not receive a
-    whole-file bytes allocation or reopen a mutable pathname.
+    A real PDF arrives with ``data`` None, as an open PDFium document plus a digest
+    streamed from the same anchored descriptor, so PDFium never reopens a mutable
+    path or needs the whole file in memory.
     """
     if pdf_settings is None:
         pdf_settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
@@ -697,17 +657,14 @@ def expand_sources(
 ) -> list[SourceEntry]:
     """Expand source containers and triage split decisions to stable ordinals.
 
-    Counting inspects only enough to learn a page count; it does not produce page
-    pixels.  Any source that cannot be read or counted still receives one ordinal,
-    so the later decision can publish a named alarm rather than lose it.
+    Counting renders no pixels. A source that cannot be read or counted still
+    gets its ordinals (one, or one per declared triage part when it is split), so
+    its refusal is published rather than lost.
 
-    ``open_source`` is the real submission's descriptor-anchored opener
-    (`operations.submit.inventory.open_submission_source`).  Counting is where the
-    anchoring matters most: PDFium parses whatever it is given *before* any digest
-    has been computed, so a pathname reopened here could be fanned out to the page
-    ordinals of a document nobody submitted.  Each row's stream is opened and
-    closed within its own row, so this pass holds one descriptor at a time rather
-    than one per file in the folder.
+    ``open_source`` is the real submission's descriptor-anchored opener. PDFium
+    parses a file before any digest exists, so a reopened pathname could fan out
+    the pages of a document nobody submitted. Each row holds its own descriptor
+    only while it is processed.
     """
     if triage_clusters is not None and triage_rows is None:
         raise ContractError(
@@ -738,9 +695,8 @@ def expand_sources(
             or isinstance(declared_size, bool)
             or declared_size < 0
         ):
-            # No `path` in the message: `run_stage` prints every ContractError to
-            # stderr, and a declared path is what the data-handling policy's logging
-            # rule keeps out of exactly that channel.
+            # No path in the message: `run_stage` prints it to stderr, and the
+            # data-handling policy keeps declared paths out of logs.
             raise ContractError(
                 "a submitted source declares no non-negative byte count; the source "
                 "manifest names it by ordinal"
@@ -803,35 +759,24 @@ def expand_sources(
         computed: str | None = None
         try:
             if open_source is not None:
-                # A real source is classified from the same descriptor-relative
-                # opener used later for its digest and PDFium document.  A pathname
-                # reconstructed from the ledger would have a replacement window.
+                # Classify from the anchored descriptor later used for the digest
+                # and PDFium; a path rebuilt from the ledger could be replaced.
                 with open_source(path) as opened_source:
                     detected = _sniff_source_stream(opened_source.handle)
                     if detected == "pdf":
-                        # Streamed PDFs are not loaded into `data`, but their
-                        # inspected identity must exist before membership seals.
-                        # This is the first of the Door's two streams over a real
-                        # PDF. It binds membership to the bytes actually inspected,
-                        # while `run.json` does not exist yet; `process_sources`
-                        # streams the file again at admission to prove those bytes
-                        # did not move after the seal. Neither pass can be dropped
-                        # in favour of the other, and each has its own test:
-                        # `test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie`
-                        # for this one, and
-                        # `test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed`
-                        # for the second.
+                        # First of two digest streams over a real PDF: this one
+                        # binds membership before `run.json` exists; the one in
+                        # `process_sources` catches bytes replaced after the seal.
+                        # Neither can be dropped.
                         computed, _ = _source_digest_stream(opened_source.handle)
                     opened_source.assert_unchanged(expected_sha256=declared_sha256)
             else:
-                # A caller with no anchored opener supplies bytes directly; there is
-                # no second, path-based way to classify a source (the door hands
-                # PDFium an open stream or nothing, never a reopenable pathname).
+                # Without an anchored opener the caller supplies bytes; PDFium is
+                # never handed a reopenable pathname.
                 detected = None
             if detected != "pdf":
-                # Rasters remain byte-backed. Their existing bounded path is
-                # intentionally unchanged; only a PDF container is handed to PDFium
-                # as an open stream instead of being read into one bytes object.
+                # Rasters are read into memory under the size bound; only PDFs
+                # are streamed.
                 if declared_size is not None and declared_size > MAX_SOURCE_BYTES:
                     append_refused_source(detected)
                     continue
@@ -860,10 +805,9 @@ def expand_sources(
             try:
                 frame_count = count_raster_pages(data)
             except FormatRefusal:
-                # Geometry cannot be applied until the frame decodes, but the
-                # manifest already declares how many pages this frame contributes.
-                # Retain one refused ordinal per part so the immutable denominator
-                # and configured post-split cap do not undercount a broken frame.
+                # The frame does not decode, but the manifest says how many pages
+                # it yields; one refused ordinal per part keeps the denominator
+                # and shard cap honest.
                 append_refused_source(detected, computed_sha256=computed)
                 continue
             if frame_count != 1:
@@ -897,10 +841,8 @@ def expand_sources(
                 continue
             append(0, detected, computed_sha256=computed)
             continue
-        # PDF/TIFF are declared page containers even when there is one page. For
-        # every other decoder-backed image, a reported multi-frame source is also
-        # fanned out. Retaining an animation as one raster would silently drop all
-        # but frame zero downstream; one-frame rasters retain their original bytes.
+        # PDF and TIFF always fan out. Any other multi-frame image fans out too,
+        # or every frame after the first would be dropped downstream.
         if route != admission.RENDER_PAGES and page_count == 1:
             append(None, detected, computed_sha256=computed)
             continue
@@ -915,8 +857,8 @@ def expand_sources(
         for cluster_id in named_clusters:
             record = triage_clusters.get(cluster_id)
             if not isinstance(record, dict) or "member_frame_sha256" not in record:
-                # Direct callers can bypass manifest validation; they still need a
-                # named contract refusal rather than a bare missing-key exception.
+                # Direct callers bypass manifest validation; give them a named
+                # refusal, not a KeyError.
                 raise ContractError(
                     "a submitted frame names a re-shoot cluster with no supplied cluster record; "
                     "no source expansion was returned because the cluster cannot be reconciled; "
@@ -929,23 +871,18 @@ def expand_sources(
                     "returned because every member must remain visible together and no canonical "
                     "frame may be selected; submit every cluster member in the same shard and retry"
                 )
-    # Deliberately no refusal for rows naming frames outside this submission:
-    # the decision manifest is corpus-scoped and a submission is one shard of
-    # it (Unit 8's 1,000-page sharding), so rows for other shards are the
-    # ordinary case, not lost evidence. The evidence guarantee runs in the
-    # other direction twice: the producer proves exact coverage over what it
-    # was handed, and this expansion refuses any submitted frame without a row.
+    # Rows for frames outside this submission are expected: the manifest is
+    # corpus-scoped and a submission is one shard. A submitted frame without a
+    # row is refused above.
     return sources
 
 
 def _require_case_unique_paths(files: list[dict[str, Any]]) -> None:
     """Refuse names that alias on default case-insensitive APFS.
 
-    A filename ledger is made on one host and may be admitted on another. Exact
-    string uniqueness is therefore insufficient: ``Page.PNG`` and ``page.png``
-    are two rows on a case-sensitive filesystem but one pathname on default APFS.
-    If the Door accepted both, which bytes an ordinal named would depend on the
-    host that happened to open it.
+    A ledger made on a case-sensitive host may be admitted on APFS, where
+    ``Page.PNG`` and ``page.png`` are one file; an ordinal must name the same
+    bytes on every host.
     """
     seen: set[str] = set()
     for row in files:
@@ -970,13 +907,9 @@ def content_aware_shards(
 ) -> list[list[SourceEntry]]:
     """Choose only seams that keep a split pair and re-shoot cluster whole.
 
-    This is intentionally a planning function: a caller selects the resulting
-    source-manifest shard *before* creating each RunTree.  Cutting after a run
-    exists would change its immutable denominator.
-
-    The page cap is sealed policy (`config/corpus_frame.toml`, checked at
-    `require_corpus_frame_shard`); shard count is a consequence, not an implicit
-    second ceiling. A caller with its own ceiling must pass ``max_shards``.
+    Call it before creating each RunTree: cutting after a run exists would
+    change its immutable denominator. The page cap is sealed policy; pass
+    ``max_shards`` only for a caller's own ceiling.
     """
     if (
         not isinstance(max_pages_per_shard, int)
@@ -1000,9 +933,8 @@ def content_aware_shards(
             "page census and retry"
         )
     blocked: set[int] = set()
-    # A split fan-out is adjacent by construction; do not place a seam after
-    # its first (or any non-final) part.  A cluster may not be adjacent, so every
-    # boundary between its first and final member is blocked as well.
+    # Split parts are adjacent, so block every seam inside one; a cluster may be
+    # scattered, so block every seam between its first and last member.
     for left, right in zip(ordered, ordered[1:], strict=False):
         if (
             left.triage_row is not None
@@ -1060,41 +992,26 @@ def process_sources(
 ) -> int:
     """Admit or refuse every declared source. Returns the count admitted.
 
-    `read_bytes` is called once per distinct raster path within this call. A real
-    PDF is different: its digest is streamed once *here*, then PDFium holds one
-    native descriptor-anchored document handle while every fanned page renders
-    from it. Once here, not once in the Door: `expand_sources` already streamed
-    the same file to bind its shard membership, before `run.json` existed. That
-    is deliberate rather than redundant -- this second stream is the only thing
-    that can see bytes replaced after the seal, and it is what the
-    `computed_sha256` comparison below refuses on. A reader who takes the
-    earlier digest as sufficient and removes this one deletes that refusal.
-    This lets a reel be larger than available Python memory without losing its
-    page ordinals or filename ledger link, and prevents a pathname replacement
-    from separating the digest from the pixels that are sealed.
+    Rasters are read once per path. A real PDF's digest is streamed here and
+    every page renders from one descriptor-anchored PDFium handle, so a reel
+    larger than memory keeps its ordinals and a replaced path cannot separate
+    digest from pixels. This stream is the only check that sees bytes replaced
+    after the run sealed: the `computed_sha256` comparison below depends on it.
 
-    Per-file, never per-folder: one unreadable or refused source does
-    not stop the rest from being decided. Byte-identical pages within one PDF remain
-    distinct pages. A second source path with the same bytes is admitted under its
-    own ordinal and records the first path as a duplicate fact; it never loses a
-    citation link merely because its blob is already content-addressed.
+    Per-file, never per-folder: one refused source does not stop the rest.
+    Byte-identical pages within one PDF stay distinct, and a second path with the
+    same bytes is admitted under its own ordinal with a duplicate fact.
     """
     if pdf_settings is None:
         pdf_settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
     admitted = 0
     seen_sources: dict[str, tuple[str, int]] = {}
-    # One entry, never a growing map. `expand_sources` assigns ordinals row by row,
-    # so every ordinal of one declared path is contiguous in this sorted iteration
-    # and a single slot avoids the same re-reads a full cache did. A full cache
-    # retained every distinct raster body for the whole call, so peak memory grew
-    # with the number of raster sources in the submission rather than with the
-    # largest one — the opposite of the guarantee the docstring above makes for a
-    # reel, granted for PDFs and then given back on the raster path.
+    # One cached raster, not a map: a path's ordinals are contiguous, and a map
+    # would grow memory with the number of rasters.
     cached_path: str | None = None
     cached_data: bytes | None = None
-    # `expand_sources()` assigns all page ordinals from one container together.
-    # Keep exactly that one PDF stream/document alive while those pages render,
-    # rather than retaining a descriptor for every PDF in a large submission.
+    # A container's ordinals are contiguous, so one PDF stream and document are
+    # held open at a time.
     active_pdf_key: str | None = None
     active_pdf_digest: tuple[str, int] | None = None
     active_pdf_document: pdf_render.OpenPdf | None = None
@@ -1107,13 +1024,8 @@ def process_sources(
         nonlocal active_pdf_document
         nonlocal active_opened_source
         nonlocal active_context
-        # Taken and cleared before anything can raise. These used to be cleared
-        # after the try/finally, so a failing close left them set: the loop's outer
-        # `finally` then called this again, closed the same native handle a second
-        # time, and that second failure replaced the first as the raised exception —
-        # the operator read a duplicate-close message instead of the resource failure
-        # that actually happened. The run failed loudly either way; it named the
-        # wrong cause.
+        # Cleared before anything can raise, so the outer handler cannot close
+        # the same handle twice and mask the real failure.
         document, context_stack = active_pdf_document, active_context
         active_pdf_key = None
         active_pdf_digest = None
@@ -1125,14 +1037,11 @@ def process_sources(
                 try:
                     pdf_render.close_document(document)
                 except pdf_render.PdfRefusal as error:
-                    # A native document that cannot be released is a pipeline
-                    # resource failure, not a property of one page. Stop loudly
-                    # without a traceback or a green stage completion.
+                    # A handle that cannot be released is a resource failure,
+                    # not a page refusal.
                     raise ContractError(str(error)) from error
         finally:
-            # The stream outlives the document by construction, so it is released
-            # second — and in a `finally`, because a document that fails to close
-            # must not also strand the descriptor it was reading through.
+            # The stream closes after the document, even if that close failed.
             if context_stack is not None:
                 context_stack.close()
 
@@ -1147,10 +1056,7 @@ def process_sources(
                 and source.declared_size > MAX_SOURCE_BYTES
                 and not streamed_pdf
             ):
-                # The raster path still receives bytes today, so retaining its
-                # allocation guard is honest. A streamed PDF does not allocate
-                # those bytes and must not be refused by a cap that guarded a
-                # retired allocation.
+                # This cap guards an in-memory read; a streamed PDF makes none.
                 _publish(
                     context,
                     source,
@@ -1259,9 +1165,8 @@ def process_sources(
                 except pdf_render.PdfRefusal as error:
                     decision = _Decision("refused", str(error), None, None, None)
                 except (OSError, inventory.SubmissionInputError) as error:
-                    # Per-file, never per-folder. A descriptor that dies between
-                    # the digest and the document open is this one source's named
-                    # alarm; letting it escape would abandon every source after it.
+                    # Per-file: a descriptor lost here refuses this source, not
+                    # every source after it.
                     decision = _Decision(
                         "refused",
                         admission.reason(RefusalReason.UNREADABLE, str(error)),
@@ -1304,11 +1209,8 @@ def process_sources(
                     )
                     continue
 
-            # Register only an admitted source. A corrupt twin needs its own
-            # corruption alarm rather than a duplicate claim about a source whose
-            # pixels never entered the Exemplar. The second *valid* filename now
-            # remains admitted, and this immutable fact makes the duplicate visible
-            # without discarding its citation link.
+            # Only admitted sources register: a corrupt twin gets its own
+            # refusal, and a valid second path stays admitted with a duplicate fact.
             first = seen_sources.get(actual_digest)
             duplicate_of = None
             if first is not None and first[0] != source.declared_path:
@@ -1322,14 +1224,9 @@ def process_sources(
             inputs = [context.input_ref(published.relative_path)]
             extra: dict[str, Any] = {
                 "sha256": decision.digest,
-                # The digest of the submitted source file, as this door computed it.
-                # For an ordinary raster this equals `sha256` above and, when the
-                # ledger declared one, `declared_sha256` too -- the digest check
-                # earlier in this loop refuses before `decide()` runs otherwise. The
-                # three names genuinely diverge only for a rendered PDF/TIFF page,
-                # where `sha256` is the *render's* digest rather than the source's.
-                # Duplicate accounting groups on this field because the door always
-                # knows it for anything admitted, render or not.
+                # The submitted file's digest; differs from `sha256` only for a
+                # rendered page. Duplicate accounting groups on it because every
+                # admission has one.
                 "admitted_source_sha256": actual_digest,
                 "stored_at": published.relative_path,
                 "geometry": {"width": decision.geometry[0], "height": decision.geometry[1]},
@@ -1346,12 +1243,8 @@ def process_sources(
                     "stored_at": parent.relative_path,
                     "source_frame_index": source.source_frame_index or 0,
                 }
-                # Content addressing can make the derivative and master the same
-                # blob: a full-frame, zero-rotation ``keep`` decision over a PNG
-                # already written by the deterministic encoder is a real example.
-                # One reference then proves both roles. Publishing it twice would
-                # violate the envelope's no-duplicate-input contract and turn an
-                # exact no-op into a fatal artifact error.
+                # A no-op `keep` over a deterministic PNG makes derivative and
+                # master one blob; envelope inputs may not repeat.
                 if parent.relative_path != published.relative_path:
                     inputs.append(context.input_ref(parent.relative_path))
             if duplicate_of is not None:
@@ -1365,9 +1258,8 @@ def process_sources(
             )
             admitted += 1
     except BaseException as primary:
-        # Cleanup must not replace a security refusal already in flight. A native
-        # close failure still remains visible on the primary exception, while the
-        # refusal that stopped admission keeps its type, message, and control flow.
+        # Cleanup must not replace a refusal already in flight; its failure
+        # becomes a note on it.
         try:
             close_active_pdf()
         except BaseException as cleanup:
@@ -1440,12 +1332,10 @@ def _iter_admissions(context: StageContext, outcome: str):
 
 
 def publish_refusal_report(context: StageContext) -> str | None:
-    """Seal every door alarm into one private, filename-bearing report.
+    """Seal every door refusal into one private, filename-bearing report.
 
-    The per-source admission artifacts remain the authority.  This report is their
-    self-hashed, input-referenced index for an operator who needs a named list
-    without putting filenames or image bytes into terminal output.  It is an
-    ordinary run-tree artifact, not a sixth on-disk file shape.
+    The admission artifacts stay the authority; this indexes them so filenames
+    never reach terminal output.
     """
     rows: list[dict[str, Any]] = []
     inputs: list[dict[str, str]] = []
@@ -1459,8 +1349,7 @@ def publish_refusal_report(context: StageContext) -> str | None:
             raise ContractError("a refused door admission has no integer source ordinal")
         if not isinstance(path, str) or not path:
             raise ContractError("a refused door admission has no declared filename")
-        # Reading the closed code back is what prevents a free-text report from
-        # turning a producer bug into the operator's only explanation.
+        # Parse the closed code so a producer bug cannot pass as free text.
         admission.reason_code(refusal)
         rows.append({"ordinal": ordinal, "declared_path": path, "reason": refusal})
         inputs.append({"relative_path": entry["relative_path"], "sha256": entry["sha256"]})
@@ -1482,22 +1371,17 @@ def publish_refusal_report(context: StageContext) -> str | None:
 
 
 def publish_duplicate_report(context: StageContext) -> str | None:
-    """Seal an operator-readable duplicate fact without refusing either source.
+    """Seal the duplicate fact without refusing either source.
 
-    The admission records remain per ordinal. This companion record groups every
-    admitted source path that shares one submitted digest, names the first observed
-    filename and ordinal, and makes the changed denominator inspectable without
-    asking a later stage to rediscover it from blobs.
+    Groups every admitted path sharing one submitted digest and names the first
+    filename and ordinal, so no later stage rediscovers it from blobs.
     """
     grouped: dict[str, list[tuple[int, str, dict[str, str]]]] = {}
     for entry, payload in _iter_admissions(context, "admitted"):
         ordinal = payload.get("ordinal")
         path = payload.get("declared_path")
-        # Not `declared_sha256`: that one is optional on a `SourceEntry`, so grouping
-        # on it made a legal admission fatal here — and fatal *after* the run had
-        # already published every admission, which is the worst moment to discover it.
-        # The door computes this one for everything it admits, so its absence really
-        # is a contract breach and stays loud rather than being skipped (principle 2).
+        # Not the optional `declared_sha256`: every admission has this digest, so
+        # its absence is a contract breach and stays loud (principle 2).
         source_digest = payload.get("admitted_source_sha256")
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise ContractError(
@@ -1572,9 +1456,7 @@ def publish_duplicate_report(context: StageContext) -> str | None:
 def publish_cluster_report(context: StageContext) -> str | None:
     """Carry corpus-scoped re-shoot links into the sealed run.
 
-    Unlike a duplicate report, this never calls one member canonical: every
-    submitted member remains an admission and the record makes that fact visible
-    to an operator without asking a later stage to reconstruct it from geometry.
+    No member is called canonical: every submitted member remains an admission.
     """
     groups: dict[str, dict[str, Any]] = {}
     inputs: list[dict[str, str]] = []
@@ -1650,46 +1532,20 @@ def publish_cluster_report(context: StageContext) -> str | None:
 def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) -> None:
     """Refuse a submission in which two submitted files derive one page identity.
 
-    Identity binds the bytes, not the manifest row, so two byte-identical files
-    under different names derive one `page_id`; the Exemplar seals one page
-    citing both submission rows, and every stage behind it still works one page
-    per submitted row. Until they process a merged page once per identity, that
-    submission cannot be read correctly, and this is where it is stopped.
+    Byte-identical files derive one `page_id`, but every later stage works one
+    page per submitted row, so the run would read one page where two were submitted.
 
-    **The whole submission is refused, and never a file.** Dropping the second
-    copy is an automated exclusion, and excluding material is the project
-    lead's decision, not the pipeline's —
-    `ArmariumCategory.EXCLUDED_WITH_APPROVAL` exists because exclusion is
-    approval-bound. Nor may the door choose the other way and read the merged
-    page once: identical bytes are one page shot twice *or* an export that wrote
-    one scan under two names, and nothing in the bytes tells the two apart. The
-    operator is asked instead, which is what principle 2 is for.
+    The whole submission is refused, never one file, and there is no override
+    flag: dropping a copy is an exclusion, which is the project lead's decision,
+    and the bytes cannot tell a page shot twice from one scan exported twice.
 
-    Ordinals only, never filenames. `run_stage` prints every `ContractError` to
-    stderr, and the data-handling logging rule excludes a declared path from
-    exactly that channel — the same reason `common/exemplar_boundary.py` and
-    `require_some_admitted` name their refusals by ordinal. The duplicate report
-    is sealed *before* this refusal precisely so the per-filename detail exists
-    in the tree: nothing is lost, and the run stops after the evidence is
-    written and before anything else seals.
+    The error names ordinals only, since `run_stage` prints it to stderr and the
+    data-handling policy keeps paths out of logs; the duplicate report sealed
+    before this refusal names the files.
 
-    There is deliberately no `--allow-duplicate-sources`. A flag that opts past
-    this would let a session wave through a refusal that exists to stop a
-    downstream lie about how many pages were read; adding that escape hatch is
-    the project lead's decision, not this door's.
-
-    **What this sees is the submitted bytes, which is not every route to one
-    page identity.** The duplicate report groups on `admitted_source_sha256`,
-    the digest of the file as submitted, so this refuses exactly the submissions
-    in which two declared filenames carry identical bytes. A page identity is
-    derived one step further on (`pipeline/1_exemplar/run.py::_page_origin`):
-    for a triage-declared frame it binds the admitted *derivative*, so two
-    sources whose bytes differ and whose derivatives coincide would also seal as
-    one page and are not grouped here. That case is refused by name at the first
-    consumer instead, by `common/exemplar_boundary`'s merged-page check, and it
-    is named here rather than left to be discovered: closing it at this door
-    would mean deriving page identity a second time in this file, and one rule
-    for what makes a page spelled in two places is how the two come to disagree.
+    Only identical submitted bytes are caught here. Different sources whose triage
+    derivatives coincide are refused by `common/exemplar_boundary` at the first
+    consumer, so page identity is derived in one place.
     """
     if duplicate_report is None:
         return
@@ -1699,11 +1555,8 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
         artifact_id(DOOR, "duplicate-report", DOOR_DUPLICATE_REPORT_SUBJECT),
     )
     groups = record["payload"].get("groups")
-    # This stage wrote the report moments ago, so a malformed one means the tree
-    # changed underneath the run -- and `run_stage` turns a `ContractError` into
-    # this pipeline's refusal shape while a `KeyError` reaches the operator as a
-    # traceback. The refusal that stops a whole submission is not the place to
-    # exit by exception type.
+    # The report was written moments ago, so a malformed one means the tree
+    # changed underneath; refuse by name rather than with a traceback.
     if not isinstance(groups, list) or not groups:
         raise ContractError(
             "the door duplicate report names no group of sources sharing one digest, so the "
@@ -1747,9 +1600,8 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
 def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | None) -> None:
     """An empty or wholly refused input set is a loud failure.
 
-    The terminal carries the count and private report location, while the report
-    itself names every source and reason. This preserves filenames as citation links
-    without placing them in a captured terminal stream.
+    The error carries counts and the private report location; only the report
+    names files.
     """
     if admitted != 0:
         return
@@ -1767,13 +1619,10 @@ def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | No
 def _refusal_census(tree: RunTree) -> tuple[int, dict[str, int]]:
     """Count the published refusals by closed-set reason code.
 
-    **Nothing in here may raise.** It runs only on the failure path, to describe a
-    failure that has already happened, and an exception from reading a damaged
-    artifact would replace "the door admitted nothing" with something about JSON —
-    the primary failure masked by a secondary one, which is a worse answer to
-    principle 2 than a partial census. So an artifact that cannot be read or whose
-    reason is outside the closed set is counted under a name that says so, and the
-    loud failure still says what it is.
+    Best effort: it describes a failure already in flight, and an error about a
+    damaged artifact would mask it (principle 2), so unreadable records are
+    counted under a name that says so. A damaged admission whose payload is not
+    an object still raises `AttributeError`.
     """
     census: dict[str, int] = {}
     total = 0
@@ -1790,10 +1639,7 @@ def _refusal_census(tree: RunTree) -> tuple[int, dict[str, int]]:
             if record["outcome"] != "refused":
                 continue
             code = admission.reason_code(record["payload"].get("reason")).value
-        # TypeError belongs here with the rest: a damaged artifact that decodes to a
-        # JSON list, string or number makes `record["outcome"]` raise it, and this
-        # function's whole contract is that it never replaces the primary failure
-        # with a secondary one about JSON.
+        # TypeError: a damaged artifact can decode to a list, string or number.
         except (OSError, TypeError, ValueError, KeyError, ContractError):
             code = "unreadable record"
         census[code] = census.get(code, 0) + 1
@@ -1803,10 +1649,8 @@ def _refusal_census(tree: RunTree) -> tuple[int, dict[str, int]]:
 def declared_synthetic_fixture_root(requested_root: str) -> Path:
     """The one root in this repository whose contents are declared synthetic.
 
-    Fixture status comes from the declared fixture
-    manifest, never from a caller flag, a filename suffix, or a folder name. A
-    caller pointing `--fixture-root` at its own directory is pointing at real
-    input, and this is what says so instead of believing it.
+    A caller pointing `--fixture-root` anywhere else is pointing at real input,
+    whatever the folder is called.
     """
     try:
         candidate = Path(requested_root).resolve(strict=True)
@@ -1826,9 +1670,8 @@ def declared_synthetic_fixture_root(requested_root: str) -> Path:
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Create the run with an explicitly supplied chair implementation.
 
-    The command-line default is the production registry. Tests supply an
-    independent deterministic implementation through this seam; no command-line
-    option chooses among implementations, chairs, revisions, recipes, or caches.
+    Tests inject a deterministic registry through this seam; no command-line
+    option chooses among implementations, chairs, revisions, recipes or caches.
     """
     parser = stage_parser(__doc__.splitlines()[0])
     parser.add_argument(
@@ -1849,11 +1692,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
     parser.add_argument(
         "--triage-decision-manifest",
-        help="Unit 5 triage-decision-manifest-v1 controlling raster split/crop/rotation",
+        help="triage-decision-manifest-v1 controlling raster split/crop/rotation",
     )
     parser.add_argument(
         "--triage-clusters",
-        help="corpus-scoped Unit 5 re-shoot cluster records keyed by cluster id",
+        help="corpus-scoped triage re-shoot cluster records keyed by cluster id",
     )
     parser.add_argument(
         "--triage-producer-recipe",
@@ -1867,15 +1710,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
 
     if args.submission_folder is not None:
-        # The run-level cap is applied inside `real_submission`, once the run root
-        # has passed the storage gate. Reading a run authority here would open and
-        # self-hash a file in a directory the data-handling policy never approved
-        # — the exact read the gate exists to stop — and an operator who mistyped
-        # the run root onto an unapproved volume holding a run.json would be told
-        # the run was halted rather than that the root is not approved.
+        # The halted-run cap waits for the storage gate: reading `run.json` on an
+        # unapproved volume is the read the gate forbids.
         return real_submission(args, registry)
-    # The fixture path is declared synthetic input and is not gated, so its cap
-    # check has no earlier gate to stand behind.
+    # The fixture path is not gated, so its cap applies first.
     _refuse_halted_run_root(Path(args.run_root), args)
     if args.submission_manifest is not None:
         raise ContractError(
@@ -1894,10 +1732,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 def _refuse_halted_run_root(run_root: Path, args) -> None:
     """Apply the sealed run-level hard-failure cap to an existing run tree.
 
-    Called on the fixture path before anything is written, and on the real path
-    only after `run_root` has passed the approved-storage gate — reading a run
-    authority is a read, and a read outside an approved location is what the gate
-    is for.
+    On the real path, call it only after `run_root` passes the storage gate.
     """
     existing_tree = RunTree(run_root, args.run_id)
     if existing_tree.resolve("run.json").exists():
@@ -1907,14 +1742,8 @@ def _refuse_halted_run_root(run_root: Path, args) -> None:
 def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
     """The one place a run's PDF target DPI is resolved, fixture or real.
 
-    One read, returning the settings and the digest of the bytes they were parsed
-    from. The door used to resolve the settings here and then let the binding step
-    open `pdf_render.toml` again for its digest, so a rewrite between the two
-    reads sealed a run whose `render_settings` recorded one target while its
-    `config_digest` bound the bytes of another — a run claiming a configuration it
-    did not execute. The digest travels into `config_digest` and into
-    the run's `sealed_config_digests`, and the door proves at its point of use
-    that the settings it renders with are the ones the run sealed.
+    Settings and digest come from one read, so a rewrite cannot seal a digest
+    for settings the run did not render with.
     """
     return render_config.load_pdf_render_binding(
         Path(args.pdf_render_config),
@@ -1924,11 +1753,10 @@ def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
 
 
 def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int:
-    """The one shared close for both entry points: reports, then the loud checks.
+    """The shared close for both entry points: reports, then the loud checks.
 
-    Order is load-bearing. Every report is sealed and announced first, so a run
-    refused below still leaves the operator the whole evidence in the tree; then
-    the two refusals fire, before `seal_boundary` writes anything else.
+    Reports seal first so a refused run still leaves its evidence; both refusals
+    fire before `seal_boundary` writes anything else.
     """
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
@@ -1979,10 +1807,8 @@ def fixture_submission(args, registry) -> int:
     )
     require_corpus_frame_shard(len(pages), bindings["sealed_config_digests"])
 
-    # The door creates the run: it is the first thing that knows what arrived, so
-    # it is the only stage that can bind a run id to its inputs. The manifest
-    # carries the *declared* digests — what this run believed about its sources —
-    # so a refusal and the declaration it was refused against tell one story.
+    # The door creates the run because it first knows what arrived. The manifest
+    # carries declared digests, so a refusal matches what it was refused against.
     tree = RunTree.create(
         Path(args.run_root),
         args.run_id,
@@ -1990,9 +1816,8 @@ def fixture_submission(args, registry) -> int:
             {
                 "relative_path": page["path"],
                 "sha256": declared[page["ordinal"]],
-                # The fixture declaration's digest is checked against these
-                # bytes by the Door.  Bind that computed page-set identity
-                # separately so shard membership never collapses to ordinals.
+                # The checked-in bytes' digest, bound separately so shard
+                # membership never collapses to ordinals.
                 "computed_sha256": page["sha256"],
                 "ordinal": page["ordinal"],
             }
@@ -2005,10 +1830,8 @@ def fixture_submission(args, registry) -> int:
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
         register_bytes=_read_corpus_register(args.corpus_register),
-        # The Door is the only stage that creates the run authority, so it is
-        # the only one that can seal the commit the code ran at into it. `None`
-        # when the orchestrator could not measure it; the store refuses
-        # anything that is not a full lowercase revision.
+        # Only the Door creates the run authority, so only it can seal the
+        # commit; None when the orchestrator could not measure it.
         repository_commit=args.repository_commit,
     )
     context = _door_context(
@@ -2019,10 +1842,7 @@ def fixture_submission(args, registry) -> int:
         registry,
         sealed_config_digests=bindings["sealed_config_digests"],
     )
-    # The point of use, on the same terms as the Designator's padding recheck: the
-    # bytes these settings were parsed from must be the bytes this run sealed. One
-    # read makes them so; this is what refuses if a later change reintroduces a
-    # second one, or seals the digest under a name nothing renders with.
+    # The settings rendered with must be the bytes this run sealed.
     context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
     sources = [
         SourceEntry(page["ordinal"], page["path"], declared[page["ordinal"]]) for page in pages
@@ -2039,12 +1859,10 @@ def fixture_submission(args, registry) -> int:
 
 
 def real_submission(args, registry) -> int:
-    """Admit a local folder's bytes into a run, once it is proven to sit inside an
-    approved storage location.
+    """Admit a local folder's bytes into a run once it sits in an approved location.
 
-    Order matters: the storage roots are checked, then the folder is inventoried,
-    then the run is created, and only then is a byte published. A folder outside
-    every approved root means nothing was read and nothing exists.
+    Order matters: storage roots, inventory, run creation, then publication. A
+    folder outside every approved root means nothing was read.
     """
     data_policy_binding = gate.load_policy_binding(Path(args.data_gate_policy))
     data_policy = data_policy_binding.policy
@@ -2055,9 +1873,8 @@ def real_submission(args, registry) -> int:
         )
 
     roots = gate.approved_storage_roots(data_policy)
-    # The *resolved* paths are used from here on, as `submit.py` does and for the
-    # same reason: checking one path and then opening another is where a
-    # check-then-use race lives, and the resolved values are already in hand.
+    # Use the resolved paths from here on: checking one path and opening another
+    # is a check-then-use race.
     submission_folder = gate.require_approved_storage_location(
         Path(args.submission_folder), roots, "submitted folder"
     )
@@ -2065,8 +1882,7 @@ def real_submission(args, registry) -> int:
     manifest_path = gate.require_approved_storage_location(
         Path(args.submission_manifest), roots, "submission filename ledger"
     )
-    # The run-level cap, now that the root it reads is a location the policy
-    # approved, and against the resolved path rather than the typed one.
+    # The halted-run cap, now that the resolved root is approved.
     _refuse_halted_run_root(run_root, args)
     for location, label in (
         (run_root, "run root"),
@@ -2082,10 +1898,8 @@ def real_submission(args, registry) -> int:
         raise ContractError("triage cluster records require a triage decision manifest")
     if args.triage_producer_recipe is not None and args.triage_decision_manifest is None:
         raise ContractError("triage producer recipe requires a triage decision manifest")
-    # Gated exactly as the submission filename ledger above is, and for the same
-    # two reasons: a real-path input read from disk is inside the data-handling
-    # policy's approved roots or it was never read, and a decision record sitting
-    # inside the submitted folder would be inventoried as a submitted source.
+    # Gated like the ledger: every real input must sit in an approved root, and a
+    # record inside the submitted folder would be inventoried as a source.
     triage_paths = [
         (args.triage_decision_manifest, "triage decision manifest"),
         (args.triage_clusters, "triage re-shoot cluster records"),
@@ -2115,13 +1929,9 @@ def real_submission(args, registry) -> int:
     format_policy = admission.load_format_policy()
     pdf_render_binding = _load_pdf_render_binding(args)
     pdf_settings = pdf_render_binding.settings
-    # Inventory streams every digest and retains no source body.  Later reads
-    # reopen by directory descriptor, never by a reconstructed ordinary path: a
-    # 15 GB PDF remains a stream, and the digest and PDFium renderer hold the same
-    # submitted file even if its name is replaced after inventory.
-    # The digest each submitted path is already bound to, for the one check that
-    # cannot be settled by `fstat` alone: a rewrite of a held inode can imitate a
-    # name replacement exactly (`inventory.OpenedSubmissionSource.assert_unchanged`).
+    # Inventory keeps no source bodies; later reads reopen by directory
+    # descriptor, so digest and render see one file even if its name is replaced.
+    # The ledger digests catch an in-place rewrite, which `fstat` alone cannot.
     ledger_digests = {row["relative_path"]: row["sha256"] for row in ledger["files"]}
     found = inventory.read_submission(submission_folder, max_bytes=0)
     found_paths = {source.relative_path for source in found}
@@ -2138,16 +1948,13 @@ def real_submission(args, registry) -> int:
             with inventory.open_submission_source(
                 submission_folder, relative_path
             ) as opened_source:
-                # The raster path is deliberately bounded even if an untrusted
-                # filename ledger lies about a file that grew after inventory.
-                # `process_sources` compares this observed size to the ledger and
-                # records the mismatch; it never allocates an arbitrary replacement.
+                # Bounded even if the untrusted ledger understates a file that
+                # grew; `process_sources` refuses the size mismatch.
                 data = opened_source.handle.read(MAX_SOURCE_BYTES + 1)
                 opened_source.assert_unchanged(expected_sha256=ledger_digests.get(relative_path))
                 return data
         except inventory.SubmissionInputError as error:
-            # `process_sources` turns a per-source read failure into its ordinary,
-            # private named refusal artifact rather than failing the entire census.
+            # `process_sources` turns this into a per-source refusal.
             raise OSError(str(error)) from error
 
     def open_source(relative_path: str):
@@ -2225,10 +2032,8 @@ def real_submission(args, registry) -> int:
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
         register_bytes=_read_corpus_register(args.corpus_register),
-        # The Door is the only stage that creates the run authority, so it is
-        # the only one that can seal the commit the code ran at into it. `None`
-        # when the orchestrator could not measure it; the store refuses
-        # anything that is not a full lowercase revision.
+        # Only the Door creates the run authority, so only it can seal the
+        # commit; None when the orchestrator could not measure it.
         repository_commit=args.repository_commit,
     )
 
@@ -2241,12 +2046,8 @@ def real_submission(args, registry) -> int:
         sealed_config_digests=bindings["sealed_config_digests"],
     )
     context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
-    # CF01: the caller-selected data-handling policy that decided where this
-    # material may live is now named by the run it admitted. The gate itself
-    # already worked from one in-memory record, so this closes the *evidence*
-    # gap rather than a race — `config/README.md` said outright that nothing
-    # bound a run to the policy version governing it, and a later reader could
-    # not say which of two policy files admitted a corpus.
+    # Bind the data-handling policy that decided where this material may live,
+    # so a reader can tell which policy admitted the corpus.
     context.require_sealed_config("data-handling", data_policy_binding.config_sha256)
     admitted = process_sources(
         context,
@@ -2304,10 +2105,7 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
         or isinstance(ordinals, bool)
     ):
         raise ContractError("the door duplicate report has no integer source and ordinal counts")
-    # "detected", not "admitted". Each source was admitted per ordinal and the
-    # report says so, but `require_no_duplicate_sources` refuses the whole
-    # submission two calls later, and two lines that an operator reads in
-    # sequence may not disagree about whether their subject was let in.
+    # "detected", not "admitted": the whole submission is refused two calls later.
     print(
         f"{sources} duplicate source(s) detected across {ordinals} page ordinal(s); "
         f"private duplicate report: {duplicate_report}",
@@ -2316,13 +2114,10 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
 
 
 def _padding_config_digest(path: str) -> str:
-    """The Designator padding policy's digest, read at the door like every other.
+    """The Designator padding policy's digest.
 
-    A real submission stops before the Designator cuts anything today, so this
-    binds nothing a real run currently uses. It is sealed anyway, because the
-    day a real structure pass exists is the day crops start depending on it, and
-    a configuration that entered the digest only once it mattered would leave
-    every earlier run id reusable across a geometry change.
+    The Designator rechecks it at point of use, so a real run that never sealed
+    it would refuse there.
     """
     try:
         return digest_bytes(Path(path).read_bytes())
@@ -2333,13 +2128,10 @@ def _padding_config_digest(path: str) -> str:
 
 
 def _geometry_config_digest(path: str) -> str:
-    """The Designator geometry policy's digest, sealed for the same reason.
+    """The Designator geometry policy's digest.
 
-    Unlike padding, this one is load-bearing today: `pipeline/2_designator/run.py`
-    re-reads the geometry policy at point of use and proves it read what was
-    bound via `context.require_sealed_config("designator-geometry", ...)`, so a
-    real run whose door never sealed this name would refuse at the Designator
-    unconditionally — the exact defect F-S5 named for padding.
+    The Designator rechecks it at point of use, so a real run that never sealed
+    it would refuse there.
     """
     try:
         return digest_bytes(Path(path).read_bytes())
@@ -2350,18 +2142,10 @@ def _geometry_config_digest(path: str) -> str:
 
 
 def _grouping_config_digest(path: str) -> str:
-    """The Designator grouping/reconciliation thresholds' digest, sealed at the door.
+    """The Designator grouping thresholds' digest.
 
-    Load-bearing on the same terms as geometry — `pipeline/2_designator/run.py`
-    re-reading these thresholds at point of use and proving it read what was bound
-    via `context.require_sealed_config("designator-grouping", ...)`, so a real run
-    whose door never sealed this name would refuse at the Designator
-    unconditionally, the defect F-S5 named for padding.
-
-    Hashed here and parsed there, never both: the schema lives in
-    `pipeline/2_designator/grouping_config.py`, and a stage may not import another
-    stage's module (`pipeline/test_stage_import_boundaries.py`). The bytes this
-    digest names are the bytes that loader is held to.
+    The Designator rechecks it at point of use, as with geometry. Hashed here and
+    parsed there, because a stage may not import another stage's module.
     """
     try:
         return digest_bytes(Path(path).read_bytes())
@@ -2404,25 +2188,14 @@ def _real_bindings(
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
-    The source manifest binds the bytes. The configuration digest binds everything
-    else that shaped what the door did: the model roster, decoder routing, and the
-    versions/settings that render pages. A run resumed under different versions or
-    routing is a different run wearing an old name, and `RunTree.create` refuses
-    it before anything is written.
-
-    **Real input needs no per-run approval record.** The per-run APPROVAL
-    record and its currency check are gone and stay gone: real input is no
-    longer approval-gated. The data-handling policy's byte digest is bound
-    again — `data_handling_policy_sha256` above and the `data-handling` sealed
-    name — but as provenance and tamper-evidence only (WHICH caller-selected
-    policy performed the storage-root check), never as a sign-off.
+    The source manifest binds the bytes; `config_digest` binds everything else
+    that shaped the door's output, so `RunTree.create` refuses a resume under
+    different settings. The data-handling policy digest is provenance, not an
+    approval.
     """
     validate_witness_adapter_bindings(models)
-    # Read and bound exactly as `common/stage.py::run_config_bindings` binds
-    # them on the fixture path. Without these a real submission reusing one run
-    # id under a different `--serving-recipes-config` produced the same
-    # `config_digest`, so `RunTree.create` saw no change and the run authority
-    # could not say which catalogue governed the run (principle 6).
+    # Bound as on the fixture path, so a changed serving catalogue changes
+    # `config_digest` (principle 6).
     try:
         serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
     except OSError as error:
@@ -2454,12 +2227,8 @@ def _real_bindings(
     corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
         corpus_frame_config_path
     )
-    # Read once and named, for the two reasons the fixture path
-    # (`common.stage.run_config_bindings`) already reads it this way: the digest
-    # sealed into `config_digest` and the one published as the point-of-use
-    # recheck must be of the same bytes -- two reads can straddle a rewrite --
-    # and an unreadable declaration is a named ContractError here rather than an
-    # OSError traceback out of the middle of a dict literal.
+    # One read feeds both digests (two reads can straddle a rewrite), and an
+    # unreadable file is a named refusal.
     try:
         perlector_protocol_config_sha256 = digest_bytes(
             Path(perlector_protocol_config_path).read_bytes()
@@ -2469,8 +2238,7 @@ def _real_bindings(
             "the Perlector protocol configuration binding at "
             f"{perlector_protocol_config_path} could not be read"
         ) from error
-    # Same discipline, same reasons, for the audit policy: one read feeding
-    # both digests, and a named refusal instead of an OSError traceback.
+    # Likewise for the audit policy.
     try:
         perlector_audit_config_sha256 = digest_bytes(Path(perlector_audit_config_path).read_bytes())
     except OSError as error:
@@ -2478,11 +2246,8 @@ def _real_bindings(
             "the Perlector audit configuration binding at "
             f"{perlector_audit_config_path} could not be read"
         ) from error
-    # The shared constant, not a second spelling of it: `require_triage_modes` reads
-    # this same file at its point of use through the default below, and a moved path
-    # would otherwise refuse every real submission carrying triage geometry with
-    # "changed between run binding" — pointing the operator at a rewrite that never
-    # happened.
+    # The shared default that `require_triage_modes` also reads; a second
+    # spelling could drift and refuse every triage run as "changed".
     triage_modes_config_path = Path(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
     try:
         triage_modes_config_sha256 = digest_bytes(triage_modes_config_path.read_bytes())
@@ -2505,11 +2270,7 @@ def _real_bindings(
                 "submission_ledger_sha256": ledger["self_hash"],
                 "format_policy": format_policy,
                 "pdf_render_config_sha256": pdf_render_config_sha256,
-                # Not an approval record and not a gate: the door
-                # still admits real material on the storage-root check alone. This
-                # binds *which* caller-selected policy performed that check, so a
-                # run can be reconciled against the policy that governed it instead
-                # of against whichever file happens to sit at the default path now.
+                # Provenance, not a gate: which policy did the storage-root check.
                 "data_handling_policy_sha256": data_handling_config_sha256,
                 "door_execution_recipe": _door_execution_recipe(pdf_settings),
                 "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,
@@ -2522,25 +2283,15 @@ def _real_bindings(
                 "designator_grouping_config_sha256": designator_grouping_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
                 "triage_modes_config_sha256": triage_modes_config_sha256,
-                # Unit 5's decisions are geometry that shaped these pixels, so
-                # they are bound like any other fact that did. A triage pass re-run
-                # between two attempts at one run id changes these digests, and
-                # `RunTree.create` then refuses the reuse by name instead of the
-                # swap being caught only where a changed row happens to reach an
-                # already-published admission. Empty for a submission with no
-                # split decisions, so an ordinary run's digest is unchanged.
+                # Triage decisions shape pixels, so a re-run triage pass under one
+                # run id is refused by name. Empty without split decisions.
                 "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_sha256,
                 "decoding_config_sha256": decoding_config_sha256,
                 "models": models.to_record(),
-                # Spec 08's run-level settings, bound on the real path exactly as
-                # `run_config_bindings` binds them on the fixture path: a resumed
-                # run under a different witness regime, declaration, or nuda
-                # design is a different run wearing an old name. Validated by the
-                # same shared function the fixture path uses, so an unapproved
-                # nuda sample or a misdeclared witness refuses before the run
-                # tree exists, never after the Attestatores leg has been paid for.
+                # Run-level witness settings, validated and bound as on the
+                # fixture path, so a bad declaration refuses before any paid work.
                 "witness_context_regime": witness_context,
                 "witness_context_declaration_sha256": witness_context_declaration_sha256,
                 "nuda_per_mille": nuda_per_mille,
@@ -2558,18 +2309,8 @@ def _real_bindings(
             }
         ),
         "adapter_recipes": adapter_recipes,
-        # Both entries named here exactly as the fixture path's
-        # `run_config_bindings` names them (`common/stage.py`), so the two paths'
-        # `sealed_config_digests` share one shape. `designator-padding`'s bytes
-        # were already folded into `config_digest` above (`_padding_config_digest`
-        # docstring: "sealed anyway... the day a real structure pass exists is the
-        # day crops start depending on it"), but the named point-of-use-recheck
-        # entry itself was missing here -- a real Designator run reaching
-        # `context.require_sealed_config("designator-padding", ...)`
-        # (`pipeline/2_designator/run.py`) over real ingress would have refused
-        # with "this context sealed no digest for the designator-padding
-        # configuration" on every real run, unconditionally -- the defect
-        # named F-S5.
+        # Named as on the fixture path, so point-of-use rechecks find them on
+        # real runs too.
         "sealed_config_digests": {
             "designator-padding": designator_padding_config_sha256,
             "designator-geometry": designator_geometry_config_sha256,
@@ -2583,24 +2324,14 @@ def _real_bindings(
             "recovery": recovery_policy["config_sha256"],
             "hard-failure": hard_failure_policy["config_sha256"],
             "triage-modes": triage_modes_config_sha256,
-            # Real ingress only: the fixture route is not gated, so a fixture run
-            # seals no data-handling name and a point of use that asked for one
-            # there would be asking about a check that never happened.
+            # Real ingress only: the fixture route is not gated.
             "data-handling": data_handling_config_sha256,
             "serving-recipes": serving_recipes_config_digest,
             "pod-placement": pod_placement_config_digest,
-            # Real ingress only, for the opposite reason: on the fixture path
-            # these three facts are inside `config_digest`, which every later
-            # stage recomputes whole and `open_context` rechecks. The real
-            # `config_digest` above cannot be recomputed downstream -- it binds
-            # the submission ledger and this machine's decoder recipe -- so the
-            # facts stages 3-7 act on need names of their own for
-            # `common.stage._refuse_incompatible_real_reuse` to recheck at every
-            # open: the model roster down to each chair's revision (`run.json`'s
-            # `witness_chairs` and `adapter_recipes` do not move when only a
-            # revision does), the Armarium format projection, and the run-level
-            # reading knobs. Named here and NOT folded into `config_digest`, so
-            # the real digest does not move and no run in flight is invalidated.
+            # Real ingress only: downstream stages cannot recompute the real
+            # `config_digest` (it binds the ledger and this machine's decoder),
+            # so the facts stages 3-7 act on are rechecked by these names at
+            # every open.
             "models": models.models_digest,
             "armarium-formats": armarium_formats_digest,
             "run-policy": real_run_policy_digest(
@@ -2641,10 +2372,8 @@ def _door_context(
 ) -> StageContext:
     """The door's own context.
 
-    It carries the sealed digests because the door is a point of use as well as the
-    binding step: it parses the PDF render policy and, on the real route, the
-    data-handling policy, and it must be able to prove that what it acted on is what
-    the run recorded.
+    It carries the sealed digests because the door also uses the PDF render and
+    data-handling policies and must prove they are what the run recorded.
     """
     run = tree.read_run()
     return StageContext(
