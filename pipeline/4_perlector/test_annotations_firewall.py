@@ -146,7 +146,7 @@ EVIDENCE = {
     "chair": "attestator_1",
     "testimonium_id": "testimonium-0001",
     "reference": {"relative_path": "3_attestatores/artifacts/t.json", "sha256": "a" * 64},
-    "variant": "Tyrel",
+    "variant": "Jean",
 }
 
 
@@ -187,7 +187,7 @@ def test_the_firewall_refuses_a_fake_seat_that_fills_a_gap_from_testimony():
     only as linked evidence. This must be refused regardless of what the
     smuggled characters equal -- the check does not even need to inspect
     `witness_evidence` to catch it."""
-    witness_variant = "Tyrel"
+    witness_variant = "Jean"
     text = f"the child of {witness_variant}, baptised"
     gaps = [
         {
@@ -209,7 +209,7 @@ def test_the_firewall_check_is_not_vacuous():
     satisfies every other schema rule — declared position, both bounds inside
     the text — and is refused solely because it names legible witness text as
     a gap."""
-    witness_variant = "Tyrel"
+    witness_variant = "Jean"
     text = f"the child of {witness_variant}, baptised"
     gap = {
         "position": "internal",
@@ -296,7 +296,7 @@ def test_witness_evidence_entries_are_a_closed_record():
 
 def test_witness_evidence_must_name_the_testimonium_it_came_from():
     """A variant with no artifact behind it is a claim about a witness rather
-    than the witness's own sealed record (GOALS 5)."""
+    than the witness's own sealed record (goal 4)."""
     without_reference = {key: value for key, value in EVIDENCE.items() if key != "reference"}
     with pytest.raises(SchemaRefusal, match="witness_evidence"):
         annotations.validate_gaps(

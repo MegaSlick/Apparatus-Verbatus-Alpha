@@ -19,7 +19,7 @@ fixture; meta-invariant #86 ("a fix proven only on a fixture is not proven")
 applies, and this suite is where the two audits' red demonstrations live as
 executable checks rather than prose.
 
-Findings: Opus-F2 (2a wedge, 2b whole-pass refusal, 2c currency loss, 2d stale
+Findings: F2 (2a wedge, 2b whole-pass refusal, 2c currency loss, 2d stale
 `complete` export) and Sol-S5 (the lax recovery counter at the Perlector).
 """
 
@@ -263,7 +263,7 @@ def test_the_perlector_derives_its_ordinal_from_the_shared_recovery_reader(tmp_p
         perlector._next_attempt(None, "a1", [region("proposal"), region("mystery")])
 
 
-# --- Opus-F2 (2a): the reread has a window, and it runs green inside it --------
+# --- F2 (2a): the reread has a window, and it runs green inside it --------
 #
 # The audit reported the reread as producing a payload the run tree then refuses
 # (IncompatibleReuse). Driving it showed something stronger and simpler: the
@@ -408,7 +408,7 @@ def test_a_reread_of_a_failed_witness_is_retained_and_the_act_still_holds(tmp_pa
     )
 
 
-# --- Opus-F2 (2b, 2c): the whole pass is not the remedy, and says so ----------
+# --- F2 (2b, 2c): the whole pass is not the remedy, and says so ----------
 
 
 def test_a_whole_pass_at_the_next_ordinal_after_a_reread_is_refused(tmp_path):
@@ -474,7 +474,7 @@ def test_a_whole_second_pass_is_still_available_on_a_run_that_was_not_reread(tmp
     """The rule above bounds the whole pass; it does not remove it.
 
     A run where nobody ran a targeted reread can still take every configured chair
-    through a second attempt — the expensive instrument GOVERNANCE 1 says is an
+    through a second attempt — the expensive instrument principle 9 says is an
     acceptable cost — and this is the assertion that closing the reread's
     interaction with it did not close the instrument.
     """
@@ -541,7 +541,7 @@ def test_an_act_targeted_reread_of_a_page_witness_is_refused_by_name(tmp_path):
     } == {1}
 
 
-# --- Opus-F2 (2d): the export may not say `complete` over superseded evidence --
+# --- F2 (2d): the export may not say `complete` over superseded evidence --
 #
 # Everything the Armarium says about an act is derived from the latest Recensor
 # review and from the reading's own basis references; neither route passes back

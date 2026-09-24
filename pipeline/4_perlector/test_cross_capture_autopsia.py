@@ -657,7 +657,7 @@ def test_instrument_sampling_is_keyed_only_by_logical_act(monkeypatch):
     assert seen == [("nuda", "pac_shared"), ("control", "pac_shared")]
 
 
-# --- Sonnet security seat: path-handling on every digest-bound reference -------
+# --- Security review: path-handling on every digest-bound reference -------
 
 
 @pytest.mark.parametrize("escaping_path", ["../outside", "a/../../outside", "/etc/passwd"])

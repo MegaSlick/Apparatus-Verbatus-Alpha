@@ -53,7 +53,7 @@ def run_logical_passes(
     ``sealed_prior`` is that same closed reference and text, read back off an
     immutable Pass A an interrupted attempt at this identity already published.
     Given one, Pass A is not asked for again: its record exists, it may not be
-    overwritten (GOVERNANCE 4), and a second live answer would differ from the
+    overwritten (principle 4), and a second live answer would differ from the
     bytes on disk and be refused. The caller decides that this act is a resume;
     this seam only declines to re-read what it is handed.
     """

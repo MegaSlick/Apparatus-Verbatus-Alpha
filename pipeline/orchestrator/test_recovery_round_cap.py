@@ -133,7 +133,7 @@ def test_an_unimplemented_page_level_request_is_not_silently_dispatched_as_a_rec
 def test_a_recovery_checkpoint_waits_for_each_owner_stage_batch(monkeypatch):
     """A recovery round is three sections, and the cap is judged between them.
 
-    Tyrel's shape for the run-level cap is "if errors happened in chandra stage
+    The shape for the run-level cap is "if errors happened in chandra stage
     it finishes that section but pauses". So every outstanding act's recrop is cut
     before any reread is asked for, and the checkpoint sits at each of the three
     section boundaries — never between two acts of the same batch, where a second
@@ -286,7 +286,7 @@ def test_a_legacy_real_ingress_recrop_is_refused_and_recorded_before_anything_is
     # run's detail as `completed.stderr or completed.stdout`, and the
     # `ContractError` this raises is itself printed to stderr, so a listing on
     # stdout would be dropped from the receipt and this refusal would be
-    # recorded nowhere a human reads (GOVERNANCE 2).
+    # recorded nowhere a human reads (principle 2).
     assert streams.out == ""
     printed = streams.err
     # Both acts, not only the one the raised exception carries.

@@ -237,7 +237,6 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     # whose locale is not UTF-8 would decode a published product's own bytes
     # differently from the machine that wrote them — the same environment
     # dependence this branch already carries in its sealed bundle identity.
-    # Found by CodeRabbit.
     rows = [
         json.loads(line) for line in (clean / "acts.jsonl").read_text(encoding="utf-8").splitlines()
     ]
@@ -427,7 +426,7 @@ def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(
 
 # --- The act-attachment view is required at export, not merely checked ----------
 #
-# Opus audit-and-repair seat 3, R0. F-O2: `export_witnesses` rechecked R0's
+# Audit-and-repair seat 3, R0. F-O2: `export_witnesses` rechecked R0's
 # act-attachment dossier view only `if attachment is not None`, so an established
 # reading that had dropped the field exported with its page-witness custody never
 # rechecked here. The retained witness basis beside it was already required.

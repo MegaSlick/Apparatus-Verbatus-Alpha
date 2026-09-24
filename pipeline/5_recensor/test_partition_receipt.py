@@ -508,7 +508,7 @@ def test_recovery_replaces_the_current_partition_snapshot_without_erasing_histor
     assert before["self_hash"] != after["self_hash"]
 
     # The receipt is the one record replaced in place. The evidence it was
-    # derived from is append-only (GOVERNANCE 4) and must still be on disk, or
+    # derived from is append-only (principle 4) and must still be on disk, or
     # the round that produced the recrop could no longer be reconstructed.
     assert tree.resolve(requested["review_ref"]["relative_path"]).exists()
 
@@ -580,7 +580,7 @@ def test_a_run_that_proposed_no_acts_gets_a_visibly_partial_receipt_not_a_refusa
     """An empty denominator is a fact about the run, not a malformed receipt.
 
     The Designator proposing nothing at all is the silent-failure shape this whole
-    pipeline exists to catch (GOALS 1), and the Armarium's own aggregate already
+    pipeline exists to catch (goal 2), and the Armarium's own aggregate already
     treats a sealed page nobody marked out as a named partial rather than an
     error. Refusing to build the receipt would have turned that into a traceback
     at the one boundary whose job is making it visible -- neither lane noticed,
@@ -810,7 +810,7 @@ def test_every_recensor_terminal_set_combination_builds_a_matching_receipt_item(
 
 
 def test_a_receipt_item_refuses_a_partition_class_its_review_does_not_derive():
-    """Pin the refusal whose wording was repaired after CodeRabbit found it."""
+    """Pin the refusal, whose wording was repaired after review."""
     from common.recensor_receipt import build_recensor_partition_receipt
 
     item = dict(
@@ -957,7 +957,7 @@ def test_an_empty_receipt_may_not_claim_to_be_complete():
 
 # --- Audit-and-repair regression (F-new-2, mutation-of-mechanisms pass) ----------
 #
-# Sonnet audit-and-repair seat 1, R0. Mutation check: `pipeline/5_recensor/run.py
+# Audit-and-repair seat 1, R0. Mutation check: `pipeline/5_recensor/run.py
 # ::validate_chair_coverage` wires `act_attachment_facts(context, act_id)` into
 # `witness_coverage(...)` as its `attachments=` argument -- the one production call
 # site for D2/D3's act-granularity floor accounting (S3's audit question: "can any
@@ -1044,7 +1044,7 @@ def test_v2_receipt_cannot_omit_its_granularity_measurement_basis(tmp_path):
 
 # --- Audit-and-repair regression (F-O4) -----------------------------------------
 #
-# Opus audit-and-repair seat 3, R0. `page_granularity_only` is subtracted from the
+# Audit-and-repair seat 3, R0. `page_granularity_only` is subtracted from the
 # completed count before the v2 block that typed it ever runs, so a non-integer
 # value left `_validate_coverage` through a raw TypeError -- not a ContractError,
 # and so not something a caller that refuses malformed evidence by name can catch.
@@ -1062,7 +1062,7 @@ def test_a_non_integer_page_granularity_count_is_a_named_refusal(value):
 
 # --- Audit-and-repair regression (F-O3) -----------------------------------------
 #
-# Opus audit-and-repair seat 3, R0. `witness_coverage` counts a chair toward the
+# Audit-and-repair seat 3, R0. `witness_coverage` counts a chair toward the
 # act floor only when its outcome IS a reading, but `_validate_coverage`
 # rederived the same number from the ATTESTATORES COMPLETED class -- which is
 # wider, because it also holds `excluded`, an approval-bound exclusion that never

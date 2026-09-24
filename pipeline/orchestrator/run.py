@@ -228,7 +228,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         # The three triage paths and the model cache were forwarded to children
         # unchecked, so a direct caller could make the Door read triage data, or
         # a stage read a model cache, relative to the repository rather than to
-        # the caller (CodeRabbit). They belong behind the same boundary as every
+        # the caller. They belong behind the same boundary as every
         # other caller path.
         ("triage_decision_manifest", "--triage-decision-manifest"),
         ("triage_clusters", "--triage-clusters"),
@@ -289,7 +289,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         # The Door is the one stage that creates the run authority, so it is the
         # only one that can seal the commit into it. Forwarded only when it was
         # actually read: a tree with no version control records no commit rather
-        # than a placeholder that looks like one (GOVERNANCE 10).
+        # than a placeholder that looks like one (principle 8).
         commit, _detail = repository_commit(args)
         if commit is not None:
             command += ["--repository-commit", commit]
@@ -309,7 +309,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
                 command += [flag, str(value)]
     if args.pdf_target_dpi is not None:
         command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
-    # A measured runtime fact of the card, not run configuration (GOVERNANCE 6);
+    # A measured runtime fact of the card, not run configuration (principle 6);
     # forwarded only when set, so a fixture run's argv carries no
     # "--placement-tier None" and stage_parser's own default (None) governs.
     if args.placement_tier is not None:
@@ -359,7 +359,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # an interruption that is not an `OSError` -- a `KeyboardInterrupt` while a
     # stage runs is the ordinary one -- used to leave the name unbound and
     # replace the interruption with an `UnboundLocalError` from the stopwatch
-    # (CodeRabbit on PR #117). A stage that could not start is timed with no
+    # A stage that could not start is timed with no
     # exit code, which is the same record the OSError path produced.
     exit_code: int | None = None
     try:
@@ -400,7 +400,7 @@ def repository_commit(args: argparse.Namespace) -> tuple[str | None, str | None]
 
     Returned as a pair, never raising for absence: a run must not be refused
     because the tree it runs from is a source export with no version control,
-    and it must equally not record a commit nobody measured (GOVERNANCE 10). An
+    and it must equally not record a commit nobody measured (principle 8). An
     absent commit is `None` *with* a reason, so a reader can tell "not
     measured" from "not looked for". A malformed one is a refusal, because a
     short or decorated revision names a commit only against the repository that
@@ -444,7 +444,7 @@ def _record_stage_timing(
     depends on: refusing a completed stage because its timing could not be
     written would destroy work to protect a record of it. A failure says so on
     stderr -- which on a pod reaches the durable transcript -- rather than
-    passing in silence (hard rule 7).
+    passing in silence (principle 2).
 
     Rewritten whole on each append rather than appended to: the file is bounded
     by the number of stage invocations in a run, and a torn append is a journal
@@ -487,7 +487,7 @@ def _record_stage_timing(
             # Whose journal this is, before its entries are carried forward. Two
             # runs pointed at one path used to keep the first run's entries and
             # replace the identity above them, so the file then attributed one
-            # run's stage timings to another (CodeRabbit on PR #117). A journal
+            # run's stage timings to another. A journal
             # that names a different run, root or schema is left exactly as it
             # is and the conflict is reported; the stopwatch never edits a
             # record it cannot account for.
@@ -648,13 +648,13 @@ def main() -> int:
         default=0,
         help="per-mille rate at which the protocol's selection rule samples acts into "
         "the primed-without-prior control arm (Lectio nuda has its own "
-        "--nuda-per-mille); raising it above 0 is Tyrel's, with "
+        "--nuda-per-mille); raising it above 0 needs the project lead's permission, with "
         "--perlector-instrument-approval-ref (config/README.md, R5a toggle register)",
     )
     parser.add_argument(
         "--perlector-instrument-approval-ref",
         default="",
-        help="Tyrel's recorded approval reference for a nonzero instrument rate",
+        help="the project lead's recorded approval reference for a nonzero instrument rate",
     )
     parser.add_argument(
         "--perlector-protocol-config",
@@ -667,7 +667,7 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="feed the Pass-A draft to Pass B (fed) or withhold it (--no-draft-fed); "
-        "changing the default is Tyrel's through B5a (config/README.md, R5a toggle "
+        "changing the default needs the project lead's permission through B5a (config/README.md, R5a toggle "
         "register)",
     )
     parser.add_argument(
@@ -751,7 +751,7 @@ def main() -> int:
     parser.add_argument(
         "--nuda-approval-ref",
         default="",
-        help="Tyrel's reference for the predeclared Lectio nuda sampling design",
+        help="the project lead's reference for the predeclared Lectio nuda sampling design",
     )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
@@ -787,7 +787,7 @@ def main() -> int:
     require_coherent_ingress_options(args)
     resolve_caller_paths(args)
     # Both argv facts the journal rests on, proved here rather than at the
-    # first entry that happens to need them (CodeRabbit on PR #117).
+    # first entry that happens to need them.
     #
     # `repository_commit` refuses a short or decorated revision, and it used to
     # be reached only from `_record_stage_timing` -- so a manual or semi run
@@ -1001,7 +1001,7 @@ def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | 
 
     The boundary's own name travels back inside the tally, so the halt below can
     say which section finished rather than only that one did. Two hard failures
-    is Tyrel's named "early warning" and stops nothing; more than two halts the
+    is the project lead's named "early warning" and stops nothing; more than two halts the
     run at this exact boundary.
     """
     tree = RunTree(Path(args.run_root), args.run_id)
@@ -1009,21 +1009,21 @@ def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | 
     if tally["instrument_count"]:
         print(
             f"run {args.run_id}: {tally['instrument_count']} Perlector instrument failure(s) "
-            "retained separately; they do not consume Tyrel's production hard-failure cap"
+            "retained separately; they do not consume the project lead's production hard-failure cap"
         )
     if tally["count"] == tally["threshold"] and tally["count"] > 0:
         print(
-            f"run {args.run_id}: {tally['count']} hard failure(s) so far — Tyrel's ruling "
+            f"run {args.run_id}: {tally['count']} hard failure(s) so far — the project lead's ruling "
             f"treats this as an early warning; one more halts the run at the next checkpoint"
         )
     return dict(tally, checkpoint=checkpoint_name) if tally["breached"] else None
 
 
 def report_halt(args, tally: dict) -> None:
-    """The one place this halt is said out loud. GOVERNANCE 2: not lost silently."""
+    """The one place this halt is said out loud. Not lost silently (principle 2)."""
     print(
         f"run {args.run_id}: halted at the {tally['checkpoint']} checkpoint — {tally['count']} "
-        f"hard failure(s) exceed the run-level cap of {tally['threshold']} (Tyrel's ruling: "
+        f"hard failure(s) exceed the run-level cap of {tally['threshold']} (the project lead's ruling: "
         f"more than {tally['threshold']} needs fixing, not another automatic stage). The "
         "section already in flight finished; nothing further was invoked"
     )
@@ -1075,7 +1075,7 @@ def undispatchable_recovery_reason(
 def report_undispatchable_recoveries(args, refused: list[tuple[str, str, str, str]]) -> None:
     """Say every refused dispatch out loud, by act, before the run stops.
 
-    GOVERNANCE 2, and the one place this refusal is recorded. The orchestrator
+    Principle 2, and the one place this refusal is recorded. The orchestrator
     keeps no file of its own (the module docstring says why: resume is a property
     of the artifacts, never of a checkpoint that could disagree with them), so its
     record of a dispatch it would not make is the run's own output — and it names
@@ -1090,7 +1090,7 @@ def report_undispatchable_recoveries(args, refused: list[tuple[str, str, str, st
     and the `ContractError` raised immediately after this is printed to stderr
     by the entry point below — so stderr is never empty on this path and a
     per-act listing on stdout would be dropped from the receipt and never seen.
-    A record the one consumer discards is GOVERNANCE 2 claimed, not met.
+    A record the one consumer discards is principle 2 claimed, not met.
     """
     print(
         f"run {args.run_id}: recovery cannot be dispatched for {len(refused)} outstanding "
@@ -1121,7 +1121,7 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     A recovery round is one completed Designator section followed by one
     completed Perlector section followed by one Recensor pass, and the cap is
     checked at each of those three boundaries — never between two acts of the
-    same batch. That is Tyrel's own shape for the cap ("if errors happened in
+    same batch. That is the project lead's own shape for the cap ("if errors happened in
     chandra stage it finishes that section but pauses"): a section already in
     flight finishes, and a second act whose recrop was already approved is not
     left without its owning stage's answer.

@@ -79,7 +79,7 @@ def test_marker_glyphs_inside_metadata_cannot_end_a_marker_or_leak_witness_text(
 
 
 def test_a_rendering_carries_witness_variants_beside_the_text_never_inside_it():
-    """Tyrel, 2026-08-05: a witness variant attaches to a gap as evidence beside the
+    """A witness variant attaches to a gap as evidence beside the
     text, never as characters inside it. Stripping the rendering must not leave the
     variant behind, which is the mechanical form of "we don't want it making shit up".
     """

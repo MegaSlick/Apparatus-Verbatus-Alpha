@@ -885,7 +885,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
     # One logical act exported under the manifest's fixed "proposal-seal
     # expected acts" claim would report a number nobody measured -- the seal
     # here holds two rows -- and would drop the count a reader needs to
-    # reconcile the bundle against that seal (GOVERNANCE 2, 10; consult §5.2's
+    # reconcile the bundle against that seal (principle 2, 10; consult §5.2's
     # "the terminal ledger reports both counts explicitly").
     with ZipFile(BytesIO(bundle.data)) as archive:
         manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
@@ -1301,7 +1301,7 @@ def test_an_occlusion_finding_cannot_hide_inside_a_review_labelled_accepted(tmp_
         )
     # `under_witnessed` is a required measurement, never a defaulted None: a
     # review row that omits it would let "the floor was met" read identically
-    # to "nobody measured the floor" (GOVERNANCE 2).
+    # to "nobody measured the floor" (principle 2).
     unmeasured = {key: value for key, value in witness_coverage.items() if key != "under_witnessed"}
     with pytest.raises(SchemaRefusal, match="malformed witness accounting"):
         armarium.logical_cross_capture_review_entry(

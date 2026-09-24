@@ -1077,7 +1077,7 @@ def test_the_ink_map_denominator_must_be_exactly_the_sealed_page_census():
 
 
 def test_a_page_the_map_never_flagged_may_not_carry_a_re_measurement():
-    """GOVERNANCE 10: absence of a measurement is recorded as absence."""
+    """Principle 8: absence of a measurement is recorded as absence."""
     with pytest.raises(SchemaRefusal, match="re-measures an ink-map page its own map never"):
         build_armarium_bundle(
             _otherwise_complete(
@@ -1258,7 +1258,7 @@ def test_projection_identity_refuses_a_self_consistent_package_with_drifted_unce
     A writer that changed only `uncertainty` -- never touching `canonical_clean_text`
     or its hash -- would pass the literal-text identity check by construction: the
     text is untouched. Uncertainty is a projected reading beside that text, not a
-    decoration outside GOVERNANCE 5's reach, so a format that silently drifted on it
+    decoration outside principle 5's reach, so a format that silently drifted on it
     alone must fail identity exactly as a drifted literal would (U3).
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
@@ -1548,7 +1548,7 @@ def test_a_non_delivered_act_may_not_carry_an_uncertainty_layer(tmp_path):
 
 
 def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(tmp_path):
-    """GOVERNANCE 5 on the path the product actually leaves by.
+    """Principle 5 on the path the product actually leaves by.
 
     The package above is internally whole and carries two different readings of one
     act, and its own manifest says `identity_verified_across` all three literal
@@ -1725,7 +1725,7 @@ def test_a_full_text_index_poisoned_with_terms_no_act_carries_is_refused(tmp_pat
     per-row phrase probe still finds what it went looking for. The recipient's
     search, meanwhile, now returns this act for words the Archetypus never
     established -- a second reading of the act inside the same package, which is
-    what GOVERNANCE 5 forbids.
+    what principle 5 forbids.
     """
     tampered = _resealed_acts_database(
         tmp_path,
@@ -1811,7 +1811,7 @@ def test_an_established_reading_that_folds_to_no_search_token_still_publishes(tm
     on every code point. A reading made only of characters in that gap folds to a
     non-empty key that tokenizes to nothing, which a per-row phrase probe reads as
     a missing index entry -- and the whole export died, naming a tampered index
-    that was never tampered with. GOALS 1: an act refused at the terminal gate for
+    that was never tampered with. goal 2: an act refused at the terminal gate for
     an instrument's own disagreement is an act that does not leave the pipeline.
     """
     projection = _projection()
@@ -1855,7 +1855,7 @@ def _real_resealed_manifest(mutate):
 
     Nothing crossed a boundary to get here. This is a sibling helper in this
     same module, adapted within the repository, not code carried from the old
-    pipeline or from a third party -- the quarantine rule (CLAUDE.md) governs
+    pipeline or from a third party -- the quarantine rule (principle 12) governs
     that crossing and has nothing to say about this one.
     """
     projection = replace(_projection(), fixture_id=None, submission_id="a" * 64)
@@ -2802,7 +2802,6 @@ def test_excluded_act_requires_and_carries_its_approval_reference(tmp_path):
     # whose locale is not UTF-8 would decode a published product's own bytes
     # differently from the machine that wrote them — the same environment
     # dependence this branch already carries in its sealed bundle identity.
-    # Found by CodeRabbit.
     rows = [
         json.loads(line) for line in (root / "acts.jsonl").read_text(encoding="utf-8").splitlines()
     ]
@@ -3249,7 +3248,7 @@ def test_a_display_that_does_not_strip_back_to_the_canonical_field_is_refused(tm
     """Spec 11 test 2's rendered half, on the written product.
 
     A display convention that changed the reading -- rather than annotating it --
-    would be a second text leaving the pipeline under GOVERNANCE 5's nose. The
+    would be a second text leaving the pipeline under principle 5's nose. The
     verifier strips the rendering and requires the canonical field back exactly.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
@@ -3354,8 +3353,8 @@ def test_a_salvage_shaped_record_cannot_enter_the_acts_namespace(field, tmp_path
     """Spec 11 test 4, in the direction the reserved-field guard does not cover.
 
     A salvage item that resembles an act must be refused by name, not left to fail on
-    a missing key somewhere downstream. Promotion re-enters the pipeline under Tyrel's
-    recorded approval; there is no export-time promotion.
+    a missing key somewhere downstream. Promotion re-enters the pipeline under the
+    project lead's recorded approval; there is no export-time promotion.
     """
     base = _projection()
     smuggled = {**base.acts[0], field: "a grid tiling nobody established"}
@@ -3772,7 +3771,7 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
 
 # --- The damage record: text_status and the transcription annotation layer ------
 #
-# Opus-F1 / Sol-S4 (T0 export honesty). The Archetypus knew an act was damaged; nothing here read
+# F1 / Sol-S4 (T0 export honesty). The Archetypus knew an act was damaged; nothing here read
 # the field, so a partial act was exported and aggregated exactly like a whole one
 # and the run said `complete` with an empty reason list. These are the projection-
 # layer half of that repair; the end-to-end demonstration through the real CLIs is
@@ -4040,7 +4039,7 @@ def test_projection_identity_refuses_a_package_whose_formats_disagree_about_dama
 
     The literal is byte-identical in every format, so the text comparison passes
     by construction; the damage record is part of the same one reading and rides
-    in the same equality check (GOVERNANCE 5 does not stop at the characters).
+    in the same equality check (principle 5 does not stop at the characters).
     """
     bundle = build_armarium_bundle(
         _partial_projection(), _formats(embed_pixels=False), _source_bytes
@@ -4787,7 +4786,7 @@ def test_the_export_names_every_instrument_of_this_build_exactly_once_in_order()
     assert [row["instrument"] for row in block["entries"]] == list(NOT_MEASURED_INSTRUMENTS)
     for row in block["entries"]:
         assert set(row) == {"instrument", "status", "detail", "recorded_in"}
-        # Where a reader goes to check the row against the evidence (GOALS 5).
+        # Where a reader goes to check the row against the evidence (goal 4).
         assert row["recorded_in"].strip()
     assert (
         _entry(block, "page-testimony-content-coverage")["recorded_in"]
@@ -4920,7 +4919,7 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
     produced exactly when every delivered reading was assessed for doubt: none
     assessed is an instrument that never ran, whatever the cap says, and some
     assessed is a partial measurement that may not be reported as a whole one
-    (GOVERNANCE 10).
+    (principle 8).
     """
     silenced = _entry(_block(_projection()), "perlector-uncertain-spans")
     assert silenced["status"] == "declared-unproduced"
@@ -4961,7 +4960,7 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
     # The live configuration under a sealed cap of 0: no reader was asked, and
     # the exhausted-cap projection minted real spans onto delivered acts anyway.
     # Something was measured, so the block may not call the instrument
-    # unproduced (GOVERNANCE 10; the independent review of 2026-09-11).
+    # unproduced (principle 8; the independent review of 2026-09-11).
     assert (
         _not_measured_status(
             "perlector-uncertain-spans",
@@ -4983,8 +4982,7 @@ def test_a_delivered_act_whose_doubt_report_was_broken_is_refused_not_counted():
     `acts_not_assessed` used to be everything that was not assessed, by
     subtraction, so an act whose reader's report could not be anchored would
     have been counted as one whose reader had no doubt channel -- two different
-    facts under one number (the independent review of 2026-09-11, and
-    CodeRabbit at the same site).
+    facts under one number.
     """
     original = _projection()
     broken = {

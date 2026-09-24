@@ -171,7 +171,7 @@ def test_classify_refuses_a_policy_whose_floor_is_not_a_positive_integer(floor):
     `is_length_suspicious` raises `ValueError` for a floor of zero, which the
     stage boundary does not classify as a contract refusal -- so a hand-built
     policy carrying zero used to leave this module unnamed while a wrongly
-    typed one was refused properly (CodeRabbit on PR #117).
+    typed one was refused properly.
     """
     with pytest.raises(ContractError, match="not a positive integer"):
         truncation.classify(
@@ -345,7 +345,7 @@ def test_a_real_act_crop_cut_off_after_one_line_is_not_caught_by_the_length_sign
     accident of scale (F082), but a 2,400x420 act crop that should carry about
     380 characters and returned its first line's 40 is NOT length-suspicious,
     and under a clean engine stop that act is established `complete`. That is
-    the silent loss GOVERNANCE 2 refuses, left standing because no real ink has
+    the silent loss principle 2 refuses, left standing because no real ink has
     been read through this instrument yet, and it is pinned here so that
     re-deriving the floor against a real run's own Perlectiones must move this
     test rather than pass it quietly. What still catches the same reading is
@@ -413,7 +413,7 @@ def test_the_shared_validator_refuses_a_record_without_its_measure():
 
 
 def test_the_record_carries_the_floor_it_was_judged_under():
-    """GOVERNANCE 6: the record protects the past on its own.
+    """Principle 6: the record protects the past on its own.
 
     A consumer holding this block and nothing else -- not the run's
     `config/perlector_protocol.toml` -- has every term of the predicate and can
@@ -488,7 +488,7 @@ def test_the_shared_validator_binds_the_floor_to_the_one_this_run_sealed():
     signal false, classifies `complete`, and clears an audit hold the sealed
     policy would have held. The caller that holds the sealed table passes it,
     and a record judged under any other floor is refused before the signal is
-    derived (CodeRabbit on PR #117).
+    derived.
     """
     from common.contracts.errors import SchemaRefusal
     from common.perlector_audit import validate_truncation_record

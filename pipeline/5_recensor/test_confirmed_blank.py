@@ -12,7 +12,7 @@ The window pass (2026-08-05) found the old pipeline's own hard-won rule for
 this: a blank verdict may never rest on fewer than several
 genuinely independent completed reads, and never on a reader's own second
 opinion. This is unanimity about an absence, never a selection among presences
-(GOVERNANCE 3) -- the Perlector's own direct reading of the ink already found
+(principle 1) -- the Perlector's own direct reading of the ink already found
 nothing; the witnesses only corroborate or contradict that finding, and a single
 dissenting witness holds the act for a human rather than being outvoted.
 """
@@ -142,7 +142,7 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     # check (the other act's page Testimonium against its aligned attachments)
     # also finds no shortfall: a1's genuinely-empty contribution adds no
     # characters to the page text at all -- the join used to give it a leading
-    # separator no act delivered (CodeRabbit W44) -- and the alignment correctly
+    # separator no act delivered -- and the alignment correctly
     # maps a2's matched span back to that raw page text (not the
     # whitespace-collapsed comparison view `align_to_anchor` matches over) so
     # the join never reads as lost coverage.
@@ -290,7 +290,7 @@ def test_the_blank_seal_consults_every_page_level_cause_the_chain_would_hold_on(
     added to the chain without being added to the gate -- so an act whose page
     still carried ink Unit 9 measured outside every cut could be sealed complete,
     provided the page's one recovery grant was already spent and the witnesses
-    corroborated the Perlector's absence. That is the missed act GOALS 1 puts
+    corroborated the Perlector's absence. That is the missed act goal 2 puts
     above every other failure, reached through a terminal COMPLETED outcome.
 
     The chain order is asserted too, and deliberately: this is the second time a
@@ -332,7 +332,7 @@ def test_the_blank_seal_consults_every_page_level_cause_the_chain_would_hold_on(
 
 def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
     """Same Perlector finding (`no-readable-text`), but only two of three chairs
-    agree -- the third reads real text. GOALS 1: a single dissent is never
+    agree -- the third reads real text. goal 2: a single dissent is never
     silently resolved, so the act is held for a human, never outvoted."""
     root = tmp_path / "runs"
     result = _run_through_recensor(root, "r", "blank-with-dissent")
@@ -499,7 +499,7 @@ def test_completed_reading_evidence_below_the_floor_never_corroborates_blank():
 
 def test_an_excluded_chair_cannot_stand_in_for_a_witness_that_never_read(tmp_path):
     """The floor is met by real ATTESTATORES `witness_coverage` accounting (two
-    genuinely-empty reads plus one Tyrel-approved `excluded` chair, which
+    genuinely-empty reads plus one approved `excluded` chair, which
     classifies COMPLETED for ATTESTATORES -- common/contracts/outcomes.py), so
     `under_witnessed` is `False`. `excluded` is not a reading, though: the
     chair never looked at the ink, and `blank_corroboration` must not let it
@@ -659,7 +659,7 @@ def test_a_floor_met_only_by_trivially_attached_empty_readings_completes_only_as
     genuinely-empty is not refused -- it is delivered, with `by_outcome`
     retaining `{genuinely-empty: 3}` and every dissent row recording
     `departed: True` over the whole reading. That is a recorded contradiction
-    rather than a silent one (GOVERNANCE 2), and flagging it belongs to R6's
+    rather than a silent one (principle 2), and flagging it belongs to R6's
     named per-witness content diff (page text against the ordered union of that
     witness's own act attachments), not to a coverage floor. Pinned here so the
     answer travels with the code.
@@ -710,7 +710,7 @@ def test_an_unlocated_act_line_never_corroborates_a_terminal_blank():
     "act-line-not-located"` (the page's anchor EXISTS yet locates no line for
     this act) still counts toward the floor, but confirmed-blank is a PROVED
     absence and geometry that does not reconcile may not seal one -- the act
-    holds for a human (GOVERNANCE 2/9). `no-page-anchor` is the different
+    holds for a human (principle 2/9). `no-page-anchor` is the different
     fact of a page with no Chandra anchor at all: the ink-free-page scenario's
     Designator-minted fallback act lives exactly there, and refusing blank on
     it would make the intended blank-page path unreachable (the acceptance

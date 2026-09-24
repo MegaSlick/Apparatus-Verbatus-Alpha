@@ -14,7 +14,7 @@ identical dossier arguments and therefore carry the same `dossier_digest` and
 the same `rendered_sha256`, so `pass_kind` is the *only* thing that
 distinguishes them at this seam. A reader that read it and behaved differently
 would make the witness-dependence contrast the whole instrument exists for
-measure the pipeline's own label instead of the model, which is GOVERNANCE 10's
+measure the pipeline's own label instead of the model, which is principle 8's
 "the instrument may not constrain what it measures" at the reader boundary.
 `FixtureReader` reads it because it has no model behind it and must stand in
 for one; that is the exception the docstring on `_declared_prior_reading`
@@ -97,7 +97,7 @@ class LectioResult(_LectioResultRequired, total=False):
     `{call_record_ref, raw_response_ref, response_sha256, finish_reason,
     served_model_id}` on every call, so a live Perlectio can bind its text
     back to the exact response it came from (ARCHITECTURE invariant 3;
-    GOVERNANCE 6, provenance travels with the record).
+    principle 6: provenance travels with the record).
     """
 
     engine_call: dict[str, Any]

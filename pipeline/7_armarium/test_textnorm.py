@@ -49,7 +49,7 @@ def test_search_fold_never_empties_a_string_that_carries_a_letter_or_digit():
 
     Spec 11 sends this unit's property tests through the window as its spec. A fold
     that emptied a real reading would give it a search key indistinguishable from a
-    blank one, which is the collapse GOVERNANCE 2 refuses everywhere else.
+    blank one, which is the collapse principle 2 refuses everywhere else.
     """
     examples = [
         "Cǣsar",

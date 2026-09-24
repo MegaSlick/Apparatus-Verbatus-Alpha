@@ -9,7 +9,7 @@ a second, independent conjunct before it may spend a bounded recovery or hold
 an act: Unit 9's own ink map must confirm real ink under that pointer.
 Without it, an Attestator's own mis-reported or hallucinated box could spend
 real recovery budget, or hold a real act, on zero actual ink -- the witness
-picking a pipeline action for itself, which GOVERNANCE 3 forbids by name.
+picking a pipeline action for itself, which principle 1 forbids by name.
 
 An earlier build pass wired the coverage route straight to
 `unclaimed_observations` with no ink confirmation at all. The
@@ -21,7 +21,7 @@ ink_runs`); yet the unconfirmed route spent a real fallback-recrop, and with
 the allowance at zero, held a real act, on that empty box alone. This file now
 proves the corrected boundary: the same witness-alone stimulus asks for
 nothing, in the same shape, whatever the recovery budget is, while the raw
-finding stays visibly retained (GOVERNANCE 2) for a human to weigh. The
+finding stays visibly retained (principle 2) for a human to weigh. The
 ink-confirmed *positive* path -- where the pointer *is* backed by real ink --
 is proven at the unit level in `test_unit14b_trigger_contract.py`, against
 synthetic ink-map evidence, rather than by adding real ink to this shared
@@ -229,7 +229,7 @@ def test_an_unclaimed_observation_alone_spends_nothing_without_ink_confirmation(
         if review["outcome"] == "held-for-review"
     ]
 
-    # Nothing is lost silently (GOVERNANCE 2): the witness's own report is
+    # Nothing is lost silently (principle 2): the witness's own report is
     # still there for a human to weigh, even though it triggers no action.
     assert retained
 
@@ -413,7 +413,7 @@ def test_the_refusal_does_not_depend_on_the_recovery_budget(tmp_path, policy, ru
         if review["outcome"] == "held-for-review"
     ]
 
-    # The witness's own report is still visible (GOVERNANCE 2), whatever the
+    # The witness's own report is still visible (principle 2), whatever the
     # budget was, even though no budget decision was ever reached over it.
     assert _retained_observations(tree)
 

@@ -1,7 +1,7 @@
 """The proposed uncertainty/gap display convention. A proposal, not a decision.
 
-Spec 11 leaves the uncertainty/gap convention to Tyrel at this gate, so a rendering has
-to exist for him to pick against, and its test 2 asks for render -> strip -> hash, so a
+Spec 11 leaves the uncertainty/gap convention to the project lead at this gate, so a
+rendering has to exist to pick against, and its test 2 asks for render -> strip -> hash, so a
 way back from it has to exist for the identity test to mean anything. This module is
 both and nothing more: **the choice changes only this file.** No hash, no stored field
 and no format writer depends on which brackets are used.
@@ -10,7 +10,7 @@ and no format writer depends on which brackets are used.
 typographic one.** EpiDoc distinguishes `<unclear>` -- ink that is present but
 doubted -- from `<gap>` -- ink that is simply gone; a reconstruction attributed to
 someone else is `<supplied>` and sits outside the established text. That is exactly
-the line Tyrel drew on 2026-08-05: a gap carries its evidence beside the text and
+the line drawn: a gap carries its evidence beside the text and
 never characters inside it, and "we don't want it making shit up". The markers below
 are plain text rather than literal XML because the near-term readers are a text file
 and a terminal, not an XML toolchain. Literal bracket glyphs are escaped before
@@ -24,9 +24,9 @@ carries it beside each literal in every selected format -- but no writer feeds i
 text with no generated span markers (literal delimiter glyphs are escaped reversibly),
 and the round trip below is still exercised only against spans built by hand in this
 module's tests. The reason is no longer that the layer does not exist: marking spans
-inside a displayed reading would exercise a convention spec 11 reserves to Tyrel at
-this gate. EXPORT_MANIFEST.json states that non-carriage as
-`claims.display.renders_canonical_uncertainty`; the pair here is ready for his word.
+inside a displayed reading would exercise a convention spec 11 reserves to the project
+lead at this gate. EXPORT_MANIFEST.json states that non-carriage as
+`claims.display.renders_canonical_uncertainty`; the pair here is ready for that word.
 """
 
 import json
@@ -35,7 +35,7 @@ from typing import Final
 
 # The name the EXPORT_MANIFEST reports, so a reader of the product can tell which
 # convention produced a rendering without reading this file. It says "proposed"
-# because it is: spec 11 leaves the choice to Tyrel at this gate.
+# because it is: spec 11 leaves the choice to the project lead at this gate.
 DISPLAY_CONVENTION: Final = "epidoc-semantics-plaintext-markers.proposed.v2"
 
 GAP_KINDS: Final = frozenset({"leading", "internal", "trailing", "whole-act"})

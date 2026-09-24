@@ -64,7 +64,7 @@ def _context(scopes: dict[str, str], *, roster=None, absent=(), fixture=None):
 # Each case carries the set the sealed roster actually implies. Agreement alone
 # would be satisfied by two readers sharing one bug -- both returning everything,
 # or both returning nothing -- so the expected set is what makes this a
-# measurement rather than a consistency check (GOVERNANCE 10). Case 0 is the
+# measurement rather than a consistency check (principle 8). Case 0 is the
 # scope layout shipped in config/models.toml.
 AGREED = (
     (
