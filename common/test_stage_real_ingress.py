@@ -575,7 +575,7 @@ def test_a_row_with_both_a_hold_and_a_page_fallback_record_is_refused_as_ambiguo
     """Class is decided by which evidence exists; two kinds of evidence is no class.
 
     Nothing tries residual, then page-fallback, until one verifies -- that would
-    be a picker over the producer's own records (hard rule 8).
+    be a picker over the producer's own records (principle 1).
     """
     designator = _Designator(real_root)
     designator.propose_served(1, designator.rectangle(1))
@@ -1086,7 +1086,7 @@ def test_run_policy_digest_moves_with_each_of_its_eight_fields():
         "draft_fed": False,
         # A run created ordinarily must not resume under the mechanics flag and
         # pass the reuse check, mixing ordinary and mechanics-only artefacts in
-        # one tree (CodeRabbit).
+        # one tree.
         "mechanics_qualification": True,
     }
     assert real_run_policy_digest(**base) == real_run_policy_digest(**base)

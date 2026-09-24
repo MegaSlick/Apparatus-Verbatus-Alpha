@@ -407,7 +407,7 @@ def test_a_withheld_record_with_no_page_residual_row_is_refused(page):
     """The whole cost of withholding is paid by the row that replaces the list.
 
     Without it the page's unclaimed ink has left the denominator behind a policy
-    name — GOVERNANCE 2's silent loss with a reason code attached to it.
+    name — principle 2's silent loss with a reason code attached to it.
     """
     page.publish_conservation(_conservation_payload())
     page.context.finish()

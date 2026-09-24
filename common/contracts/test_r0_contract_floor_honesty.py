@@ -48,7 +48,7 @@ def _base_coverage(**overrides) -> dict:
 #
 # The three D2/D3 tests below used to hand `_validate_coverage` a hand-built
 # record and assert only that the field was admitted. A regression that kept the
-# field names and ignored their values passed all three (CodeRabbit, PR #92).
+# field names and ignored their values passed all three.
 # They now generate the record from `witness_coverage` itself and assert the
 # value it computes, so ignoring an attachment fact, an unrecorded health flag or
 # an uncovered span turns a test red.
@@ -170,8 +170,7 @@ def test_an_unaligned_shortfall_is_counted_from_attachment_and_span_evidence():
     aligned = _coverage()
     # `comparable` is left True on purpose: the fixture isolates absence of
     # attachment from span non-comparability, so a `witness_coverage` that
-    # regressed to reading only `comparable` fails here (CodeRabbit round 2 on
-    # PR #92).
+    # regressed to reading only `comparable` fails here.
     unattached = _coverage(
         chair_3=_fact(attached=False, comparable=True, attachment_basis="unattached")
     )
@@ -195,10 +194,9 @@ def test_an_unaligned_shortfall_is_counted_from_attachment_and_span_evidence():
             )
 
 
-# --- CodeRabbit (pre-push CLI, R0 PR loop): the acceptance halves above prove the
-# schema has room for each honest fact; these prove the validator still argues
-# with a dishonest value of the same fact, so deleting the validation cannot
-# leave all six tests green.
+# --- The acceptance halves above prove the schema has room for each honest
+# fact; these prove the validator still argues with a dishonest value of the
+# same fact, so deleting the validation cannot leave all six tests green.
 
 
 def test_a_page_granularity_count_beyond_the_configured_chairs_is_refused():
@@ -259,10 +257,10 @@ def test_an_unattached_chair_does_not_satisfy_the_act_level_floor():
 
 # --- Audit-and-repair regression (F-S4) ------------------------------------------
 #
-# Sonnet audit-and-repair seat 1, R0. S4 prime suspect: "the permissive partial-
+# S4 prime suspect: "the permissive partial-
 # granularity path (has_complete_granularity guard) skips the under_witnessed
 # rederivation for records carrying SOME granularity fields. Can a dishonest
-# record thread that needle?" -- yes, confirmed before this audit's fix.
+# record thread that needle?" -- yes, confirmed and fixed.
 
 
 def test_an_under_witnessed_act_cannot_claim_otherwise_by_omitting_two_of_three_granularity_fields():

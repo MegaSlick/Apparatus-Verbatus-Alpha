@@ -308,7 +308,7 @@ def test_a_retraction_names_what_it_retracts_and_never_deletes_it():
 
 
 def test_a_retracted_correspondence_stops_resolving_and_says_which_finding_it_is():
-    """GOVERNANCE 2 and 4 at once: the declaration is retained as evidence and
+    """principle 2 and principle 4 at once: the declaration is retained as evidence and
     stops answering. A retraction the reader ignored would leave the register's
     only correction mechanism inert -- the wrong physical act would keep
     resolving, with `outcome: resolved`, and nothing anywhere would be a

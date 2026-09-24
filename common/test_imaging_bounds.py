@@ -153,7 +153,7 @@ def test_crop_refuses_a_declared_size_past_the_bound_on_its_pillow_fallback_path
     can die building the fixture before the assertion it exists for ever runs.
     `_crop_decoded_page` refuses on `image.width * image.height` before
     `image.load()`, so a compact IDAT under a large IHDR reaches the same
-    refusal by the same route. Found by CodeRabbit."""
+    refusal by the same route."""
     # 100,500,000 pixels: over MAX_PIXELS, under Pillow's own 2x raise ceiling
     width, height = 10_050, 10_000
     assert MAX_PIXELS < width * height < 2 * MAX_PIXELS
@@ -351,7 +351,7 @@ def test_the_triage_render_refuses_a_declared_size_past_the_pixel_bound():
     materialised, as in the `crop_png` fallback case above: the check runs on the
     IHDR's dimensions before `load`, so a compact IDAT reaches it by the same route
     and the refusal must name the bound rather than the truncation `load` would
-    otherwise report. Found by CodeRabbit."""
+    otherwise report."""
     width, height = 10_050, 10_000
     assert MAX_PIXELS < width * height < 2 * MAX_PIXELS
 
@@ -395,7 +395,7 @@ def test_the_triage_render_refuses_geometry_that_falls_outside_what_it_decoded(f
     The Exemplar boundary does reconcile the declared frame against the decoded
     master, but only after this function has already rendered the padded page, and
     the door's producing path (`render_raster_page`) reconciles nothing at all.
-    Found by CodeRabbit."""
+    """
     master = BytesIO()
     Image.new("L", (4, 4), 255).save(master, format="PNG")
     part = triage_part()
@@ -435,7 +435,7 @@ def test_the_triage_render_refuses_a_rotation_that_would_expand_past_the_pixel_b
     so Pillow was asked for the allocation and the run ended there instead of at a
     recorded refusal — the Door checks the geometry of the page it is handed, which
     is a page that no longer exists. The strip is the cheap shape to provoke it with:
-    the master itself decodes to 400KB. Found by CodeRabbit."""
+    the master itself decodes to 400KB."""
     master = BytesIO()
     Image.new("L", (200_000, 2), 255).save(master, format="PNG")
     part = triage_part(width=200_000, height=2)
