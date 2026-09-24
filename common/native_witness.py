@@ -94,14 +94,16 @@ _DIMENSION_ROUNDING: Final = {
 #   img, 2500, 2500))`.
 #
 # One known departure: `resize_png_lanczos` promotes a bitonal (`"1"`) image to
-# `"L"` because Pillow silently uses NEAREST for LANCZOS on that mode.  Churro
-# does not, so on a bitonal page our replay differs from the vendor's pixels,
-# deliberately (pinned by `test_a_bitonal_crop_replays_through_our_lanczos_not_
-# the_vendors_nearest`).  Chandra converts to RGB first, so it is unaffected.
+# `"L"` because Pillow (12.3.0) silently uses NEAREST for LANCZOS on that mode.
+# Churro does not, so on a bitonal page our replay differs from the vendor's
+# pixels, deliberately (pinned by `test_a_bitonal_crop_replays_through_our_
+# lanczos_not_the_vendors_nearest`).  Chandra converts to RGB first, so it is
+# unaffected.
 RESIZING_ADAPTER_CROP_OPERATIONS: Final = frozenset(_DIMENSION_ROUNDING)
 ADAPTER_CROP_OPERATIONS: Final = frozenset({"crop"}) | RESIZING_ADAPTER_CROP_OPERATIONS
-#: Colour conversions an adapter may record, in triage's words.  `keep` states
-#: that none ran, which an omitted field cannot.
+#: Colour conversions an adapter may record, in the words
+#: `pipeline/0_triage/manifest.py::COLOUR_MODES` uses.  `keep` states that none
+#: ran, which an omitted field cannot.
 ADAPTER_COLOUR_MODES: Final = frozenset({"keep", "rgb"})
 #: Churro must record `colour_mode`: `ensure_rgb` is half of the operation it names.
 _COLOUR_MODE_REQUIRED_OPERATIONS: Final = frozenset({"churro-prepare-ocr-image.v1"})
@@ -109,9 +111,9 @@ _COLOUR_MODE_OPTIONAL_OPERATIONS: Final = frozenset({"chandra-scale-to-fit.v1"})
 #: Churro's conversion is unconditional, so `keep` would be false.  Chandra's
 #: `scale_to_fit` converts nothing itself (its loader does), so it is not fixed.
 _COLOUR_MODE_FIXED_VALUES: Final = {"churro-prepare-ocr-image.v1": "rgb"}
-#: Operations that convert colour before resizing (Chandra converts at load;
-#: Churro after).  On `LA`/`RGBA` pages the two orders give different pixels,
-#: so the replay must follow the vendor's.
+#: Operations that convert colour before resizing (Chandra converts at load,
+#: `chandra/input.py::load_image`; Churro after).  On `LA`/`RGBA` pages the two
+#: orders give different pixels, so the replay must follow the vendor's.
 _COLOUR_BEFORE_RESIZE: Final = frozenset({"chandra-scale-to-fit.v1"})
 # `scale_to_fit`'s grid and maximum area.  Its 50,176-pixel minimum is not
 # checked: the grid snap can land the output below it (100x80 becomes 252x196).
@@ -124,9 +126,9 @@ CHURRO_MAX_IMAGE_DIM_PX: Final = CHURRO_MAX_INLINE_IMAGE_DIM
 # wire is `request_capacity.sendable_max_tokens`.  Sources: the CHURRO paper,
 # section B.2, and the `--max-new-tokens` default of
 # `churro_transformers_infer.py` at `stanford-oval/churro @
-# 2db3d9f5489cf12fbbe7384dd7f1b97b5f6f298b`.  (The harness's
-# `COMPLETION_TOKENS_FOR_STANDARD_MODELS = 20_000` is a context length, not a
-# generation bound.)
+# 2db3d9f5489cf12fbbe7384dd7f1b97b5f6f298b`.
+# (`utils/llm/models.py::COMPLETION_TOKENS_FOR_STANDARD_MODELS` in the same
+# vendor repository is a context length, not a generation bound.)
 CHURRO_OUTPUT_TOKENS: Final = DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
 # The one intake ceiling before the parser or the repetition scan reads a byte;
 # over 209 bytes per declared token, far beyond any transcription.
@@ -464,8 +466,10 @@ def validate_native_witness_geometry(
         presented=presented,
         page_size=page_size,
         retained_text=payload.get("payload"),
-        # Consumers reconcile `page_witness` against the sealed declaration, so
-        # an act chair cannot forge it.
+        # The one record that does not present the witness's own view is a page
+        # witness's act view (`page_witness: True`, scope != "page"); consumers
+        # reconcile the flag against the sealed declaration, so an act chair
+        # cannot forge it.
         presentation_is_witness_view=(
             payload.get("scope") == "page" or payload.get("page_witness") is not True
         ),
@@ -1116,8 +1120,9 @@ _CHURRO_CAPTURE_FINDING_KINDS: Final = (
     _CHURRO_REPETITION_FINDING_KINDS | churro_document.DOCUMENT_FINDING_KINDS
 )
 _CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
-# Fixture words, vLLM's `length`, and what is retained when the wire carried no
-# `finish_reason` at all.
+# `eos`/`stop`/`max_new_tokens` are the fixture transport's words, `length` is
+# vLLM's cut-off word, and `STOP_REASON_UNREPORTED` is what a live page chair
+# retains when the wire carried no `finish_reason`.
 _CHURRO_STOP_REASONS: Final = (
     frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS | {STOP_REASON_UNREPORTED}
 )

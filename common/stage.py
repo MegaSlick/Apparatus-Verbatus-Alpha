@@ -226,9 +226,9 @@ ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
 
 # One manifest per upstream stage per pass.  `build_manifest` digests every
-# artifact and consumers ask per act (a Recensor pass once spent 45 minutes on
-# it).  Safe because an upstream stage is sealed before its consumers open; the
-# stage being written is never cached.
+# artifact and consumers ask per act, so the cost is acts x artifacts, each
+# digested.  Safe because an upstream stage is sealed before its consumers open;
+# the stage being written is never cached.
 _PASS_MANIFESTS: dict[tuple[str, str, str], dict[str, Any]] = {}
 
 
@@ -548,8 +548,9 @@ class StageContext:
     def nuda_approval_ref(self) -> str:
         """The sealed selector for the sampling design this run draws nuda under.
 
-        Empty when nothing is sampled.  Argv on both routes, backed by `config_digest` on the fixture route and
-        by the `run-policy` digest on the real one. See `witness_context`.
+        Empty when nothing is sampled.  Argv on both routes, backed by
+        `config_digest` on the fixture route and by the `run-policy` digest on
+        the real one. See `witness_context`.
         """
         return self.args.nuda_approval_ref
 
@@ -919,7 +920,8 @@ def _decode_environment(stage: str) -> dict[str, Any]:
     jpg = features.version_codec("jpg") or "unavailable"
     turbo = features.version_feature("libjpeg_turbo")
     heif = pillow_heif.libheif_info().get("libheif", "unavailable")
-    # Pass-through stages record `none`.
+    # Pass-through stages record `none`; the Door names both library routes it
+    # can take.
     paths = {
         "door": {"pillow", "pdfium"},
         "exemplar": {"project-png"},
@@ -2274,7 +2276,9 @@ def _validate_structure_chair_call(context: StageContext, call: Any) -> None:
     """The closed record of the posture the structure chair was served under.
 
     The policy is recorded by name and digest, never by copying the
-    temperature, which could then disagree with the sealed bytes.
+    temperature, which could then disagree with the sealed bytes.  The digest
+    is held to the run's sealed `decoding` entry, so a `config/decoding.toml`
+    edited after binding is refused here rather than sealed into a reading.
     """
     if not isinstance(call, Mapping) or set(call) != STRUCTURE_CALL_FIELDS:
         named = sorted(call) if isinstance(call, Mapping) else type(call).__name__
@@ -4421,7 +4425,8 @@ def run_stage(main) -> int:
 def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) -> dict[str, Any]:
     """The current record for a subject: the latest attempt, with its honest status.
 
-    The one place "current" is derived.  A missing ordinal is fatal, never 0.
+    The one place "current" is derived.  A missing ordinal is fatal, never 0:
+    a default 0 lets listing order pick the current record.
     `operation` lets the attempt id be re-derived from subject and ordinal: the
     envelope does not bind the payload's ordinal, so a forged high ordinal would
     otherwise become current.  Ordinals must run 1..N; a gap is a lost attempt

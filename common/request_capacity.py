@@ -483,12 +483,12 @@ def prompt_digest(*texts: str) -> str:
     return digest_bytes("\x00".join(texts).encode("utf-8"))
 
 
-# Each chair's prompt cost, measured with its own tokenizer and chat template at
-# the pinned revision (`TOKEN_COST_REPORT.md` sections 1, 3 and 5), with the
-# image tokens subtracted.  One entry per prompt the chair can send, matched by
+# Each chair's prompt cost, rendered through the model's own chat template with
+# the real tokenizer at the pinned revision (`transformers` 5.16.1, the
+# measuring host's; the lock pins 5.14.1), image placeholder expanded and image
+# tokens subtracted.  One entry per prompt the chair can send, matched by
 # digest: Churro has two framings (`pipeline/3_attestatores/churro.py::FRAMINGS`).
-# Each re-measurement reproduced the superseded number over the old text as a
-# control.  Message order does not change the count.
+# Message order does not change the count.
 MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = MappingProxyType(
     {
         # Chandra's own `OCR_LAYOUT_PROMPT` (`common/chandra_layout.py`).  Its
@@ -539,9 +539,9 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
     }
 )
 
-# The Perlector's floor: a representative three-testimonia dossier
-# (`TOKEN_COST_REPORT.md` section 5), and its tokenizer's rate over register
-# French, kept as the measured integer pair (section 6) so the arithmetic is exact.
+# The Perlector's floor: a representative three-testimonia dossier, and its
+# tokenizer's rate over register French (120 tokens for 73 words), kept as the
+# measured integer pair so the arithmetic is exact.
 PERLECTOR_PROMPT_FLOOR_TOKENS: Final = 790
 PERLECTOR_TOKENS_PER_WORD: Final = (120, 73)
 
@@ -647,10 +647,10 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 
 
 # What a dense page's answer costs, per chair, in the chair's own response
-# grammar: the same 800-word `FRENCH_ACT` body for every row
-# (`TOKEN_COST_REPORT.md` section 8), so the rows stay comparable.  DAI and the
-# Perlector use their page-fallback act, the demanding case.  A row holds only
-# for its chair's current response grammar, and nothing checks that.
+# grammar: the same 800-word `FRENCH_ACT` body for every row, so the rows stay
+# comparable.  DAI and the Perlector use their page-fallback act, the demanding
+# case.  A row holds only for its chair's current response grammar, and nothing
+# checks that.
 #
 # Chandra's two rows (1645) are measured with apostrophes escaped as `&#x27;`
 # (1506 written literally): the parser resolves character references, so the
@@ -685,7 +685,7 @@ MEASURED_ACT_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 # * DAI, 1,024: the model card's `max_new_tokens`.  It is not in the vendor's
 #   `generation_config.json`, which `feeding.dai_generation()` carries byte for
 #   byte, so it lives here.
-# * Churro, 20,000: the CHURRO paper, section B.2.
+# * Churro, 20,000: the CHURRO paper (arXiv:2509.19768), section B.2.
 #
 # The Perlector is a stock base model with no vendor bound;
 # `pipeline/4_perlector/live_reader.py` sends none.
