@@ -2918,7 +2918,10 @@ def test_real_catalogue_gives_every_real_chair_its_own_unproven_vllm_row():
     # and the catalogue must cover nothing for a chair no stage resolves.
     secondary = real_models.chairs["secondary_proposer"]
     assert isinstance(secondary, AbsentChair)
-    assert "first real roster" in secondary.reason
+    assert (
+        secondary.reason
+        == "the optional YOLO secondary proposer is not part of the first real roster"
+    )
     assert [row for row in real_catalogue.profiles if row.chair == "secondary_proposer"] == []
     assert len(real_catalogue.profiles) == len(configured) * len(tiers)
     for identity in configured:

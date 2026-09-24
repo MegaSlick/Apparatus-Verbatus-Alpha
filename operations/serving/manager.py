@@ -1,8 +1,9 @@
 """Start one configured vLLM chair, prove it answers, then publish its receipt.
 
 It never ranks chairs, retries with another recipe, or falls back from an adapter
-to its base. Every start failure becomes a refusal naming the requested chair; a
-refusal the registry raised is re-raised unchanged so its reason survives. An
+to its base. Pre-launch validation errors (such as a discoverable local environment
+file) propagate as they are; after that, every start failure becomes a refusal naming
+the requested chair; a refusal the registry raised is re-raised unchanged so its reason survives. An
 interrupt is not a chair refusal, because the operator caused it.
 """
 

@@ -1619,9 +1619,10 @@ def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | No
 def _refusal_census(tree: RunTree) -> tuple[int, dict[str, int]]:
     """Count the published refusals by closed-set reason code.
 
-    Never raises: it describes a failure already in flight, and an error about a
-    damaged artifact would mask it (principle 2). Unreadable records are counted
-    under a name that says so.
+    Best effort: it describes a failure already in flight, and an error about a
+    damaged artifact would mask it (principle 2), so unreadable records are
+    counted under a name that says so. A damaged admission whose payload is not
+    an object still raises `AttributeError`.
     """
     census: dict[str, int] = {}
     total = 0
