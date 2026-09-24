@@ -58,7 +58,14 @@ from typing import Callable, Sequence
 from . import durable
 from .controllers import LaptopSupervisor, record_from_lease
 from .lease import LeaseStore, PodLease
-from .models import PRE_RUNNING_STATES, Presence, ProviderStatus, require_utc, utc_now
+from .models import (
+    CONTAINER_START_TIMEOUT_SECONDS,
+    PRE_RUNNING_STATES,
+    Presence,
+    ProviderStatus,
+    require_utc,
+    utc_now,
+)
 from .notify_bridge import Notifier, shell_notifier, silent
 from .provider import PodProvider
 from .shutdown import CloseReport, VerifiedShutdown
@@ -80,6 +87,21 @@ bounded container-start and channel waits, and `LaptopSupervisor.run_once`
 closes the lease the moment that heartbeat goes stale. Once the lease is armed
 the same word is a restarted container, and it is closed like any other word
 that is not RUNNING."""
+
+PROVIDER_STARTING_ARMED = "provider-starting-armed"
+"""An armed pod still reports a pre-running word; waited on, but not for long.
+
+The pod timer arms from inside the container, and a provider may call the
+container RUNNING only once it is healthy, so arming can precede RUNNING. The
+word is waited on for `CONTAINER_START_TIMEOUT_SECONDS` after the arming
+receipt; past that the tick reports `PROVIDER_STARTING_PAST_GRACE`."""
+
+PROVIDER_STARTING_PAST_GRACE = "provider-starting-past-grace"
+"""An armed pod's pre-running word, seen past the grace after arming.
+
+Not yet a close: the lease closes only when the next consecutive tick sees the
+word past the grace again (a container that restarted, or never became
+healthy)."""
 
 # `close_lease_now`'s own outcomes, spelled the same kebab-case way. The close
 # itself is `_close_lease`, unchanged and shared with the tick above; these
@@ -108,6 +130,8 @@ _CONTINUE_STATES = frozenset(
         "controller-unarmed",
         PROVIDER_UNREACHABLE,
         PROVIDER_STARTING,
+        PROVIDER_STARTING_ARMED,
+        PROVIDER_STARTING_PAST_GRACE,
     }
 )
 
@@ -576,6 +600,7 @@ def supervise_tick(
     owner_token: str,
     heartbeat_timeout: timedelta,
     now: Callable[[], datetime] = utc_now,
+    previous: SuperviseResult | None = None,
 ) -> SuperviseResult:
     """One cycle: heartbeat/lifetime/orphan reconciliation, then the 04-4 fix.
 
@@ -654,6 +679,10 @@ def supervise_tick(
             ),
             lease=lease,
         )
+    if state in PRE_RUNNING_STATES and result.state == "active":
+        waited = _armed_pre_running(lease, status.provider_state, previous, now())
+        if waited is not None:
+            return waited
     if state is not None and state != "RUNNING":
         reason = (
             f"provider observed pod lifecycle state {status.provider_state!r}, not RUNNING -- "
@@ -669,6 +698,55 @@ def supervise_tick(
             now=now,
         )
     return result
+
+
+def _armed_pre_running(
+    lease: PodLease, word: str | None, previous: SuperviseResult | None, observed: datetime
+) -> SuperviseResult | None:
+    """Wait on an armed pod's pre-running word, or ``None`` to close it now.
+
+    Inside `CONTAINER_START_TIMEOUT_SECONDS` after the arming receipt the
+    word is waited on: arming from inside the container can precede the
+    provider calling it RUNNING. Past that, a tick reports
+    `PROVIDER_STARTING_PAST_GRACE`, and the next consecutive tick that sees the
+    word past the grace again closes. The previous tick is the run loop's own
+    in-memory result, not the identity file's telemetry, which no close
+    decision reads; a restart forgets it and so costs one more tick, never an
+    open-ended wait. A receipt with no readable ``observed_at`` has no grace.
+    """
+
+    receipt = lease.controller_record or {}
+    armed_at: datetime | None = None
+    stamp = receipt.get("observed_at")
+    if isinstance(stamp, str):
+        try:
+            armed_at = require_utc(
+                datetime.fromisoformat(stamp.replace("Z", "+00:00")), "arming receipt"
+            )
+        except ValueError:
+            armed_at = None
+    grace = timedelta(seconds=CONTAINER_START_TIMEOUT_SECONDS)
+    if armed_at is not None and observed - armed_at < grace:
+        return SuperviseResult(
+            PROVIDER_STARTING_ARMED,
+            (
+                f"provider reports armed pod lifecycle state {word!r} within "
+                f"{CONTAINER_START_TIMEOUT_SECONDS:.0f}s of arming; the container may not be "
+                "reported RUNNING until it is healthy, so this waits"
+            ),
+            lease=lease,
+        )
+    if previous is not None and previous.state == PROVIDER_STARTING_PAST_GRACE:
+        return None
+    return SuperviseResult(
+        PROVIDER_STARTING_PAST_GRACE,
+        (
+            f"provider reports armed pod lifecycle state {word!r} past the "
+            f"{CONTAINER_START_TIMEOUT_SECONDS:.0f}s grace after arming; closing if the next "
+            "tick still reports it"
+        ),
+        lease=lease,
+    )
 
 
 def _closed(result: SuperviseResult, *, touched: bool) -> tuple[SuperviseResult, int]:
@@ -1039,6 +1117,7 @@ def run_supervisor(
             owner_token=owner_token,
             heartbeat_timeout=heartbeat_timeout,
             now=now,
+            previous=result,
         )
         record_tick(ident_path, ident, state=result.state, detail=result.detail, now=now())
         if result.close_report is not None and not result.close_report.verified:

@@ -119,6 +119,16 @@ other word except RUNNING -- an exited, errored or terminated pod -- is closed
 at once.
 """
 
+CONTAINER_START_TIMEOUT_SECONDS = 600.0
+"""The bound on waiting for a pod's container to start, shared by both controllers.
+
+`controller_armer.CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS` is this value (its
+docstring says why it is generous); the laptop supervisor reuses it as the
+grace in which an armed pod may still report a pre-running word, because a
+provider may call the container RUNNING only once it is healthy, after the pod
+timer inside it has already armed. Defined here so the two cannot drift and
+neither module imports the other for it."""
+
 BILLING_BUCKET_WIDTH = timedelta(hours=1)
 """One provider billing bucket, shared by the RunPod adapter (which always
 requests ``bucketSize=hour``) and the generic verifier's window bound, so the

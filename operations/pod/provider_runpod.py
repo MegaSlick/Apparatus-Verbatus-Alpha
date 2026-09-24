@@ -1439,10 +1439,12 @@ class RunPodV2Provider(_RunPodAdapter):
                 f"RunPod refused to terminate pod {pod_id!r} with HTTP 409: it belongs to a "
                 "cluster and cannot be terminated through the pod endpoint. It is still "
                 "billing; terminate its cluster from the RunPod console now "
-                f"({_problem_summary(response.body)})"
+                f"({_body_summary(response.body)})"
             )
+        # `_body_summary`, never `_problem_summary`: DELETE's body is never
+        # parsed, so no answer to it can raise before the refusal is built.
         raise ProviderFailure(
-            f"RunPod terminate returned HTTP {response.status}: {_problem_summary(response.body)}"
+            f"RunPod terminate returned HTTP {response.status}: {_body_summary(response.body)}"
         )
 
     def verify_absent(self, pod_id: str) -> AbsenceObservation:
@@ -1994,7 +1996,7 @@ def _problem_summary(body: bytes) -> str:
 
     try:
         problem = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return _body_summary(body)
     if not isinstance(problem, dict) or not isinstance(problem.get("title"), str):
         return _body_summary(body)

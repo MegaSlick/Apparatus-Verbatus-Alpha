@@ -150,7 +150,10 @@ acknowledgement is durably bound to the exact lease, pod and hard deadline.
   `RUNNING`, naming it. The exception is `PROVISIONING` or `STARTING` on a lease that is still
   unarmed while its launch owner heartbeats: that tick reports `provider-starting` and
   waits, bounded by the launch's own arming waits and its heartbeat. On an armed lease the
-  same word is a restarted container and closes. A provider that cannot answer is neither
+  same word is waited on for the container-start bound (600 s) after the arming receipt,
+  because the timer arms from inside the container and RunPod may report RUNNING only once
+  it is healthy; past that, it closes when two consecutive ticks still see it. `ERROR`
+  closes at once. A provider that cannot answer is neither
   `RUNNING` nor a reason to close; the heartbeat rule still holds and the loop keeps
   ticking.
 - **The operator's `status` shows a supervisor block per open lease**: running, absent or
@@ -662,7 +665,8 @@ Record the pod id, timestamps, provider responses, and whether each item is **ve
   comes back as the exec-form JSON object, re-serialized, or as a shell string, and whether
   the deconstructed `entrypoint` and `cmd` appear.
 - [ ] Under v2, record every `status` word the pod passes through and how long each lasted,
-  and whether `pod.cost` is non-zero while `PROVISIONING`.
+  whether `pod.cost` is non-zero while `PROVISIONING`, and whether RUNNING is reported
+  before or after the pod timer's arming receipt.
 - [ ] On the route the run uses (v1 as well as v2), record whether the pod-scoped
   `RUNPOD_API_KEY` is accepted by the routes the pod-side timer calls (status, terminate,
   list, billing), and that the pod's env carries `VERBATUS_RUNPOD_ROUTE` naming that route.

@@ -271,8 +271,11 @@ called.
    in either proceeds to arming, whose container-start and channel bounds
    limit the wait; `adopt` still requires `RUNNING`; `ERROR` closes at once.
    The supervisor reports `provider-starting` and waits only while the lease
-   is unarmed and its launch owner heartbeats, and closes the same word on an
-   armed lease.
+   is unarmed and its launch owner heartbeats. On an armed lease it waits for
+   the container-start bound after the arming receipt, since the timer arms
+   from inside the container and v2 may report RUNNING only once it is
+   healthy, and past that closes when two consecutive ticks still see the
+   word. `ERROR` closes at once.
 4. **Anchor and window.** `created_at` is `createdAt`, with no fallback.
    `capture_cost` uses `metadata.query` when present: it must name this pod
    and the `hour` bucket and cover the requested window, its start becomes the
@@ -325,8 +328,9 @@ close stops at once. The pod list asks for cluster member pods too.
 - Whether `metadata.query` appears on the `podId`-filtered billing route, and
   whether the buckets fill the window (04-9).
 - That RunPod bills nothing before `createdAt` (04-7).
-- The `status` sequence a real pod passes through, and whether `cost` is
-  non-zero while `PROVISIONING`.
+- The `status` sequence a real pod passes through, whether `cost` is
+  non-zero while `PROVISIONING`, and whether RUNNING is reported before or
+  after the pod timer's arming receipt.
 - Whether the pod-scoped `RUNPOD_API_KEY` is accepted by the routes the
   pod-side timer calls, on v1 as well as v2.
 - Every field name (04-6); the catalogue cross-check confirms the GPU ids for

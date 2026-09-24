@@ -133,6 +133,7 @@ from . import durable, supervise
 from .arming import ControllerArming, ControllerReadiness
 from .lease import LeaseOwnershipError, LeaseStore, PodLease
 from .models import (
+    CONTAINER_START_TIMEOUT_SECONDS,
     PodCreateRequest,
     PodRecord,
     require_utc,
@@ -182,7 +183,7 @@ volume's network view -- that is what the first authorized boot's
 to be replaced by one derived from it.
 """
 
-CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS: Final = 600.0
+CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS: Final = CONTAINER_START_TIMEOUT_SECONDS
 """How long a launch may wait for the pod's container to start, before the bound above begins.
 
 The two waits are different things and they were previously one number.

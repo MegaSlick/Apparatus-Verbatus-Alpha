@@ -737,6 +737,24 @@ def test_terminate_names_a_cluster_pod_it_cannot_stop_and_does_not_retry() -> No
     assert len(transport.calls) == 1
 
 
+def test_a_deeply_nested_409_body_still_surfaces_as_the_named_refusal() -> None:
+    """DELETE's body is never parsed, so no body can stop the refusal being built."""
+
+    nested = b"[" * 100_000 + b"]" * 100_000
+    transport = ScriptedTransport([HttpResponse(409, nested)])
+
+    with pytest.raises(TerminateRefused, match="belongs to a cluster"):
+        provider(transport).terminate("pod-1")
+
+
+def test_a_deeply_nested_problem_body_elsewhere_is_summarised_not_raised() -> None:
+    nested = b"[" * 100_000 + b"]" * 100_000
+    transport = ScriptedTransport([HttpResponse(503, nested)])
+
+    with pytest.raises(ProviderFailure, match="HTTP 503"):
+        provider(transport).status("pod-1")
+
+
 def test_a_refused_terminate_stops_the_close_at_once_with_its_remedy() -> None:
     world = PodWorld(terminate_status=409)
     adapter = provider(world)  # type: ignore[arg-type]
