@@ -347,16 +347,15 @@ def test_a_sound_approval_validates():
     assert validate_approval_record(sound_approval())["approver"] == APPROVER
 
 
-def test_only_tyrel_approves():
-    """GOVERNANCE: "No automated agent may act as the human in any rule here." The
-    schema cannot stop an agent writing the file, but it can stop the file from
-    passing under anyone else's name."""
+def test_only_the_project_lead_approves():
+    """The schema cannot stop an agent writing the file, but it can stop the file
+    from passing under anyone else's role."""
     record = sound_approval()
     record["approver"] = "the session"
     record["self_hash"] = self_hash(record)
     with pytest.raises(ApprovalRefusal) as caught:
         validate_approval_record(record)
-    assert "only Tyrel approves" in str(caught.value)
+    assert "only the project lead" in str(caught.value)
 
 
 def test_unhashable_current_content_is_told_apart_from_a_digest_mismatch():

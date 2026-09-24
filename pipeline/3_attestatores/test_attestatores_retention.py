@@ -1258,7 +1258,7 @@ def test_scenario_specific_testimony_overrides_scenario_agnostic_testimony():
 
 
 def test_an_excluded_testimonium_without_an_approval_reference_is_refused_at_the_schema():
-    """Spec 07 test 2: `excluded` exists only as a reference to a Tyrel
+    """Spec 07 test 2: `excluded` exists only as a reference to a project-lead
     approval-record artifact. Absent that artifact, a chair that did not read is
     `not-run`, `dead` or `failed` — all of which force visible partial status —
     and the word `excluded` alone buys nothing.
