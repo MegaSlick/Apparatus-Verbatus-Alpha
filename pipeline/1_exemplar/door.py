@@ -4,15 +4,15 @@ Admissions and refusals are written into the Exemplar's directory, so no refusal
 is filed where nothing downstream reads it (principle 2).
 
 `admission.py` routes each source by its decoded bytes, never its extension.
-Ordinary rasters are decoded; PDF and TIFF containers fan out to one page each.
+Ordinary rasters are decoded; PDF and TIFF containers fan out, one ordinal per page.
 PDFium paints the whole visible PDF page, so text beside an image stays in the
 sealed pixels. Every refusal is an artifact with a reason from
 `admission.RefusalReason`, and an input set that admits nothing fails loudly.
 
 A run is created either from the repository's declared synthetic fixture or from
 real input inside an approved storage location; the route is sealed into
-`run.json` as `ingress`. Real input needs no per-run approval record; the
-storage-root check in `operations.submit.gate` is the gate.
+`run.json` as `ingress`. Real input needs no per-run approval record: it never
+enters git, so the storage-root check in `operations.submit.gate` is the only gate.
 
 Invoked as a program:
 
@@ -1690,11 +1690,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
     parser.add_argument(
         "--triage-decision-manifest",
-        help="Unit 5 triage-decision-manifest-v1 controlling raster split/crop/rotation",
+        help="triage-decision-manifest-v1 controlling raster split/crop/rotation",
     )
     parser.add_argument(
         "--triage-clusters",
-        help="corpus-scoped Unit 5 re-shoot cluster records keyed by cluster id",
+        help="corpus-scoped triage re-shoot cluster records keyed by cluster id",
     )
     parser.add_argument(
         "--triage-producer-recipe",
@@ -2114,8 +2114,8 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
 def _padding_config_digest(path: str) -> str:
     """The Designator padding policy's digest.
 
-    Sealed on real runs now so no run id is reusable across a padding change
-    once real crops depend on it.
+    The Designator rechecks it at point of use, so a real run that never sealed
+    it would refuse there.
     """
     try:
         return digest_bytes(Path(path).read_bytes())

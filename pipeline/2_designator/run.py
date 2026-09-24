@@ -94,8 +94,9 @@ from common.stage import (  # noqa: E402
 )
 
 # Total attempts, first included, for a whole-page structure call; retries only
-# recover a structural loop or invalid layout, never sample for quality. Must not
-# exceed recovery.toml's absolute ceiling.
+# recover a structural loop or invalid layout, never sample for quality. Kept
+# equal to `common/recovery.py`'s `RULED_ABSOLUTE_CAP` by hand, so every retry,
+# structure included, sits under the one absolute cap (principle 7).
 ABSOLUTE_STRUCTURE_ATTEMPT_CEILING = 3
 STRUCTURE_ATTEMPT_KIND = "structure-attempt"
 
@@ -932,8 +933,8 @@ def hold_act(
 
     A skipped act would leave the proposal seal short and conservation would
     reconcile against its absence. The hold cites the Exemplar's page outcome as
-    evidence. `reason_code` is separate from the page because a structure-held
-    page is sealed, not unsealed.
+    evidence. `reason_code` is separate from `blocking_ordinal` because the
+    blocking page is not always unsealed: a structure-held page is sealed ink.
     """
     entry = records.get(blocking_ordinal)
     if entry is None:
@@ -1861,9 +1862,9 @@ def _publish_conservation_and_secondary(
     page_id = page_record["subject_id"]
     components = result["residual_components"]
     component_count = len(components)
-    # Only below-floor dust is aggregated; substantial components always get
-    # their own held rows, however many specks share the page.
     promoted, aggregated = _partition_residual_components(components, thresholds)
+    # `complete` on an unmeasured page too: nothing was withheld, and
+    # `ink_measurable` already says nothing was measured.
     enumeration = RESIDUAL_ENUMERATION_AGGREGATED if aggregated else RESIDUAL_ENUMERATION_COMPLETE
     conservation_payload = {
         "page_ordinal": ordinal,
@@ -2291,8 +2292,7 @@ def _live_secondary_provenance(context) -> dict:
 
     Resolved every run, as in `secondary_provenance`. A configured secondary
     chair is refused: the live path serves none and may not write a receipt for
-    a call it did not make (principle 6). The project lead has kept the role
-    absent for now.
+    a call it did not make (principle 6).
     """
     resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
     if isinstance(resolved, AbsentChair):
