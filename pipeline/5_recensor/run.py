@@ -1,20 +1,17 @@
 """Recensor: establishes that the text is complete. It establishes no text.
 
-It reconciles what the proposal seal expected against what actually happened, and
-gives every expected act exactly one outcome. Three of those outcomes end the act
-here; two send it onward. Nothing it does touches a reading.
+It reconciles what the proposal seal expected against what happened and gives every
+expected act exactly one outcome. Nothing it does touches a reading.
 
 **Recovery is bounded and recorded.** The budget comes from `config/recovery.toml`,
-whose absolute cap is "PURE ABSOLUTE, STOP AT 3". When the budget is spent
-the act is held for review — it is never re-rolled until it looks better, because
-recovery recovers coverage and not quality (principle 7). Every request is an
-artifact, so nothing can disappear inside a loop.
+every request is an artifact, and a spent budget holds the act for review. Recovery
+recovers coverage, not quality, so nothing is re-rolled until it looks better
+(principle 7).
 
-**It does not select among witnesses.** Witness outcomes are aggregated into a
-coverage record that marks an act under-witnessed and forces the run's aggregate
-visibly partial. On an explicit Perlector `no-readable-text` finding, unanimous
-region-bound absence may additionally corroborate a blank; it never supplies
-characters, and no count of chairs can change a reading.
+**It does not select among witnesses.** Witness outcomes form a coverage record that
+can mark an act under-witnessed and the run visibly partial. On a Perlector
+`no-readable-text` finding, unanimous region-bound absence may corroborate a blank; it
+never supplies characters.
 
     python pipeline/5_recensor/run.py --run-root <dir> --run-id <id>
 """
@@ -163,51 +160,23 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
 def audit_state(
     context, reading: dict, act_id: str, *, expected_act_key: str | None = None
 ) -> dict | None:
-    """Verify the two R5b artifacts behind a Perlectio's audit claim.
+    """Verify the two audit artifacts behind a Perlectio's audit claim.
 
-    The Perlectio's self-hash only proves that somebody sealed its references;
-    this consumer proves they name the matching act, exact kinds, and the exact
-    finding bytes whose unresolved state governs review routing.
+    The Perlectio's self-hash proves only that someone sealed its references; this
+    proves they name this act, the exact kinds, and the finding whose unresolved state
+    routes review.
 
-    `not-run` is the one Perlector outcome published without a reading attempt
-    (`pipeline/4_perlector/run.py`: a Designator-held act, an explicitly absent
-    Perlector chair, an atomic presentation over the sealed image ceiling, or a
-    live attempt interrupted inside its own audit round, whose frozen semi-final
-    no second reading can reproduce).
-    It never reaches Pass C, so there is no chain to
-    verify and no unresolved span to route on — the act is held on its own
-    outcome further down. Demanding a chain here turned the absent-chair hold
-    this stage is built to report into a traceback about missing final text,
-    which is exactly the trap the `basis_regions` guard below is named for.
-    Completed attempted outcomes (`read`, `truncated`, `no-readable-text`) publish
-    the pair and are verified. An operational `failed` outcome instead carries
-    the shared closed failure evidence and is verified through that contract; a
-    historical full-reading shape carrying the same outcome remains an audit
-    chain. A forged `not-run` buys nothing, because that class is held rather
-    than accepted.
-
-    `None`, not `False`: this act has no audit at all — the same fact a
-    Designator-held act's review records. `False` means audited, with its
-    sealed re-proof round spent — or nothing to spend it on — not that every
-    flag resolved: one reader call answers every flag at once, and
-    `change_record` carries at most one span, so `False` is not a per-flag
-    resolution claim. Routing is unchanged (`elif audit_unresolved:` treats
-    both as falsy); only the record is honest.
-
-    Returned as the two facts the finding seals rather than the one boolean it
-    used to be: `unresolved`, which routes, and `examination`, which says *why*
-    -- an exhausted cap and a re-proof that was delivered and did not complete
-    are both unresolved, and the review a person reads has to tell them apart
-    (independent audit of 2026-09-10, F1: the second case used to be sealed as
-    resolved because its text matched).
+    `not-run` never reaches Pass C, so it has no chain and returns `None`; it is held on
+    its own outcome, so a forged one buys nothing. An operational `failed` record is
+    verified through the shared failure contract. `None` means no audit at all; an
+    `unresolved` of `False` means audited with the round spent or nothing to spend it
+    on, not that every flag resolved. `examination` says why, so review can tell an
+    exhausted cap from an incomplete re-proof.
     """
     if reading["outcome"] == "not-run":
         return None
-    # Operational failures carry no text or audit chain.  Validate their full
-    # retained evidence before routing them to review.  A historical/test
-    # attempted outcome named ``failed`` with the ordinary completed-reading
-    # payload is still read by the pre-existing audit contract; only the new
-    # closed shape is interpreted as an operational failure.
+    # Only the closed operational-failure shape skips the chain; a `failed` outcome with
+    # an ordinary reading payload is still audited.
     if reading["outcome"] == "failed" and "failure" in reading["payload"]:
         validate_failed_perlectio(context, reading, act_id, expected_act_key=expected_act_key)
         return None
@@ -220,27 +189,13 @@ def audit_state(
 
 
 def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
-    """Each chair's current attempt facts, from ONE latest-attempt collapse.
+    """Each chair's current attempt facts, from one latest-attempt collapse.
 
-    Derived, never stored as a pointer. A failed attempt 2 over a successful
-    attempt 1 therefore reads as `failed`, with attempt 1 intact as history.
-    `latest_per_chair` is the one shared derivation of "current" per chair,
-    also used by `pipeline/4_perlector/run.py::testimonia_of` over the same
-    upstream artifacts, so the consumers cannot drift on what "current" means.
-    `outcome` and `content_health` come out of the same collapse for the same
-    reason: two functions that each re-derived "current" independently could
-    drift apart, and the staleness check below would then compare two
-    different ideas of the current attempt.
-
-    A page witness's act-attachment `content_health` is recorded from this
-    exact per-(act, chair) attempt stream (`pipeline/3_attestatores/run.py`'s
-    `attempts_by_pair`), not from its page-level Testimonium -- a targeted
-    reread appends to this stream whether or not the chair is page-scoped, so
-    this is a staleness signal for every chair alike (REOPENED F-O1).
-
-    `read_evidence` joins them for the same reason again: it is a fact about
-    the same current attempt, and `blank_corroboration` may not read it from a
-    second, independently derived idea of which attempt that is.
+    Derived, never stored: a failed attempt 2 over a successful attempt 1 reads as
+    `failed`. `latest_per_chair` is the derivation the Perlector's `testimonia_of` also
+    uses, and outcome, health and read evidence come from this one collapse so the
+    staleness check and `blank_corroboration` never compare two ideas of "current". A
+    reread appends to this per-(act, chair) stream for page witnesses too.
     """
     records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
     return {
@@ -257,16 +212,10 @@ def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
 
 
 def _read_evidence(payload: dict) -> dict[str, bool]:
-    """The two facts an Attestatores attempt leaves behind when a chair looked.
+    """Whether an Attestatores attempt claims a chair looked: regions and a receipt.
 
-    `pipeline/3_attestatores/HANDOFF.md`: `read` and `genuinely-empty` "mean a
-    chair actually read the exact regions and carry a serving receipt", and its
-    one write path sets both together for every attempted outcome. So these are
-    not a quality signal about the reading -- they are whether the record even
-    claims a request was made, and they are read here rather than assumed
-    because a completed *absence* is the outcome whose whole content is that
-    nothing was there, and therefore the one that can be produced without
-    anything having been asked (Sol-S1).
+    Not a quality signal. A completed absence is the one outcome that could be produced
+    without anything being asked, so the claim is read rather than assumed.
     """
     regions = payload.get("regions")
     provenance = payload.get("provenance")
@@ -278,12 +227,7 @@ def _read_evidence(payload: dict) -> dict[str, bool]:
 
 
 def chair_outcomes(current_attempts: dict[str, dict]) -> dict[str, str]:
-    """The current outcome per chair, projected from ONE passed collapse.
-
-    Takes the `chair_current_attempts` result rather than re-deriving it, so a
-    caller that needs outcomes and read evidence together provably reads both
-    from the same collapse instead of two identical walks happening to agree.
-    """
+    """The current outcome per chair, from the caller's collapse so evidence shares it."""
     return {chair: fact["outcome"] for chair, fact in current_attempts.items()}
 
 
@@ -340,28 +284,17 @@ def _proposal_geometry_by_page(context, act_id: str) -> dict[int, dict]:
 def _merge_page_attachment_fact(previous: dict, current: dict) -> dict:
     """An unattached continuation may not erase another page's attachment.
 
-    Chosen by strength, not by arrival order. `attached` alone decided this
-    before, and `comparable` is a per-page fact -- the producer derives it from
-    that page's own alignment status and that page's own retained text
-    (`pipeline/3_attestatores/run.py`), so one chair's two rows for one act
-    genuinely differ in it. Rows arrive in page order, so a continuation page
-    that attached without comparable text sorted ahead of the primary page that
-    had both and won on `attached` being equal. The chair was then recorded
-    incomparable, dropped out of the witness floor, and the act read
-    under-witnessed -- an act held for a human on evidence that existed.
-
-    Ties keep `previous`, so equal-strength rows behave exactly as before.
+    Chosen by strength, not arrival order: `comparable` is a per-page fact, so a
+    continuation that attached without comparable text must not outrank a primary page
+    that has both. Ties keep `previous`.
     """
     return max(previous, current, key=lambda fact: (fact["attached"], fact["comparable"]))
 
 
 SURVEY_ABSENT = "act-visibility-survey-absent"
 REGISTRATION_ABSENT = "cross-capture-registration-absent"
-# A view whose capture rendered two pages cannot be surveyed on one grid: the
-# instrument divides a single rectangle into cells, and a rectangle spanning two
-# page coordinate spaces exists on no page. Recorded like the other absences
-# rather than measured, because a verdict over that rectangle would describe a
-# surface no camera saw.
+# A view that rendered two pages cannot be surveyed on one grid: its rectangle exists on
+# no page. Recorded as an absence, not measured.
 SURVEY_SPANS_TWO_PAGES = "act-visibility-survey-spans-two-pages"
 # An absent instrument is recorded but does not become a measured shortfall.
 INSTRUMENT_ABSENT_CODES = frozenset({SURVEY_ABSENT, REGISTRATION_ABSENT, SURVEY_SPANS_TWO_PAGES})
@@ -370,20 +303,9 @@ INSTRUMENT_ABSENT_CODES = frozenset({SURVEY_ABSENT, REGISTRATION_ABSENT, SURVEY_
 def occlusion_records_by_page(context) -> dict[str, list[dict]]:
     """Read every sealed Designator occlusion record once per run, by page.
 
-    The same shape as this stage's other page-level inputs
-    (`page_coverage_findings`, `geometry_coverage_inputs`, `ink_map_by_page`):
-    computed once in `main` and passed down. `_page_occlusion_survey` used to
-    rebuild the whole Designator manifest and re-read every occlusion artifact
-    for every page of every view of every act, which is the same evidence read
-    O(acts x views x pages) times.
-
-    Only the reading moves. Each record's payload is still opened here exactly
-    as it was on the first survey, and the polygon and `z_relationship` checks
-    stay in the survey below, where they fire for the page actually being
-    surveyed and name it. A record with no string `page_id` cannot be filed
-    under any page, so it cannot be silently absorbed as "no survey for this
-    page" either -- a page that is never surveyed and a page whose survey was
-    unreadable must not read alike, so this refuses instead of dropping.
+    A record with no string `page_id` refuses: a page never surveyed and a page whose
+    survey was unreadable must not read alike. Polygon checks stay in the per-page
+    survey, where they name the page.
     """
     records: dict[str, list[dict]] = {}
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
@@ -407,18 +329,13 @@ def occlusion_records_by_page(context) -> dict[str, list[dict]]:
 def _page_occlusion_survey(occlusions: dict[str, list[dict]], page_id: str) -> dict:
     """Return the sealed occlusion evidence for one Exemplar page.
 
-    Artifact absence is not evidence that a survey ran. A ``below-ink`` record
-    proves its polygon does not obscure ink; every other accepted relationship
-    remains occluding. Validation is local because stages may not import one
-    another's implementation modules.
+    Artifact absence is not evidence that a survey ran. A `below-ink` record does not
+    obscure ink; every other relationship occludes. Validated locally because stages
+    may not import one another's modules.
 
-    No Designator stage publishes ``kind="occlusion"`` today
-    (`pipeline/2_designator/geometry_layer.py::occlusion_envelope` can build the
-    geometry; nothing seals it), so on every current run this returns
-    ``surveyed: False`` and the caller records `act-visibility-survey-absent`.
-    That is a named absence, not a measurement, and it is deliberately not a
-    shortfall: `review_route_from_findings` routes an absent instrument like
-    `False` because absence is not a measured gap. See both HANDOFFs.
+    No Designator stage seals `kind="occlusion"` yet, so every current run records
+    `act-visibility-survey-absent`: a named absence, which routing does not treat as a
+    shortfall.
     """
     polygons: list[list[dict[str, int]]] = []
     refs: list[str] = []
@@ -471,23 +388,12 @@ def act_cross_capture_coverage(
     occlusions: dict[str, list[dict]] | None = None,
     proposal_geometry: dict[str, dict] | None = None,
 ) -> dict | None:
-    """Survey the captures sealed in this act's current Perlectio.
+    """Survey the captures sealed in this act's current Perlectio; `None` if none registered.
 
-    ``None`` means no registered capture presentation exists. Each view uses
-    the proposal geometry for every local act named by its sealed autopsia.
-    Missing page surveys remain unresolved, and capture-local grids remain
-    unresolved when multiple captures lack a sealed registration into one
-    coordinate frame.
-
-    ``occlusions`` and ``proposal_geometry`` are the run-level reads `main`
-    performs once and passes down: the sealed occlusion records by page, and a
-    cache of local-act proposal geometry filled as this survey asks for it.
-    A logical act names the same local acts from every one of its views, so the
-    same Designator regions were otherwise re-read once per view per act.
-    Both default to deriving from ``context`` so a caller with one act and one
-    tree — every test of this function — needs no bookkeeping; nothing in the
-    Recensor writes Designator artifacts, so the cached reads cannot go stale
-    inside a pass.
+    Missing page surveys, and capture-local grids with no sealed registration into one
+    frame, remain unresolved. `occlusions` and `proposal_geometry` are run-level reads
+    `main` passes down; they default to reading from `context`, and the Recensor writes
+    no Designator artifacts, so they cannot go stale within a pass.
     """
     if occlusions is None:
         occlusions = occlusion_records_by_page(context)
@@ -531,22 +437,11 @@ def act_cross_capture_coverage(
             surveyed = surveyed and page_survey["surveyed"]
             polygons.extend(page_survey["polygons"])
             occlusion_refs.extend(page_survey["occlusion_refs"])
-        # One capture may render two pages -- `logical_reading.act_autopsia`
-        # groups every touched page by capture, so an act running over a page
-        # break becomes one view with two page identifiers. The bounding box
-        # below is taken over every page's proposal geometry at once, and the
-        # occlusion polygons above are pooled the same way, so for such a view
-        # the rectangle handed to the instrument mixes two coordinate spaces:
-        # a sticker over the top of page two would be reported as covering
-        # cells whose coordinates belong to page one. The verdict is not
-        # decorative -- `cross_capture_review_causes` reads it and
-        # `review_route_from_findings` turns occluded-everywhere into a stated
-        # reason -- so an act could be held on a false measurement, or called
-        # fully visible while real occlusion landed in the wrong cells.
-        # Continuation acts are ordinary in these registers, so this is the
-        # common case and not an edge. Until the instrument can classify each
-        # page on its own grid and combine the results, such a view is recorded
-        # as unmeasured rather than measured wrongly (principles 2 and 8).
+        # An act crossing a page break gives one capture two pages, and one bounding box
+        # would mix two coordinate spaces, so occlusion on page two would land in page
+        # one's cells. Until each page is classified on its own grid, such a view is
+        # recorded as unmeasured (principles 2, 8). This is the common case:
+        # continuation acts are ordinary in these registers.
         if surveyed and len(view["page_ids"]) > 1:
             visibility_state = "unresolved"
             visible_cells = []
@@ -652,23 +547,18 @@ def cross_capture_review_causes(coverage: dict | None) -> tuple[bool, bool | Non
 def act_attachment_facts(
     context, act_id: str, current_attempts: dict[str, dict]
 ) -> dict[str, dict]:
-    """Re-derive R0's attachment record before counting the witness floor.
+    """Re-derive the attachment record before counting the witness floor.
 
-    The Perlector checks the same writer fact at its read seam.  The Recensor is
-    the independent floor-accounting seam, so a sealed attachment boolean is
-    not evidence merely because its basis label is spelled correctly: page
-    testimony must still overlap this act's original proposal geometry, in
-    either direction of claimed/derived drift.
+    The Recensor is the independent floor-accounting seam: a sealed attachment boolean
+    is not evidence, so page testimony must still overlap this act's original proposal
+    geometry.
     """
     outcomes = chair_outcomes(current_attempts)
     records = artifacts_for(context, ATTESTATORES, "act-attachment", act_id)
     if not records:
         raise FatalAccounting(f"act {act_id} has no derived act-attachment record")
-    # The one shared derivation of "current", exactly as the Perlector's
-    # act_attachment_view selects it. The local sort this replaces defaulted a
-    # missing ordinal to 0 and took the last record blind, so a duplicate or
-    # gapped ordinal chain picked an arbitrary attachment where the strict
-    # helper refuses — the same two-predicates-drifting shape as F-O1/F-O3.
+    # The shared derivation of "current" the Perlector uses; it refuses a duplicate or
+    # gapped ordinal chain.
     record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
     payload = record.get("payload")
     entries = payload.get("attachments") if isinstance(payload, dict) else None
@@ -701,10 +591,8 @@ def act_attachment_facts(
         if health is not None and not isinstance(health, dict):
             raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
         truncated = health.get("truncated") if isinstance(health, dict) else None
-        # The same malformed-versus-absent rule `attached` and `content_health`
-        # get above: any non-boolean flag read as "act-scoped" would skip the
-        # alignment-consistency check and halt later on the outcome check with
-        # a message blaming the Testimonium, when the real fault is this field.
+        # Likewise malformed versus absent: a non-boolean read as act-scoped would skip
+        # the alignment check and fail later, blaming the Testimonium.
         page_witness = entry.get("page_witness")
         if not isinstance(page_witness, bool):
             raise FatalAccounting(
@@ -731,9 +619,7 @@ def act_attachment_facts(
             )
         seen_pairs.add(pair)
         if page_witness:
-            # `page_ordinal` was type-checked above, before it became half of
-            # the duplicate-pair key; re-reading and re-checking it here said
-            # the same thing twice with a thinner message.
+            # `page_ordinal` was type-checked above.
             proposal_page = proposal_pages.get(page_ordinal)
             if proposal_page is None:
                 raise FatalAccounting(
@@ -784,12 +670,8 @@ def act_attachment_facts(
                         f"act {act_id} page witness {chair!r} does not bind its retained raw "
                         "response as a verified input"
                     )
-                # `resolve` returns an identity *or* an absence, and `AbsentChair`
-                # carries no `witness_adapter`. Read straight through, a page
-                # record naming a chair the roster marks absent stopped this
-                # stage with an AttributeError -- a traceback where its contract
-                # owes a named refusal, and one that says nothing about which
-                # act or chair was inconsistent.
+                # `resolve` may return an `AbsentChair`, which has no `witness_adapter`;
+                # refuse by name rather than raise AttributeError.
                 resolved = context.registry.resolve(chair)
                 if not isinstance(resolved, ChairIdentity):
                     raise FatalAccounting(
@@ -814,18 +696,12 @@ def act_attachment_facts(
             attachment_outcome = (
                 page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
             )
-            # The same shared rule the producer and the Perlector use
-            # (`common/contracts/outcomes.py::page_attachment_basis`), read here
-            # independently from this stage's own copy of the evidence: a page
-            # witness attaches on its reported ink over the sealed proposal, or
-            # -- only where it reported none -- on an alignment that located
-            # this act's anchor line in its page text. The second basis is what
-            # a grammar carrying no geometry (Churro's, by vendor design) can
-            # reach at all; the floor is counted from this, so it is derived,
-            # never read off the record's own boolean. A malformed alignment
-            # cannot buy an attachment: the helper answers "not located" for
-            # every shape it does not recognise, and the closed-shape refusals
-            # below still name it.
+            # The shared attachment rule, applied to this stage's own copy of the
+            # evidence: a page witness attaches on its ink over the sealed proposal or,
+            # only where it reported none, on a located anchor line (the only path for a
+            # grammar with no geometry). The floor is counted from this derivation,
+            # never from the record's boolean; an unrecognized alignment derives as not
+            # located.
             derived_basis = page_attachment_basis(
                 reading=attachment_outcome in WITNESS_READING_OUTCOMES,
                 geometry_overlaps=any(
@@ -857,12 +733,8 @@ def act_attachment_facts(
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} has no computed alignment fact"
                 )
-            # The exact derived label. Admitting either of the two attaching
-            # bases by membership would let a chair attached on its own
-            # geometry be filed as `anchor-line` and the reverse -- and the two
-            # differ in exactly the fact a floor reader needs: `anchor-line`
-            # says this chair counts here only because another chair's anchor
-            # located its text.
+            # The exact label: `anchor-line` says this chair counts only because another
+            # chair's anchor located its text.
             if entry["attached"] and attachment_basis != derived_basis:
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} names attachment basis "
@@ -873,12 +745,9 @@ def act_attachment_facts(
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} names a basis for an unattached record"
                 )
-            # The documented closed shapes (pipeline/3_attestatores/HANDOFF.md),
-            # enforced where the floor is counted, not only at the Perlector: an
-            # attached record missing its geometry -- or its anchor_basis, which
-            # the blank gate below reads -- must not count as valid coverage,
-            # and a reason-free unaligned record leaves an operator with no
-            # statement of why comparison failed.
+            # The closed shapes, enforced where the floor is counted: an attached record
+            # missing its geometry or `anchor_basis` must not count, and an unaligned
+            # record needs a reason.
             if alignment["status"] == "aligned":
                 if (
                     set(alignment)
@@ -909,9 +778,8 @@ def act_attachment_facts(
                         alignment["anchor_basis"] != "act-anchor"
                         and alignment.get("anchor_chair") is not None
                     )
-                    # F087: same backstop fact Perlector now requires -- carried
-                    # through rather than re-derived, so the two stages cannot
-                    # silently drift on what a closed aligned shape contains.
+                    # The alignment's SIGALRM backstop fact, as the Perlector requires
+                    # it.
                     or not isinstance(alignment.get("deadline_in_force"), bool)
                 ):
                     raise FatalAccounting(
@@ -926,12 +794,9 @@ def act_attachment_facts(
                     f"act {act_id} page witness {chair!r} carries an unaligned record with "
                     "no usable reason; an unexplained failure is a silent loss"
                 )
-            # `attached` proves that SOME evidence placed this chair's reading
-            # in this act -- its own reported ink over the sealed proposal, or
-            # an alignment that located this act's anchor line in its page text
-            # (the derivation above). It does not prove there is a slice of
-            # retained text to compare, and the floor requires that as well:
-            # an aligned record AND a string on the referenced page record.
+            # `attached` proves some evidence placed this reading in the act, not that
+            # there is retained text to compare; the floor also needs an aligned record
+            # and a string page payload.
             if entry["comparable"] != (
                 entry["attached"]
                 and alignment["status"] == "aligned"
@@ -1023,11 +888,8 @@ def act_attachment_facts(
             "health_unrecorded": truncated is None,
             "page_witness": page_witness,
             "content_health": health,
-            # None for act-scoped chairs and unaligned page witnesses; the
-            # producer's disclosure of what an aligned page witness aligned
-            # against ("act-anchor" | "no-page-anchor" | "act-line-not-located").
-            # `blank_corroboration`
-            # is the consumer that must see it.
+            # What an aligned page witness aligned against, for `blank_corroboration`;
+            # None for act-scoped chairs and unaligned page witnesses.
             "anchor_basis": (
                 entry["alignment"].get("anchor_basis")
                 if page_witness and entry["attached"]
@@ -1047,27 +909,16 @@ def act_attachment_facts(
                     "across its pages; one act attempt cannot have two health records; "
                     "restore the attempt's single recorded health"
                 )
-            # A page witness has one attachment for every contributing page.
-            # Its act-level floor remains the one act attempt, so a continuation
-            # whose page has no anchor cannot erase the primary page's valid
-            # attachment; all page references remain separately checked by the
-            # content denominator below. Merging whole rows keeps one page's
-            # contribution carrying both predicates together: the surviving row
-            # is the strongest single page's, never a pair of booleans OR-ed
-            # across pages, which could manufacture a combination no one page
-            # supplied.
+            # A page witness has one row per contributing page but one act attempt, so
+            # rows merge and a continuation without an anchor cannot erase the primary
+            # page's attachment. Whole rows merge, never OR-ed booleans, so no
+            # combination appears that no single page supplied.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
-            # Only rows of this same act attempt are merged -- the health
-            # equality just above is what holds that -- so filling one page's
-            # missing basis from a sibling page never borrows another attempt's
-            # evidence.
-            #
-            # `act-line-not-located` is sticky across aligned page rows: a
-            # terminal blank cannot discard the page whose geometry failed.
-            # Without the stickiness `blank_corroboration` would read the merged
-            # row as geometry-checked and let a failed alignment corroborate a
-            # blank it never located.
+            # Only rows of one attempt merge (the health check above holds that), so
+            # filling a missing basis from a sibling page borrows nothing.
+            # `act-line-not-located` is sticky, or `blank_corroboration` would treat a
+            # failed alignment as checked geometry.
             bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
             if "act-line-not-located" in bases_seen:
                 merged["anchor_basis"] = "act-line-not-located"
@@ -1092,71 +943,27 @@ def blank_corroboration(
     """The corroborating chairs if every witness that read this act's ink agrees
     nothing was there, or `None` if the evidence does not support that.
 
-    ARCHITECTURE and spec 09 both name blank confirmation as a candidate
-    completeness check ("a zero-output unit is diagnosed, then either sealed
-    confirmed-blank with evidence or held unresolved-with-evidence"). A blank
-    verdict may not rest on fewer than several genuinely INDEPENDENT completed
-    reads, and never on a reader's own second opinion — the old pipeline paid to
-    learn that (window pass, 2026-08-05).
+    Unanimity about an absence, never a selection among presences: the Perlector
+    already found `no-readable-text` in the ink, and this asks only whether the
+    witnesses corroborate it. One chair that read text holds the act for a human and is
+    never outvoted. A blank needs several independent completed reads, never a
+    reader's second opinion.
 
-    This is **unanimity about an absence, never a selection among presences**:
-    the Perlector's own direct examination of the ink (autopsia, not testimony)
-    already produced `no-readable-text`, and this asks only whether the witnesses
-    corroborate or contradict that finding. A single chair that actually read
-    text is exactly the disagreement goal 2 says must never be silently
-    resolved — it holds the act for a human, and never outvotes the dissenter.
+    The floor is counted from chairs that completed a read, not from `under_witnessed`,
+    which also counts an excluded chair; no chair may still be unresolved. A recovery
+    region is witness-uncovered, so inherited testimony cannot corroborate absence
+    there. A page witness whose anchor locates no line for this act
+    (`act-line-not-located`) counts toward the floor but cannot corroborate a terminal
+    blank; `no-page-anchor` can, or the blank-page path would be unreachable.
 
-    A recovery region is witness-uncovered by contract: the inherited
-    testimonia remain bound to the original proposal regions. They therefore
-    cannot corroborate absence in an expanded region they never saw.
-
-    Requires the configured witness floor to have been met by chairs that
-    actually completed a read (not merely configured), and no chair still
-    unresolved — a floor met only by `failed`/`dead` chairs, or a run that
-    has not yet heard from every configured chair, corroborates nothing.
-
-    The floor is checked against `completed` below, never against
-    `coverage["under_witnessed"]`: that flag is `ATTESTATORES`'s own
-    COMPLETED class, which also counts an approval-bound `excluded` chair
-    (`common/contracts/outcomes.py`) — a chair excluded from witnessing
-    at all, not one that read the ink and found nothing. `under_witnessed`
-    can therefore be `False` while the actual reading evidence is one chair
-    short of the floor; trusting it here would let an excluded chair stand
-    in for a witness that never looked.
-
-    `attachments` is `act_attachment_facts`'s per-chair record. A page witness
-    whose trivial attach discloses `anchor_basis: "act-line-not-located"`
-    still counts toward the floor (the chair did complete, and that is
-    disclosed rather than hidden), but it may not corroborate a TERMINAL
-    blank: the page's Chandra anchor exists yet locates no line for this act,
-    so the geometry does not reconcile, and confirmed-blank is a proved
-    absence -- the act holds for a human instead (principle 2/9; goal 2:
-    the unproved direction costs a review, never an act). `no-page-anchor` is
-    the different fact of a page with no anchor at all -- an ink-free or
-    fallback page has nothing for Chandra to anchor, and refusing blank there
-    would make the intended blank-page path unreachable.
-
-    `read_evidence` is `chair_current_attempts`'s per-chair record of the two
-    facts an actual request leaves behind: the regions the chair was shown, and
-    the serving receipt for the attempt. The sentence this function's caller
-    publishes is a claim about what happened -- "every witness that actually read
-    this act ... independently reports the same absence" -- and until Sol-S1 that
-    claim was made without anyone checking it. The Sol-S1 repair itself is
-    upstream (the minting branch is deleted); the fabricated records carried
-    regions AND receipts, so this gate is defence in depth against a resealed
-    or foreign artifact, not a second catch for that finding. A completed-class
-    outcome missing either fact is a record this pipeline's own writer cannot
-    produce, so it is `FatalAccounting` rather than a quiet `None`: a hold
-    would say the evidence was weak, and what is actually true is that the
-    evidence is not this stage's to interpret. A presence check -- the strong
-    per-byte counterpart runs at the Perlector over the same artifacts.
+    A completed outcome missing its regions or receipt is a record this pipeline's
+    writer cannot produce, so it is fatal rather than a quiet `None`.
     """
     completed = sorted(
         chair for chair, outcome in outcomes.items() if outcome in WITNESS_READING_OUTCOMES
     )
-    # Named per chair AND per missing fact: "this record shows no request was
-    # made" sends an operator to the producer, and which half is absent says
-    # which producer branch to look at. One message for two faults would not.
+    # Named per chair and per missing fact: which half is absent points to the producer
+    # branch.
     unproved = []
     for chair in completed:
         evidence = read_evidence.get(chair, {})
@@ -1173,14 +980,9 @@ def blank_corroboration(
             f"{'; '.join(unproved)}. A blank may not be corroborated by a read that nothing "
             "records having happened"
         )
-    # **Below the validation, deliberately.** These two are ordinary "this act
-    # cannot be confirmed blank" facts and they return a quiet `None`; the check
-    # above is a claim that the run tree holds a record this pipeline's own writer
-    # could not have produced. Ordering the short-circuit first made that alarm
-    # conditional on the act being otherwise eligible, so exactly the trees most
-    # likely to be malformed — a recovery region, a run still missing a chair —
-    # were the ones where a forged completed record travelled unexamined. A
-    # writer-impossible record is fatal on every path or it is not fatal at all.
+    # After the validation: a writer-impossible record must be fatal on every path,
+    # including recovery regions and runs missing a chair, where these quiet returns
+    # would otherwise skip it.
     if witness_uncovered or coverage["unresolved_chairs"]:
         return None
     if (
@@ -1189,9 +991,7 @@ def blank_corroboration(
         or any(outcomes[chair] != "genuinely-empty" for chair in completed)
         or any(
             attachments.get(chair, {}).get("anchor_basis") == "act-line-not-located"
-            # Defence in depth beside `act_attachment_facts`' own refusal: a
-            # page witness whose fact somehow carries no basis at all is
-            # geometry nobody checked, and a terminal blank may not rest on it.
+            # A page witness with no basis at all is geometry nobody checked.
             or (
                 attachments.get(chair, {}).get("page_witness")
                 and attachments.get(chair, {}).get("anchor_basis") is None
@@ -1206,11 +1006,8 @@ def blank_corroboration(
 def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, object]:
     """Return one act's coverage after refusing ambiguous witness history.
 
-    Deliberately callable before the Recensor publishes anything: an ambiguity
-    discovered while reviewing the second act would otherwise leave a review for
-    the first one already on disk. That fragment is not a completed stage, but it
-    is an easy thing for a later retry to mistake for history, so the whole
-    witness denominator is validated before any of it is published.
+    Callable before anything is published, so an ambiguity found at a later act never
+    leaves a partial set of reviews for a retry to mistake for history.
     """
     current_attempts = chair_current_attempts(context, act_id)
     outcomes = chair_outcomes(current_attempts)
@@ -1229,12 +1026,9 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "chairs and nothing may add one after the seal"
         )
     attachments = act_attachment_facts(context, act_id, current_attempts)
-    # R4's attachment is an independent computed fact for a PAGE witness.  It
-    # must not be forced back into the act attempt outcome there: a page
-    # witness can have read its page while the bounded text-to-anchor
-    # calculation honestly remains unaligned, and `act_attachment_facts`
-    # already checks that fact for internal consistency against its own
-    # computed alignment.
+    # A page witness's attachment is an independent computed fact: it may have read its
+    # page while alignment honestly stayed unaligned, so it is not forced to match the
+    # act outcome.
     unaccounted = sorted(set(outcomes) ^ set(attachments))
     if unaccounted:
         raise FatalAccounting(
@@ -1242,19 +1036,10 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"chair(s) {unaccounted}; an absent fact would silently read as unattached, and "
             "an extra one would attach a chair that never testified for this act"
         )
-    # An ACT-SCOPED chair carries no independent computed fact: its `attached`
-    # is a restatement of that chair's own current Testimonium outcome, not a
-    # second measurement of anything. `reread_pass` (`pipeline/3_attestatores/
-    # run.py`) appends a new act-scoped attempt without writing a new
-    # attachment record, so the derived attachment is a THIRD consumer of the
-    # same artifacts as `chair_outcomes`/`testimonia_of` and can drift from
-    # both exactly as it did before R4 (F-O1): a targeted reread would
-    # otherwise count the witness floor from an attempt the reread already
-    # superseded. Restored on R4's audit (REOPENED F-O1) after removing it
-    # here left this hole open for every act-scoped chair; page witnesses are
-    # exempted because their own alignment-consistency check above is the
-    # genuinely independent fact this check would otherwise wrongly demand
-    # agreement from.
+    # An act-scoped chair's `attached` restates its current Testimonium outcome. A
+    # reread appends an attempt without a new attachment, so a mismatch means the floor
+    # would count a superseded attempt. Page witnesses are exempt: their alignment check
+    # above is the independent fact.
     superseded = sorted(
         chair
         for chair, outcome in outcomes.items()
@@ -1267,12 +1052,9 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"outcome for chair(s) {superseded}; the witness floor may not be counted from "
             "a superseded attempt"
         )
-    # NOT scoped to act-scoped chairs, unlike the outcome check just above: a
-    # page witness's attachment `content_health` is recorded from this exact
-    # per-(act, chair) attempt stream, not from page-level text, so it is a
-    # valid staleness signal for every chair (`chair_current_attempts`'s
-    # docstring; mirrors `pipeline/4_perlector/run.py::act_attachment_view`'s
-    # identical, symmetric check -- REOPENED F-O1).
+    # For every chair, page witnesses included: attachment health comes from this
+    # per-(act, chair) stream. The Perlector's `act_attachment_view` makes the same
+    # check.
     stale_health = sorted(
         chair
         for chair, fact in attachments.items()
@@ -1328,18 +1110,10 @@ def _payload(record: dict, what: str) -> dict:
 def recovery_state(context, act_id: str, budget: dict) -> dict:
     """Reconcile this act's requested, cut, and reviewed recovery history.
 
-    A recovery request is not evidence that its recrop happened, and a recovery
-    crop is not evidence that the Perlector read it.  The three append-only
-    histories must therefore agree before another Recensor review can be written:
-    exactly one recovery-requested review per request, at most one recrop per
-    request, and a later Perlectio for every recrop.  No branch here establishes
-    text or selects among readings; disagreement is fatal accounting.
-
-    The request history itself — ordinals, kinds, and the counters each request
-    recorded — is reconciled by `common/recovery.py::reconcile_recovery_requests`,
-    the one implementation the Designator and orchestrator boundary also uses.
-    What this function adds is the binding between that history and the reviews,
-    recrops and rereads that answered it.
+    A request is not evidence of a recrop, nor a recrop of a reading, so the histories
+    must agree before another review is written: one recovery-requested review per
+    request and at most one recrop per request. The request history itself is
+    reconciled by the shared `reconcile_recovery_requests`.
     """
     ordered_requests = reconcile_recovery_requests(
         artifacts_for(context, RECENSOR, "recovery-request", act_id), act_id, budget
@@ -1358,14 +1132,11 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
         if review.get("outcome") != "recovery-requested":
             continue
         payload = _payload(review, f"recovery-requested review of {act_id}")
-        # The review's own recense ordinal -- a function of its content
-        # (`publish_review`), not of this act's recovery count -- bound to its
-        # own sealed identity below, exactly as every other review is.
+        # The review's own recense ordinal, a function of its content, bound to its
+        # sealed identity below.
         ordinal = payload.get("attempt_ordinal")
-        # Which recovery request this review answers: the request's own
-        # position among this act's requests, named separately because the
-        # two ordinals are no longer the same number (`publish_review`'s
-        # docstring, F132).
+        # The position of the request this review answers, which differs from the
+        # recense ordinal.
         request_ordinal = payload.get("recovery_request_ordinal")
         request_ref = payload.get("recovery_request_ref")
         matching_request = next(
@@ -1419,10 +1190,8 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
     regions = artifacts_for(context, DESIGNATOR, "region", act_id)
     recrops_by_request = {request_id: [] for request_id in request_refs}
     recovery_regions = []
-    # Validate the whole origin vocabulary through the one shared reader, so this
-    # stage and the two downstream ones cannot disagree about what counts as a
-    # recovery crop. The count is discarded here; the per-region binding below is
-    # what this function additionally needs and the shared reader does not do.
+    # Validate the origin vocabulary through the shared reader so every stage agrees
+    # what a recovery crop is; the count itself is unused.
     recovery_region_count(act_id, regions)
     for region in regions:
         payload = _payload(region, f"Designator region of {act_id}")
@@ -1509,16 +1278,9 @@ def _expected_basis_facts(region: dict, act_id: str) -> dict:
 def recensor_continuation_link(regions: list[dict], act_id: str) -> dict:
     """The Recensor's own continuation fact, derived from evidence alone.
 
-    ARCHITECTURE and spec 09 agree the Recensor's link is the authoritative
-    continuation relation; the Designator's proposal seal carries
-    `has_continuation` as its own PROPOSAL, not a settled fact this stage may
-    inherit unexamined ("the Designator proposes continuations"). This derives
-    the answer directly from the original proposal regions actually cut — never
-    from the seal's flag — so the seal's claim can be checked against it rather
-    than trusted in its place. A genuine continuation cuts two proposal regions
-    on two distinct source pages; counting bare regions without checking the
-    pages would call two regions on the SAME page a continuation, which they
-    are not.
+    This link is the authoritative continuation relation; the seal's `has_continuation`
+    is only the Designator's proposal, checked against it. A continuation needs
+    proposal regions on two distinct pages, not merely two regions.
     """
     facts = [
         _expected_basis_facts(region, act_id)
@@ -1536,13 +1298,9 @@ def recensor_continuation_link(regions: list[dict], act_id: str) -> dict:
 def reconcile_continuation(act: dict, continuation_link: dict, act_id: str) -> bool:
     """Reconcile the seal's proposed continuation against the Recensor's own link.
 
-    Returns whether the act's reading covers only part of a claimed
-    continuation — never established as a whole act while that is true. Raises
-    when the seal instead denies a continuation its own evidence already
-    proves: silently agreeing with a seal that under-claims against the
-    evidence would let the Designator's proposal override the Recensor's own
-    authoritative continuation fact, which is exactly what stage ownership of
-    this relation (ARCHITECTURE, spec 09) exists to prevent.
+    Returns whether the reading covers only part of a claimed continuation. Raises when
+    the seal denies a continuation its own evidence proves: a proposal may not override
+    the Recensor's authoritative fact.
     """
     if act["has_continuation"] and not continuation_link["is_continuation"]:
         return True
@@ -1560,12 +1318,10 @@ def reconcile_continuation(act: dict, continuation_link: dict, act_id: str) -> b
 def regions_by_source_page(context) -> dict[int, list[dict]]:
     """Every currently-cut Designator region's page-pixel bounds, by source page.
 
-    Proposal and recovery together, from every act that touches a page — the
-    residual-ink check (`residual_ink.py`) asks about the PAGE's own pixels,
-    never any one act's denominator, so a region cut for a different act on the
-    same page still counts as coverage here. A page nobody cut a region on at
-    all has no entry: there is no evidence to read a region's absence against
-    yet. That gap is named, not papered over, in `HANDOFF.md`.
+    Proposal and recovery regions of every act count as coverage, because the
+    residual-ink check asks about the page's pixels, not one act's denominator. A page
+    with no region at all has no entry, so its residual ink is never measured here and
+    no act's review reports it.
     """
     by_page: dict[int, list[dict]] = {}
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
@@ -1580,10 +1336,8 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
             )
         ordinal = transform.get("source_page_ordinal")
         bounds = transform.get("bounds")
-        # Every one of the four numbers, not merely that `bounds` is an object:
-        # `residual_ink` indexes all four, so a rectangle that is a dict and
-        # nothing more reaches the pixel arithmetic and leaves by traceback
-        # instead of by the named refusal this check exists to give.
+        # All four numbers: `residual_ink` indexes each, and a bare dict would fail by
+        # traceback.
         if (
             not isinstance(ordinal, int)
             or isinstance(ordinal, bool)
@@ -1601,13 +1355,10 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
 
 
 def _source_rows(run: dict) -> dict[int, dict]:
-    """The submitted source-manifest row for each ordinal, by ordinal.
+    """The submitted source-manifest row for each ordinal.
 
-    The same reconciliation `pipeline/2_designator/run.py::_source_rows` and
-    `pipeline/7_armarium/run.py::page_census` each carry locally rather than
-    share — every stage that touches sealed Exemplar pixels rebuilds its own
-    view of the submitted denominator before trusting a page's own claim
-    about them.
+    Every stage that reads sealed Exemplar pixels rebuilds the submitted denominator
+    before trusting a page's claim; the Designator and Armarium carry their own copies.
     """
     rows = run.get("source_manifest")
     if not isinstance(rows, list) or not rows:
@@ -1628,16 +1379,11 @@ def _source_rows(run: dict) -> dict[int, dict]:
 
 
 def sealed_page_images(context) -> dict[int, dict]:
-    """Every sealed Exemplar page's own artifact, by ordinal.
+    """Every sealed Exemplar page's own artifact, by ordinal, checked against the manifest.
 
-    Verified against the run's own submitted source manifest before this
-    stage trusts its pixels — the residual-ink check reads raw bytes off
-    `payload["image_path"]`, a self-declared field `validate_envelope` never
-    relates to a page's digest-checked `inputs`. Every other stage that reads
-    sealed page pixels (`pipeline/2_designator/run.py`,
-    `pipeline/7_armarium/run.py`) calls this exact check first; reading raw
-    bytes off an unverified path here would be the one place in the pipeline
-    that skips it.
+    The residual-ink check reads raw bytes off `payload["image_path"]`, a self-declared
+    field the envelope never relates to the page's digest-checked inputs, so it is
+    verified first, as every stage that reads page pixels does.
     """
     pages: dict[int, dict] = {}
     for entry in stage_manifest(context, EXEMPLAR)["artifacts"]:
@@ -1680,24 +1426,10 @@ def sealed_page_images(context) -> dict[int, dict]:
 def capture_digest_by_page(sealed_pages: dict[int, dict]) -> dict[int, str]:
     """The capture identity every cross-capture consumer means, by page ordinal.
 
-    The physical-act partition, the cross-capture autopsia and this stage's own
-    visibility survey all name a capture by the *sealed Exemplar page's*
-    `source_sha256` (`pipeline/4_perlector/logical_reading.py::
-    _source_sha256_of_page`), which `verify_sealed_page_pixels` has already
-    proved is a lowercase SHA-256 over bytes that verify.
-
-    `run.json`'s source-manifest row is a different fact and is not that
-    identity. It records what the *submission* declared: optional at real
-    ingress (`pipeline/1_exemplar/door.py`'s `SourceEntry.declared_sha256` is
-    `str | None`, and `RunTree.create` validates only ordinals), and for a page
-    rendered out of a container it names the container, so several ordinals
-    share one value. Asking the capture-specific gate about that row therefore
-    either named the wrong capture or handed it `None`, and `None` came back as
-    "lacks logical-act/capture identity" — a refusal naming the wrong thing.
-
-    Refuses here rather than at the gate: a digest that cannot be stated is an
-    accounting failure of this stage's own evidence, not of the caller's
-    request.
+    Captures are named by the sealed Exemplar page's `source_sha256`, already verified.
+    The source-manifest row is not that identity: its declared digest is optional and,
+    for a page rendered from a container, names the container. A digest that cannot be
+    stated is this stage's own accounting failure, so it refuses here.
     """
     digests: dict[int, str] = {}
     for ordinal, page in sorted(sealed_pages.items()):
@@ -1724,45 +1456,25 @@ def capture_digest_for(capture_digests: dict[int, str], page_ordinal: int, act_i
 
 
 def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None) -> dict[int, dict]:
-    """Residual-ink findings for every sealed page with at least one region cut
-    on it (ARCHITECTURE's candidate list: "a residual-ink check whose input is
-    the page image itself, never the proposal set"), computed once per run and
-    reused by every act that reaches one of these pages.
+    """Residual-ink findings for every sealed page with a region cut on it, once per run.
 
-    Deterministic core, cheapest instrument first: pure geometry over the
-    page's own pixels, entirely independent of any witness or reading. A page
-    with zero regions cut on it at all is not checked here — see
-    `regions_by_source_page`.
-
-    ``sealed_pages`` is the same verified page map `main` already needs for the
-    capture digests; passing it keeps one pixel-verification pass per run
-    rather than one per consumer. Omitting it derives the map here exactly as
-    before, so every direct caller and test is unchanged.
-
-    **The paper value every count here is taken below is the Designator's**, from
-    `common.background` under the sealed `[grouping.background]` policy this run
-    bound. Independence lives in the contrast, not in the inference: until
-    2026-09-06 this check inferred its own paper from the page's raw histogram
-    mode, which on a photographed opening is the bezel, and it then measured
-    approximately zero residual ink on every such page. A page whose paper the
-    shared inference refuses gets a finding that carries the refusal and no
-    counts at all, and `page_coverage_for` keeps it out of `checked_pages`.
+    The input is the page image itself, never the proposal set, a witness or a reading.
+    The paper value is the Designator's shared inference under the sealed background
+    policy, never the page's own histogram mode, which on a photographed opening is the
+    bezel and hides all residual ink. A page whose paper the inference refuses gets a
+    finding carrying the refusal and no counts. `sealed_pages` lets `main` share one
+    pixel-verification pass.
     """
     regions = regions_by_source_page(context)
     if not regions:
         return {}
-    # The same sealed file the Designator and the Ink Map read, proved against
-    # the digest this run bound at `open_context`. Read once for the run: only
-    # the two band widths are per-page, and `resolve_background_policy` derives
-    # those from each page's own dimensions.
+    # The sealed file the Designator and Ink Map read, bound at open; only the band
+    # widths vary per page.
     background_config = load_background_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", background_config["config_sha256"])
-    # `[coverage_audit]` from the same bytes and under the same seal: the two
-    # gates this audit's flag is decided by, and the page-spanning bound it
-    # splits its counts on -- the same bound the Designator withheld under, which
-    # is what makes the component this audit sets aside the component that stage
-    # accounts for separately. Declared or fallback coverage may claim its
-    # pixels; only an unclaimed remainder is held.
+    # `[coverage_audit]` from the same sealed bytes, with the Designator's page-spanning
+    # bound, so the component this audit sets aside is the one that stage accounts for.
+    # Only an unclaimed remainder is held.
     coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     pages = sealed_page_images(context) if sealed_pages is None else sealed_pages
@@ -1774,10 +1486,7 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
                 f"a Designator region names source page {ordinal}, which the Exemplar "
                 "did not seal; a crop of unsealed pixels is invariant #10's imbalance"
             )
-        # The bytes measured, digested — not the separate earlier read
-        # `sealed_page_images` verified. Verifying one read and measuring
-        # another records a finding derived from pixels nobody checked, which is
-        # a metric that was not measured passing as one (principle 8).
+        # Digest the bytes actually measured, not an earlier read (principle 8).
         image_bytes = context.tree.read_bytes(page["payload"]["image_path"])
         if digest_bytes(image_bytes) != page["payload"]["source_sha256"]:
             raise FatalAccounting(
@@ -1795,14 +1504,9 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
                 coverage_policy=resolve_coverage_audit_policy(coverage_config, width, height),
             )
         except BackgroundInferenceRefusal as error:
-            # **The audit refuses the page rather than reporting zero on it.**
-            # Its paper value could not be inferred, so "how much ink is outside
-            # every cut" has no answer here at all; a finding of zero would be a
-            # green coverage proof taken under a divider that is not paper, which
-            # is exactly the failure this stage's audit stopped being able to
-            # catch while it inferred its own background. Recorded rather than
-            # dropped: `page_coverage_for` carries it to every act that touches
-            # the page, so no consumer reads the absence as a clean page.
+            # Without a paper value there is no ink count, and zero would be a false
+            # clean page. The refusal is recorded and carried to every act touching the
+            # page.
             findings[ordinal] = {
                 "ink_measurable": False,
                 "named_finding": INK_NOT_MEASURABLE,
@@ -1813,25 +1517,13 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
 
 
 def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dict[str, list[int]]:
-    """The residual-ink fact every review records: which source pages this act's
-    own current regions were cut from, and which of those are flagged.
+    """The residual-ink fact every review records: which pages this act's regions were
+    cut from, and which of those are flagged.
 
-    Every page the act's proposal or recovery regions touch, not only its primary
-    `page_ordinal` — a continuation's far-side page is examined exactly as its
-    near side is, and a successful recovery crop that reaches previously-missed
-    ink clears the page's finding on the very next pass.
-
-    `checked_pages` is narrowed to pages `findings` actually has an entry for,
-    not merely every ordinal an act's regions name: in `main()`'s real call the
-    two sets always coincide (`page_coverage_findings` derives its keys from
-    the same region set this function reads), but the field's own purpose --
-    "a consumer cannot tell 'checked and clear' from 'never checked'" -- only
-    holds if a page absent from `findings` is never reported as checked.
-
-    One derivation for all four review shapes, including a Designator-held act
-    whose own near-side region really was cut: a shape that records this fact
-    empty rather than deriving it drops a flagged page's only evidence whenever
-    that act is the only one touching the page.
+    Every page the act's regions touch, so a continuation's far side is examined too.
+    `checked_pages` holds only pages `findings` has, so "checked and clear" never covers
+    "never checked". One derivation for every review shape, including a held act, so a
+    flagged page's only evidence is never dropped.
     """
     ordinals = sorted(
         {
@@ -1842,13 +1534,8 @@ def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dic
         }
     )
     present = [ordinal for ordinal in ordinals if ordinal in findings]
-    # A page whose background the shared inference refused is *not* checked. It
-    # was looked at and no measurement came back, which is a third state beside
-    # "checked and clear" and "never checked", and the field set says all three
-    # apart rather than folding the new one into either: an unmeasurable page in
-    # `checked_pages` would be a coverage claim nobody measured, and an
-    # unmeasurable page in neither list would be indistinguishable from a page
-    # no region was ever cut on.
+    # A refused background is a third state beside checked-and-clear and never-checked,
+    # listed apart from both.
     unmeasurable = {
         ordinal for ordinal in present if findings[ordinal].get("ink_measurable") is False
     }
@@ -1889,9 +1576,8 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
                 "Ink Map inventory or restart the run before rerunning the Recensor."
             )
         if record.get("outcome") == INK_NOT_MEASURABLE:
-            # **Present, explicitly unavailable, and sealed.** Validate before
-            # discarding runs: a malformed refusal cannot become the same `None`
-            # as the producer's honest unavailable measurement.
+            # Validate before discarding runs, so a malformed refusal cannot become the
+            # same `None` as an honest one.
             try:
                 refusal = validate_ink_not_measurable_payload(payload)
                 context.require_sealed_config(
@@ -1963,12 +1649,10 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
 
 
 def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> int:
-    """Ink of Unit 9's retained runs inside ``box`` and outside every cut region.
+    """Ink of the Ink Map's retained runs inside ``box`` and outside every cut region.
 
-    Witness observations remain classified against the proposal set that
-    existed when they were recorded, so an observation may overlap a recovery
-    crop cut later. Subtracting every current proposal and recovery crop keeps
-    already-covered ink from funding another bounded recovery.
+    An observation may overlap a recovery crop cut after it was recorded; subtracting
+    every current crop keeps covered ink from funding another recovery.
     """
     width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
     if (
@@ -1989,10 +1673,8 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
         )
     x0 = max(0, box["x"])
     y0 = max(0, box["y"])
-    # Clamp the far edge back to the near edge as well as to the page. A box
-    # wholly above the page otherwise produces (for example) ``rows[0:-2]``;
-    # Python interprets that as almost the whole page, manufacturing ink inside
-    # geometry that intersects no page pixel at all.
+    # Clamp the far edge to the near edge too: a box above the page would otherwise
+    # slice `rows[0:-2]`, almost the whole page.
     x1 = max(x0, min(width, box["x"] + box["w"]))
     y1 = max(y0, min(height, box["y"] + box["h"]))
     total = 0
@@ -2017,10 +1699,8 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
                     "Ink Map artifact or restart the run before rerunning the Recensor."
                 )
             start, length = run
-            # Ordered and disjoint, as `ink_runs` writes them and as
-            # `edge_ink_from_runs` already requires of the same evidence. Two
-            # runs that overlap would be counted twice here and could confirm
-            # a pointer over ink that is not there.
+            # Ordered and disjoint, as `ink_runs` writes them; overlapping runs would
+            # count ink twice.
             if start < previous_end or length <= 0 or start + length > width:
                 raise FatalAccounting(
                     "ink-map edge findings have unordered or out-of-bounds runs. Counting them "
@@ -2069,38 +1749,17 @@ def unclaimed_ink_observations(
 ) -> list[dict]:
     """Which of this page's retained unclaimed observations point at real ink.
 
-    A witness box is only a pointer. Recovery requires independently measured
-    ink outside every current cut; agreement, overlap scores, chair identity,
-    and other witness-derived quantities cannot authorize it. ``cut_regions``
-    is required because an omitted mask would count already-covered ink as a
-    reason to cut it again. ``minimum_ink_pixels`` is the sealed noise floor
-    the ink under a pointer must clear, keyword-only with no default: it was
-    the module constant `MINIMUM_INK_PIXELS` until 2026-09-14 and is read from
-    `[coverage_audit.noise_floor]` under the run's own seal now, so a caller
-    that forgets it fails loudly rather than funding recovery under a floor
-    nobody sealed.
-
-    A retained observation with no map row is a fatal accounting gap, not an
-    empty result: absence of the independent evidence cannot honestly be read
-    as a measurement of zero ink. With no observations there is no pointer to
-    confirm, so an absent row remains inert here; the Armarium later reconciles
-    the complete page denominator independently.
-
-    A retained observation whose own ``bounds`` is missing or not the closed
-    ``{x, y, w, h}`` shape is the same kind of gap, not a pointer that happens
-    to point at nothing: silently skipping it would let a malformed witness
-    record disappear behind an empty result instead of the fatal refusal every
-    other malformed-evidence path in this module raises.
+    A witness box is only a pointer: recovery needs independently measured ink outside
+    every current cut, at least the sealed `minimum_ink_pixels`. Both are required
+    arguments, so covered ink is never re-cut and no unsealed floor funds recovery. A
+    retained observation with no map row or malformed bounds is fatal: missing evidence
+    is not a measurement of zero.
     """
     evidence = maps.get(page_ordinal)
     if evidence is None and page_ordinal in maps:
-        # **The Ink Map measured this page and refused it by name.** There is no
-        # independent ink measurement, so no pointer here can be confirmed and
-        # no recovery may be authorized from one -- recovery requires measured
-        # ink outside every cut, and this page has no measurement at all. That
-        # is not the same as measuring zero, and it is not lost: the page is
-        # carried in every touching act's `page_coverage.unmeasurable_pages`,
-        # so a reviewer can tell "no unclaimed ink here" from "nobody could say".
+        # The Ink Map refused this page, so no pointer can be confirmed. The page is
+        # carried in `unmeasurable_pages`, so review can tell "nobody could say" from
+        # "no ink".
         return []
     if evidence is None:
         if unclaimed_observations:
@@ -2116,12 +1775,7 @@ def unclaimed_ink_observations(
     requests = []
     for observation in unclaimed_observations:
         bounds = observation.get("bounds") if isinstance(observation, dict) else None
-        # Each of x, y, w and h is required, and required to be a real integer.
-        # `isinstance(bounds, dict)` alone let a partial rectangle through to
-        # `_ink_outside_cuts_in_box`, which indexes `box["x"]` and ended the
-        # stage with a bare KeyError -- an unnamed crash in place of the named
-        # refusal this gate exists to give, for the one malformed shape that
-        # actually reaches the arithmetic.
+        # All four keys as real integers; `_ink_outside_cuts_in_box` indexes each.
         if (
             not isinstance(bounds, dict)
             or set(bounds) != {"x", "y", "w", "h"}
@@ -2157,11 +1811,8 @@ def unclaimed_ink_observations(
             request = {
                 "page_ordinal": page_ordinal,
                 "outside_ink_pixels": ink_pixels,
-                # The pointer is never sufficient on its own: it reaches
-                # this retained request only after the Ink Map measured
-                # enough ink outside every existing crop.  It then gives
-                # the Designator exact sealed-image geometry to cut, so a
-                # real ingress need not borrow fixture rectangles.
+                # Reached only after measured ink confirmed the pointer; gives the
+                # Designator exact sealed-image geometry to cut.
                 "bounds": canonical_bounds,
             }
             for name in (
@@ -2187,15 +1838,9 @@ RECOVERY_ORIGINS = (COVERAGE_OBSERVATION_ORIGIN, DECLARED_CROP_ORIGIN)
 def observation_funded_pages(context, acts: list[dict]) -> set[int]:
     """Pages whose one observation-funded recovery has already been spent.
 
-    An unclaimed observation is page-scoped, while the recovery request it can
-    fund is act-scoped. Counting from the retained tree prevents each act on a
-    page, or each later Recensor pass, from spending a separate grant for the
-    same page evidence. The first eligible act follows the sealed proposal
-    order and budget state; no witness-derived ranking enters that choice.
-
-    Spending the grant does not claim the ink is covered. The observation stays
-    retained, and the Designator expands the act's declared rectangle rather
-    than treating the witness box as authoritative geometry.
+    An observation is page-scoped but funds an act-scoped request, so the grant is
+    counted from the retained tree, not per act or per pass. The first eligible act in
+    sealed proposal order spends it; spending it claims nothing about coverage.
     """
     page_of = {act["act_id"]: act["page_ordinal"] for act in acts}
     funded: dict[int, str] = {}
@@ -2236,11 +1881,8 @@ def observation_funded_pages(context, acts: list[dict]) -> set[int]:
 def recovery_request_origin(*, declared: bool, outside_ink_requests: list) -> str:
     """Name the route that actually caused one fallback-recrop request.
 
-    A scenario declaration and an ink-confirmed observation can coincide.  The
-    declaration is the independent structural route and takes precedence: the
-    page's one observation-funded grant must not be consumed merely because
-    witness geometry happened to be present beside a request the declaration
-    already caused.  With neither cause, publication is an accounting defect.
+    A declaration takes precedence over a coinciding ink-confirmed observation, so the
+    page's one observation grant is not spent on a request the declaration caused.
     """
     if declared:
         return DECLARED_CROP_ORIGIN
@@ -2279,13 +1921,7 @@ def unresolved_observation_hold(
 
 
 def _require_reconciled_pixels(ordinal: int, pixel_counts: dict) -> tuple[int, int, int]:
-    """Pixel-count typing and conservation, shared by every consumer of `pixel_counts`.
-
-    Both the enumerated and the withheld page shapes hold the sealed page's own
-    ink accounting to the same two facts: the three counts are non-negative
-    integers, and `claimed + residual == total`. Returns the triple so the
-    enumerated caller can still check its own per-component sum against it.
-    """
+    """Pixel-count typing and `claimed + residual == total`, shared by every page shape."""
     if any(
         not isinstance(count, int) or isinstance(count, bool) or count < 0
         for count in pixel_counts.values()
@@ -2307,31 +1943,16 @@ def _require_reconciled_pixels(ordinal: int, pixel_counts: dict) -> tuple[int, i
 
 
 def geometry_coverage_inputs(context) -> dict[int, dict]:
-    """Consume, and independently reconcile, R2's conservation denominator.
+    """Consume, and independently reconcile, the Designator's conservation denominator.
 
-    A conservation record is not a conclusion this stage may copy into its own
-    review.  Every sealed page represented by a non-held act must have one, and
-    its residual components must have become exactly the held residual acts in
-    the proposal seal.  Reading both sides here makes a broken R2 invariant-8
-    partition or a missing sealed-page denominator a refusal, rather than a
-    reassuring Recensor record.  An all-held page is the distinct door-refusal
-    shape: it never reached sealing, so absence remains absence for its reviews.
+    Every sealed page with a non-held act needs a record, and its residual components
+    must equal the held residual acts in the proposal seal. An all-held page never
+    reached sealing, so its absence stays absence.
 
-    **A page that withheld its enumeration is a third shape, and it fails for
-    its own name.**  The Designator holds a page as one `page-residual` review
-    item when its reconciliation counted more unclaimed components than the
-    sealed grouping policy allows one page to enumerate, and then omits
-    `residual_components` rather than emptying it -- an empty list is the claim
-    "no unclaimed ink", which is the opposite of what happened.  Without a
-    branch of its own such a record arrived at the malformed-facts refusal and
-    was reported as a broken artifact, which is a true statement about the
-    shape and a false one about the run: nothing was malformed, a page was
-    held under a policy, and the operator was told the wrong thing.  Every
-    condition below is recomputed from the record and the seal, never read off
-    the Designator's word for it: the count must exceed the bound it names, the
-    page must carry exactly one page-residual act, and it must carry none of
-    the per-component ones -- minting both would account for the same unlisted
-    ink twice.
+    A page that withheld its enumeration (more components than the sealed policy lets
+    one page list) is its own shape: no `residual_components`, exactly one page-residual
+    act and no per-component ones. Every condition is recomputed from the record and
+    the seal.
     """
     acts = expected_acts(context)
     residual_keys = {act["act_key"] for act in acts if act["act_key"].startswith("residual:")}
@@ -2647,31 +2268,11 @@ def _withheld_page_conservation(
 ) -> dict:
     """One page held as a single review item in place of its residual components.
 
-    This stage is the second consumer of that decision and reconciles it the
-    same way it reconciles an enumerated page: against the seal, never against
-    the producer's assurance.  What it cannot do is add up the components, so
-    the two checks that survive are the ones that still can be made -- the ink
-    accounting itself (`claimed + residual == total`, still exact and still
-    published) and the partition (exactly one page-residual act for this page,
-    and none of the per-component ones).  The per-component pixel sum is the
-    one check genuinely lost here, and it is lost because the list it summed is
-    the thing deliberately not carried; saying so is better than quietly
-    dropping it.
-
-    The finding this returns carries the same key set as every other shape this
-    function can produce, and says something different in it.  `residual_act_count`
-    is 0 and true -- no `residual:` act was minted -- and on its own it would
-    read to a reviewer as a page whose unclaimed components vanished, so the
-    count, the bound, the enumeration and the one page-residual act are named
-    beside it.  What it may not do is *lose* those keys on the other two shapes:
-    an enumerated page states the same facts with `residual_enumeration:
-    "complete"` and a null reason, and a page with no record at all states them
-    as null, so a consumer reads one schema and finds absence as a value rather
-    than as a `KeyError` on whichever shape a page happened to produce.  Filling
-    them is only honest because each value is true of the page it describes;
-    restating a withheld page in an enumerated page's *values* would be the same
-    class of untruth as `NO_PAGE_CONSERVATION` defaulting to
-    `ink_measurable: False`.
+    Reconciled against the seal, like an enumerated page. Without the list the
+    per-component pixel sum cannot be recomputed, so the checks are the ink accounting
+    and the partition: exactly one page-residual act and no per-component ones. The
+    finding keeps the key set of every other shape, so consumers read one schema; each
+    value is true of this page.
     """
     if not measurable:
         raise FatalAccounting(
@@ -2738,13 +2339,8 @@ def _withheld_page_conservation(
 def current_act_attachments(context) -> dict[str, dict]:
     """The current act-attachment record per act, from one manifest pass.
 
-    `latest_attempt` is the one shared derivation of "current", exactly as
-    `act_attachment_facts` above and `pipeline/4_perlector/run.py`'s
-    `act_attachment_view` derive it. Keeping the last record the manifest
-    happens to list is the defect both of those already record: manifest order
-    is a hash, so a second Attestatores pass would hand this check whichever
-    attachment sorted last rather than the current one, and a third consumer
-    deriving "current" its own way is the F-O1/F-O3 drift shape itself.
+    Uses the shared `latest_attempt`: manifest order is a hash, so the last listed
+    record is not the current one.
     """
     records: dict[str, list[dict]] = {}
     for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
@@ -2908,11 +2504,9 @@ def reconcile_page_roles(
             )
 
 
-#: The alignment reason the Perlector and the Attestatores both force onto every
-#: attachment row belonging to a page that is not its act's primary page
-#: (`pipeline/4_perlector/run.py`, `pipeline/3_attestatores/run.py`). The act
-#: anchor is derived from the act's own primary page, so a continuation page has
-#: none and no row on it can ever reach `aligned`.
+#: The alignment reason forced onto every attachment row on a page that is not its
+#: act's primary page. The act anchor comes from the primary page, so no row there can
+#: be `aligned`.
 CONTINUATION_NO_ACT_ANCHOR = "continuation-page-no-act-anchor"
 
 
@@ -2924,19 +2518,10 @@ def continuation_unmeasured_reason(
 ) -> str:
     """Say, in one sentence, why a declared-unanchored act's uncovered text has no verdict.
 
-    The observation itself is kept — the chair, the page, the uncovered count —
-    because it is real and somebody has to be able to act on it. What is refused
-    is calling it a shortfall: no span of a declared act can enter the union its
-    page text was diffed against, by declaration rather than by measurement
-    (principle 8).
-
-    Two situations, and the sentence names which one it is describing. Where the
-    chair has no aligned spans on the page at all, the whole page is unmeasured
-    and this is the page's own `reason` — the ruled wording,
-    unchanged. Where it does have some, only the declared acts' share is
-    unmeasured; the page carries a real verdict and this rides beside it as
-    `unmeasured_reason`, scoped to those acts, because the page-wide sentence
-    would be a false statement about a page that *was* measured.
+    The observation is kept, but it is not a shortfall: by declaration no span of such an
+    act can enter the union (principle 8). With no aligned spans on the page this is the
+    page's `reason`; beside a measured verdict it rides as `unmeasured_reason`, scoped to
+    those acts.
     """
     observed = "; ".join(
         f"chair {chair!r} saw {count} uncovered non-whitespace character(s) beside "
@@ -2965,16 +2550,14 @@ def continuation_unmeasured_reason(
 def testimony_content_findings(context) -> dict[int, dict]:
     """Compare each page witness's text to its own aligned act attachments.
 
-    This is deliberately testimony-to-testimony: no Perlectio text participates
-    until R5b's Pass-C output exists.  The retained alignment spans are the loss
-    map; a non-whitespace page character outside their ordered union is a visible
-    coverage shortfall, never a verdict about which witness is right.
+    Testimony to testimony; no Perlectio text participates. A non-whitespace page
+    character outside the union of the aligned spans is a visible coverage shortfall,
+    never a verdict about which witness is right.
     """
     attachments = current_act_attachments(context)
     page_testimonia = current_page_testimonia(context)
-    # Read and validated once, not once per page witness: `expected_acts` re-reads
-    # the proposal seal and re-verifies its self-hash on every call, and this stage
-    # never writes to the Designator's seal while it runs.
+    # Read once: `expected_acts` re-verifies the seal on every call, and this stage
+    # never writes it.
     acts_by_page: dict[int, list[dict]] = {}
     proposal_regions_by_page: dict[int, list[dict]] = {}
     for act in expected_acts(context):
@@ -2994,20 +2577,10 @@ def testimony_content_findings(context) -> dict[int, dict]:
             if act not in page_acts:
                 page_acts.append(act)
             bounds = transform.get("bounds")
-            # The same rectangle `_proposal_geometry_by_page` requires of these
-            # same sealed proposals: four integer sides, on the page, with
-            # positive area. Two distinct failures follow from accepting less.
-            # A rectangle that is a dict and nothing more reaches
-            # `unrouted_observations`, which indexes all four sides by name, and
-            # leaves the stage that decides recovery as a bare `KeyError` naming
-            # neither page nor act. Worse, a *degenerate* rectangle -- zero or
-            # negative width, or an off-page origin -- indexes cleanly and
-            # overlaps nothing, so `_overlaps` reports that no proposal accounts
-            # for ink a proposal does in fact cover, and the witness's
-            # observation is published as an unrouted-observation finding. That
-            # is manufactured coverage evidence driving bounded recovery
-            # (principles 7 and 8), which is why the range checks belong here and
-            # not only in the sibling reader.
+            # The rectangle `_proposal_geometry_by_page` requires: a partial one would
+            # fail as a bare KeyError, and a degenerate one would overlap nothing and
+            # manufacture an unrouted-observation finding that drives recovery
+            # (principles 7, 8).
             if (
                 not isinstance(bounds, dict)
                 or set(bounds) != {"x", "y", "w", "h"}
@@ -3068,12 +2641,8 @@ def testimony_content_findings(context) -> dict[int, dict]:
     unanchored_by_page: dict[int, list[tuple[str, int, list[str]]]] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
-        # `current_page_testimonia` types only the page ordinal and the chair,
-        # because those two become dict keys. The observed rows below are still
-        # untrusted evidence read from disk, and `unrouted_observations` indexes
-        # each one by name: a row that is not a closed observation would leave
-        # this stage as a raw KeyError rather than a named refusal, from the one
-        # stage that decides whether coverage recovery runs.
+        # The observed rows are untrusted and `unrouted_observations` indexes them by
+        # name, so a malformed one is refused by name.
         try:
             validate_reportable_observations(payload.get("observed", []))
         except ContractError as error:
@@ -3103,10 +2672,9 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ) from error
         observed = payload.get("observed")
         if isinstance(presented, dict) and presented and isinstance(observed, list):
-            # Coverage is computed from what the witness saw and the current
-            # sealed proposal denominator. The optional retained partition is
-            # audit evidence, not an input whose omission or older denominator
-            # may suppress a present finding.
+            # From what the witness saw and the current proposal denominator; the
+            # optional retained partition is audit evidence and may not suppress a
+            # finding.
             unclaimed = unrouted_observations([record], proposal_regions_by_page.get(ordinal, []))
         else:
             unclaimed = []
@@ -3122,14 +2690,9 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 observation["testimonium_ref"] = testimonium_ref
                 observation["observation_ordinal"] = observation.pop("ordinal")
             finding.setdefault("unclaimed_observations", []).extend(copy.deepcopy(unclaimed))
-            # An observation outside every proposal is a retained coverage
-            # finding, not evidence that the page's *reported text* fell
-            # outside an attached span.  It independently asks the Recensor
-            # for bounded recovery below; turning it into this text shortfall
-            # would keep every act on the page held after that route has run,
-            # even though the finding never assigned the observation to one of
-            # them.  That would turn unknown ownership into a silent negative
-            # verdict about otherwise reconciled acts.
+            # An observation outside every proposal routes recovery on its own. It is
+            # not a text shortfall, which would keep every act on the page held over an
+            # observation assigned to none of them.
         if "payload" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:
                 raise FatalAccounting(
@@ -3137,23 +2700,14 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     f"coverage: {record['artifact_id']} for page {ordinal}, chair {chair!r}; "
                     "restore the retained Attestatores record"
                 )
-            # A page witness that read nothing across every act on this page --
-            # every configured act was `dead`, `not-run`, or otherwise non-reading
-            # for this chair -- carries no retained `payload` text: `testimonium_payload`'s
-            # reading-only bridge (pipeline/3_attestatores/run.py) never sets it for
-            # a non-reading outcome. The outcome check above distinguishes that
-            # legitimate absence from a malformed producer that claims it read the
-            # page but lost the text. There is no witness content to diff against
-            # attachments in the former case; the chair's absence stays visible
-            # through its act-scoped Testimonia and the act's witness-coverage floor.
+            # A page witness that read nothing on this page legitimately has no text;
+            # its absence stays visible through its act-scoped Testimonia and the
+            # witness floor.
             continue
         text = payload.get("payload")
         if not isinstance(text, str):
-            # Structured derived testimony is retained but has no comparable
-            # page text.  Its act attachment is explicitly `comparable: false`,
-            # so it cannot satisfy the witness floor; treating that declared
-            # limit as a malformed page would erase the very evidence the
-            # retirement is meant to preserve.
+            # Structured testimony has no comparable page text; its attachment is
+            # `comparable: false`, so it cannot meet the floor either.
             continue
         spans = []
         declared_unanchored: list[str] = []
@@ -3176,14 +2730,10 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 and alignment.get("status") == "unaligned"
                 and alignment.get("reason") == CONTINUATION_NO_ACT_ANCHOR
             ):
-                # Not attachment-conditional, deliberately. The declaration is
-                # written onto every continuation row whichever way `attached`
-                # came out (`pipeline/3_attestatores/run.py` derives the row per
-                # contributing page and forces this alignment before geometry is
-                # consulted), and it is the declaration -- not the geometry --
-                # that makes an aligned span unreachable here. Requiring
-                # `attached` would leave the live seam's own continuation page,
-                # whose rows are unattached, reported as a measured shortfall.
+                # Not conditional on `attached`: the declaration is on every
+                # continuation row and is what makes an aligned span unreachable;
+                # unattached continuation rows would otherwise read as a measured
+                # shortfall.
                 declared_unanchored.append(act_id)
         covered_intervals = _covered_intervals(spans, len(text))
         uncovered = uncovered_non_whitespace_ranges(text, covered_intervals)
@@ -3196,52 +2746,29 @@ def testimony_content_findings(context) -> dict[int, dict]:
             "uncovered_non_whitespace": uncovered,
         }
         if declared_unanchored and uncovered["count"]:
-            # Recorded whichever way the verdict goes: this chair saw uncovered
-            # text beside acts whose spans could never have covered it, and that
-            # observation is what names the gap the Perlector has yet to close.
-            # The settlement below decides whether it becomes the page's reason
-            # or rides beside a measured one.
+            # Recorded either way; the settlement below decides whether it becomes the
+            # page's reason or rides beside a measured one.
             unanchored_by_page.setdefault(ordinal, []).append(
                 (chair, uncovered["count"], sorted(declared_unanchored))
             )
         if covered_intervals or not declared_unanchored:
-            # Only an *empty* span union is unmeasured -- the union, not the
-            # span list: a zero-width aligned span is a valid row that covers
-            # nothing, so `covered_intervals` is the fact, not `spans` or
-            # `declared_unanchored` alone. Where this chair has covering spans
-            # on the page, the diff was taken against a real union -- a mixed
-            # page carries one act starting here beside another continuing
-            # through -- so its uncovered text is a measurement like any other
-            # and raises the page's shortfall. Suppressing it because some
-            # other act on the page declared itself unanchorable would hide a
-            # real coverage loss behind a neighbour's declaration, which is
-            # the missed act goal 2 puts above every other cost. The
-            # ruling (Unit 12 F2) withholds the verdict where the measurement
-            # cannot be made; here it can be.
+            # Only an empty covered union is unmeasured (a zero-width span covers
+            # nothing). Where this chair has covering spans its uncovered text is a real
+            # measurement, and a neighbour's unanchored declaration may not hide it.
             finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     for finding in findings.values():
         if finding["by_chair"]:
             continue
-        # This finding exists only because unclaimed geometry created it: no
-        # chair on this page reported text, so the loop above never diffed one
-        # and `by_chair` stayed empty. Leaving the seeded `shortfall: False`
-        # would publish a clean text measurement nobody took, indistinguishable
-        # from a page whose witnesses were read and covered everything
-        # (principle 8) -- the very restatement `NO_PAGE_CONTENT_COVERAGE`
-        # exists to avoid for pages that reach no measurement at all. The
-        # unclaimed observations stay: they are geometry, and they still route
-        # bounded recovery.
+        # No chair on this page reported text, so nothing was measured, and `shortfall:
+        # False` would publish a clean measurement nobody took (principle 8). The
+        # unclaimed observations stay and still route recovery.
         finding["shortfall"] = None
         finding.setdefault("reason", NO_PAGE_CONTENT_COVERAGE["reason"])
     for ordinal, observations in unanchored_by_page.items():
         finding = findings[ordinal]
         if finding["shortfall"]:
-            # This page carries a real shortfall measured against a real span
-            # union -- by another chair, or by this same chair on a mixed page
-            # where one act's spans are aligned and another's are declared
-            # unanchorable. That verdict is a measurement and outranks the
-            # unmeasured one; the reason still records what could not be
-            # measured beside it, so neither half is lost (principle 2).
+            # A shortfall measured against a real union outranks the unmeasured verdict;
+            # the unmeasured reason is kept beside it (principle 2).
             finding.setdefault(
                 "unmeasured_reason",
                 continuation_unmeasured_reason(
@@ -3249,15 +2776,9 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ),
             )
             continue
-        # Ruling on Unit 12's F2: unmeasured by name.
-        # Before it, this page's uncovered text became `shortfall: True` on a
-        # page no act's review reads, so the verdict reached nothing and the
-        # export said DELIVERED over it. `None` is this module's existing
-        # spelling for "not measured" (the `by_chair`-empty case above), and it
-        # is the honest one here: the diff was taken against a union the
-        # Perlector declared empty, so its result is not a shortfall the
-        # Recensor found. The count stays in `by_chair`, the reason names the
-        # cause, and every act spanning the page restates the row.
+        # Unmeasured by name: the diff was taken against a union the Perlector declared
+        # empty, so it is not a shortfall. The count stays in `by_chair`, and every act
+        # spanning the page restates the row.
         finding["shortfall"] = None
         finding.setdefault("reason", continuation_unmeasured_reason(ordinal, observations))
     return findings
@@ -3304,17 +2825,10 @@ NO_PAGE_CONTENT_COVERAGE = {
 def geometry_coverage_for(findings: dict[int, dict], ordinal: int) -> dict:
     """Return one review's private copy of a page's geometry-coverage fact.
 
-    A page with no conservation record at all is **not** a page the Designator
-    measured and found unmeasurable. It publishes one record per page it sealed,
-    unmeasurable pages included, precisely "because a page with no conservation
-    record at all is the silent gap this artifact exists to close"
-    (`pipeline/2_designator/run.py::_publish_conservation_and_secondary`), so an
-    absent record means the page never reached that stage — a door refusal, whose
-    acts are already held for the page loss itself. Defaulting to
-    `ink_measurable: False` here would restate a measurement nobody took, in a
-    record byte-identical to a real unmeasurable page's (principle 8). The
-    absence is recorded as absence instead, and every act gets its own object for
-    the reason `testimony_content_for_page` does.
+    The Designator publishes a record for every page it sealed, so a missing record
+    means the page never reached it (a door refusal). Defaulting to
+    `ink_measurable: False` would restate a measurement nobody took (principle 8), so
+    absence is recorded as absence.
     """
     return copy.deepcopy(findings.get(ordinal, NO_PAGE_CONSERVATION))
 
@@ -3322,12 +2836,9 @@ def geometry_coverage_for(findings: dict[int, dict], ordinal: int) -> dict:
 def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
     """Return one review's private copy of a page-level content finding.
 
-    The measurement is intentionally computed once per page, but review payloads
-    are act-scoped consumers. Giving each consumer its own nested object prevents
-    an in-process mutation made while preparing one act from changing a sibling
-    act's still-to-be-published evidence. A page absent from `findings` had no
-    page witness report text to measure; its None-valued fallback records that
-    absence rather than restating it as a measured, clean page.
+    Each act gets its own object, so preparing one act cannot mutate a sibling's
+    unpublished evidence. A page absent from `findings` records absence, not a clean
+    page.
     """
     return copy.deepcopy(findings.get(ordinal, NO_PAGE_CONTENT_COVERAGE))
 
@@ -3337,23 +2848,11 @@ def testimony_content_for_continuation_pages(
 ) -> list[dict]:
     """Restate the content finding of every page this act spans but is not primary on.
 
-    The same derivation `page_coverage_for` already uses for residual ink —
-    "every page the act's proposal or recovery regions touch, not only its
-    primary `page_ordinal`" — applied to the measurement that did not have it.
-    Without this, a continuation page's finding reached no review at all: both
-    acts of the fixture are primary on page 1, so page 2's record was computed
-    every run and read by nobody.
-
-    These rows are **not** route inputs. Their verdict is `None` wherever the
-    Perlector declared the page unanchorable (`continuation_unmeasured_reason`),
-    and `review_route_from_findings` treats `None` as "no measurement exists" —
-    routing them would be routing an absence. What they do is make the absence
-    visible in the act's own record, in the export, and in the Armarium's
-    per-act restatement, which is what principle 2 asks of a partial result.
-
-    Present and empty for an act that spans one page, for the reason
-    `page_coverage_for`'s `checked_pages` is: a consumer that only ever sees the
-    field populated cannot tell "spans no continuation" from "never derived".
+    Without this, a continuation page's finding reached no review. These rows are not
+    route inputs: their verdict is `None` where the Perlector declared the page
+    unanchorable, and routing on `None` would route an absence; they make it visible
+    (principle 2). Present and empty for a one-page act, so "no continuation" differs
+    from "never derived".
     """
     ordinals = sorted(
         {
@@ -3407,16 +2906,9 @@ def review_route_from_findings(
     ``None`` means the corresponding measurement does not exist and therefore
     routes like ``False``; absence is not a measured shortfall.
     """
-    # A shape guard, not a live filter: the route inputs are booleans, None, a
-    # closed examination string, one retained free-text problem, and one nested
-    # object (the re-proof's truncation record) that carries no vocabulary a
-    # preference could ride in, so the walk cannot currently refuse anything --
-    # it matches on keys, and the free text is a value. Said plainly
-    # rather than left reading as a screen that catches something (principle
-    # 8). It is kept because the day one of these carries vocabulary is the
-    # day the routing decision could. The screens that do bite are
-    # `publish_review` and the recovery payload, which see the nested coverage
-    # objects.
+    # A shape guard: no current route input carries vocabulary a preference could ride
+    # in, so this cannot refuse anything yet. `publish_review` and the recovery payload
+    # are the screens that bite.
     refuse_capture_preference(
         {
             "cross_capture_occluded_everywhere": cross_capture_occluded_everywhere,
@@ -3432,12 +2924,8 @@ def review_route_from_findings(
         },
         what="a Recensor review route",
     )
-    # The examination is the fact; `audit_unresolved` is derived from it by
-    # one shared function, so where both arrive they must agree, and the route
-    # is taken on the examination. A caller handing this composer a resolved
-    # boolean beside an incomplete examination would otherwise deliver an act
-    # whose re-examination never finished (independent review of candidate
-    # 0934c057, finding 4).
+    # The examination is the fact and `audit_unresolved` derives from it, so both must
+    # agree and the route follows the examination.
     if audit_examination is not None:
         derived = unresolved_state(audit_examination)
         if audit_unresolved is not None and audit_unresolved != derived:
@@ -3468,16 +2956,10 @@ def review_route_from_findings(
         )
     if audit_unresolved:
         if audit_examination == EXAMINATION_INCOMPLETE:
-            # The re-proof was delivered and the truncation instrument did not
-            # classify its call `complete` -- the engine reported it ran out of
-            # budget, gave no word, or the text it returned carried the
-            # instrument's own cut-off signals. The establishing reading stands
-            # as evidence and keeps its own call's provenance; the
-            # re-examination the frozen flags required has simply not
-            # happened, whatever text the call returned, so nothing here is
-            # delivered on the strength of it. The reason names the
-            # instrument's verdict and the sealed signals, not a word the
-            # engine may never have spoken (principle 8).
+            # The re-proof ran but did not classify complete. The establishing reading
+            # stands with its own provenance, but the re-examination never happened; the
+            # reason names the instrument's verdict, not an engine word that may not
+            # exist (principle 8).
             reasons.append(
                 "the Perlector's audit re-proof of this act did not complete: "
                 f"{_describe_termination(audit_reproof_truncation)}, so the flag(s) it was "
@@ -3486,13 +2968,9 @@ def review_route_from_findings(
                 "re-examination that never finished"
             )
         elif audit_examination == EXAMINATION_REPROOF_REJECTED:
-            # The re-proof was delivered and its call ran to completion, but the
-            # text it changed reached outside every flag that could have asked
-            # for it -- a live reader's own rewrite, not a truncation, so it is
-            # never described as one. The rewrite itself was refused and never
-            # published; the establishing (Pass-B) reading is what stands, and
-            # the flag it was sent to settle is exactly as unassessed as an
-            # incomplete re-proof leaves it.
+            # The re-proof completed but rewrote text outside every flag: a reader's
+            # overreach, not a truncation. The rewrite was refused and the Pass-B
+            # reading stands.
             reasons.append(
                 "the Perlector's audit re-proof for this act completed but rewrote text "
                 "outside every location its own flag identified; the rewrite is refused rather "
@@ -3500,12 +2978,8 @@ def review_route_from_findings(
                 "rather than delivered on a re-examination that overran its own scope"
             )
         elif audit_examination in (None, EXAMINATION_CAP_EXHAUSTED):
-            # `None` is a caller asserting `audit_unresolved` without naming the
-            # specific examination behind it -- unlike `EXAMINATION_INCOMPLETE`
-            # and `EXAMINATION_REPROOF_REJECTED` above, cap-exhausted was never
-            # cross-checked against a derived examination even before this
-            # branch existed, so an omitted examination reads exactly as it
-            # always has: this generic reason, not a new refusal.
+            # `None` means the caller did not name the examination; it gets the generic
+            # cap-exhausted reason.
             reasons.append(
                 "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
                 "they remain explicit uncertainty rather than a silent retry"
@@ -3517,18 +2991,10 @@ def review_route_from_findings(
                 "to hold for"
             )
     if assessment_malformed:
-        # A doubt report the schema could not anchor is a fault of the call's
-        # output, like a cut-off generation: the text may stand, but whatever
-        # the reader tried to say about its own doubts was lost, and an act
-        # delivered over that loss would carry an empty layer that reads as
-        # confidence. Held, never re-rolled (principle 7).
-        #
-        # The retained problem is quoted into the reason, not merely pointed
-        # at. It is the only sentence that says what went wrong, and before
-        # this it appeared in no review record, no export row and nothing the
-        # console prints -- a person reading the queue was told the category
-        # and sent to find the artifact (the independent review of
-        # 2026-09-11).
+        # An unanchorable doubt report loses what the reader said about its doubts, and
+        # delivering over it would read as confidence. Held, never re-rolled (principle
+        # 7). The retained problem is quoted: it is the only sentence saying what went
+        # wrong.
         reason = (
             "the reader's doubt report over this act could not be anchored to its text and is "
             "retained as a malformed assessment; the act is held rather than delivered with "
@@ -3572,25 +3038,14 @@ def publish_review(
 ) -> dict:
     """Write a review only after rejecting witness-selection vocabulary.
 
-    A review's identity is not a pure function of the act's own recovery
-    history: `page_coverage_for` (goal 2, HANDOFF.md) deliberately derives a
-    review's content from every act sharing its page, so a page-wide fact can
-    legitimately change an act's review between Recensor passes even when that
-    act never itself recovers. Minting the next ordinal from the act's own
-    recovery-request count (as this used to) let two passes republish
-    different content under the same identity, which the immutable writer
-    correctly refuses -- killing a run that should have completed. Instead,
-    `prior` (this act's current review, from `current_review`, or `None`
-    before its first) decides the ordinal: try the prior review's own ordinal
-    first -- an unrelated page-wide fact usually leaves this act's content
-    unchanged, and the store's own byte-for-byte reuse makes that a no-op --
-    and mint a fresh ordinal only when the store proves this pass's content
-    actually differs. `attempt_ordinal` lives in the payload the caller
-    builds; this function stamps it in place rather than trusting the caller
-    to have already matched it to the ordinal it lands at.
+    A review's content can change between passes without the act recovering, because
+    page-wide facts come from every act on its page. So the prior review's ordinal is
+    tried first (unchanged content reuses byte for byte), and a fresh ordinal is minted
+    only when the store proves the content differs. The ordinal is stamped here, never
+    trusted from the caller.
 
-    Review records are a second durable consumer beside Perlectio: screening
-    only the route inputs would leave a future direct payload field unchecked.
+    The whole payload is screened, not only the route inputs: a review is a second
+    durable record, and a future direct payload field would otherwise go unchecked.
     """
     refuse_capture_preference(payload, what="a Recensor review")
     measurement_field = "testimony_content_coverage"
@@ -3660,18 +3115,9 @@ def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) 
 def _refuse_an_unhandled_designator_terminal(act: dict) -> None:
     """Name a Designator outcome that ends an act but has no handling here yet.
 
-    `held` is not the only terminal Designator outcome. `excluded` and `failed` are
-    terminal in the same table (`common/contracts/outcomes.py`), and both stages of
-    this file tested only for `held` — so either would fall through to the reading
-    path and be reported as "reached the Recensor with no reading at all". That
-    message is false: the act was never going to have a reading, and the imbalance
-    was invented by the check rather than found by it.
-
-    What review record such an act should get is genuinely undecided — `excluded` is
-    approval-bound and `failed` is a refusal, and the Designator emits neither today.
-    So this says exactly that, rather than inventing the policy or letting a wrong
-    message stand. Whoever teaches the Designator to emit one lands the handling here
-    and this refusal stops firing.
+    `excluded` and `failed` are terminal like `held` and would otherwise be misreported
+    as an act with no reading. Their review record is undecided and the Designator emits
+    neither today, so this refuses by name until that handling lands here.
     """
     category = terminal_category(DESIGNATOR, act["outcome"])
     if category is None:
@@ -3707,12 +3153,9 @@ def preflight_review_evidence(context, budget: dict) -> None:
                 "one recorded recrop and no reading may appear unrequested"
             )
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
-        # The earliest stage that can say so: a reading whose witness basis a
-        # later Testimonium has superseded is not reconciled, and the Recensor is
-        # what decides whether a reading may be accepted at all. Checked here as
-        # well as at the Archetypus and the export because one derivation with
-        # three consumers is what kept `recovery_region_count` from drifting, and
-        # each of the three can be reached first by hand.
+        # The earliest stage that can refuse a reading whose witness basis was
+        # superseded; the Archetypus and the export check it too, since any may be
+        # reached first.
         require_current_witness_basis(
             act_id,
             latest,
@@ -3727,22 +3170,13 @@ def preflight_review_evidence(context, budget: dict) -> None:
 
 
 def write_partition_receipt(context, budget: dict) -> None:
-    """Rebuild the scoped Recensor partition receipt from disk, never manifests.
+    """Rebuild the scoped Recensor partition receipt from disk, never from manifests.
 
-    Spec 09: "a self-hashed run receipt that **recomputes every denominator from
-    the artifacts on disk** rather than trusting stage manifests." The mutable
-    stage manifests stay a cache, so their agreement with disk is checked before
-    either may stand beside a receipt; the denominator itself is rederived
-    through `expected_acts`, and every review and coverage record is read afresh
-    from the immutable artifacts.
-
-    Its status is deliberately scoped, and the scope is part of the record: it
-    speaks for the proposal-act and configured-witness denominators at the moment
-    the Recensor reviewed them. It does not claim to be the run's final export
-    verdict — the page-level residual-ink and continuation facts are recorded in
-    the review payloads this receipt cites, and a page nobody cut a region on is
-    outside every denominator here. Claiming otherwise would be exactly the
-    "complete" principle 2 refuses.
+    Manifests are a cache, checked against disk first; the denominator is rederived
+    through `expected_acts`, and every record is read afresh. The receipt speaks only
+    for the proposal-act and witness denominators at review time, not for the run's
+    final export: a page with no region cut on it lies outside every denominator here
+    (principle 2).
     """
     for stage in (DESIGNATOR, ATTESTATORES, PERLECTOR, RECENSOR):
         if not context.tree.manifest_agrees_with_disk(stage):
@@ -3805,38 +3239,21 @@ def write_partition_receipt(context, budget: dict) -> None:
 
 
 def real_ingress(context) -> bool:
-    """Whether this context's run authority names the real route.
-
-    Delegates to `common.stage.is_real_ingress`, the same reader the shared
-    constructor and `expected_acts` use, so the two cannot disagree about
-    which route a run is on.
-    """
+    """Whether this run authority names the real route, by the shared reader."""
     return is_real_ingress(context.run)
 
 
 def declared_scenario(context) -> dict | None:
-    """The declared scenario on the fixture route; `None` on a real submission.
-
-    A real submission carries no fixture to declare one, and its refusing
-    accessor is never touched here -- `real_ingress` alone decides the branch,
-    read once off `context.run`. Extracted so the branch is one named function
-    a unit test can call directly, rather than a bare conditional only visible
-    inside `main`.
-    """
+    """The declared scenario on the fixture route; `None` on a real submission."""
     return None if real_ingress(context) else scenario_for(context.fixture, context.scenario)
 
 
 def declared_unreconciled(scenario: dict | None, act_key: str) -> bool:
     """Whether a declared scenario holds this act as unreconciled.
 
-    `review_route_from_findings`'s `unreconciled` cause has exactly one feeder
-    in the tree: a synthetic scenario's declared `hold_acts`. It is not a
-    measurement this stage takes. On a real submission there is no scenario
-    (`scenario is None`) and therefore no producer of the cause at all, so this
-    is `False` there -- which says that nothing fed it, not that the act was
-    measured as reconciled. The only cross-act anomaly computation in the tree
-    is Pass C's flag pass at the Perlector, and its verdict reaches the review
-    through `audit_unresolved`. The HANDOFF says the same under `kind="review"`.
+    The only feeder of the `unreconciled` route cause. On a real submission it is
+    `False` because nothing fed it, not because the act measured as reconciled; the
+    cross-act anomaly check is Pass C's, arriving as `audit_unresolved`.
     """
     if scenario is None:
         return False
@@ -3863,16 +3280,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # real route carries the registry, the sealed digests and the parsed
     # recovery policy the lines below require.
     context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
-    # The run's own sealed policy, parsed once when the run's binding was checked,
-    # never reopened here. `config/recovery.toml` used to be read a second time at
-    # this line: a rewrite landing between `open_context` and it published reviews
-    # and recovery-requests carrying an allowance the run never sealed — measured
-    # as both acts held for review with `budget_allowed: 0` under a run whose
-    # digest bound the stock allowance, and unrecoverable afterwards because the
-    # correct rerun computes different bytes under the same immutable review
-    # identity and stops with IncompatibleReuse (audit S3). The recheck below
-    # proves the carried policy is the sealed one, so a reintroduced second read
-    # refuses instead of publishing.
+    # The sealed policy parsed when the run's binding was checked, never re-read: a
+    # rewrite in between would publish an allowance the run never sealed, unrecoverably.
+    # The recheck proves the carried policy is the sealed one.
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
 
@@ -3881,10 +3291,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     scenario = declared_scenario(context)
     floor = context.witness_floor
 
-    # This pass must precede publication.  `latest_attempt` refuses duplicate
-    # semantic ordinals rather than selecting an arbitrary hash-sorted record;
-    # doing that only as each act is published can leave an earlier act's review
-    # behind when a later act is malformed.
+    # Before any publication, so a malformed later act never leaves an earlier act's
+    # review behind.
     preflight_witness_denominator(context, floor)
     preflight_recovery_history(context, budget)
     preflight_review_evidence(context, budget)
@@ -3892,21 +3300,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # Both residual measurement and the witness-pointer gate use the union of
     # every proposal and recovery crop currently cut on the page.
     cut_regions = regions_by_source_page(context)
-    # One verification pass over the sealed pages, on exactly the condition
-    # `page_coverage_findings` already applied: with no region cut anywhere, it
-    # returned before touching a page, and this stage still does not verify
-    # pixels no crop was taken from.
+    # Verify sealed pages only when some region is cut; pixels no crop came from are
+    # never read.
     sealed_pages = sealed_page_images(context) if cut_regions else {}
     capture_digests = capture_digest_by_page(sealed_pages)
     page_findings = page_coverage_findings(context, sealed_pages)
     geometry_inputs = geometry_coverage_inputs(context)
     content_findings = testimony_content_findings(context)
     ink_maps = ink_map_by_page(context)
-    # The noise floor a witness pointer's ink must clear before it may fund
-    # recovery, read from the sealed `[coverage_audit.noise_floor]` and proven
-    # against this run's own seal at the point of use, the way every other
-    # reader of that file proves its bytes. Read once for the run: it is a flat
-    # count and does not resolve per page.
+    # The sealed noise floor a pointer's ink must clear, proved against this run's seal;
+    # read once, as it is one flat count.
     coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     minimum_ink_pixels = coverage_config["coverage_audit"]["minimum_ink_pixels"]
@@ -3928,21 +3331,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         geometry_coverage = geometry_coverage_for(geometry_inputs, act["page_ordinal"])
 
         if act["outcome"] == "held":
-            # The Designator could not mark this act out. There is no reading to
-            # review and no recovery to request — recovery recovers coverage on
-            # sealed ink, and this act's missing ink was never sealed. The act
-            # still gets this stage's explicit outcome, so its terminal category
-            # derives from a review like every other act's.
+            # No reading and no recovery: this act's missing ink was never sealed. It
+            # still gets an explicit review, so its terminal category derives like every
+            # other act's.
             hold, hold_path = designator_hold(context, act_id)
-            # A Designator hold has two distinct shapes (`pipeline/2_designator/
-            # run.py::initial_pass`): the act's own page never sealed, and no
-            # region of it is cut at all; or the act's own page sealed and its
-            # near-side region WAS cut, but a declared continuation's page
-            # never sealed. `hold_regions` reads what was actually cut rather
-            # than assuming the first shape for both — a real near-side region
-            # has real continuation and page-coverage facts to report, and
-            # hardcoding them empty would silently drop a flagged page's
-            # evidence for the one act that touches it.
+            # A hold may still have a cut near-side region (only a continuation's page
+            # failed to seal), so read what was cut rather than report empty facts.
             hold_regions = artifacts_for(context, DESIGNATOR, "region", act_id)
             publish_review(
                 context,
@@ -3957,11 +3351,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "coverage": coverage,
                     "geometry_coverage": geometry_coverage,
                     "testimony_content_coverage": content_coverage,
-                    # Derived from what was actually cut, exactly as
-                    # `page_coverage` below is: a Designator-held act whose
-                    # near-side region really was cut has continuation pages to
-                    # restate, and hardcoding this empty for the held shape
-                    # would drop the only record of them.
+                    # Derived from what was cut, as `page_coverage` is.
                     "testimony_content_coverage_continuation": (
                         testimony_content_for_continuation_pages(
                             content_findings, hold_regions, act["page_ordinal"]
@@ -3972,18 +3362,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "recoveries_used": 0,
                     "budget_allowed": budget["allowed"],
                     "absolute_cap": budget["absolute_cap"],
-                    # None, not absent, and not False: a Designator-held act
-                    # has no Perlectio and therefore no audit to report. The
-                    # field stays universal so a consumer can tell "no audit
-                    # exists" (here) from "audited, resolved" (False) and
-                    # "audited, unresolved" (True).
+                    # None: no Perlectio, so no audit; distinct from audited and
+                    # resolved (False) or unresolved (True).
                     "audit_unresolved": None,
                     "audit_examination": None,
                     "uncertainty_assessment": None,
-                    # None for the same reason: a held act was never shown
-                    # real capture pixels, so there is no cross-capture
-                    # visibility survey to report, universally present like
-                    # every field above.
+                    # None: a held act was never shown capture pixels.
                     "cross_capture_coverage": None,
                 },
             )
@@ -4003,10 +3387,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # this process never writes to.
         readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
 
-        # Every review is about one specific Perlectio, not merely the current
-        # object a later stage happens to find.  The reference is both an input
-        # digest and a payload fact so Archetypus can prove it establishes the
-        # exact reading Recensor assessed.
+        # Every review names the exact Perlectio it assessed, as input and payload, so
+        # the Archetypus can prove it establishes that reading.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
         audit_facts = audit_state(context, latest, act_id, expected_act_key=act["act_key"])
@@ -4015,12 +3397,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         audit_reproof_truncation = (
             None if audit_facts is None else audit_facts["reproof_truncation"]
         )
-        # Carried onto the review as the same closed `{state, problem}` object
-        # the Perlectio, the Archetypus record and the export row use, so one
-        # field name has one shape wherever a consumer meets it. It used to be
-        # the bare state string here, which is two types under one name (the
-        # independent review of 2026-09-11). `None` still means "no Perlectio,
-        # so no report", exactly as the Designator-held shape above says.
+        # The same closed `{state, problem}` object every record uses; `None` means no
+        # Perlectio, so no report.
         assessment = latest_payload.get("uncertainty_assessment")
         assessment_record = (
             {"state": assessment.get("state"), "problem": assessment.get("problem")}
@@ -4040,12 +3418,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             cross_capture_occluded_everywhere,
             cross_capture_unresolved,
         ) = cross_capture_review_causes(cross_coverage)
-        # WAVE WIRING (was the pre-wave seam `False`): R5b's Pass-C producer
-        # now sits below this branch, so the composer receives the verified
-        # audit state the seat-era candidate could not have. Computed here,
-        # after audit_state, because a held act has no reading and no audit
-        # chain to consult — it takes its own branch above and never reaches
-        # the routing that consumes this.
+        # After `audit_state`; a held act has no audit chain and took its own branch
+        # above.
         findings_route = review_route_from_findings(
             cross_capture_occluded_everywhere=cross_capture_occluded_everywhere,
             cross_capture_unresolved=cross_capture_unresolved,
@@ -4069,11 +3443,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         continuation_link = recensor_continuation_link(state["regions"], act_id)
         continuation_shortfall = reconcile_continuation(act, continuation_link, act_id)
 
-        # The residual-ink check, against the page(s) this act's own current
-        # regions were cut from — never against what any stage claimed to
-        # find. A flagged page holds every act that touches it: nobody yet
-        # knows which act, if any, the uncovered ink belongs to, so a human
-        # needs the whole page, not a guess at which one act is "responsible".
+        # Against the page image itself, never a stage's claim. A flagged page holds
+        # every act on it, because nobody knows which act the uncovered ink belongs to.
         page_coverage = page_coverage_for(state["regions"], page_findings)
         flagged_pages = page_coverage["flagged_pages"]
         # The testimony-content half of the same "every page this act touches"
@@ -4086,10 +3457,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         used_total = len(state["requests"])
         used_fallback = len(state["requests_by_kind"][FALLBACK_RECROP])
         allowed_fallback = recovery_kind_budget(budget, FALLBACK_RECROP)
-        # A witness's geometry is only a pointer; independently measured ink
-        # outside the live crop union is required to authorize recovery.
-        # Without this check, an Attestator's mis-reported box alone could
-        # spend a real recovery budget or hold an act on zero actual ink.
+        # A witness box is only a pointer: recovery needs measured ink outside the live
+        # crop union, or a misreported box could spend budget or hold an act on no ink.
         outside_ink_requests = unclaimed_ink_observations(
             ink_maps,
             content_coverage.get("unclaimed_observations", []),
@@ -4104,42 +3473,25 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         observation_hold = unresolved_observation_hold(
             outside_ink_requests, act["page_ordinal"], funded_pages
         )
-        # A measured recovery request is now dispatchable on either ingress:
-        # real ingress carries exact Testimonium and Ink Map references plus
-        # canonical page-space bounds, all remeasured by the Designator.  The
-        # unsupported operation remains page-level reread, which is not
-        # substituted with a crop.
-        # Names the recovery-*request*'s own position among this act's requests
-        # -- `attempt_id(act_id, "recover", ...)`, below -- never the review's
-        # identity: a review's own ordinal is a function of its content, not of
-        # how many times this act has recovered (`publish_review`'s docstring).
+        # The request's own position among this act's requests, not the review's
+        # ordinal, which follows content.
         request_ordinal = used_total + 1
 
-        # The cap is enforced at the request boundary rather than by convention
-        # (spec 09's third test): the kind's own allowance, the pooled total, and
-        # the project lead's absolute cap all have to permit this request before it is made.
-        # `allowed` can only ever be the smaller of the three today, but a policy
-        # is a file somebody edits and a bound nobody checks is not a bound.
+        # Enforced at the request boundary: the kind allowance, the pooled total and the
+        # absolute cap must each permit it, because a policy file can be edited.
         if (
             not continuation_shortfall
-            # Cross-capture geometry neither funds nor vetoes a recovery: only
-            # the Unit 14B ink observation and bounded grants do. The survey
-            # covers the current proposal, not the unclaimed ink outside it.
+            # Cross-capture geometry neither funds nor vetoes recovery; only a measured
+            # ink observation and bounded grants do.
             and wants_recovery
             and used_fallback < allowed_fallback
             and used_total < budget["allowed"]
             and used_total < budget["absolute_cap"]
         ):
-            # The Recensor asks; the Designator cuts. Recording the request as an
-            # artifact is what keeps the loop countable from the tree alone. Only
-            # `fallback-recrop` is requested here: it is the one recovery
-            # operation this pipeline can actually dispatch today (a Designator
-            # recrop). `page-level-reread` stays a real, distinct, budgeted kind
-            # in the policy and the payload schema below, ready for the day a
-            # Perlector continuation-aware reread exists to answer it — but this
-            # stage does not request an operation nothing downstream can honor,
-            # because a request the orchestrator can only refuse turns a graceful
-            # hold into a hard failure for no gain.
+            # The Recensor asks; the Designator cuts. Only `fallback-recrop` is
+            # requested: `page-level-reread` stays a budgeted kind, but nothing
+            # downstream can honour it yet, and a request that can only be refused turns
+            # a hold into a failure.
             request_origin = recovery_request_origin(
                 declared=declared_recovery(scenario, act_key),
                 outside_ink_requests=outside_ink_requests,
@@ -4161,18 +3513,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         "Designator cannot independently verify"
                     )
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
-                # A shape guard, and it cannot fire on the production path
-                # today -- said plainly here rather than left to be discovered,
-                # the way the route screen above already states its own reach.
-                # Every conjunct below is proved before this point: the three
-                # budget comparisons are the enclosing condition's own, this
-                # origin is reachable only from a non-empty measured ink
-                # observation, and that same branch is what proves the page's
-                # grant unspent. So `admitted` is true whenever control arrives.
-                # Its worth is structural: it is a second spelling of the rule,
-                # and it fires if a later edit makes the live gate looser than
-                # the contract. It does not, on its own, hold the two in
-                # agreement -- an edit that loosens both together would pass.
+                # A second spelling of the gate that cannot fire on the production path:
+                # every conjunct is proved above. It catches an edit that loosens the
+                # live gate alone, not one that loosens both.
                 dossier = latest_payload.get("dossier")
                 gate = capture_specific_recovery(
                     logical_act_id=(
@@ -4180,19 +3523,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         if isinstance(dossier, dict) and "logical_act_id" in dossier
                         else act_id
                     ),
-                    # The sealed page's own verified pixel digest, which is the
-                    # capture identity the partition and the autopsia use.
-                    # `run.json`'s source-manifest row is the *submission's*
-                    # declaration: optional at real ingress and shared by every
-                    # page rendered from one container, so reading `["sha256"]`
-                    # off it could hand the gate `None` (refused as "lacks
-                    # logical-act/capture identity", which names the wrong
-                    # fault) or a digest belonging to a different capture.
+                    # The sealed page's verified pixel digest, which the partition and
+                    # autopsia use; the source-manifest row is not a capture identity.
                     source_sha256=capture_digest_for(capture_digests, act["page_ordinal"], act_id),
                     page_ordinal=act["page_ordinal"],
-                    # This origin is reachable only from a non-empty measured
-                    # ink observation; duplicating that expression would let
-                    # the gate and its structural guard drift independently.
+                    # Reachable only from a measured ink observation.
                     ink_confirmed=True,
                     page_observation_grant_available=act["page_ordinal"] not in funded_pages,
                     act_budget_available=(
@@ -4207,25 +3542,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         "but Unit 19C's own capture-specific gate says it should not be "
                         f"admitted: {gate['reason']}"
                     )
-            # Screened inline rather than behind a `publish_recovery_request`
-            # helper. This stage's fourth durable record carries the same nested
-            # coverage objects `publish_review` screens, and unscreened it was
-            # the one shape where a preference field reached disk. But the
-            # quality firewall in `test_quality_firewall.py` finds this write by
-            # its literal `kind="recovery-request"` and reads the conditionals
-            # around it; moving the call into a helper would put the request
-            # outside every gate as far as that scan could see, and a firewall
-            # taught to follow wrappers is a firewall that can be walked around.
+            # Screened inline, not in a helper: `test_quality_firewall.py` finds this
+            # write by its literal `kind="recovery-request"` and reads the conditions
+            # around it.
             recovery_payload = {
                 "act_key": act_key,
                 "attempt_ordinal": request_ordinal,
                 "recovery_kind": FALLBACK_RECROP,
-                # The origin as data beside the sentence that states it, so
-                # the page-wide bound counts a recorded fact rather than
-                # re-reading prose (`observation_funded_pages`). The origin
-                # is single -- declaration takes precedence for funding --
-                # while the reason keeps every triggered cause visible when
-                # the two coincide.
+                # The origin as data, so the page-wide bound counts a fact rather than
+                # parsing prose. Declaration takes precedence for funding; the reason
+                # lists every cause.
                 "origin": request_origin,
                 "reason": recovery_request_reason(
                     declared_crop=declared_recovery(scenario, act_key),
@@ -4241,10 +3567,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "testimony_content_coverage_continuation": continuation_content_coverage,
                 "perlectio_ref": reading_ref,
                 "recovery_policy": budget,
-                # Declared fixture recovery keeps its fixture geometry.  A
-                # measured real-ingress observation supplies this exact
-                # page-space rectangle, independently confirmed outside the
-                # current crop union above.
+                # Declared fixture recovery keeps its fixture geometry; a measured
+                # observation supplies its confirmed page-space rectangle.
                 **(
                     {
                         "recovery_bounds": outside_ink_requests[0]["bounds"],
@@ -4279,12 +3603,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 ),
                 payload=recovery_payload,
             )
-            # Spent where the request is actually published, not where
-            # `wants_recovery` was computed: an act that wanted recovery and was
-            # refused it by budget or continuation must not consume the page's
-            # one grant on the way past. The condition is the same one that
-            # recorded the origin above, so the page marked funded is exactly
-            # the page whose request says it was.
+            # Spent where the request is published, so an act refused by budget or
+            # continuation does not consume the page's grant.
             if request_origin == COVERAGE_OBSERVATION_ORIGIN:
                 funded_pages.add(act["page_ordinal"])
             request_ref = context.input_ref(request.relative_path)
@@ -4296,17 +3616,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 inputs=[reading_ref, request_ref],
                 payload={
                     "act_key": act_key,
-                    # Which recovery request this review answers -- distinct
-                    # from the review's own `attempt_ordinal`, which
-                    # `publish_review` derives from content, not from this
-                    # act's recovery count (`recovery_state` cross-checks this
-                    # field against the request it names).
+                    # The request this review answers, distinct from the review's own
+                    # content-derived ordinal; `recovery_state` cross-checks it.
                     "recovery_request_ordinal": request_ordinal,
                     "recovery_kind": FALLBACK_RECROP,
                     "coverage": coverage,
-                    # R6 audit F-O7: this was the only review shape carrying
-                    # neither field, so its consumers could not tell "checked
-                    # and clear" from "never checked".
+                    # Present on every review shape, so "checked and clear" differs from
+                    # "never checked".
                     "geometry_coverage": geometry_coverage,
                     "testimony_content_coverage": content_coverage,
                     "testimony_content_coverage_continuation": continuation_content_coverage,
@@ -4315,10 +3631,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "perlectio_ref": reading_ref,
                     "recovery_request_ref": request_ref,
                     "recovery_policy": budget,
-                    # This act WAS audited (computed above for every act with a
-                    # Perlectio); omitting the field here would read back as
-                    # None -- "no audit exists" -- which is false, and R8's
-                    # canonical export is the consumer that would believe it.
+                    # This act was audited; omitting the field would read back as None,
+                    # "no audit exists".
                     "audit_unresolved": audit_unresolved,
                     "audit_examination": audit_examination,
                     "uncertainty_assessment": assessment_record,
@@ -4328,27 +3642,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
-        # Whether the reading *succeeded*, not merely whether one exists. The
-        # Archetypus copies `payload["text"]` out of whatever the latest reading
-        # is, so a `truncated` or `failed` Perlectio carrying stale text would be
-        # established as the one text and a `not-run` one would crash on the
-        # missing field. goal 1 is accuracy against the ink; text nobody
-        # successfully read is not a reading, and principle 2 says it may not
-        # vanish behind a successful status either. Held, visibly, outcome named.
+        # Whether the reading succeeded, not merely exists: the Archetypus copies the
+        # latest reading's text, so text nobody successfully read is held visibly
+        # (principle 2).
         blank_evidence = None
         if reading_class is not OutcomeClass.COMPLETED:
-            # `no-readable-text` is the one non-completed Perlector outcome that
-            # can end here rather than in the ordinary hold below: it is the
-            # Perlector's own direct finding (autopsia against the ink, not
-            # testimony), and `blank_corroboration` asks only whether the
-            # witnesses corroborate or contradict it — never a selection among
-            # them. Every other non-completed outcome (`failed`, `truncated`,
-            # `not-run`) falls straight through to the ordinary hold: none of
-            # them is a positive claim of absence, so there is no absence here
-            # to confirm.
-            # One `chair_current_attempts` collapse feeds both maps, so "the
-            # gate and the outcomes cannot disagree about which attempt is
-            # current" is structural rather than two identical walks agreeing.
+            # `no-readable-text` is the Perlector's own positive finding of absence, so
+            # it alone may seal blank if the witnesses corroborate it; other
+            # non-completed outcomes fall through to the hold. One collapse feeds both
+            # maps, so the gate and the outcomes agree on the current attempt.
             current_attempts = chair_current_attempts(context, act_id)
             current_outcomes = chair_outcomes(current_attempts)
             corroborating_chairs = (
@@ -4363,30 +3665,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     latest["outcome"] == "no-readable-text"
                     and not continuation_shortfall
                     and not flagged_pages
-                    # Every hold cause the ordinary chain below would apply,
-                    # asked once. `confirmed-blank` is COMPLETED-class and
-                    # terminal, so a cause that only appears in that chain is a
-                    # cause this seal silently overrides: an act whose page
-                    # carries witness text outside every aligned attachment, or
-                    # whose Perlector exhausted its audit re-proof cap, would be
-                    # sealed complete over a shortfall this stage had already
-                    # measured (principle 2; invariant 6). The three page-level
-                    # conditions above are named separately because they are
-                    # already refused before the route is consulted; this
-                    # subsumes the scenario hold `act_key not in
-                    # scenario["hold_acts"]` used to state, through the
-                    # composer's own `unreconciled` cause.
+                    # Every hold cause the ordinary chain would apply: `confirmed-blank`
+                    # is terminal, so a cause that appears only in that chain would be
+                    # silently overridden (principle 2).
                     and findings_route is None
-                    # The fourth page-level cause, and the newest. Unit 9 still
-                    # confirming ink in a witness pointer outside every cut is
-                    # exactly the shortfall the three conditions above exist to
-                    # keep out of a terminal seal: with the page's one grant
-                    # already spent, the budget exhausted, or the run on the
-                    # real route where no recrop can be cut, no request is
-                    # published, so this cause appears only in the chain below
-                    # and `confirmed-blank` would silently override it. An act
-                    # sealed COMPLETED-class over measured, unclaimed ink is the
-                    # missed act goal 2 puts above every other failure.
+                    # Confirmed ink in a witness pointer outside every cut, with no
+                    # request published (grant spent or budget exhausted), is also a
+                    # shortfall `confirmed-blank` must not override.
                     and observation_hold is None
                 )
                 else None
@@ -4405,15 +3690,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         else ""
                     ),
                 )
-                # Spec 09 seals a blank "with evidence", and a sentence is not
-                # evidence a consumer can read. The review queue, the Armarium
-                # and anyone re-deriving this outcome get the same facts as
-                # data: what the reading itself found, which chairs corroborated
-                # it, and which pages this check found no ink outside coverage
-                # on. That is narrower than "clear": the check never looks
-                # inside the act's own crop, so the field is named for exactly
-                # what it measured and no more (principle 8). The `reason`
-                # above stays, for a human reading one record.
+                # The blank's evidence as data, not only prose. The page field is named
+                # for exactly what was measured: no residual ink outside coverage, never
+                # inside the act's own crop (principle 8).
                 blank_evidence = {
                     "perlector_outcome": latest["outcome"],
                     "corroborating_chairs": corroborating_chairs,
@@ -4488,12 +3767,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             subject_id=act_id,
             outcome=outcome,
             prior=current_review(context, act_id),
-            # `latest`, never `readings[0]`: manifest order is a hash, so after a
-            # recovery the first record can be the superseded attempt, and citing
-            # its crop as the basis for accepting the new reading is deterministic
-            # and wrong. `basis_regions` is empty unless the reading completed —
-            # a `not-run` Perlectio carries no `basis` key at all, and indexing it
-            # would turn an honest hold into a traceback.
+            # `latest`, not `readings[0]`: manifest order is a hash. `basis_regions` is
+            # empty unless the reading completed, since a `not-run` Perlectio has no
+            # `basis`.
             inputs=[reading_ref]
             + [context.input_ref(reference["image_path"]) for reference in basis_regions],
             payload={
@@ -4508,42 +3784,26 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "budget_allowed": budget["allowed"],
                 "absolute_cap": budget["absolute_cap"],
                 "perlectio_ref": reading_ref,
-                # Recorded the same way for every act rather than only when it
-                # flags something — the same reasoning `continuation` above is
-                # recorded under: a consumer that only ever sees the field
-                # populated cannot tell "checked and clear" from "never checked".
+                # Recorded for every act, so "checked and clear" differs from "never
+                # checked".
                 "page_coverage": page_coverage,
-                # The Pass-C verdict, recorded as data for every act for the
-                # same reason: an act held for an exhausted audit cap must be
-                # separable from every other hold without matching prose, and
-                # an audit whose sealed round was spent must be tellable from
-                # one never checked. R8's canonical export reads uncertainty
-                # spans whose review-side "why" lives exactly here.
+                # The Pass-C verdict as data, so an audit-cap hold is separable from
+                # other holds without matching prose.
                 "audit_unresolved": audit_unresolved,
-                # Beside the boolean, the fact behind it: `not-due`,
-                # `cap-exhausted`, `complete` or `incomplete`, so a review a
-                # person reads can tell an exhausted cap from a re-proof that
-                # was delivered and did not finish (F1). `None` exactly where
-                # `audit_unresolved` is `None`.
+                # The fact behind the boolean, so review can tell an exhausted cap from
+                # an unfinished re-proof; `None` exactly where `audit_unresolved` is.
                 "audit_examination": audit_examination,
-                # The reader's own doubt report, `{state, problem}`, so a review
-                # can say whether an empty uncertainty layer is an absence of
-                # doubt or an absence of a channel (F2), and can quote the
-                # problem where there is one. The same name carries the same
-                # shape on every record that has one.
+                # The reader's `{state, problem}`, so an empty uncertainty layer can be
+                # told from an absent channel.
                 "uncertainty_assessment": assessment_record,
                 "cross_capture_coverage": cross_coverage,
-                # Present only on a `confirmed-blank`, because it is the evidence
-                # that outcome rests on and nothing else has any. Every other
-                # review carries the fields above and no more.
+                # Only on `confirmed-blank`, the one outcome that rests on it.
                 **({"blank_evidence": blank_evidence} if blank_evidence is not None else {}),
             },
         )
 
-    # The partition receipt is a refusal-capable part of closing the Recensor
-    # pass.  Its denominator requires a current stored manifest, so write that
-    # derived cache first; only a pass whose receipt succeeds may publish the
-    # completion seal, after which the final manifest includes that seal.
+    # The receipt can refuse, so it is written before the seal; its denominator needs a
+    # current stored manifest, written first.
     context.finish()
     write_partition_receipt(context, budget)
     context.seal_boundary()
