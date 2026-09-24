@@ -127,7 +127,7 @@ names, which is how this stage's tests reach them.
 
 An empty-text `established` record is refused at the schema (`validate_text_status`).
 `no_readable_text` requires `evidence_ref` — see below. A blank page is **not** a fatal
-error (Tyrel, 2026-08-05: "It is not a fatal error there might be blank pages"); what is
+error -- a run may legitimately contain blank pages; what is
 refused is the opposite collapse, ink that is merely unread reported as ink that was
 never there.
 
@@ -177,8 +177,8 @@ and `recensor_ref` are resolved — is still owed once the Recensor lane defines
   `{witness_ref, variant}`: the witness must be one of this reading's own basis
   testimonia, and **the quoted variant must be a substring of what that witness actually
   reported**. A variant that is neither the ink nor something a witness said is a
-  reconstruction, and the record carries none (Tyrel, 2026-08-05: "we don't want it
-  making shit up"). The comparison is exact; normalizing here would be a place for the
+  reconstruction, and the record carries none -- the reader must never invent
+  wording it did not see. The comparison is exact; normalizing here would be a place for the
   record to differ from the testimony it quotes.
 
 The shapes map onto the mature convention rather than inventing markup: `<unclear
@@ -193,7 +193,7 @@ kinds of damage — `uncertain` against `uncertain_spans`, `illegible` against `
 each carries a fact the other's schema cannot hold: a `certainty` of `unknown` has no
 canonical equivalent, and a canonical gap's `position`, `chair` and `testimonium_id` have
 no place on an `illegible` note. Folding one into the other would therefore lose evidence,
-which GOVERNANCE 4 does not allow, so both are sealed and both travel. They cannot
+which principle 4 does not allow, so both are sealed and both travel. They cannot
 contradict each other into silence because `text_status` is the union of the two: either
 one recording unread ink makes the record `partial`.
 
@@ -221,7 +221,7 @@ bytes either way) is a product decision, not made here.
 `dissent_ref` names that Perlectio artifact rather than making a second mutable dissent
 copy. **`dissent_ref` and `perlectio_ref` are the same value by design, not by
 accident**: `perlectio_ref` is the parent evidence this record establishes from,
-`dissent_ref` is where a reader finds this act's dissent (Tyrel's 4d — by reference,
+`dissent_ref` is where a reader finds this act's dissent (by reference,
 never copied); the dissent lives inside the Perlectio itself, so the two pointers
 coincide. The Armarium's own frozen verification requires them equal, so carrying only
 one under two names is not available without breaking that consumer. `perlectio_ref` and
@@ -305,8 +305,7 @@ Consequences worth stating plainly:
   guards the packaged bundle's own `formats.formats` selection (currently five:
   text-bundle, acts-database, jsonl, review-items, salvage-tier), not the Armarium's
   artifact *kind* — every literal-text format ships as a member inside the single
-  `export` kind, so a kind-keyed guard could never see one arrive (found and fixed as
-  F090). Cross-format text identity across the three literal formats is proven by
+  `export` kind, so a kind-keyed guard could never see one arrive. Cross-format text identity across the three literal formats is proven by
   `pipeline/7_armarium/armarium_export.py::_compare_literal_projections` at build and
   verify time. A sixth format must be named in both places, or the new one passes over
   in silence.

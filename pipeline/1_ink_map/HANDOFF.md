@@ -6,7 +6,7 @@ The ink map runs after the Exemplar seal and before the Designator. It writes on
 
 ## The paper value is the Designator's, and the contrast is this stage's
 
-Since 2026-09-06 the background every count here is taken below comes from
+The background every count here is taken below comes from
 `common.background::infer_background_evidence`, under the sealed
 `[grouping.background]` block of `config/designator_grouping.toml` resolved for
 this page's own dimensions — the same inference, the same policy and the same
@@ -37,7 +37,7 @@ statistics.
 page's dark mode, the Designator's derived margin, this stage's own contrast,
 the ink threshold that produced every count on the record, and the digest of the
 sealed policy — so a reader can recompute the level the page was measured at
-(GOVERNANCE 6).
+(principle 6).
 
 ## A page whose paper cannot be inferred is named, not zeroed
 
@@ -71,7 +71,7 @@ NOT YET MEASURED.** What is measured is the fixture: page 1 of
 21.8 KiB of JSON. That figure says nothing about a 300-DPI register page, whose
 larger raster and denser handwriting move both terms, and this stage's shard is
 described elsewhere in units of a thousand pages. Extrapolating from the fixture
-would be exactly the unmeasured claim GOVERNANCE 10 forbids, so the shard disk
+would be exactly the unmeasured claim principle 8 forbids, so the shard disk
 budget stays an open question against real material and is named here rather
 than assumed away.
 
@@ -81,7 +81,7 @@ is unresolved evidence, not a hold. **Unit 14 owns the explicit hold outcome for
 an unproposed cross-page half act.**
 
 **The strip and the gate are measured now, and both are sealed.** They were the
-flat 64 pixels and the flat 2,000 outside-coverage pixels until 2026-09-06, both
+flat 64 pixels and the flat 2,000 outside-coverage pixels, both
 PROPOSED-NOT-MEASURED and both reasoned against a 200x260 fixture. They are
 `[coverage_audit] edge_band_bp = 100` and `substantial_ink_area_bp = 4` in
 `config/designator_grouping.toml`, `sample_count = 44`, resolved per page against
@@ -131,11 +131,6 @@ partial reason for every page whose edge ink no crop released, so a run
 carrying one cannot report `complete`. A page whose ink the crops did claim is
 released and adds no reason.
 
-This paragraph previously recorded the opposite, as the deferral this unit had
-chosen while Unit 14 was outstanding. Unit 14B has landed; the sentence is kept
-here corrected rather than deleted because this file is the stage interface and
-a consumer who built against the old contract needs to see that it moved.
-
 ## The fixture's current edge measure is quiet
 
 The synthetic pages are 200x260. Their historical 64-pixel perimeter reached
@@ -158,10 +153,10 @@ as unreleased after the Designator had supplied coverage, not a specimen with
 unclaimed edge ink.
 
 Unit 14B originally retained the fixture and fixed band.
-**The band was re-derived on 2026-09-06**: at the sealed `edge_band_bp` the same
+**The band was re-derived**: at the sealed `edge_band_bp` the same
 two pages contain 0 of 11,520 and 0 of 3,840 ink pixels in their perimeter
-strips. The sealed `minimum_ink_pixels` (`[coverage_audit.noise_floor]`, a module
-constant until 2026-09-14) remains the noise floor; the substantial-ink gate
+strips. The sealed `minimum_ink_pixels` (`[coverage_audit.noise_floor]`, formerly a
+module constant) remains the noise floor; the substantial-ink gate
 is resolved from page area. Armarium re-measures the Ink Map's retained,
 lossless page-space runs against verified final Designator crop bounds. A clear
 re-measure releases the page; a flagged re-measure holds it. The
