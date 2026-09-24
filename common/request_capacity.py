@@ -649,8 +649,8 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # What a dense page's answer costs, per chair, in the chair's own response
 # grammar: the same 800-word `FRENCH_ACT` body for every row
 # (`TOKEN_COST_REPORT.md` section 8), so the rows stay comparable.  DAI and the
-# Perlector use their page-fallback act, the demanding case.  An edit to a
-# chair's response grammar expires its row.
+# Perlector use their page-fallback act, the demanding case.  A row holds only
+# for its chair's current response grammar, and nothing checks that.
 #
 # Chandra's two rows (1645) are measured with apostrophes escaped as `&#x27;`
 # (1506 written literally): the parser resolves character references, so the
