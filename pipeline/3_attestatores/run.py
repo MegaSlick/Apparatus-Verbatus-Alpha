@@ -1,22 +1,16 @@
 """Attestatores: retain every witness attempt without changing its history.
 
-Each Testimonium has two deliberately separate witness-facing fields. ``payload``
-is the witness's native response, retained without shaping it into an imagined
-common body schema. ``witness_reported`` is a witness's own confidence or status
-claim, retained as a claim but never used to compute channel health. The latter is
-computed here from the native response and the transport boundary.
+``payload`` is the witness's native response, unshaped. ``witness_reported`` is the
+witness's own confidence or status claim, kept as a claim and never used for channel
+health, which is computed here from the response and the transport boundary.
 
-Attempts are append-only. A re-read receives a new ordinal and artifact identity;
-there is no current pointer to update. Consumers derive current from the newest
-contiguous ordinal, so a later failed attempt remains visibly failed while the
-earlier reading remains intact in history.
+Attempts are append-only: a re-read gets a new ordinal and artifact identity, and
+consumers take the newest contiguous ordinal as current.
 
-Two write paths, and both append. `--attempt-ordinal N` is the whole pass: every
-configured chair, every expected act, at that one ordinal — the same command
-twice writes the same bytes. `--operation reread --act <id> --chair <role>` moves
-exactly one chair on one act, at the ordinal that chair's own history says comes
-next; a reread happens because one witness failed on one act, and re-witnessing
-the other chairs to reach it would re-read ink nobody doubted.
+`--attempt-ordinal N` runs every chair on every expected act at that ordinal and is
+deterministic. `--operation reread --act <id> --chair <role>` moves one chair on one
+act to its next ordinal, so a single failed reading is retried without re-reading
+ink nobody doubted.
 
     python pipeline/3_attestatores/run.py --run-root <dir> --run-id <id>
     python pipeline/3_attestatores/run.py ... --operation reread --act <id> --chair <role>
@@ -149,13 +143,9 @@ from operations.serving.residency import (  # noqa: E402
     FileResidencyLease,
 )
 
-# A witness may report one of these ordinal self-assessments. They are retained
-# as testimony about its own response, never promoted into a model ranking or
-# used to choose a witness. Six plain levels keep fixture and future adapters
-# interoperable while refusing an unbounded integer scale or invented prose.
-# `uncertain` and `unsure` are deliberately both admitted: real adapters emit
-# both spellings, and collapsing them to one is R3's call when it meets those
-# adapters, not this stage's.
+# Self-assessments a witness may report. They are retained as testimony, never used
+# to rank or choose a witness. `uncertain` and `unsure` are both admitted because
+# real adapters emit both spellings.
 WITNESS_CONFIDENCE_ORDINALS = frozenset({"certain", "high", "medium", "low", "uncertain", "unsure"})
 
 DEFAULT_FORMAT_CAPABILITIES = {
@@ -167,13 +157,8 @@ DEFAULT_FORMAT_CAPABILITIES = {
 def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
     """What this adapter's own grammar can carry, validated, for a pre-send refusal.
 
-    Thin wrapper over `witness_adapters.declared_format_capabilities`, the one
-    place this validation lives (it used to be a second copy of
-    `live_witness._format_capabilities_for`'s own body): a
-    `RequestCapacityRefusal` fires before any request reaches the wire, but
-    the refused attempt still names a real adapter, and that adapter's
-    declared expressiveness is a fact about it whether or not this one
-    request was sendable.
+    A request refused before sending still names a real adapter, and its declared
+    expressiveness is recorded either way.
     """
     return witness_adapters.declared_format_capabilities(adapter)
 
@@ -181,14 +166,8 @@ def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
 def real_ingress(context) -> bool:
     """Whether this context opened a real submission, read off its run authority.
 
-    Delegates to `common.stage.is_real_ingress`, the same reader the shared
-    constructor and `expected_acts` use -- as the Perlector's and Recensor's
-    own `real_ingress` already do -- so no stage can disagree with the
-    constructor about which route a run is on. The reading is taken from the
-    one authority the context carries and never from `context.scenario`: the
-    ingress record is inside `run.json`'s own self-hash, so the route a run was
-    created under cannot be switched by argv or by a fixture declaring a
-    scenario of the same name.
+    Read from `run.json`, never `context.scenario`: the ingress record is inside the
+    run's self-hash, so argv or a fixture scenario cannot switch the route.
     """
     return is_real_ingress(context.run)
 
@@ -196,19 +175,8 @@ def real_ingress(context) -> bool:
 def page_subject(context, page_ordinal: int, *, page_ids: dict[int, str] | None = None) -> str:
     """The Exemplar page one submitted ordinal names, on either ingress route.
 
-    `exemplar_page_ids` is the one index of "which page is ordinal N" for both
-    routes. This stage used to derive it from the fixture's declared page sha
-    (`common.fixture_identity.page_identity`), which a real submission does not
-    have; on a fixture run the two agree for every sealed page, because a
-    sealed page's identity is the admitted bytes' digest and "sealed" means
-    those bytes matched the declaration.
-
-    The Exemplar layer is sealed before this stage opens, so the walk answers
-    the same every time for the life of this process; a caller that visits many
-    pages in one pass builds the index once with `exemplar_page_ids(context)`
-    and threads it in as `page_ids`, rather than paying an inventory walk (one
-    validated read per Exemplar page) at every lookup. A caller asking about a
-    single page may omit it and pay that one walk directly.
+    `page_ids` is an optional prebuilt `exemplar_page_ids(context)`; a caller visiting
+    many pages passes it to avoid one inventory walk per lookup.
     """
     pages = page_ids if page_ids is not None else exemplar_page_ids(context)
     if page_ordinal not in pages:
@@ -241,27 +209,21 @@ def _confidence_problem(value: Any, path: str = "witness_reported") -> str | Non
     return None
 
 
-# The two write paths this program implements, checked against by name because
-# `--operation` carries no argparse `choices` — the same parser serves every
-# stage — so an unrecognized one otherwise falls through to the whole pass and a
-# mistyped reread re-reads nothing while exiting 0.
+# Checked by name because the shared parser gives `--operation` no `choices`; a
+# mistyped reread would otherwise run the whole pass and exit 0.
 OPERATIONS = frozenset({"initial", "reread"})
 
-# A witness response is untrusted input: a several-thousand-deep nested value
-# drives `_native_problem` past Python's recursion limit, and `RecursionError` is
-# not a `ContractError`, so nothing between here and process exit catches it —
-# one adversarial witness takes down the whole folder rather than its own attempt.
-# Real transcription output nests a handful of levels deep, so this is headroom
-# rather than a fit.
+# A witness response is untrusted: deep nesting would raise an uncaught
+# `RecursionError` in `_native_problem` and kill the whole run, not one attempt.
+# Real output nests a few levels, so this is headroom.
 _MAX_NATIVE_DEPTH = 64
 
 
 def proposed_regions(context, act_id: str) -> list[dict]:
     """Every original Designator region the chair was actually shown.
 
-    A later recovery region is intentionally not substituted. A Testimonium binds
-    to these exact pixel blobs, not to whichever crop happens to be current when a
-    later consumer reads the run tree.
+    Later recovery regions are not substituted: a Testimonium binds to the exact
+    pixels shown.
     """
     regions = []
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
@@ -284,10 +246,8 @@ def proposed_regions(context, act_id: str) -> list[dict]:
 def sealed_page_proposal_regions(context, page_ordinal: int) -> list[dict]:
     """Every sealed Designator proposal on one page, independent of act state.
 
-    The page partition and unrouted-observation denominator is the page's whole
-    sealed proposal set (Unit 10C's rule): a held act's proposal was still
-    sealed on this page, and omitting it makes the retained snapshot contradict
-    the Recensor's independent re-derivation of the same denominator.
+    A held act's proposal is included: the Recensor re-derives the same denominator
+    from the whole sealed set and must agree with it.
     """
     regions = []
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
@@ -355,12 +315,8 @@ REGION_TRANSFORM_FIELDS: Final = ("source_page_id", "source_page_ordinal")
 def presentation_for_region(region: dict[str, Any]) -> dict[str, Any]:
     """Derive one region presentation from a sealed proposal record.
 
-    The writer's caller has already verified this region's crop lineage, but
-    `validate_testimonium_presentation` reads regions straight out of the
-    Designator manifest to reconcile a record it is treating as untrusted. A
-    sealed region missing its transform or blob identity left that seam as a
-    raw KeyError -- from the check whose whole job is to name what is wrong
-    with the evidence -- so the missing field is named here instead.
+    The validator also calls this on untrusted records, so missing fields are
+    named rather than raised as a bare KeyError.
     """
     payload = region.get("payload")
     transform = payload.get("transform") if isinstance(payload, dict) else None
@@ -393,12 +349,8 @@ def page_witness_attempted(
 ) -> bool:
     """Whether this page-scoped chair was shown pixels for at least one of its acts.
 
-    Distinct from `page_join`'s `reading` (whether text was actually produced):
-    a chair attempted and shown a crop that came back `failed` is still a chair
-    that was shown an image, so `presented` must not collapse that case into the
-    same empty block held acts, refused pages, and absent chairs record. Using
-    `reading` here would misreport "shown pixels, bad response" as "never shown
-    an image" (principle 2).
+    Not `page_join`'s `reading`: a failed response was still shown an image, and
+    must not be recorded as never shown (principle 2).
     """
     return any(
         attempts_by_pair[(act["act_id"], chair)].outcome in ATTEMPTED_WITNESS_OUTCOMES
@@ -462,10 +414,7 @@ def _fixture_native_observations(
         return None
     observations = []
     for ordinal, row in enumerate(rows):
-        # A row missing a coordinate is refused where the fixture row can be
-        # identified. Passing `{"w": None}` down instead reaches the geometry
-        # contract as "non-integer page-pixel coordinates", which is true and
-        # names neither the chair, the page, nor which row to go and fix.
+        # Refused here, where the error can name the chair, page and row.
         missing = sorted(key for key in ("x", "y", "w", "h") if key not in row)
         if missing:
             raise SchemaRefusal(
@@ -484,39 +433,23 @@ def _fixture_native_observations(
     return observations
 
 
-#: Adapters whose fixture rows may declare `raw_response` bytes. The committed
-#: corpus carries a synthetic Chandra body and nothing else, and the attempt
-#: boundary already refuses a fixture `raw_response` for any other adapter
-#: (`resolve_attempt`): fixture bytes may not be attributed to a model boundary
-#: that never produced them. Named here because the page-partition branch has to
-#: ask the same question -- "does this chair's response reach `observe` in this
-#: posture?" -- and answering it with an adapter name would put the fixture
-#: posture back on a hard-coded chair.
+#: Adapters whose fixture rows may declare `raw_response` bytes; `resolve_attempt`
+#: refuses them for any other adapter, since fixture bytes may not be attributed to
+#: a model that never produced them.
 FIXTURE_NATIVE_RESPONSE_ADAPTERS: Final = frozenset({"chandra.v1"})
 
 
 def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
     """Whether this chair's page partition is re-derived from its own response bytes.
 
-    True for any page-scoped adapter that reports geometry, on the live path,
-    where the chair really answered and `captured_page_attempt` carried its bytes
-    forward as `observation_payload`. In the fixture posture it is true only for
-    the adapters the fixture may declare response bytes for; every other page
-    chair's offline record keeps the declared-observation route it has always
-    taken, so no committed byte moves.
-
-    The question the branch actually asks is "are there response bytes here to
-    derive geometry from", and it is answered from the registry's
-    `takes_page_size` rather than from an adapter's name. Chandra answers yes;
-    Churro answers no, because `HistoricalDocument` publishes no coordinates at
-    all, and its page record carries the presentation echo the no-geometry route
-    owns for every adapter.
+    True for a geometry-reporting (`takes_page_size`) adapter on the live path, and
+    in fixture runs only for adapters allowed fixture response bytes; the others
+    keep the declared-observation route.
     """
     if not isinstance(resolved, ChairIdentity):
         return False
-    # Not guarded: an adapter with no runnable binding is refused here, loudly,
-    # rather than answered `False` and routed down the no-geometry branch as
-    # though it had simply reported nothing.
+    # Unguarded on purpose: an adapter with no runnable binding must be refused,
+    # not routed down the no-geometry branch.
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     if not adapter.takes_page_size:
         return False
@@ -528,22 +461,9 @@ def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
 def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The reported boxes a page partition may be derived from, or a named refusal.
 
-    `split_page_edge_overshoots` admits `native` and `derived` boxes and refuses
-    a `presented` echo by name: an echo restates the image the chair was shown,
-    so turning one into a page-edge finding would report as witness geometry
-    something no witness reported. Chandra's `observe` returns an empty list for
-    a body whose blocks report no usable box, so the only adapter that reaches
-    this seam hands over reported boxes or nothing.
-
-    Three cases, and the third is the point. All reported: the list, unchanged.
-    None reported: empty, which is what the caller already detects as "this
-    response reported no geometry" and answers by putting the presentation echo
-    back through `observed_from_presentation` -- the one path that owns that
-    fact for every adapter, so nothing is dropped and nothing is invented.
-    **A mix is refused**, not filtered: no adapter today returns one, and an
-    adapter that began to would be saying something this partition has no rule
-    for. Silently keeping half of it would publish a page geometry nobody
-    designed and no reader could tell from a complete one (principle 2).
+    All reported: returned unchanged. None reported: empty, and the caller falls
+    back to the presentation echo. A mix is refused, not filtered: half a record
+    would look like a complete partition (principle 2).
     """
     reported = [item for item in observed if item["bounds_source"] in REPORTED_BOUNDS_SOURCES]
     if reported and len(reported) != len(observed):
@@ -552,8 +472,7 @@ def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "A partition derived from half of that record would look complete. "
             "Return reported geometry or the no-geometry echo, not both."
         )
-    # Ordinals stay dense and 0-based, which the page-edge check requires and
-    # reads as the response's own order. Untouched when nothing was filtered.
+    # Ordinals stay dense and 0-based, as the page-edge check requires.
     return reported
 
 
@@ -565,13 +484,9 @@ def page_partition_entries(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return a page witness's surviving boxes and response-linked page-edge findings.
 
-    `page_size` is the sealed source page, never a presentation crop: a block
-    may cross the crop edge while remaining valid page-space geometry.
-
-    The page Testimonium, rather than the retired textual act bridge, owns the
-    witness partition.  A finding without the raw response that supplied its
-    block is a named but unauditable assertion, so this narrow join refuses it
-    before either a page record or an attachment can be published.
+    `page_size` is the sealed source page, never a presentation crop: a block may
+    cross the crop edge and still be valid page geometry. A finding without its raw
+    response reference cannot be audited, so it is refused before publication.
     """
     survivors, overshoots = split_page_edge_overshoots(observed, page_size=page_size)
     if overshoots and (
@@ -602,9 +517,8 @@ def _sealed_source_page(
 def _verified_page_bytes(context, page: dict[str, Any]) -> bytes:
     """Read once and bind the exact page bytes that image operations will use.
 
-    ``read_artifact`` verifies the page's inputs, but reopening its blob afterward
-    creates a check/use interval. Compare the one immutable byte object handed to
-    Pillow/cropping with the page digest so a filesystem swap cannot cross it.
+    Digesting the same bytes object that is decoded closes the check/use gap a
+    second read of the blob would open.
     """
     payload = page.get("payload")
     if not isinstance(payload, dict):
@@ -674,9 +588,8 @@ def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
 def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
     """Whether a fixture declaration belongs to this immutable attempt.
 
-    Older fixture rows mean attempt one explicitly. Silently applying a declared
-    first-attempt failure to every re-read would make the test seam a mutable
-    outcome selector rather than a description of one attempt.
+    A row without an ordinal means attempt one only, so a declared failure does not
+    repeat on every re-read.
     """
     declared = row.get("attempt_ordinal", 1)
     if not isinstance(declared, int) or isinstance(declared, bool) or declared < 1:
@@ -703,15 +616,6 @@ def _declared_pairs(context, ordinal: int, fixture_key: str) -> set[tuple[str, s
                 )
             pairs.add(pair)
     return pairs
-
-
-# A Designator page-fallback act used to be recognized here, by its derived
-# identity, and given `genuinely-empty` for every configured chair without any
-# response boundary being consulted (Sol-S1). Nothing in this stage asks what
-# kind of act it is reading any more: a fallback crop is a proposed region like
-# any other, its chairs are asked like any other, and what comes back decides
-# the outcome. The identity check that guarded the branch went with the branch --
-# an unforgeable selector for a branch that must not exist is still the branch.
 
 
 def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
@@ -764,30 +668,10 @@ def declared_response(
 ) -> dict[str, Any] | None:
     """The one response the fixture declares this chair returned for this request.
 
-    Two tables reach this boundary and both declare a *response*, never an
-    outcome. `[[testimony]]` carries whatever the witness returned;
-    `[[witness_empty]]` carries the one response whose whole body is the empty
-    string, kept as its own table so a reviewer reading the fixture can see at a
-    glance which chairs returned nothing. Either way the declared bytes come back
-    through `prepared_response` and `resolve_attempt` derives the outcome from
-    what was actually retained.
-
-    The tables handled before this one -- `witness_failure`, `witness_not_run`,
-    `witness_malformed` -- are its exact complement: each declares the *absence*
-    of a usable response, which is the only thing that may name an outcome with
-    nothing retained. That line is what this stage's `genuinely-empty` no longer
-    crosses; there is no third shape, and in particular no act identity, that
-    mints a completed reading without a response to it.
-
-    Every `witness_empty` row is scenario-scoped, so it sits at the same
-    precedence as a scenario-specific `[[testimony]]` row and overrides the
-    scenario-agnostic base response for its own scenario exactly as one does --
-    that is how a shipped blank scenario says "this chair returned nothing here"
-    over the base table's declared text. Two declarations at *that* precedence
-    are two answers to one question, and the elif chain would have resolved them
-    silently in `witness_empty`'s favour. `declarations_for`'s cross-table check
-    cannot see this pair, because `[[testimony]]` is looked up per request rather
-    than collected into a declared-pair set.
+    `[[testimony]]` and `[[witness_empty]]` declare responses, never outcomes; the
+    outcome is derived from what is retained. A `witness_empty` row overrides the
+    base response for its scenario, and one that collides with a scenario
+    `[[testimony]]` row is refused here, since `declarations_for` cannot see it.
     """
     response = testimony_for(context, act_key, chair, declarations["ordinal"])
     if (act_key, chair) not in declarations["empty"]:
@@ -797,10 +681,8 @@ def declared_response(
             "fixture declares both an empty response and a scenario response for "
             f"{(act_key, chair)!r} at attempt ordinal {declarations['ordinal']}"
         )
-    # An empty Chandra response can still carry native layout blocks.  Keep the
-    # response declaration as its source: manufacturing a box from the shown
-    # page would turn a presentation fallback into reported geometry and let a
-    # completed blank witness count as having covered ink it never located.
+    # An empty Chandra response can still carry layout blocks, so keep the declared
+    # raw response; a box invented from the shown page would claim ink never located.
     matching_empty_rows = [
         row
         for row in context.fixture.get("witness_empty", [])
@@ -829,11 +711,8 @@ def declared_response(
 def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str | None:
     """Return why a native response cannot be retained as canonical JSON.
 
-    The generic artifact writer rejects floats and malformed Unicode later, but a
-    witness response must become a retained ``failed`` attempt rather than make a
-    whole folder crash or be quietly repaired with ``str()``, replacement Unicode,
-    or a shared text schema. This is deliberately strict until Spec 04 defines a
-    binary provider-body contract.
+    Checked here so a bad response becomes a retained ``failed`` attempt rather than
+    a crash in the artifact writer or a silent repair.
     """
     if depth > _MAX_NATIVE_DEPTH:
         return f"{path} nests deeper than {_MAX_NATIVE_DEPTH} levels"
@@ -880,9 +759,7 @@ def _native_type(value: Any) -> str:
     return type(value).__name__
 
 
-# Every health field of a chair with no native response except the reason, so the
-# writer below and the reader in `validate_content_health` cannot disagree about
-# what "no response" looks like.
+# Shared by the writer and `validate_content_health` so both agree on "no response".
 NO_RESPONSE_HEALTH = {
     "native_type": None,
     "encoding": "not-applicable",
@@ -899,10 +776,7 @@ def no_response_health(*, reason: str) -> dict[str, Any]:
     return {**NO_RESPONSE_HEALTH, "truncation_basis": reason}
 
 
-# A `genuinely-empty` reading has no witness text at all -- there is nothing to
-# locate in the anchor, so nothing was lost finding it either. Shared by the
-# trivial-attachment branch below so a zero-length alignment always reads as
-# exactly as empty as it is.
+# Alignment loss for a `genuinely-empty` reading: no text, so nothing was lost.
 _ZERO_ALIGNMENT_LOSS: dict[str, int] = {
     "markup_characters": 0,
     "whitespace_characters": 0,
@@ -913,11 +787,8 @@ _ZERO_ALIGNMENT_LOSS: dict[str, int] = {
 def content_health(native_payload: Any, *, completed: bool | None = None) -> dict[str, Any]:
     """Compute deterministic channel facts from native output alone.
 
-    ``witness_reported`` intentionally is not an argument. A witness's assertion
-    that it was confident, complete, or uncertain cannot become health merely by
-    being present. The synthetic fixture is an explicit complete transport seam;
-    real serving code must pass a trusted response-boundary fact or leave
-    truncation unknown.
+    ``witness_reported`` is deliberately not an input: a self-report never becomes
+    health. ``completed`` must come from a trusted response boundary, or be None.
     """
     if (problem := _native_problem(native_payload)) is not None:
         return {
@@ -960,12 +831,9 @@ def content_health(native_payload: Any, *, completed: bool | None = None) -> dic
 def validate_content_health(native_payload: Any, health: Any) -> None:
     """Refuse a resealed health record that is not this stage's deterministic shape.
 
-    A self-hashed artifact can still have been re-sealed with a damaged health
-    field.  The tally must not count it as known simply because its envelope and
-    JSON syntax remain valid.  Whether an unrecordable channel is an accounted
-    failure or #23's UNKNOWN is not decided here — that is
-    `require_accounted_unrecordable_channel`, which reads the outcome this
-    function deliberately does not.
+    A valid self-hash does not prove the field was computed here. Whether an
+    unrecordable channel is an accounted failure is decided by
+    `require_accounted_unrecordable_channel`, not here.
     """
     if not isinstance(health, dict):
         raise SchemaRefusal("a Testimonium carries no object content_health record")
@@ -1019,12 +887,8 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
         return
 
     if recordable is False:
-        # The narrowest record this stage writes: nothing of what the witness
-        # returned could be kept, so there is nothing left to measure and every
-        # remaining field is fixed. Leaving them free would let a resealed record
-        # take this branch and then assert a character count, a truncation state
-        # and a retained payload — self-reported facts wearing the name of the
-        # computed ones spec 07 requires these to be.
+        # Nothing was kept, so every measured field is fixed; otherwise a resealed
+        # record could assert measurements nothing made.
         if native_payload is not None:
             raise SchemaRefusal(
                 "a Testimonium whose native channel was unrecordable retains a native "
@@ -1063,9 +927,7 @@ def prepared_response(
 ) -> tuple[Any, Any, dict[str, Any] | None, dict[str, Any], str | None]:
     """Return native output and any recording defect without normalizing either.
 
-    The final element is a reason that turns this one attempt into ``failed``.
-    The raw object is left untouched for every recordable response, including an
-    unexpected-but-parseable JSON shape.
+    The final element, when set, is the reason this attempt is ``failed``.
     """
     if "payload" not in row:
         health = no_response_health(reason="fixture response declared no native payload")
@@ -1113,13 +975,9 @@ def provenance_for(
 ) -> dict:
     """The exact configured identity and actual serving moment for one outcome.
 
-    ``receipt_ref`` is the live boundary's half: a chair that really served this
-    reading already published its receipt when the client started it
-    (``ServingManager.start`` -> ``StageContextReceiptPublisher`` ->
-    ``StageContext.write_serving_receipt``), so the live pass names *that*
-    moment's receipt rather than writing a second, declared one. Absent it the
-    fixture path is unchanged: it writes `fixture_serving_details`, which says
-    `fixture://` out loud (principle 8).
+    A live chair already published its receipt when serving started, so the live
+    pass passes ``receipt_ref``. Without it, an attempted fixture chair gets a
+    receipt that says `fixture://` (principle 8).
     """
     if receipt_ref is not None and not attempted:
         raise ContractError(
@@ -1174,22 +1032,10 @@ TESTIMONIUM_FIELDS = frozenset(
         "unpresented_regions",
     }
 )
-# `page_witness` marks a page chair's act-scoped compatibility record and is
-# validated here. `scope` and `page_ordinal` are deliberately NOT listed: they
-# belong to the page-scoped kind, which this closed act-level payload never
-# carries, and allowing them here let a resealed act record wear page clothing.
-# `native_capture` and `serving_call_ref` are the live boundary's two additions
-# (SPEC_A section 2.3). Both are written only by the live pass: a fixture attempt
-# carries neither, so the fixture record's bytes are exactly what they were.
-# `native_capture` was already admitted on a page record by the shared contract
-# (`common/native_witness.PAGE_TESTIMONIUM_OPTIONAL_FIELDS`); this admits it on an
-# act record too, where a live attempt's own retained model view belongs.
-# `raw_response_kind` says what sort of bytes `raw_response_ref` names, because
-# on a live record it is two different things: the adapter's own output, when a
-# parser read it, and the whole transport body, when no adapter ever saw a
-# reading. Both are retained evidence and neither is the other, so the record
-# says which rather than leaving a reader to infer it from whether some other
-# optional field happens to be present.
+# `scope` and `page_ordinal` belong only to the page-scoped kind, so an act record
+# cannot pose as one. `native_capture` and `serving_call_ref` are written only on
+# the live path. `raw_response_kind` says whether `raw_response_ref` names the
+# adapter's output or the whole transport body.
 OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
     {
         "adapter_metadata",
@@ -1203,11 +1049,8 @@ OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
     }
 )
 
-# A page Testimonium is a different, closed record from the act-scoped
-# compatibility Testimonium above.  In particular, ``page_role`` says whether
-# the page is the act's primary page, only carries continuations, or contains
-# both.  Keeping that fact in the producer's contract prevents page two from
-# being an anonymous duplicate of page one.
+# A page Testimonium is a separate closed record; its ``page_role`` (primary,
+# continuation, or both) keeps page two from duplicating page one anonymously.
 PAGE_TESTIMONIUM_FIELDS = PAGE_TESTIMONIUM_REQUIRED_FIELDS
 
 
@@ -1263,8 +1106,7 @@ def testimonium_payload(
     if adapter_metadata is not None:
         record["adapter_metadata"] = adapter_metadata
     if native_capture is not None:
-        # Only the derived view joins the payload; the response bytes stay in the
-        # named blob the capture already points at.
+        # The response bytes stay in the blob the capture names.
         record["native_capture"] = native_capture
     if serving_call_ref is not None:
         record["serving_call_ref"] = serving_call_ref
@@ -1332,8 +1174,7 @@ def validate_adapter_metadata(payload: Any) -> None:
 def _named_once(references: list[Any]) -> list[Any]:
     """Keep the first mention of each input reference, in the order given.
 
-    Order is the record's own account of how it was derived, so it is
-    preserved; a repeat is not a second response and must not read as one.
+    A repeat is not a second response and must not read as one.
     """
     seen: list[str] = []
     kept: list[Any] = []
@@ -1371,25 +1212,12 @@ def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
 
 
 def validate_live_serving_fields(payload: dict[str, Any]) -> None:
-    """Close the two fields only a live reading writes onto an act Testimonium.
+    """Close the fields only a live reading writes onto an act Testimonium.
 
-    A retained model view (`native_capture`) is the adapter's own record of the
-    bytes it parsed, so it must name the very blob this Testimonium names: two
-    references disagreeing about which response was read is a record that cannot
-    say what it read. The call record (`serving_call_ref`) is the request half of
-    the same moment, and it is meaningless without a retained response beside it
-    -- a chair that answered nothing has no reading to account for.
-
-    `raw_response_kind` is the third: a live record's retained blob is the
-    adapter's own output on every branch where a parser ran, and the whole
-    transport body on the one branch where none could. Those are different
-    evidence -- one is the model's answer, the other is an envelope around a
-    body that was never a reading -- and a reader that guessed between them
-    from the presence of some other field would be reading a record that never
-    said. So a record that names a serving call and retains a response must
-    name which kind it retained, and a retained model view must agree that it
-    is the adapter's own output, because that is the only thing a capture can
-    describe.
+    `native_capture` must name the same blob as the record. `serving_call_ref`
+    needs a retained response beside it, except for a Chandra error trace. A live
+    record that retains a response must say whether it is model output or a
+    transport body, and a capture can only describe model output.
     """
     kind = payload.get("raw_response_kind")
     if kind is not None:
@@ -1441,10 +1269,8 @@ def validate_retained_response_blob(
 ) -> None:
     """Re-read one retained blob so a missing or changed one cannot pass a tally.
 
-    ``field`` names which reference is being re-read. A live Testimonium carries
-    two of them -- the response bytes and the current `chair-call-record.v2` blob -- and
-    a tally that re-hashed only the first would leave the request half of the
-    serving moment as a reference nothing checks.
+    ``field`` names the reference: a live record carries both the response and the
+    call-record blob, and both are re-hashed.
     """
     checked = validate_stage_blob_ref(reference, field)
     try:
@@ -1480,16 +1306,8 @@ def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
         _require_chandra_native_testimonium_scope(payload, page_record=False)
     validate_adapter_metadata(payload)
     validate_retained_response_pairing(payload)
-    # The closed confidence-ordinal set is a writer-side rule
-    # (`_confidence_problem`, applied in `prepared_response` and the Chandra
-    # branch of `resolve_attempt`), and this is the one envelope validator both
-    # of those writers and the tally/resume read-back share. Checking it again
-    # here is what makes it a property of every sealed Testimonium rather than
-    # of however many call sites remember to ask -- and, since Unit 2, this
-    # validator is also the gate a crash resume trusts before carrying a
-    # retained self-report forward into a freshly published record: unchecked
-    # here, a malformed claim that ever reached disk would be revalidated as
-    # fine and republished rather than refused.
+    # Checked again here because this validator is shared by both writers and by
+    # the tally and crash-resume read-back, which must not republish a bad claim.
     if problem := _confidence_problem(payload.get("witness_reported")):
         raise SchemaRefusal(problem)
     return validate_native_witness_geometry(payload)
@@ -1544,7 +1362,7 @@ def page_testimonium_payload(
     if adapter_metadata is not None:
         record["adapter_metadata"] = adapter_metadata
     if native_capture is not None:
-        # Only derived text joins the payload; raw bytes remain in the named blob.
+        # Raw bytes remain in the named blob.
         record["native_capture"] = native_capture
     if native_inference is not None:
         record["native_inference"] = native_inference
@@ -1607,11 +1425,8 @@ class AttemptIndex(NamedTuple):
 def _attempt_history(context) -> AttemptIndex:
     """Index immutable Testimonia and derived attachments once for this invocation.
 
-    The independent tally deliberately rebuilds and validates the inventory for
-    accounting. This index serves only append/collision decisions, whose repeated
-    per-pair manifest walks otherwise make a pass quadratic in the folder size —
-    which is why the derived act-attachments travel in the same walk rather than
-    in a second one per act.
+    Serves only append/collision decisions, which would otherwise walk the manifest
+    per pair and go quadratic; the tally validates independently.
     """
     manifest = context.tree.build_manifest(ATTESTATORES)
     by_pair: AttemptHistory = {}
@@ -1626,13 +1441,8 @@ def _attempt_history(context) -> AttemptIndex:
             continue
         record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
         payload = record.get("payload")
-        # No `payload["scope"] == "page"` skip here. Page-scoped Testimonia are a
-        # kind of their own and the filter above already excludes them, so the
-        # skip could only ever fire for an act-scoped record that *claimed* page
-        # scope — and it would then drop that record out of the append/collision
-        # history on the strength of one self-reported field, which is exactly
-        # the disguise F-O5 closed in `attempt_tally`. The identical line was
-        # left standing here. Found in fresh-context review (P2).
+        # No skip on `payload["scope"]`: page records are already a separate kind,
+        # and a self-reported scope must not drop an act record from the history.
         chair = payload.get("chair") if isinstance(payload, dict) else None
         if isinstance(chair, str):
             by_pair.setdefault((entry["subject_id"], chair), []).append(record)
@@ -1644,16 +1454,9 @@ def require_appendable_ordinal(
 ) -> None:
     """Allow only a rerun of an attempt that exists, or exactly the next one.
 
-    Ordinals are the contiguous run 1..N — `latest_attempt` refuses a gap — so any
-    ordinal at or below the current one names an attempt that is already on disk,
-    and rewriting it is a resume: the RunTree refuses it outright if the bytes
-    differ. Only `current + 1` adds anything.
-
-    The bound is `<= current + 1` rather than `in {current, current + 1}` because a
-    targeted reread moves one chair's ordinal without moving any other's. Insisting
-    every pair be at the same ordinal would mean the orchestrator — which always
-    asks for ordinal 1 — held the whole folder from the moment one chair was
-    reread, over writes that would every one have been byte-identical no-ops.
+    Any ordinal up to the current one is a resume, which the RunTree refuses if the
+    bytes differ. Lower ordinals are admitted because a reread moves one chair
+    ahead, and the orchestrator's ordinal-1 pass must remain a no-op resume.
     """
     records = history.get((act_id, chair), [])
     if not records:
@@ -1685,25 +1488,11 @@ def _refuse_write_collision(
     """Refuse before any Testimonium write if this pass would seal different
     bytes than an attempt already recorded at this exact identity.
 
-    A targeted reread and a whole pass can reach the very same identity with a
-    different honest outcome — `resolve_attempt`'s docstring says so plainly: an
-    undeclared response is `failed` under a reread and `not-run` under a whole
-    pass, because the two write paths mean different things by silence.
-    `RunTree.publish_artifact` already refuses a colliding write, but only when
-    it is reached, mid-pass, after every earlier pair in this invocation has
-    already been published — a half-written attempt layer whose stored manifest
-    was never rewritten to describe it. Checking every pair against what already
-    exists, before any of them is written, keeps a doomed pass from writing a
-    Testimonium rather than stranding the folder partway through. Native response
-    bytes are deliberately retained before parsing and therefore stay as
-    content-addressed custody even when this later comparison refuses.
-
-    Only a pair whose target ordinal already holds a record can collide;
-    `require_appendable_ordinal` already refuses any ordinal beyond that, so
-    this only ever compares against a genuine resume attempt. Compared on the
-    fields the two write paths can actually disagree on, not the full sealed
-    envelope: provenance does not vary with the `reread` flag, only what
-    `resolve_attempt` decided did.
+    A reread and a whole pass can reach one identity with different outcomes (an
+    undeclared response is `failed` under one and `not-run` under the other). The
+    RunTree would refuse only mid-pass, after earlier pairs were published, so
+    every pair is checked first. Raw response blobs retained before this refusal
+    stay in custody.
     """
     existing = [
         record
@@ -1721,11 +1510,8 @@ def _refuse_write_collision(
         or payload.get("format_capabilities") != attempt.format_capabilities
         or payload.get("content_health") != attempt.health
         or payload.get("reason") != attempt.reason
-        # The parsed text is not the native response. Two Chandra bodies may
-        # produce the same text while carrying different layout blocks, and the
-        # raw digest is what binds the geometry this attempt will publish. A
-        # resume that compared only the text discovered that collision later at
-        # the immutable writer, after earlier pairs had already been published.
+        # Two Chandra bodies can parse to the same text with different layout
+        # blocks; the raw digest binds the geometry.
         or payload.get("raw_response_ref") != attempt.raw_response_ref
     ):
         raise SchemaRefusal(
@@ -1740,12 +1526,7 @@ def _refuse_write_collision(
 def pass_would_append(history: AttemptHistory, act_id: str, chairs, ordinal: int) -> bool:
     """Would a whole pass at this ordinal add an attempt to this act, or repeat one?
 
-    The bound in `require_appendable_ordinal` admits both, deliberately — a
-    targeted reread moves one chair's ordinal without moving any other's, so the
-    orchestrator's ordinal-1 pass has to stay a byte-identical resume over a
-    folder one chair has been reread in. The rules that close an act's witness
-    layer apply to the append and not to the repeat, so they need this told apart
-    rather than assumed.
+    The witness-layer closing rules apply to an append, not a repeat.
     """
     for chair in chairs:
         records = history.get((act_id, chair), [])
@@ -1764,40 +1545,15 @@ def require_shared_whole_pass_ordinal(
 ) -> None:
     """Refuse an appending whole pass on an act a targeted reread has moved.
 
-    The whole pass is a run-level instrument: every configured chair, every
-    expected act, at one ordinal. It also re-derives each act's act-attachment at
-    that same ordinal. A targeted reread moves exactly one chair and re-derives
-    the attachment one ordinal above whatever it found, so after a reread the
-    whole pass's next attachment ordinal is already taken — by a record describing
-    a different state.
+    A reread already took the act's next attachment ordinal, and the RunTree would
+    refuse only after the pass's Testimonia were written, leaving attempts the
+    manifest does not name. An act is off the shared ordinal when its chairs
+    disagree on their current ordinal; pairs with no record are ignored.
 
-    `RunTree.publish_artifact` would refuse that write correctly but *late*: in
-    the derived-record loop, after every Testimonium of the pass had been written
-    and before `context.finish()` rewrote the inventory to describe them. The
-    folder would then hold attempts its own manifest does not name, which the next
-    pass can only report as UNKNOWN. Refused here instead, before anything is
-    written.
-
-    The condition is the model rather than the mechanism: **a targeted reread
-    takes its act off the shared whole-pass ordinal**, and an act is off it
-    exactly when its chairs no longer agree on one current ordinal. A pass that
-    only *repeats* attempts already sealed is untouched (see `pass_would_append`),
-    which is what keeps the orchestrator's ordinal-1 resume working over a folder
-    one chair has been reread in, and a partly-lost attempt layer — where some
-    pairs have no record at all — is a repair at the ordinal its surviving pairs
-    already share, not a mixed act.
-
-    One residual is deliberately left to the RunTree rather than checked here:
-    reread *every* chair on one act up to the same ordinal and the act agrees
-    again — and a whole pass at that ordinal is then a REPEAT, so
-    `pass_would_append` skips both new rules entirely and the pass proceeds to
-    the attachment derivation, whose next ordinal the rereads already took.
-    Reaching that collision needs each chair's whole-pass attempt to be
-    byte-identical to its reread attempt — otherwise `_refuse_write_collision`
-    stops the pass first — so the pass that survives had nothing to add. The
-    outcome is a loud fatal refusal with `RunTree.write_manifest` as the recorded
-    one-step recovery, and a check for it would cost a second derivation of every
-    attachment in preflight to close a case whose worst outcome is a noisy stop.
+    Not caught here: rereading every chair to the same ordinal makes the pass a
+    repeat, and the attachment write then fails loudly in the RunTree
+    (`RunTree.write_manifest` recovers). Catching it would cost a second
+    derivation of every attachment.
     """
     current: dict[str, int] = {}
     for chair in chairs:
@@ -1836,54 +1592,17 @@ def preflight_appendable_ordinals(
     """Refuse a damaged history, or a colliding write, before adding any new
     attempt to this invocation.
 
-    The ordinal bound alone is not enough: it lets a whole pass through at an
-    ordinal a targeted reread has already sealed a *different* record at for one
-    chair, and the collision then surfaces reactively, mid-pass, at whichever
-    pair the loop reaches it on — see `_refuse_write_collision`. The caller
-    supplies one declaration set for both this preflight and `attempt_pass`,
-    since the two must agree on what this ordinal means. The returned region map
-    lets publication use the exact regions preflight already verified instead of
-    walking and hashing Designator again.
+    The returned region map lets publication reuse the regions verified here.
 
-    **One ordinal for the whole pass, on a resume exactly as on a first run.**
-    Unit 2 asks what a crashed pass does about the pairs it already sealed, and
-    the answer is not a per-pair ordinal map. Three facts forbid one. A
-    page-scoped chair has no act-scoped attempt to repeat at all — `reread_pass`
-    refuses to mint one by name — so moving such a pair to ordinal 2 while the
-    page Testimonium and the act attachment stay at ordinal 1 publishes a
-    `not-run` over a good `read` and drops that chair out of the act's coverage.
-    `require_shared_whole_pass_ordinal` exists precisely because an act's
-    attachment is derived once per pass and cannot describe two ordinals at
-    once. And the Perlector's reading ordinal is a function of the act's crop
-    history, which the Recensor, Archetypus and Armarium each re-derive, so a
-    reading that appears without a recrop is refused downstream by all three.
+    A resumed pass keeps one ordinal for every pair and reuses each pair already
+    sealed at it instead of asking the chair again: a live chair cannot reproduce
+    immutable bytes, an attachment describes one ordinal, and downstream stages
+    refuse a reading ordinal that moves without a recrop (principles 2 and 4).
 
-    So a resumed whole pass repeats its ordinal, but it never asks a chair again
-    for a pair already sealed at that ordinal. The retained Testimonium is
-    validated and supplies the attempt facts used by the derived page and
-    attachment records; only pairs the interrupted pass did not seal reach the
-    chair. This is what makes the resume safe for a real non-deterministic chair:
-    no second answer has to reproduce immutable bytes, and no later ordinal is
-    invented for an act the pass never finished (principle 2 and principle 4).
-
-    **`resolve` is what keeps this preflight a no-write preflight when the chair
-    is live.** In fixture mode it is `resolve_attempt`, which reads the sealed
-    fixture and needs nothing outside this process. A live chair cannot be
-    consulted here at all -- that would be N x M model calls with nothing on
-    disk until the last one returned -- so the live pass supplies a resolver
-    that returns `PENDING_LIVE_ATTEMPT` for every unsealed pair and fills each
-    in as its own response arrives. The live caller also passes
-    `resume_incomplete_pass=True` unconditionally: a pair already sealed at this
-    ordinal is reused from its retained Testimonium and never asked again,
-    because a live chair cannot reproduce immutable bytes (principle 4).
-
-    **`fixture_declared` is `main`'s statement, from the run authority, that a
-    sealed fixture stands behind this run.** A fixture run -- live or offline --
-    validates its declared Churro page responses here, before any write, as a
-    fact about the sealed inputs; a real submission has no fixture and nothing
-    to validate, and the reader would refuse by name at its first touch of
-    `context.fixture`. The flag is decided by `real_ingress(context)` in `main`
-    and nowhere else; it is not a way for a caller to skip a fixture check.
+    `resolve` defaults to the fixture resolver; the live pass passes one that
+    returns `PENDING_LIVE_ATTEMPT` so no model is called before anything is written.
+    `fixture_declared` comes from `real_ingress` in `main`: a real submission has
+    no fixture to validate.
     """
     resolve = resolve_attempt if resolve is None else resolve
     # Native declarations must refuse before compatibility records are published.
@@ -1899,11 +1618,7 @@ def preflight_appendable_ordinals(
     ]
     closed = witness_bound_reading_acts(context) if appending else frozenset()
     for act in appending:
-        # The whole pass is the other write path that can add testimony to an act,
-        # so it meets the same closed-layer rule the targeted reread does. Only an
-        # append: a whole pass that rewrites attempts already sealed at this
-        # ordinal is the orchestrator's ordinary resume, moves no chair's current
-        # record, and is untouched by this.
+        # An appending whole pass meets the same closed-layer rule as a reread.
         require_open_witness_layer(closed, act, f"a whole pass at ordinal {ordinal}")
     for act in acts:
         regions: list[dict] = []
@@ -1937,9 +1652,8 @@ def preflight_appendable_ordinals(
                         f"{ordinal}; a resume cannot choose one"
                     )
                 record = existing[0]
-                # Seeded only when non-empty: `validate_tallied_testimonium`
-                # re-derives a missing entry and names the absent proposal crop,
-                # and an empty list would suppress that named refusal.
+                # Omitted when empty so the validator re-derives it and names the
+                # missing proposal crop.
                 validate_tallied_testimonium(
                     context, record, act, {act["act_id"]: regions} if regions else {}
                 )
@@ -1959,12 +1673,8 @@ def preflight_appendable_ordinals(
                 )
             attempts_by_pair[pair] = attempt
             if attempt is PENDING_LIVE_ATTEMPT:
-                # Nothing to compare: the branch above reuses every pair already
-                # sealed at this ordinal whenever a resolver of this kind is in
-                # play, so a pending pair has no record here to collide with.
-                # The live pass checks nothing further before publishing because
-                # there is nothing there to check -- and if that ever stopped
-                # being true, this is where it would have to be caught.
+                # A pending pair must have no sealed record: sealed pairs are
+                # reused above, never asked again.
                 if existing:
                     raise FatalAccounting(
                         f"the live preflight left {pair!r} unresolved while a Testimonium is "
@@ -1973,11 +1683,7 @@ def preflight_appendable_ordinals(
                     )
                 continue
             _refuse_write_collision(index.by_pair, act, chair, ordinal, attempt)
-    # Last, so a genuine witness-attempt disagreement is named for what it is
-    # rather than reported as its consequence one derivation downstream: the
-    # attachment collides *because* a reread already sealed an attempt this pass
-    # would contradict, and where that contradiction exists `_refuse_write_collision`
-    # says which chair and which two outcomes.
+    # Last, so `_refuse_write_collision` names the underlying chair conflict first.
     for act in appending:
         require_shared_whole_pass_ordinal(index, act, context.witness_chairs, ordinal)
     return regions_by_act, attempts_by_pair, frozenset(sealed_pairs)
@@ -1991,11 +1697,8 @@ def validate_tallied_testimonium(
 ) -> None:
     """Refuse a resealed Testimonium that this stage could not have produced.
 
-    The generic envelope proves a record is syntactically sealed; the attempt
-    tally also has to prove its stage-specific channel remains interpretable
-    before authorizing another immutable append. This deliberately validates no
-    witness's *content* and makes no quality decision. `regions_by_act` retains
-    that independent verification once per act while the tally checks each chair.
+    Checks structure only, never witness content. `regions_by_act` caches the
+    verified regions per act across chairs.
     """
     payload = record.get("payload")
     if not isinstance(payload, dict):
@@ -2004,11 +1707,7 @@ def validate_tallied_testimonium(
     if "raw_response_ref" in payload:
         validate_retained_response_blob(context.tree, payload["raw_response_ref"])
     if "serving_call_ref" in payload:
-        # The live half of the same rule. `inputs` is re-derived below from the
-        # regions and the presentation alone, so a live record's two retained
-        # blobs are deliberately not envelope inputs -- which is exactly why the
-        # tally re-hashes them itself rather than leaving them as references
-        # nothing ever reads back.
+        # Live blobs are not envelope inputs, so the tally re-hashes them itself.
         validate_retained_response_blob(
             context.tree, payload["serving_call_ref"], "serving_call_ref"
         )
