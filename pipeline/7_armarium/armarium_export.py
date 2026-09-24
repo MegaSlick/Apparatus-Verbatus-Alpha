@@ -227,8 +227,8 @@ _SALVAGE_PROMOTION_CLAIM: Final = (
 _SALVAGE_ABSENCE_REASON: Final = "this run has no sealed salvage inventory to account for"
 _DISPLAY_REASON: Final = (
     "the rendering is not fed this package's canonical uncertainty layer, which travels "
-    "beside each literal instead; marking spans inside a displayed reading would exercise "
-    "a convention that remains Tyrel's choice at this gate"
+    "beside each literal instead; no span-marking convention has been chosen for "
+    "displayed readings"
 )
 _COMPLETED_CATEGORIES: Final = frozenset(
     {
@@ -1348,7 +1348,7 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
     return {act_id: record[0] for act_id, record in baseline.items()}
 
 
-INK_MAP_DENOMINATOR: Final = "Unit 9 ink-map sealed pages"
+INK_MAP_DENOMINATOR: Final = "ink-map sealed pages"
 _INK_MAP_ROW_FIELDS: Final = frozenset({"ordinal", "initial_outcome", "remeasured"})
 # `substantial_ink_pixels` joined this set on 2026-09-06, when the absolute
 # outside-coverage gate stopped being a module constant and became a fraction of
@@ -3814,7 +3814,7 @@ def _export_manifest(
             # `display:` line that looks like a complete reading.
             "display": {
                 "convention": DISPLAY_CONVENTION,
-                "status": "proposed-pending-tyrels-choice",
+                "status": "proposed-not-yet-chosen",
                 "alters_stored_text": False,
                 "renders_canonical_uncertainty": False,
                 "exercised_against_real_spans": False,
@@ -5199,7 +5199,7 @@ def _verify_display_claim(manifest: dict[str, Any]) -> None:
     if (
         not isinstance(display, dict)
         or display.get("convention") != DISPLAY_CONVENTION
-        or display.get("status") != "proposed-pending-tyrels-choice"
+        or display.get("status") != "proposed-not-yet-chosen"
         or display.get("alters_stored_text") is not False
         or display.get("renders_canonical_uncertainty") is not False
         or display.get("exercised_against_real_spans") is not False

@@ -2961,8 +2961,8 @@ def _live_secondary_provenance(context) -> dict:
         }
     raise ContractError(
         f"the secondary proposer chair {SECONDARY_PROPOSER_CHAIR!r} is configured, but the "
-        "live structure pass serves no secondary chair and writes no fixture receipt for one; "
-        "the role is absent by ruling, so a live run must configure it absent"
+        "live structure pass serves no secondary chair and writes no fixture receipt for one, "
+        "so a live run must configure it absent"
     )
 
 

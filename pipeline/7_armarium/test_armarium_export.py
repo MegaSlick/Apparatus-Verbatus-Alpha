@@ -3284,15 +3284,14 @@ def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
 
     assert manifest["claims"]["display"] == {
         "convention": DISPLAY_CONVENTION,
-        "status": "proposed-pending-tyrels-choice",
+        "status": "proposed-not-yet-chosen",
         "alters_stored_text": False,
         "renders_canonical_uncertainty": False,
         "exercised_against_real_spans": False,
         "reason": (
             "the rendering is not fed this package's canonical uncertainty "
-            "layer, which travels beside each literal instead; marking spans "
-            "inside a displayed reading would exercise a convention that "
-            "remains Tyrel's choice at this gate"
+            "layer, which travels beside each literal instead; no span-marking "
+            "convention has been chosen for displayed readings"
         ),
     }
     # The same package says, two claims above, that it carries the canonical
@@ -4486,7 +4485,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
     assert manifest["schema"] == "armarium-export-manifest.v7"
     assert manifest["claims"]["status"] == "complete"
     assert manifest["claims"]["ink_map"] == {
-        "denominator": "Unit 9 ink-map sealed pages",
+        "denominator": "ink-map sealed pages",
         "held_pages": [],
         "unmeasurable_pages": [1],
     }
