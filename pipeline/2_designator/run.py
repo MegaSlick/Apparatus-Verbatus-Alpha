@@ -2534,8 +2534,9 @@ def _terminalize_structure_history(
 def live_initial_pass(context, serving_factory, tier: str) -> bool:
     """Mark out every sealed page through the served structure chair. True when held.
 
-    Shares everything with `initial_pass` except the proposer: one served call
-    per sealed page replaces the fixture's declared acts, and the chair's real
+    Shares everything with `initial_pass` except the proposer: one retained
+    terminal answer per sealed page, from up to the sealed attempt limit of
+    served calls, replaces the fixture's declared acts, and the chair's real
     receipt replaces the fixture provenance. `context.fixture` is never read.
 
     Per page, the answer publishes before the status that cites it, then the

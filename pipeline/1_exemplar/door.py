@@ -658,7 +658,8 @@ def expand_sources(
     """Expand source containers and triage split decisions to stable ordinals.
 
     Counting renders no pixels. A source that cannot be read or counted still
-    gets one ordinal, so its refusal is published rather than lost.
+    gets its ordinals (one, or one per declared triage part when it is split), so
+    its refusal is published rather than lost.
 
     ``open_source`` is the real submission's descriptor-anchored opener. PDFium
     parses a file before any digest exists, so a reopened pathname could fan out
