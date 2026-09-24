@@ -61,10 +61,7 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
     {
         "reason",
         "partition_disagreement",
-        # The retained responses this record's own derived geometry was
-        # quantized from, and the declared rule that converted them. Plural
-        # because a page record's partition may be assembled from more than one
-        # retained response; a page witness that answers once retains one.
+        # Plural: a page partition may be assembled from several responses.
         "raw_response_refs",
         "adapter_metadata",
         "native_capture",
@@ -73,194 +70,71 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
-# The rounding rule each resizing operation's own publisher applies -- and so,
-# read as a key set, which operations resize at all. Ours and Churro's truncate
-# (`int()`); Chandra's snaps to its 28-pixel patch grid, and calling that
-# `floor` would be a record that reads false (principle 8).
+# Each resizing operation's rounding rule; the key set is also the set of
+# operations that resize.  Chandra snaps to its 28-pixel grid, which is not `floor`.
 _DIMENSION_ROUNDING: Final = {
     "crop-resize-preserve-aspect": "floor",
     "chandra-scale-to-fit.v1": "grid-28",
     "churro-prepare-ocr-image.v1": "floor",
 }
-# The executable transforms an `adapter-crop` presentation may name.
+# The transforms an `adapter-crop` may name.  Each is replayed from sealed page
+# bytes by `validate_presented_page_binding`, so an operation absent here is
+# refused rather than trusted (ARCHITECTURE invariant 3).
 #
-# Every one of them is replayed from sealed page bytes by
-# `validate_presented_page_binding` before its blob digest is believed, so the
-# list is not documentation: an operation absent here has no re-derivation and
-# is refused rather than trusted (ARCHITECTURE invariant 3). The resizing
-# subset is derived from `_DIMENSION_ROUNDING` rather than restated, because
-# the two lists disagreeing is a schema that requires a recipe it then cannot
-# name a rounding rule for.
-#
-# `crop` and `crop-resize-preserve-aspect` are this repository's own recipes.
-# The two `.v1` operations are ports of a vendor's own preprocessing, adopted
-# under the ruling that admitted them and named after the vendor function each
-# reproduces, so a record says which vendor pipeline sized the pixels rather
-# than only that something resized them:
+# The `.v1` operations are ports of vendor preprocessing, named after the
+# function each reproduces:
 #
 # * `chandra-scale-to-fit.v1` -- `chandra/model/util.py::scale_to_fit` at
-#   `datalab-to/chandra @ d4f7467435aa4137d9539f000ddf0b7ced3eb43f`: LANCZOS
-#   onto a 28-pixel grid inside a 6,291,456-pixel area, with the vendor's own
-#   greedy aspect trim. Its target therefore does *not* preserve the source
-#   aspect exactly, which is why the aspect identity in `_validate_resize_recipe`
-#   is not applied to it -- and does not have to be: Chandra's own geometry is
-#   `data-bbox` normalized 0-1000, mapped by `to_page_bounds` against the
-#   *sealed page* size, never through this resized view. The RGB step recorded
-#   as `colour_mode` is the vendor's too, one function earlier:
-#   `chandra/input.py::load_image` converts at open, so `scale_to_fit` is only
-#   ever handed RGB -- which is why this operation converts *before* it resizes
-#   (`_COLOUR_BEFORE_RESIZE`) where Churro's converts after.
+#   `datalab-to/chandra @ d4f7467435aa4137d9539f000ddf0b7ced3eb43f`.  Its greedy
+#   trim does not preserve aspect exactly, which is harmless: Chandra's boxes
+#   are mapped against the sealed page, never through this view.
 # * `churro-prepare-ocr-image.v1` -- `src/churro_ocr/_internal/image.py::
 #   prepare_ocr_image` at `stanford-oval/Churro @
 #   4abb17386d9656199c2776195926545fc527a691`: `ensure_rgb(resize_image_to_fit(
-#   img, 2500, 2500))`, LANCZOS, downscale-only, and the RGB step recorded as
-#   `colour_mode` because the vendor performs it before the model sees a pixel.
+#   img, 2500, 2500))`.
 #
-# **One departure, named here rather than discovered later.** Both ports resize
-# through `common/imaging.resize_png_lanczos`, which promotes a bilevel (mode
-# `"1"`) image to `"L"` before resampling, because Pillow 12.3.0 silently
-# substitutes NEAREST for LANCZOS on modes `"1"` and `"P"` -- a recipe that
-# said `pillow-lanczos` and delivered nearest-neighbour would be a record that
-# reads false. Churro's `resize_image_to_fit` resizes whatever it loaded
-# directly, so on a *bitonal* sealed page (triage's `bitonal` mode writes one,
-# and `_PNG_IDENTITY_MODES` seals it as `"1"`) the vendor gets Pillow's NEAREST
-# and this replay gets a true LANCZOS. The pixels differ, and the departure is
-# reproduced deliberately in the direction of the honest resampler rather than
-# corrected in the direction of the vendor's accident. `test_a_bitonal_crop_
-# replays_through_our_lanczos_not_the_vendors_nearest` pins it, and **U8's
-# vendor parity table needs a mode-`"1"` row that expects inequality here**;
-# a parity test that asserted byte equality on a bitonal source would be
-# asserting something neither port claims. Chandra is unaffected, and for a
-# stronger reason than it used to be: its own loader converts to RGB before
-# anything resizes (`chandra/input.py::load_image`), and its adapter now runs
-# that conversion in the same place (`_COLOUR_BEFORE_RESIZE`), so a bitonal
-# Chandra crop is already `"RGB"` when it reaches `resize_png_lanczos` and the
-# promotion never applies to it.
+# One known departure: `resize_png_lanczos` promotes a bitonal (`"1"`) image to
+# `"L"` because Pillow (12.3.0) silently uses NEAREST for LANCZOS on that mode.
+# Churro does not, so on a bitonal page our replay differs from the vendor's
+# pixels, deliberately (pinned by `test_a_bitonal_crop_replays_through_our_
+# lanczos_not_the_vendors_nearest`).  Chandra converts to RGB first, so it is
+# unaffected.
 RESIZING_ADAPTER_CROP_OPERATIONS: Final = frozenset(_DIMENSION_ROUNDING)
 ADAPTER_CROP_OPERATIONS: Final = frozenset({"crop"}) | RESIZING_ADAPTER_CROP_OPERATIONS
-#: The colour conversions an adapter may perform between the resize and the
-#: wire, spelled from the words `pipeline/0_triage/manifest.py::COLOUR_MODES`
-#: already uses for the same concept (GLOSSARY: one concept, one word). Only
-#: `rgb` is executable here, and `keep` says explicitly that no conversion ran
-#: -- a distinction a missing field cannot make on a record that is allowed to
-#: omit it. A further mode arrives with the vendor that performs it, never
-#: ahead of one.
+#: Colour conversions an adapter may record, in the words
+#: `pipeline/0_triage/manifest.py::COLOUR_MODES` uses.  `keep` states that none
+#: ran, which an omitted field cannot.
 ADAPTER_COLOUR_MODES: Final = frozenset({"keep", "rgb"})
-#: Which operations may name a `colour_mode`, and which must. `ensure_rgb` is
-#: half of `prepare_ocr_image`, so a Churro presentation that does not say what
-#: it did to the colour samples has not recorded the vendor operation it names.
+#: Churro must record `colour_mode`: `ensure_rgb` is half of the operation it names.
 _COLOUR_MODE_REQUIRED_OPERATIONS: Final = frozenset({"churro-prepare-ocr-image.v1"})
 _COLOUR_MODE_OPTIONAL_OPERATIONS: Final = frozenset({"chandra-scale-to-fit.v1"})
-#: And which may name only one value. `prepare_ocr_image` is
-#: `ensure_rgb(resize_image_to_fit(...))` with no branch in it, so a Churro
-#: record saying `keep` says the RGB half of the operation it names did not
-#: run. Requiring the key and then admitting either answer would let a record
-#: name the vendor operation over a grayscale blob the vendor never sends --
-#: the same silence the required-field rule above was written to close, one
-#: level in. Chandra's operation is not fixed the same way and stays optional:
-#: `scale_to_fit` performs no conversion itself, so the name does not imply
-#: one. Its adapter records `rgb` all the same, because the conversion the
-#: vendor *does* perform is one function earlier
-#: (`chandra/input.py::load_image`), which is a fact about the adapter's own
-#: recipe rather than about the operation name -- and `keep` therefore stays
-#: available to a record whose vendor converts nothing at all.
+#: Churro's conversion is unconditional, so `keep` would be false.  Chandra's
+#: `scale_to_fit` converts nothing itself (its loader does), so it is not fixed.
 _COLOUR_MODE_FIXED_VALUES: Final = {"churro-prepare-ocr-image.v1": "rgb"}
-#: And where each operation's conversion sits relative to its resize, because
-#: the two orders are not the same pixels and a replay has to pick the vendor's.
-#: Churro's `prepare_ocr_image` is `ensure_rgb(resize_image_to_fit(...))`, so
-#: its colour step is last; Chandra's is one function earlier than the operation
-#: it is recorded on -- `chandra/input.py::load_image` converts at open and
-#: `scale_to_fit` resizes whatever it was handed -- so its colour step is first.
-#: On an `L`, `1` or `RGB` crop the choice is invisible: expanding grey into
-#: three channels commutes with a per-band resample. On an `LA` or `RGBA` crop
-#: it is not -- Pillow's resampler treats an alpha band differently from a
-#: colour one, and the two orders were measured to disagree by a sample level
-#: across most of the image (`test_chandra_adapter.py::
-#: test_the_two_colour_orders_are_not_the_same_pixels_on_an_alpha_page`). The
-#: Exemplar seals `LA` and `RGBA` pages, so that crop is a page the door admits.
+#: Operations that convert colour before resizing (Chandra converts at load,
+#: `chandra/input.py::load_image`; Churro after).  On `LA`/`RGBA` pages the two
+#: orders give different pixels, so the replay must follow the vendor's.
 _COLOUR_BEFORE_RESIZE: Final = frozenset({"chandra-scale-to-fit.v1"})
-# `chandra/model/util.py::scale_to_fit` at the pinned sha: LANCZOS onto a
-# 28-pixel grid, under a 3072x2048 = 6,291,456-pixel maximum area.
-#
-# **The vendor's 1792x28 = 50,176-pixel minimum is not a bound on its output
-# and is deliberately not checked here.** It is the *input* area below which
-# `scale_to_fit` scales up; the grid snap that follows rounds each side to the
-# nearest 28 and can land back under it. A 100x80 crop scales to 250.4x200.4,
-# snaps to 252x196, and 49,392 px is below the minimum the vendor was aiming
-# at -- a record its own function produced. Refusing that would refuse a legal
-# Chandra presentation, which is the one thing this vocabulary must never do.
-# The maximum is a real post-condition: the refinement loop trims blocks until
-# the area is under it, and its 1x1 escape is 784 px.
+# `scale_to_fit`'s grid and maximum area.  Its 50,176-pixel minimum is not
+# checked: the grid snap can land the output below it (100x80 becomes 252x196).
 CHANDRA_SCALE_GRID_PX: Final = 28
 CHANDRA_SCALE_MAX_PIXELS: Final = 3072 * 2048
-# `resize_image_to_fit(img, 2500, 2500)` at the pinned tag; the same 2,500 is
-# `_MAX_IMAGE_DIM` in the paper-era harness and `MAX_IMAGE_DIM` in the
-# standalone `churro_transformers_infer.py`. Re-exported from the port that
-# also performs the arithmetic rather than restated: this module holds a record
-# to the vendor's rule, and a second literal of the vendor's own bound is a
-# second thing to keep in step with the vendor.
+# Re-exported from the port so the vendor's bound has one literal.
 CHURRO_MAX_IMAGE_DIM_PX: Final = CHURRO_MAX_INLINE_IMAGE_DIM
 
-# Churro's *declared* output bound, retained on every request's
-# `generation_declared` and in every retained Churro model view as the record
-# of what Churro's own pipeline asks for.  It is not, by itself, what goes on
-# the wire: `common/request_capacity.py::sendable_max_tokens` sends
-# `min(this, max_model_len - image - prompt)` against the request's own
-# capacity record, because vLLM's admission rule is
-# `prompt_tokens + max_tokens <= max_model_len` and every sealed Churro row
-# caps `max_model_len` far below this number (8,192 at 24 GB and 48 GB, 16,384
-# at 80 GB+).
-#
-# **The number is not a carried configuration value, and it has three sources.**
-# It was 24,000 here, described as Churro's "carried HuggingFace-generate
-# `max_new_tokens`"; the model's `generation_config.json` at the pinned
-# revision carries no such field, so that description named a source that does
-# not exist and the number belonged to nobody. 20,000 is what three separate
-# vendor artifacts say, and they are listed with what each one *is*, because
-# two of them are generation bounds and the third is not:
-#
-# 1. **The CHURRO paper, section B.2** (arXiv:2509.19768): a maximum of 20,000
-#    generated tokens, "chosen to allow generation of all gold outputs". A
-#    generation bound, stated by the authors as such.
-# 2. **The standalone reference implementation**,
-#    `churro_transformers_infer.py:41-46` at
-#    `stanford-oval/churro @ 2db3d9f5489cf12fbbe7384dd7f1b97b5f6f298b`: the
-#    `--max-new-tokens` default is 20,000. Also a generation bound, and the one
-#    vendor artifact that runs this model without a server.
-# 3. **`utils/llm/models.py::COMPLETION_TOKENS_FOR_STANDARD_MODELS = 20_000`**
-#    at the paper-era release, wired into the `MODEL_MAP` row for churro and
-#    passed to the container as `--max-model-len`. **This one is a context
-#    length, not a cap** -- the harness sends no `max_tokens` at all -- and it
-#    is recorded here as corroboration of the number with that difference
-#    named, never as a third statement of the same quantity. Reading it as a
-#    generation bound is the specific misreading the research refuted, and the
-#    sealed Churro row's `max_model_len = 20000` is where it actually lands.
-#
-# The value is declared once for the whole repository in
-# `request_capacity.DECLARED_ANSWER_BOUND_TOKENS` beside the other three
-# chairs' bounds, so one chair's bound cannot drift from the table the wire
-# value is computed from; this module re-exports that entry rather than
-# restating the integer.
-#
-# Four MiB still allows more than 209 UTF-8 response bytes per declared token
-# -- far beyond an OCR transcription -- while giving the XML parser and the
-# post-hoc repetition scan a hard ceiling whatever bound the request carried.
+# Churro's declared output bound, recorded on every request; what goes on the
+# wire is `request_capacity.sendable_max_tokens`.  Sources: the CHURRO paper,
+# section B.2, and the `--max-new-tokens` default of
+# `churro_transformers_infer.py` at `stanford-oval/churro @
+# 2db3d9f5489cf12fbbe7384dd7f1b97b5f6f298b`.
+# (`utils/llm/models.py::COMPLETION_TOKENS_FOR_STANDARD_MODELS` in the same
+# vendor repository is a context length, not a generation bound.)
 CHURRO_OUTPUT_TOKENS: Final = DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
-# One name, so the chair's three legal answer shapes cannot acquire three
-# intake bounds. It was declared beside the retired JSON wire contract
-# (`common/churro_response.py`) and re-exported here; that module is gone with
-# the coordinate channel it closed, so the number is declared here, which is
-# where `derive_churro_capture` applies it -- before either parser or the
-# repetition detector is handed a byte. `common/churro_document.py` deliberately
-# declares no ceiling of its own and takes this one as an argument, so the
-# grammar reader and the seam that bounds it cannot drift apart.
+# The one intake ceiling before the parser or the repetition scan reads a byte;
+# over 209 bytes per declared token, far beyond any transcription.
+# `churro_document` takes it as an argument rather than declaring its own.
 CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
-# The tail-cycle scan's own two numbers, chair-neutral like the scan itself:
-# the shortest repeating unit it will call a cycle, and how many times that
-# unit must recur at the very end of the response before it is one. Both are
-# declared, not measured -- the design defers calibrating them against
-# Chandra's own `detect_repeat_token` thresholds to Stage 2, and a threshold
-# nobody has measured says so rather than wearing a measurement's authority
+# Shortest repeating unit and minimum tail repeats.  Declared, not measured
 # (principle 8).
 _REPETITION_WINDOW: Final = 24
 _REPETITION_MIN_REPEATS: Final = 3
@@ -300,21 +174,10 @@ def _bounds(value: Any, what: str, *, page_size: tuple[int, int] | None) -> dict
 def churro_fit_target(source_width: int, source_height: int) -> tuple[int, int]:
     """The exact size `resize_image_to_fit(img, 2500, 2500)` returns for a crop.
 
-    `common/imaging_ports.py::resize_to_fit_churro` is the port of
-    `src/churro_ocr/_internal/image.py::resize_image_to_fit` at the pinned sha,
-    and it is called rather than restated. It was restated here while this
-    module was the only reader of the rule; the adapter that *writes* the
-    record now sizes its image through the port, and a contract validator
-    holding a record to a second copy of the arithmetic would be pinned to that
-    copy rather than to the vendor -- the two would agree for exactly as long
-    as both were wrong. The byte equality of the port itself against the
-    fetched vendor source is proved in `common/test_vendor_parity.py`.
-
-    Checking only that a target fits the square and does not enlarge would
-    admit a stretch the vendor cannot produce: a 4000x3000 crop presented as
-    2500x100 passes both of those and re-derives, because re-derivation replays
-    whatever target the record asks for. It would then carry the vendor's name
-    over an image the vendor's own code would never have made.
+    Calls the port rather than restating it, so the validator and the adapter
+    share one copy (checked against the vendor in `common/test_vendor_parity.py`).
+    The exact size matters because replay reproduces any target, including a
+    stretch the vendor cannot produce.
     """
     return resize_to_fit_churro(source_width, source_height)
 
@@ -322,27 +185,10 @@ def churro_fit_target(source_width: int, source_height: int) -> tuple[int, int]:
 def _validate_resize_recipe(transform: dict[str, Any]) -> None:
     """Close the executable resize recipe, then the rules its operation names.
 
-    Everything above the per-operation block is shared: a closed six-field
-    recipe, a resampler this repository can actually run, positive integer
-    dimensions typed before any arithmetic reads them, a target inside the
-    executable pixel bound, and source dimensions equal to the crop the
-    recipe sits on. That last one is what makes the recipe replayable at all;
-    the digest check in `validate_presented_page_binding` replays whatever
-    target the record asked for, so a target nothing constrains re-derives
-    happily and is still the wrong image.
-
-    What each operation adds is what its own publisher's rule makes checkable
-    from the recorded numbers, and the two publishers do not offer the same
-    thing. Churro's `resize_image_to_fit` is a closed formula, so the target is
-    held to it exactly (`churro_fit_target`). Chandra's `scale_to_fit` is a
-    scale, a grid snap and a greedy trim loop, and a second hand-written copy
-    of *that* in a contract validator would be pinned to itself rather than to
-    the vendor -- it would agree with a drifted port for exactly as long as
-    both were wrong -- so its target is held only to the grid and the maximum
-    area, the two facts its output always satisfies. The byte equality of
-    either port against the fetched vendor source is proved offline in
-    `common/test_vendor_parity.py`; these are the rules a record can be held to
-    here, with no network and no vendor package installed.
+    Replay reproduces whatever target the record asks for, so the target must
+    be constrained here.  Churro's target is held to its closed formula;
+    Chandra's trim loop is not re-implemented, so its target is held only to
+    the grid and maximum area, which its output always satisfies.
     """
     operation = transform["operation"]
     resize = transform["resize"]
@@ -382,15 +228,8 @@ def _validate_resize_recipe(transform: dict[str, Any]) -> None:
     source_width, source_height = resize["source_width_px"], resize["source_height_px"]
     target_width, target_height = resize["target_width_px"], resize["target_height_px"]
     if operation == "crop-resize-preserve-aspect":
-        # `preserve-aspect` and `floor` are the operation's own words, so they are
-        # required to be true of the numbers beside them rather than left as
-        # description. Without this a record could name this operation over a
-        # target that stretches the crop, and still pass every other check here:
-        # the digest re-derives, because re-derivation replays whatever target
-        # the record asked for. What it would cost is the identification
-        # `_dai_observe` makes when it reports the crop's own page bounds as the
-        # box for the whole shown image; downstream view-to-page mapping is only
-        # sound over a uniform scale.
+        # Hold the numbers to the name: view-to-page mapping (`_dai_observe`) is
+        # only sound over a uniform scale.
         if target_height != max(1, source_height * target_width // source_width):
             raise SchemaRefusal(
                 "a resized adapter-crop does not preserve the aspect its operation names"
@@ -443,21 +282,14 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
         or value["source_page_ordinal"] < 1
         or not isinstance(value["image_path"], str)
         or not value["image_path"]
-        # The lowercase hex shape, not merely 64 characters: a blob identity
-        # that cannot be a digest can never match one, and saying so here names
-        # the malformed presentation instead of a later mismatch.
         or not is_sha256(value["image_sha256"])
     ):
         raise SchemaRefusal("a Testimonium presented block has invalid source or blob identity")
     transform = value["transform"]
     if not isinstance(transform, dict):
         raise SchemaRefusal("a Testimonium presented block has no complete page transform")
-    # Every branch below hashes this value against a frozenset, so a non-string
-    # operation is normalized away first. Left as it arrives, an unhashable one
-    # -- a list, a dict -- would raise `TypeError` out of a contract check
-    # instead of the named refusal two checks further down, which is the exact
-    # failure `test_unhashable_enum_values_are_named_refusals_not_python_
-    # tracebacks` pins for the other enums in this schema.
+    # Normalized first: an unhashable value would raise TypeError in the
+    # frozenset lookups below instead of a named refusal.
     operation = transform.get("operation")
     if not isinstance(operation, str):
         operation = None
@@ -505,13 +337,8 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
             "that did not run"
         )
     if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
-        # Only an `adapter-crop` is ever replayed against sealed page bytes
-        # (`validate_presented_page_binding`). A resize recipe on a `page` or a
-        # `region` presentation is therefore a transform nothing re-derives --
-        # the record would describe a resampling and never be held to it, which
-        # is precisely what ARCHITECTURE invariant 3 exists to prevent. Every
-        # producer in the tree already publishes these as `adapter-crop`
-        # (`witness_adapters.py::_dai_present`); this says so.
+        # Only an adapter-crop is replayed, so a resize anywhere else would never
+        # be checked (ARCHITECTURE invariant 3).
         if kind != "adapter-crop":
             raise SchemaRefusal(
                 f"a {kind!r} presentation names the resizing operation {operation!r}; only an "
@@ -572,13 +399,8 @@ def validate_observed(
                 "a presented-source observed box differs from the presented transform"
             )
         bounds = _bounds(item["bounds"], "a Testimonium observed box", page_size=page_size)
-        # The containment refusal below guards records whose presentation IS the
-        # complete view the witness received (page-scoped records, and act
-        # records of act-scoped chairs). A page witness's act view restates the
-        # chair's page-level geometry in page-pixel space, so its boxes may
-        # legitimately exceed this record's one-crop presentation; they remain
-        # bounded by the sealed page via `page_size` above, and Unit 10C's
-        # coverage derivation is what consumes that page-space geometry.
+        # A page witness's act view restates page-level geometry, so its boxes
+        # may exceed this record's crop; they stay bounded by the sealed page.
         presented_bounds = presented["transform"]["bounds"]
         if presentation_is_witness_view and not (
             presented_bounds["x"] <= bounds["x"]
@@ -626,11 +448,8 @@ def validate_native_witness_geometry(
 ) -> dict[str, Any]:
     """Validate the two derived blocks and recursively refuse preference claims.
 
-    An empty pair records the distinct, visible fact that the chair was never
-    shown an image.  It is required for held acts, refused pages, and explicitly
-    absent chairs: inventing a whole-page presentation for any of those paths
-    would claim evidence that did not exist.  Once a presentation exists, the
-    ordinary closed geometry contract applies unchanged.
+    An empty pair records that the chair was never shown an image (held acts,
+    refused pages, absent chairs).
     """
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium payload is not an object")
@@ -642,16 +461,15 @@ def validate_native_witness_geometry(
             raise SchemaRefusal("an unpresented Testimonium must carry an empty observed block")
         return payload
     presented = validate_presented(presented, page_size=page_size)
-    # Both Testimonium kinds retain the exact span-addressable text in `payload`.
     validate_observed(
         observed,
         presented=presented,
         page_size=page_size,
         retained_text=payload.get("payload"),
-        # An act view of a page witness (`page_witness: True`, never scope="page")
-        # restates page-level geometry; every other record presents the witness's
-        # own complete view. Consumers reconcile the flag against the sealed
-        # page-witness declaration, so it cannot be forged onto an act chair.
+        # The one record that does not present the witness's own view is a page
+        # witness's act view (`page_witness: True`, scope != "page"); consumers
+        # reconcile the flag against the sealed declaration, so an act chair
+        # cannot forge it.
         presentation_is_witness_view=(
             payload.get("scope") == "page" or payload.get("page_witness") is not True
         ),
@@ -681,19 +499,10 @@ def validate_presented_page_binding(
     page_size: tuple[int, int],
     page_bytes: bytes | None = None,
 ) -> None:
-    """Bind a whole-page presentation to the sealed page it names.
+    """Bind a presentation to the sealed page it names.
 
-    `presented` says which sealed page it is in `source_page_id` and which blob
-    was shown in `image_path`/`image_sha256`, and nothing reconciled the two.
-    A record could therefore name page 1 and carry page 2's real, digest-bound
-    pixels: self-consistent, readable, and a lie about which ink a witness saw.
-    Its observed boxes would then be validated against page 1's dimensions and
-    read, by any later coverage derivation, as page 1 geometry (goal 4;
-    ARCHITECTURE invariant 3).
-
-    Region callers also bind the sealed Designator record. An adapter-crop is an
-    exact PNG crop or its explicitly recorded LANCZOS resize; either operation
-    must reproduce its retained digest from sealed page bytes.
+    Otherwise a record could name page 1 while carrying page 2's pixels (goal 4).
+    An adapter-crop must re-derive its digest from the sealed page bytes.
     """
     kind = presented["kind"]
     whole_page = {"x": 0, "y": 0, "w": page_size[0], "h": page_size[1]}
@@ -730,19 +539,13 @@ def validate_presented_page_binding(
                 "an adapter-crop presentation cannot be re-derived without its sealed page bytes"
             )
         derived = crop_png(page_bytes, bounds)
-        # Each vendor's own order, because the two orders are not the same
-        # pixels. `_COLOUR_BEFORE_RESIZE` says which operation converts first;
-        # `keep` is recorded and executes nothing either way, which is the whole
-        # of its meaning.
+        # The vendor's own order; see `_COLOUR_BEFORE_RESIZE`.
         colour_first = operation in _COLOUR_BEFORE_RESIZE
         if colour_first:
             derived = _replay_colour_mode(presented, derived)
         if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
             resize = presented["transform"]["resize"]
-            # The closed recipe repeats crop dimensions so any re-deriver drift
-            # becomes a named schema refusal before resizing. Read off the
-            # derived bytes after any colour step, which cannot change them:
-            # `convert("RGB")` re-samples no pixel position.
+            # A colour step cannot change dimensions, so this holds either order.
             if dimensions(derived) != (resize["source_width_px"], resize["source_height_px"]):
                 raise SchemaRefusal("a resized adapter-crop recipe disagrees with its sealed crop")
             derived = resize_png_lanczos(
@@ -818,19 +621,9 @@ def unpresented_region_ids(
 
 
 def _truncation_from_stop_word(transport_stop_reason: str) -> tuple[bool | None, str]:
-    """The three states the live response boundary can actually measure.
+    """Truncated, not truncated, or unknown when the engine reported no stop reason.
 
-    The engine says one of three things about where a reading stopped, and this
-    contract used to be able to record only two of them. Asking "is this word a
-    cut-off word" made an engine that reported *nothing* indistinguishable from
-    one that reported a natural stop, so a live Churro page whose wire carried
-    no ``finish_reason`` could only be published as ``truncated: false`` — a
-    completed boundary nobody observed, which principle 8 refuses. The third
-    state is the honest one: unknown, and said so in the basis, exactly the
-    shape `validate_content_health` already closes and the live boundary
-    (`pipeline/3_attestatores/live_witness.py::_content_health`) already
-    derives. Nothing about the two measured states changes, so a record written
-    under the old two-valued rule reconciles identically.
+    An unreported stop is never recorded as a natural one (principle 8).
     """
 
     if transport_stop_reason == STOP_REASON_UNREPORTED:
@@ -855,9 +648,7 @@ def validate_page_testimonium_payload(
     if (
         payload["scope"] != "page"
         or not _integer(payload["page_ordinal"])
-        # Page ordinals are 1-based everywhere; `validate_presented` already
-        # refuses `source_page_ordinal < 1`, and a page record free to name 0 or
-        # a negative page could not be reconciled against any sealed page.
+        # 1-based everywhere.
         or payload["page_ordinal"] < 1
         or not isinstance(page_role, str)
         or page_role not in PAGE_ROLES
@@ -866,13 +657,8 @@ def validate_page_testimonium_payload(
         raise SchemaRefusal("a page Testimonium has invalid page scope facts")
     validate_unpresented_regions(payload)
     validated = validate_native_witness_geometry(payload)
-    # Which page the record says it speaks for, and which page it says it was
-    # shown, are two separate fields. Left unreconciled, a record can name page
-    # 2 while carrying page 5's presentation and page-5 observed boxes; a
-    # consumer keying on `page_ordinal` would then read page-5 geometry as page
-    # 2's (goal 4, ARCHITECTURE invariant 3). The Perlector checks this at its
-    # own seam; closing it here means every consumer of the shared contract gets
-    # it, including the Recensor's coverage derivation.
+    # The page spoken for and the page shown must agree, or a consumer keying on
+    # `page_ordinal` reads another page's geometry (goal 4).
     presented = payload["presented"]
     if presented and presented["source_page_ordinal"] != payload["page_ordinal"]:
         raise SchemaRefusal(
@@ -918,15 +704,10 @@ def validate_page_testimonium_payload(
                     raise SchemaRefusal(
                         "a Churro page Testimonium health differs from its parsed native capture"
                     )
-                # An empty page reading may be published as a confirmed blank
-                # only when the boundary positively said the model finished.
-                # Cut off and unreported both fail that test, for the same
-                # reason and with the same consequence: the attempt carries a
-                # reason and is not a blank anyone measured.
+                # An empty reading is a confirmed blank only when the model
+                # positively finished; cut off or unreported needs a reason.
                 interrupted_silence = truncated is not False and parsed_text == ""
                 if interrupted_silence:
-                    # The retired `reported` projection cannot smuggle a claimed
-                    # absence any more; the closed schema refuses the key itself.
                     if not (isinstance(payload.get("reason"), str) and payload["reason"].strip()):
                         raise SchemaRefusal(
                             "a cut-off empty Churro page capture has no failed-attempt reason"
@@ -939,9 +720,7 @@ def validate_page_testimonium_payload(
                 if payload["payload"] is not None:
                     raise SchemaRefusal("an unread Churro page capture claims retained page text")
                 cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
-                # `failed` names its refusal in `reason`; `unrecognized-shape`
-                # names the shape in `outcome`. One helper, so the record and
-                # this check cannot describe the same capture differently.
+                # The same helper the writer uses, so the two cannot disagree.
                 parse_refusal = native_parse_refusal(parse)
                 basis = (
                     "response cut off by the provider "
@@ -997,10 +776,7 @@ def validate_retained_response_refs(
 ) -> None:
     """Close a page partition's links to its retained native responses.
 
-    A partition may derive from several responses, so references remain plural
-    and ordered. The producing stage owns its blob namespace; this shared seam
-    closes the reference shape and prevents quantization metadata from appearing
-    without the bytes whose geometry it describes.
+    Quantization metadata is refused without the bytes it describes.
     """
     refs = payload.get("raw_response_refs")
     if refs is not None:
@@ -1051,10 +827,8 @@ def validate_retained_response_refs(
             )
 
 
-# A declared, deliberately UNMEASURED routing rule.  Unit 10 records only the
-# unambiguous zero-overlap case; calibrating a near-overlap threshold would be a
-# measurement claim principle 8 does not permit until something has actually
-# been measured.
+# Declared and unmeasured: only zero overlap is recorded, because a near-overlap
+# threshold would be a measurement claim nobody has made (principle 8).
 UNROUTED_OBSERVATION_OVERLAP: Final = {"rule": "positive-area", "status": "unmeasured"}
 
 
@@ -1068,13 +842,8 @@ def _overlaps(left: dict[str, int], right: dict[str, int]) -> bool:
 def validate_reportable_observations(observed: Any) -> list[dict[str, Any]]:
     """Close only the observation fields a coverage derivation indexes by name.
 
-    `validate_observed` is the full contract and needs the presentation to
-    check containment; a consumer deriving coverage from a retained record
-    holds observations without necessarily re-deriving that presentation. What
-    it does do is index `ordinal`, `bounds_source`, and `bounds` on every row,
-    so a row that is not a closed observation leaves that consumer as a raw
-    KeyError instead of a named refusal — from stages whose whole contract is
-    that a fault arrives with its cause attached (principle 2).
+    For consumers without the presentation `validate_observed` needs, so a
+    malformed row is a named refusal rather than a KeyError.
     """
     if not isinstance(observed, list):
         raise SchemaRefusal("a Testimonium observed block is not a list")
@@ -1085,9 +854,7 @@ def validate_reportable_observations(observed: Any) -> list[dict[str, Any]]:
             raise SchemaRefusal("a Testimonium observed entry has no integer ordinal")
         if item.get("bounds_source") not in BOUNDS_SOURCES:
             raise SchemaRefusal("a Testimonium observed box has an unknown bounds_source")
-        # Only reported geometry is measured against proposals; a `presented`
-        # echo is excluded before its box is read, so it is not required to be
-        # a box the consumer would never compare.
+        # A `presented` echo is never compared, so its box is not required.
         if item["bounds_source"] in REPORTED_BOUNDS_SOURCES:
             _bounds(item.get("bounds"), "a Testimonium observed box", page_size=None)
     return observed
@@ -1107,18 +874,9 @@ def split_page_edge_overshoots(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Separate, never clamp, native boxes that run past a sealed page edge.
 
-    A Chandra response can name several independent layout blocks.  One box
-    whose quantized maximum edge exceeds the sealed page is not usable witness
-    geometry: the ordinary observed-box wall would refuse it, and changing its
-    edge to fit would falsely report a different box.  It also says nothing
-    about the other blocks in the response.  Keep those valid blocks, with
-    dense ordinals rebuilt from their surviving response order, and retain the
-    rejected box as a named fact for the durable page partition.
-
-    This helper intentionally accepts only already-derived, closed observation
-    entries.  It is not a permissive alternate validator: malformed geometry
-    still reaches the existing refusal path, and the returned overshoot keeps
-    the exact quantized bounds rather than an in-page substitute.
+    Clamping would report a different box.  One bad box says nothing about the
+    response's other blocks, so the rest survive with dense ordinals and the
+    overshoot is kept as a finding with its exact bounds.
     """
     if (
         not isinstance(page_size, tuple)
@@ -1190,15 +948,9 @@ def unrouted_observations(
 ) -> list[dict[str, Any]]:
     """Named, non-fatal findings for reported ink no sealed proposal accounts for.
 
-    The finding is coverage evidence, not a verdict on text or witness quality.
-    It gives the Recensor's bounded fallback-recrop route the only legal next
-    step; it never turns an observation into an act or moves an attempt ordinal.
-
-    The denominator is every sealed proposal on the presented page, not one
-    act's proposals; otherwise a neighboring act's ink becomes a false finding.
-
-    Only reported geometry counts. A `bounds_source: "presented"` box restates
-    the input image and must not create a finding about ink no witness reported.
+    Coverage evidence for the Recensor's fallback recrop, never an act.  The
+    comparison is against every proposal on the page, not one act's, or a
+    neighbouring act's ink would become a false finding.
     """
     prior_findings = prior_findings or set()
     proposal_boxes = [
@@ -1244,12 +996,7 @@ def partition_disagreement(
     *,
     page_edge_overshoots: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Record page/chair partition facts without selecting any pairing.
-
-    All positive-area pairings are retained.  Where one observation intersects
-    multiple proposals, every competing pairing remains in the record; neither
-    witness nor proposal wins a correspondence decision here.
-    """
+    """Record page/chair partition facts without selecting any pairing (principle 1)."""
     payload = testimonium["payload"]
     presented = payload["presented"]
     page_id = presented.get("source_page_id") if isinstance(presented, dict) else None
@@ -1293,11 +1040,8 @@ def _partition_pairing_facts(
     """Ambiguity is symmetric, so neither side may choose a single pairing."""
     deltas: list[dict[str, Any]] = []
     pairing_keys: list[tuple[int, int, int, int]] = []
-    # A tie is a tie from either side: one observation spanning several
-    # proposals, or several observations each claiming the same proposal.
-    # Counting matches per proposal as well as per observation is what makes
-    # `ambiguous` answer "two observations tie" the way the geometry actually
-    # ties, not only the direction the loop happens to walk first.
+    # Counted from both sides: one observation over several proposals, or
+    # several observations on one proposal.
     observation_match_counts: dict[int, int] = {}
     proposal_match_counts: dict[tuple[int, int, int, int], int] = {}
     for observation in observations:
@@ -1351,120 +1095,49 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
         "parse",
     }
 )
-# `vendor_identity` is admitted and optional, for the reason `framing` is:
-# every record written before this field existed is exactly what it was and
-# stays valid, and no fixture digest moves the day the field is admitted. It
-# becomes a fact each adapter *writes* when that adapter lands its vendor
-# grammar (Chandra U9, Churro U10, DAI U11), and each adapter's own tests pin
-# its presence for that chair -- which is where a per-chair requirement can be
-# stated truthfully, since the three chairs do not have the same vendor
-# artifacts: DAI publishes no inference code at all, so its identity names the
-# weights repository and revision the carried files came from, where Chandra's
-# and Churro's name a source repository and commit.
+# Optional so earlier records stay valid; each adapter's tests require it for
+# that chair.
 _NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity"})
 _VENDOR_IDENTITY_FIELDS: Final = frozenset({"repository", "sha", "carried_strings"})
-#: The parser names a retained model view may record, one per vendor grammar.
-#:
-#: `html` is Chandra's `data-bbox` layout, `xml` Churro's HistoricalDocument,
-#: `text` DAI's plain UTF-8. The vocabulary is enumerated rather than left as
-#: "any non-empty string" because `verify_native_capture_bytes` re-derives a
-#: capture *under the name the record carries*: a name no dispatcher answers to
-#: is a record that can never be re-derived, and it would be discovered as a
-#: `KeyError` at re-derivation rather than as a refusal at the seam that wrote
-#: it (principle 2).
+#: One parser name per vendor grammar: Chandra `html`, Churro `xml`, DAI `text`.
+#: Closed because re-derivation dispatches on the recorded name.
 NATIVE_CAPTURE_PARSERS: Final = frozenset({"html", "xml", "text"})
-#: The one name still written in this tree at this commit, admitted so this
-#: contract can land ahead of the unit that retires it, and separate so that
-#: retirement is a one-line deletion rather than an edit to the vocabulary
-#: above. `json` is the committed fixture's Chandra placeholder
-#: (`fixture-chandra-response.v1`), kept until U16 re-declares `proof/`'s rows
-#: in the vendor grammars. It is not a vendor grammar and does not survive this
-#: wave. Unit 12's `churro` live-posture dispatcher is gone: the Churro adapter
-#: reads the vendor's own `HistoricalDocument` grammar under `xml`
-#: (`common/churro_document.py`), in both postures, so there is one Churro
-#: parser rather than a live one and a fixture one.
+#: `json` is the committed fixture's Chandra placeholder, not a vendor grammar;
+#: kept apart so removing it is one line once `proof/` uses vendor grammars.
 _TRANSITIONAL_CAPTURE_PARSERS: Final = frozenset({"json"})
 _ADMITTED_CAPTURE_PARSERS: Final = NATIVE_CAPTURE_PARSERS | _TRANSITIONAL_CAPTURE_PARSERS
-# `unrecognized-shape` is the state a parser reaches when it ran, read the
-# whole response, and could name no shape it knows — distinct from `failed`,
-# where the parser refused the bytes, and from `parsed`, where it produced
-# text. `pipeline/3_attestatores/chandra.py` has produced it since it was
-# written (the vendor publishes no response specimen, so a real Chandra body is
-# a named surprise rather than a parse failure), and
-# `feeding.retain_model_view` records it; this contract simply had no room for
-# it, so the one state a live Chandra response actually reaches could not be
-# attached to any record. Admitting it puts the retained model view back beside
-# the bytes it describes instead of dropping the view and keeping only the
-# blob.
+# `unrecognized-shape`: the parser read the whole response and knew no shape
+# for it, as opposed to `failed` (refused the bytes).
 _NATIVE_CAPTURE_PARSE_STATES: Final = frozenset(
     {"not-requested", "pending", "parsed", "failed", "unrecognized-shape"}
 )
-#: The post-hoc scan's own two findings. Separate from the grammar's, because
-#: only one of them may appear more than never: a capture carries at most one
-#: repetition finding, while a grammar answer can legitimately report several
-#: facts about itself at once (an echo trimmed *and* a page whose ink lies
-#: outside its sections).
+#: Kept apart from the grammar's findings: a capture carries at most one of these.
 _CHURRO_REPETITION_FINDING_KINDS: Final = frozenset(
     {"post-hoc-repetition", "post-hoc-repetition-uninspected"}
 )
-#: Everything a Churro capture's `findings` may name. The grammar's own half is
-#: `common/churro_document.py`'s closed set, taken from it rather than restated
-#: so a finding that module learns to report is not a finding this contract
-#: silently refuses. Their internal shapes are closed where they are produced
-#: (`validate_churro_document_parse`) and held exactly by
-#: `verify_native_capture_bytes`, which re-derives the whole findings list from
-#: the retained bytes and compares it; what this module closes here is the
-#: vocabulary and the repetition findings' own fields.
+#: The grammar's half is imported, not restated, so the two cannot drift.
 _CHURRO_CAPTURE_FINDING_KINDS: Final = (
     _CHURRO_REPETITION_FINDING_KINDS | churro_document.DOCUMENT_FINDING_KINDS
 )
 _CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
-# `eos`/`stop`/`max_new_tokens` are the fixture transport's own vocabulary;
-# `length` is vLLM's cut-off word for the same fact on the live wire.
-# `STOP_REASON_UNREPORTED` (`common/contracts/serving.py`) is neither a fixture
-# nor an engine word -- it is what a live page-scoped chair (Churro) retains
-# when the wire carried no `finish_reason` at all, and it must be admitted
-# here or every such live Churro response would fail `_validate_churro_capture`
-# by name, indistinguishably from a genuinely unknown transport word.
+# `eos`/`stop`/`max_new_tokens` are the fixture transport's words, `length` is
+# vLLM's cut-off word, and `STOP_REASON_UNREPORTED` is what a live page chair
+# retains when the wire carried no `finish_reason`.
 _CHURRO_STOP_REASONS: Final = (
     frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS | {STOP_REASON_UNREPORTED}
 )
 
 
-#: The parser name `derive_churro_capture` can run for this chair -- one name,
-#: for one grammar, in both postures. Unit 12 carried two, `"xml"` for the
-#: committed fixture's `<output>` bodies and `"churro"` for a live dispatcher
-#: that also read this repository's own JSON coordinate contract. That contract
-#: is retired (`pipeline/3_attestatores/churro.py` says why), so what is left is
-#: the vendor's own grammar, and both postures read it through
-#: `common/churro_document.py`. `verify_native_capture_bytes` re-derives under
-#: the name the record was written with, and there is now exactly one branch for
-#: it to reach.
+#: One grammar, read the same way by fixture and live runs.
 CHURRO_PARSERS: Final = frozenset({churro_document.CHURRO_PARSER})
 
 
 def parse_churro_response(raw: bytes, *, system_prompt: str | None = None) -> dict[str, Any]:
     """One Churro body, read under the vendor's own grammar and its two fallbacks.
 
-    Returns `common/churro_document.py`'s own parse record -- state, parser,
-    response byte count, findings, and for a parse the shape, text view, text,
-    sections, marked spans and page count. This module adds exactly one thing to
-    that call: the intake ceiling, `CHURRO_MAX_RESPONSE_BYTES`, which the
-    grammar module deliberately declares none of so that one chair cannot end up
-    with two of them.
-
-    `system_prompt` is the exact string the request sent. Only that string is
-    ever trimmed from the head of a response
-    (`churro_document.trim_leading_prompt`, the vendor's own
-    `run_churro_ocr.py` rule), and it is passed rather than guessed because
-    trimming against a framing that was not sent could remove real
-    transcription that happens to begin the same way.
-
-    A body that is not bytes raises the grammar module's own named refusal
-    rather than returning a record: both callers here have already bound bytes
-    (`feeding.retain_model_view` and `verify_native_capture_bytes` each check
-    the type before they reach this), so a non-bytes body at this seam is a
-    programming error rather than one more thing a witness said.
+    Adds only the intake ceiling to `churro_document.parse_churro_document`.
+    `system_prompt` must be the exact string sent: trimming an echo of a
+    framing that was not sent could cut real transcription.
     """
 
     return churro_document.parse_churro_document(
@@ -1475,23 +1148,14 @@ def parse_churro_response(raw: bytes, *, system_prompt: str | None = None) -> di
 def native_parse_refusal(parse: dict[str, Any]) -> str:
     """The one sentence a non-parsed native capture is described by.
 
-    Two readers have to agree on it, or a record refuses itself: the live
-    boundary composes an attempt's `reason` and unrecordable `truncation_basis`
-    from it (`pipeline/3_attestatores/live_witness.py`), and this module's page
-    validator re-derives both and compares. It was one inline expression in each
-    place, identical by coincidence, and the second state Unit 12 admits --
-    `unrecognized-shape`, whose evidence is `outcome` and not `reason` -- is
-    where the coincidence would have ended in a `KeyError` from inside a
-    contract check.
+    Shared by the live boundary, which writes it, and the page validator, which
+    re-derives it; they must agree.
     """
     if parse["state"] == "failed":
         return parse["reason"]
     if parse["state"] == "unrecognized-shape":
         return f"the response shape was not recognized: {parse['outcome']}"
-    # Never reached by either caller -- both take this path only after their
-    # `parsed` branches have returned -- and stated rather than left to a
-    # `KeyError` from inside a contract check, which is the failure mode this
-    # helper exists to have removed once already.
+    # Unreachable from current callers; a named refusal rather than a KeyError.
     raise SchemaRefusal(
         f"a {parse['state']!r} native parse record carries no refusal to name; "
         "only a failed or unrecognized-shape parse describes one"
@@ -1501,26 +1165,9 @@ def native_parse_refusal(parse: dict[str, Any]) -> str:
 def detect_repetition(raw: bytes | bytearray | str) -> dict[str, Any] | None:
     """Report a repeated tail after capture; this function has no generation input.
 
-    Chair-neutral, and deliberately so. The scan was written for Churro because
-    Churro was the first page-scoped chair in the tree, but nothing in it is
-    Churro's: a degeneration loop is the dominant failure mode of every
-    VLM-OCR reader, and the same tail-cycle fact has to be recordable for
-    Chandra's HTML, DAI's plain text and the Perlector's own reading. The name
-    said otherwise, so the next caller's choice was to import a function whose
-    name asserts a chair it is not, or to write a second copy that would drift.
-    `detect_churro_repetition` remains bound to this function, so every
-    existing caller and every retained default keeps working unchanged.
-
-    It never re-rolls, never scores, and never gates: it returns a finding the
-    caller records beside the bytes (principle 7 -- recovery recovers
-    coverage, not quality).
-
-    Text is accepted directly as well as bytes. A caller that already holds the
-    decoded reading -- the Perlector does -- should not have to re-encode it to
-    ask this question, and a round trip through UTF-8 could only turn a string
-    that cannot fail the decode into one that cannot fail it differently. Bytes
-    behave exactly as they did: a body that is not UTF-8 is not scanned, and
-    says so as a finding rather than as an exception.
+    Chair-neutral.  Returns a finding for the caller to record; it never
+    re-rolls or gates (principle 7).  Bytes that are not UTF-8 give an
+    "uninspected" finding rather than an exception.
     """
     if isinstance(raw, str):
         text = raw
@@ -1550,10 +1197,7 @@ def detect_repetition(raw: bytes | bytearray | str) -> dict[str, Any] | None:
     return None
 
 
-#: The name this scan was published under while it belonged to one chair. Kept
-#: as an alias rather than a wrapper so the two cannot diverge, and because
-#: `derive_churro_capture`'s default argument and `feeding.py`'s import both
-#: bind it by name.
+#: The scan's former name; only a test still imports it.
 detect_churro_repetition = detect_repetition
 
 
@@ -1568,28 +1212,11 @@ def derive_churro_capture(
 ) -> dict[str, Any]:
     """Derive the exact mutable-free facts a Churro capture may publish.
 
-    Oversized bytes have already crossed the response boundary, so they remain
-    evidence in the caller's blob store.  They are not handed to the parser or
-    the detector; both unperformed operations are named in the retained facts.
-
-    `parser` asks for the one grammar this chair has (`CHURRO_PARSERS`), or is
-    `None` for a retention that asks for no parse at all. Any other name is
-    refused rather than answered `not-requested`: a record naming a parser this
-    seam did not run would be a finished attempt wearing the look of one nobody
-    started (principle 2).
-
-    The grammar's own findings travel with the reading, ahead of the post-hoc
-    scan's. They are facts about this response that the page text alone cannot
-    show -- a prompt echo trimmed off its head, a stray `&` escaped to make it
-    parse, a page whose ink lies outside every section the vendor's walk
-    reaches, a body that arrived in the retired `<output>` envelope nobody asked
-    for.
-
-    The repetition detector then inspects `parse["text"]` where a parse produced
-    one and the raw bytes otherwise, naming which in the finding's `inspected`
-    field -- unchanged, and the parsed text is the right input: repetition is a
-    fact about what the model transcribed, not about the punctuation of the
-    envelope or the indentation of the XML it arrived in.
+    Oversized bytes stay in the blob store unparsed and unscanned, and the
+    record says so.  `parser` is `None` for no parse; an unknown name is
+    refused rather than recorded as `not-requested` (principle 2).  The
+    repetition scan reads the parsed text where there is one, since repetition
+    is about what was transcribed, not the XML around it.
     """
     if parser is not None and parser not in CHURRO_PARSERS:
         raise SchemaRefusal(
@@ -1625,8 +1252,7 @@ def derive_churro_capture(
     stop_reason = transport_stop_reason
     if parser is not None:
         document = document_parser(raw, system_prompt=system_prompt)
-        # Copied, not aliased: this function promises mutable-free facts, and a
-        # caller's own `document_parser` is free to hand back records it keeps.
+        # Copied: an injected parser may hand back records it keeps.
         findings.extend(dict(finding) for finding in document["findings"])
         if document["state"] == "parsed":
             parse = {"state": "parsed", "parser": parser, "text": document["text"]}
@@ -1634,11 +1260,7 @@ def derive_churro_capture(
             parse = {"state": "failed", "parser": parser, "reason": document["reason"]}
             stop_reason = "partial-parse-failed"
         else:
-            # The grammar names an unplaceable shape in `reason`, and the whole
-            # sentence becomes the capture's `outcome` rather than a short token
-            # derived from it. It is the only thing that says *which* root
-            # element arrived, and a record that dropped it would name the
-            # surprise without naming what the surprise was (principle 2).
+            # The whole sentence, because it is what names the root element.
             parse = {
                 "state": "unrecognized-shape",
                 "parser": parser,
@@ -1653,10 +1275,8 @@ def derive_churro_capture(
     )
     if finding := repetition_detector(inspected):
         findings.append({**finding, "inspected": basis})
-        # The parse outcome wins over a repeated tail, as `failed` already did:
-        # a body this parser could not place is the more load-bearing fact about
-        # the capture, and the repetition stays recorded in `findings` either
-        # way, so nothing is lost by the precedence (principle 2).
+        # A parse failure outranks repetition in the stop reason; the finding is
+        # kept either way.
         if finding["kind"] == "post-hoc-repetition" and parse["state"] not in {
             "failed",
             "unrecognized-shape",
@@ -1668,15 +1288,8 @@ def derive_churro_capture(
 def churro_capture_system_prompt(capture: dict[str, Any]) -> str | None:
     """The exact system string a retained Churro capture says its request sent.
 
-    Read off the capture's own retained `view.prompt` rather than passed in, so
-    a re-derivation trims the head of the response against the framing that
-    reading was actually taken under. Every other route would be a guess: this
-    chair has two attested framings, and a re-derivation that tried the wrong
-    one could either leave an echo in the text or cut transcription out of it,
-    and would then disagree with the record it is checking.
-
-    ``None`` where no capture wrote one. `_validate_churro_capture` requires the
-    key for a `churro.v1` capture, so that is a record this seam did not write.
+    Re-derivation must trim against the framing actually sent; with two
+    framings, any other source would be a guess.
     """
 
     view = capture.get("view")
@@ -1727,15 +1340,7 @@ def verify_native_capture_blob(tree: Any, value: Any) -> dict[str, Any]:
 
 
 def _validate_churro_capture(value: dict[str, Any]) -> None:
-    """Close the rules that belong to Churro alone, once the shared shape holds.
-
-    `validate_native_capture` closes what every adapter's retained model view
-    must carry. These are Churro's own: its transport reasons, its prompt and
-    generation view, its terminal XML parse, its single repetition finding and
-    the stop-reason arithmetic over the two. Keeping them here gives the next
-    page adapter a visible slot for its own rules instead of one body where the
-    shared closure and one adapter's specifics are stacked without a seam.
-    """
+    """Close the rules that belong to Churro alone, once the shared shape holds."""
     parse = value["parse"]
     state, parser, findings = parse["state"], parse.get("parser"), value["findings"]
     if value["transport_stop_reason"] not in _CHURRO_STOP_REASONS:
@@ -1744,15 +1349,8 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
             f"{value['transport_stop_reason']!r}"
         )
     view = value["view"]
-    # `framing` is admitted and optional, and both halves of that are
-    # deliberate. Optional, because every record written before this chair had
-    # more than one framing is still exactly what it was and stays valid.
-    # Admitted, because a live reading is now taken under one of several
-    # declared framings (`pipeline/3_attestatores/churro.py::FRAMINGS`) and the
-    # record has to be able to say which -- the prompt bytes beside it identify
-    # the wording, but only a reader who already knows both wordings can tell
-    # them apart, and a run's own name for the question it asked is the fact an
-    # A/B compares on.
+    # `framing` names which declared framing was asked; optional so earlier
+    # records stay valid.
     if set(view) - {"framing"} != {"prompt", "generation"}:
         raise SchemaRefusal(
             "a Churro page capture does not retain exactly its prompt and generation view"
@@ -1760,11 +1358,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
     if "framing" in view and (not isinstance(view["framing"], str) or not view["framing"]):
         raise SchemaRefusal("a Churro page capture names a framing that is not a nonblank string")
     prompt, generation = view["prompt"], view["generation"]
-    # `{system}` and nothing else. Both vendor-attested profiles set the user
-    # prompt to `None` (`common/churro_document.py`), so the user turn carries
-    # the image alone, and a retained view with a `user` member would be a
-    # record of text this chair is never sent -- the retired two-message framing
-    # this repository asked in until the vendor systems ruling.
+    # System only: both vendor framings send the image alone in the user turn.
     if (
         not isinstance(prompt, dict)
         or set(prompt) != {"system"}
@@ -1782,11 +1376,6 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
         raise SchemaRefusal(
             f"a Churro page capture does not retain its {CHURRO_OUTPUT_TOKENS}-token bound"
         )
-    # All three states the one grammar can reach. The `parser != "churro"` gate
-    # Unit 12 put on `unrecognized-shape` is gone with the second parser name:
-    # `xml` now reaches `common/churro_document.py`, which can conclude any of
-    # the three, and a gate saying otherwise would refuse the vendor's own
-    # well-formed answer under an unexpected root element.
     if state not in {"parsed", "failed", "unrecognized-shape"} or parser not in CHURRO_PARSERS:
         raise SchemaRefusal("a retained Churro page capture has no terminal parse record")
     repetitions = [
@@ -1799,12 +1388,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
         if kind not in _CHURRO_CAPTURE_FINDING_KINDS:
             raise SchemaRefusal(f"a Churro page capture has unknown finding kind {kind!r}")
         if kind not in _CHURRO_REPETITION_FINDING_KINDS:
-            # A grammar finding. Its own closed shape belongs to the module that
-            # produces it (`churro_document.validate_churro_document_parse`) and
-            # is held exactly by `verify_native_capture_bytes`, which re-derives
-            # the whole list from the retained bytes and compares. Restating the
-            # per-kind field sets here would be a second copy free to drift from
-            # the grammar that writes them.
+            # Grammar findings are held exactly by `verify_native_capture_bytes`.
             continue
         if kind == "post-hoc-repetition":
             if set(finding) != {"kind", "unit_characters", "repeats", "inspected"} or any(
@@ -1831,9 +1415,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
     if state == "failed":
         expected_stop = "partial-parse-failed"
     elif state == "unrecognized-shape":
-        # Ordered after `failed` and before the repetition clause, matching
-        # `derive_churro_capture`'s own precedence: the parse outcome is what
-        # the stop reason names, and the repetition finding stays in `findings`.
+        # Same precedence as `derive_churro_capture`.
         expected_stop = "partial-parse-unrecognized-shape"
     elif repeated:
         expected_stop = "partial-post-hoc-repetition-detected"
@@ -1846,30 +1428,10 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
 def validate_vendor_identity(value: Any) -> dict[str, Any]:
     """Close which vendor pin the bytes beside this capture were taken from.
 
-    principle 6 requires every stored reading to carry the resolved identity
-    and revision of the *model* that produced it, and it already does. This is
-    the other half of the same obligation once a chair runs its vendor's own
-    system: the prompt bytes, the message shape and the output grammar are the
-    vendor's, taken at one commit, and a re-parse under a different pin
-    produces a different reading of the same retained response. Without the pin
-    on the record that difference is invisible -- two Testimonia disagree and
-    nothing says the second one read the bytes through another vendor's rules.
-
-    Three fields, and each is load-bearing:
-
-    * ``repository`` -- where the material came from. For Chandra and Churro
-      that is the vendor's source repository; for DAI, which publishes no
-      inference code, it is the weights repository its carried files ship in.
-    * ``sha`` -- the exact 40-hex commit or revision, never a tag or a branch.
-      A movable name would make the record's own claim unfalsifiable.
-    * ``carried_strings`` -- the sha256 of each string this repository carries
-      from that pin, by the name it is carried under, so a byte that changed in
-      our tree is visible against the vendor commit that is supposed to have
-      supplied it. This is the digest half of the offline byte-equality check
-      in ``common/test_vendor_parity.py``; here it travels *with* the reading.
-
-    ``carried_strings`` may not be empty. A vendor identity naming a repository
-    and a commit and then no bytes at all records a provenance for nothing.
+    The prompt, message shape and grammar are the vendor's at one commit, and a
+    different pin reads the same bytes differently (principle 6).  ``sha`` is
+    an exact commit, never a movable tag.  ``carried_strings`` digests each
+    string carried from that pin (DAI's ``repository`` is its weights repository).
     """
     if not isinstance(value, dict) or set(value) != _VENDOR_IDENTITY_FIELDS:
         raise SchemaRefusal(
@@ -1927,11 +1489,6 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     reference = value["raw_response_ref"]
     if not isinstance(reference, dict) or set(reference) != {"relative_path", "sha256"}:
         raise SchemaRefusal("a page Testimonium native capture has no raw-response reference")
-    # A shape check alone (any two non-empty strings) let a malformed or
-    # forged reference stand as this record's own claim to be traceable back
-    # to retained bytes (ARCHITECTURE invariant 2, goal 4) -- the same
-    # `{relative_path, sha256}` shape is held to `is_sha256` everywhere else
-    # this pipeline closes a blob reference; this was the one place it was not.
     if (
         not isinstance(reference["relative_path"], str)
         or not reference["relative_path"]
@@ -1961,19 +1518,12 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     if state in {"not-requested", "pending"}:
         expected = {"state", "parser"}
     else:
-        # `unrecognized-shape` names the shape it could not place in `outcome`,
-        # where `failed` names the refusal in `reason` and `parsed` carries
-        # `text`. Three states, three distinct third fields, so a record cannot
-        # wear one state's clothing while carrying another's evidence.
+        # Distinct third fields, so one state cannot carry another's evidence.
         third = {"parsed": "text", "failed": "reason"}.get(state, "outcome")
         expected = {"state", "parser", third}
     if set(parse) != expected:
         raise SchemaRefusal("a page Testimonium native capture parse record has the wrong shape")
-    # Three separate faults, three separate sentences. A parse nobody asked for
-    # naming a parser, and a parse naming a parser no grammar answers to, have
-    # different fixes -- and the second is the one that would otherwise surface
-    # as a `KeyError` from inside `verify_native_capture_bytes` rather than as
-    # a refusal at the seam that wrote it (principle 2).
+    # Separate sentences, because the faults have different fixes.
     if state == "not-requested":
         if parser is not None:
             raise SchemaRefusal(
@@ -2214,10 +1764,7 @@ def _validate_page_edge_overshoot_response_refs(
             "The rejected box cannot be traced back to the bytes that produced it. "
             "Retain the raw response reference before publishing the finding."
         )
-    # Closed before it is indexed. `reference["sha256"]` over a malformed entry
-    # raised KeyError or TypeError straight through this validator, and an
-    # escaping builtin is not the named refusal a page Testimonium's provenance
-    # contract owes its reader.
+    # Closed before indexing, so a malformed entry is a named refusal.
     if any(
         not isinstance(reference, dict) or not isinstance(reference.get("sha256"), str)
         for reference in raw_response_refs
