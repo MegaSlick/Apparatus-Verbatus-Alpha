@@ -1,17 +1,10 @@
 """Start one configured vLLM chair, prove it answers, then publish its receipt.
 
-The manager receives one already-named chair.  It never ranks chairs, retries
-with another recipe, or turns a failed adapter into its bare base.  Every
-*observed* start failure leaves as a refusal naming that requested chair: one
-this manager observed is routed through ``ChairRegistry.refuse_recipe_start``,
-and one the registry itself raised is re-raised as it stands, because refusing
-it a second time would replace the chair boundary's own reason with this
-module's.
-
-The one start failure that is deliberately *not* a chair refusal is an
-interrupt — ``KeyboardInterrupt``/``SystemExit`` — because the operator, not
-the chair, is the reason.  ``start``'s ``BaseException`` clause says what it
-does with the two facts that case can produce.
+It never ranks chairs, retries with another recipe, or falls back from an adapter
+to its base. Pre-launch validation errors (such as a discoverable local environment
+file) propagate as they are; after that, every start failure becomes a refusal naming
+the requested chair; a refusal the registry raised is re-raised unchanged so its reason survives. An
+interrupt is not a chair refusal, because the operator caused it.
 """
 
 from __future__ import annotations
@@ -79,59 +72,20 @@ from .http import (
 from .process import ProcessLauncher, ServerProcess
 from .residency import ResidencyHandle, ResidencyLease
 
-# The roster's two hybrid Mamba/attention checkpoints, named by the exact
-# `config/models-real.toml` repository they are pinned at -- never by role.
-# A role name (`attestator_1`,
-# `designator_structure`, `perlector`, ...) is reused across this package's
-# whole test suite as a generic fixture identifier for chairs that have
-# nothing to do with these checkpoints, so keying this refusal on role would
-# make it fire on unrelated fixtures the moment they happened to share a real
-# role name.  The repository string does not collide: every fixture identity
-# in this suite is pinned at an `example/...`  placeholder, never at a real
-# vendor repository.  Chandra-2 (`datalab-to/chandra-ocr-2`) backs both
-# `attestator_1` and `designator_structure` -- one checkpoint, two roles --
-# and the Perlector's own weights (`Qwen/Qwen3.8-27B`) are the same qwen3_5
-# hybrid family.  vLLM v0.27.1 itself treats prefix caching over that
-# architecture's recurrent state as opt-in rather than unsupported --
-# `arg_utils.py::_set_default_chunked_prefill_and_prefix_caching_args` keys
-# its own default off `not model_config.is_hybrid`, with the comment "Hybrid
-# models support prefix caching but keep it opt-in for now" -- so "vendor
-# marks this experimental" overstates what the pinned source actually says.
-# The caution this refusal encodes is this project's own: it only costs
-# extra recurrent-state memory for the privilege (this catalogue's own rows
-# for these chairs range `max_num_seqs` 1-4 across tiers, so a blanket
-# "nothing else is ever resident" claim would not hold at every tier), so a
-# row serving either checkpoint launches with it off until there is a
-# measured reason to spend that memory.
-# This is a launch-time refusal, not a catalogue-parse refusal:
-# `enable_prefix_caching` is an ordinary bool the schema already admits
-# either way, and the corrected value for the real rows is a row-data
-# decision (`config/serving_recipes_real.toml`), not a U4 schema change.
-# Refusing here, at the one door every real launch already passes through,
-# makes a still-wrong data row fail before it ever reaches a rented GPU
-# rather than only in a later review.
-#
-# Reconciled by U15: `config/serving_recipes_real.toml` now sets
-# `enable_prefix_caching = false` for exactly the rows this refusal targets
-# (attestator_1, designator_structure, perlector), so a real launch of any of
-# them no longer hits this refusal. Left in place as protection against a
-# future row edit that turns it back on without a reason to spend the memory
-# (`operations/serving/README.md` carries the same reconciliation).
+# Hybrid Mamba/attention checkpoints, for which a row with prefix caching on is
+# refused: on them it costs extra recurrent-state memory, and nothing has measured a reason to
+# spend it (vLLM itself leaves it opt-in for hybrids). Keyed by repository, not
+# role, because tests reuse role names for unrelated fixture chairs. Checked at
+# launch so a wrong recipe row fails before it reaches a rented GPU.
 _HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qwen3.8-27B"})
 
-# `parse_openai_answer` (operations/serving/http.py) names an HTTP-level probe
-# failure "VLLM_PROBE_HTTP_ERROR: inference probe returned HTTP {status}".
-# Extracting the status back out of that string is a compromise: it is
-# `http.py`'s own wording, not this module's, and re-deriving it here rather
-# than adding a structured status field to `ReadinessError` avoids widening
-# that error's shape for one caller. If `http.py`'s wording ever changes, the
-# match simply stops firing and every probe rejection reverts to the old
-# retry-to-watchdog behaviour -- a safe direction to fail in.
+# Parses the status out of `parse_openai_answer`'s probe error message. If that
+# wording changes the match stops firing and probe rejections fall back to
+# retrying until the watchdog, which is safe.
 _PROBE_HTTP_STATUS = re.compile(r"HTTP (\d{3})$")
 
-# Only the serving smoke assembly receives this identity token.  It permits an
-# unproven row to enter the existing start -> fixture read -> verified stop
-# lifecycle without adding a general-purpose bypass to ``start``.
+# Only the serving smoke assembly holds this token. It lets an unproven row run
+# start, fixture read and verified stop without a general bypass in ``start``.
 _PREFLIGHT_QUALIFICATION_PURPOSE: Final = object()
 MECHANICS_QUALIFICATION_PURPOSE: Final = object()
 _NORMAL_LAUNCH = "normal"
@@ -179,9 +133,8 @@ class InstalledPackages:
 class ReceiptPublication:
     """Three immutable evidence references for one observed serving moment.
 
-    ``ServingReceipt`` remains the existing closed v1 identity/serving record.
-    The launch audit is intentionally separate because pid, argv digest, package
-    map, readiness evidence, and adapter proof do not belong in that schema.
+    The launch audit is separate because pid, argv, packages, readiness and
+    adapter proof do not belong in the closed receipt schema.
     """
 
     receipt_reference: Mapping[str, str]
@@ -225,10 +178,8 @@ class ReadinessEvidence:
 class AdapterCalibration:
     """A declared deterministic base-versus-adapter activation check.
 
-    ``fixture_sha256`` names the calibration fixture without putting its image
-    bytes or transcribed content into a receipt.  A vision/connector adapter
-    must set ``requires_image`` so a text-only probe cannot be misreported as
-    evidence for its visual path.
+    A vision adapter must set ``requires_image`` so a text-only probe cannot
+    count as evidence for its visual path.
     """
 
     kind: str
@@ -249,10 +200,8 @@ class AdapterCalibration:
         normalized_payload, canonical_payload = seal_json_object(
             self.payload, label="adapter calibration payload"
         )
-        # The public projection is useful for diagnostics/tests, but actual
-        # requests are rebuilt from `_canonical_payload` below.  Mutating a
-        # nested list/dict on this projection therefore cannot swap in a remote
-        # image or change the already-validated calibration request.
+        # Requests are rebuilt from `_canonical_payload`, so mutating this
+        # projection cannot change the validated request.
         object.__setattr__(self, "payload", MappingProxyType(normalized_payload))
         object.__setattr__(self, "_canonical_payload", canonical_payload)
         if not isinstance(self.requires_image, bool):
@@ -290,12 +239,10 @@ class AdapterCalibration:
         prompt: str,
         mime_type: str,
     ) -> "AdapterCalibration":
-        """Build an image-bearing deterministic chat probe from a local fixture.
+        """Build an image chat probe from a local fixture, embedded as a data URI.
 
-        This is intentionally the only convenience builder: it reads one local
-        proof fixture, embeds its exact bytes as a data URI, and binds their
-        SHA-256 into the calibration.  It neither fetches media nor accepts a
-        remote/file URL that vLLM could interpret differently on the pod.
+        Remote or file URLs are never accepted: vLLM could resolve them
+        differently on the pod.
         """
 
         if not isinstance(prompt, str) or not prompt.strip():
@@ -389,13 +336,8 @@ class ServiceHandle:
     def request_reading(self, kind: str, body_bytes: bytes, timeout_seconds: float) -> HttpResponse:
         """POST one already-built reading request and return the raw response.
 
-        Unparsed and unretained: the caller (a :class:`ChairClient`, not this
-        module) owns retaining the raw bytes before parsing and owns parsing
-        with :func:`operations.serving.http.parse_openai_reading`.  This is
-        the one wire-level primitive a reading needs beyond ``request`` —
-        which forces a manager-chosen non-deterministic payload shape and
-        parses with the readiness-probe parser, neither of which fits a
-        witness or reader call.
+        The caller retains and parses the bytes. ``request`` does not fit a
+        reading: it imposes its own payload shape and the probe parser.
         """
 
         return self._manager.request_reading(self, kind, body_bytes, timeout_seconds)
@@ -446,24 +388,19 @@ class ServiceHandle:
         fixture: str | Path,
         exchange_observer: Callable[[bytes, HttpResponse], None] | None = None,
     ) -> OpenAIResult:
-        """Request this service with the actual OpenAI chat image from ``fixture``.
+        """Request this service with the actual chat image from ``fixture``.
 
-        The pod smoke seam uses this rather than ordinary ``request`` so a
-        passing page read cannot silently become a text-only health surrogate.
-        The only accepted image lives in a ``role=user``
-        ``messages[].content[]`` block of a chat-completions request; an
-        ignored extension field merely named ``image_url`` is refused.  The
-        returned response SHA-256 is the opaque token that the smoke result
-        must carry as ``fixture_response_sha256``.
+        The pod smoke uses this so a passing page read cannot be a text-only
+        request. The image must sit in a ``role=user`` content block; a stray
+        field merely named ``image_url`` is refused.
         """
 
         if kind != "chat-completions":
             raise ServingConfigurationError(
                 "golden-page fixture requests must use the chat-completions endpoint"
             )
-        # Validate and dispatch one ordinary-dict snapshot: a custom or
-        # later-mutated Mapping must not present an image here and then
-        # serialize as a text-only request inside ``request_body``.
+        # Validate and send one snapshot, so a mutable Mapping cannot show an
+        # image here and serialize without it.
         sealed_payload, _ = seal_json_object(payload, label="golden-page request")
         fixture_digest = _fixture_sha256(fixture)
         image_digest = hashlib.sha256(
@@ -489,12 +426,10 @@ class ServiceHandle:
 
 
 class StageContextReceiptPublisher:
-    """Adapter for the repository's existing run-receipt publication seam.
+    """Publishes through ``StageContext``: receipt, launch audit and evidence manifest.
 
-    ``StageContext.write_serving_receipt`` deliberately re-verifies the chair
-    and writes content-addressed run-receipt bytes.  The launch audit is written
-    as a separate content-addressed stage blob, then returned with its reference;
-    it is never smuggled into the closed receipt v1 schema or discarded.
+    The launch audit is its own content-addressed blob, outside the closed
+    receipt schema.
     """
 
     def __init__(self, context: Any) -> None:
@@ -532,12 +467,10 @@ class StageContextReceiptPublisher:
 
 
 class ServingManager:
-    """A fake-first, sequential vLLM lifecycle manager.
+    """A sequential vLLM lifecycle manager.
 
-    Each call to :meth:`start` verifies the requested snapshot immediately
-    before launch.  For an adapter chair it verifies the configured base too,
-    because that base genuinely participates in the answer; it is never used as
-    a fallback if any adapter check fails.
+    :meth:`start` verifies the snapshot just before launch, and an adapter's base
+    too, because the base shapes the answer. The base is never a fallback.
     """
 
     def __init__(
@@ -562,18 +495,10 @@ class ServingManager:
     ) -> None:
         supplied_command_prefix = command_prefix is not None
         if command_prefix is None:
-            # Invoking vLLM through this interpreter binds the command to the
-            # exact environment inspected through importlib.metadata below.  A
-            # PATH-resolved console script could name another virtualenv's vLLM.
-            #
-            # The module is `vllm.entrypoints.cli.main`, not `vllm` itself: the
-            # published wheel (checked against the pinned 0.27.1's own central
-            # directory) carries no `vllm/__main__.py`, so `python -m vllm`
-            # raises `No module named vllm.__main__` before a request is ever
-            # served.  `vllm.entrypoints.cli.main` is the module vLLM's own
-            # `[project.scripts] vllm = "vllm.entrypoints.cli.main:main"` console
-            # script points at, and it carries `if __name__ == "__main__":
-            # main()`, so `-m` runs it the same way the console script would.
+            # This interpreter, so the launched vLLM is the one whose version was
+            # inspected; a PATH console script could belong to another venv. The
+            # wheel has no `vllm/__main__.py`; this module is the console
+            # script's target.
             command_prefix = (sys.executable, "-m", "vllm.entrypoints.cli.main")
         if (
             not isinstance(command_prefix, tuple)
@@ -587,20 +512,10 @@ class ServingManager:
             and package_inspector is None
             and command_prefix[0] != sys.executable
         ):
-            # `InstalledPackages` reads *this* interpreter's distributions, so
-            # the whole point of `_assert_runtime` — that the pinned versions
-            # are the ones the engine will import — holds only while the child
-            # is this interpreter.  Launch another one under the default
-            # inspector and the pin passes against an environment nothing ran
-            # in, and `runtime_packages.observed` in the launch audit becomes a
-            # measurement of the wrong Python (principle 6, principle 8).
-            #
-            # Compared as exact strings rather than resolved paths on purpose:
-            # two virtualenvs routinely symlink the same real interpreter while
-            # holding entirely different site-packages, so `realpath` equality
-            # would accept precisely the substitution this refuses.  A caller
-            # that really does launch elsewhere must supply the
-            # `PackageInspector` for *that* environment and own the pairing.
+            # The default inspector reads this interpreter's packages, so the
+            # runtime pin check only means something if the child is this
+            # interpreter. Exact strings, not realpaths: two venvs can symlink one
+            # interpreter with different site-packages.
             raise ValueError(
                 "the default package inspector reads this interpreter's installed "
                 "distributions, so a supplied vLLM command_prefix must launch "
@@ -658,27 +573,19 @@ class ServingManager:
     ) -> ServiceHandle:
         """Start one configured chair and publish its receipt after a real answer.
 
-        A returned handle is impossible unless the process was live, loopback
-        health responded, `/v1/models` advertised its exact id, the endpoint
-        completed a bounded probe, adapters supplied positive evidence, and the
-        receipt publisher accepted the observed details.
+        A handle returns only after health, the exact model id, a bounded probe,
+        adapter evidence and receipt publication have all succeeded.
         """
 
-        # There is no named configured chair to refuse if this boundary is
-        # called with an invented value.  Validate it before using the registry's
-        # named-chair refusal path.
+        # An invented value names no chair to refuse, so check it first.
         if not isinstance(identity, ChairIdentity):
             raise ServingConfigurationError("serving start requires one resolved ChairIdentity")
         if not isinstance(tier, str) or not tier:
             raise ServingConfigurationError("serving start requires one non-blank placement tier")
-        # The one door every real launch already passes through, whether it
-        # arrives from `ServingSmokeReader.read`'s preflight lifecycle or
-        # directly through `ChairClient.__enter__` -- checked here rather
-        # than only upstream so no caller of `start` can bypass it.
+        # Checked here because every launch passes through ``start``.
         assert_no_discoverable_local_env()
         if self._active is not None or self._residency_handle is not None:
-            # Do not route this through failed-launch cleanup: a held lease is
-            # intentional evidence that a prior shutdown has not been verified.
+            # Not failed-launch cleanup: the held lease records an unverified shutdown.
             self._refuse(
                 identity,
                 ServingConfigurationError(
@@ -691,12 +598,8 @@ class ServingManager:
         process: ServerProcess | None = None
         endpoint = ""
         try:
-            # Every participating profile — the chair's own and, for an
-            # adapter, its base's — passes the recipe door before any snapshot
-            # is verified: a proven adapter over an unproven base must refuse
-            # with no registry.ensure work behind it, or the preflight gate's
-            # "before snapshot verification" claim is false for exactly the
-            # composed launches that need it most.
+            # Both the chair's and an adapter base's profiles pass the recipe
+            # check before any snapshot is verified.
             profile = _launchable(
                 self.recipes.for_identity(identity, tier),
                 identity,
@@ -710,21 +613,13 @@ class ServingManager:
                 if identity.adapter_of is None
                 else self.registry.ensure(base_identity)
             )
-            # The row's declared image geometry, proved against the model's own
-            # processor configuration now that a verified snapshot of it exists.
             assert_processor_geometry(base_snapshot, profile)
-            # Computed now, before any process exists, rather than while
-            # assembling the launch audit after readiness: a missing or
-            # unreadable generation_config.json is exactly as offline-knowable
-            # as the processor-geometry check just above, and deferring it
-            # would spend a real launch's boot time (GPU-hours on the live
-            # path) to discover a fact already on local disk.
+            # Before launch: a bad generation_config.json is knowable offline,
+            # so finding it after boot would waste GPU time.
             generation_config_digest = _generation_config_digest(profile, base_snapshot)
             endpoint = profile.endpoint
-            # The lock spans endpoint probing and any failed launch cleanup, not
-            # merely the successful `ServiceHandle` lifetime.  Otherwise two pod
-            # assemblers can race from an apparently empty endpoint into GPU
-            # co-residency.
+            # Held from endpoint probing through failed-launch cleanup, or two
+            # assemblers can race from an empty endpoint into GPU co-residency.
             self._residency_handle = self.residency_lease.acquire(identity)
             self._assert_endpoint_unoccupied(endpoint)
             argv = render_vllm_argv(
@@ -754,16 +649,8 @@ class ServingManager:
                 tokenizer_revision=base_identity.receipt_revision,
                 seed=profile.seed,
                 context_cap=profile.max_model_len,
-                # `chair-serving-receipt.v1`'s `pixel_cap` is the **total pixel
-                # count** that went to vLLM, because that is the only pixel
-                # bound a serving moment actually had.  It is the third site of
-                # the one word this branch already had to disentangle once:
-                # `config/pod_placement.toml`'s `pixel_cap` is a longest edge,
-                # and `ServingSmokeReader._assert_profile_within_placement`
-                # holds the arithmetic that relates them.  A reader comparing a
-                # receipt's `pixel_cap` with a placement plan's is comparing
-                # 2359296 with 1792 and will conclude the wrong thing, exactly
-                # as this package did before that check was corrected.
+                # A total pixel count. `pixel_cap` in config/pod_placement.toml
+                # is a longest edge; the two are not comparable directly.
                 pixel_cap=profile.max_pixels,
                 engine="vllm",
                 engine_version=observed_packages["vllm"],
@@ -814,9 +701,8 @@ class ServingManager:
             self._active = handle
             return handle
         except ChairRefusal as error:
-            # The chair boundary has already named this failure. If cleanup is
-            # also unverified, both facts must leave through the one refusal
-            # the registry raises; a second call would mask the first.
+            # Already a refusal. An unverified cleanup rides along in one refusal;
+            # a second refusal would mask the first.
             cleanup_error = self._attempt_cleanup(process, endpoint)
             if cleanup_error is not None:
                 self._refuse(identity, error, also=cleanup_error)
@@ -838,23 +724,11 @@ class ServingManager:
                 "registry refusal returned unexpectedly"
             ) from error  # pragma: no cover
         except BaseException as error:
-            # KeyboardInterrupt/SystemExit must not strand a child between
-            # launch and handle publication.  When cleanup proves the child and
-            # endpoint are gone, the control-flow signal is re-raised
-            # unchanged: nothing is owed to anyone but the operator who sent it.
-            #
-            # When cleanup *cannot* prove that, the two facts cannot both be
-            # this exception, and the possibly-resident child wins.  So the
-            # interrupt is deliberately converted into a `ServiceStopError`
-            # carrying both halves, and the control-flow signal is spent to say
-            # so.  The cost is real and is accepted knowingly: an ordinary
-            # `except Exception` above this frame — `PreflightRunner._smoke` is
-            # the one in this repository — will now catch what was a Ctrl-C and
-            # turn it into a red issue rather than unwinding. That is the
-            # louder of the two outcomes, because the retained lease then makes
-            # every following start refuse by name, whereas an interrupt that
-            # unwound past a handler would leave the stop failure in a
-            # traceback nobody stores (principle 2).
+            # An interrupt must not strand a child. If cleanup is verified, the
+            # interrupt is re-raised unchanged. If not, a possibly resident child
+            # matters more, so the interrupt becomes a ServiceStopError; callers
+            # that catch Exception then record it instead of unwinding, and the
+            # retained lease makes later starts refuse (principle 2).
             cleanup_error = self._attempt_cleanup(process, endpoint)
             if cleanup_error is not None:
                 raise ServiceStopError(
@@ -901,11 +775,7 @@ class ServingManager:
     ) -> HttpResponse:
         """POST a caller-built request body and return the unparsed response.
 
-        Same liveness gate as ``request``, deliberately narrower otherwise: no
-        request shape is imposed here (the caller already built and digested
-        it), and nothing is parsed — a malformed or refusal-worthy body must
-        reach the caller's own parser, never be turned into an exception this
-        module raises on the caller's behalf.
+        Nothing is parsed here, so a malformed body reaches the caller's parser.
         """
 
         self._require_active(handle)
@@ -926,30 +796,20 @@ class ServingManager:
             self._assert_endpoint_absent(handle.endpoint)
             self._release_residency()
         except BaseException as error:
-            # Deliberately retain both the active handle and the pod lease.  A
-            # following start must not convert a failed exact shutdown into a
-            # second GPU resident process.  The caller may call `stop()` again
-            # after repairing an endpoint/process problem.
+            # Keep the handle and the lease, so a failed shutdown cannot lead to
+            # a second resident GPU process; `stop()` may be called again.
             if isinstance(error, ServiceStopError):
                 raise
-            # Name the type as well as the message.  `_stop_process` observes
-            # its child with `process.poll()` outside its own try, so a
-            # `ServerProcess` implementation that raises there arrives here as
-            # it stands — and `str()` of an exception raised with no arguments
-            # is the empty string, which would report an unstopped child as
-            # `VLLM_STOP_FAILED: ` and nothing else (principle 2).
+            # Include the type: an exception raised with no arguments has an
+            # empty message.
             raise ServiceStopError(f"{type(error).__name__}: {error}") from error
         else:
             self._active = None
 
     def recover_failed_start(self) -> None:
-        """Retry exact cleanup after a failed start retained the pod lease.
+        """Retry cleanup after a failed start kept the pod lease; never a launch path.
 
-        This is deliberately not a new launch path.  It is the only recovery
-        action available when a readiness/publisher failure also left this
-        manager unsure whether its owned child or endpoint is gone.  Once it
-        proves absence, the original lease is released and a later named start
-        may proceed.
+        Once the child and endpoint are proved gone, the lease is released.
         """
 
         if self._active is not None:
@@ -966,12 +826,7 @@ class ServingManager:
         tier: str,
         profile: ServingProfile,
     ) -> tuple[ChairIdentity, ServingProfile]:
-        """Resolve the base chair and pass its profile through the recipe door.
-
-        Deliberately snapshot-free: `start` verifies snapshots only after every
-        participating profile has been validated, so an unproven base profile
-        refuses before any `registry.ensure` work.
-        """
+        """Resolve the base chair and check its profile, without touching snapshots."""
 
         if identity.adapter_of is None:
             return identity, profile
@@ -1038,44 +893,22 @@ class ServingManager:
     ) -> ReadinessEvidence:
         deadline = self.monotonic() + profile.startup_timeout_seconds
         last = "service did not become ready"
-        # Which kind of not-ready the last round saw, tracked rather than
-        # sniffed back out of `last`: "the port never answered" and "the engine
-        # answered and refused" are different facts and only one of them is
-        # what a still-loading server looks like from here. `None` until a
-        # probe has come back either way, so a budget that expires before the
-        # first round cannot be reported as an observation of the endpoint.
-        #
-        # Four states, not two. `EndpointUnavailable` also carries a timeout, a
-        # reset and a malformed local route, and its own `definitively_absent`
-        # is what tells those from a refused connection -- recording every one
-        # of them as refused had a timed-out start reported as "connection
-        # refused ... raising startup_timeout_seconds is unlikely to help",
-        # which is the opposite of the advice a timeout deserves.
+        # The kind of not-ready last observed: refused, unreachable (timeout,
+        # reset) or answered-but-unready. They call for different timeout
+        # advice. None until a probe returns.
         endpoint_state: str | None = None
-        # Whether the log's loading marker moved while this start was waited
-        # on. A marker anywhere in the retained tail says loading was observed
-        # once; only a marker that changed says the engine was still making
-        # progress when the bound expired, and the stronger sentence is the one
-        # an operator extends a timeout and keeps billing on.
+        # Only a loading marker that changed shows the engine still progressing;
+        # that is what justifies advising a longer, billed timeout.
         progress_line: str | None = None
         progress_advanced = False
         while True:
-            # Each probe below is bounded by whichever is smaller, its own
-            # per-request budget or what is left of the watchdog's. Without the
-            # second half, the watchdog's deadline was consulted only *between*
-            # requests, so a probe issued one millisecond inside it could still
-            # add its whole budget to a start that had already run out of time.
-            #
-            # Recomputed at every call rather than once per round: the health
-            # check, the model list and the inference probe run in sequence, and
-            # a value taken before the first would let the third spend time the
-            # first two had already spent.
+            # Each probe is capped by the watchdog time left, recomputed per
+            # call, so no probe overruns the deadline.
             def probe_timeout() -> float:
                 return min(_READINESS_PROBE_TIMEOUT_SECONDS, max(0.0, deadline - self.monotonic()))
 
-            # Liveness and the launch log get their last word before the generic
-            # watchdog refusal: a dead process or a named fatal signature is a
-            # better-named fact than "timed out" for an operator reading the record.
+            # A dead process or a fatal log line is a better reason than a timeout,
+            # so check them before the watchdog.
             self._assert_process_live(process)
             launch_tail = process.read_tail()
             if launch_tail.startswith("VLLM_LOG_UNREADABLE:"):
@@ -1091,10 +924,7 @@ class ServingManager:
                 if progress_line is not None and current_progress != progress_line:
                     progress_advanced = True
                 progress_line = current_progress
-            # A budget of zero would mean issuing a request that cannot succeed.
-            # The watchdog timeout is the right answer at that point, and it is
-            # the same refusal the check at the bottom of this loop produces --
-            # after the tail this round already read has had its say above.
+            # No time left: a request could not succeed.
             if deadline - self.monotonic() <= 0:
                 raise _watchdog_timeout(
                     process,
@@ -1145,13 +975,8 @@ class ServingManager:
                 )
             except ReadinessError as error:
                 if _is_deterministic_probe_rejection(error):
-                    # A 4xx here is the engine refusing the *shape* of the
-                    # readiness probe -- a malformed or unsupported request --
-                    # not "not warmed up yet".  Every following poll will send
-                    # the identical body and get the identical answer, so
-                    # retrying to the watchdog only spends the rest of
-                    # `startup_timeout_seconds` (real GPU-hours on the live
-                    # path) to learn nothing new (hostile review item L).
+                    # A 4xx rejects the probe's shape, not warm-up; retrying the
+                    # same body would only burn GPU time until the watchdog.
                     raise
                 last = str(error)
                 endpoint_state = _ENDPOINT_ANSWERED_UNREADY
@@ -1278,15 +1103,14 @@ class ServingManager:
         started_at: str,
         generation_config_digest: str | None,
     ) -> Mapping[str, object]:
-        """Return operational evidence deliberately kept outside receipt schema v1."""
+        """Return operational evidence kept outside the receipt schema."""
 
         argv_digest = hashlib.sha256(
             json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         pins = model_and_tokenizer_pins(base_snapshot.identity)
-        # A local-repository chair has no commit to record. The audit says so
-        # positively — `revision_kind` names which pin actually bound the
-        # launch — rather than leaving two nulls a reader has to interpret.
+        # A local-repository chair has no commit; `revision_kind` says which pin
+        # bound the launch instead of leaving nulls.
         model_revision, tokenizer_revision = (
             pins if pins is not None else (base_snapshot.identity.receipt_revision,) * 2
         )
@@ -1319,12 +1143,8 @@ class ServingManager:
                     "enforce_eager": profile.enforce_eager,
                     "trust_remote_code": profile.trust_remote_code,
                     "generation_config": profile.generation_config,
-                    # Only present for 'auto': the digest of the exact
-                    # generation_config.json vLLM will resolve from the
-                    # verified snapshot, so 'auto' is a value pinned by the
-                    # chair's own revision rather than an unaudited default
-                    # that could silently change underneath the row (schema
-                    # note at config.py, generation_config validation).
+                    # Only for 'auto': pins the generation_config.json vLLM will
+                    # read, so 'auto' cannot change silently under the row.
                     "generation_config_digest": generation_config_digest,
                     "request_logging": False,
                     "startup_timeout_seconds": profile.startup_timeout_seconds,
@@ -1361,10 +1181,8 @@ class ServingManager:
         )
 
     def _next_log_path(self, identity: ChairIdentity) -> Path:
-        # One log per launch, never a per-chair log reopened: a previous
-        # launch's fatal signature still in the tail would abort this one's
-        # readiness poll, which is the trap the old pipeline worked around
-        # instead of removing.
+        # One log per launch: a previous launch's fatal line in a reused log
+        # would abort this readiness poll.
         return self.log_root / f"vllm-{identity.role}-{uuid.uuid4().hex}.log"
 
     def _residency_fd(self) -> int:
@@ -1388,20 +1206,13 @@ class ServingManager:
     def _attempt_cleanup(
         self, process: ServerProcess | None, endpoint: str
     ) -> ServiceStopError | None:
-        """The one cleanup sequence shared by a failed start and its later retry.
+        """Cleanup shared by a failed start and its retry.
 
-        Stop the exact owned process, verify its endpoint is absent, then
-        release the residency lease — in that order, because releasing first
-        would let a second start proceed while this process might still be
-        live.  On any failure, the process/endpoint are recorded as unready so
-        :meth:`recover_failed_start` can retry exactly this same cleanup;
-        recording them again with the same values on that retry's own failure
-        is a no-op, not a second distinct effect.
-
-        The stop failure is returned rather than raised or suppressed: an
-        unknown still-live child is not secondary to the readiness or publisher
-        problem that exposed it, and both facts have to reach the one refusal
-        the registry raises (principle 2).
+        Stop, verify the endpoint is absent, then release the lease; releasing
+        first would let another start run beside a live process. On failure the
+        process and endpoint are kept for :meth:`recover_failed_start`. The error
+        is returned, not raised, so it joins the start failure in one refusal
+        (principle 2).
         """
 
         try:
@@ -1459,11 +1270,7 @@ class ServingManager:
         deadline = self.monotonic() + self.shutdown_timeout_seconds
         last = "endpoint absence has not been observed"
         while True:
-            # The same bound `_wait_until_ready` gets, for the same reason: this
-            # loop also consulted its deadline only after a request returned, so
-            # a probe issued one millisecond inside it could add its whole budget
-            # to a stop that had already run out of time — and this one runs
-            # while an owned GPU process may still be resident.
+            # Cap each probe by the time left, as in `_wait_until_ready`.
             remaining = deadline - self.monotonic()
             if remaining <= 0:
                 raise ServiceStopError(last)
@@ -1497,13 +1304,8 @@ class ServingManager:
     ) -> None:
         """Report this chair unavailable, carrying every reason it is.
 
-        `also` exists because a failed launch can produce two independent
-        facts, and reporting either alone loses the other. Refusing with only
-        the stop failure tells an operator the process would not go away and
-        never mentions that it died of CUDA out-of-memory; refusing with only
-        the launch failure hides a child that may still hold the card. Both go
-        in one message, because the registry raises one refusal and whatever is
-        not in it is not anywhere (principle 2).
+        `also` carries a cleanup failure beside the start failure: the registry
+        raises one refusal, and a reason left out of it is lost (principle 2).
         """
 
         error_code = getattr(error, "code", type(error).__name__)
@@ -1523,49 +1325,20 @@ class ServingManager:
             ) from refusal
 
 
-#: The two files a Qwen-VL repository can state its vision-encoder geometry in,
-#: in the order they are consulted. Which one exists differs by chair at the
-#: pinned revisions -- ``datalab-to/chandra-ocr-2`` ships both,
-#: ``stanford-oval/churro-3B`` and ``Qwen/Qwen3.8-27B`` only the first, and
-#: ``attestator_2``'s DAI revision only the second (fetching the other returns
-#: 404). ``preprocessor_config.json`` states ``patch_size``/``merge_size`` at
-#: the top level; ``processor_config.json`` nests them under
-#: ``image_processor``, and both spellings are read below.
+#: Where a Qwen-VL repository states its vision geometry, in lookup order. The
+#: pinned repositories ship one or both; ``processor_config.json`` nests the
+#: values under ``image_processor``.
 PROCESSOR_CONFIG_FILENAMES: Final = ("preprocessor_config.json", "processor_config.json")
 
 
 def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfile) -> None:
-    """Prove the row's declared image geometry against the model's own file.
+    """Check the row's declared ``patch_size``/``merge_size`` against the model's file.
 
-    ``patch_size`` and ``merge_size`` decide how many prompt tokens every image
-    costs (``common/request_capacity.py``), and until now the row *declared*
-    them and nothing checked the declaration: a row that said 14 for a patch-16
-    chair would mis-count every image by 30% and refuse or admit requests on
-    the strength of it, silently, with the arithmetic published in the receipt
-    as though it had been checked. It is a comment in three files that says
-    where the numbers came from; this is the check.
-
-    **Where it can run, and where it cannot.** It reads the verified snapshot
-    the launch is about to serve, so it runs wherever the weights are -- on the
-    pod, at every start, including the preflight start that stamps a row
-    ``proven``. It cannot run on a laptop that has never materialized the
-    model, and it does not pretend to: this is not called from a request
-    builder or from a catalogue test, and the offline check on those numbers
-    remains what it always was, a reviewed comment naming the source.
-
-    Asked only of a row that declares the pair. Every real row does; a fixture
-    or synthetic row declares neither and is left exactly as it was
-    (``operations/serving/config.py::_OPTIONAL_PROFILE_FIELDS``).
-
-    **A snapshot carrying neither file is passed, and that is a boundary rather
-    than an oversight.** All four pinned repositories ship one of the two, so
-    for a real materialization absence cannot happen -- and when it does, it
-    means a store built by a test or a synthetic fixture, which is not a wrong
-    declaration about a real model but the absence of a model to declare
-    anything about. Whether a materialized store is complete is
-    ``common/chairs/model_store.py``'s question and is answered against the
-    pinned manifest, not here. The skip is pinned by its own test so it cannot
-    become the quiet default for a real chair.
+    They set every image's prompt-token cost, so a wrong declaration mis-counts
+    every request. The check needs the weights, so it runs at every start on the
+    pod. Rows that declare neither value (fixtures) are skipped. A snapshot with
+    neither file passes: every pinned repository ships one, so only a test store
+    lacks both, and store completeness is checked against the manifest elsewhere.
     """
 
     declared = {field: getattr(profile, field, None) for field in ("patch_size", "merge_size")}
@@ -1612,13 +1385,8 @@ def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfil
         return
 
 
-# The exact filenames this project's own convention already treats as
-# credential-bearing: `.gitignore` ignores `.env`/`.env.*` (keeping only the
-# tracked `.env.example`), and `.githooks/check_ingress.py` names `.env` a
-# sensitive filename it scans outgoing history for. `local.env` matches
-# nothing any tool here or in vLLM reads by name -- it names no established
-# convention -- so it is kept only as an explicit, additional operator
-# habit, never as the check's reason for existing.
+# Filenames the repository already treats as credential-bearing (`.env`,
+# `.env.*` except the tracked example), plus `local.env` as an operator habit.
 _ENV_OVERRIDE_EXACT_NAMES: Final = frozenset({"local.env", ".env"})
 _ENV_OVERRIDE_EXCLUDED_NAMES: Final = frozenset({".env.example"})
 
@@ -1626,23 +1394,9 @@ _ENV_OVERRIDE_EXCLUDED_NAMES: Final = frozenset({".env.example"})
 def assert_no_discoverable_local_env(*, directory: str | Path | None = None) -> None:
     """Refuse a live launch next to an undeclared env-override file.
 
-    ``directory`` defaults to the process's own current working directory --
-    exactly what an owned vLLM subprocess inherits when
-    :class:`operations.serving.process.PopenServerProcess` launches it
-    without an explicit ``cwd``. A file such as ``.env`` or ``local.env``
-    sitting there is exactly the kind of side channel principle 6 exists to
-    catch: nothing in this package's config-inputs sealing or launch audit
-    would ever see a value it silently injected (a Hub token enabling a
-    network fetch the real path forbids, a proxy, an engine flag), because
-    such a file is invisible to every check that reads *this repository's*
-    configuration. Checked here, inside :meth:`ServingManager.start`, rather
-    than only from the smoke-preflight lifecycle: `start` is the one door
-    every real launch already passes through, whether it arrives through a
-    smoke reader or directly through :class:`ChairClient`, so a check placed
-    anywhere upstream of it guards only the caller that happened to run it.
-    A caller with a real reason to launch from a directory that has one may
-    pass ``directory`` explicitly; there is no way to silence this for the
-    default cwd.
+    ``directory`` defaults to the cwd, which the vLLM child inherits. A value
+    injected from such a file (a Hub token, a proxy, an engine flag) is invisible
+    to the sealed configuration and the launch audit (principle 6).
     """
 
     target = Path(directory) if directory is not None else Path.cwd()
@@ -1675,9 +1429,7 @@ def _launchable(
 ) -> ServingProfile:
     """Refuse non-launchable rows before snapshot and runtime checks.
 
-    Fixture chairs are answered from declared ``fixture://`` details, while an
-    unsupported row names a missing native engine. Deferring either refusal
-    would replace its configuration cause with a misleading pin or engine
+    Refusing later would hide the configuration cause behind a pin or engine
     failure.
     """
 
@@ -1703,14 +1455,9 @@ def _launchable(
             f"preflight_state={profile.preflight_state!r}; real-silicon preflight must "
             "prove this exact profile before launch"
         )
-    # The profile row's own digest cannot see this one.  A preflight proves a
-    # flag profile *and* the checkpoint it was measured with; repointing the
-    # chair in `config/models.toml` — other weights, a bumped revision, a
-    # re-verified manifest — leaves the catalogue row byte-identical and its
-    # `preflight_digest` still valid, so a stale proof would otherwise carry
-    # over onto weights nobody preflighted.  Refuse here, where both halves are
-    # in hand, rather than launch on a claim that has quietly stopped being
-    # about the thing being launched.
+    # A preflight proves a profile with one checkpoint. Repointing the chair in
+    # config/models.toml leaves the row and its digest unchanged, so the chair
+    # identity is checked here too.
     observed_identity_digest = chair_preflight_identity_digest(identity)
     if (
         profile.preflight_state == "proven"
@@ -1731,7 +1478,7 @@ def _launchable(
             f"chair {identity.role!r} serves {identity.repo!r}, a hybrid Mamba/attention "
             "(qwen3_5) checkpoint; vLLM keeps prefix caching over recurrent state opt-in "
             f"for hybrid models, and it only costs recurrent-state memory here -- "
-            f"enable_prefix_caching must be false for this chair (hostile review item L)"
+            f"enable_prefix_caching must be false for this chair"
         )
     return profile
 
@@ -1739,26 +1486,13 @@ def _launchable(
 def _generation_config_digest(
     profile: ServingProfile, base_snapshot: VerifiedSnapshot
 ) -> str | None:
-    """Digest the exact generation_config.json a 'auto' row will resolve to.
+    """Digest the generation_config.json an 'auto' row will resolve to.
 
-    ``None`` for a 'vllm' row -- but that is not because vLLM has no vendor
-    file to pin. ``config.py`` admits ``generation_config='auto'`` only for a
-    witness role (``is_witness_role(chair)``); it does not check whether
-    ``generation_config.json`` is actually in the chair's manifest, so an
-    'auto' row whose snapshot lacks the file is only caught here, at launch,
-    by the ``OSError`` handling below -- not refused earlier at catalogue
-    parse. And a 'vllm' row is not free of the vendor file either: vLLM
-    v0.27.1's ``ModelConfig.try_get_generation_config`` reads
-    ``generation_config.json`` for `'vllm'` exactly as it does for `'auto'`
-    (``config/model.py``), and the input processor applies whatever
-    ``eos_token_id`` it carries to every request's stop tokens
-    (``v1/engine/input_processor.py``, ``SamplingParams.
-    update_from_generation_config``) regardless of this row's value. Only the
-    *sampling parameters* (temperature, top_p, ...) are withheld under
-    'vllm' (``ModelConfig.get_diff_sampling_param``'s own `'vllm'` special
-    case) -- the file itself, and its effect on stop tokens, is not. This
-    digest is still only recorded for an 'auto' row: nothing here proves that
-    choice wrong, only that "no vendor file to pin" is not the reason for it.
+    ``None`` for a 'vllm' row, although vLLM still reads the file's
+    ``eos_token_id`` under 'vllm' (v0.27.1,
+    ``ModelConfig.try_get_generation_config``); only its sampling parameters
+    are ignored. A
+    missing file on an 'auto' row is first caught here, at launch.
     """
 
     if profile.generation_config != "auto":
@@ -1785,10 +1519,8 @@ def render_vllm_argv(
 ) -> tuple[str, ...]:
     """Render the exact argv from verified identities and one typed profile.
 
-    The model and tokenizer arguments point at the locally verified snapshot.
-    Whether the two revision flags accompany them is
-    ``model_and_tokenizer_pins``' decision, and its docstring holds the reason
-    a local-repository chair correctly gets neither.
+    Model and tokenizer point at the verified snapshot; ``model_and_tokenizer_pins``
+    decides whether revision flags follow.
     """
 
     pins = model_and_tokenizer_pins(base_identity)
@@ -1811,9 +1543,8 @@ def render_vllm_argv(
             "--tokenizer-revision",
             tokenizer_revision,
         ]
-    # An adapted chair registers its own alias through `--lora-modules` below,
-    # so the API identity of the served weights is the base chair's; an
-    # unadapted chair is itself the API identity.
+    # An adapter registers its alias via `--lora-modules`, so the served name
+    # is the base's.
     argv += [
         "--served-model-name",
         base_profile.served_model_id if adapter_snapshot is not None else profile.served_model_id,
@@ -1837,36 +1568,16 @@ def render_vllm_argv(
         ),
         "--generation-config",
         profile.generation_config,
-        # Page contents are not diagnostic data.  Keep vLLM's documented
-        # request logging disabled independently of ordinary engine logging.
+        # Page contents are not diagnostic data.
         "--no-enable-log-requests",
-        # Named counts only (prompt/completion/total token counts), never
-        # prompt or completion text -- distinct from the request-logging flag
-        # just above.  vLLM v0.27.1 sets `usage.prompt_tokens` unconditionally
-        # on every non-streaming response regardless of this flag
-        # (`chat_completion/serving.py`'s final `UsageInfo(...)` construction);
-        # what this flag actually gates is `usage.prompt_tokens_details`,
-        # whose `multimodal_tokens` field breaks the total down by modality
-        # (`{"image": ..., ...}`).  That per-modality count is what lets
-        # `reconcile_usage_against_capacity` localize a mismatch to the image
-        # or text half even on a *mixed* real request (hostile review item
-        # H), rather than only on the image-only/text-only requests the
-        # scalar-only comparison could ever localize; a silently dropped
-        # `mm_processor_kwargs` (vllm-project/vllm#49015, #54527) would
-        # otherwise read a page at the wrong scale with no error at all.
+        # Token counts only, never text. The per-modality breakdown lets usage
+        # reconciliation catch a silently dropped `mm_processor_kwargs`, which
+        # would otherwise read a page at the wrong scale with no error
+        # (vllm-project/vllm#49015).
         "--enable-prompt-tokens-details",
-        # Pinned rather than left at vLLM's `auto` chat-template
-        # content-format detection: under `string` format (which `auto` can
-        # resolve to, and which some future template revision could resolve
-        # to differently), vLLM hoists every image placeholder ahead of the
-        # text regardless of the caller's own part order
-        # (vllm-project/vllm#14047) -- so a check against the *rendered*
-        # request body would read green no matter what order the caller
-        # actually assembled, silently defeating
-        # `http.assert_image_before_text_on_wire` (hostile review item
-        # A).  Under `openai` format the rendered content list keeps the
-        # caller's own order verbatim, which is what makes that assertion
-        # mean anything on the wire.
+        # Not `auto`: under `string` format vLLM moves images ahead of text
+        # (vllm-project/vllm#14047), so the image-before-text check could not
+        # fail. `openai` keeps the caller's part order.
         "--chat-template-content-format",
         "openai",
         "--enable-prefix-caching"
@@ -1888,9 +1599,7 @@ def render_vllm_argv(
                     {
                         "name": profile.served_model_id,
                         "path": str(adapter_snapshot.root),
-                        # vLLM receives the immutable configured source ref,
-                        # not an API alias that happened to be registered for
-                        # this process.
+                        # The configured source ref, not a process-local alias.
                         "base_model_name": base_identity.source_reference,
                     },
                     sort_keys=True,
@@ -1909,40 +1618,12 @@ def render_vllm_argv(
 def _fatal_log_signature(tail: str) -> str | None:
     """Name a fatal startup failure rather than waiting out the whole watchdog.
 
-    Spec 04 requires a red preflight to carry useful remediation, and spec 12
-    requires operator-facing errors to say what happened and what to do next.
-    The two loud LoRA/model rejections therefore need named refusals rather than
-    a generic watchdog timeout. The old pipeline's launch scripts, which grepped
-    `does not support LoRA` and `Unknown model`, are historical evidence for the
-    strings rather than the authority for this behavior.
-
-    Those scripts also grepped `RuntimeError|ValueError`, and that is
-    deliberately **not** carried.  This poll re-reads the whole launch tail
-    every interval, so one benign line naming either word aborts a start that
-    was going to succeed.  A missed signature costs a bounded watchdog wait; a
-    false one costs a relaunch, and on the real path that is GPU-hours.
-
-    `VLLM_ERROR` is kept, and is honestly a marker with no producer on this
-    path.  vLLM prints no such string: it was the *wrapper script's* own echo
-    in the old pipeline (`/window/remote/serve_chandra.sh` line 87 writes it to
-    the wrapper's stdout after grepping the engine log), and this poll reads
-    only the child's own launch log.  It stays because a future launch wrapper
-    that does write into that log has one agreed word for "fatal, stop
-    waiting", and because a signature that never fires costs nothing — the risk
-    it carries is a false positive from some later vLLM string containing
-    `vllm_error`, not a missed failure.  It is not evidence that vLLM says
-    anything.
-
-    A bare `traceback` is declined for exactly the same reason.  vLLM has
-    printed a benign, logged-and-swallowed traceback at startup for an
-    optional backend that failed to import (FlashInfer probing is the
-    documented case: vllm-project/vllm#12513, #30240) while still going on to
-    serve normally.  Because this poll re-reads the whole tail every interval,
-    that one line would make the chair deterministically unstartable, not
-    merely cost one relaunch.  `EngineDeadError` and `CUDA out of memory`
-    already name the loud fatal cases, and `VLLM_PROCESS_EXITED`
-    (`_assert_process_live`, checked earlier in the same loop) catches a
-    process that a bad traceback actually killed.
+    The list stays narrow: the whole tail is re-read every poll, so one benign
+    match aborts a good start every time. `RuntimeError`, `ValueError` and bare
+    `traceback` are excluded because vLLM logs harmless ones at startup
+    (vllm-project/vllm#12513); a process they kill is caught as exited.
+    `VLLM_ERROR` has no producer in vLLM itself; it is reserved for a launch
+    wrapper that writes into this log.
     """
 
     normalized = tail.lower()
@@ -1996,19 +1677,14 @@ travels with the refusal.
 
 
 _REDACTED: Final = "[redacted]"
-#: `name=value`, `name: value`, `"name":"value"` -- the structured forms a log
-#: line carries a secret in. The name is captured so
-#: `models.looks_like_credential_field` can answer for it; the value is
-#: captured separately so only the value is replaced.
+#: `name=value`, `name: value`, `"name":"value"`; only the value is replaced.
 _LOG_ASSIGNMENT: Final = re.compile(
     r"""(?P<lead>["']?)(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)(?P=lead)\s*[:=]\s*"""
     r"""(?P<quote>["']?)(?P<value>[^\s"',;}\]]+)(?P=quote)"""
 )
-#: `Authorization: Bearer <value>` and a bare `Bearer <value>`: the scheme
-#: names the secret, so what follows it is one whatever shape it has.
+#: Whatever follows `Bearer` is a secret, whatever its shape.
 _LOG_BEARER: Final = re.compile(r"""(?i)\bbearer\s+(?P<value>[^\s"',;]+)""")
-#: Where a value ends inside one whitespace-delimited token, so the shape test
-#: reaches the parts of `key=value` and `{"key":"value"}` as well as the token.
+#: Splits a token so the shape test also reaches the parts of `key=value`.
 _TOKEN_PARTS: Final = re.compile(r"""[^\s"'{}\[\],;:=]+""")
 
 
@@ -2022,28 +1698,12 @@ def _redact_value(match: re.Match[str]) -> str:
 
 
 def _redacted(text: str) -> str:
-    """Blank out credential-shaped tokens before a launch log leaves the machine.
+    """Blank out credential-shaped values before a launch log leaves the machine.
 
-    This refusal now carries launch-log bytes into places the log itself never
-    went -- a journal record, a pod report, a phone notification -- and a log is
-    the child's own stdout, not a value this module composed. `models
-    .looks_like_credential_value` is the shape test `bootstrap_main`'s argv
-    refusal and `fixture.py`'s drill scrub already share, and its docstring asks
-    new boundaries to reuse it rather than re-express it; a tail that travels is
-    one. Whitespace is preserved line by line so the progress line a reader is
-    meant to recognise still reads as one.
-
-    **A log line is not an argv.** That shape test answers for a whole token
-    and rejects anything carrying `.`, `:`, `/`, `\\` or `@` as ordinary path
-    and URL punctuation -- so `token=hf_...`, `{"token":"eyJ..."}` and a
-    tab-separated field went through unchanged although the bare value would
-    have been caught. Three passes now: the name-bound
-    forms first, because `models.looks_like_credential_field` answers for a
-    *name* that names itself a secret and no shape test can catch a JWT that
-    looks like a dotted path; then `Bearer`, whose scheme names the secret
-    after it; then the shape test, over each whitespace-delimited token and
-    over the parts inside it. Only the value is replaced -- the surrounding log
-    text stays readable, which is the whole reason a tail travels at all.
+    The tail travels to journals and notifications. Three passes, since the shared
+    shape test skips tokens with path or URL punctuation: values of secret-named
+    fields (a JWT looks like a dotted path), anything after `Bearer`, then the
+    shape test over each token and its parts. Only values are replaced.
     """
 
     def redact_named(match: re.Match[str]) -> str:
@@ -2063,8 +1723,7 @@ def _redacted(text: str) -> str:
     for raw in text.splitlines():
         line = _LOG_ASSIGNMENT.sub(redact_named, raw)
         line = _LOG_BEARER.sub(_redact_value, line)
-        # Split on all whitespace, keeping it: a tab-separated field is a field
-        # like any other, and the line must still read as the line it was.
+        # Split on all whitespace but keep it, so tabs separate fields too.
         lines.append(
             "".join(
                 part if index % 2 else redact_by_shape(part)
@@ -2080,9 +1739,7 @@ def _progress_log_line(tail: str) -> str | None:
     for line in reversed(tail.splitlines()):
         lowered = line.lower()
         if any(marker in lowered for marker in _LOADING_LOG_MARKERS):
-            # Collapsed to one line: this goes in front of `last` in a refusal
-            # whose readers -- including two pinned test regexes that cannot
-            # cross a newline -- treat the first line as the diagnosis.
+            # One line: readers of the refusal treat its first line as the diagnosis.
             return " ".join(line.split())[:240]
     return None
 
@@ -2107,29 +1764,10 @@ def _watchdog_timeout(
 ) -> ReadinessError:
     """Say which kind of not-ready this was, and carry the evidence for it.
 
-    ``VLLM_WATCHDOG_TIMEOUT: loopback endpoint unavailable: ...`` is the same
-    sentence whether the engine was three minutes into reading fifty gigabytes
-    of weights off a network volume or had died without ever opening its port,
-    and those need opposite responses: raise this row's
-    ``startup_timeout_seconds``, or go and find out what is wrong.  The launch
-    log can tell them apart, and it was already read every poll for fatal
-    signatures -- it just never reached the refusal.
-
-    ``endpoint_state`` is four-valued on purpose: ``refused`` for a port proven
-    empty, ``unreachable`` for a request that produced no response and proved
-    nothing (a timeout, a reset, a malformed local route), ``answered-unready``
-    for an engine that answered and was not ready, and ``None`` for a budget
-    that ran out before any probe came back at all -- which a one-second
-    ``startup_timeout_seconds`` can reach. Collapsing any of them into another
-    would put a claim about an endpoint nobody reached into a durable record.
-
-    ``progress_advanced`` is the same discipline over the log: a loading marker
-    anywhere in the retained tail says loading was *observed*, and only a
-    marker that changed while this start was waited on says the engine was
-    still making progress when the bound expired.
-
-    The diagnosis and the last readiness answer stay on the first line, ahead
-    of the log tail, because that is where every reader of this message looks.
+    Still loading and never started need opposite responses (raise the timeout,
+    or investigate), and the launch log tells them apart. ``endpoint_state`` is
+    ``None`` when no probe returned before the budget ran out. The diagnosis
+    stays on the first line, ahead of the log tail.
     """
 
     tail = _redacted(process.read_tail())
@@ -2186,11 +1824,7 @@ def _watchdog_timeout(
             f"{budget_seconds:.0f}s startup_timeout_seconds bound was gone before the "
             "first round completed, so nothing here observed the endpoint at all"
         )
-    # In bytes, because that is what the limit says and what a journal entry, a
-    # pod report and a phone notification actually carry. Slicing the string
-    # counted characters, so a non-ASCII tail could be several times the
-    # documented size. A cut landing mid-character
-    # decodes to a replacement character rather than raising.
+    # Cut in bytes, not characters; a cut mid-character decodes as a replacement.
     encoded = tail.encode("utf-8")
     excerpt = encoded[-_WATCHDOG_TAIL_BYTES:].decode("utf-8", errors="replace").strip()
     if not excerpt:
@@ -2201,14 +1835,9 @@ def _watchdog_timeout(
 
 
 def _is_deterministic_probe_rejection(error: ReadinessError) -> bool:
-    """A readiness probe HTTP error that waiting cannot resolve.
+    """A readiness probe 4xx: the engine rejecting the request, which waiting cannot fix.
 
-    ``parse_openai_answer`` raises ``VLLM_PROBE_HTTP_ERROR`` for any
-    non-200 probe response, whether the engine is still booting (502/503,
-    worth retrying) or has fully initialized and is rejecting the exact
-    request body every poll resends (4xx, retrying learns nothing).  Only
-    the latter is named deterministic here: a client-error status is the
-    engine answering, not the engine being unready.
+    A 5xx while booting is still worth retrying.
     """
 
     if error.code != "VLLM_PROBE_HTTP_ERROR":
@@ -2263,23 +1892,15 @@ def _utc_stamp(value: datetime) -> str:
 
 
 def _active_chat_image_bytes(payload: Mapping[str, object], *, label: str) -> bytes:
-    """Extract the one image vLLM will receive from an OpenAI chat payload.
+    """Extract the one image vLLM will receive; refuse anything but exactly one.
 
-    A thin single-image wrapper over :func:`chat_image_bytes_all`, kept for
-    the golden-page smoke and adapter probes that must refuse anything but
-    exactly one active image.  The refusal rules — a typed ``image_url`` part
-    in a ``role=user`` content list, a local ``data:image/...;base64,`` URI,
-    and no ignored ``image_url`` key elsewhere in the payload — live once, in
-    that shared function.
+    The image rules live in :func:`chat_image_bytes_all`.
     """
 
     try:
         images = chat_image_bytes_all(payload, label=label)
     except ServingConfigurationError as error:
-        # A hidden image_url outside every role=user content list is, for
-        # this single-image caller, the same refusal as finding none active:
-        # collapse the shared function's more specific wording into the one
-        # message this call site has always raised.
+        # Reword a stray image_url refusal as this caller's single refusal.
         if "outside a role=user content list" in str(error):
             raise ServingConfigurationError(
                 f"{label} must contain exactly one active image_url "
