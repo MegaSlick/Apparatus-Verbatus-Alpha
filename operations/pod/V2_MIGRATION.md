@@ -71,8 +71,8 @@ rather than a caution.
 | `networkVolumeId` + `volumeMountPath` | `mounts.network[0].volumeId` + `mounts.network[0].path` ("max 1 item currently") | same |
 | `env` | `env` | same |
 | `templateId` | `templateId` ("body fields override template") | same |
-| **`interruptible: false`** | **none.** The create input's full property list is `name, cloud, cpu, dataCenterIds, globalNetworking, gpu, mounts, startJupyter, startSsh, templateId, image, args, disk, env, ports, registry`; `interruptible`, `spot` and `bidPerGpu` do not appear, and the Pod response carries no `interruptible` either | `https://api.runpod.io/v2/openapi.json` |
-| **`dockerStartCmd: [argv]`** | **none.** No `command`, `startCommand`, `dockerStartCmd`, `dockerEntrypoint` or `entrypoint`; the only related field is `args` (string): "Arguments passed to container entrypoint" | `https://api.runpod.io/v2/openapi.json`; `api-reference-v2/pods/create-a-pod` |
+| **`interruptible: false`** | **none.** As read on 2026-09-02 (superseded by §6), the create input's property list is `name, cloud, cpu, dataCenterIds, globalNetworking, gpu, mounts, startJupyter, startSsh, templateId, image, args, entrypoint, cmd, disk, env, ports, registry` (`entrypoint` and `cmd` were missed in that reading); `interruptible`, `spot` and `bidPerGpu` do not appear, and the Pod response carries no `interruptible` either | `https://api.runpod.io/v2/openapi.json` |
+| **`dockerStartCmd: [argv]`** | **No field of that name.** The 2026-09-02 reading found only `args`, described then as "Arguments passed to container entrypoint"; superseded by §6: `CreatePodRequest` also accepts top-level `entrypoint` and `cmd` arrays in exec form, and `args` is now "The container's command, as a single raw string", accepting a shell string or a `{"entrypoint":[...],"cmd":[...]}` object | `https://api.runpod.io/v2/openapi.json`; `api-reference-v2/pods/create-a-pod` |
 
 Fields v1 accepted that the adapter never sent (`containerDiskInGb`,
 `volumeInGb`, `ports`, `dataCenterIds`, `dockerEntrypoint`) map to `disk`,
@@ -119,7 +119,7 @@ window is still an observation for the first live run.
 
 | Where | v1 behaviour | v2 fact | Consequence |
 |---|---|---|---|
-| `create` | `200`/`201` | `201`; `400` — "The body matches the contract but was rejected — either it breaks a cross-field rule, or this GPU and data center combination could not be placed."; `422` — "The body does not match the contract. `errors` lists each violation."; **`402` "Insufficient account balance"**; `403` "no access to requested pool"; `429` with `Retry-After` | `402` is a provider-side floor beneath ours; the adapter should name it, never retry it. `400` must not be read as malformed — that is `422`'s meaning, not `400`'s (`api-reference-v2/pods/create-a-pod`) |
+| `create` | `200`/`201` | `201`; `400` — "The body matches the contract but was rejected — either it breaks a cross-field rule, or this GPU and data center combination could not be placed."; `422` — "The body does not match the contract. `errors` lists each violation."; **`402` "Insufficient balance."** (the wording on 2026-09-24; "Insufficient account balance" on 2026-09-02); `403` "no access to requested pool"; `429` with `Retry-After` | `402` is a provider-side floor beneath ours; the adapter should name it, never retry it. `400` must not be read as malformed — that is `422`'s meaning, not `400`'s (`api-reference-v2/pods/create-a-pod`) |
 | `_record` | refuses any `desiredStatus` outside the three words | a just-created v2 pod is `PROVISIONING`, then `STARTING` | `_record` as written would refuse every fresh v2 create; `adopt` (requires `RUNNING`) is unchanged in meaning |
 | `supervise.py` every tick | closes on any word other than `RUNNING` | a pod is legitimately `PROVISIONING`/`STARTING` before it runs | the supervisor would close a pod that is still starting; the migration must teach it the two pre-running words and `ERROR` explicitly, with a bounded provisioning wait rather than an open-ended one |
 | `terminate` | tolerates `200`/`202`/`204`/`404` | `204`; `409` for cluster members | `409` is a refusal to name, not to tolerate |
@@ -234,11 +234,11 @@ called.
 
 | Question | Answer | Source |
 |---|---|---|
-| Rental type of a v2 pod (§4.1) | **Not settled.** The create body and Pod object carry no rental-type field; `openapi.json` contains none of "interruptible", "spot", "on-demand", "bid", "rental", "reserved" or "savings"; `Cloud` is only `SECURE`/`COMMUNITY`. `pods/pricing` lists only "On-demand" and "Savings plans", but v1's create page still documents `interruptible`: "Set to true to create an interruptible or spot Pod". No page says what a v2 create without the field produces. | `api-reference-v2/pods/create-a-pod`; `openapi.json`; `pods/pricing`; `api-reference/pods/POST/pods` |
-| Start command (§4.2) | **Settled.** `args` accepts a JSON object `{"entrypoint":[...],"cmd":[...]}` that sets both explicitly, besides a bare shell string "split into arguments" by unstated rules. "Responses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`", though the Pod schema lists neither `entrypoint` nor `cmd`. The template page has no other start-command field. | `openapi.json`; `api-reference-v2/pods/get-a-pod`; `api-reference-v2/templates/create-a-template` |
+| Rental type of a v2 pod (§4.1) | **Not settled.** The create body and Pod object carry no rental-type field; in `openapi.json` none of "interruptible", "spot", "on-demand", "bid", "rental", "reserved" or "savings" refers to pod rental type ("reserved" occurs once, in a secret-name prefix; "on demand" once, for serverless workers); `Cloud` is only `SECURE`/`COMMUNITY`. `pods/pricing` lists only "On-demand" and "Savings plans", but v1's create page still documents `interruptible`: "Set to true to create an interruptible or spot Pod". No page says what a v2 create without the field produces. | `api-reference-v2/pods/create-a-pod`; `openapi.json`; `pods/pricing`; `api-reference/pods/POST/pods` |
+| Start command (§4.2) | **Settled.** `args` accepts a JSON object `{"entrypoint":[...],"cmd":[...]}` that sets both explicitly, besides a bare shell string "split into arguments" by unstated rules. "Responses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`"; the Pod schema carries `entrypoint` and `cmd` only as optional properties inherited through `ContainerConfig` → `BaseContainerConfig`, in no `required` list and no example. `CreatePodRequest` also accepts top-level `entrypoint` and `cmd` arrays. The template page has no other start-command field. | `openapi.json`; `api-reference-v2/pods/get-a-pod`; `api-reference-v2/templates/create-a-template` |
 | `metadata.query` on the `podId`-filtered billing route (§5 step 4) | **Ambiguous.** Described as "Resolved query window and granularity (routes without a filter).", yet marked required, with `podId` "The podId filter applied, if any", and shown in a `podId`-filtered example. | `api-reference-v2/billing/get-pod-billing-history` |
 | Pod list paging | **New since 2026-09-02.** `{"pods": [...], "pagination": {"nextCursor", "hasNextPage"}}`, both required; `nextCursor` "Null on the last page"; `limit` 1–1000, default 1000. | `api-reference-v2/pods/list-pods` |
-| Pod environment | `RUNPOD_POD_ID` "Unique Pod identifier."; `RUNPOD_API_KEY` "Pod-scoped API key."; no route named. | `pods/references/environment-variables` |
+| Pod environment | `RUNPOD_POD_ID` "Unique Pod identifier."; `RUNPOD_API_KEY` "Pod-scoped API key."; no route named. | `pods/templates/environment-variables` (the old `pods/references/environment-variables` URL redirects there) |
 
 ### Each plan step
 
@@ -288,7 +288,18 @@ called.
    fail-closed path. `test_provider_runpod.py` keeps the v1 shapes.
 
 The start command is sent as `args` in the exec-form object, interpreter as
-`entrypoint` and the rest of the argv as `cmd`, and read back strictly. The
+`entrypoint` and the rest of the argv as `cmd`, and read back strictly.
+
+**Top-level `entrypoint`/`cmd` versus the `args` object (not yet changed).**
+The adapter should send the top-level `entrypoint` and `cmd` arrays instead of
+the `args` object: they are typed exec-form arrays in the schema, the fields
+`args` itself "encodes into", so the request carries no JSON inside a string
+and the provider's own validation sees the argv. The read-back stays as it
+is until the first live v2 run: the response's `entrypoint` and `cmd` are
+optional, so `args` "exactly as stored" is the only form the schema
+guarantees, and whether it comes back as the object, re-serialized, is
+exactly what that run observes. Sending one form and reading the other is
+consistent, since the docs call them two representations of one command. The
 pod-side timer uses v2 by default; `VERBATUS_RUNPOD_ROUTE=v1` in its
 environment selects v1.
 

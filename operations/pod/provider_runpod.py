@@ -20,15 +20,19 @@ records the 2026-09-02 reading of the rest):
   `RUNNING`, `EXITED`, `ERROR`, `TERMINATED`), `cost` ("Current cost in USD per
   hour (0.0 when EXITED or TERMINATED)"), `createdAt`, `startedAt`, `cloud`,
   `gpu`, `mounts`, `env`, `args`, `template` — and **no rental-type field**.
-- `https://api.runpod.io/v2/openapi.json` (read as a static document) — no
-  occurrence of "interruptible", "spot", "on-demand", "bid", "rental",
-  "reserved" or "savings" anywhere; `Cloud` is only `SECURE` ("Runpod-owned
+- `https://api.runpod.io/v2/openapi.json` (read as a static document) — none
+  of "interruptible", "spot", "on-demand", "bid", "rental", "reserved" or
+  "savings" refers to pod rental type anywhere ("reserved" occurs once, in a
+  secret-name prefix; "on demand" once, for serverless workers); `Cloud` is
+  only `SECURE` ("Runpod-owned
   datacenter hardware") or `COMMUNITY`. `args` is "The container's command, as
   a single raw string", accepting a bare shell string "treated as CMD and split
   into arguments" or a JSON object `{"entrypoint":[...],"cmd":[...]}`;
   "Responses always return both representations: `args` exactly as stored,
-  plus the deconstructed `entrypoint` and `cmd`" — although the Pod schema's
-  own property and `required` lists name neither `entrypoint` nor `cmd`.
+  plus the deconstructed `entrypoint` and `cmd`". The Pod schema carries
+  `entrypoint` and `cmd` only as optional properties inherited through
+  `ContainerConfig` → `BaseContainerConfig`: neither is in its `required` list
+  or in any example. `CreatePodRequest` accepts them as top-level arrays too.
 - `docs.runpod.io/api-reference-v2/templates/create-a-template` — no start
   command field beyond the same `args`; no rental-type field.
 - `docs.runpod.io/api-reference-v2/pods/get-a-pod` — the same Pod object; its
@@ -61,7 +65,8 @@ records the 2026-09-02 reading of the rest):
   Pod", default `false`. So spot pods still exist on the platform, and no page
   says what a v2 create without the field produces. **That is why
   `V2_ON_DEMAND_BASIS` is unset and a v2 create refuses** (`RunPodV2Provider`).
-- `docs.runpod.io/pods/references/environment-variables` — `RUNPOD_POD_ID`
+- `docs.runpod.io/pods/templates/environment-variables` (the old
+  `pods/references/environment-variables` URL redirects there) — `RUNPOD_POD_ID`
   "Unique Pod identifier." and `RUNPOD_API_KEY` "Pod-scoped API key.", with no
   route named; whether that key is accepted by v2 is a live-run observation.
 
@@ -1447,6 +1452,10 @@ class RunPodV2Provider(_RunPodAdapter):
         it in a ``podId``-filtered example. So its absence is not a refusal;
         the capture then falls back to the v1 standard (attribution and
         containment against the requested window) and never reports pending.
+        A ``metadata.query`` that is present but carries no ``podId`` (the
+        field is optional in ``PodBillingQuery``) is different: it does not
+        fall back, it reports the cost unavailable, because a resolved window
+        that does not name this pod cannot attribute the records to it.
         """
 
         started = require_utc(started_at, "billing start")
@@ -1811,9 +1820,9 @@ def _v2_start_argv(pod_id: str, payload: Mapping[str, object]) -> tuple[str, ...
     object ``{"entrypoint": [...], "cmd": [...]}``. This adapter sends only
     the second, so the argv is exact and the image's own ENTRYPOINT cannot
     wrap the pod timer; anything else read back refuses. The page also says
-    responses carry the deconstructed ``entrypoint`` and ``cmd``, though the
-    schema's pod object lists neither, so they are checked when present and
-    not required.
+    responses carry the deconstructed ``entrypoint`` and ``cmd``; the pod
+    schema has them only as optional inherited properties, in no ``required``
+    list and no example, so they are checked when present and not required.
     """
 
     raw = payload.get("args")
