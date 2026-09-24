@@ -1,19 +1,22 @@
-# RunPod REST v1 → v2: the migration, recorded page by page before any code
+# RunPod REST v1 → v2: the migration, recorded page by page
 
-Tyrel ruled on 2026-08-11 (`workbench/standing/TYREL_RULINGS_2026-08-10_SPEND.md`):
-*"V2 should be what we use."* `provider_runpod.py` still speaks v1, and RunPod's
-own documentation banner now retires v1 on **2026-11-15**. This file is the
-record the ruling and the README's v1/v2 paragraph asked for: every endpoint,
-field, status code and lifecycle word the adapter uses today, mapped to its v2
-counterpart with the page that says so, and the ones with no counterpart named.
-**No v2 code exists in this tree.** The plan at the end is what the next unit
-executes; this unit read documentation only and called nothing.
+The project lead directed on 2026-08-11 that REST v2 is the route this runtime
+uses, and RunPod's own documentation retires v1 on **2026-11-15**. This file
+maps every endpoint, field, status code and lifecycle word the v1 adapter uses
+to its v2 counterpart, with the page that says so, and names the ones with no
+counterpart. §6 records what is now built and what still waits on a live run.
 
-Every page below was read online on **2026-09-02**. A citation is the page's
-URL under `https://docs.runpod.io/` unless another host is named. Where a page
-was summarized rather than quoted, the entry says so. Nothing here is an
-observed response: it is what the vendor publishes, and the first authorised
-live run is what confirms the provider answers that way (deferral 04-6).
+**`RunPodV2Provider` now exists beside the v1 class** in `provider_runpod.py`
+and is the default route; the v1 class stays selectable until the first live
+run under v2 is green. **A v2 create is refused by name** until the rental
+type can be shown (§4.1, §6).
+
+§1–§5 record the pages as read online on **2026-09-02**; §6 records the second
+reading on **2026-09-24**, which `provider_runpod.py`'s module docstring also
+lists. A citation is the page's URL under `https://docs.runpod.io/` unless
+another host is named. Nothing here is an observed response: it is what the
+vendor publishes, and the first authorised live run is what confirms the
+provider answers that way (deferral 04-6).
 
 ## 1. The two routes, and the one that stays GraphQL
 
@@ -44,7 +47,7 @@ and the status codes each verb accepts.
 | Verb | v1 call | v2 call | Source |
 |---|---|---|---|
 | `create` | `POST /pods` → `200` or `201` accepted | `POST /v2/pods` → **`201 Created`** only. "Provisioning is asynchronous: the pod starts in `PROVISIONING`, transitions through `STARTING`, and reaches `RUNNING` once its container is healthy. Poll `getPod` (or watch the pod's `status`) to observe readiness rather than assuming the pod is running when this call returns." | `api-reference-v2/pods/create-a-pod` |
-| `create` (recovery) / `verify_absent` | `GET /pods?includeMachine=true&includeNetworkVolume=true` → bare array | `GET /v2/pods` → envelope `{"pods": [...]}`; only query parameter `includeClusterPods` (default false); **no pagination parameters documented**; `env` is returned per pod | `api-reference-v2/pods/list-pods`; `api-reference-v2/migrate-from-v1` ("v1 returned bare arrays; v2 wraps them") |
+| `create` (recovery) / `verify_absent` | `GET /pods?includeMachine=true&includeNetworkVolume=true` → bare array | `GET /v2/pods` → envelope `{"pods": [...]}`; only query parameter `includeClusterPods` (default false); **no pagination parameters documented** on 2026-09-02 (paging has since been added; §6); `env` is returned per pod | `api-reference-v2/pods/list-pods`; `api-reference-v2/migrate-from-v1` ("v1 returned bare arrays; v2 wraps them") |
 | `adopt` | `GET /pods/{podId}?includeMachine=true&includeNetworkVolume=true` → `200`/`404` | `GET /v2/pods/{id}` — **no query parameters**; gpu, mounts and env are always in the body | `api-reference-v2/pods/get-a-pod` |
 | `status` | `GET /pods/{podId}` → `200`/`404` | `GET /v2/pods/{id}` → `200`, `401`, `403`, `404`, `429`; 404 body `{"title":"Not Found","status":404,"detail":"pod not found"}` | `api-reference-v2/pods/get-a-pod` |
 | `terminate` | `DELETE /pods/{podId}` → `204` documented; adapter also tolerates `200`, `202`, `404` | `DELETE /v2/pods/{id}` → `204` "Deleted. Response has no body."; `401`, `403`, `404`, **`409`** ("pod belongs to cluster; cannot terminate via pod endpoints"), `429`. Equivalent: `POST /v2/pods/{id}/action` with `{"action":"terminate"}` → `204`. Network volumes are "only detached — the volume itself is not deleted"; host-local storage is "destroyed with it". No idempotency wording. | `api-reference-v2/pods/terminate-a-pod`; `api-reference-v2/pods/trigger-a-pod-state-transition` |
@@ -137,17 +140,18 @@ window is still an observation for the first live run.
 
 ## 4. What has no v2 counterpart, and what each costs the runtime
 
-1. **`interruptible=false` cannot be requested or verified.** Today
+1. **`interruptible=false` cannot be requested or verified** (still unsettled
+   on 2026-09-24; §6). Today
    `_create_payload` sends it and `_runtime_contract` refuses a pod that does
    not report it false. The v2 documentation read does not say whether v2 pods
    are on-demand only, spot only, or chosen elsewhere. The next unit must find
    a v2 page that states the rental type, or record documented absence and
    have the first live boot read the pod's type in the console. **This is a
-   stop-and-say item under CLAUDE.md rule 9 if no page settles it:** Spec 04's
+   stop-and-say item if no page settles it:** Spec 04's
    "a spot reclaim mid-run is a silent-loss machine" is a goal, and shipping a
    v2 create that cannot prove on-demand would satisfy the ruling by breaking
    the goal.
-2. **`dockerStartCmd` has no v2 field.** The runtime's whole arming argument
+2. **`dockerStartCmd` has no v2 field** (settled on 2026-09-24; §6). The runtime's whole arming argument
    rests on the pod timer being the container's primary process, checked
    before create (`models._assert_pod_timer_is_primary_process`) and again
    against the effective response (`_runtime_contract`). Under v2 the primary
@@ -169,7 +173,7 @@ window is still an observation for the first live run.
    object always carries `gpu` and `mounts`.
 6. **`lastStartedAt` is gone**, replaced by the pair 04-7 wanted.
 
-## 5. The plan the next unit executes
+## 5. The plan, as written on 2026-09-02 (§6 records what was done)
 
 In order, each step offline against the fake transport, none touching a
 provider:
@@ -179,7 +183,7 @@ provider:
    and the key's env name under v2), and whatever v2 page names the rental
    type. Record each with its date in `provider_runpod.py`'s docstring, the
    way the four v1 pages are recorded today. If no page settles item 4.1,
-   stop and put the conflict to Tyrel with this file as the evidence.
+   stop and put the conflict to the project lead with this file as the evidence.
 2. **Build `RunPodV2Provider` beside the v1 class, not over it**, behind the
    same seven-verb seam and the same `HttpTransport`, with `RUNPOD_REST_ROOT`
    becoming the v1 constant and a `RUNPOD_V2_ROOT` beside it. The v1 class
@@ -220,3 +224,88 @@ provider:
 What this plan does not do: it does not migrate the pod-timer's environment
 contract, the S3 volume view, or anything in `operations/operator/volume_s3.py`,
 none of which is a REST v1 call.
+
+## 6. Done on 2026-09-24, and what still waits
+
+Every step ran offline against the fake transport; no RunPod endpoint was
+called.
+
+### What the second reading settled
+
+| Question | Answer | Source |
+|---|---|---|
+| Rental type of a v2 pod (§4.1) | **Not settled.** The create body and Pod object carry no rental-type field; `openapi.json` contains none of "interruptible", "spot", "on-demand", "bid", "rental", "reserved" or "savings"; `Cloud` is only `SECURE`/`COMMUNITY`. `pods/pricing` lists only "On-demand" and "Savings plans", but v1's create page still documents `interruptible`: "Set to true to create an interruptible or spot Pod". No page says what a v2 create without the field produces. | `api-reference-v2/pods/create-a-pod`; `openapi.json`; `pods/pricing`; `api-reference/pods/POST/pods` |
+| Start command (§4.2) | **Settled.** `args` accepts a JSON object `{"entrypoint":[...],"cmd":[...]}` that sets both explicitly, besides a bare shell string "split into arguments" by unstated rules. "Responses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`", though the Pod schema lists neither `entrypoint` nor `cmd`. The template page has no other start-command field. | `openapi.json`; `api-reference-v2/pods/get-a-pod`; `api-reference-v2/templates/create-a-template` |
+| `metadata.query` on the `podId`-filtered billing route (§5 step 4) | **Ambiguous.** Described as "Resolved query window and granularity (routes without a filter).", yet marked required, with `podId` "The podId filter applied, if any", and shown in a `podId`-filtered example. | `api-reference-v2/billing/get-pod-billing-history` |
+| Pod list paging | **New since 2026-09-02.** `{"pods": [...], "pagination": {"nextCursor", "hasNextPage"}}`, both required; `nextCursor` "Null on the last page"; `limit` 1–1000, default 1000. | `api-reference-v2/pods/list-pods` |
+| Pod environment | `RUNPOD_POD_ID` "Unique Pod identifier."; `RUNPOD_API_KEY` "Pod-scoped API key."; no route named. | `pods/references/environment-variables` |
+
+### Each plan step
+
+1. **Pages read** and recorded in `provider_runpod.py`'s docstring. §4.1 is
+   unsettled, so the v2 create **fails closed**: `RunPodV2Provider.create`
+   refuses before any POST while `V2_ON_DEMAND_BASIS` is `None`, naming v1 as
+   the route for a paid create. Every v2 pod record then carries no runtime
+   contract and states why, so `launch.py` closes such a pod on create and
+   refuses it on adopt. **This needs the project lead:** a RunPod page or
+   vendor answer that says a v2 create with `cloud: "SECURE"` and no bid is
+   on-demand, recorded in a reviewed commit that sets `V2_ON_DEMAND_BASIS`.
+2. **`RunPodV2Provider` is built beside `RunPodProvider`**, sharing a base
+   class for prices, balance, fixture recording and launch-token lookup.
+   `RUNPOD_REST_ROOT` is the v1 constant and `RUNPOD_V2_ROOT` sits beside it.
+   `live_runpod_provider(..., route=)` pairs the class with its root; the
+   default route is `"v2"`, and each class refuses a live transport pointed at
+   the other root.
+3. **Lifecycle words.** `_V2_POD_STATES` is v2's six-word enum;
+   `models.PRE_RUNNING_STATES` names `PROVISIONING` and `STARTING`. A create
+   in either proceeds to arming, whose container-start and channel bounds
+   limit the wait; `adopt` still requires `RUNNING`; `ERROR` closes at once.
+   The supervisor reports `provider-starting` and waits only while the lease
+   is unarmed and its launch owner heartbeats, and closes the same word on an
+   armed lease.
+4. **Anchor and window.** `created_at` is `createdAt`, with no fallback.
+   `capture_cost` uses `metadata.query` when present: it must name this pod
+   and the `hour` bucket and cover the requested window, its start becomes the
+   declared window start, and an empty answer inside it is
+   `PENDING_RECONCILIATION`. When `metadata.query` is absent the capture falls
+   back to the v1 standard and never reports pending, because the page does
+   not settle that it is present on this route. `recordCount`, when present,
+   must equal the records returned. 04-7 and 04-9 are rewritten in the README.
+5. **Named refusals.** Create: `402` (the provider's balance floor), `400`
+   (placement or cross-field, explicitly not malformed), `422` (the body does
+   not match), none retried, each carrying the RFC 9457 detail. Terminate:
+   `204` and `404` accepted, `409` (cluster pod) refused with its remedy,
+   anything else refused.
+6. **Catalogue cross-check.** `RunPodV2Provider.cross_check_catalogue` reads
+   `GET /v2/catalog/gpus` and names every reviewed GPU id that is missing, not
+   on Secure cloud, or listed at another Secure price. The README's checklist
+   runs it before the first paid create under v2.
+7. **Balance observer** left on GraphQL; the README's checklist carries the
+   early-2027 row.
+8. **`test_provider_runpod_v2.py`** covers every mapped endpoint, the new
+   lifecycle words, `402`/`409`/`400`/`422`, the list and billing envelopes,
+   paging, the `createdAt` anchor, a verified close end to end, and each
+   fail-closed path. `test_provider_runpod.py` keeps the v1 shapes.
+
+The start command is sent as `args` in the exec-form object, interpreter as
+`entrypoint` and the rest of the argv as `cmd`, and read back strictly. The
+pod-side timer uses v2 by default; `VERBATUS_RUNPOD_ROUTE=v1` in its
+environment selects v1.
+
+### What waits on the first live v2 run
+
+- Whether `args` comes back as the exec-form object (verbatim or
+  re-serialized), whether `entrypoint` and `cmd` appear, and whether the pod
+  runs exactly that argv. The contract check refuses anything else, so a
+  different echo reads as an unproven contract and closes the pod.
+- Whether `metadata.query` appears on the `podId`-filtered billing route, and
+  whether the buckets fill the window (04-9).
+- That RunPod bills nothing before `createdAt` (04-7).
+- The `status` sequence a real pod passes through, and whether `cost` is
+  non-zero while `PROVISIONING`.
+- Whether the pod-scoped `RUNPOD_API_KEY` is accepted by the v2 routes the
+  pod-side timer calls.
+- Every field name (04-6); the catalogue cross-check confirms the GPU ids for
+  free before the first paid create.
+
+The v1 class is deleted in its own commit once that run is green.
