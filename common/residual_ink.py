@@ -11,8 +11,8 @@ the Recensor passes every proposal and recovery region for the page. This module
 must not invent an act identity, request recovery, or hold a run. Unit 14 owns
 the explicit hold for unproposed edge ink.
 
-**The paper value is no longer inferred here.** Until 2026-09-06 this module
-took the page's single most common pixel as paper. On a photographed register
+**The paper value is no longer inferred here.** This module used to
+take the page's single most common pixel as paper. On a photographed register
 opening that is the bezel -- 0 or near it on every page of the Designator's
 127-page calibration that reaches its surround branch -- so `background - 40`
 was below every 8-bit sample, this audit counted approximately zero ink over a
@@ -30,8 +30,8 @@ stage it is checking rather than a second opinion.
 Designator's conservation denominator is what makes the containment claim below
 true rather than vacuous.
 
-**The page-spanning component is named and taken out of both counts.** Until
-2026-09-06 this audit measured every ink pixel on the page against every region
+**The page-spanning component is named and taken out of both counts.** This
+audit used to measure every ink pixel on the page against every region
 cut for it. On a real page the Designator withholds one connected component
 whose bounding box is the whole leaf from detected grouping while preserving
 all of its pixels in conservation
@@ -56,7 +56,7 @@ labels at the page's own *derived* margin, not at this module's contrast, and
 that is measured rather than chosen: at this module's looser contrast the
 writing merges into the page-spanning component and the audit hides 3,367 to
 1,480,349 outside-coverage ink pixels on 41 of the 44 pages -- it reports clean
-pages, which is the direction GOALS 1 forbids. A component is a property of the
+pages, which is the direction goal 2 forbids. A component is a property of the
 page's structure, found at the level the page derives for itself; how much ink
 there is, is this module's own question, and the contrast that answers it stays
 its own.
@@ -65,7 +65,7 @@ its own.
 by the same `BackgroundInferenceRefusal` and for the same reason: a residual of
 zero taken under a paper value that is not paper is arithmetic wearing a
 measurement's name. The caller records the refusal on its own record rather than
-publishing a count nobody took (GOVERNANCE 10). It does not remove the page from
+publishing a count nobody took (principle 8). It does not remove the page from
 the run -- every consumer of this module cuts and reads the page either way.
 """
 
@@ -96,10 +96,10 @@ from common.imaging import Bounds, grayscale_rows
 
 #: The noise floor: below this many outside-coverage ink pixels, a residual
 #: mark is treated as noise regardless of what fraction of the page's (possibly
-#: tiny) total ink count it represents. **Sealed, not a constant, since
-#: 2026-09-14.** It was `MINIMUM_INK_PIXELS = 24` here until then, outside every
+#: tiny) total ink count it represents. **Sealed, not a constant.**
+#: It used to be `MINIMUM_INK_PIXELS = 24` here, outside every
 #: run's config_digest, so a change between two live runs left their provenance
-#: byte-identical (pre-launch review, F088). The value is the field named below
+#: byte-identical (finding F088). The value is the field named below
 #: in `[coverage_audit.noise_floor]`; a policy resolves it unchanged, because a
 #: speck is a speck at every resolution, and `coverage_flag` takes it by name.
 MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
@@ -121,7 +121,7 @@ MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 #: `common/test_designator_recensor_ink_calibration.py`; see the Designator's
 #: `conservation.py` module docstring for the whole decision.
 #:
-#: **That guarantee was arithmetic until 2026-09-06 and is a measurement now.**
+#: **That guarantee was arithmetic and is a measurement now.**
 #: A margin comparison only orders two thresholds when both are taken below the
 #: *same* background, and until this module began inferring through
 #: `common.background` the two backgrounds were different statistics — the
@@ -141,7 +141,7 @@ MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 #: audit's threshold is *higher* than the primary scan's and it counts more ink
 #: than that scan does — including paper. It is still far below the
 #: conservation denominator of 2, which is the number the containment claim is
-#: about. What that costs on real material was measured on 2026-09-06 over 44
+#: about. What that costs on real material was measured over 44
 #: pages and it is the reason the absolute gate below is now a fraction of the
 #: page: at this contrast a real page's audited ink is 1 to 27 per cent of its
 #: own area, so a flat count of outside-coverage pixels means something
@@ -149,8 +149,8 @@ MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
 
 #: The fraction of a page's own ink pixels that must fall outside every region
-#: currently cut for it before the page is flagged, in basis points. **Sealed
-#: since 2026-09-14** beside the noise floor, for the same reason; it was the
+#: currently cut for it before the page is flagged, in basis points. **Sealed**
+#: beside the noise floor, for the same reason; it was the
 #: float `MINIMUM_FRACTION_OUTSIDE_COVERAGE = 0.02` here, and it is an integer
 #: now because canonical artifacts carry no floats. The gate is compared in
 #: integers -- `outside * BASIS_POINTS >= bp * total` -- which is the same
@@ -161,9 +161,9 @@ MINIMUM_FRACTION_OUTSIDE_BP_FIELD: Final = "minimum_fraction_outside_bp"
 #: that page's total ink it is. The fraction gate alone has a hole at the dense
 #: end: a page carrying 500,000 ink pixels can leave 9,000 of them -- several
 #: words, plainly real text -- outside every cut region and still sit under 2%.
-#: That would report a missed act as a clean page, contrary to GOALS 1.
+#: That would report a missed act as a clean page, contrary to goal 2.
 #:
-#: **It is a fraction of the page's own area now, and until 2026-09-06 it was
+#: **It is a fraction of the page's own area now; it used to be
 #: the flat count 2,000.** A flat count is 384 basis points of this
 #: repository's 200x260 fixture page and 1.6 of a 12.6-megapixel leaf, so the
 #: same constant asked a question 240 times stricter on the real page than on
@@ -187,7 +187,7 @@ SUBSTANTIAL_INK_AREA_BP_FIELD: Final = "substantial_ink_area_bp"
 #: of either. `mapped` claims a measurement, and this page has none.
 INK_NOT_MEASURABLE = "ink-not-measurable"
 
-#: The retained page-space evidence's schema id. `v2` from 2026-09-06: the runs
+#: The retained page-space evidence's schema id. `v2`'s runs
 #: are this page's AUDITED ink -- every pixel this audit calls ink, less its
 #: page-spanning component -- where `v1`'s were the whole page's. See
 #: `ink_runs_from_rows` for the change and why the id moved with it.
@@ -197,7 +197,7 @@ INK_RUNS_SCHEMA = "ink-runs.v2"
 # than a calibrated cross-page-act threshold: it localizes the signal, and what
 # decides is the pair of gates above.
 #
-# **It is a fraction of the page's shorter side now, and until 2026-09-06 it was
+# **It is a fraction of the page's shorter side now; it used to be
 # the flat 64 pixels.** 64 pixels is 32 per cent of this repository's 200-pixel
 # fixture page -- not a strip, most of the page -- and 1.8 per cent of a
 # 3,600-pixel leaf. The basis is the SHORTER side and not each dimension
@@ -289,7 +289,7 @@ def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
     publishes measurements under it *before* the Designator ever runs, so a
     file whose numbers are well-formed and whose provenance block is missing
     used to reach a published `ink-map` record with nothing having asked where
-    those numbers came from (CodeRabbit on PR #117). The loader below enforces
+    those numbers came from. The loader below enforces
     it now, on the same closed schema and with the same calibration rule.
     """
 
@@ -520,7 +520,7 @@ def resolve_coverage_audit_policy(
     property of pages two orders of magnitude smaller than any this pipeline
     reads -- the smallest real page in the calibration sample is 1.5 megapixels
     -- and it is the price of the floor. The alternative is worse in the
-    direction GOALS 1 cares about: without it a 20x20 page resolves the gate to
+    direction goal 2 cares about: without it a 20x20 page resolves the gate to
     zero and every stray pixel flags.
 
     Both resolutions go through `common.background.round_half_up_bp`, the one
@@ -893,7 +893,7 @@ def ink_runs_from_rows(
     same page-spanning bound, as the page's own finding was, and a default would
     let one call site drift.
 
-    **The schema id moved from `ink-runs.v1` to `ink-runs.v2` on 2026-09-06,
+    **The schema id moved from `ink-runs.v1` to `ink-runs.v2`,
     because what these runs hold changed.** They used to be every pixel the
     audit called ink. They are now that set with this page's page-spanning
     component removed -- the same subtraction `residual_ink` makes, made once

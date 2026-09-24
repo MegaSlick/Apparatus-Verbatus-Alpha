@@ -25,7 +25,7 @@ door is driven through the *real* registry. Two logs are asserted on: the fetch
 seam's, and a trace of every `resolve`/`ensure`/`receipt` call the registry made
 while handling the refusal.
 
-GOVERNANCE 3, read as ops rather than as models: nothing about a picker requires
+Principle 1, read as ops rather than as models: nothing about a picker requires
 that it be called one, or that a model be the thing doing the choosing.
 """
 

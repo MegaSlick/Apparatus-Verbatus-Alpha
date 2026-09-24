@@ -25,8 +25,8 @@ asked for, and the one place another chair is *resolved* is `_cache_descriptor`
 reading an adapter's configured `adapter_of` base — a configuration lookup, so that
 an old adapter cache cannot masquerade as compatible with a repinned base. It never
 fetches, serves, ranks or substitutes that base. A registry that fell back from one
-chair to a close-enough one would be a picker wearing an ops hat (GOVERNANCE 3,
-CLAUDE.md hard rule 8), and the closed taxonomy plus `test_chairs_no_substitution.py`
+chair to a close-enough one would be a picker wearing an ops hat (principle 1),
+and the closed taxonomy plus `test_chairs_no_substitution.py`
 are what keep one out. That test drives all seven doors through the *real* registry
 and asserts, on a call log kept *inside* the registry rather than in front of it,
 that no other configured chair was resolved, fetched or receipted while each refusal
@@ -52,7 +52,7 @@ timestamp and a live endpoint — honestly non-deterministic — so it is writte
 under the run root through `RunTree.write_run_receipt`, content-addressed, and
 `StageContext.publish` refuses one outright. A stage payload carries the
 receipt's digest-checked reference plus the immutable resolved identity and
-revision, never the timestamp or the endpoint. That is what keeps GOVERNANCE 6's
+revision, never the timestamp or the endpoint. That is what keeps principle 6's
 provenance travelling with every record without breaking spec 01's guarantee that
 repeating an identical command leaves every byte unchanged.
 
@@ -118,7 +118,7 @@ bytes are not there yet. `verify_store` proves what exists and marks the derived
 inventory `complete: false` with every pending artifact named;
 `require_complete_store` is the door for a consumer that needs the whole roster
 on disk. A half-fetched store is therefore recordable and visibly partial rather
-than unrepresentable (GOVERNANCE 2). A pending entry also refuses if its
+than unrepresentable (principle 2). A pending entry also refuses if its
 artifact-keyed snapshot or manifest exists, so replaying an older pending record
 cannot relabel acquired or lost bytes as “not yet fetched.”
 

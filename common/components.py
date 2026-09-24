@@ -1,9 +1,9 @@
 """Connected-component labelling over an ink pixel set, shared by three readers.
 
 **This module is the Designator's own labeller, moved.** It lived in
-`pipeline/2_designator/structure.py` until 2026-09-06 and is re-exported from
+`pipeline/2_designator/structure.py` and is re-exported from
 there, so every caller in that stage still reaches for it where it has always
-been. It moved for the reason `common/background.py` moved the day before and by
+been. It moved for the same reason `common/background.py` moved, and by
 the same rule: a second stage needs it, and `common/` may not import a stage.
 The second reader is `common/residual_ink.py`, whose outside-coverage audit has
 to be able to name this page's page-spanning component -- the one the
@@ -63,8 +63,7 @@ def label_components_reference(pixels: set, *, gap_tolerance_px: int) -> list[Co
 
     Its cost is the reason it is no longer the shipped path: measured 383 s and
     2.17 GB of peak RSS for one 8.7-megapixel photographed page at the sealed
-    `gap_tolerance_px = 3` (`workbench/active/TIMING_REPORT_2026-09-05.md` §1b).
-    Nothing on the live path calls it.
+    `gap_tolerance_px = 3`. Nothing on the live path calls it.
     """
     if gap_tolerance_px < 0:
         raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")
@@ -192,8 +191,7 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     radius^2` dictionary operations. On a real photographed register page at
     300-DPI-equivalent size that measured **383 s and 2.17 GB** for one page at
     the sealed `gap_tolerance_px = 3`, paid by `run.py`'s `_analyze_page` for
-    every sealed page before the first chair is called
-    (`workbench/active/TIMING_REPORT_2026-09-05.md` §1b, §1e). The union-find
+    every sealed page before the first chair is called. The union-find
     here is over ink *runs* instead: real ink is horizontally contiguous, so a
     page of 5.7 million ink pixels is a few hundred thousand runs, and the
     per-pixel neighbourhood probe becomes an interval overlap test between two

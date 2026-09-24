@@ -6,8 +6,8 @@ coupling of the same kind -- a constant one file's number was measured
 against, in a file that cannot import it.
 
 **The third is the one that stopped these being arithmetic.** Two margins only
-order two ink sets when both are taken below the *same* background, and until
-2026-09-06 they were not: the Designator inferred a page's paper from its own
+order two ink sets when both are taken below the *same* background, and they
+used not to be: the Designator inferred a page's paper from its own
 two population modes while `common/residual_ink.py` took the raw histogram mode.
 On a photographed page those are different values by two hundred grey levels,
 the audit's ink set was empty, and the containment the first test pins held over
@@ -128,7 +128,7 @@ def test_the_sealed_ink_bound_still_sits_at_the_level_it_was_measured_at():
     everywhere else. A pin costs nothing and fails loudly on the change that
     matters.
 
-    It is read from `common/background.py` since 2026-09-06, which is where the
+    It is read from `common/background.py`, which is where the
     constant and the probe that uses it both live now: the inference moved out of
     the Designator so that three stages could share it. The file it is compared
     *against* is unchanged, so this is still two source literals in two files.
@@ -150,7 +150,7 @@ def photographed_shaped_page() -> tuple[int, int, list[bytearray]]:
     **the surround wins the histogram**: 20,400 pixels of frame against the
     interior's 19,000 of paper (its 19,600 pixels less the 600 the three marks
     take), so the page's single most common value is 5, which is what
-    `common/residual_ink.py` called paper until 2026-09-06. Its interior
+    `common/residual_ink.py` used to call paper. Its interior
     darkness at the level the surround test measures is 4,043 basis points,
     inside the sealed 5,000 bound and above the 287-3,452 the Designator's 127
     real pages measured, which is stated so the shape is not read as a

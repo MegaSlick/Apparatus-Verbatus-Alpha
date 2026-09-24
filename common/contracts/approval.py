@@ -1,6 +1,6 @@
-"""The approval-record artifact — the one shape every Tyrel-approval is recorded in.
+"""The approval-record artifact — the one shape every approval is recorded in.
 
-GOVERNANCE: only Tyrel approves an exclusion, declares the pipeline proven, or
+Only the project lead approves an exclusion, declares the pipeline proven, or
 grants the permissions the rules require. No automated agent may act as the human
 in any rule. This module cannot enforce that — a file says what it says — but it
 can make an approval *checkable*: one shape, self-hashed, naming the exact policy
@@ -17,12 +17,12 @@ Deterministic artifacts carry no timestamps, because two identical runs must
 produce identical bytes. An approval is not deterministic output — it is a record
 of a human act at a moment — so the moment is the point.
 
-**Cut 2026-08-09, per Tyrel's ruling that session.** `data-gate` used to be a third
-action here, backing a per-run approval-record requirement for real input: none of
-this pipeline's material ever reaches git (it runs on a GPU host, `workbench/` is
-gitignored, and an ingress check plus CI's full-history payload scan already cover that
-mechanically), so the extra sign-off bought nothing and is gone. `exclusion` and
-`salvage-promotion` remain — GOVERNANCE 1 still requires Tyrel's approval for an
+`data-gate` used to be a third action here, backing a per-run approval-record
+requirement for real input: none of this pipeline's material ever reaches git
+(it runs on a GPU host, `workbench/` is gitignored, and an ingress check plus
+CI's full-history payload scan already cover that mechanically), so the extra
+sign-off bought nothing and is gone. `exclusion` and `salvage-promotion`
+remain — principle 9 still requires the project lead's approval for an
 exclusion, and that is governance, not something this cut touches.
 """
 
@@ -75,7 +75,7 @@ _FIELDS: Final = frozenset({"schema", *_REQUIRED})
 class ApprovalRecordReference:
     """A digest-checked reference to an approval-record artifact.
 
-    An approval is evidence of Tyrel's act, not a caller assertion.  Carrying the
+    An approval is evidence of the project lead's act, not a caller assertion.  Carrying the
     path and digest together lets a consumer verify the stored bytes before it
     trusts the record they decode to.  This mirrors ``RunReceiptReference`` while
     keeping the approval contract independent of the run-tree writer.
@@ -135,7 +135,7 @@ def synthetic_fixture_ingress_record() -> dict[str, str]:
 def real_ingress_record() -> dict[str, str]:
     """Return the ingress record for a real submission.
 
-    Carries no approval evidence: cut 2026-08-09, this mode used to bind a
+    Carries no approval evidence: this mode used to bind a
     data-gate policy hash and an approval reference here. Real material never
     reaches git regardless of any run-level sign-off, so the record now says only
     which of the two known routes created the run.
@@ -251,7 +251,7 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
     if approver != APPROVER:
         raise ApprovalRefusal(
             f"approval record names approver {approver!r}; only "
-            f"{APPROVER} approves, and no agent stands in for him"
+            f"{APPROVER} approves, and no agent stands in for them"
         )
     action = record["action"]
     if type(action) is not str:

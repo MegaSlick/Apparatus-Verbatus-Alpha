@@ -150,7 +150,7 @@ def test_store_refuses_a_pinned_licence_whose_bytes_are_gone(tmp_path):
         verify_store(tmp_path)
 
 
-# --- S1: publish-once custody (GOVERNANCE 4 — evidence is never overwritten) -----
+# --- S1: publish-once custody (principle 4 — evidence is never overwritten) -----
 
 
 def test_write_derived_inventory_reuses_identical_bytes_silently(tmp_path):
@@ -1258,7 +1258,7 @@ def test_a_resumed_boot_still_refuses_bytes_that_differ_from_the_first_fetch(tmp
     The recovery above works because a pinned revision fetched twice yields the
     same bytes, so the orphaned manifest is republished identically and reused.
     If it does not, the orphan is the pin and the new bytes lose: publication
-    never overwrites existing evidence (GOVERNANCE 4).
+    never overwrites existing evidence (principle 4).
     """
 
     capacity = dict(_MATERIALIZATION_CAPACITY)
@@ -1525,11 +1525,12 @@ def test_a_complete_sharded_fetch_keeps_reconciling_after_the_boot_that_made_it(
 
 
 def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
-    """A licence note is Tyrel's acceptance, and a copy of it is not a paraphrase.
+    """A licence note is the project lead's acceptance, and a copy of it is not
+    a paraphrase.
 
     `config/models.toml` holds the drafted real roster commented out, one
     `license_note` per row recording what that repository licenses and that it
-    was accepted under the research track on 2026-08-20.
+    was accepted under the research track.
     `config/models-real.toml` is that roster made selectable, so its notes must
     be those notes and not a session's rewording of them.
     """
@@ -1561,7 +1562,7 @@ def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothin
     """The store's `license_declaration` and the roster's note are one fact.
 
     The store column decides which sentinel a fetch without a licence file
-    writes; the roster note is what Tyrel accepted. If they disagree the store
+    writes; the roster note is what the project lead accepted. If they disagree the store
     records a licence position nobody took, so the disagreement is caught here
     rather than at a pod launch.
     """

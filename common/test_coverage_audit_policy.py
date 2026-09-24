@@ -1,7 +1,7 @@
 """The sealed `[coverage_audit]` policy: what it refuses, and what it resolves to.
 
-The two gates in `common/residual_ink.py` were flat pixel counts until
-2026-09-06 and are fractions of the page now. This module holds the loader and
+The two gates in `common/residual_ink.py` used to be flat pixel counts
+and are fractions of the page now. This module holds the loader and
 the resolver to the same shape `common/background.py`'s policy is held to: a
 closed field set, both ends of both bounds refused by name, and a resolution
 that is measurably proportional rather than merely renamed.
@@ -28,8 +28,8 @@ from common.residual_ink import (
 ROOT = Path(__file__).resolve().parents[1]
 
 # The shipped noise floor and fraction gate, and a well-formed `[coverage_audit]`
-# table to vary one field of at a time. Both values were module constants until
-# 2026-09-14 (`MINIMUM_INK_PIXELS = 24`, `MINIMUM_FRACTION_OUTSIDE_COVERAGE =
+# table to vary one field of at a time. Both values used to be module constants
+# (`MINIMUM_INK_PIXELS = 24`, `MINIMUM_FRACTION_OUTSIDE_COVERAGE =
 # 0.02`) and are sealed in their own sub-table now, with their own provenance,
 # so the calibration claim over the two gates is not read as covering them.
 NOISE_FLOOR = {"minimum_ink_pixels": 24, "minimum_fraction_outside_bp": 200}
@@ -255,7 +255,7 @@ def test_a_shipped_policy_with_no_provenance_block_is_refused_by_the_common_load
     Designator's own loader -- and it runs before the Designator does. So a file
     whose numbers are well-formed and whose provenance block is missing used to
     reach a published measurement with nothing having asked where those numbers
-    came from (CodeRabbit on PR #117).
+    came from.
     """
     path = tmp_path / "no-provenance.toml"
     path.write_text(_sealed_toml_without(block), encoding="utf-8")

@@ -50,7 +50,7 @@ _MAX_ENTITY_CHARACTERS: Final = 40
 # -- `common/` is the lower layer and `feeding.py` already imports from it, so
 # an import the other way would be circular. `test_alignment.py` asserts this
 # tuple is byte-identical to `feeding._UNCERTAINTY_TOKENS` so the two copies
-# cannot drift silently (GOVERNANCE 10).
+# cannot drift silently (principle 8).
 _UNCERTAINTY_TOKENS: Final = ("[UNCERTAIN]", "[CROSSED_OUT]")
 
 
@@ -63,7 +63,7 @@ def _alarm(signum: int, frame: Any) -> None:
 # chair ("the witness timed out"); what actually happened is that this module's
 # own wall-clock backstop fired before it could say anything about coverage, and
 # the difference decides whether a shortfall is evidence or an absent
-# measurement (GOVERNANCE 10).
+# measurement (principle 8).
 DEADLINE_REASON: Final = "alignment-deadline-exceeded"
 
 
@@ -84,8 +84,8 @@ def _matching_blocks(witness_text: str, anchor_text: str) -> list[tuple[int, int
     to match ordinary ink. It is also what makes the matcher slow on degenerate
     input; the wall-clock backstop below exists because of it.
 
-    **RapidFuzz's Indel/LCS opcodes were tried here and refused, on measurement
-    (hostile review C, 2026-09-07).** They are four orders of magnitude faster
+    **RapidFuzz's Indel/LCS opcodes were tried here and refused, on measurement.**
+    They are four orders of magnitude faster
     -- the slowest input the sealed pair bound admits goes from 283.9 s to
     0.011 s -- and on identical or near-identical page text they return exactly
     these blocks. But LCS maximizes matched *characters*, and where that ties, it
@@ -193,7 +193,7 @@ def markup_text_view(raw: str) -> dict[str, Any]:
     # composition cannot reproduce the composed text (starter-starter
     # composition, e.g. Hangul jamo), the map records None for every entry
     # rather than publishing offsets that may lie -- an absent measurement,
-    # never a fabricated one (GOVERNANCE 10).
+    # never a fabricated one (principle 8).
     composed_offsets: list[int | None]
     cluster_chars: list[str] = []
     cluster_offsets: list[int | None] = []
@@ -343,13 +343,13 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
     made no measurement of coverage, and nothing downstream may read it as one.
     It is still `unaligned` rather than a partial map, because publishing spans
     a timed-out comparison never finished would be worse than saying nothing
-    (GOVERNANCE 2/10).
+    (principle 2 / principle 8).
 
     **The deadline is sized from the legitimate ceiling, not the pathological
     one, and it does not clear the pathological one.** An unaligned page witness
     is not `comparable`, so it leaves the act's witness floor: a deadline short
     enough to fire on real work records a slow comparison as coverage that is
-    missing (GOALS 1, hostile review C). A 7,500-character page whose acts
+    missing (goal 2). A 7,500-character page whose acts
     repeat one formula verbatim -- a scribe copying one form -- measures 10.1 s,
     already past the five seconds this config used to carry, so 25 s is what it
     now carries. Two *different* low-entropy chair responses at exactly
