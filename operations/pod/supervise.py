@@ -637,6 +637,14 @@ def supervise_tick(
         # Bounded without a clock of its own: this branch is reachable only
         # while `run_once` found the launch owner's heartbeat fresh, and the
         # launcher heartbeats only inside its bounded arming waits.
+        #
+        # An adopted pod was RUNNING when adopted, so the same word during its
+        # arming is really a restart. It is still waited on here, because
+        # nothing durable tells an adopted lease from a created one: the lease
+        # schema records no origin, and comparing the pod's creation instant
+        # with the lease's leans on the provider's and this laptop's clocks
+        # agreeing, where a wrong answer closes a healthy new launch. The wait
+        # stays inside the same bounded arming window either way.
         return SuperviseResult(
             PROVIDER_STARTING,
             (

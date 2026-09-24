@@ -175,6 +175,7 @@ from .models import (
     Presence,
     ProviderFailure,
     ProviderStatus,
+    TerminateRefused,
     as_decimal,
     looks_like_credential_field,
     parse_billing_cutoff_margin_seconds,
@@ -195,9 +196,13 @@ RUNPOD_DEFAULT_ROUTE: Final = "v2"
 """The route `live_runpod_provider` and the pod-side timer use unless told otherwise."""
 
 RUNPOD_ROUTE_ENV: Final = "VERBATUS_RUNPOD_ROUTE"
-"""Optional pod environment key choosing the pod-side timer's route; unset means
-`RUNPOD_DEFAULT_ROUTE`. The timer only reads, terminates and captures billing,
-which every route can do for any pod in the account."""
+"""The pod environment key that seals the route a pod was created through.
+
+Each adapter's create adds it to the pod's ``env`` with its own ``ROUTE``, and
+`timer_context_from_environment` requires it, so the pod-side timer closes its
+pod through the same route -- and the same credential scope -- the launch used.
+A timer that guessed a default could be the one controller that cannot
+terminate its own pod at the hard deadline."""
 
 V2_ON_DEMAND_BASIS: Final[str | None] = None
 """The documented basis on which a v2 pod is on-demand, or ``None`` while there is none.
@@ -206,8 +211,8 @@ REST v2 has no ``interruptible`` field on create and no rental-type field on the
 pod (module docstring), so the adapter cannot request on-demand or read it
 back. While this is ``None``, `RunPodV2Provider.create` refuses before any POST
 and every v2 pod record carries no runtime contract. Setting it is the project
-lead's decision, made in a reviewed commit that names the page or vendor answer
-that settles it; nothing at run time can set it."""
+lead's decision, and it is set only in a reviewed commit that names the page or
+vendor answer that settles it."""
 
 V2_ON_DEMAND_REFUSAL: Final = (
     "RunPod REST v2 cannot show that a pod is on-demand: its create body has no "
@@ -243,9 +248,6 @@ _POD_STATES = frozenset({"RUNNING", "EXITED", "TERMINATED"})
 
 _V2_POD_STATES = frozenset({"PROVISIONING", "STARTING", "RUNNING", "EXITED", "ERROR", "TERMINATED"})
 """v2's ``PodStatus`` enum. `models.PRE_RUNNING_STATES` names the two the runtime waits on."""
-
-_V2_ZERO_COST_STATES = frozenset({"EXITED", "TERMINATED"})
-"""Where v2 documents ``cost`` as 0.0; anywhere else a zero rate is refused."""
 
 _MAX_POD_LIST_PAGES: Final = 20
 """v2 pages the pod list at up to 1000 pods a page. Twenty pages is far past
@@ -573,6 +575,21 @@ def _first_error(errors: object) -> str:
     return "unreadable error payload"
 
 
+def _pod_environment(request: PodCreateRequest, route: str) -> dict[str, str]:
+    """The request's metadata plus the sealed route, refusing a conflicting one."""
+
+    environment = dict(request.metadata)
+    stated = environment.get(RUNPOD_ROUTE_ENV)
+    if stated is not None and stated != route:
+        raise ProviderFailure(
+            f"RunPod create request carries {RUNPOD_ROUTE_ENV}={stated!r} but is being sent "
+            f"through REST {route}; the pod-side timer must close through the route that "
+            "created it. No create request was issued"
+        )
+    environment[RUNPOD_ROUTE_ENV] = route
+    return environment
+
+
 class _RunPodAdapter:
     """What both REST routes share: prices, balance, fixture recording, token lookup.
 
@@ -877,7 +894,7 @@ class RunPodProvider(_RunPodAdapter):
                 "RunPod recovery lookup found no pod carrying this exact launch token; "
                 "no create request was issued"
             )
-        response = self.transport.request("POST", "/pods", _create_payload(request))
+        response = self.transport.request("POST", "/pods", _create_payload(request, self.ROUTE))
         if response.status not in {200, 201}:
             raise ProviderFailure(
                 f"RunPod create returned HTTP {response.status}: {_body_summary(response.body)}"
@@ -1225,7 +1242,7 @@ provisioned the pod are checked against each other rather than left independent.
 """
 
 
-def _create_payload(request: PodCreateRequest) -> dict[str, object]:
+def _create_payload(request: PodCreateRequest, route: str = "v1") -> dict[str, object]:
     """The v1 `PodCreateInput` body. `interruptible` is always explicitly false.
 
     Spec 04: on-demand only — "a spot reclaim mid-run is a silent-loss machine".
@@ -1254,7 +1271,7 @@ def _create_payload(request: PodCreateRequest) -> dict[str, object]:
         "networkVolumeId": request.volume_id,
         "volumeMountPath": request.volume_mount_path,
         "dockerStartCmd": list(request.docker_start_cmd),
-        "env": dict(request.metadata),
+        "env": _pod_environment(request, route),
     }
     if request.template is not None:
         payload["templateId"] = request.template
@@ -1306,7 +1323,7 @@ class RunPodV2Provider(_RunPodAdapter):
             )
         if V2_ON_DEMAND_BASIS is None:
             raise ProviderFailure(V2_ON_DEMAND_REFUSAL + "; no create request was issued")
-        response = self.transport.request("POST", "/pods", _v2_create_payload(request))
+        response = self.transport.request("POST", "/pods", _v2_create_payload(request, self.ROUTE))
         if response.status == 201:
             return self._record(_object(response.body, "RunPod create"))
         # None of these is retried, here or by any caller: a create is never
@@ -1412,7 +1429,7 @@ class RunPodV2Provider(_RunPodAdapter):
         if response.status in {204, 404}:
             return
         if response.status == 409:
-            raise ProviderFailure(
+            raise TerminateRefused(
                 f"RunPod refused to terminate pod {pod_id!r} with HTTP 409: it belongs to a "
                 "cluster and cannot be terminated through the pod endpoint. It is still "
                 "billing; terminate its cluster from the RunPod console now "
@@ -1661,9 +1678,13 @@ class RunPodV2Provider(_RunPodAdapter):
         cursor: str | None = None
         seen: set[str] = set()
         for _ in range(_MAX_POD_LIST_PAGES):
-            path = (
-                "/pods" if cursor is None else f"/pods?{urllib.parse.urlencode({'cursor': cursor})}"
-            )
+            # Cluster member pods are left out unless asked for. A pod this
+            # runtime created is standalone, but a list that hides any pod in
+            # the account is not one absence can be read from.
+            query: dict[str, str] = {"includeClusterPods": "true"}
+            if cursor is not None:
+                query["cursor"] = cursor
+            path = f"/pods?{urllib.parse.urlencode(query)}"
             response = self.transport.request("GET", path)
             if response.status != 200:
                 raise ProviderFailure(
@@ -1707,6 +1728,60 @@ class RunPodV2Provider(_RunPodAdapter):
             "from a list this adapter did not finish"
         )
 
+    def _v2_rate(
+        self, pod_id: str, state: str, payload: Mapping[str, object]
+    ) -> tuple[Decimal, str, str | None]:
+        """The hourly rate a record carries, its source, and a contract refusal if any.
+
+        A RUNNING pod must report a positive ``cost``; anything else raises,
+        as the v1 adapter does. Any other state never refuses an identified pod
+        on its rate: v2 documents 0.0 for EXITED and TERMINATED and says
+        nothing for PROVISIONING, STARTING or ERROR, and a record that raised
+        here after a POST would leave a billing pod unbound. So a missing or
+        non-positive rate there is replaced by the reviewed sheet's price for
+        the reported GPU, with a source that says so; when even that cannot be
+        resolved the rate is zero and the record carries a contract refusal,
+        so the pod is bound and closed rather than launched on an unknown rate.
+        """
+
+        observed_source = (
+            "RunPod observed pod cost; volume rate supplied at launch, not observed from the "
+            "provider"
+        )
+        raw = payload.get("cost")
+        if state == "RUNNING":
+            hourly = as_decimal(raw, f"RunPod pod {pod_id} cost")  # type: ignore[arg-type]
+            if hourly <= 0:
+                raise ProviderFailure(
+                    f"RunPod pod {pod_id} reports a non-positive cost while RUNNING"
+                )
+            return hourly, observed_source, None
+        try:
+            hourly = as_decimal(raw, f"RunPod pod {pod_id} cost")  # type: ignore[arg-type]
+        except ValueError:
+            hourly = Decimal("0")
+        if hourly > 0:
+            return hourly, observed_source, None
+        gpu = payload.get("gpu")
+        gpu_id = gpu.get("id") if isinstance(gpu, Mapping) else None
+        try:
+            if not isinstance(gpu_id, str) or not gpu_id:
+                raise ValueError("the pod reports no gpu.id")
+            reviewed = as_decimal(self.pod_price(gpu_id), "RunPod reviewed pod price")
+        except Exception as error:  # noqa: BLE001 - any failure here is a named refusal below
+            return (
+                Decimal("0"),
+                f"RunPod reported no pod rate while {state}, and no reviewed price resolved",
+                f"RunPod pod {pod_id} reported no hourly rate while {state} and the reviewed "
+                f"price sheet could not supply one ({error}); its cost cannot be bounded",
+            )
+        return (
+            reviewed,
+            f"RunPod reported no pod rate while {state}; the reviewed price sheet's rate for "
+            f"{gpu_id} stands in; volume rate supplied at launch",
+            None,
+        )
+
     def _record(self, payload: Mapping[str, object]) -> PodRecord:
         """Identity, lifecycle, rate, volume and creation instant; then the contract.
 
@@ -1721,25 +1796,23 @@ class RunPodV2Provider(_RunPodAdapter):
         state = payload.get("status")
         if state not in _V2_POD_STATES:
             raise ProviderFailure(f"RunPod pod {pod_id} reports an unrecognised status: {state!r}")
-        hourly = as_decimal(payload.get("cost"), f"RunPod pod {pod_id} cost")
-        if hourly <= 0 and state not in _V2_ZERO_COST_STATES:
-            raise ProviderFailure(f"RunPod pod {pod_id} reports a non-positive cost while {state}")
         volume_id, mount_path = _v2_network_mount(pod_id, payload)
+        hourly, rate_source, rate_refusal = self._v2_rate(pod_id, str(state), payload)
         created_at = _timestamp(payload.get("createdAt"), f"RunPod pod {pod_id} createdAt")
         contract: PodRuntimeContract | None = None
-        refusal: str | None = None
-        try:
-            contract = _v2_runtime_contract(pod_id, payload, volume_id, mount_path)
-        except ProviderFailure as error:
-            refusal = str(error)
+        refusal: str | None = rate_refusal
+        if refusal is None:
+            try:
+                contract = _v2_runtime_contract(pod_id, payload, volume_id, mount_path)
+            except ProviderFailure as error:
+                refusal = str(error)
         return PodRecord(
             pod_id=pod_id,
             name=_text(payload.get("name"), f"RunPod pod {pod_id} name"),
             estimate=PodEstimate(
                 hourly,
                 as_decimal(self.volume_price(volume_id), "RunPod volume price"),
-                "RunPod observed pod cost; volume rate supplied at launch, not observed "
-                "from the provider",
+                rate_source,
                 self.now(),
             ),
             volume_id=volume_id,
@@ -1795,6 +1868,12 @@ def _v2_runtime_contract(
         )
     command = _v2_start_argv(pod_id, payload)
     margin = _billing_cutoff_margin_from_environment(pod_id, payload)
+    environment = payload.get("env")
+    if not isinstance(environment, Mapping) or environment.get(RUNPOD_ROUTE_ENV) != "v2":
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} env does not seal {RUNPOD_ROUTE_ENV}=v2; its pod-side "
+            "timer could not close it through the route that created it"
+        )
     image = _text(payload.get("image"), f"RunPod pod {pod_id} image")
     template = payload.get("template")
     if V2_ON_DEMAND_BASIS is None:
@@ -1866,7 +1945,7 @@ def _v2_start_args(command: tuple[str, ...]) -> str:
     return json.dumps({"entrypoint": [command[0]], "cmd": list(command[1:])}, separators=(",", ":"))
 
 
-def _v2_create_payload(request: PodCreateRequest) -> dict[str, object]:
+def _v2_create_payload(request: PodCreateRequest, route: str = "v2") -> dict[str, object]:
     """The v2 `CreatePodRequest` body: nested where v1 was flat.
 
     No ``interruptible`` is sent because v2 has no such field; that is why
@@ -1884,7 +1963,7 @@ def _v2_create_payload(request: PodCreateRequest) -> dict[str, object]:
         "disk": request.container_disk_gb,
         "mounts": {"network": [{"volumeId": request.volume_id, "path": request.volume_mount_path}]},
         "args": _v2_start_args(request.docker_start_cmd),
-        "env": dict(request.metadata),
+        "env": _pod_environment(request, route),
         "startJupyter": False,
         "startSsh": False,
     }
@@ -1981,7 +2060,9 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
         _required_environment(env, BILLING_CUTOFF_MARGIN_ENV), BILLING_CUTOFF_MARGIN_ENV
     )
     launch_identity = _required_environment(env, LAUNCH_TOKEN_ENV)
-    route = env.get(RUNPOD_ROUTE_ENV) or RUNPOD_DEFAULT_ROUTE
+    # Required, never defaulted: the route is sealed into the pod's env by the
+    # adapter that created it (`_pod_environment`).
+    route = _required_environment(env, RUNPOD_ROUTE_ENV)
     if route not in RUNPOD_ROUTES:
         raise RuntimeError(
             f"RunPod pod timer is not armed: {RUNPOD_ROUTE_ENV} must be one of {RUNPOD_ROUTES}"

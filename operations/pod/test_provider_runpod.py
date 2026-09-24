@@ -380,7 +380,12 @@ def test_create_correlates_the_launch_token_before_it_posts() -> None:
     assert body["networkVolumeId"] == "volume-1"
     assert body["volumeMountPath"] == "/workspace/private"
     assert body["gpuTypeIds"] == ["NVIDIA RTX 6000 Ada Generation"]
-    assert body["env"] == {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"}
+    # The adapter seals its own route into the pod's env for the pod-side timer.
+    assert body["env"] == {
+        "VERBATUS_LAUNCH_TOKEN": TOKEN,
+        BILLING_CUTOFF_MARGIN_ENV: "3600",
+        "VERBATUS_RUNPOD_ROUTE": "v1",
+    }
     # The create body used to name no container disk at all, so the pod took
     # whatever the image or the account defaulted to while the bootstrap
     # downloaded the serving stack onto it twice over.
@@ -750,6 +755,7 @@ def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:
             "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
             BILLING_CUTOFF_MARGIN_ENV: "3600",
             "VERBATUS_LAUNCH_TOKEN": TOKEN,
+            "VERBATUS_RUNPOD_ROUTE": "v1",
         }
     )
 
@@ -772,6 +778,7 @@ def test_pod_timer_refuses_an_unbounded_or_noncanonical_sealed_cutoff_margin(
         "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
         BILLING_CUTOFF_MARGIN_ENV: margin,
         "VERBATUS_LAUNCH_TOKEN": TOKEN,
+        "VERBATUS_RUNPOD_ROUTE": "v1",
     }
 
     with pytest.raises(ProviderFailure, match="VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"):

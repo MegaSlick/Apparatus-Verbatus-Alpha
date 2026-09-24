@@ -16,18 +16,23 @@ from decimal import Decimal
 import pytest
 
 from . import provider_runpod
+from .controllers import ControllerState, LaptopSupervisor
+from .lease import LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     BillingState,
     CloseState,
+    PendingCreateIntent,
     PodCreateRequest,
     Presence,
     ProviderFailure,
+    TerminateRefused,
 )
 from .provider import PodProvider
 from .provider_runpod import (
     RUNPOD_DEFAULT_ROUTE,
     RUNPOD_REST_ROOT,
+    RUNPOD_ROUTE_ENV,
     RUNPOD_V2_ROOT,
     HttpResponse,
     RunPodProvider,
@@ -42,6 +47,12 @@ UTC = timezone.utc
 NOW = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
 TOKEN = "a" * 32
 CREATED = "2026-09-24T11:40:00Z"
+LIST = "/pods?includeClusterPods=true"
+SEALED_ENV = {
+    "VERBATUS_LAUNCH_TOKEN": TOKEN,
+    BILLING_CUTOFF_MARGIN_ENV: "3600",
+    "VERBATUS_RUNPOD_ROUTE": "v2",
+}
 
 
 class ScriptedTransport:
@@ -101,7 +112,7 @@ def pod_payload(**overrides: object) -> dict[str, object]:
         "args": exec_args(),
         "disk": 200,
         "ports": [],
-        "env": {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        "env": dict(SEALED_ENV),
         "registry": None,
         "mounts": {"network": [{"volumeId": "volume-1", "path": "/workspace/private"}]},
         "gpu": {"id": "NVIDIA RTX 6000 Ada Generation", "count": 1, "vcpuCount": 16, "memory": 64},
@@ -199,14 +210,19 @@ def timer_environment(**overrides: str) -> dict[str, str]:
     return environment
 
 
-def test_the_pod_timer_uses_the_default_route_unless_its_environment_names_one() -> None:
-    default = timer_context_from_environment(timer_environment())
+def test_the_pod_timer_closes_through_the_route_sealed_into_its_pod() -> None:
+    v2 = timer_context_from_environment(timer_environment(VERBATUS_RUNPOD_ROUTE="v2"))
     v1 = timer_context_from_environment(timer_environment(VERBATUS_RUNPOD_ROUTE="v1"))
 
-    assert type(default.timer.shutdown.provider) is RunPodV2Provider
+    assert type(v2.timer.shutdown.provider) is RunPodV2Provider
     assert type(v1.timer.shutdown.provider) is RunPodProvider
     with pytest.raises(RuntimeError, match="VERBATUS_RUNPOD_ROUTE"):
         timer_context_from_environment(timer_environment(VERBATUS_RUNPOD_ROUTE="v9"))
+
+
+def test_the_pod_timer_refuses_to_guess_a_route_its_pod_does_not_carry() -> None:
+    with pytest.raises(RuntimeError, match="required environment VERBATUS_RUNPOD_ROUTE"):
+        timer_context_from_environment(timer_environment())
 
 
 # -- create: the on-demand stop, then the documented body and statuses --------
@@ -220,7 +236,7 @@ def test_create_refuses_before_any_post_while_on_demand_cannot_be_shown() -> Non
 
     assert 'route="v1"' in str(refused.value)
     assert "V2_ON_DEMAND_BASIS" in str(refused.value)
-    assert [(method, path) for method, path, _ in transport.calls] == [("GET", "/pods")]
+    assert [(method, path) for method, path, _ in transport.calls] == [("GET", LIST)]
 
 
 def test_a_pod_this_launch_already_created_is_still_returned_for_closing() -> None:
@@ -256,7 +272,8 @@ def test_create_posts_the_documented_nested_body(on_demand_settled: None) -> Non
             {"entrypoint": ["python"], "cmd": list(request().docker_start_cmd[1:])},
             separators=(",", ":"),
         ),
-        "env": {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        # The adapter seals its own route into the pod's env for the timer.
+        "env": SEALED_ENV,
         "startJupyter": False,
         "startSsh": False,
         "templateId": "template-immutable-reference",
@@ -265,6 +282,44 @@ def test_create_posts_the_documented_nested_body(on_demand_settled: None) -> Non
     assert record.state == "PROVISIONING"
     assert record.runtime_contract is not None
     assert record.runtime_contract.matches(request(container_disk_gb=200))
+
+
+def test_a_request_naming_another_route_is_refused_before_any_post(
+    on_demand_settled: None,
+) -> None:
+    transport = ScriptedTransport([json_response(page([]))])
+    metadata = {**request().metadata, "VERBATUS_RUNPOD_ROUTE": "v1"}
+
+    with pytest.raises(ProviderFailure, match="through REST v2"):
+        provider(transport).create(request(metadata=metadata))
+
+    assert [method for method, _, _ in transport.calls] == ["GET"]
+
+
+def test_a_v1_create_seals_v1_into_its_pod_env() -> None:
+    transport = ScriptedTransport([json_response([]), json_response({}, 500)])
+    v1 = RunPodProvider(
+        transport,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(ProviderFailure, match="HTTP 500"):
+        v1.create(request())
+
+    body = transport.calls[1][2]
+    assert body is not None and body["env"][RUNPOD_ROUTE_ENV] == "v1"  # type: ignore[index]
+
+
+def test_a_pod_whose_env_does_not_seal_v2_carries_no_contract(on_demand_settled: None) -> None:
+    env = {k: v for k, v in SEALED_ENV.items() if k != "VERBATUS_RUNPOD_ROUTE"}
+    record = provider(ScriptedTransport([]))._record(pod_payload(env=env))
+
+    assert record.runtime_contract is None
+    assert (
+        record.contract_refusal is not None and "VERBATUS_RUNPOD_ROUTE" in record.contract_refusal
+    )
 
 
 def test_the_close_window_anchors_on_created_at_not_on_container_start(
@@ -334,10 +389,15 @@ def test_a_create_answered_200_is_not_the_documented_201(on_demand_settled: None
         provider(transport).create(request())
 
 
-def test_recovery_only_create_never_posts() -> None:
+@pytest.mark.parametrize("settled", [False, True])
+def test_recovery_only_create_never_posts(monkeypatch: pytest.MonkeyPatch, settled: bool) -> None:
+    """Proven with the on-demand gate open too, so recovery_only itself is what stops the POST."""
+
+    if settled:
+        monkeypatch.setattr(provider_runpod, "V2_ON_DEMAND_BASIS", "test basis, not a real one")
     transport = ScriptedTransport([json_response(page([]))])
 
-    with pytest.raises(ProviderFailure, match="no create request was issued"):
+    with pytest.raises(ProviderFailure, match="found no pod carrying this exact launch token"):
         provider(transport).create(request().recovery_request())
 
     assert [method for method, _, _ in transport.calls] == ["GET"]
@@ -382,7 +442,10 @@ def test_token_correlation_follows_every_page_of_the_pod_list() -> None:
     record = provider(transport).create(request())
 
     assert record.pod_id == "pod-1"
-    assert [path for _, path, _ in transport.calls] == ["/pods", "/pods?cursor=c%2F2%2B"]
+    assert [path for _, path, _ in transport.calls] == [
+        LIST,
+        LIST + "&cursor=c%2F2%2B",
+    ]
 
 
 def test_list_absence_reads_every_page_before_it_answers() -> None:
@@ -498,15 +561,57 @@ def test_an_unrecognised_status_is_refused_by_the_record() -> None:
         provider(transport).adopt("pod-1")
 
 
-def test_a_zero_rate_is_refused_where_v2_does_not_document_it() -> None:
-    with pytest.raises(ProviderFailure, match="non-positive cost while PROVISIONING"):
-        provider(ScriptedTransport([]))._record(pod_payload(status="PROVISIONING", cost=0))
+def test_a_running_pod_with_no_positive_rate_is_refused() -> None:
+    with pytest.raises(ProviderFailure, match="non-positive cost while RUNNING"):
+        provider(ScriptedTransport([]))._record(pod_payload(cost=0))
 
 
-def test_a_zero_rate_is_accepted_for_an_exited_pod_as_v2_documents() -> None:
-    record = provider(ScriptedTransport([]))._record(pod_payload(status="EXITED", cost=0))
+@pytest.mark.parametrize("word", ["PROVISIONING", "STARTING", "ERROR", "EXITED", "TERMINATED"])
+@pytest.mark.parametrize("cost", [0, None])
+def test_a_pod_not_running_is_never_refused_on_its_rate(
+    on_demand_settled: None, word: str, cost: object
+) -> None:
+    """A record that raised here after a POST would leave a billing pod unbound."""
+
+    record = provider(ScriptedTransport([]))._record(pod_payload(status=word, cost=cost))
+
+    assert record.state == word
+    assert record.estimate.pod_hourly_usd == Decimal("0.77")
+    assert "reported no pod rate" in record.estimate.source
+    assert record.runtime_contract is not None
+
+
+def test_a_rate_neither_reported_nor_reviewed_binds_a_record_that_closes() -> None:
+    def no_price(gpu: str) -> Decimal:
+        raise LookupError(f"no reviewed card_profile prices {gpu}")
+
+    adapter = RunPodV2Provider(
+        ScriptedTransport([]),
+        pod_price=no_price,
+        volume_price=lambda volume: Decimal("0.05"),
+        now=lambda: NOW,
+    )
+
+    record = adapter._record(pod_payload(status="PROVISIONING", cost=0))
 
     assert record.estimate.pod_hourly_usd == Decimal("0")
+    assert record.runtime_contract is None
+    assert record.contract_refusal is not None
+    assert "cost cannot be bounded" in record.contract_refusal
+
+
+def test_a_create_answered_error_at_zero_cost_is_returned_and_closes(
+    on_demand_settled: None,
+) -> None:
+    world = PodWorld(post=pod_payload(status="ERROR", cost=0))
+    adapter = provider(world)  # type: ignore[arg-type]
+
+    record = adapter.create(request())
+    report = shutdown_for(adapter).close(record, reason="created in ERROR")
+
+    assert record.state == "ERROR"
+    assert report.state is CloseState.VERIFIED
+    assert [method for method, _, _ in world.calls][:3] == ["GET", "POST", "DELETE"]
 
 
 @pytest.mark.parametrize(
@@ -625,11 +730,25 @@ def test_terminate_names_a_cluster_pod_it_cannot_stop_and_does_not_retry() -> No
         [problem(409, "Conflict", "pod belongs to cluster; cannot terminate via pod endpoints")]
     )
 
-    with pytest.raises(ProviderFailure, match="belongs to a cluster") as refused:
+    with pytest.raises(TerminateRefused, match="belongs to a cluster") as refused:
         provider(transport).terminate("pod-1")
 
     assert "console" in str(refused.value)
     assert len(transport.calls) == 1
+
+
+def test_a_refused_terminate_stops_the_close_at_once_with_its_remedy() -> None:
+    world = PodWorld(terminate_status=409)
+    adapter = provider(world)  # type: ignore[arg-type]
+    record = adapter._record(pod_payload())
+
+    report = shutdown_for(adapter).close(record, reason="drill")
+
+    assert report.state is CloseState.FAILED_SHUTDOWN
+    assert report.terminate_attempts == 1
+    assert report.manual_action is not None and "console" in report.manual_action
+    assert not report.pod_get_absent and not report.pod_list_absent
+    assert [method for method, _, _ in world.calls] == ["DELETE"]
 
 
 @pytest.mark.parametrize("code", [200, 202, 500])
@@ -936,3 +1055,110 @@ def test_the_catalogue_cross_check_names_every_disagreement() -> None:
 def test_an_unreadable_catalogue_refuses(response: HttpResponse, reason: str) -> None:
     with pytest.raises(ProviderFailure, match=reason):
         provider(ScriptedTransport([response])).cross_check_catalogue({})
+
+
+# -- a routed fake of the documented v2 routes, for whole flows -----------------
+
+
+class PodWorld:
+    """Answers each documented v2 route from one small in-memory account."""
+
+    def __init__(
+        self,
+        pods: list[dict[str, object]] | None = None,
+        *,
+        post: dict[str, object] | None = None,
+        terminate_status: int = 204,
+    ) -> None:
+        self.pods = {str(pod["id"]): pod for pod in (pods or [])}
+        self.post = post
+        self.terminate_status = terminate_status
+        self.calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def request(
+        self, method: str, path: str, body: dict[str, object] | None = None
+    ) -> HttpResponse:
+        self.calls.append((method, path, body))
+        if method == "GET" and path.startswith(LIST):
+            return json_response(page(list(self.pods.values())))
+        if method == "GET" and path.startswith("/billing/pods?"):
+            return billing([billing_record()])
+        if method == "POST" and path == "/pods" and self.post is not None:
+            self.pods[str(self.post["id"])] = self.post
+            return json_response(self.post, 201)
+        pod_id = path.rsplit("/", 1)[-1]
+        if method == "DELETE":
+            if self.terminate_status == 204:
+                self.pods.pop(pod_id, None)
+                return HttpResponse(204, b"")
+            return problem(self.terminate_status, "Conflict", "pod belongs to cluster")
+        if method == "GET" and pod_id in self.pods:
+            return json_response(self.pods[pod_id])
+        if method == "GET":
+            return problem(404, "Not Found", "pod not found")
+        raise AssertionError(f"undocumented call {method} {path}")
+
+
+def shutdown_for(adapter: RunPodV2Provider) -> VerifiedShutdown:
+    return VerifiedShutdown(
+        adapter,
+        timeout_seconds=5,
+        poll_seconds=1,
+        billing_cutoff_margin_seconds=3600,
+        monotonic=lambda: 0.0,
+        sleeper=lambda seconds: None,
+        now=lambda: NOW,
+    )
+
+
+def test_restart_recovery_binds_and_closes_a_v2_pod_that_carries_no_contract(
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    """`LaptopSupervisor`'s pending-create recovery through the real v2 adapter.
+
+    The on-demand gate is unset, so the recovered record has no runtime
+    contract; recovery must still bind it to the lease and close it.
+    """
+
+    world = PodWorld([pod_payload(), pod_payload(id="unrelated", env={})])
+    adapter = provider(world)  # type: ignore[arg-type]
+    sealed = request(
+        metadata={
+            **request().metadata,
+            "VERBATUS_POD_HOURLY_USD": "0.77",
+            "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
+        }
+    )
+    intent = PendingCreateIntent.from_request(sealed, launch_token=TOKEN)
+    store = LeaseStore(tmp_path / f"{TOKEN}.json")
+    store.create(
+        PodLease(
+            lease_id=TOKEN,
+            launch_token=TOKEN,
+            provider_name="runpod",
+            pod_id=None,
+            volume_id="volume-1",
+            pod_hourly_usd=Decimal("0.77"),
+            volume_hourly_usd=Decimal("0.05"),
+            created_at=NOW - timedelta(minutes=30),
+            started_at=None,
+            hard_deadline=NOW + timedelta(hours=1),
+            owner_token="launcher-that-died",
+            heartbeat_at=NOW - timedelta(minutes=30),
+            pending_create=intent,
+        )
+    )
+
+    result = LaptopSupervisor(
+        store,
+        shutdown_for(adapter),
+        owner_token="restarted-laptop",
+        heartbeat_timeout=timedelta(seconds=30),
+        now=lambda: NOW,
+    ).run_once()
+
+    assert result.state is ControllerState.PENDING_CREATE_RECOVERED
+    assert result.close_report is not None and result.close_report.verified
+    assert ("DELETE", "/pods/pod-1", None) in world.calls
+    assert not any(path == "/pods/unrelated" for _, path, _ in world.calls)
+    assert not any(method == "POST" for method, _, _ in world.calls)

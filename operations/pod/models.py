@@ -30,6 +30,15 @@ class ProviderFailure(PodRuntimeError):
     """The provider failed a requested observation or action."""
 
 
+class TerminateRefused(ProviderFailure):
+    """The provider refused to terminate this pod in a way no retry can change.
+
+    Its message names the remedy (for RunPod v2, a pod that belongs to a
+    cluster). `VerifiedShutdown.close` stops at once on it and reports a failed
+    shutdown carrying that message, rather than re-issuing the same refused
+    request for the rest of its window while the pod bills."""
+
+
 class LeaseOwnershipError(PodRuntimeError):
     """A lease owner attempted to overwrite another controller's record."""
 
