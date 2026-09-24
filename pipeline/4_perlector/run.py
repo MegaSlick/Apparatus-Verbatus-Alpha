@@ -773,8 +773,8 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
     """Every chair's current testimonium for this act: the latest attempt only.
 
     Attempts are append-only (principle 4). Every record is validated, but only each
-    chair's latest attempt is evidence, as in the Recensor's `chair_outcomes`, so dissent,
-    witness coverage and the recorded basis never see a superseded attempt.
+    chair's latest attempt is evidence, as in the Recensor's `chair_current_attempts`, so
+    dissent, witness coverage and the recorded basis never see a superseded attempt.
     """
     records = []
     for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
@@ -1787,9 +1787,11 @@ def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return list(distinct.values())
 
 
-# Written by the audit loop after the establishing text is frozen into their bytes. A
-# live chair cannot reproduce that text, so an attempt interrupted after one of them can
-# be neither reused nor read again.
+# `PRE_PERLECTIO_ARTIFACTS` lists, in publication order, every artifact an attempt
+# publishes before its Perlectio; it is named for the Perlectio because its last two
+# entries follow the establishing reading. Those two are written by the audit loop after
+# the establishing text is frozen into their bytes. A live chair cannot reproduce that
+# text, so an attempt interrupted after one of them can be neither reused nor read again.
 _AUDIT_ROUND_KINDS: Final = frozenset({"audit-draft", "audit-finding"})
 
 
@@ -4251,7 +4253,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         finding_ref = context.input_ref(finding.relative_path)
         # An unresolved flag never stays a clean `read`: it becomes an explicit span on
-        # the Perlectio layer, and the Recensor consumes the `unresolved` fact.
+        # the Perlectio layer, and the Recensor consumes the `unresolved` fact. The
+        # projected spans carry no instrument label; only `payload["audit"]` and the
+        # finding say which are the audit's.
         payload["uncertain_spans"] = _union_with_projection(
             [
                 {

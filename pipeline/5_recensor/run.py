@@ -440,7 +440,8 @@ def act_cross_capture_coverage(
         # An act crossing a page break gives one capture two pages, and one bounding box
         # would mix two coordinate spaces, so occlusion on page two would land in page
         # one's cells. Until each page is classified on its own grid, such a view is
-        # recorded as unmeasured (principles 2, 8).
+        # recorded as unmeasured (principles 2, 8). This is the common case:
+        # continuation acts are ordinary in these registers.
         if surveyed and len(view["page_ids"]) > 1:
             visibility_state = "unresolved"
             visible_cells = []
@@ -1319,7 +1320,8 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
 
     Proposal and recovery regions of every act count as coverage, because the
     residual-ink check asks about the page's pixels, not one act's denominator. A page
-    with no region at all has no entry.
+    with no region at all has no entry, so its residual ink is never measured here and
+    no act's review reports it.
     """
     by_page: dict[int, list[dict]] = {}
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
@@ -1458,8 +1460,10 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
 
     The input is the page image itself, never the proposal set, a witness or a reading.
     The paper value is the Designator's shared inference under the sealed background
-    policy; a page whose paper it refuses gets a finding carrying the refusal and no
-    counts. `sealed_pages` lets `main` share one pixel-verification pass.
+    policy, never the page's own histogram mode, which on a photographed opening is the
+    bezel and hides all residual ink. A page whose paper the inference refuses gets a
+    finding carrying the refusal and no counts. `sealed_pages` lets `main` share one
+    pixel-verification pass.
     """
     regions = regions_by_source_page(context)
     if not regions:
@@ -3039,6 +3043,9 @@ def publish_review(
     tried first (unchanged content reuses byte for byte), and a fresh ordinal is minted
     only when the store proves the content differs. The ordinal is stamped here, never
     trusted from the caller.
+
+    The whole payload is screened, not only the route inputs: a review is a second
+    durable record, and a future direct payload field would otherwise go unchecked.
     """
     refuse_capture_preference(payload, what="a Recensor review")
     measurement_field = "testimony_content_coverage"
