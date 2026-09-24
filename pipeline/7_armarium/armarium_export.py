@@ -618,7 +618,9 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
 
     Traversal is descriptor-relative and no-follow, so swapping a checked directory
     for a symlink cannot redirect the write, and writing a new file then replacing
-    breaks any pre-existing hard link instead of writing through it.
+    breaks any pre-existing hard link instead of writing through it. Members are
+    copied with no size cap because the caller has already refused every
+    non-stored ZIP entry.
     """
     for name in names:
         parts = PurePosixPath(name).parts
@@ -1730,8 +1732,9 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         for act in projection.acts
     )
     # Counted by state, never by subtraction, so a broken doubt report is not
-    # counted as "no doubt channel". The Recensor holds `malformed` acts, so a
-    # delivered one means the projection did not come from a run.
+    # counted as "no doubt channel". Any other state (the Recensor's `malformed`,
+    # for one) is refused: the Recensor holds those, so a delivered one means the
+    # projection did not come from a run.
     assessed_count = 0
     not_assessed_count = 0
     for act in projection.acts:
@@ -1958,8 +1961,9 @@ def _validate_salvage_items(items: tuple[dict[str, Any], ...]) -> None:
 def _reject_act_salvage_namespace(act: dict[str, Any]) -> None:
     """The salvage firewall in the other direction: no salvage record becomes an act.
 
-    This stage never writes act text; promotion is a pipeline re-entry the project
-    lead approves.
+    A salvage record arriving as an act would have its harvested scrap written as
+    established text. This stage never writes act text; promotion is a pipeline
+    re-entry the project lead approves.
     """
     reached = sorted(set(act) & _SALVAGE_DISCRIMINANT_FIELDS)
     if reached:
@@ -2048,7 +2052,11 @@ def _pages_by_ordinal(
 
 
 def _manifest_run_binding(projection: ArmariumProjection) -> dict[str, str]:
-    """The manifest's `run` block, under whichever identity name this run carries."""
+    """The manifest's `run` block, under whichever identity name this run carries.
+
+    `_validate_projection` has already required exactly one identity, so the
+    fallback needs no second check.
+    """
     if isinstance(projection.submission_id, str) and projection.submission_id:
         return {
             "submission_id": projection.submission_id,
@@ -2747,7 +2755,8 @@ def _text_bundle_records(
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal("a text-bundle section has no act identity or literal")
                 # A second literal would keep offsets validated against the first.
-                # As the only literal format, nothing else would catch that.
+                # When the text bundle is the only selected literal format, nothing
+                # else would catch that.
                 if pending is not None:
                     raise SchemaRefusal("a text-bundle section carries more than one literal")
                 try:
@@ -2815,7 +2824,6 @@ def _text_bundle_records(
                 # display markup never enters the hashed text.
                 if current_id is None or pending is None or index + 1 >= len(lines):
                     raise SchemaRefusal("a text-bundle display has no literal to render")
-
                 if pending_uncertainty is None:
                     raise SchemaRefusal(
                         "a text-bundle section carries a literal with no uncertainty layer"
@@ -2841,7 +2849,6 @@ def _text_bundle_records(
                     rendered = json.loads(lines[index + 1])
                 except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     raise SchemaRefusal("a text-bundle display is not JSON") from error
-
                 try:
                     stripped = strip_display(rendered) if isinstance(rendered, str) else None
                 except ValueError as error:
@@ -3678,7 +3685,8 @@ def _verify_logical_partition_claim(
 ) -> None:
     """Re-derive the clustered act-partition claim from its source evidence.
 
-    So a rebuilt package cannot report fewer seal rows than the run produced.
+    Recomputed from `logical_accounting` rather than read from the manifest, so a
+    rebuilt package cannot report fewer seal rows than the run produced.
     """
     claim = manifest["claims"]["act_partition"]
     accounting = sources.get("logical_accounting")
