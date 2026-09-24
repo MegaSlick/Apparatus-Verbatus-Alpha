@@ -303,12 +303,12 @@ class ContainerLivenessProbe(Protocol):
     refusal.  What decides whether a pod is armed is the report the pod itself
     wrote; this only says when it became reasonable to start waiting for one.
 
-    A lifecycle word is not a substitute.  RunPod's ``desiredStatus`` reads
+    A lifecycle word is not a substitute.  RunPod v1's ``desiredStatus`` reads
     RUNNING from the moment ``create`` returns -- it is what the pod was asked
     to be -- so a probe built on it would answer "started" while the host was
-    still pulling the image.  `provider_runpod.RunPodProvider.status` surfaces
-    ``lastStartedAt`` for exactly this, and an untracked factory wires this
-    seam to it.
+    still pulling the image.  Both RunPod adapters' ``status`` surface the
+    provider's container-start instant (v2 ``startedAt``, v1 ``lastStartedAt``)
+    for exactly this, and an untracked factory wires this seam to it.
     """
 
     def started_at(self) -> datetime | None:
