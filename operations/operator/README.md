@@ -33,7 +33,7 @@ any time to check on things.
 | `scantailor` | Names the separate desktop handoff and records a saved ScanTailor project's geometry by digest. | No. It does not launch ScanTailor or use its output images. |
 | `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
-| `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
+| `upload` | Sends your images to storage. | No rented machine is needed — do it first if you like. With `--network-volume`, the volume itself costs money for as long as it exists, pod or no pod. |
 | `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the trio `--models-config config/models-real.toml`, `--serving-recipes-config config/serving_recipes_real.toml`, and `--witness-context-config config/witness_context-real.toml`; all three are sealed into the run and a partial trio is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. You have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
@@ -321,8 +321,9 @@ elsewhere and still read.
 
 ## Alpha shortcuts this surface ships
 
-1. **No live provider path exists.** Every price, pod, volume and billing record is the
-   in-memory fake's.
+1. **No live pod provider path exists.** Every price, pod, volume and billing record is
+   the in-memory fake's. The one live path is `upload --network-volume` (and `fetch-run`),
+   which reach a real RunPod network volume over S3 (item 3).
 2. **`boot` measures no real machine.** A green boot means the local wiring is sound, not
    that a GPU exists.
 3. **`upload` writes to a local folder by default**, through the same checksum-verified,
