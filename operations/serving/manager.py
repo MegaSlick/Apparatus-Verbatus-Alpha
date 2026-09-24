@@ -71,8 +71,8 @@ from .http import (
 from .process import ProcessLauncher, ServerProcess
 from .residency import ResidencyHandle, ResidencyLease
 
-# Hybrid Mamba/attention checkpoints, which launch with prefix caching off: on
-# them it costs extra recurrent-state memory, and nothing has measured a reason to
+# Hybrid Mamba/attention checkpoints, for which a row with prefix caching on is
+# refused: on them it costs extra recurrent-state memory, and nothing has measured a reason to
 # spend it (vLLM itself leaves it opt-in for hybrids). Keyed by repository, not
 # role, because tests reuse role names for unrelated fixture chairs. Checked at
 # launch so a wrong recipe row fails before it reaches a rented GPU.
@@ -1477,7 +1477,7 @@ def _launchable(
             f"chair {identity.role!r} serves {identity.repo!r}, a hybrid Mamba/attention "
             "(qwen3_5) checkpoint; vLLM keeps prefix caching over recurrent state opt-in "
             f"for hybrid models, and it only costs recurrent-state memory here -- "
-            f"enable_prefix_caching must be false for this chair (hostile review item L)"
+            f"enable_prefix_caching must be false for this chair"
         )
     return profile
 
@@ -1488,7 +1488,9 @@ def _generation_config_digest(
     """Digest the generation_config.json an 'auto' row will resolve to.
 
     ``None`` for a 'vllm' row, although vLLM still reads the file's
-    ``eos_token_id`` under 'vllm'; only its sampling parameters are ignored. A
+    ``eos_token_id`` under 'vllm' (v0.27.1,
+    ``ModelConfig.try_get_generation_config``); only its sampling parameters
+    are ignored. A
     missing file on an 'auto' row is first caught here, at launch.
     """
 
@@ -1569,7 +1571,8 @@ def render_vllm_argv(
         "--no-enable-log-requests",
         # Token counts only, never text. The per-modality breakdown lets usage
         # reconciliation catch a silently dropped `mm_processor_kwargs`, which
-        # would otherwise read a page at the wrong scale with no error.
+        # would otherwise read a page at the wrong scale with no error
+        # (vllm-project/vllm#49015).
         "--enable-prompt-tokens-details",
         # Not `auto`: under `string` format vLLM moves images ahead of text
         # (vllm-project/vllm#14047), so the image-before-text check could not

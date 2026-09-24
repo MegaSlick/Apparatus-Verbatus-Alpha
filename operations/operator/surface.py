@@ -136,7 +136,7 @@ DEFAULT_FIXTURE = "synthetic-two-page-v0"
 MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_NOTIFY_MESSAGE_CHARACTERS = 500
 """A held run with hundreds of unsealed pages built a notification message with
-one entry per page and no ceiling at all (F020); the underlying transport truncates
+one entry per page and no ceiling at all; the underlying transport truncates
 `notify_bridge`'s own failure-detail string the same way, at 160 characters, so a
 cap here is not a new idea in this codebase, only a missing one on the outbound
 message itself."""
@@ -951,8 +951,7 @@ class OperatorSurface:
         is provenance on a volume that will be destroyed (principle 6). Records
         at operator-chosen or root paths come only when named in
         ``evidence_keys`` (operations/pod/README.md lists them): finding them
-        would mean listing the whole volume, which holds page images. Not yet
-        run against a real endpoint.
+        would mean listing the whole volume, which holds page images.
         """
 
         try:
@@ -994,7 +993,8 @@ class OperatorSurface:
             MemoryError,
         ) as error:
             # The fetched tree is untrusted: deep nesting raises RecursionError
-            # in the JSON parser, and `RunTree.read_bytes` is unbounded.
+            # in the JSON parser, and a blob-sized JSON record can exhaust memory
+            # while parsing.
             receipt = self._write_action(
                 "fetch-run",
                 {
@@ -2232,8 +2232,9 @@ class OperatorSurface:
         return loaded
 
     def _state_relative(self, path: Path) -> str:
-        """Record a path under the state root relative to it, so a moved state
-        directory keeps working; paths outside it stay absolute.
+        """Record a path under the state root relative to it.
+
+        A moved state directory then keeps working; paths outside it stay absolute.
         """
 
         try:
@@ -4269,7 +4270,8 @@ def _door_module(workspace: Path):
     By path because `--workspace` may name another checkout than `sys.path`.
     The door edits `sys.path` and imports bare sibling modules, so both are
     restored afterwards; otherwise a later call for another workspace would
-    reuse this one's cached modules.
+    reuse this one's cached modules. Purging after load is safe: the returned
+    module holds its own references to what it imported.
     """
 
     original_sys_path = list(sys.path)

@@ -156,7 +156,8 @@ READER_DOUBTS = (
         "confidence": "medium",
         "pass_kind": "audit-reproof",
     },
-    # Deliberately out of bounds; the generator checks that it stays so.
+    # Deliberately out of bounds, so the report is sealed `malformed` and the act
+    # held; the generator checks that it stays so.
     {
         "scenario": "reader-doubt-malformed",
         "act_key": "a1",
@@ -255,8 +256,9 @@ NATIVE_OBSERVATIONS = (
     # attestator_1 (Chandra) derives geometry from its native responses, so a box
     # here would double-count. attestator_3's box contains both proposals.
     # No live Churro response can produce this box: its format has no coordinates.
-    # The fixture publishes it as native anyway; the live path reaches the same
-    # outcome through anchor lines instead. proof/test_fixture_declaration_contract.py
+    # The fixture publishes it as native anyway, so the offline run counts three
+    # of three witnesses and delivers; the live path delivers too, through anchor
+    # lines. proof/test_fixture_declaration_contract.py
     # pins this row as the one whose chair cannot express layout.
     {"chair": "attestator_3", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
     # Ink outside every proposal (page 1's proposals start at x=12), kept for
@@ -329,9 +331,10 @@ SCENARIO_TESTIMONY = (
     },
 )
 
-# Recovery recrops. Each must be a strict superset of the act's padded capture
-# rectangle (a1's is 12,15,188,99 under config/designator_padding.toml), since the
-# recovery pass refuses a recrop that adds no pixels. a1 stops at y=114, where
+# Recovery recrops. Each is a strict superset of the act's padded capture
+# rectangle (a1's is 12,15,188,99 under config/designator_padding.toml): the
+# recovery pass refuses a recrop adding no pixel, and a superset widens rather
+# than trading one edge for another. a1 stops at y=114, where
 # a2's capture rectangle begins, so every pixel is cut under exactly one act.
 # a2 is cross-page: recropping its primary page must keep its continuation page
 # in the evidence denominator.
