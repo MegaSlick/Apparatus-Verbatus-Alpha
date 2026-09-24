@@ -110,8 +110,8 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
     # §4.5's ink-confirmation conjunct (`unclaimed_ink_observations`, read
     # through `outside_ink_requests`) correctly refuses it a second recovery
     # round; a2 goes straight to held-for-review instead
-    # (`pipeline/orchestrator/test_orchestrator_acceptance.py`'s "Unit 14B
-    # audit" REVIEW_RUN_TREE_DIGEST re-pin measures the same tree).
+    # (the note above the digest pins in
+    # `pipeline/orchestrator/test_orchestrator_acceptance.py` states the same fact).
     # Spending an unconfirmed witness pointer here would be exactly the
     # picker principle 1 forbids.
     assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]

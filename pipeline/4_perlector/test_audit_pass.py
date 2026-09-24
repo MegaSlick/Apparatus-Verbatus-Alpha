@@ -1273,7 +1273,7 @@ def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(
         "default_round_cap = 1\n"
         "absolute_round_cap = 2\n"
         "round_cap = 2\n"
-        'approval_ref = "tyrel-2026-08-16-raised-audit-cap"\n'
+        'approval_ref = "project-lead-raised-audit-cap"\n'
     )
     with pytest.raises(ContractError, match="exactly one span-scoped audit re-proof"):
         audit.load(approved)
@@ -1363,7 +1363,7 @@ def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
     assert kept["signals"]["ends_abruptly"] is False
 
 
-def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path):
+def test_raised_cap_needs_the_project_leads_reference_and_exhaustion_routes_review(tmp_path):
     raised = tmp_path / "raised.toml"
     raised.write_text(
         'schema = "perlector-audit.v3"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'

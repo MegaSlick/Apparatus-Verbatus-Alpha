@@ -201,7 +201,7 @@ def test_unsampled_run_has_prior_and_production_but_no_control(tmp_path):
     assert _records(tree, "primed-without-prior") == []
 
 
-def test_control_refuses_without_tyrels_approval_on_fixture_path(tmp_path):
+def test_control_refuses_without_the_project_leads_approval_on_fixture_path(tmp_path):
     root = tmp_path / "runs"
     result = _run(root, "r", "happy", "--perlector-instrument-per-mille", "1")
     assert result.returncode != 0
