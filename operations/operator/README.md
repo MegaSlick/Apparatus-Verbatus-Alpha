@@ -200,8 +200,9 @@ own** (listed under `refused_serving_logs`) without taking the verified tree dow
 into a fresh `--into` for the longer log, or read an oversized one on the volume.
 
 **Local files are compared, never replaced.** Identical bytes are reused; different bytes
-refuse by name and leave the local run untouched. A refused attempt keeps nothing it
-fetched, so running it again is safe. The listing and `GetObject` path has not yet run
+refuse by name and leave the local run untouched. A refused attempt removes what it
+fetched, so running it again is safe — unless a removal itself failed, which today stops
+the cleanup and can leave staged files behind; check `--into` before retrying. The listing and `GetObject` path has not yet run
 against a real endpoint.
 
 ### The launch's evidence
