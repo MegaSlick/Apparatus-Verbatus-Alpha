@@ -1,22 +1,16 @@
 """Attestatores: retain every witness attempt without changing its history.
 
-Each Testimonium has two deliberately separate witness-facing fields. ``payload``
-is the witness's native response, retained without shaping it into an imagined
-common body schema. ``witness_reported`` is a witness's own confidence or status
-claim, retained as a claim but never used to compute channel health. The latter is
-computed here from the native response and the transport boundary.
+``payload`` is the witness's native response, unshaped. ``witness_reported`` is the
+witness's own confidence or status claim, kept as a claim and never used for channel
+health, which is computed here from the response and the transport boundary.
 
-Attempts are append-only. A re-read receives a new ordinal and artifact identity;
-there is no current pointer to update. Consumers derive current from the newest
-contiguous ordinal, so a later failed attempt remains visibly failed while the
-earlier reading remains intact in history.
+Attempts are append-only: a re-read gets a new ordinal and artifact identity, and
+consumers take the newest contiguous ordinal as current.
 
-Two write paths, and both append. `--attempt-ordinal N` is the whole pass: every
-configured chair, every expected act, at that one ordinal — the same command
-twice writes the same bytes. `--operation reread --act <id> --chair <role>` moves
-exactly one chair on one act, at the ordinal that chair's own history says comes
-next; a reread happens because one witness failed on one act, and re-witnessing
-the other chairs to reach it would re-read ink nobody doubted.
+`--attempt-ordinal N` runs every chair on every expected act at that ordinal; running
+it again is a byte-identical resume. `--operation reread --act <id> --chair <role>` moves one chair on one
+act to its next ordinal, so a single failed reading is retried without re-reading
+ink nobody doubted.
 
     python pipeline/3_attestatores/run.py --run-root <dir> --run-id <id>
     python pipeline/3_attestatores/run.py ... --operation reread --act <id> --chair <role>
@@ -149,13 +143,9 @@ from operations.serving.residency import (  # noqa: E402
     FileResidencyLease,
 )
 
-# A witness may report one of these ordinal self-assessments. They are retained
-# as testimony about its own response, never promoted into a model ranking or
-# used to choose a witness. Six plain levels keep fixture and future adapters
-# interoperable while refusing an unbounded integer scale or invented prose.
-# `uncertain` and `unsure` are deliberately both admitted: real adapters emit
-# both spellings, and collapsing them to one is R3's call when it meets those
-# adapters, not this stage's.
+# Self-assessments a witness may report. They are retained as testimony, never used
+# to rank or choose a witness. `uncertain` and `unsure` are both admitted because
+# real adapters emit both spellings.
 WITNESS_CONFIDENCE_ORDINALS = frozenset({"certain", "high", "medium", "low", "uncertain", "unsure"})
 
 DEFAULT_FORMAT_CAPABILITIES = {
@@ -167,13 +157,8 @@ DEFAULT_FORMAT_CAPABILITIES = {
 def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
     """What this adapter's own grammar can carry, validated, for a pre-send refusal.
 
-    Thin wrapper over `witness_adapters.declared_format_capabilities`, the one
-    place this validation lives (it used to be a second copy of
-    `live_witness._format_capabilities_for`'s own body): a
-    `RequestCapacityRefusal` fires before any request reaches the wire, but
-    the refused attempt still names a real adapter, and that adapter's
-    declared expressiveness is a fact about it whether or not this one
-    request was sendable.
+    A request refused before sending still names a real adapter, and its declared
+    expressiveness is recorded either way.
     """
     return witness_adapters.declared_format_capabilities(adapter)
 
@@ -181,14 +166,8 @@ def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
 def real_ingress(context) -> bool:
     """Whether this context opened a real submission, read off its run authority.
 
-    Delegates to `common.stage.is_real_ingress`, the same reader the shared
-    constructor and `expected_acts` use -- as the Perlector's and Recensor's
-    own `real_ingress` already do -- so no stage can disagree with the
-    constructor about which route a run is on. The reading is taken from the
-    one authority the context carries and never from `context.scenario`: the
-    ingress record is inside `run.json`'s own self-hash, so the route a run was
-    created under cannot be switched by argv or by a fixture declaring a
-    scenario of the same name.
+    Read from `run.json`, never `context.scenario`: the ingress record is inside the
+    run's self-hash, so argv or a fixture scenario cannot switch the route.
     """
     return is_real_ingress(context.run)
 
@@ -196,19 +175,8 @@ def real_ingress(context) -> bool:
 def page_subject(context, page_ordinal: int, *, page_ids: dict[int, str] | None = None) -> str:
     """The Exemplar page one submitted ordinal names, on either ingress route.
 
-    `exemplar_page_ids` is the one index of "which page is ordinal N" for both
-    routes. This stage used to derive it from the fixture's declared page sha
-    (`common.fixture_identity.page_identity`), which a real submission does not
-    have; on a fixture run the two agree for every sealed page, because a
-    sealed page's identity is the admitted bytes' digest and "sealed" means
-    those bytes matched the declaration.
-
-    The Exemplar layer is sealed before this stage opens, so the walk answers
-    the same every time for the life of this process; a caller that visits many
-    pages in one pass builds the index once with `exemplar_page_ids(context)`
-    and threads it in as `page_ids`, rather than paying an inventory walk (one
-    validated read per Exemplar page) at every lookup. A caller asking about a
-    single page may omit it and pay that one walk directly.
+    `page_ids` is an optional prebuilt `exemplar_page_ids(context)`; a caller visiting
+    many pages passes it to avoid one inventory walk per lookup.
     """
     pages = page_ids if page_ids is not None else exemplar_page_ids(context)
     if page_ordinal not in pages:
@@ -241,27 +209,21 @@ def _confidence_problem(value: Any, path: str = "witness_reported") -> str | Non
     return None
 
 
-# The two write paths this program implements, checked against by name because
-# `--operation` carries no argparse `choices` — the same parser serves every
-# stage — so an unrecognized one otherwise falls through to the whole pass and a
-# mistyped reread re-reads nothing while exiting 0.
+# Checked by name because the shared parser gives `--operation` no `choices`; a
+# mistyped reread would otherwise run the whole pass and exit 0.
 OPERATIONS = frozenset({"initial", "reread"})
 
-# A witness response is untrusted input: a several-thousand-deep nested value
-# drives `_native_problem` past Python's recursion limit, and `RecursionError` is
-# not a `ContractError`, so nothing between here and process exit catches it —
-# one adversarial witness takes down the whole folder rather than its own attempt.
-# Real transcription output nests a handful of levels deep, so this is headroom
-# rather than a fit.
+# A witness response is untrusted: deep nesting would raise an uncaught
+# `RecursionError` in `_native_problem` and kill the whole run, not one attempt.
+# Real output nests a few levels, so this is headroom.
 _MAX_NATIVE_DEPTH = 64
 
 
 def proposed_regions(context, act_id: str) -> list[dict]:
     """Every original Designator region the chair was actually shown.
 
-    A later recovery region is intentionally not substituted. A Testimonium binds
-    to these exact pixel blobs, not to whichever crop happens to be current when a
-    later consumer reads the run tree.
+    Later recovery regions are not substituted: a Testimonium binds to the exact
+    pixels shown.
     """
     regions = []
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
@@ -284,10 +246,8 @@ def proposed_regions(context, act_id: str) -> list[dict]:
 def sealed_page_proposal_regions(context, page_ordinal: int) -> list[dict]:
     """Every sealed Designator proposal on one page, independent of act state.
 
-    The page partition and unrouted-observation denominator is the page's whole
-    sealed proposal set (Unit 10C's rule): a held act's proposal was still
-    sealed on this page, and omitting it makes the retained snapshot contradict
-    the Recensor's independent re-derivation of the same denominator.
+    A held act's proposal is included: the Recensor re-derives the same denominator
+    from the whole sealed set and must agree with it.
     """
     regions = []
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
@@ -355,12 +315,8 @@ REGION_TRANSFORM_FIELDS: Final = ("source_page_id", "source_page_ordinal")
 def presentation_for_region(region: dict[str, Any]) -> dict[str, Any]:
     """Derive one region presentation from a sealed proposal record.
 
-    The writer's caller has already verified this region's crop lineage, but
-    `validate_testimonium_presentation` reads regions straight out of the
-    Designator manifest to reconcile a record it is treating as untrusted. A
-    sealed region missing its transform or blob identity left that seam as a
-    raw KeyError -- from the check whose whole job is to name what is wrong
-    with the evidence -- so the missing field is named here instead.
+    The validator also calls this on untrusted records, so missing fields are
+    named rather than raised as a bare KeyError.
     """
     payload = region.get("payload")
     transform = payload.get("transform") if isinstance(payload, dict) else None
@@ -393,12 +349,8 @@ def page_witness_attempted(
 ) -> bool:
     """Whether this page-scoped chair was shown pixels for at least one of its acts.
 
-    Distinct from `page_join`'s `reading` (whether text was actually produced):
-    a chair attempted and shown a crop that came back `failed` is still a chair
-    that was shown an image, so `presented` must not collapse that case into the
-    same empty block held acts, refused pages, and absent chairs record. Using
-    `reading` here would misreport "shown pixels, bad response" as "never shown
-    an image" (principle 2).
+    Not `page_join`'s `reading`: a failed response was still shown an image, and
+    must not be recorded as never shown (principle 2).
     """
     return any(
         attempts_by_pair[(act["act_id"], chair)].outcome in ATTEMPTED_WITNESS_OUTCOMES
@@ -462,10 +414,7 @@ def _fixture_native_observations(
         return None
     observations = []
     for ordinal, row in enumerate(rows):
-        # A row missing a coordinate is refused where the fixture row can be
-        # identified. Passing `{"w": None}` down instead reaches the geometry
-        # contract as "non-integer page-pixel coordinates", which is true and
-        # names neither the chair, the page, nor which row to go and fix.
+        # Refused here, where the error can name the chair, page and row.
         missing = sorted(key for key in ("x", "y", "w", "h") if key not in row)
         if missing:
             raise SchemaRefusal(
@@ -484,39 +433,23 @@ def _fixture_native_observations(
     return observations
 
 
-#: Adapters whose fixture rows may declare `raw_response` bytes. The committed
-#: corpus carries a synthetic Chandra body and nothing else, and the attempt
-#: boundary already refuses a fixture `raw_response` for any other adapter
-#: (`resolve_attempt`): fixture bytes may not be attributed to a model boundary
-#: that never produced them. Named here because the page-partition branch has to
-#: ask the same question -- "does this chair's response reach `observe` in this
-#: posture?" -- and answering it with an adapter name would put the fixture
-#: posture back on a hard-coded chair.
+#: Adapters whose fixture rows may declare `raw_response` bytes; `resolve_attempt`
+#: refuses them for any other adapter, since fixture bytes may not be attributed to
+#: a model that never produced them.
 FIXTURE_NATIVE_RESPONSE_ADAPTERS: Final = frozenset({"chandra.v1"})
 
 
 def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
     """Whether this chair's page partition is re-derived from its own response bytes.
 
-    True for any page-scoped adapter that reports geometry, on the live path,
-    where the chair really answered and `captured_page_attempt` carried its bytes
-    forward as `observation_payload`. In the fixture posture it is true only for
-    the adapters the fixture may declare response bytes for; every other page
-    chair's offline record keeps the declared-observation route it has always
-    taken, so no committed byte moves.
-
-    The question the branch actually asks is "are there response bytes here to
-    derive geometry from", and it is answered from the registry's
-    `takes_page_size` rather than from an adapter's name. Chandra answers yes;
-    Churro answers no, because `HistoricalDocument` publishes no coordinates at
-    all, and its page record carries the presentation echo the no-geometry route
-    owns for every adapter.
+    True for a geometry-reporting (`takes_page_size`) adapter on the live path, and
+    in fixture runs only for adapters allowed fixture response bytes; the others
+    keep the declared-observation route.
     """
     if not isinstance(resolved, ChairIdentity):
         return False
-    # Not guarded: an adapter with no runnable binding is refused here, loudly,
-    # rather than answered `False` and routed down the no-geometry branch as
-    # though it had simply reported nothing.
+    # Unguarded on purpose: an adapter with no runnable binding must be refused,
+    # not routed down the no-geometry branch.
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     if not adapter.takes_page_size:
         return False
@@ -528,22 +461,10 @@ def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
 def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The reported boxes a page partition may be derived from, or a named refusal.
 
-    `split_page_edge_overshoots` admits `native` and `derived` boxes and refuses
-    a `presented` echo by name: an echo restates the image the chair was shown,
-    so turning one into a page-edge finding would report as witness geometry
-    something no witness reported. Chandra's `observe` returns an empty list for
-    a body whose blocks report no usable box, so the only adapter that reaches
-    this seam hands over reported boxes or nothing.
-
-    Three cases, and the third is the point. All reported: the list, unchanged.
-    None reported: empty, which is what the caller already detects as "this
-    response reported no geometry" and answers by putting the presentation echo
-    back through `observed_from_presentation` -- the one path that owns that
-    fact for every adapter, so nothing is dropped and nothing is invented.
-    **A mix is refused**, not filtered: no adapter today returns one, and an
-    adapter that began to would be saying something this partition has no rule
-    for. Silently keeping half of it would publish a page geometry nobody
-    designed and no reader could tell from a complete one (principle 2).
+    All reported: returned unchanged. None reported: empty; the page publisher
+    substitutes the presentation echo. A mix is refused, not filtered: half a
+    record would look like a complete partition (principle 2). An echo is excluded
+    because it restates the image shown, not what the witness reported.
     """
     reported = [item for item in observed if item["bounds_source"] in REPORTED_BOUNDS_SOURCES]
     if reported and len(reported) != len(observed):
@@ -552,8 +473,7 @@ def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "A partition derived from half of that record would look complete. "
             "Return reported geometry or the no-geometry echo, not both."
         )
-    # Ordinals stay dense and 0-based, which the page-edge check requires and
-    # reads as the response's own order. Untouched when nothing was filtered.
+    # Ordinals stay dense and 0-based, as the page-edge check requires.
     return reported
 
 
@@ -565,13 +485,9 @@ def page_partition_entries(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return a page witness's surviving boxes and response-linked page-edge findings.
 
-    `page_size` is the sealed source page, never a presentation crop: a block
-    may cross the crop edge while remaining valid page-space geometry.
-
-    The page Testimonium, rather than the retired textual act bridge, owns the
-    witness partition.  A finding without the raw response that supplied its
-    block is a named but unauditable assertion, so this narrow join refuses it
-    before either a page record or an attachment can be published.
+    `page_size` is the sealed source page, never a presentation crop: a block may
+    cross the crop edge and still be valid page geometry. A finding without its raw
+    response reference cannot be audited, so it is refused before publication.
     """
     survivors, overshoots = split_page_edge_overshoots(observed, page_size=page_size)
     if overshoots and (
@@ -602,9 +518,8 @@ def _sealed_source_page(
 def _verified_page_bytes(context, page: dict[str, Any]) -> bytes:
     """Read once and bind the exact page bytes that image operations will use.
 
-    ``read_artifact`` verifies the page's inputs, but reopening its blob afterward
-    creates a check/use interval. Compare the one immutable byte object handed to
-    Pillow/cropping with the page digest so a filesystem swap cannot cross it.
+    Digesting the same bytes object that is decoded closes the check/use gap a
+    second read of the blob would open.
     """
     payload = page.get("payload")
     if not isinstance(payload, dict):
@@ -674,9 +589,8 @@ def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
 def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
     """Whether a fixture declaration belongs to this immutable attempt.
 
-    Older fixture rows mean attempt one explicitly. Silently applying a declared
-    first-attempt failure to every re-read would make the test seam a mutable
-    outcome selector rather than a description of one attempt.
+    A row without an ordinal means attempt one only, so a declared failure does not
+    repeat on every re-read.
     """
     declared = row.get("attempt_ordinal", 1)
     if not isinstance(declared, int) or isinstance(declared, bool) or declared < 1:
@@ -703,15 +617,6 @@ def _declared_pairs(context, ordinal: int, fixture_key: str) -> set[tuple[str, s
                 )
             pairs.add(pair)
     return pairs
-
-
-# A Designator page-fallback act used to be recognized here, by its derived
-# identity, and given `genuinely-empty` for every configured chair without any
-# response boundary being consulted (Sol-S1). Nothing in this stage asks what
-# kind of act it is reading any more: a fallback crop is a proposed region like
-# any other, its chairs are asked like any other, and what comes back decides
-# the outcome. The identity check that guarded the branch went with the branch --
-# an unforgeable selector for a branch that must not exist is still the branch.
 
 
 def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
@@ -764,30 +669,10 @@ def declared_response(
 ) -> dict[str, Any] | None:
     """The one response the fixture declares this chair returned for this request.
 
-    Two tables reach this boundary and both declare a *response*, never an
-    outcome. `[[testimony]]` carries whatever the witness returned;
-    `[[witness_empty]]` carries the one response whose whole body is the empty
-    string, kept as its own table so a reviewer reading the fixture can see at a
-    glance which chairs returned nothing. Either way the declared bytes come back
-    through `prepared_response` and `resolve_attempt` derives the outcome from
-    what was actually retained.
-
-    The tables handled before this one -- `witness_failure`, `witness_not_run`,
-    `witness_malformed` -- are its exact complement: each declares the *absence*
-    of a usable response, which is the only thing that may name an outcome with
-    nothing retained. That line is what this stage's `genuinely-empty` no longer
-    crosses; there is no third shape, and in particular no act identity, that
-    mints a completed reading without a response to it.
-
-    Every `witness_empty` row is scenario-scoped, so it sits at the same
-    precedence as a scenario-specific `[[testimony]]` row and overrides the
-    scenario-agnostic base response for its own scenario exactly as one does --
-    that is how a shipped blank scenario says "this chair returned nothing here"
-    over the base table's declared text. Two declarations at *that* precedence
-    are two answers to one question, and the elif chain would have resolved them
-    silently in `witness_empty`'s favour. `declarations_for`'s cross-table check
-    cannot see this pair, because `[[testimony]]` is looked up per request rather
-    than collected into a declared-pair set.
+    `[[testimony]]` and `[[witness_empty]]` declare responses, never outcomes; the
+    outcome is derived from what is retained. A `witness_empty` row overrides the
+    base response for its scenario, and one that collides with a scenario
+    `[[testimony]]` row is refused here, since `declarations_for` cannot see it.
     """
     response = testimony_for(context, act_key, chair, declarations["ordinal"])
     if (act_key, chair) not in declarations["empty"]:
@@ -797,10 +682,8 @@ def declared_response(
             "fixture declares both an empty response and a scenario response for "
             f"{(act_key, chair)!r} at attempt ordinal {declarations['ordinal']}"
         )
-    # An empty Chandra response can still carry native layout blocks.  Keep the
-    # response declaration as its source: manufacturing a box from the shown
-    # page would turn a presentation fallback into reported geometry and let a
-    # completed blank witness count as having covered ink it never located.
+    # An empty Chandra response can still carry layout blocks, so keep the declared
+    # raw response; a box invented from the shown page would claim ink never located.
     matching_empty_rows = [
         row
         for row in context.fixture.get("witness_empty", [])
@@ -829,11 +712,8 @@ def declared_response(
 def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str | None:
     """Return why a native response cannot be retained as canonical JSON.
 
-    The generic artifact writer rejects floats and malformed Unicode later, but a
-    witness response must become a retained ``failed`` attempt rather than make a
-    whole folder crash or be quietly repaired with ``str()``, replacement Unicode,
-    or a shared text schema. This is deliberately strict until Spec 04 defines a
-    binary provider-body contract.
+    Checked here so a bad response becomes a retained ``failed`` attempt rather than
+    a crash in the artifact writer or a silent repair.
     """
     if depth > _MAX_NATIVE_DEPTH:
         return f"{path} nests deeper than {_MAX_NATIVE_DEPTH} levels"
@@ -880,9 +760,7 @@ def _native_type(value: Any) -> str:
     return type(value).__name__
 
 
-# Every health field of a chair with no native response except the reason, so the
-# writer below and the reader in `validate_content_health` cannot disagree about
-# what "no response" looks like.
+# Shared by the writer and `validate_content_health` so both agree on "no response".
 NO_RESPONSE_HEALTH = {
     "native_type": None,
     "encoding": "not-applicable",
@@ -899,10 +777,7 @@ def no_response_health(*, reason: str) -> dict[str, Any]:
     return {**NO_RESPONSE_HEALTH, "truncation_basis": reason}
 
 
-# A `genuinely-empty` reading has no witness text at all -- there is nothing to
-# locate in the anchor, so nothing was lost finding it either. Shared by the
-# trivial-attachment branch below so a zero-length alignment always reads as
-# exactly as empty as it is.
+# Alignment loss for a `genuinely-empty` reading: no text, so nothing was lost.
 _ZERO_ALIGNMENT_LOSS: dict[str, int] = {
     "markup_characters": 0,
     "whitespace_characters": 0,
@@ -913,11 +788,8 @@ _ZERO_ALIGNMENT_LOSS: dict[str, int] = {
 def content_health(native_payload: Any, *, completed: bool | None = None) -> dict[str, Any]:
     """Compute deterministic channel facts from native output alone.
 
-    ``witness_reported`` intentionally is not an argument. A witness's assertion
-    that it was confident, complete, or uncertain cannot become health merely by
-    being present. The synthetic fixture is an explicit complete transport seam;
-    real serving code must pass a trusted response-boundary fact or leave
-    truncation unknown.
+    ``witness_reported`` is deliberately not an input: a self-report never becomes
+    health. ``completed`` must come from a trusted response boundary, or be None.
     """
     if (problem := _native_problem(native_payload)) is not None:
         return {
@@ -960,12 +832,9 @@ def content_health(native_payload: Any, *, completed: bool | None = None) -> dic
 def validate_content_health(native_payload: Any, health: Any) -> None:
     """Refuse a resealed health record that is not this stage's deterministic shape.
 
-    A self-hashed artifact can still have been re-sealed with a damaged health
-    field.  The tally must not count it as known simply because its envelope and
-    JSON syntax remain valid.  Whether an unrecordable channel is an accounted
-    failure or #23's UNKNOWN is not decided here — that is
-    `require_accounted_unrecordable_channel`, which reads the outcome this
-    function deliberately does not.
+    A valid self-hash does not prove the field was computed here. Whether an
+    unrecordable channel is an accounted failure is decided by
+    `require_accounted_unrecordable_channel`, not here.
     """
     if not isinstance(health, dict):
         raise SchemaRefusal("a Testimonium carries no object content_health record")
@@ -1019,12 +888,8 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
         return
 
     if recordable is False:
-        # The narrowest record this stage writes: nothing of what the witness
-        # returned could be kept, so there is nothing left to measure and every
-        # remaining field is fixed. Leaving them free would let a resealed record
-        # take this branch and then assert a character count, a truncation state
-        # and a retained payload — self-reported facts wearing the name of the
-        # computed ones spec 07 requires these to be.
+        # Nothing was kept, so every measured field is fixed; otherwise a resealed
+        # record could assert measurements nothing made.
         if native_payload is not None:
             raise SchemaRefusal(
                 "a Testimonium whose native channel was unrecordable retains a native "
@@ -1063,9 +928,7 @@ def prepared_response(
 ) -> tuple[Any, Any, dict[str, Any] | None, dict[str, Any], str | None]:
     """Return native output and any recording defect without normalizing either.
 
-    The final element is a reason that turns this one attempt into ``failed``.
-    The raw object is left untouched for every recordable response, including an
-    unexpected-but-parseable JSON shape.
+    The final element, when set, is the reason this attempt is ``failed``.
     """
     if "payload" not in row:
         health = no_response_health(reason="fixture response declared no native payload")
@@ -1113,13 +976,9 @@ def provenance_for(
 ) -> dict:
     """The exact configured identity and actual serving moment for one outcome.
 
-    ``receipt_ref`` is the live boundary's half: a chair that really served this
-    reading already published its receipt when the client started it
-    (``ServingManager.start`` -> ``StageContextReceiptPublisher`` ->
-    ``StageContext.write_serving_receipt``), so the live pass names *that*
-    moment's receipt rather than writing a second, declared one. Absent it the
-    fixture path is unchanged: it writes `fixture_serving_details`, which says
-    `fixture://` out loud (principle 8).
+    A live chair already published its receipt when serving started, so the live
+    pass passes ``receipt_ref``. Without it, an attempted fixture chair gets a
+    receipt that says `fixture://` (principle 8).
     """
     if receipt_ref is not None and not attempted:
         raise ContractError(
@@ -1174,22 +1033,10 @@ TESTIMONIUM_FIELDS = frozenset(
         "unpresented_regions",
     }
 )
-# `page_witness` marks a page chair's act-scoped compatibility record and is
-# validated here. `scope` and `page_ordinal` are deliberately NOT listed: they
-# belong to the page-scoped kind, which this closed act-level payload never
-# carries, and allowing them here let a resealed act record wear page clothing.
-# `native_capture` and `serving_call_ref` are the live boundary's two additions
-# (SPEC_A section 2.3). Both are written only by the live pass: a fixture attempt
-# carries neither, so the fixture record's bytes are exactly what they were.
-# `native_capture` was already admitted on a page record by the shared contract
-# (`common/native_witness.PAGE_TESTIMONIUM_OPTIONAL_FIELDS`); this admits it on an
-# act record too, where a live attempt's own retained model view belongs.
-# `raw_response_kind` says what sort of bytes `raw_response_ref` names, because
-# on a live record it is two different things: the adapter's own output, when a
-# parser read it, and the whole transport body, when no adapter ever saw a
-# reading. Both are retained evidence and neither is the other, so the record
-# says which rather than leaving a reader to infer it from whether some other
-# optional field happens to be present.
+# `scope` and `page_ordinal` belong only to the page-scoped kind, so an act record
+# cannot pose as one. `native_capture` and `serving_call_ref` are written only on
+# the live path. `raw_response_kind` says whether `raw_response_ref` names the
+# adapter's output or the whole transport body.
 OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
     {
         "adapter_metadata",
@@ -1203,11 +1050,8 @@ OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
     }
 )
 
-# A page Testimonium is a different, closed record from the act-scoped
-# compatibility Testimonium above.  In particular, ``page_role`` says whether
-# the page is the act's primary page, only carries continuations, or contains
-# both.  Keeping that fact in the producer's contract prevents page two from
-# being an anonymous duplicate of page one.
+# A page Testimonium is a separate closed record; its ``page_role`` (primary,
+# continuation, or both) keeps page two from duplicating page one anonymously.
 PAGE_TESTIMONIUM_FIELDS = PAGE_TESTIMONIUM_REQUIRED_FIELDS
 
 
@@ -1263,8 +1107,7 @@ def testimonium_payload(
     if adapter_metadata is not None:
         record["adapter_metadata"] = adapter_metadata
     if native_capture is not None:
-        # Only the derived view joins the payload; the response bytes stay in the
-        # named blob the capture already points at.
+        # The response bytes stay in the blob the capture names.
         record["native_capture"] = native_capture
     if serving_call_ref is not None:
         record["serving_call_ref"] = serving_call_ref
@@ -1332,8 +1175,7 @@ def validate_adapter_metadata(payload: Any) -> None:
 def _named_once(references: list[Any]) -> list[Any]:
     """Keep the first mention of each input reference, in the order given.
 
-    Order is the record's own account of how it was derived, so it is
-    preserved; a repeat is not a second response and must not read as one.
+    A repeat is not a second response and must not read as one.
     """
     seen: list[str] = []
     kept: list[Any] = []
@@ -1371,25 +1213,12 @@ def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
 
 
 def validate_live_serving_fields(payload: dict[str, Any]) -> None:
-    """Close the two fields only a live reading writes onto an act Testimonium.
+    """Close the fields only a live reading writes onto an act Testimonium.
 
-    A retained model view (`native_capture`) is the adapter's own record of the
-    bytes it parsed, so it must name the very blob this Testimonium names: two
-    references disagreeing about which response was read is a record that cannot
-    say what it read. The call record (`serving_call_ref`) is the request half of
-    the same moment, and it is meaningless without a retained response beside it
-    -- a chair that answered nothing has no reading to account for.
-
-    `raw_response_kind` is the third: a live record's retained blob is the
-    adapter's own output on every branch where a parser ran, and the whole
-    transport body on the one branch where none could. Those are different
-    evidence -- one is the model's answer, the other is an envelope around a
-    body that was never a reading -- and a reader that guessed between them
-    from the presence of some other field would be reading a record that never
-    said. So a record that names a serving call and retains a response must
-    name which kind it retained, and a retained model view must agree that it
-    is the adapter's own output, because that is the only thing a capture can
-    describe.
+    `native_capture` must name the same blob as the record. `serving_call_ref`
+    needs a retained response beside it, except for a Chandra error trace. A live
+    record that retains a response must say whether it is model output or a
+    transport body, and a capture can only describe model output.
     """
     kind = payload.get("raw_response_kind")
     if kind is not None:
@@ -1441,10 +1270,8 @@ def validate_retained_response_blob(
 ) -> None:
     """Re-read one retained blob so a missing or changed one cannot pass a tally.
 
-    ``field`` names which reference is being re-read. A live Testimonium carries
-    two of them -- the response bytes and the current `chair-call-record.v2` blob -- and
-    a tally that re-hashed only the first would leave the request half of the
-    serving moment as a reference nothing checks.
+    ``field`` names the reference: a live record carries both the response and the
+    call-record blob, and both are re-hashed.
     """
     checked = validate_stage_blob_ref(reference, field)
     try:
@@ -1480,16 +1307,9 @@ def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
         _require_chandra_native_testimonium_scope(payload, page_record=False)
     validate_adapter_metadata(payload)
     validate_retained_response_pairing(payload)
-    # The closed confidence-ordinal set is a writer-side rule
-    # (`_confidence_problem`, applied in `prepared_response` and the Chandra
-    # branch of `resolve_attempt`), and this is the one envelope validator both
-    # of those writers and the tally/resume read-back share. Checking it again
-    # here is what makes it a property of every sealed Testimonium rather than
-    # of however many call sites remember to ask -- and, since Unit 2, this
-    # validator is also the gate a crash resume trusts before carrying a
-    # retained self-report forward into a freshly published record: unchecked
-    # here, a malformed claim that ever reached disk would be revalidated as
-    # fine and republished rather than refused.
+    # Checked again here because this validator is shared by the write path
+    # (`prepared_response`) and by the tally and crash-resume read-back, which
+    # must not republish a bad claim.
     if problem := _confidence_problem(payload.get("witness_reported")):
         raise SchemaRefusal(problem)
     return validate_native_witness_geometry(payload)
@@ -1544,7 +1364,7 @@ def page_testimonium_payload(
     if adapter_metadata is not None:
         record["adapter_metadata"] = adapter_metadata
     if native_capture is not None:
-        # Only derived text joins the payload; raw bytes remain in the named blob.
+        # Raw bytes remain in the named blob.
         record["native_capture"] = native_capture
     if native_inference is not None:
         record["native_inference"] = native_inference
@@ -1607,11 +1427,8 @@ class AttemptIndex(NamedTuple):
 def _attempt_history(context) -> AttemptIndex:
     """Index immutable Testimonia and derived attachments once for this invocation.
 
-    The independent tally deliberately rebuilds and validates the inventory for
-    accounting. This index serves only append/collision decisions, whose repeated
-    per-pair manifest walks otherwise make a pass quadratic in the folder size —
-    which is why the derived act-attachments travel in the same walk rather than
-    in a second one per act.
+    Serves only append/collision decisions, which would otherwise walk the manifest
+    per pair and go quadratic; the tally validates independently.
     """
     manifest = context.tree.build_manifest(ATTESTATORES)
     by_pair: AttemptHistory = {}
@@ -1626,13 +1443,8 @@ def _attempt_history(context) -> AttemptIndex:
             continue
         record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
         payload = record.get("payload")
-        # No `payload["scope"] == "page"` skip here. Page-scoped Testimonia are a
-        # kind of their own and the filter above already excludes them, so the
-        # skip could only ever fire for an act-scoped record that *claimed* page
-        # scope — and it would then drop that record out of the append/collision
-        # history on the strength of one self-reported field, which is exactly
-        # the disguise F-O5 closed in `attempt_tally`. The identical line was
-        # left standing here. Found in fresh-context review (P2).
+        # No skip on `payload["scope"]`: page records are already a separate kind,
+        # and a self-reported scope must not drop an act record from the history.
         chair = payload.get("chair") if isinstance(payload, dict) else None
         if isinstance(chair, str):
             by_pair.setdefault((entry["subject_id"], chair), []).append(record)
@@ -1644,16 +1456,9 @@ def require_appendable_ordinal(
 ) -> None:
     """Allow only a rerun of an attempt that exists, or exactly the next one.
 
-    Ordinals are the contiguous run 1..N — `latest_attempt` refuses a gap — so any
-    ordinal at or below the current one names an attempt that is already on disk,
-    and rewriting it is a resume: the RunTree refuses it outright if the bytes
-    differ. Only `current + 1` adds anything.
-
-    The bound is `<= current + 1` rather than `in {current, current + 1}` because a
-    targeted reread moves one chair's ordinal without moving any other's. Insisting
-    every pair be at the same ordinal would mean the orchestrator — which always
-    asks for ordinal 1 — held the whole folder from the moment one chair was
-    reread, over writes that would every one have been byte-identical no-ops.
+    Any ordinal up to the current one is a resume (ordinals are contiguous;
+    `latest_attempt` refuses a gap), which the RunTree refuses if the bytes differ. Lower ordinals are admitted because a reread moves one chair
+    ahead, and the orchestrator's ordinal-1 pass must remain a no-op resume.
     """
     records = history.get((act_id, chair), [])
     if not records:
@@ -1685,25 +1490,12 @@ def _refuse_write_collision(
     """Refuse before any Testimonium write if this pass would seal different
     bytes than an attempt already recorded at this exact identity.
 
-    A targeted reread and a whole pass can reach the very same identity with a
-    different honest outcome — `resolve_attempt`'s docstring says so plainly: an
-    undeclared response is `failed` under a reread and `not-run` under a whole
-    pass, because the two write paths mean different things by silence.
-    `RunTree.publish_artifact` already refuses a colliding write, but only when
-    it is reached, mid-pass, after every earlier pair in this invocation has
-    already been published — a half-written attempt layer whose stored manifest
-    was never rewritten to describe it. Checking every pair against what already
-    exists, before any of them is written, keeps a doomed pass from writing a
-    Testimonium rather than stranding the folder partway through. Native response
-    bytes are deliberately retained before parsing and therefore stay as
-    content-addressed custody even when this later comparison refuses.
-
-    Only a pair whose target ordinal already holds a record can collide;
-    `require_appendable_ordinal` already refuses any ordinal beyond that, so
-    this only ever compares against a genuine resume attempt. Compared on the
-    fields the two write paths can actually disagree on, not the full sealed
-    envelope: provenance does not vary with the `reread` flag, only what
-    `resolve_attempt` decided did.
+    A reread and a whole pass can reach one identity with different outcomes (an
+    undeclared response is `failed` under one and `not-run` under the other). The
+    RunTree would refuse only mid-pass, after earlier pairs were published, so
+    every pair is checked first. Compared on the fields the two write paths can
+    disagree on; provenance does not vary with `reread`. Raw response blobs
+    retained before this refusal stay in custody.
     """
     existing = [
         record
@@ -1721,11 +1513,8 @@ def _refuse_write_collision(
         or payload.get("format_capabilities") != attempt.format_capabilities
         or payload.get("content_health") != attempt.health
         or payload.get("reason") != attempt.reason
-        # The parsed text is not the native response. Two Chandra bodies may
-        # produce the same text while carrying different layout blocks, and the
-        # raw digest is what binds the geometry this attempt will publish. A
-        # resume that compared only the text discovered that collision later at
-        # the immutable writer, after earlier pairs had already been published.
+        # Two Chandra bodies can parse to the same text with different layout
+        # blocks; the raw digest binds the geometry.
         or payload.get("raw_response_ref") != attempt.raw_response_ref
     ):
         raise SchemaRefusal(
@@ -1740,12 +1529,7 @@ def _refuse_write_collision(
 def pass_would_append(history: AttemptHistory, act_id: str, chairs, ordinal: int) -> bool:
     """Would a whole pass at this ordinal add an attempt to this act, or repeat one?
 
-    The bound in `require_appendable_ordinal` admits both, deliberately — a
-    targeted reread moves one chair's ordinal without moving any other's, so the
-    orchestrator's ordinal-1 pass has to stay a byte-identical resume over a
-    folder one chair has been reread in. The rules that close an act's witness
-    layer apply to the append and not to the repeat, so they need this told apart
-    rather than assumed.
+    The witness-layer closing rules apply to an append, not a repeat.
     """
     for chair in chairs:
         records = history.get((act_id, chair), [])
@@ -1764,40 +1548,15 @@ def require_shared_whole_pass_ordinal(
 ) -> None:
     """Refuse an appending whole pass on an act a targeted reread has moved.
 
-    The whole pass is a run-level instrument: every configured chair, every
-    expected act, at one ordinal. It also re-derives each act's act-attachment at
-    that same ordinal. A targeted reread moves exactly one chair and re-derives
-    the attachment one ordinal above whatever it found, so after a reread the
-    whole pass's next attachment ordinal is already taken — by a record describing
-    a different state.
+    A reread already took the act's next attachment ordinal, and the RunTree would
+    refuse only after the pass's Testimonia were written, leaving attempts the
+    manifest does not name. An act is off the shared ordinal when its chairs
+    disagree on their current ordinal; pairs with no record are ignored.
 
-    `RunTree.publish_artifact` would refuse that write correctly but *late*: in
-    the derived-record loop, after every Testimonium of the pass had been written
-    and before `context.finish()` rewrote the inventory to describe them. The
-    folder would then hold attempts its own manifest does not name, which the next
-    pass can only report as UNKNOWN. Refused here instead, before anything is
-    written.
-
-    The condition is the model rather than the mechanism: **a targeted reread
-    takes its act off the shared whole-pass ordinal**, and an act is off it
-    exactly when its chairs no longer agree on one current ordinal. A pass that
-    only *repeats* attempts already sealed is untouched (see `pass_would_append`),
-    which is what keeps the orchestrator's ordinal-1 resume working over a folder
-    one chair has been reread in, and a partly-lost attempt layer — where some
-    pairs have no record at all — is a repair at the ordinal its surviving pairs
-    already share, not a mixed act.
-
-    One residual is deliberately left to the RunTree rather than checked here:
-    reread *every* chair on one act up to the same ordinal and the act agrees
-    again — and a whole pass at that ordinal is then a REPEAT, so
-    `pass_would_append` skips both new rules entirely and the pass proceeds to
-    the attachment derivation, whose next ordinal the rereads already took.
-    Reaching that collision needs each chair's whole-pass attempt to be
-    byte-identical to its reread attempt — otherwise `_refuse_write_collision`
-    stops the pass first — so the pass that survives had nothing to add. The
-    outcome is a loud fatal refusal with `RunTree.write_manifest` as the recorded
-    one-step recovery, and a check for it would cost a second derivation of every
-    attachment in preflight to close a case whose worst outcome is a noisy stop.
+    Not caught here: rereading every chair to the same ordinal makes the pass a
+    repeat, and the attachment write then fails loudly in the RunTree
+    (`RunTree.write_manifest` recovers). Catching it would cost a second
+    derivation of every attachment.
     """
     current: dict[str, int] = {}
     for chair in chairs:
@@ -1836,54 +1595,19 @@ def preflight_appendable_ordinals(
     """Refuse a damaged history, or a colliding write, before adding any new
     attempt to this invocation.
 
-    The ordinal bound alone is not enough: it lets a whole pass through at an
-    ordinal a targeted reread has already sealed a *different* record at for one
-    chair, and the collision then surfaces reactively, mid-pass, at whichever
-    pair the loop reaches it on — see `_refuse_write_collision`. The caller
-    supplies one declaration set for both this preflight and `attempt_pass`,
-    since the two must agree on what this ordinal means. The returned region map
-    lets publication use the exact regions preflight already verified instead of
-    walking and hashing Designator again.
+    The returned region map lets publication reuse the regions verified here.
 
-    **One ordinal for the whole pass, on a resume exactly as on a first run.**
-    Unit 2 asks what a crashed pass does about the pairs it already sealed, and
-    the answer is not a per-pair ordinal map. Three facts forbid one. A
-    page-scoped chair has no act-scoped attempt to repeat at all — `reread_pass`
-    refuses to mint one by name — so moving such a pair to ordinal 2 while the
-    page Testimonium and the act attachment stay at ordinal 1 publishes a
-    `not-run` over a good `read` and drops that chair out of the act's coverage.
-    `require_shared_whole_pass_ordinal` exists precisely because an act's
-    attachment is derived once per pass and cannot describe two ordinals at
-    once. And the Perlector's reading ordinal is a function of the act's crop
-    history, which the Recensor, Archetypus and Armarium each re-derive, so a
-    reading that appears without a recrop is refused downstream by all three.
+    A resumed pass keeps one ordinal for every pair: an attachment describes one
+    ordinal, and downstream stages refuse a reading ordinal that moves without a
+    recrop (principles 2 and 4). With `resume_incomplete_pass`, a pair already
+    sealed at this ordinal is reused rather than re-resolved, since a live chair
+    cannot reproduce immutable bytes; a fixture pass over a completed boundary
+    re-resolves and compares.
 
-    So a resumed whole pass repeats its ordinal, but it never asks a chair again
-    for a pair already sealed at that ordinal. The retained Testimonium is
-    validated and supplies the attempt facts used by the derived page and
-    attachment records; only pairs the interrupted pass did not seal reach the
-    chair. This is what makes the resume safe for a real non-deterministic chair:
-    no second answer has to reproduce immutable bytes, and no later ordinal is
-    invented for an act the pass never finished (principle 2 and principle 4).
-
-    **`resolve` is what keeps this preflight a no-write preflight when the chair
-    is live.** In fixture mode it is `resolve_attempt`, which reads the sealed
-    fixture and needs nothing outside this process. A live chair cannot be
-    consulted here at all -- that would be N x M model calls with nothing on
-    disk until the last one returned -- so the live pass supplies a resolver
-    that returns `PENDING_LIVE_ATTEMPT` for every unsealed pair and fills each
-    in as its own response arrives. The live caller also passes
-    `resume_incomplete_pass=True` unconditionally: a pair already sealed at this
-    ordinal is reused from its retained Testimonium and never asked again,
-    because a live chair cannot reproduce immutable bytes (principle 4).
-
-    **`fixture_declared` is `main`'s statement, from the run authority, that a
-    sealed fixture stands behind this run.** A fixture run -- live or offline --
-    validates its declared Churro page responses here, before any write, as a
-    fact about the sealed inputs; a real submission has no fixture and nothing
-    to validate, and the reader would refuse by name at its first touch of
-    `context.fixture`. The flag is decided by `real_ingress(context)` in `main`
-    and nowhere else; it is not a way for a caller to skip a fixture check.
+    `resolve` defaults to the fixture resolver; the live pass passes one that
+    returns `PENDING_LIVE_ATTEMPT` so no model is called before anything is written.
+    `fixture_declared` comes from `real_ingress` in `main`: a real submission has
+    no fixture to validate.
     """
     resolve = resolve_attempt if resolve is None else resolve
     # Native declarations must refuse before compatibility records are published.
@@ -1899,11 +1623,7 @@ def preflight_appendable_ordinals(
     ]
     closed = witness_bound_reading_acts(context) if appending else frozenset()
     for act in appending:
-        # The whole pass is the other write path that can add testimony to an act,
-        # so it meets the same closed-layer rule the targeted reread does. Only an
-        # append: a whole pass that rewrites attempts already sealed at this
-        # ordinal is the orchestrator's ordinary resume, moves no chair's current
-        # record, and is untouched by this.
+        # An appending whole pass meets the same closed-layer rule as a reread.
         require_open_witness_layer(closed, act, f"a whole pass at ordinal {ordinal}")
     for act in acts:
         regions: list[dict] = []
@@ -1937,9 +1657,8 @@ def preflight_appendable_ordinals(
                         f"{ordinal}; a resume cannot choose one"
                     )
                 record = existing[0]
-                # Seeded only when non-empty: `validate_tallied_testimonium`
-                # re-derives a missing entry and names the absent proposal crop,
-                # and an empty list would suppress that named refusal.
+                # Omitted when empty so the validator re-derives it and names the
+                # missing proposal crop.
                 validate_tallied_testimonium(
                     context, record, act, {act["act_id"]: regions} if regions else {}
                 )
@@ -1959,12 +1678,8 @@ def preflight_appendable_ordinals(
                 )
             attempts_by_pair[pair] = attempt
             if attempt is PENDING_LIVE_ATTEMPT:
-                # Nothing to compare: the branch above reuses every pair already
-                # sealed at this ordinal whenever a resolver of this kind is in
-                # play, so a pending pair has no record here to collide with.
-                # The live pass checks nothing further before publishing because
-                # there is nothing there to check -- and if that ever stopped
-                # being true, this is where it would have to be caught.
+                # A pending pair must have no sealed record: sealed pairs are
+                # reused above, never asked again.
                 if existing:
                     raise FatalAccounting(
                         f"the live preflight left {pair!r} unresolved while a Testimonium is "
@@ -1973,11 +1688,7 @@ def preflight_appendable_ordinals(
                     )
                 continue
             _refuse_write_collision(index.by_pair, act, chair, ordinal, attempt)
-    # Last, so a genuine witness-attempt disagreement is named for what it is
-    # rather than reported as its consequence one derivation downstream: the
-    # attachment collides *because* a reread already sealed an attempt this pass
-    # would contradict, and where that contradiction exists `_refuse_write_collision`
-    # says which chair and which two outcomes.
+    # Last, so `_refuse_write_collision` names the underlying chair conflict first.
     for act in appending:
         require_shared_whole_pass_ordinal(index, act, context.witness_chairs, ordinal)
     return regions_by_act, attempts_by_pair, frozenset(sealed_pairs)
@@ -1991,11 +1702,8 @@ def validate_tallied_testimonium(
 ) -> None:
     """Refuse a resealed Testimonium that this stage could not have produced.
 
-    The generic envelope proves a record is syntactically sealed; the attempt
-    tally also has to prove its stage-specific channel remains interpretable
-    before authorizing another immutable append. This deliberately validates no
-    witness's *content* and makes no quality decision. `regions_by_act` retains
-    that independent verification once per act while the tally checks each chair.
+    Checks structure only, never witness content. `regions_by_act` caches the
+    verified regions per act across chairs.
     """
     payload = record.get("payload")
     if not isinstance(payload, dict):
@@ -2004,11 +1712,7 @@ def validate_tallied_testimonium(
     if "raw_response_ref" in payload:
         validate_retained_response_blob(context.tree, payload["raw_response_ref"])
     if "serving_call_ref" in payload:
-        # The live half of the same rule. `inputs` is re-derived below from the
-        # regions and the presentation alone, so a live record's two retained
-        # blobs are deliberately not envelope inputs -- which is exactly why the
-        # tally re-hashes them itself rather than leaving them as references
-        # nothing ever reads back.
+        # Live blobs are not envelope inputs, so the tally re-hashes them itself.
         validate_retained_response_blob(
             context.tree, payload["serving_call_ref"], "serving_call_ref"
         )
@@ -2067,8 +1771,7 @@ def validate_tallied_testimonium(
             raise SchemaRefusal(
                 "a Testimonium tally record does not bind exactly the proposal regions and inputs"
             )
-        # Re-derive the explicit limit from sealed regions so it cannot understate
-        # which bound crops the one presented image does not speak for.
+        # Re-derived so a record cannot understate which bound crops go unpresented.
         if payload["unpresented_regions"] != unpresented_region_ids(payload["presented"], regions):
             raise SchemaRefusal(
                 "a Testimonium tally record does not name exactly the bound regions its "
@@ -2087,20 +1790,9 @@ def validate_tallied_testimonium(
 def require_accounted_unrecordable_channel(record: dict[str, Any], payload: dict[str, Any]) -> None:
     """Tell a witness whose output could not be kept from an evidence channel nobody can read.
 
-    Two of spec 07's requirements look contradictory here and are not, because
-    they are about different channels. Its isolation bullet — "one bad crop, one
-    dead witness, one malformed response never kills the folder ... recorded as a
-    failed attempt and refused, not repaired silently" — is about one witness's
-    own output. Invariant #23's — "a damaged or unrecordable evidence channel
-    makes the count UNKNOWN, and UNKNOWN holds the folder" — is about the attempt
-    tally, the independent count of what was attempted.
-
-    So an unrecordable response is accounted inside an honestly `failed` attempt
-    that says why: countable, counted, visibly failed, its act under-witnessed and
-    its run partial. Holding the whole folder instead would stop the Perlector
-    reading ink nobody doubts because one witness of three failed. Only a record
-    claiming to be a *reading* while saying nothing could retain what it read is
-    incoherent, and that one is #23's UNKNOWN.
+    An unrecordable response is accounted as a `failed` attempt with a reason, so
+    one bad witness does not hold the folder. Only a record claiming a reading it
+    could not retain is refused, which makes the tally UNKNOWN.
     """
     if record["outcome"] in WITNESS_READING_OUTCOMES:
         raise SchemaRefusal(
@@ -2130,21 +1822,11 @@ def attempt_tally(
 ) -> dict[str, Any]:
     """Rebuild and check the stage's attempt inventory.
 
-    The stored manifest is derived state, not the evidence: it is checked against
-    a fresh tree walk and the immutable Testimonia. An unreadable, malformed,
-    missing or divergent inventory makes the count UNKNOWN, and a caller must hold
-    rather than turn that uncertainty into a favourable count.
+    The stored manifest is checked against a fresh walk and the Testimonia; any
+    damage or divergence makes the count UNKNOWN, and the caller must hold.
 
-    A witness whose own output could not be retained is a different fact and does
-    not make the count unknown — see `require_accounted_unrecordable_channel`.
-
-    `chairs` supplies the act/chair denominator and is optional independently of
-    `acts`, because *whether every pair is accounted for* is a closing check and
-    not a precondition. Demanding it before a pass deadlocks the one thing that
-    could satisfy it: a pass interrupted before its manifest was written leaves a
-    partial inventory, and the pass that would complete it was refused on the
-    grounds that it was incomplete. Every record on disk is still validated
-    either way; only the denominator moves.
+    `chairs` is optional because full pair coverage is a closing check: demanding
+    it before a pass would block the pass that completes an interrupted one.
     """
     if chairs is not None and acts is None:
         raise SchemaRefusal("an attempt tally denominator names chairs but no expected acts")
@@ -2155,12 +1837,8 @@ def attempt_tally(
     except FatalAccounting:
         raise
     except (ContractError, OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
-        # RecursionError beside the others for the same reason `_read_json` in
-        # common/runtree/store.py added it: json's scanner recurses per nesting
-        # level, so a stored manifest an attacker or a damaged write replaced with
-        # deeply nested JSON raises it here directly, on this stage's own read,
-        # rather than through the shared reader. Uncaught, that is a traceback
-        # where #23 promises UNKNOWN + hold.
+        # json recurses per nesting level, so a deeply nested manifest raises
+        # RecursionError here; it must become UNKNOWN and hold, not a traceback.
         return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
     if stored != rebuilt:
         return {
@@ -2170,13 +1848,8 @@ def attempt_tally(
             "reason": "the stored Attestatores manifest does not equal its rebuilt inventory",
         }
 
-    # Page-scoped Testimonia are independently retained source evidence under
-    # their own kind, so this kind filter keeps the act-level walk to act
-    # attempts alone. There was also a `payload["scope"] == "page"` skip inside
-    # the loop below, which this filter made unreachable -- and which, had
-    # anything reached it, would have carried an act-scoped record past every
-    # check in this function on the strength of one self-reported field. Found
-    # in audit; F-O5.
+    # Filtered by kind, never by the self-reported `scope`, so an act record cannot
+    # claim page scope and skip these checks.
     testimonia = [entry for entry in rebuilt["artifacts"] if entry["kind"] == "testimonium"]
     by_act = {act["act_id"]: act for act in acts or ()}
     try:
@@ -2219,13 +1892,8 @@ def attempt_tally(
                 operation=f"read:{chair}",
             )
     except ContractError as error:
-        # `FatalAccounting` is a `ContractError`, and `latest_attempt` raises it in five
-        # places directly inside this block — so without this the broadest handler here
-        # turned invariant #10 into a hold. The two are not interchangeable: a hold says
-        # *the count is unknown*, while an accounting imbalance says *the partition
-        # itself is broken*, and the error class exists to keep those apart. Its own
-        # docstring is the rule — "nothing may catch this and carry on". Two other sites
-        # in this file already re-raise it the same way; this one must too.
+        # `FatalAccounting` is a `ContractError` but means the partition is broken,
+        # not that the count is unknown; it must never become a hold.
         if isinstance(error, FatalAccounting):
             raise
         return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
@@ -2252,11 +1920,7 @@ def _positive_ordinal(value: str) -> int:
 class Attempt(NamedTuple):
     """One chair's resolved outcome for one act on one attempt.
 
-    One shape shared by every constructor — `dead_attempt`, `not_read_attempt`,
-    and `resolve_attempt` — so the whole-pass write path and the targeted reread
-    cannot drift on what a witness attempt is. It describes one chair and reads
-    no other chair's record: nothing here compares, ranks, or chooses among
-    witnesses, and there is no argument through which it could.
+    Describes one chair only; nothing here compares or ranks witnesses.
     """
 
     outcome: str
@@ -2267,31 +1931,22 @@ class Attempt(NamedTuple):
     reason: str | None
     raw_response_ref: dict[str, str] | None = None
     observation_payload: Any = None
-    # Live-only, and appended so every existing constructor -- positional or
-    # keyword -- keeps writing exactly the record it wrote before (the fixture
-    # pass must stay byte-identical). `native_capture` is the adapter's own
-    # retained model view; `serving_call_ref` names the `chair-call-record.v2`
-    # blob the client wrote for the one request this attempt came from.
+    # Live-only fields, appended last so positional fixture constructors are
+    # unchanged. `serving_call_ref` names this request's call-record blob.
     native_capture: dict[str, Any] | None = None
     serving_call_ref: dict[str, str] | None = None
     receipt_ref: dict[str, str] | None = None
-    # Which sort of bytes `raw_response_ref` names. `None` on the fixture path,
-    # which retains one kind of declared bytes and has no branch that could
-    # mean the other.
+    # Which sort of bytes `raw_response_ref` names; `None` on the fixture path.
     raw_response_kind: str | None = None
-    # Chandra-only compact provenance over every physical request. The final
-    # response above remains the sole Testimonium payload.
+    # Chandra-only provenance over every physical request; not the payload.
     native_inference: dict[str, Any] | None = None
 
 
 class _PendingLiveAttempt:
     """The live pass has not asked this chair for this pair yet.
 
-    Deliberately not an `Attempt` with a `pending` outcome: an outcome is a
-    published fact, and a sentinel that can be published is a sentinel that
-    eventually is. Nothing here can be mistaken for a witness result -- it has no
-    outcome, no payload and no health -- so a code path that fails to replace it
-    fails loudly at the first attribute it reaches.
+    Not an `Attempt`, so an unreplaced sentinel fails loudly instead of being
+    published.
     """
 
     __slots__ = ()
@@ -2306,18 +1961,12 @@ PENDING_LIVE_ATTEMPT: Any = _PendingLiveAttempt()
 def pending_live_attempt(context, act, chair, resolved, declarations) -> Any:
     """The live preflight's resolver: every unsealed pair is still unasked.
 
-    Same signature as `resolve_attempt`, because it stands exactly where that
-    function stands and the seam must not grow a second shape. It reads none of
-    its arguments: in live mode the fixture's declared responses are not this
-    run's evidence, and the chair is asked once, later, from the pass that can
-    publish its answer immediately.
+    Has `resolve_attempt`'s signature; the chair is asked later by the pass that
+    publishes its answer.
     """
     del context, act, chair, declarations
     if isinstance(resolved, AbsentChair):
-        # An absent chair is unavailable before any attempt reaches it, in either
-        # posture. Leaving it pending would put a chair the roster says is not
-        # there into the live schedule, and the first thing the schedule does is
-        # try to start it.
+        # Pending would put an absent chair into the live schedule to be started.
         return dead_attempt(resolved)
     return PENDING_LIVE_ATTEMPT
 
@@ -2325,31 +1974,17 @@ def pending_live_attempt(context, act, chair, resolved, declarations) -> Any:
 def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
     """Crash resume must rehydrate retained Chandra bytes for page geometry.
 
-    The act-scoped Testimonium is not republished, but its response still feeds
-    the derived page record. Its blob therefore has to remain present and
-    digest-identical before that Testimonium can stand in for a new chair response.
+    The response still feeds the derived page record, so its blob must be present
+    and digest-identical.
     """
     payload = record["payload"]
     raw_response_ref = payload.get("raw_response_ref")
     observation_payload = None
-    # A live attempt whose response never parsed carries no observation payload:
-    # `live_witness.captured_page_attempt` sets one only on the parsed branch,
-    # because geometry derived from bytes no parser recognized would be geometry
-    # nobody read. The resume must reconstruct the same fact, or the page record
-    # it rebuilds derives a partition the interrupted pass never wrote and the
-    # immutable writer refuses the republish. `serving_call_ref` is the live
-    # marker; the fixture path retains its declared bytes on every branch and is
-    # deliberately untouched here.
+    # A live attempt carries geometry bytes only where its response parsed; the
+    # resume must match, or the rebuilt page record differs from the sealed one.
     served_by_a_chair = payload.get("serving_call_ref") is not None
-    # `content_health.recordable is True` is wider than "this outcome is a
-    # reading": `live_witness._content_health` sets `recordable: True`
-    # unconditionally on every parsed branch, including the parsed-but-
-    # unconfirmed-blank `failed` outcome (cut off, or an unrecognized stop
-    # word) -- the same branch `captured_page_attempt` deliberately withholds
-    # `observation_payload` for. Gate on the outcome set that branch actually
-    # used, the same fix `_page_capture_from_record` already applies for the
-    # identical reason (principle 4): rehydrating on a wider test would hand
-    # a resume geometry the interrupted pass never published.
+    # Gated on outcome, not `recordable`, which is also true for a parsed but
+    # cut-off `failed` response that carried no geometry (principle 4).
     parsed_into_a_payload = _retains_chandra_observation_payload(record)
     if raw_response_ref is not None:
         validate_raw_response_ref(raw_response_ref)
@@ -2366,9 +2001,7 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
                 "a resumed Testimonium's retained raw response digest differs from its "
                 f"reference: expected {raw_response_ref['sha256']}, read {observed}"
             )
-        # Read and digest-checked either way -- the blob must still be there and
-        # still be itself before this record can stand in for a chair response.
-        # Only whether it is offered as *geometry* depends on the branch above.
+        # Always digest-checked; only its use as geometry depends on the branch.
         if served_by_a_chair and not parsed_into_a_payload:
             observation_payload = None
     provenance = payload.get("provenance")
@@ -2381,9 +2014,7 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
         reason=payload.get("reason"),
         raw_response_ref=raw_response_ref,
         observation_payload=observation_payload,
-        # Carried back so a resumed live pass can rebuild the page record its
-        # interrupted predecessor derived from this same response, without ever
-        # asking the chair a second time (`live_page_capture`).
+        # Lets a resumed live pass rebuild the page record without re-asking.
         native_capture=payload.get("native_capture"),
         serving_call_ref=payload.get("serving_call_ref"),
         receipt_ref=provenance.get("receipt_ref") if isinstance(provenance, dict) else None,
@@ -2541,31 +2172,18 @@ def captured_churro_page_attempt(
             "fixture bytes may not be attributed to a different model boundary"
         )
     adapter = witness_adapters.resolve_runnable_adapter(adapter_name)
-    # The registry's churro retain wrapper pins the adapter name itself; the
-    # relabel-proof seam accepts no adapter argument at all.
+    # The retain wrapper pins the adapter name; it takes no adapter argument.
     capture = adapter.retain(
         context.tree,
-        # The adapter's own prompt under its default framing, not a frozen
-        # declaration of this stage's own. Chandra keeps a `FIXTURE_PROMPT`
-        # because its fixture rows are a JSON placeholder no chair was ever
-        # asked for; Churro's fixture rows are answers in shapes the vendor
-        # grammar actually reads, so the honest declaration beside them is the
-        # question the vendor's registry asks. `framing` is deliberately not
-        # recorded: the fixture asks nobody anything, so there is no run whose
-        # question a name would identify.
+        # Churro fixture rows are real vendor-grammar answers, so the view records
+        # the adapter's own prompt; no framing, as no request was made.
         view={"prompt": adapter.prompt(), "generation": feeding.churro_generation()},
         raw_response=raw,
         transport_stop_reason=stop,
-        # One grammar, one parser name, both postures
-        # (`common/native_witness.py::CHURRO_PARSERS`).
+        # Same parser name as the live path.
         parser="xml",
     )
-    # The adapter's own declared expressiveness, read off its registry entry,
-    # exactly as the live boundary reads it (`_declared_format_capabilities`).
-    # Churro declares `can_express_uncertainty=True, can_express_layout=False`
-    # (`churro.py::FORMAT_CAPABILITIES`); what reading it here buys is that
-    # Churro's grammar and this posture cannot come to disagree about what
-    # that grammar can carry the day either one changes (U12).
+    # Read from the adapter, as the live path does, so the two cannot diverge.
     capabilities = _declared_format_capabilities(adapter)
     parsed = capture["parse"]
     # Post-hoc findings cannot decide whether the transport cut off the response.
@@ -2609,12 +2227,8 @@ def captured_churro_page_attempt(
         if cut_off
         else ""
     )
-    # `failed` names its refusal in `reason`; `unrecognized-shape` names the
-    # shape it could not place in `outcome`, and this posture can now reach the
-    # second: the vendor grammar reads any well-formed XML and refuses only the
-    # root elements it knows nothing about. One helper, shared with the live
-    # boundary and with the page validator that re-derives both of these
-    # sentences and compares them.
+    # Shared with the live path and the page validator, which re-derives and
+    # compares these sentences.
     parse_refusal = native_parse_refusal(parsed)
     basis = (
         f"response cut off by the provider ({stop!r}); {parse_refusal}"
@@ -2658,9 +2272,7 @@ def dead_attempt(resolved: AbsentChair) -> Attempt:
 def not_read_attempt(resolved: ChairIdentity | AbsentChair, reason: str) -> Attempt:
     """One chair on an act no witness was shown: unavailable, or not asked.
 
-    An absent chair stays `dead` whatever kept the act from being read, because
-    the two facts are independent — holding the act does not turn an unreachable
-    witness into a merely unasked one.
+    An absent chair stays `dead`: holding the act does not make it merely unasked.
     """
     if isinstance(resolved, AbsentChair):
         return dead_attempt(resolved)
@@ -2677,14 +2289,8 @@ def not_read_attempt(resolved: ChairIdentity | AbsentChair, reason: str) -> Atte
 def declarations_for(context, ordinal: int) -> dict[str, Any]:
     """Every fixture declaration that applies to this exact attempt ordinal.
 
-    Read once per pass rather than once per chair, and bound to the ordinal, so a
-    declared first-attempt failure cannot silently describe a later reread.
-
-    `empty` is a declared empty *response* — the fixture's stand-in for a
-    provider that returned an empty body — and `declared_response` sends it back
-    through the same retention boundary as any declared text, so the outcome is
-    derived from what was retained rather than named here. `not_run` is a
-    configured chair deliberately never asked for this attempt.
+    Bound to the ordinal so a first-attempt failure cannot describe a reread.
+    `empty` is a declared empty response, not an outcome.
     """
     declarations = {
         "ordinal": ordinal,
@@ -2710,15 +2316,9 @@ def declarations_for(context, ordinal: int) -> dict[str, Any]:
 
 
 def real_declarations(ordinal: int) -> dict[str, Any]:
-    """The declaration set of a real submission: nothing, by name.
+    """The declaration set of a real submission: empty, in `declarations_for`'s shape.
 
-    `witness_failure`, `witness_not_run`, `witness_malformed` and `witness_empty`
-    are the offline posture's stand-ins for what a transport returned. A real
-    failure is what the transport actually returned, and the live resolver
-    reads none of these tables; so the set is empty in every family, in the
-    exact shape `declarations_for` builds, and it is built here rather than by
-    that reader because that reader's whole body is the fixture and a real run
-    has none to read.
+    A real run has no fixture; its failures are what the transport returned.
     """
     return {
         "ordinal": ordinal,
@@ -2740,17 +2340,9 @@ def resolve_attempt(
 ) -> Attempt:
     """What one configured chair's attempt at one act came to.
 
-    Every branch ends in exactly one member of the closed six-outcome vocabulary,
-    because a chair that simply does not appear is the silent skip this stage
-    exists to refuse.
-
-    `reread` decides which member an undeclared response lands on, and the two
-    write paths genuinely differ there. A whole pass asks the fixture what each
-    chair returned at this ordinal, and silence means the chair was not asked:
-    `not-run`. A targeted reread names one chair on one act, so the invocation
-    *is* the attempt and silence is an attempt that produced no usable
-    Testimonium — which spec 07 gives to `failed`, "as against ... `not-run`
-    (configured, never attempted)".
+    Every branch ends in one closed outcome. An undeclared response is `not-run`
+    in a whole pass but `failed` under `reread`, where the invocation itself is
+    the attempt.
     """
     if isinstance(resolved, AbsentChair):
         return dead_attempt(resolved)
@@ -2809,22 +2401,11 @@ def resolve_attempt(
             if resolved.witness_adapter in FIXTURE_NATIVE_RESPONSE_ADAPTERS and isinstance(
                 response.get("raw_response"), str
             ):
-                # Geometry may derive only from explicitly declared response
-                # bytes; synthesizing JSON from `payload` would create native
-                # evidence no witness returned.
+                # Geometry derives only from declared response bytes, never from
+                # JSON synthesized from `payload`.
                 raw_response = response["raw_response"].encode("utf-8")
-                # `FIXTURE_NATIVE_RESPONSE_ADAPTERS` is a one-member set and this
-                # block is Chandra's own: the retained view below is
-                # `chandra.FIXTURE_PROMPT`, the fixture's frozen declaration, and
-                # the retain recipe is Chandra's `json` parser. Adding a second
-                # adapter to that set means writing that adapter's own branch
-                # here first, or its bytes would be filed under Chandra's model
-                # boundary (principle 6) -- a Testimonium whose retained view
-                # and parser name a chair that never produced it. The comment
-                # said so and nothing enforced it, so the refusal is written
-                # down: the coupling is between this set and this one recipe,
-                # and it fails closed at the moment the set widens rather than
-                # at whatever later reads the misfiled record.
+                # This branch is Chandra's recipe; any other adapter's bytes would
+                # be filed under Chandra's model boundary (principle 6).
                 if resolved.witness_adapter != "chandra.v1":
                     raise SchemaRefusal(
                         f"fixture raw_response for adapter {resolved.witness_adapter!r} would be "
@@ -2836,12 +2417,9 @@ def resolve_attempt(
                 adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
                 retained = adapter.retain(
                     context.tree,
-                    # No adapter argument: Chandra's retain wrapper pins its own
-                    # registry identity, as Churro's and DAI's do. The prompt
-                    # is the fixture's frozen declaration, not `adapter.prompt()`:
-                    # this view is sealed into the pinned fixture bytes, the
-                    # fixture never asks a chair anything, and the served
-                    # instruction must be free to change without moving them.
+                    # The fixture's frozen prompt, not `adapter.prompt()`: this view
+                    # is sealed into pinned fixture bytes, and the served prompt must
+                    # be free to change without moving them.
                     view={"prompt": dict(chandra.FIXTURE_PROMPT)},
                     raw_response=raw_response,
                     transport_stop_reason="fixture-complete",
@@ -2864,14 +2442,9 @@ def resolve_attempt(
                     health,
                     recording_problem,
                 ) = prepared_response({**response, "payload": native_payload})
-                # The health the response boundary produced is kept as it came.
-                # Recomputing it here repeated the same call for every
-                # recordable payload, and on the unrecordable branch -- where
-                # `prepared_response` returns a `None` payload with the honest
-                # unrecordable health -- it would have overwritten that with the
-                # health of `None`, reporting a recordable null channel and
-                # leaving the unrecordable-channel accounting with nothing to
-                # fire on (principle 2).
+                # Health is kept as `prepared_response` computed it; recomputing it
+                # from a `None` payload would erase an unrecordable channel
+                # (principle 2).
                 if parsed["state"] != "parsed":
                     outcome = "failed"
                     reason = f"the Chandra response shape was not recognized: {parsed['outcome']}"
@@ -2906,16 +2479,8 @@ def resolve_attempt(
                 outcome = "failed"
                 reason = f"the provider response was refused without repair: {recording_problem}"
             elif isinstance(native_payload, str) and native_payload == "":
-                # Derived from the response this chair actually returned, never
-                # asserted about it. `genuinely-empty` is the one completed
-                # outcome whose whole content is an absence, so it is the one
-                # most easily minted from something other than evidence -- and
-                # it used to be: a Designator page-fallback act took this
-                # outcome for every configured chair from its own derived
-                # identity, before any response boundary was consulted at all
-                # (Sol-S1). Nothing reaches here without a retained, recordable
-                # response to this exact request; a missing one is the
-                # `not-run`/`failed` above and holds the act.
+                # Only a retained, recordable empty response reaches here;
+                # `genuinely-empty` is never asserted without one.
                 outcome = "genuinely-empty"
             else:
                 outcome = "read"
@@ -2926,19 +2491,13 @@ def resolve_attempt(
 def declared_page_witness_chairs(context) -> set[str]:
     """Read page-witness scope from the sealed model configuration.
 
-    Unit 10A moves the source of truth here: scope is `witness_scope` in the
-    sealed roster, never a fixture declaration a run could contradict. This
-    producer must not accept fixture scope or delegate roster validation to the
-    Perlector; each side of the handoff checks the sealed authority itself.
-
-    All write and reread paths use this accessor, because a downstream page-join
-    check cannot repair an immutable act record that already carries the wrong
-    scope.
+    Scope comes from the sealed roster's `witness_scope`, never a fixture. Every
+    write path uses this, since an immutable record with the wrong scope cannot be
+    repaired downstream.
     """
     roster = context.witness_chairs
-    # `type(chair) is not str` rather than `isinstance`: set construction and
-    # refusal formatting below both invoke subclass-defined behaviour, so the
-    # exact built-in string is required first (work/boundary-named-refusals).
+    # Exact `str`, not `isinstance`: a subclass could override hashing or
+    # formatting used below.
     if (
         not isinstance(roster, list)
         or any(type(chair) is not str for chair in roster)
@@ -2985,28 +2544,15 @@ def derived_chandra_anchor(
 ) -> dict[str, dict[str, Any]]:
     """Each act's anchor range on one page, from the anchor chair's own served response.
 
-    The live counterpart of the fixture's declared `[[chandra_anchor]]` rows,
-    built from two facts the retained page Testimonium already carries: the
-    chair's page text, and its reported blocks with their spans into that
-    text. An act's anchor lines are the reported blocks whose geometry overlaps
-    one of the act's sealed proposal regions on this page -- the same
-    positive-area rule attachment uses (`reported_geometry_overlaps`), applied
-    per block -- so alignment attaches text to acts by geometry and never by
-    choosing among witnesses (principle 1). The range is the hull, in the
-    markup-stripped normalized view `align_to_anchor` measures in, of those
-    blocks' spans: when an act's blocks are not adjacent in reading order the
-    hull carries a neighbour's characters too, which overstates disagreement
-    and never hides it -- the same deliberate direction the clipped witness
-    hull below takes. `line_geometry` carries every overlapping block, in
-    reading order, including one whose text normalizes to nothing.
+    The live counterpart of the fixture's `[[chandra_anchor]]` rows. An act's anchor
+    lines are the reported blocks overlapping its sealed regions, so acts are
+    matched by geometry, never by choosing a witness (principle 1). The range is
+    the hull of those blocks' spans in normalized text; a non-adjacent neighbour
+    inside the hull overstates disagreement rather than hiding it.
 
-    An act no reported block overlaps, or whose overlapping blocks carry no
-    normalizable text, gets no range and is `act-anchor-line-not-located`: the
-    page's anchor exists and locates no line for it. Only acts whose primary
-    page is this one are anchored here; a continuation's tail has no anchor
-    line by design (`continuation-page-no-act-anchor`). A block overlapping two
-    acts gives both the same range, which `refuse_ambiguous_act_alignments`
-    then names rather than resolves.
+    An act with no overlapping text gets no range. Only acts whose primary page is
+    this one are anchored. A block shared by two acts gives both the same range,
+    which `refuse_ambiguous_act_alignments` then refuses.
     """
     offset_map = markup_text_view(page_text)["offset_map"]
     normalized_by_raw: dict[int, list[int]] = {}
@@ -3050,12 +2596,7 @@ def derived_chandra_anchor(
 
 
 def declared_chandra_anchor_chair(context) -> str:
-    """The sole configured Chandra chair named as the alignment anchor.
-
-    Both routes use it: the fixture route to name the chair the declared
-    anchor stands in for, the live route to pick whose served page response
-    the anchor is derived from (`derived_chandra_anchor`).
-    """
+    """The sole configured Chandra chair named as the alignment anchor."""
     chairs = [
         chair
         for chair in context.witness_chairs
@@ -3085,20 +2626,14 @@ def publish_attempt(
 ) -> None:
     """Seal one immutable Testimonium. The only write path for an attempt.
 
-    ``live`` says the response came from a chair that actually served it. It
-    changes exactly one derivation: a fixture `[[native_observation]]` row is a
-    declared stimulus for the offline posture, and letting one stand in for the
-    geometry a live response really carried would record a measurement nobody
-    made (principle 8). Everything else here is identical in both postures,
-    which is what keeps the fixture record byte-for-byte what it was.
+    ``live`` only stops fixture `[[native_observation]]` rows standing in for the
+    geometry a live response carried (principle 8).
     """
-    # This shared accessor must run before building any artifact facts: a bad
-    # roster cannot be allowed to seal an otherwise plausible record first.
+    # First, so a bad roster refuses before any record is built.
     page_witness_chairs = declared_page_witness_chairs(context)
     attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
-    # One presentation has one page-pixel space. Continuation crops remain bound
-    # in `regions`/`inputs`, while `unpresented_regions` explicitly prevents the
-    # derived geometry from looking complete across pages it cannot describe.
+    # One presentation covers one page; continuation crops stay bound in
+    # `regions` and are named in `unpresented_regions`.
     presented = presentation_for_region(regions[0]) if attempted else {}
     adapter = (
         witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
@@ -3112,9 +2647,6 @@ def publish_attempt(
             resolved.witness_adapter, source_presentation, presented
         )
     unpresented_regions = unpresented_region_ids(presented, regions)
-    # A declared observation is the offline posture's stimulus. A live response
-    # carries its own geometry, and letting a fixture row stand in for it would
-    # publish a measurement nobody made (principle 8).
     fixture_observed = (
         _fixture_native_observations(
             context, chair=chair, page_ordinal=presented["source_page_ordinal"]
@@ -3122,19 +2654,9 @@ def publish_attempt(
         if presented and not live
         else None
     )
-    # A property of the ADAPTER, read off its registry entry, never a comparison
-    # against one adapter's name: "does this adapter's `observe` take the sealed
-    # page's own size?" Two hard-coded names in one branch is how the third page
-    # adapter is silently left out of a rule it belongs to, which is exactly what
-    # happened to Churro here until Unit 12.
+    # Read from the adapter's registry entry, never by adapter name.
     takes_page_size = adapter is not None and adapter.takes_page_size
-    # One presentation names one sealed page, and that page's size is a fact
-    # about the page, not about this view of it. Bound once here: both
-    # derivations below need it, and `_sealed_source_page` reads the whole
-    # page blob and re-digests it on every call, so asking twice per act view
-    # would double the I/O and the hashing for one unchanging number.
-    # Read only where it is actually needed -- a page-scoped act
-    # view with a presentation.
+    # Read once: `_sealed_source_page` re-reads and re-digests the whole page.
     sealed_page_size = (
         _sealed_source_page(context, presented)[2] if presented and takes_page_size else None
     )
@@ -3143,9 +2665,7 @@ def publish_attempt(
     elif fixture_observed is not None:
         observed = fixture_observed
     elif takes_page_size:
-        # A page witness's act view restates page-level geometry, so the
-        # grammar's normalized boxes convert against the sealed page's own
-        # size, never this one crop's (`chandra.observe`).
+        # Normalized boxes convert against the sealed page's size, not the crop's.
         observed = adapter.observe(
             presented,
             attempt.observation_payload
@@ -3162,15 +2682,10 @@ def publish_attempt(
         )
     else:
         observed = observed_from_presentation(presented)
-    # Reported geometry only, through the same helper the page partition uses, so
-    # the two seams cannot come to disagree about what a mixed response means:
-    # all reported passes through, none reported is empty, a mix is refused by
-    # name rather than half-kept. An echo needs no split: it restates the
-    # presentation, which is inside its own page by construction, and routing and
-    # coverage exclude it anyway.
+    # Same helper as the page partition, so both treat a mixed response alike.
+    # A presentation echo lies inside its page by construction and needs no split.
     if presented and takes_page_size and (reported := _partition_geometry(observed)):
-        # The act view cannot retain partition findings, but it must exclude an
-        # overshoot so one bad block does not prevent the page record retaining it.
+        # Overshoots are dropped here; the page record retains them as findings.
         observed, _ = split_page_edge_overshoots(reported, page_size=sealed_page_size)
     payload = testimonium_payload(
         chair=chair,
@@ -3188,10 +2703,8 @@ def publish_attempt(
         observed=observed,
         unpresented_regions=unpresented_regions,
         outcome=attempt.outcome,
-        # The interim act view of an immutable page witness carries the flag
-        # from construction so the geometry contract validates it correctly.
-        # Its attachment points at the retained page Testimonium; R4 replaces
-        # this view with alignment, not with another witness kind.
+        # Set at construction so the geometry contract validates this act view
+        # as page-space geometry.
         page_witness=chair in page_witness_chairs,
         reason=attempt.reason,
         raw_response_ref=attempt.raw_response_ref,
@@ -3205,9 +2718,7 @@ def publish_attempt(
     )
     inputs = testimonium_inputs(context, regions, presented) if attempted else []
     inputs = _named_once(inputs + _chandra_trace_inputs(attempt.native_inference))
-    # Adapter output is untrusted. Reconcile it while refusal can still leave
-    # the immutable Testimonium identity unwritten; tally/consumer validation
-    # repeats this check but cannot undo an invalid publication.
+    # Adapter output is untrusted; check before the immutable write.
     validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
     context.publish(
         kind="testimonium",
@@ -3225,14 +2736,8 @@ def _raw_span_from_normalized(
     """Translate a `[start, end)` span over `markup_text_view`'s normalized text
     back into the raw text's own character indices.
 
-    `align_to_anchor`'s matching runs on the normalized (whitespace-collapsed)
-    text, so a matched block's `start`/`end` are normalized-text offsets. Storing
-    them as-is under `witness_span` -- which every later reader (this stage's own
-    `span` field, and the Recensor's page-Testimonium content-coverage check)
-    indexes into the RAW page text -- silently shifts by however much leading or
-    internal whitespace the normalization collapsed. `offset_map[i]` is `None`
-    only for a synthesized separator character with no raw counterpart, so the
-    real span is the min/max raw index actually mapped inside the range.
+    Readers index `witness_span` into the raw text, so a normalized offset would
+    shift by the collapsed whitespace. `None` entries are synthesized separators.
     """
     raw_indices = [
         offset_map[index] for index in range(start, end) if offset_map[index] is not None
@@ -3243,40 +2748,22 @@ def _raw_span_from_normalized(
 
 
 class PageJoin(NamedTuple):
-    """R0's synthetic page reading for one chair: the text, what it amounts to,
+    """One chair's synthetic page reading: the text, what it amounts to,
     and every act attempt the join could not carry."""
 
     native_payload: str
     outcome: str
     unjoined_act_attempts: list[dict[str, Any]]
-    # How many attempts the join DID carry. Carried rather than derived, because
-    # `page_failure_reason` cannot tell "some acts joined empty" from "nothing
-    # joined at all" out of the unjoined list alone, and the difference is the
-    # difference between a page read as blank and a page not read.
+    # Needed to tell a page read as blank from a page not read at all.
     joined_act_attempts: int
 
 
 def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]], joined: int) -> str:
     """Why a page record failed, derived from the unjoined attempts' own outcomes.
 
-    **Never from their count.** Two different things land in
-    `unjoined_act_attempts`: an attempt that was not a reading at all, and a
-    reading this chair genuinely delivered as a structured native object that the
-    synthetic text join cannot concatenate (`page_join` above spells the second
-    out in each row's own `reason`). Counting them together called both "unread",
-    which is false of the second and sends an operator hunting a provider failure
-    that never happened — the same defect as the "page witness had no recordable
-    response" wording this stage already replaced, one case over.
-
-    So the page-level reason reads the partition the rows already carry rather
-    than re-deriving a worse one from a length comparison.
-
-    **`joined` is needed and is not derivable from the list.** The first version of
-    this function reported "the page join carried only empty readings" for a page
-    where *nothing* joined — every attempt a failure, no reading of any kind — which
-    is the same misdescription one case further along, introduced by the commit that
-    fixed the previous one. An unjoined list of non-readings is identical in both
-    cases; only the joined count separates a page read as blank from a page not read.
+    Unjoined rows are either non-readings or structured readings the text join
+    cannot concatenate, and the reason must not call the latter unread. `joined`
+    separates a page read as blank from one not read at all.
     """
 
     unread = [
@@ -3298,13 +2785,7 @@ def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]], joined: int
             "while either kind is outstanding"
         )
     if not joined:
-        # One case further along the same road the docstring above walks twice.
-        # A page whose chair was never served at all reaches here with every row
-        # `not-run` or `dead`, and "N attempts, none of them carrying a reading"
-        # describes requests that were made and came back useless -- sending an
-        # operator to look for responses that were never asked for. `not-run` at
-        # page scope means no request reached the chair, and the reason has to
-        # say that rather than borrow the attempted wording.
+        # A chair never asked must not be described as asked and unread.
         if not any(row["outcome"] in ATTEMPTED_WITNESS_OUTCOMES for row in unread):
             return (
                 f"this chair was never shown any of the {len(unread)} act(s) on this page: "
@@ -3325,47 +2806,16 @@ def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]], joined: int
 def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
     """Concatenate one chair's delivered act readings into its page reading.
 
-    Only a genuine reading contributes text. An attempt whose *outcome* is
-    `failed` can still carry a parsed `native_payload` string (a bad
-    `witness_reported`/`format_capabilities` fails the whole attempt without
-    clearing the text `prepared_response` already parsed) -- filtering on
-    `isinstance(..., str)` alone let that failed act's own text be silently
-    folded into a page witness's "read" testimony, laundering a recorded failure
-    into apparent coverage (D2/D3; principle 2), the defect named F-S1.
+    Only a reading outcome with text joins: a `failed` attempt can still hold
+    parsed text, which must not become coverage (principle 2). Everything else,
+    including structured readings, is listed in `unjoined_act_attempts` from the
+    same partition. Separators go only between delivered characters, and the
+    outcome follows the joined text:
 
-    The disclosure is the exact complement of that filter, computed from one
-    partition rather than from a second predicate. They were two predicates, and
-    they did not agree: the join also dropped an act whose reading is a
-    structured native object (a dict or list rather than text), while the closed
-    `unjoined_act_attempts` list named only non-reading OUTCOMES. In the shipped
-    `structured-witness` scenario that made attestator_1's page-1 record report
-    `read`, carry act a2's text alone, and disclose nothing -- act a1 gone behind
-    a successful status, which is F-P3's own defect through F-S1's own door,
-    named F-O7.
-
-    **A separator is not a reading.** The join used to be `"\n".join(readable)`
-    over every joined payload including the empty ones, and the outcome was
-    `read` whenever `readable` was non-empty -- so a page whose every act this
-    chair genuinely read as empty produced `payload="\n"` and a `read` page
-    Testimonium: characters no act delivered, under an outcome claiming a
-    reading of them. Separators are therefore placed only
-    *between* delivered characters, and the outcome is derived from the joined
-    text rather than from the length of the list that produced it:
-
-    - `failed`: no act reading joined and at least one underlying attempt reached
-      the chair. The page has no reading, but the attempted serving receipt still
-      travels with the failed record.
-    - `not-run`: no act reading joined because none of the underlying requests was
-      attempted. It carries neither a presentation nor a receipt.
-    - `genuinely-empty`: acts joined and every one of them delivered an empty
-      body. The chair read the page's acts and reported nothing on each, which
-      is the same fact at page scope that the act-scoped outcome records, and
-      `payload=""` is what `genuinely-empty` means everywhere in this stage.
-    - `read`: the joined text carries at least one delivered character.
-
-    A joined-but-empty act is not listed in `unjoined_act_attempts`: it was
-    carried, faithfully, and its zero characters are in the text. What it read
-    stays visible in its own act-scoped Testimonium and in the act attachment.
+    - `failed`: nothing joined, and at least one attempt reached the chair.
+    - `not-run`: nothing joined, and no attempt reached the chair.
+    - `genuinely-empty`: every joined act delivered an empty body.
+    - `read`: at least one delivered character.
     """
     joined: list[tuple[dict[str, Any], Attempt]] = []
     unjoined: list[tuple[dict[str, Any], Attempt]] = []
@@ -3387,15 +2837,8 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
             else "not-run"
         )
     elif native_payload == "":
-        # A completed absence is claimed only over a page this chair's join
-        # fully carried: `genuinely-empty` says "read the page's acts and
-        # reported nothing on each", and an act the join could not carry is an
-        # act this record did not read — a proved absence over unread ground
-        # would be the fabrication defect one scope up (invariant 6). `read`
-        # beside unjoined rows stays honest because delivered characters plus
-        # a disclosure claim less, not more. Nothing seals on a page record's
-        # outcome today; the act-scoped Testimonia carry the read-empty facts
-        # either way.
+        # An absence is claimed only over a fully joined page; unjoined acts were
+        # not read here.
         outcome = "genuinely-empty" if not unjoined else "failed"
     else:
         outcome = "read"
@@ -3408,10 +2851,7 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
                 "act_id": act["act_id"],
                 "act_key": act["act_key"],
                 "outcome": attempt.outcome,
-                # A non-reading attempt always carries its own reason. A reading
-                # the join could not carry has none to borrow, and an omission
-                # with no reason is the silent loss this list exists to refuse --
-                # so the join states its own limit instead.
+                # A reading the join could not carry has no reason of its own.
                 "reason": attempt.reason
                 if attempt.outcome not in WITNESS_READING_OUTCOMES
                 else (
@@ -3427,35 +2867,11 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
 def refuse_ambiguous_act_alignments(rows_by_act: list[list[dict[str, Any]]]) -> None:
     """Unalign, in place, every pair of act spans one chair cannot tell apart.
 
-    The page-wide matcher runs once per (page, chair) and each act clips its own
-    hull out of it, so two acts can end up claiming overlapping stretches of one
-    chair's page reading.  Both claims are then unattributable: choosing between
-    them by span size, act order, or overlap fraction would be a picker over one
-    witness's text (principle 1), and letting both stand would feed
-    the same characters to two acts' dissent rows as though the witness had said
-    them twice.
-
-    So neither wins.  Their text correspondence becomes explicitly unaligned
-    with a named reason, and neither can count toward the witness floor.  A
-    zero-width span (the trivial attach a genuinely-empty page reading gets)
-    touches nothing and is deliberately not an overlap.
-
-    **What survives the unalignment depends on what attached it**, and this is
-    not cosmetic bookkeeping: a chair attached by `geometric-overlap` stays
-    attached, because the chair really did report ink there and the alignment
-    was never its evidence.  A chair attached by `anchor-line` has just lost the
-    only evidence it had, so it becomes unattached and says so.  Leaving it
-    `attached: true` beside an unaligned record published a row neither reader
-    can accept -- both re-derive attachment through
-    `common/contracts/outcomes.py::page_attachment_basis`, which answers
-    `unattached` for a witness with no geometry and no located anchor line, and
-    refuse a record whose stored boolean disagrees.  Unreachable while nothing
-    attached on text alone; reachable from Unit 12, which is why it is fixed
-    here rather than recorded.
-
-    Extracted from the attachment pass so it can be exercised directly: the
-    combination needs one chair's page reading to match one act's anchor range in
-    two separate places, which no fixture currently produces.
+    Two acts claiming overlapping text from one chair's page reading are both
+    unaligned: picking one would choose over a witness's text (principle 1). A
+    zero-width span is not an overlap. A `geometric-overlap` attachment survives;
+    an `anchor-line` one loses its only evidence and becomes unattached, matching
+    `page_attachment_basis`. Separate so tests can reach a case no fixture makes.
     """
     by_page_chair: dict[tuple[int, str], list[dict[str, Any]]] = {}
     for entries in rows_by_act:
@@ -3501,16 +2917,8 @@ def act_scoped_attachment_entry(
 ) -> dict[str, Any]:
     """One act-scoped chair's derived attachment view of one attempt.
 
-    Shared by the whole pass and the targeted reread, because both derive the
-    same view of the same per-(act, chair) attempt stream and a second spelling
-    is how the two would come to disagree about what the derived record says —
-    the drift F-O1 was, one layer down.
-
-    An act-scoped chair reads the act crop directly, so there is no page reading
-    to place it inside and `alignment` is deliberately absent. The span is this
-    chair's own complete delivered reading, the interim measure that stands until
-    R4's alignment computes a true covered span (F-S2: it is derived from the
-    response, never fixture-declared).
+    Shared by the whole pass and the reread so the two cannot drift. There is no
+    page reading to align into, so the span is the whole delivered reading.
     """
     attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
     act_attempt = attempt_id(act["act_id"], f"read:{chair}", ordinal)
@@ -3544,9 +2952,8 @@ def act_scoped_attachment_entry(
 def non_reading_alignment_reason(outcome: str, *, native_page_capture: bool) -> str:
     """Name the record whose non-reading outcome prevents page alignment.
 
-    A native page capture owns the page Testimonium's outcome.  The legacy
-    synthetic join instead gates this act on its own act attempt, because the
-    joined page record can still read on the strength of a different act.
+    With a native page capture the page record's outcome gates; with the synthetic
+    join it is the act attempt's, since the page can read on another act.
     """
     if outcome in WITNESS_READING_OUTCOMES:
         raise FatalAccounting(
@@ -3565,10 +2972,8 @@ def require_live_page_capture(
 ) -> tuple["Attempt", dict[str, Any]]:
     """The live response this page record is derived from, or a named refusal.
 
-    Under a live posture there is no second place a page record could come
-    from. Falling through to the legacy act-attempt join would publish a page
-    record derived from act views while the chair really did answer once, for
-    the page -- a record about a response nobody made (principle 8).
+    Falling back to the act-view join would describe a response nobody made
+    (principle 8).
     """
     captured = page_captures.get((page_ordinal, chair))
     if captured is None:
@@ -3587,12 +2992,8 @@ def page_denominator(
 ) -> tuple[dict[str, list[int]], dict[int, list[dict[str, Any]]]]:
     """Which pages every proposed act stands on, and which acts stand on each page.
 
-    One derivation, two readers. The page publisher needs it to know which page
-    records to write; the live pass needs the same answer *before* it asks a
-    page-scoped chair anything, because a page is that chair's unit of work.
-    Deriving it twice would be two answers to "which pages does this act
-    contribute?" that can drift, and the drift would show up as a page record
-    published for a page nobody was asked about.
+    Shared by the page publisher and the live pass so the pages asked about and
+    the pages published cannot drift.
     """
     contributing_pages_by_act: dict[str, list[int]] = {}
     by_page: dict[int, list[dict[str, Any]]] = {}
@@ -3618,11 +3019,8 @@ def page_denominator(
                 contributing_pages = [act["page_ordinal"]]
                 if act["has_continuation"]:
                     if real_ingress(context):
-                        # A real run's seal row was already checked against the
-                        # far-page region the Designator cut (`expected_acts`);
-                        # reaching here means that region was refused at the
-                        # crop boundary, and there is no declaration to name
-                        # the far page in its place.
+                        # The far-page region was refused, and a real run has no
+                        # declaration to name the far page instead.
                         raise FatalAccounting(
                             f"act {act['act_id']}'s proposal seal claims a continuation and "
                             "real ingress carries no continuation declaration; its far-page "
@@ -3657,39 +3055,24 @@ def publish_page_testimonia_and_attachments(
 ) -> None:
     """Retain page testimony and derive one attachment record for every act.
 
-    R0 uses each successful chair's complete delivered act reading as an interim
-    span so the custody chain is real before R4 owns text alignment. The fixture
-    declares no spans. The act-scoped records for chairs 1 and 3 remain a temporary
-    compatibility view for the current Perlector; each is explicitly linked below
-    to the immutable page Testimonium that supplied it.
+    Page witnesses' act-scoped records are a compatibility view for the Perlector;
+    each attachment links to the page Testimonium that supplied it.
     """
-    # Scope is authoritative only after the sealed roster and configured
-    # occupants agree.
     page_chairs = declared_page_witness_chairs(context)
     anchor_chair = declared_chandra_anchor_chair(context)
-    # Declared Churro responses are validated in the attempt preflight now,
-    # before any compatibility record publishes.
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
     page_observations: dict[tuple[int, str], list[dict[str, Any]]] = {}
     page_texts: dict[tuple[int, str], str] = {}
-    # Native captures own their page outcome; legacy joins derive it from act
-    # attempts, so the two paths cannot share an attempt-object fallback.
+    # Native captures only; a legacy join's outcome comes from its act attempts.
     page_outcomes: dict[tuple[int, str], str] = {}
-    # The anchor is a page fact, not a chair's report, and it is kept in its own
-    # map for that reason: parked in `page_texts` under a reserved chair slot it
-    # shared a key space with the configured roster, so a chair carrying that
-    # name would have had its retained page reading silently overwritten by the
-    # anchor markup and then been aligned against itself.
+    # Separate from `page_texts` so no chair name can collide with the anchor.
     anchor_texts: dict[int, str] = {}
     page_alignments: dict[tuple[int, str], dict[str, Any]] = {}
     anchor_ranges: dict[tuple[int, str], dict[str, int]] = {}
     contributing_pages_by_act, by_page = page_denominator(context, acts, regions_by_act)
-    # Built once for this whole pass and threaded into every `page_subject` /
-    # `presentation_for_page` call below: each is otherwise a fresh Exemplar
-    # inventory walk (one validated read per page), paid again for every
-    # page-scoped chair on every page.
+    # Built once; each lookup would otherwise walk the Exemplar inventory.
     page_ids = exemplar_page_ids(context)
 
     for page_ordinal, page_acts in sorted(by_page.items()):
@@ -3708,8 +3091,7 @@ def publish_page_testimonia_and_attachments(
             else:
                 captured = require_live_page_capture(page_captures, page_ordinal, chair)
             if captured is None:
-                # Legacy fixture rows retain their deliberately synthetic join.
-                # A Churro row above never takes this path.
+                # Legacy fixture rows keep the synthetic join.
                 join = page_join(
                     [(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts]
                 )
@@ -3717,10 +3099,7 @@ def publish_page_testimonia_and_attachments(
                 native_payload, outcome = join.native_payload, join.outcome
                 unjoined_act_attempts = join.unjoined_act_attempts
             else:
-                # Not `page_attempt`: that name is rebound below to this page
-                # record's attempt *identity* string, and one name meaning both
-                # an Attempt and an attempt id is how a page record ends up
-                # published under the wrong identity when this loop is edited.
+                # Not `page_attempt`, which names the attempt id below.
                 page_attempt_result, native_capture = captured
                 native_payload, outcome = (
                     page_attempt_result.native_payload,
@@ -3729,19 +3108,9 @@ def publish_page_testimonia_and_attachments(
                 unjoined_act_attempts = []
                 page_outcomes[(page_ordinal, chair)] = page_attempt_result.outcome
             reading = outcome in WITNESS_READING_OUTCOMES
-            # Did a response actually arrive for this page? A retained capture
-            # says so, and so does a live capture whose wire body `ChairClient`
-            # could not parse into a reading at all -- that body arrived, was
-            # retained, and produced an unrecordable channel, which is a
-            # different fact from a chair that answered nothing (principle 2).
-            # Retained bytes are what the question turns on, which is why the
-            # test is `raw_response_ref` rather than the mere presence of a
-            # capture: a request refused before it was sent
-            # (`capacity_refusal_attempt`) is filed as a capture too, and
-            # nothing arrived for it -- it must take the no-response health,
-            # not the health of a body nobody received.
-            # In the fixture posture `page_captures` is None and this is exactly
-            # the `native_capture is not None` it has always been.
+            # Whether a response arrived, judged by retained bytes: an unparsable
+            # live body arrived (principle 2), but a request refused before
+            # sending is also filed as a capture and nothing arrived for it.
             arrived = native_capture is not None or (
                 page_captures is not None
                 and captured is not None
@@ -3757,10 +3126,7 @@ def publish_page_testimonia_and_attachments(
                     unjoined_act_attempts, page_attempt_result.joined_act_attempts
                 )
             )
-            # Only a retained reading. A failed native capture has no text, and
-            # a `None` parked here read back as "this page has no anchor" three
-            # hundred lines below. The page-attempt gate below keeps that lookup
-            # from being reached; this keeps the map's own type honest.
+            # Text only; a `None` here would read later as "no anchor".
             if isinstance(native_payload, str):
                 page_texts[(page_ordinal, chair)] = native_payload
             health = (
@@ -3793,17 +3159,10 @@ def publish_page_testimonia_and_attachments(
             page_role = roles.pop() if len(roles) == 1 else "mixed"
             page_response_refs: list[dict[str, str]] = []
             page_edge_overshoots: list[dict[str, Any]] = []
-            # Two acts on one page legitimately share one chair's raw response
-            # (the comment below dedupes `page_response_refs` for exactly this
-            # reason), so re-deriving that response's overshoots once per act
-            # would re-add the identical (response_sha256, ordinal) finding more
-            # than once. `validate_partition_disagreement` refuses that as one
-            # rejected block counted twice, aborting the whole page publish over
-            # ordinary shared testimony rather than a malformed record.
+            # Acts on one page can share a raw response; a repeated finding would
+            # be refused as one block counted twice.
             seen_page_edge_overshoots: set[tuple[str, int]] = set()
-            # Declared fixture observations simulate native geometry; for a
-            # Chandra chair they are additive marginal evidence rather than the
-            # whole derived layer.
+            # For a Chandra chair, declared observations add to derived geometry.
             fixture_observed = (
                 _fixture_native_observations(context, chair=chair, page_ordinal=page_ordinal)
                 if page_captures is None
@@ -3812,40 +3171,21 @@ def publish_page_testimonia_and_attachments(
             if not presented:
                 observed: list[dict[str, Any]] = []
             elif _derives_partition_from_response(resolved, page_captures):
-                # The fixture executes one retained Chandra response per
-                # compatibility act, while the durable page Testimonium owns
-                # their page partition. Re-derive that partition only from
-                # responses whose primary page is this page; a continuation's
-                # primary-page response must not become geometry on its far
-                # page merely because the act belongs to both. The comment about
-                # one response per compatibility act is the fixture walk and
-                # stands; the live path below takes exactly one source.
+                # Only responses whose primary page is this page: a continuation's
+                # primary-page response must not become geometry on its far page.
                 adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
                 observed = []
                 captured_geometry = False
                 needs_default_observation = False
                 page_size = _sealed_source_page(context, presented)[2]
-                # Which retained responses this page's partition derives from.
-                # Under a live capture there is exactly one: the page response
-                # the chair really returned, which every act view on the page
-                # also carries -- deriving from each act view in turn would
-                # append the same blocks once per act. The fixture executes one
-                # declared response per compatibility act, so it walks them.
+                # Live: the single page response, not once per act view.
+                # Fixture: one declared response per act.
                 sources: list[tuple[bytes, dict[str, str] | None, bool]] = []
                 if page_captures is not None:
                     raw = page_attempt_result.observation_payload
                     if raw is not None:
-                        # `False`: the capture already names these bytes on this
-                        # record (`native_capture.raw_response_ref`), and
-                        # `raw_response_refs` is the list of the *partition's*
-                        # responses. A live page has one response, described
-                        # under the capture; naming it here as well would say
-                        # the same reading twice in one payload. The envelope
-                        # itself is safe either way -- `_named_once` below binds
-                        # each blob once, and the Perlector's reconstruction of
-                        # those inputs de-duplicates before it compares
-                        # (`4_perlector/run.py::_distinct_inputs`) -- so this is
-                        # a claim about what the payload says, not a workaround.
+                        # `False`: the capture already names these bytes, and
+                        # listing them again would state one reading twice.
                         sources.append((raw, page_attempt_result.raw_response_ref, False))
                 else:
                     for act in page_acts:
@@ -3860,11 +3200,7 @@ def publish_page_testimonia_and_attachments(
                         sources.append((raw, source_attempt.raw_response_ref, True))
                 for raw, reference, name_in_partition in sources:
                     captured_geometry = True
-                    # Keep the reference to the bytes this page's geometry was
-                    # quantized from, in the record that carries the geometry.
-                    # Retained once per distinct blob and in the order the
-                    # partition was built, so the record answers "derived from
-                    # what?" without rejoining act-scoped compatibility records.
+                    # Name each source blob once, in partition order.
                     if (
                         name_in_partition
                         and reference is not None
@@ -3882,19 +3218,8 @@ def publish_page_testimonia_and_attachments(
                         and reference is not None
                         and reference not in page_response_refs
                     ):
-                        # A page-edge finding names a (response_sha256,
-                        # ordinal) pair, and its response must be reachable
-                        # through the partition list a reader of the finding
-                        # walks -- so this one blob is named there after all,
-                        # and the double-naming above is accepted because the
-                        # alternative is an untraceable finding. Unreachable for
-                        # Chandra's own layout grammar -- a `data-bbox` with a
-                        # component outside [0, 1000] is `malformed-bbox` and
-                        # reports no rectangle at all, and the ones that survive
-                        # convert through `common/structure_answer.py::
-                        # to_page_bounds`, which clamps the far edges to the
-                        # page -- so only a live body wearing the fixture
-                        # placeholder's pixel boxes could take this branch.
+                        # A page-edge finding's response must be reachable from
+                        # the partition list, so it is named there too.
                         page_response_refs.append(reference)
                     for overshoot in overshoots:
                         overshoot_key = (overshoot["response_sha256"], overshoot["ordinal"])
@@ -3904,14 +3229,8 @@ def publish_page_testimonia_and_attachments(
                     for item in source_observed:
                         observed.append({**item, "ordinal": len(observed)})
                 if page_captures is not None and captured_geometry and not observed:
-                    # A live response that parsed but reported no block geometry
-                    # (a page-scoped chair whose grammar carries no coordinate
-                    # at all, or a layout answer whose blocks each report no
-                    # rectangle -- `Blank-Page` or a malformed `data-bbox` --
-                    # or one with no block in it)
-                    # is a page with no reported geometry, the same fact the
-                    # fixture's genuinely-empty rows record: the presentation
-                    # echo stands in, excluded from routing and coverage.
+                    # No reported geometry: the presentation echo stands in,
+                    # excluded from routing and coverage.
                     needs_default_observation = True
                 if needs_default_observation or not captured_geometry:
                     observed.extend(
@@ -3919,9 +3238,7 @@ def publish_page_testimonia_and_attachments(
                         for item in observed_from_presentation(presented)
                     )
                 if fixture_observed is not None:
-                    # Declared marginal geometry is additional evidence: native
-                    # response blocks still attach testimony to acts, while the
-                    # marginal box must remain available to the unclaimed route.
+                    # Kept alongside native blocks for the unclaimed route.
                     for item in fixture_observed:
                         observed.append({**item, "ordinal": len(observed)})
             elif fixture_observed is not None:
@@ -3929,21 +3246,16 @@ def publish_page_testimonia_and_attachments(
             elif adapter is not None:
                 observed = adapter.observe(presented, native_payload)
             else:
-                # An absent chair cannot currently be attempted; keep its
-                # no-adapter fallback explicit if that invariant changes.
+                # Unreachable while absent chairs are never attempted.
                 observed = observed_from_presentation(presented)
-            # The page Testimonium is the durable home for a witness's own
-            # partition.  Keep every proposal/observation pairing as geometry,
-            # including the common unrouted-observation finding; this stage does
-            # not choose an act for a marginal observation.
+            # Every proposal/observation pairing is kept; this stage does not
+            # assign a marginal observation to an act.
             page_proposals = page_proposal_regions
             page_artifact_id = artifact_id(
                 ATTESTATORES, "page-testimonium", page_subject_id, page_attempt
             )
-            # A never-presented page has no witness geometry to partition, and a
-            # retained snapshot naming zero proposals on a page the Designator
-            # sealed proposals for would be a false fact the Recensor refuses.
-            # The optional field is honestly absent instead.
+            # Absent, not empty, for a never-presented page: zero proposals would
+            # be false and the Recensor refuses it.
             disagreement = (
                 partition_disagreement(
                     {
@@ -3974,24 +3286,15 @@ def publish_page_testimonia_and_attachments(
                 act_key=f"page-{page_ordinal}",
                 ordinal=ordinal,
                 regions=[],
-                # A failed attempted page still records the serving moment;
-                # every attempted witness outcome is receipt-backed. Under a live
-                # capture that moment is the one the chair really served, named by
-                # the receipt its own client re-read at start.
+                # Every attempted outcome, failed included, is receipt-backed.
                 provenance=provenance_for(
                     context,
                     resolved,
                     attempted=attempted_page,
                     receipt_ref=page_attempt_result.receipt_ref if captured is not None else None,
                 ),
-                # The captured attempt's own declared value when this record
-                # derives from one real chair response (`page_attempt_result`
-                # is the `Attempt`/`LiveAttempt` `captured_page_attempt`
-                # built, format_capabilities and all); the legacy synthetic
-                # `PageJoin` -- built from possibly several acts' attempts,
-                # each free to declare its own -- carries no single value of
-                # its own, so it keeps the blanket default it always recorded
-                # (`page_join`, `PageJoin` above).
+                # A synthetic join spans several attempts and has no single value,
+                # so it records the default.
                 format_capabilities=(
                     page_attempt_result.format_capabilities
                     if captured is not None
@@ -4012,24 +3315,16 @@ def publish_page_testimonia_and_attachments(
                 reason=None if reading else failure_reason,
             )
             inputs = [context.input_ref(presented["image_path"])] if presented else []
-            # See the act-scoped writer: no adapter-derived evidence is made
-            # immutable before it reconciles with its sealed page and inputs.
+            # Checked before the immutable write, as in `publish_attempt`.
             validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
             context.publish(
                 kind="page-testimonium",
                 subject_id=page_subject_id,
                 outcome=outcome,
                 attempt=page_attempt,
-                # Every retained response this record derived from is an input,
-                # not only the Churro capture: `RunTree.read_artifact` re-reads
-                # `inputs` and nothing else, so a reference that lives only in
-                # the payload is a blob no ordinary consumer re-hashes. The
-                # order is the payload's own -- presented image, then the
-                # partition's responses in partition order, then the capture.
-                # Named once each: a page whose partition was derived from the
-                # very bytes its capture describes -- a live Chandra page that
-                # parsed -- reaches the same reference twice, and one response
-                # listed twice is not two responses.
+                # Every retained response is an input, because `read_artifact`
+                # re-hashes only `inputs`. A live Chandra page reaches one blob
+                # twice, so each is named once.
                 inputs=_named_once(
                     inputs
                     + page_response_refs
@@ -4047,13 +3342,8 @@ def publish_page_testimonia_and_attachments(
             )
             page_observations[(page_ordinal, chair)] = observed
         if page_captures is not None:
-            # The live anchor is derived from the anchor chair's OWN served
-            # response for this page -- its retained page text, and the block
-            # geometry it reported with spans into that text -- never from the
-            # fixture's declared `[[chandra_anchor]]` rows, which are the
-            # offline posture's stand-in and carry geometry no live run
-            # measured (principle 8). A page the anchor chair did not read as
-            # text derives no anchor, and its page witnesses say so by name.
+            # Live anchors come from the anchor chair's own served response,
+            # never fixture rows (principle 8).
             anchor_page_text = page_texts.get((page_ordinal, anchor_chair))
             if page_outcomes.get((page_ordinal, anchor_chair)) == "read" and isinstance(
                 anchor_page_text, str
@@ -4075,11 +3365,7 @@ def publish_page_testimonia_and_attachments(
                 if row.get("page_ordinal") == page_ordinal
             ]
         if len(anchors) > 1:
-            # Skipping a malformed declaration is not the same fact as an absent
-            # one: it would detach every page witness on the page from every act
-            # on it, and record `missing-chandra-page-anchor` for an anchor that
-            # is present on disk -- a default substituted for malformed evidence
-            # (principle 2 and principle 8).
+            # A malformed anchor is refused, not treated as absent (principles 2, 8).
             raise SchemaRefusal(
                 f"page {page_ordinal} declares {len(anchors)} Chandra anchors; a page has "
                 "one anchor, and skipping a duplicated declaration would detach every "
@@ -4094,20 +3380,11 @@ def publish_page_testimonia_and_attachments(
             anchor = anchors[0]
             anchor_texts[page_ordinal] = anchor["html"]
             normalized_anchor = markup_text_view(anchor["html"])["text"]
-            # `lines` is declared in reading order (ARCHITECTURE: Chandra's own
-            # `ocr_layout` reading flow). Searching each line from where the
-            # previous one ended, rather than from the start of the page every
-            # time, means a phrase repeated across two acts on the same page
-            # (a formulaic register opening, most plainly) resolves to its own
-            # occurrence in order instead of both lines collapsing onto the
-            # first match `str.find` would return from position 0.
+            # `lines` are in reading order; searching from the previous match lets
+            # a repeated formulaic opening resolve to its own occurrence.
             search_from = 0
             for line in anchor.get("lines", []):
-                # The same malformed-versus-absent rule as the anchor checks
-                # above: a skipped row leaves the act reporting
-                # act-anchor-line-not-located for a line that sits malformed on
-                # disk, and leaves `search_from` behind the malformed line's
-                # span so the next act's formulaic opening can resolve into it.
+                # Malformed lines are refused, not skipped.
                 if not isinstance(line, dict) or not isinstance(line.get("act_key"), str):
                     raise SchemaRefusal(
                         f"a Chandra anchor line for page {page_ordinal} names no act key; "
@@ -4119,16 +3396,7 @@ def publish_page_testimonia_and_attachments(
                         f"the Chandra anchor line for act {line['act_key']} on page "
                         f"{page_ordinal} carries no text; a malformed line is not an absent one"
                     )
-                # The haystack is the markup-stripped, whitespace-collapsed
-                # view, so the needle must be the same view of the same
-                # declaration -- searching raw declared text inside the
-                # normalized anchor failed for any line carrying a tag, an
-                # entity, or a double space, and it failed SILENTLY: nothing
-                # recorded the miss, the act reported
-                # act-anchor-line-not-located for a line sitting on disk, and
-                # `search_from` stayed behind the unlocated line's span. An
-                # unlocatable declared line is malformed evidence, not an
-                # absent act line.
+                # Needle and haystack must be the same normalized view.
                 needle = markup_text_view(source)["text"]
                 start = normalized_anchor.find(needle, search_from) if needle else -1
                 act = next((item for item in page_acts if item["act_key"] == line["act_key"]), None)
@@ -4142,13 +3410,6 @@ def publish_page_testimonia_and_attachments(
                 if start >= 0:
                     if act is not None:
                         if (page_ordinal, act["act_id"]) in anchor_ranges:
-                            # The same malformed-vs-absent rule as every branch
-                            # above: keeping the last line would drop the first
-                            # line's span and geometry without a record, and the
-                            # dropped half's characters would read as witness
-                            # departure. The day an act genuinely owns several
-                            # anchor lines, line_geometry carries all of them --
-                            # it does not keep the last.
                             raise SchemaRefusal(
                                 f"page {page_ordinal} declares more than one Chandra anchor "
                                 f"line for act {line['act_key']}; keeping the last one would "
@@ -4165,13 +3426,8 @@ def publish_page_testimonia_and_attachments(
                             or bbox["w"] <= 0
                             or bbox["h"] <= 0
                         ):
-                            # A null, non-integer, or negative coordinate is a
-                            # default standing in for geometry nobody measured;
-                            # published as this act's line_geometry it would be
-                            # indistinguishable from a real rectangle -- or be a
-                            # rectangle nothing can draw, refused two stages
-                            # later as a type error at the consumer instead of
-                            # here, at the declaration (principle 2 and principle 8).
+                            # An unmeasured rectangle must not pass as a real one
+                            # (principles 2, 8).
                             raise SchemaRefusal(
                                 f"the Chandra anchor line for act {line['act_key']} on page "
                                 f"{page_ordinal} declares an unusable rectangle; only measured "
@@ -4183,11 +3439,8 @@ def publish_page_testimonia_and_attachments(
                             "end": start + len(needle),
                             "line_geometry": [{"bbox": bbox}],
                         }
-                    # A located line advances the cursor whether or not it maps
-                    # to a proposed act on this page -- an anchor line for an
-                    # unproposed act still occupies its span of the page, and
-                    # leaving the cursor behind it would let the NEXT act's
-                    # formulaic opening resolve into this line's text.
+                    # Advance even for an unproposed act: its line still occupies
+                    # the page.
                     search_from = start + len(needle)
 
     attachment_rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
@@ -4199,65 +3452,32 @@ def publish_page_testimonia_and_attachments(
             alignment: dict[str, Any] | None = None
             if page_witness:
                 act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
-                # Whose reading this attachment is a view OF. The entry names one
-                # page Testimonium, so the answer is that record's own attempt
-                # wherever a native capture produced one -- and it is resolved per
-                # contributing page, because a chair can be captured on the act's
-                # primary page and not on its continuation. Under a native capture
-                # the act-scoped rows are a separate compatibility channel, and
-                # reading them here published an act attachment describing a
-                # response the referenced page record never made: an alignment
-                # computed over a page the chair failed to deliver, or a failed
-                # page laundered into `attached: true`. The legacy join keeps the
-                # act attempt because its page outcome is derived from exactly
-                # those attempts.
+                # The outcome of the page record this entry names: the native
+                # capture's where there is one, else the act attempt the legacy
+                # join was derived from.
                 captured_outcome = page_outcomes.get((act["page_ordinal"], chair))
                 page_outcome = (
                     captured_outcome if captured_outcome is not None else act_attempt.outcome
                 )
                 if page_outcome not in WITNESS_READING_OUTCOMES:
-                    # There is no reading to place. Running the page alignment
-                    # here would manufacture an `aligned` status for text this
-                    # chair never delivered on this act, and the Perlector
-                    # refuses exactly that shape (`attached: False` beside an
-                    # aligned alignment) -- one failed attempt would stop the
-                    # act for a reason that has nothing to do with the ink.
-                    # The attempt's own outcome is the explicit unaligned
-                    # reason instead.
+                    # No reading to place; aligning anyway would claim text the
+                    # chair never delivered.
                     alignment = {
                         "status": "unaligned",
-                        # Native captures name the page attempt; legacy joins name
-                        # this act's attempt because another act can make the joined
-                        # page record read successfully.
                         "reason": non_reading_alignment_reason(
                             page_outcome,
                             native_page_capture=captured_outcome is not None,
                         ),
                     }
                 elif page_outcome == "genuinely-empty":
-                    # There is no witness text to place, which is a different fact
-                    # from text that was placed and searched for in vain: bounded
-                    # alignment can never succeed against an empty string (an empty
-                    # `SequenceMatcher` sequence has no matching block of positive
-                    # size), so running it here would turn an honest "nothing was
-                    # here" into a permanent, unrecoverable "unaligned" -- silently
-                    # dropping a genuine blank corroboration below the witness
-                    # floor (principle 2 and principle 8). Attach trivially at a zero-length
-                    # span instead, exactly as the act-scoped branch below already
-                    # does for the same outcome.
+                    # Alignment can never match an empty string, so a blank reading
+                    # attaches trivially at a zero-length span instead of becoming
+                    # permanently unaligned (principles 2, 8).
                     alignment = {
                         "status": "aligned",
-                        # A trivial attach with no located anchor line says so,
-                        # and says WHICH absence: an ink-free or fallback page
-                        # legitimately has no Chandra anchor at all
-                        # (`no-page-anchor` -- blank confirmation stays open),
-                        # while a page whose anchor exists but locates no line
-                        # for this act is geometry that does not reconcile
-                        # (`act-line-not-located` -- `blank_corroboration`
-                        # refuses to seal a terminal blank on it). Without the
-                        # distinction the Recensor and the export could not
-                        # tell either from a computed alignment (principle 2
-                        # and principle 8).
+                        # Names which absence: no page anchor at all (blank
+                        # confirmation stays open) or an anchor that locates no
+                        # line for this act (a terminal blank is refused).
                         "anchor_basis": (
                             "act-anchor"
                             if act_anchor is not None
@@ -4274,11 +3494,8 @@ def publish_page_testimonia_and_attachments(
                             else {"start": 0, "end": 0}
                         ),
                         "witness_span": {"start": 0, "end": 0},
-                        # Nothing was matched, because there was no witness text
-                        # to match. The measurement is recorded all the same:
-                        # every aligned record carries it, so a reader never has
-                        # to tell "no match" from "not measured" by the absence
-                        # of a field (principle 2).
+                        # Recorded anyway, so "no match" never looks like "not
+                        # measured" (principle 2).
                         "anchor_line_match": {
                             "anchor_characters": (
                                 act_anchor["end"] - act_anchor["start"]
@@ -4293,10 +3510,7 @@ def publish_page_testimonia_and_attachments(
                         ),
                         "loss": {"witness": _ZERO_ALIGNMENT_LOSS, "anchor": _ZERO_ALIGNMENT_LOSS},
                         "offset_maps": {"witness": [], "anchor": []},
-                        # F087: no witness text means align_to_anchor never ran,
-                        # so no deadline was ever needed -- disclosed rather than
-                        # left absent, the same closed-shape reasoning as every
-                        # other field on this trivial attach (principle 2).
+                        # Alignment never ran, so no deadline applied.
                         "deadline_in_force": False,
                     }
                 else:
@@ -4305,49 +3519,25 @@ def publish_page_testimonia_and_attachments(
                     if page_text is None or anchor_text is None:
                         result = {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
                     elif act_anchor is None:
-                        # The page anchor exists; this act's line was not located
-                        # in it (or the fixture declared none for it). Saying
-                        # "missing-chandra-page-anchor" here sent an operator
-                        # looking for an anchor file that exists.
+                        # The page anchor exists; this act's line is not in it.
                         result = {"status": "unaligned", "reason": "act-anchor-line-not-located"}
                     else:
-                        # One alignment per (page, chair), not per (act, chair):
-                        # the inputs do not depend on the act, and the design
-                        # doc's own measurement puts a scattered-difference
-                        # `SequenceMatcher` near CUBIC in length. Recomputing it
-                        # once per act turned a page of forty acts into forty
-                        # identical full-page alignments per page witness.
+                        # Cached per (page, chair): the inputs do not depend on
+                        # the act, and `SequenceMatcher` can be near cubic.
                         result = page_alignments.get((act["page_ordinal"], chair))
                         if result is None:
                             result = align_to_anchor(page_text, anchor_text, limits)
                             page_alignments[(act["page_ordinal"], chair)] = result
                     if result["status"] == "aligned":
-                        # CLIPPED to this act's anchor range, then carried back
-                        # through each block's own witness/anchor offset, rather
-                        # than hulling whole overlapping blocks (R4 audit,
-                        # F-X2: the hull handed every act the chair's entire
-                        # page reading, inverting the dissent instrument), THEN
-                        # translated from the markup-stripped normalized space
-                        # the matcher measured in back to RAW page-text indices
-                        # through the alignment's own offset_map (R6 audit,
-                        # F-G2: every consumer of witness_span -- the Perlector
-                        # comparison views, the Recensor content coverage, the
-                        # act-scoped `span` mirror -- indexes the RAW retained
-                        # text). Wave composition per R6-Opus's recorded
-                        # verdict: clip in normalized space first, translate at
-                        # this one storage point, spans stay RAW everywhere.
+                        # Clip each matched block to this act's anchor range in
+                        # normalized space; whole blocks would hand every act the
+                        # whole page. Translate to raw indices once, at storage,
+                        # because every consumer indexes the raw text.
                         clipped = []
-                        # How much of THIS act's anchor line the clipped
-                        # fragments actually matched, measured here because this
-                        # is the only place that holds the fragments: the record
-                        # keeps a hull, and a hull cannot be un-hulled later.
-                        # `anchor_line_located` reads the longest run to decide
-                        # whether anything was located at all -- without it a
-                        # scatter of single coincidental characters produced a
-                        # positive hull and put a chair on the witness floor
-                        # (hostile review of Unit 12, must-fix 1). The matching
-                        # blocks are disjoint and increasing in both sequences,
-                        # so the total is a sum and never double-counts.
+                        # Measured here, where the fragments exist; the record
+                        # keeps only a hull. The longest run stops scattered
+                        # coincidental characters counting as located. Blocks are
+                        # disjoint, so the sum does not double-count.
                         matched_characters = 0
                         longest_matched_run = 0
                         for span in result["spans"]:
@@ -4359,16 +3549,9 @@ def publish_page_testimonia_and_attachments(
                                 matched_characters += end - start
                                 longest_matched_run = max(longest_matched_run, end - start)
                         if clipped:
-                            # Still a hull ACROSS the clipped fragments: when the
-                            # act's anchor range matches the witness in two
-                            # separate places, the span also covers whatever the
-                            # witness wrote between them, and the comparison view
-                            # may carry a few of a neighbour's characters into
-                            # the dissent row as a departure. That direction is
-                            # deliberate -- it overstates disagreement and never
-                            # hides it, which is what an instrument watching for
-                            # a reader that learned to agree with witnesses
-                            # needs. Do not "fix" this towards agreement.
+                            # A hull across fragments may include a neighbour's
+                            # characters. Deliberate: it overstates disagreement
+                            # and never hides it. Do not "fix" towards agreement.
                             normalized_start = min(start for start, _ in clipped)
                             normalized_end = max(end for _, end in clipped)
                             raw_span = _raw_span_from_normalized(
@@ -4405,27 +3588,17 @@ def publish_page_testimonia_and_attachments(
                                         "witness": result["witness"]["offset_map"],
                                         "anchor": result["anchor"]["offset_map"],
                                     },
-                                    # F087: align_to_anchor's own deadline_in_force
-                                    # answer, carried into the record this stage
-                                    # actually publishes rather than stopping at
-                                    # the function's return value.
                                     "deadline_in_force": result["deadline_in_force"],
                                 }
                         else:
                             result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
                     if result["status"] == "unaligned":
-                        # No `deadline_in_force` here (unlike the aligned branch
-                        # below): an unaligned record's `reason` already names a
-                        # fired deadline explicitly (`DEADLINE_REASON`), so there
-                        # is no ambiguity left for the field to resolve, and
-                        # `result` in most of these branches is one of this
-                        # function's own short-circuits that never called
-                        # align_to_anchor at all.
+                        # No `deadline_in_force`: `reason` already names a fired
+                        # deadline.
                         alignment = {"status": "unaligned", "reason": result["reason"]}
             if page_witness:
-                # Derive each row from the primary alignment without mutating it:
-                # source-page ordinal does not determine primary-first act order,
-                # so an earlier continuation must not erase the comparison view.
+                # Do not mutate the primary alignment: a continuation page can
+                # sort before the primary one.
                 for contributing_page in contributing_pages_by_act[act["act_id"]]:
                     is_primary_page = contributing_page == act["page_ordinal"]
                     page_alignment = (
@@ -4442,18 +3615,10 @@ def publish_page_testimonia_and_attachments(
                         if region["payload"]["transform"]["source_page_ordinal"]
                         == contributing_page
                     ]
-                    # Two bases, derived by the one shared rule
-                    # (`common/contracts/outcomes.py::page_attachment_basis`)
-                    # both readers re-derive: this chair's own reported ink over
-                    # the act's sealed proposal, or -- only where it reported no
-                    # such ink -- an alignment that located this act's anchor
-                    # line inside its page text. The second exists because a
-                    # grammar can carry no geometry at all (Churro's, by vendor
-                    # design), and geometry-only attachment left every such
-                    # chair permanently unattached and every act one witness
-                    # under the floor. Nothing here selects among witnesses: the
-                    # anchor decides whether this chair's text was PLACED in
-                    # this act, never whose reading is right (principle 1).
+                    # Attached by reported ink over the proposal, or, where there
+                    # is none (Churro reports no geometry), by a located anchor
+                    # line. The anchor places text; it never judges a reading
+                    # (principle 1).
                     contributing_outcome = page_outcomes.get(
                         (contributing_page, chair), act_attempt.outcome
                     )
@@ -4480,16 +3645,9 @@ def publish_page_testimonia_and_attachments(
                             and page_alignment["status"] == "aligned"
                             and isinstance(page_texts.get((contributing_page, chair)), str),
                             "attachment_basis": attachment_basis,
-                            # The ACT attempt's health, deliberately, even under a
-                            # native page capture: both later readers require this
-                            # field to equal the chair's current act-scoped
-                            # Testimonium health, as the staleness check that
-                            # catches a reread appended after this derived view
-                            # was written (`pipeline/4_perlector/run.py`, reopened
-                            # F-O1; `pipeline/5_recensor/run.py`). It is a currency
-                            # check on the per-(act, chair) stream, not a claim
-                            # about the page response -- which is what `attached`
-                            # and `alignment` beside it describe.
+                            # The act attempt's health, even under a page capture:
+                            # the Perlector and Recensor compare it with the current
+                            # act Testimonium to detect a later reread.
                             "content_health": act_attempt.health,
                             "alignment": page_alignment,
                             "span": (
@@ -4516,11 +3674,8 @@ def publish_page_testimonia_and_attachments(
             subject_id=act["act_id"],
             outcome="read",
             attempt=attempt_id(act["act_id"], "act-attachment", ordinal),
-            # The attachment payload retains each page/act Testimonium reference.
-            # It deliberately does not make the derived record's immutable
-            # publication depend on a later testimonio history surviving: the
-            # tally must diagnose that missing evidence itself, not have the
-            # manifest rebuild fail before it reaches the denominator check.
+            # References live in the payload, not `inputs`, so missing evidence is
+            # diagnosed by the tally rather than failing the manifest rebuild.
             inputs=[],
             payload={
                 "act_key": act["act_key"],
@@ -4540,22 +3695,16 @@ def attempt_pass(
 ) -> tuple[int, bool]:
     """Every configured chair's attempt at every expected act, at one ordinal.
 
-    Returns how many records were written and whether any proposal crop was
-    refused — the second is reported, never swallowed, because an act whose crop
-    no chair could be shown is a different fact from an act every chair read. The
-    region and attempt maps are the result of this invocation's no-write
-    preflight. Publication therefore seals the exact attempt whose collision was
-    checked, while a pair the interrupted invocation already sealed is counted
-    but not published or sent to its chair a second time.
+    Returns the records counted and whether any proposal crop was refused.
+    Publishes exactly the attempts preflight checked; already sealed pairs are
+    counted, not republished.
     """
     recorded = 0
     isolated_crop_failure = False
     for act in acts:
         regions, not_read = regions_by_act[act["act_id"]]
         if not_read is not None and act["outcome"] != "held":
-            # A refused crop is isolated to its act. No witness is claimed to
-            # have read pixels whose lineage failed; every chair instead receives
-            # an explicit non-reading record and the other acts proceed.
+            # Isolated to this act: every chair gets a non-reading record.
             isolated_crop_failure = True
 
         for chair in context.witness_chairs:
@@ -4579,13 +3728,9 @@ def attempt_pass(
 def bound_serving_recipes(context) -> ServingRecipes:
     """The serving catalogue this run sealed, re-read and re-checked by digest.
 
-    `open_context` already refuses a run whose configuration bytes moved, so
-    this is the same authority read a second time rather than a new one: the
-    point is that the rows this stage decides live-or-fixture from are the rows
-    the run's `config_digest` covers, checked at the moment they are used
-    (principle 6). Refuses in this stage's own vocabulary, because a serving
-    catalogue that cannot be read is a configuration refusal, not a witness
-    failure.
+    Re-checked at the moment of use so the rows deciding live or fixture are the
+    sealed ones (principle 6). An unreadable catalogue is a configuration refusal,
+    not a witness failure.
     """
     if context.serving_config_inputs is None:  # pragma: no cover - open_context always sets it
         raise ContractError(
@@ -4611,18 +3756,8 @@ def bound_serving_recipes(context) -> ServingRecipes:
 def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) -> dict[str, str]:
     """`fixture` or `live` for every configured witness chair, and never a mix.
 
-    The mode is the sealed serving-recipe row's own `kind`, read through
-    `operations.serving.client.serving_mode_for` -- a three-name lookup with a
-    named refusal on zero rows, an unresolved tier, or a catalogue that is half
-    live for one chair. There is no new configuration key, and no fallback in
-    either direction (principle 1).
-
-    One run, one serving posture. A roster half live and half fixture would
-    publish, in one attempt layer at one ordinal, records whose receipts say
-    `fixture://` beside records from a rented card -- and every consumer that
-    compares witnesses across an act would be comparing two different kinds of
-    evidence without being told. An absent chair has no serving row to read and
-    is `dead` in either posture, so it names no mode here.
+    A mixed roster would put fixture and live evidence side by side in one
+    attempt layer, unmarked. Absent chairs have no mode.
     """
     modes: dict[str, str] = {}
     for chair in context.witness_chairs:
@@ -4651,15 +3786,8 @@ def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) ->
 def require_every_witness_served(modes: dict[str, str]) -> None:
     """On a real submission every configured witness chair serves, or nothing runs.
 
-    Every witness runs its own full pass -- no capture, no slicing -- and a
-    roster where every row is served is the only
-    real posture. A real run has no fixture to answer for a chair, so a fixture
-    row for a configured witness is not a second posture to mix with; it is a
-    chair nothing can ask, and a run with no served chair at all would publish
-    a whole pass in which no witness saw any ink. Both are refused by name
-    before any act is read. The mixed-posture refusal in `witness_serving_modes`
-    stays as a guard for the fixture-live seam; on the shipped real catalogue it
-    never fires, because every witness row there is live at every tier.
+    A real run has no fixture, so a fixture-posture chair could never answer, and
+    a run with no served chair would read no ink.
     """
     unserved = sorted(chair for chair, mode in modes.items() if mode != "live")
     if unserved:
@@ -4679,17 +3807,10 @@ def require_every_witness_served(modes: dict[str, str]) -> None:
 def default_serving_factory(context, identity: ChairIdentity, tier: str) -> ChairClient:
     """Build the client a live pass reads one chair through.
 
-    Every part of it belongs to the run: the registry that resolved the chair,
-    the receipt publisher bound to this same `StageContext` (so the receipt a
-    Testimonium names is one this run really wrote), the catalogue the run
-    sealed, and the decoding posture its `config_digest` covers. Nothing here
-    starts anything -- `ChairClient.__enter__` does, later, once.
-
-    A stage test supplies its own factory instead (`main(serving_factory=...)`),
-    which is the same in-process injection seam `registry_factory` already is
-    and, for the same reason, is deliberately not a command-line flag: a `--fake`
-    route to a fake answering under a configured chair's name is the one thing
-    this framework exists to refuse.
+    Everything is bound to this run, so a Testimonium's receipt is one this run
+    wrote. Nothing starts until `ChairClient.__enter__`. Tests inject their own
+    factory in-process; it is deliberately not a CLI flag, so no fake can answer
+    under a configured chair's name.
     """
     policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
     manager = ServingManager(
@@ -4699,20 +3820,9 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         launcher=SubprocessLauncher(),
         http=UrllibHttpTransport(),
         receipt_publisher=StageContextReceiptPublisher(context),
-        # The logs stay in this stage's own writing directory, where
-        # `RunTree.inventory_scope()` names them and `fetch-run` brings them
-        # home as unverified side evidence. `serving_log_path`, never a
-        # directory spelled here: this call site read `f"{ATTESTATORES}/..."`,
-        # and the stage is named "attestatores" while it writes in
-        # "3_attestatores", so every engine log landed at a path no scope
-        # accounted for and `fetch-run` refused the whole served tree by name,
-        # bringing home nothing from a run that had already billed a card. The
-        # lease does not stay here: one card is one pod's boundary, not one run
-        # tree's, so it takes the container-local path the pod preflight and
-        # every other serving stage take. A lease resolved inside a run tree let
-        # two stages resumed under different run ids both acquire and co-reside
-        # on one GPU, and put an advisory lock on a network mount that is not
-        # known to honour one.
+        # Logs go where `inventory_scope()` expects them, or `fetch-run` refuses
+        # the served tree. The lease is per pod, not per run tree, and a network
+        # mount may not honour an advisory lock, so it uses the container path.
         log_root=context.tree.resolve(context.tree.serving_log_path(ATTESTATORES)),
         residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
         producer="pipeline/3_attestatores/run.py",
@@ -4729,11 +3839,8 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         retain=lambda data: retained_blob_ref(context, data),
         decoding_config_sha256=decoding_sha256,
         record_temperature=policy["reading_of_record"]["temperature"],
-        # Wired bare, the way the serving README describes.
-        # `ServiceHandle.receipt_reference` is a read-only mapping proxy and
-        # `RunTree.read_run_receipt` accepts its own reference type or a plain
-        # `dict` and refuses anything else by name; `ChairClient.__enter__`
-        # copies at that seam, so no stage-side conversion is left to do.
+        # Passed bare: `ChairClient.__enter__` copies the read-only receipt
+        # reference into a dict.
         read_receipt=context.tree.read_run_receipt,
         chandra_native_policy=policy.get("chandra_native_inference"),
     )
@@ -4746,12 +3853,7 @@ def retained_blob_ref(context, data: bytes) -> dict[str, str]:
 
 
 def attempt_from_live(live: live_witness.LiveAttempt) -> Attempt:
-    """Convert one `LiveAttempt` into the `Attempt` every write path shares.
-
-    A rename, not a remap: `live_witness` derives exactly the facts
-    `resolve_attempt` derives, from a retained response instead of a declared
-    one, plus the three the live boundary adds.
-    """
+    """Convert one `LiveAttempt` into the `Attempt` every write path shares."""
     return Attempt(
         outcome=live.outcome,
         native_payload=live.native_payload,
@@ -4790,12 +3892,8 @@ def _sealed_page_testimonia(context, ordinal: int) -> dict[tuple[int, str], dict
 def served_live(context, provenance: Any) -> bool:
     """Did a chair really serve the record this provenance belongs to?
 
-    The receipt is the one place that answers it: the fixture posture writes
-    `fixture://offline-chair-runner` out loud (`common/stage.fixture_serving_details`),
-    a live start writes the endpoint that actually answered. Read rather than
-    inferred from which optional fields a payload happens to carry, because a
-    page record of a live Chandra response carries neither a retained model
-    view nor a serving-call reference and is still a live record.
+    Read from the receipt endpoint, not inferred from optional fields: a live
+    Chandra page record may carry neither a capture nor a call reference.
     """
     reference = provenance.get("receipt_ref") if isinstance(provenance, dict) else None
     if not isinstance(reference, dict):
@@ -4809,12 +3907,8 @@ def _page_capture_from_record(
 ) -> tuple[Attempt, dict[str, Any] | None]:
     """Rebuild one page capture from a record the interrupted pass already sealed.
 
-    A live chair cannot reproduce immutable bytes, so a resumed live pass never
-    re-asks for a page some sealed record already describes; it rebuilds the
-    page facts from that record instead (principle 4). A record whose own
-    receipt says the fixture posture served it is refused by name: rebuilding a
-    live page record from it would attribute a declared response to a chair
-    that served this run.
+    A live chair cannot reproduce immutable bytes, so the page is rebuilt, not
+    re-asked (principle 4). A fixture-served record is refused.
     """
     payload = record["payload"]
     provenance = payload.get("provenance")
@@ -4830,35 +3924,15 @@ def _page_capture_from_record(
     observation_payload = None
     if (
         capture is not None
-        # A property of the ADAPTER, read off its registry entry, exactly as
-        # `_derives_partition_from_response` reads it, and never a comparison
-        # against one adapter's name. `captured_page_attempt` carries the
-        # response bytes forward as `observation_payload` for every page-scoped
-        # adapter, and this flag says which of them has geometry in those bytes
-        # to rebuild from -- so a resume republishes exactly what the interrupted
-        # pass sealed rather than something the adapter's name happened to
-        # decide (principle 4). An adapter with no runnable binding is refused
-        # loudly by `resolve_runnable_adapter` rather than answered `False` here.
+        # Read from the registry, as in `_derives_partition_from_response`.
         and witness_adapters.resolve_runnable_adapter(capture["adapter"]).takes_page_size
         and capture["parse"]["state"] == "parsed"
         and _retains_chandra_observation_payload(record)
     ):
-        # `capture["parse"]["state"] == "parsed"` alone is wider than the
-        # condition `captured_page_attempt` used when it decided whether to
-        # carry the bytes forward as `observation_payload` in the first
-        # place: a parsed-but-unconfirmed-blank body (cut off, or an
-        # unrecognized stop word) is also "parsed" but lands on the `failed`
-        # branch there, with no `observation_payload` ever set. Rehydrating
-        # on parse-state alone would hand a resume different geometry than
-        # the interrupted pass sealed -- the immutable writer then refuses
-        # the differing republish. Gate on the same outcome set
-        # `captured_page_attempt`'s reading branch uses (principle 4).
-        #
-        # The page record's geometry is re-derived from the response bytes on
-        # republish (`publish_page_testimonia_and_attachments`), so a resumed
-        # page capture must carry them exactly as the interrupted pass did --
-        # read back and digest-checked, the same rehydration
-        # `_attempt_from_retained_testimonium` performs for a parsed act view.
+        # Parse state alone is too wide: a parsed but cut-off `failed` body
+        # carried no geometry bytes originally (principle 4). The bytes are
+        # re-read and digest-checked because the page geometry is re-derived
+        # from them on republish.
         reference = validate_raw_response_ref(capture["raw_response_ref"])
         try:
             observation_payload = context.tree.read_bytes(reference["relative_path"])
@@ -4883,11 +3957,7 @@ def _page_capture_from_record(
             observation_payload=observation_payload,
             native_capture=capture,
             receipt_ref=provenance.get("receipt_ref") if isinstance(provenance, dict) else None,
-            # Derived from the capture rather than read off the record: the
-            # sealed record here may be a *page* Testimonium, whose own closed
-            # schema has no place for this field, and a capture's retained
-            # reference is by definition the adapter's own output bytes. There
-            # is nothing to guess.
+            # A page record has no such field; a capture always names model output.
             raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT if capture is not None else None,
             native_inference=payload.get("native_inference"),
         ),
@@ -4906,20 +3976,9 @@ def resumed_page_captures(
 ) -> dict[tuple[int, str], tuple[Attempt, dict[str, Any]]]:
     """Every page response a resumed live pass must not ask for a second time.
 
-    Two sealed records can hold one: the page Testimonium itself, and -- when
-    the interrupted pass got as far as the act layer but not the page layer --
-    the act-scoped compatibility record of any act whose *primary* page is this
-    one, which this boundary derives from the very same page response. A page
-    that neither describes was never answered at this ordinal and is asked for
-    normally; a continuation page is exactly that case, because no act record is
-    ever derived from a continuation page's response.
-
-    More than one act on the page can carry that compatibility record (the
-    happy fixture's a1 and a2 are both primary on page 1), and every one of
-    them is checked, not just the first found: they all claim to derive from
-    the same page response, so a disagreement between them is a record
-    problem this boundary must name rather than silently resolve by taking
-    whichever act sorts first.
+    Found in the sealed page Testimonium, or else in the act records of acts
+    whose primary page this is, which derive from the same response. Every such
+    act record is compared, and a disagreement is refused rather than resolved.
     """
     sealed_records = _sealed_page_testimonia(context, ordinal)
     captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]] = {}
@@ -4940,38 +3999,20 @@ def resumed_page_captures(
                     continue
                 attempt = attempts_by_pair[pair]
                 if attempt.outcome not in ATTEMPTED_WITNESS_OUTCOMES:
-                    # `dead`/`not-run`: this pair was never shown pixels, so it
-                    # neither stands in for a response nor disagrees with one --
-                    # a not-run act sealed by live_attempt_pass's own first loop
-                    # (a held crop, a refused proposal) is not a fixture-posture
-                    # record wearing this act's name, it is simply not evidence
-                    # of this page's response either way.
+                    # Never shown pixels, so no evidence about the page response.
                     continue
                 if (
                     attempt.serving_call_ref is None
                     and attempt.health.get("recordable") is None
                     and served_live(context, {"receipt_ref": attempt.receipt_ref})
                 ):
-                    # A live attempt at a request that was refused before it was
-                    # sent (`capacity_refusal_attempt`): there is no call record
-                    # because there was no call, and its no-response health says
-                    # exactly that. Both facts are needed, and neither alone
-                    # would do: the fixture posture also writes a failed attempt
-                    # with no-response health for a row that declared no
-                    # payload, and only the receipt says which posture served
-                    # this one. It stands in for this page rather than being
-                    # refused -- the arithmetic that refused it is the same on a
-                    # resumed pass, and re-asking would only rebuild the record
-                    # it already sealed.
+                    # A live request refused before sending: no call, no response.
+                    # The receipt tells it from a fixture no-payload row. Reused,
+                    # since re-asking would refuse the same way.
                     candidates.append((act["act_id"], attempt))
                     continue
                 if attempt.serving_call_ref is None:
-                    # An *attempted* outcome naming no serving call, with a
-                    # response channel it could describe, is the
-                    # fixture posture's own shape: every live attempt names the
-                    # call record of the request that produced it, whether or
-                    # not its adapter's retained view could be published beside
-                    # it.
+                    # Every live attempt names its call record; this one is fixture.
                     raise SchemaRefusal(
                         f"the Testimonium sealed for act {act['act_id']} and chair {chair!r} at "
                         f"ordinal {ordinal} names no serving call, so it was not written by a "
@@ -5012,20 +4053,10 @@ def live_attempt_pass(
     """The same pass, asked of chairs that really serve: chair-outer, one request
     at a time, and every response published before the next one is requested.
 
-    Three rulings meet here and are all executable code rather than intent.
-    Sequential serving and "one chair runs its whole span, then the next"
-    are `feeding.stage_major_schedule` and
-    `SingleChairResidency`: one resident chair, a deterministic chair-outer
-    order, and a named refusal if a schedule ever served one unit twice or
-    returned to a chair already unloaded. Response-as-arrival is the publish
-    inside the serve callback: an interrupted pass leaves sealed Testimonia and
-    their retained bytes, never N x M model calls with nothing on disk.
-
-    The unit of work is the chair's own scope. An act-scoped chair is asked once
-    per act; a page-scoped chair is asked once per *page*, and its act-scoped
-    compatibility records are derived from that one page response rather than
-    from a second request per act -- which is what `witness_scope` has always
-    meant and what the fixture path already does with a declared page response.
+    One resident chair at a time, in a deterministic chair-outer order
+    (`feeding.stage_major_schedule`). Publishing on arrival means an interrupted
+    pass leaves its sealed responses on disk. A page-scoped chair is asked once
+    per page, and its act records derive from that response.
     """
     page_chairs = declared_page_witness_chairs(context)
     _contributing_pages, acts_by_page = page_denominator(context, acts, regions_by_act)
@@ -5047,10 +4078,8 @@ def live_attempt_pass(
     recorded = 0
     isolated_crop_failure = False
 
-    # Everything no chair has to answer for: a pair already sealed at this
-    # ordinal (counted, never re-asked, never rewritten) and a pair no chair was
-    # shown pixels for at all. Published first, so the folder already accounts
-    # for them if the first request refuses.
+    # Pairs needing no request are published first, so the folder accounts for
+    # them if the first request refuses. Sealed pairs are only counted.
     for act in acts:
         regions, not_read = regions_by_act[act["act_id"]]
         if not_read is not None and act["outcome"] != "held":
@@ -5075,16 +4104,9 @@ def live_attempt_pass(
             )
             recorded += 1
 
-    # A resumed page capture answers for its page's response, but not for
-    # every act view that response feeds: an interruption between two of a
-    # page's own act publications leaves the later ones sealed nowhere, and a
-    # resumed pass that only reused the page capture would never revisit them
-    # -- `resumed_page_captures` records that the response happened, this
-    # loop finishes publishing what it answers for. Only a pair still
-    # `PENDING_LIVE_ATTEMPT` is published; the pairs the non-serving loop
-    # above already published or sealed are untouched. Runs after that loop
-    # so a pair it published is no longer `PENDING_LIVE_ATTEMPT` here and is
-    # not published a second time.
+    # A resume may have stopped between a page's act views; publish any still
+    # pending from the resumed capture. After the loop above, so nothing is
+    # published twice.
     for (page_ordinal, chair), (attempt, _capture) in page_captures.items():
         recorded += publish_page_act_views(
             context,
@@ -5098,11 +4120,8 @@ def live_attempt_pass(
             attempts_by_pair=attempts_by_pair,
         )
 
-    # One schedule per chair, concatenated: `stage_major_schedule` orders one
-    # chair's own units, and a chair's unit is a page or an act depending on its
-    # sealed scope, so there is no single act list that could describe them all.
-    # Concatenating keeps every guarantee the executor checks -- contiguous
-    # chair blocks, no chair returned to, no unit served twice, one parish.
+    # One schedule per chair, concatenated, since a unit is a page or an act by
+    # scope; the executor's ordering guarantees still hold.
     units: dict[tuple[str, str], Any] = {}
     schedule: list[dict[str, str]] = []
     for chair in sorted(set(context.witness_chairs)):
@@ -5114,9 +4133,7 @@ def live_attempt_pass(
             for page_ordinal in sorted(acts_by_page):
                 if (page_ordinal, chair) in page_captures:
                     continue
-                # The page's own sealed subject id, not a synthesized name: the
-                # schedule is a record of what was served, and a page unit is
-                # addressed by the page the Exemplar sealed.
+                # Addressed by the sealed Exemplar page id.
                 unit_id = page_subject(context, page_ordinal, page_ids=page_ids)
                 units[(chair, unit_id)] = page_ordinal
                 rows.append({"act_id": unit_id, "page_ordinal": page_ordinal})
@@ -5128,9 +4145,7 @@ def live_attempt_pass(
                 rows.append({"act_id": act["act_id"], "page_ordinal": act["page_ordinal"]})
         schedule.extend(feeding.stage_major_schedule(context.tree.run_id, rows, [chair]))
 
-    # Resolved once for the whole pass, from the roster this run sealed: which
-    # framing each page chair is asked in. A chair whose adapter has a single
-    # framing resolves to `None` and is asked exactly as it always was.
+    # `None` for an adapter with a single framing.
     framings = {
         chair: witness_adapters.framing_for(context.registry.config, chair)
         for chair in sorted(page_chairs)
@@ -5188,9 +4203,7 @@ def live_attempt_pass(
                 serve=serve,
             )
         except ServingError as error:
-            # A serving refusal is this stage's refusal to report, not a
-            # traceback: the bytes of every response that did arrive are already
-            # retained and every Testimonium published before it is sealed.
+            # Reported as a refusal; everything that arrived is already sealed.
             raise ContractError(f"a live witness reading was refused: {error}") from error
 
     unresolved = sorted(
@@ -5205,38 +4218,17 @@ def live_attempt_pass(
     return recorded, isolated_crop_failure, page_captures
 
 
-# The engine words a live reading may carry into a record: vLLM's own `stop`
-# and `length`, the fixture transport's synonyms for the same two facts, and the
-# explicit marker for an engine that reported no stop reason at all. Anything
-# else is a word this system has never measured a meaning for.
+# vLLM's `stop` and `length`, the fixture transport's synonyms for them, and the
+# no-stop-reason marker. Any other word has no measured meaning.
 _LIVE_ENGINE_STOP_WORDS: Final = _CHURRO_STOP_REASONS | {STOP_REASON_UNREPORTED}
 
 
 def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> None:
     """Refuse a live response whose engine stop word cannot be recorded honestly.
 
-    An engine word outside `_LIVE_ENGINE_STOP_WORDS` has no measured meaning
-    here: recording it would put a word into a truncation channel nothing can
-    read, and mapping it to either "complete" or "cut off" would be a
-    measurement nobody made (principle 8, and the same rule
-    `pipeline/4_perlector/truncation.py` applies by refusing an unknown engine
-    string by name). The check runs on `transport_stop_reason` alone, so it
-    also catches an unmeasured word on a response `ChairClient` could not parse
-    into a reading at all: a wire body no adapter parsed still names its engine
-    word verbatim inside the retained chair-call-record blob, and a word
-    this pipeline has never measured a meaning for is exactly as unpublishable
-    there as on a parsed capture.
-
-    It refuses before the response's own record is published, with its bytes
-    already retained by the client (principle 2).
-
-    A *reported-nothing* boundary used to be refused here as well, for Churro
-    alone, because the shared page contract asked a two-valued question of a
-    three-state fact and would have published `truncated: false` over a
-    boundary nothing observed. `common/native_witness.py` now measures the
-    third state, so that refusal is gone rather than merely relaxed: an
-    unreported word publishes `truncated: null` with basis `not-recorded`, on
-    the page record and the act record alike.
+    Mapping an unknown word to complete or cut off would be a measurement nobody
+    made (principle 8). Checked on the stop word alone, so unparsed responses are
+    covered too. The bytes are already retained (principle 2).
     """
     if transport_stop_reason not in _LIVE_ENGINE_STOP_WORDS:
         raise ContractError(
@@ -5256,37 +4248,12 @@ def capacity_refusal_attempt(
 ) -> Attempt:
     """One chair's outcome for a request its sealed row could not hold.
 
-    A pre-send capacity refusal is a fact about *this* request: this page's
-    pixels, at this row's `max_pixels`, against this row's `max_model_len`. It
-    says nothing about the next page, which may be smaller, or about the same
-    chair on another unit. Letting it out of `_serve_act_unit` /
-    `_serve_page_unit` would have stopped the whole pass, so one oversized page
-    would have cost every other page's testimony -- and a missed act is worse
-    than a poorly read one (goal 2). It is recorded here instead, in the same
-    shape an empty or malformed response takes: `outcome="failed"`, a named
-    reason, and the pass moves on to the next unit. The Designator already
-    holds this way (`structure_pass`'s `structure-request-too-large`), and this
-    closes the asymmetry.
-
-    The health is the **no-response** shape, not the unrecordable one, and the
-    difference is the whole point: nothing arrived, so there is no channel to
-    call unrecordable. `reason` carries the refusal's own sentence, which is
-    the capacity record in words -- every image's token cost, the prompt, the
-    reserved answer, the need, the row it was measured against, and by how much
-    it overran.
-
-    `receipt_ref` is the chair's real serving moment. The chair *did* start:
-    this pass entered its client, the manager published its receipt, and the
-    request was refused after that, on this laptop. Naming that receipt is what
-    keeps the record a live one -- a resumed pass reads it back and must not
-    mistake this for a fixture-posture record.
-
-    `adapter` names the chair that was refused, so `format_capabilities`
-    still records what its grammar can express even though no request
-    reached the wire (`_declared_format_capabilities`): what a chair's
-    grammar can carry is a fact about the chair, not about whether this one
-    request fit the row. Optional and defaulting to the blanket value only
-    for a caller with no adapter in hand.
+    The refusal concerns this request only, so it becomes a `failed` attempt and
+    the pass continues; one oversized page must not cost every other page. Health
+    is the no-response shape, since nothing arrived. `receipt_ref` is the chair's
+    real start, which marks the record as live for a resume. `adapter` keeps the
+    chair's declared capabilities on the record; the default is for a caller with
+    no adapter in hand.
     """
 
     reason = f"{what} was refused before it was sent: {error}"
@@ -5324,17 +4291,11 @@ def _serve_act_unit(
             context,
             adapter,
             presentation,
-            # The sealed row this chair is actually running under: a
-            # page-fallback act's crop is one fallback band, not a whole page
-            # (`live_witness.act_chair_request`'s own docstring), and still
-            # needs checking against the row like any other DAI request
-            # (`live_witness.request_capacity_or_refuse`).
+            # Checked against the row this chair runs under, like any request.
             profile=client.handle.profile,
         )
     except RequestCapacityRefusal as error:
-        # This act's crop against this row, and nothing else: the next act's
-        # crop may be a sixth of the page and fit comfortably
-        # (`capacity_refusal_attempt`).
+        # Only this act's crop failed; the next may fit.
         attempt = capacity_refusal_attempt(
             error,
             receipt_ref=client.handle.receipt_reference,
@@ -5402,17 +4363,8 @@ def publish_page_act_views(
 ) -> int:
     """Publish every still-pending act view one page chair's response feeds.
 
-    The act-scoped records are the same facts as the page record -- outcome,
-    retained text, health, retained bytes -- because they are the same response.
-    Only an act whose *primary* page is this one takes its view from here: a
-    continuation's act view belongs to the act's own page, and the far page's
-    reading reaches that act through the page record its attachment names.
-
-    Shared by `_serve_page_unit` (a page response this pass just received) and
-    `live_attempt_pass` (a page response a resumed pass recovered from a sealed
-    record, per the interrupted-mid-page repair below). Only a pair still
-    `PENDING_LIVE_ATTEMPT` is published: a pair the interrupted pass already
-    sealed for this page is left exactly as it was.
+    Only acts whose primary page is this one; a continuation reaches its act
+    through the page record. Pairs already sealed are left untouched.
     """
     recorded = 0
     for act in page_acts:
@@ -6125,9 +5077,8 @@ def _chandra_retry_trace(
 def _with_chandra_trace(attempt: Attempt, trace: dict[str, Any]) -> Attempt:
     exhausted = trace["exhausted_condition"]
     if exhausted == "repeat-token":
-        # Attestatores has no free-standing partial outcome. A repeated vendor
-        # return is therefore a failed/partial Testimonium with its retained
-        # text and capture still present, rather than a completed reading.
+        # There is no partial outcome, so an exhausted repeat is `failed` with its
+        # text and capture retained.
         attempt = attempt._replace(
             outcome="failed",
             reason=(
@@ -6174,14 +5125,11 @@ def _serve_chandra_native_page(
         if record["payload"]["native_attempt_ordinal"] != expected:
             raise FatalAccounting("a Chandra native intent chain has a non-contiguous ordinal")
     if len(intent_records) == len(terminal_records) + 1:
-        # Detect the unmatched durable intent before preparing a new dispatch.
-        # A resumed service has a new receipt, so attempting to republish first
-        # would report immutable-byte drift instead of the delivery ambiguity
-        # this intent exists to preserve.
+        # Checked before any republish: a resumed service has a new receipt, which
+        # would surface as byte drift instead of the real delivery ambiguity.
         refuse_chandra_orphan_intent(True)
 
-    # Existing terminal evidence is immutable and sufficient to resume. Its
-    # trigger says whether the pinned loop had another request to make.
+    # A terminal's trigger says whether the loop had another request to make.
     if terminal_records:
         for expected, record in enumerate(terminal_records, 1):
             payload = record["payload"]
@@ -6200,10 +5148,8 @@ def _serve_chandra_native_page(
 
     next_ordinal = len(terminal_records) + 1
     if terminal_records and terminal_records[-1]["payload"].get("trigger") == "inference-error":
-        # The terminal is durable before the upstream delay begins. A crash in
-        # that interval cannot prove how much of the delay elapsed, so resume
-        # conservatively performs the full ordinal delay before another intent
-        # can be published or another HTTP request can leave.
+        # A crash during the backoff cannot show how much elapsed, so the full
+        # delay is repeated.
         resumed_delay = chandra_error_backoff_seconds(next_ordinal - 1)
         if resumed_delay is None:
             raise FatalAccounting("the final Chandra attempt requested an impossible retry")
@@ -6221,10 +5167,8 @@ def _serve_chandra_native_page(
             receipt_ref=client.handle.receipt_reference,
         )
         if reused_intent:
-            # A terminal artifact would have appeared in ``terminal_records``.
-            # Reissuing here could duplicate a request that reached vLLM before
-            # the process died. The retained intent makes that explicit delivery
-            # uncertainty and requires operator intervention.
+            # No terminal exists, so the request may have reached vLLM before a
+            # crash; reissuing could duplicate it. An operator must decide.
             refuse_chandra_orphan_intent(True)
 
         response = None
@@ -6353,23 +5297,12 @@ def _serve_page_unit(
             adapter,
             resolved.witness_adapter,
             presentation,
-            # The sealed row this chair is actually running under. Every
-            # chair's generation bound is derived from it and from this
-            # request's own capacity record
-            # (`common/request_capacity.py::sendable_max_tokens`).
+            # The generation bound derives from this row and the request's capacity.
             profile=client.handle.profile,
-            # Which framing this run asks this chair in, resolved once from the
-            # sealed roster before the pass began
-            # (`witness_adapters.framing_for`). `None` where the adapter has one
-            # framing and there is nothing to name.
             framing=framing,
         )
     except RequestCapacityRefusal as error:
-        # This page against this row. Every other page keeps its testimony, and
-        # the page's own record says why this one has none
-        # (`capacity_refusal_attempt`). The capture is filed exactly as a
-        # malformed response's is -- with no retained model view, because there
-        # was no response to derive one from.
+        # Only this page fails. No model view, since there was no response.
         attempt = capacity_refusal_attempt(
             error,
             receipt_ref=client.handle.receipt_reference,
@@ -6442,32 +5375,10 @@ def _serve_page_unit(
 def witness_bound_reading_acts(context) -> frozenset[str]:
     """Every act whose reading was already established from this act's testimony.
 
-    The one question the attempt model turns on. `pipeline/4_perlector/run.py::
-    _next_attempt` derives the reading ordinal from the act's *crop* history —
-    one reading of the proposal, plus one for each recovery crop cut since — and
-    the Recensor, Archetypus and Armarium each enforce that same identity. So a
-    Testimonium that arrives after such a reading has nowhere to go: the Perlector
-    recomputes the same ordinal, builds a different payload from the new
-    testimony, and the run tree refuses the write against the record it already
-    sealed. There is no forward path, because the Perlectio that would have to
-    change is itself immutable (principle 4).
-
-    A witness pass may add coverage. A reading is still made only by a crop.
-    A second look's coverage has nowhere to go except a recovery request, and a
-    recovery request mints a region, and a region moves the reading ordinal.
-    New testimony after a reading is refused; new INK after a reading is a
-    recovery request. This distinguishes coverage recovery (principle 7) from
-    re-rolling a witness until it says something preferable.
-
-    **Closed by a reading that cites testimony, not by any Perlectio at all.** A
-    held act and an absent Perlector chair both publish `not-run` records with no
-    witness basis; their bytes do not depend on the testimony, so new testimony
-    wedges nothing there and a whole second pass over a run holding one held act
-    must not be refused on its account.
-
-    One walk for the whole invocation, and read from the Perlector's own artifacts
-    rather than from a flag, so a folder assembled or resumed in any order answers
-    the same way.
+    The reading ordinal follows the crop history, so testimony added after a
+    reading would collide with the immutable Perlectio (principle 4); new ink must
+    come through a recovery crop, never a re-rolled witness (principle 7). Only a
+    Perlectio citing testimony closes an act; a `not-run` one does not depend on it.
     """
     closed = set()
     for entry in context.tree.build_manifest(PERLECTOR)["artifacts"]:
@@ -6483,15 +5394,8 @@ def witness_bound_reading_acts(context) -> frozenset[str]:
 def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what: str) -> None:
     """Refuse a new witness attempt on an act the Perlector has already read.
 
-    At entry, before anything is written. The alternative is what the audit found:
-    the attempt is appended, and the wedge it makes is discovered three stages
-    later as an immutability refusal on a reading identity nothing can move — with
-    no forward path, because the Perlectio that would have to change is itself
-    immutable (principle 4).
-
-    A *rerun* of an attempt already sealed is untouched by this: it rewrites
-    byte-identical bytes, changes no chair's current record, and is how the
-    orchestrator resumes. Only an append is refused.
+    Checked before any write; otherwise the collision surfaces stages later with
+    no way forward (principle 4). Callers apply it to appends only, not resumes.
     """
     if act["act_id"] in closed:
         raise ContractError(
@@ -6506,13 +5410,7 @@ def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what
 
 
 def next_attempt_ordinal(history: AttemptHistory, act_id: str, chair: str) -> int:
-    """The ordinal a reread of this one chair appends at.
-
-    Derived from that chair's own history on disk, exactly as
-    `pipeline/2_designator/run.py::_next_region_ordinal` derives the next crop
-    ordinal — so append-only is a property of what already exists rather than of
-    how many times this program has been invoked.
-    """
+    """The ordinal a reread of this one chair appends at, from its history on disk."""
     records = history.get((act_id, chair), [])
     if not records:
         raise ContractError(
@@ -6534,17 +5432,8 @@ def reread_pass(
 ) -> int:
     """Append one new attempt for one named chair on one named act.
 
-    The whole-pass `--attempt-ordinal` is the wrong instrument for this. A reread
-    happens because *one* chair failed on *one* act; re-witnessing every chair on
-    every act to reach it re-reads ink nobody doubted, costs a provider call per
-    chair per act, and moves every other chair's derived-current record for no
-    reason. This path moves exactly the chair named, and every other chair's
-    current record stays the attempt it already was.
-
-    Everything else matches the whole pass: same declaration tables at the new
-    ordinal, same regions the first attempt was shown (a reread is a second look
-    at the original proposal, never a first look at ink a recovery uncovered),
-    same single write path, and no pointer anywhere — "current" stays derived.
+    Every other chair's current record stays as it was. The reread is shown the
+    original proposal regions, never a recovery crop.
     """
     act = next((row for row in acts if row["act_id"] == act_id), None)
     if act is None:
@@ -6562,17 +5451,9 @@ def reread_pass(
             "to reread"
         )
     if chair in declared_page_witness_chairs(context):
-        # A page witness reports one reading of one page. Its act-level view is
-        # *derived* — the page join, then the alignment of that join against the
-        # page anchor — so there is no act-scoped request to put to it a second
-        # time, and re-deriving one act's view from an attempt the page record
-        # does not describe would leave the page Testimonium and the attachment
-        # disagreeing about the same chair. No operation exists today to re-ask
-        # a page witness about anything: building one would be new, page-scoped
-        # Attestatores work, and it is deliberately not half-performed here.
-        # (The recovery vocabulary's `page-level-reread` is a PERLECTOR
-        # operation — a different concept whose name must not be borrowed for
-        # this one; one word per concept.)
+        # A page witness's act view is derived from its page reading; rereading
+        # one act would contradict the page record. (`page-level-reread` is a
+        # Perlector operation, unrelated.)
         raise ContractError(
             f"chair {chair!r} is page-scoped in this run: it reports one reading per "
             "page and its act-level view is derived from that page reading, so there is no "
@@ -6584,8 +5465,7 @@ def reread_pass(
         witness_bound_reading_acts(context), act, f"a reread of chair {chair!r}"
     )
 
-    # No `require_appendable_ordinal` here: `next_attempt_ordinal` returns the
-    # current ordinal plus one, off the same history, so the bound cannot fire.
+    # `next_attempt_ordinal` is always current + 1, so no appendable check is needed.
     ordinal = next_attempt_ordinal(index.by_pair, act_id, chair)
     attempt = resolve_attempt(
         context,
@@ -6617,20 +5497,9 @@ def prepared_act_attachment(
 ) -> tuple[int, list[dict[str, Any] | None]]:
     """Every refusal for the reread's re-derived attachment, WITHOUT writing.
 
-    Split from the publication deliberately: all three refusals here depend only
-    on state that existed before the reread writes anything, and running them
-    after `publish_attempt` is how a damaged tree could strand a sealed
-    Testimonium its manifest does not yet name — the exact failure
-    `require_shared_whole_pass_ordinal`'s docstring condemns on the whole-pass
-    path. The reread preflights this first, publishes the Testimonium second,
-    and publishes the attachment last, so a refusal leaves the folder untouched.
-
-    The reread chair's own slot comes back as `None`: its re-derived entry
-    references the NEW Testimonium by digest, so it can only be built after the
-    publish (`republish_act_attachment` fills it). The other chairs' attempts
-    did not move, so their entries are carried forward — but *checked* first,
-    so a stale entry is refused rather than laundered into a newer record by a
-    reread that has nothing to do with it.
+    Run before the Testimonium is published, so a refusal leaves the folder
+    untouched. The reread chair's slot is `None` until its new Testimonium exists;
+    other chairs' entries are carried forward after a staleness check.
     """
     records = index.attachments_by_act.get(act["act_id"], [])
     if not records:
@@ -6670,10 +5539,7 @@ def prepared_act_attachment(
             and item.get("attached")
             and other["outcome"] not in WITNESS_READING_OUTCOMES
         ):
-            # The other half of staleness for an act-scoped carried entry: a
-            # positive `attached` over a chair whose current outcome is not a
-            # reading. A page witness's `attached` is alignment-derived and may
-            # legitimately diverge; the Perlector's own guard holds that case.
+            # Act-scoped only: a page witness's `attached` comes from alignment.
             raise SchemaRefusal(
                 f"act {act['act_id']}'s current act-attachment claims chair "
                 f"{item['chair']!r} attached while its current outcome is "
@@ -6693,12 +5559,8 @@ def republish_act_attachment(
     next_ordinal: int,
     entries: list[dict[str, Any] | None],
 ) -> None:
-    """Publish the attachment `prepared_act_attachment` already checked.
-
-    The reread chair's `None` slot is filled here, after its Testimonium exists
-    to be referenced by digest; every other entry was carried and checked in the
-    preflight.
-    """
+    """Publish the attachment `prepared_act_attachment` already checked, filling
+    the reread chair's slot."""
     filled = [
         act_scoped_attachment_entry(context, act, chair, attempt, ordinal) if item is None else item
         for item in entries
@@ -6720,18 +5582,8 @@ def republish_act_attachment(
 def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
     """Say, once and out loud, which fixture declarations a live pass does not read.
 
-    The fixture is this run's corpus: its pages, acts, continuations and
-    proposals are what a live chair is shown. Its *declared responses* are the
-    offline posture's stand-in for a model, and a live pass reads none of them —
-    every outcome here comes from a response a chair really returned. Nothing is
-    lost: those rows are still in the sealed fixture, and every record this pass
-    writes names the receipt of the moment that produced it, so no reader can
-    mistake one posture's record for the other's. What would be lost is an
-    operator's ability to notice, which is what this line is for (principle 2).
-
-    A real submission declares nothing: there is no fixture, so there is no row
-    to pass over and nothing an operator could fail to notice. Nothing is
-    printed, and the fixture accessor is never touched.
+    A live pass uses the fixture's corpus but none of its declared responses; the
+    operator is told so (principle 2). A real submission has no fixture.
     """
     if real_ingress(context):
         return
@@ -6746,12 +5598,7 @@ def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
         )
         for family in ("churro_page_response", "native_observation", *families)
     }
-    # `chandra_anchor` keys on `page_ordinal`, not `chair` -- a page anchor is
-    # not any one witness's row -- so the `chair in live_chairs` filter above
-    # cannot be reused for it. `publish_page_testimonia_and_attachments` drops
-    # every declared anchor unconditionally once it is passed a live
-    # `page_captures` dict, so every anchor the scenario declares is counted
-    # here, not only the ones a particular chair would have read.
+    # Anchors have no chair, and a live pass ignores all of them.
     counted["chandra_anchor"] = sum(
         1
         for row in context.fixture.get("chandra_anchor", [])
@@ -6770,20 +5617,14 @@ def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
 def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     """Run every configured chair through one attempt, or reread one named chair.
 
-    ``serving_factory(context, identity, tier) -> ChairClient`` is the live
-    boundary's in-process injection seam, exactly as ``registry_factory`` is for
-    chair resolution and for exactly the same reason: a command-line route to a
-    fake serving a configured chair's name is the thing this framework refuses.
-    It is consulted only when the sealed serving catalogue says this run's
-    witness chairs are live.
+    ``serving_factory`` is an in-process test seam like ``registry_factory``, used
+    only when the sealed catalogue says the witnesses are live.
     """
     parser = stage_parser(__doc__.splitlines()[0], accepts_chair=True)
     parser.add_argument(
         "--attempt-ordinal",
         type=_positive_ordinal,
-        # No default ordinal: a reread derives its own from the named chair's
-        # history, and a default would make "asked for ordinal 1" and "asked for
-        # nothing" the same argv, so the reread could not say it was overridden.
+        # No default, so a reread can tell an explicit ordinal from none.
         default=None,
         help="append this ordinal for every act/chair, or repeat the current one byte-identically",
     )
@@ -6794,22 +5635,14 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             f"{sorted(OPERATIONS)}. A mistyped reread would otherwise run a whole pass, "
             "ignore the act and chair it was given, and report success"
         )
-    # Either ingress route: the constructor reads the run authority once and
-    # opens the synthetic or the real context accordingly. A real context
-    # carries the registry and the sealed digests this stage requires below,
-    # `fixture=None` behind a refusing accessor, and `REAL_SCENARIO`.
+    # Opens the fixture or the real context, as the run authority says.
     context = open_stage_context(args, ATTESTATORES, registry_factory=registry_factory)
     real = real_ingress(context)
-    # A witness reading is a model decode too.  The adapter currently exposes no
-    # generation knobs in the fixture seam, but this check keeps a future real
-    # adapter from treating the record posture as an unbound side setting.
+    # A witness reading is a model decode, so its decoding policy must be sealed.
     _decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
     witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
-    # The serving posture of this run's witnesses, read from the sealed
-    # serving-recipe rows and nothing else (SPEC_A section 2.1). Resolved before
-    # any act is read, because it decides which pass structure runs. On a real
-    # submission the only posture is every witness served.
+    # Resolved first: the serving posture decides which pass runs.
     modes = witness_serving_modes(context, bound_serving_recipes(context), args.placement_tier)
     if real:
         require_every_witness_served(modes)
@@ -6822,25 +5655,10 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     except ContractError as error:
         print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
         return EXIT_HELD
-    # A stored inventory is evidence that attempts existed, and it is evidence even
-    # when none of them is left: gating this check on the *walk* finding something
-    # meant that losing part of a folder's Testimonium layer held it — stored and
-    # rebuilt no longer agree — while losing all of it did not, because the
-    # first-run path was taken instead and `context.finish()` rewrote the inventory
-    # that said otherwise. So the stored manifest's own existence is one trigger,
-    # and a stage seal is the other: a sealed boundary is a completed pass, and its
-    # tally must reconcile whether or not the inventory file survived.
-    #
-    # The walk alone is deliberately NOT a third trigger, and that is Unit 2's
-    # change here. A pass interrupted inside `attempt_pass` leaves immutable
-    # Testimonia, no inventory and no seal — and asking `attempt_tally` to
-    # reconcile against an inventory that was never written held every crash
-    # resume on a missing file, with a manual `RunTree.write_manifest` as the only
-    # way out. There is no stored claim to contradict in that state, so the resume
-    # below repeats the pass at its own ordinal: what is already sealed is reused
-    # byte-for-byte, what the crash never reached is written, and nothing is
-    # overwritten or concealed. A pass that sealed and then lost its inventory
-    # still reconciles, because the seal is still in the rebuilt walk.
+    # A stored inventory or a stage seal means a pass finished writing, so its tally must
+    # reconcile even if every Testimonium is gone. Records alone do not trigger
+    # it: a crash before the inventory was written leaves nothing to contradict,
+    # and the pass resumes at its ordinal, reusing what is sealed.
     stored_inventory = context.tree.resolve(context.tree.manifest_path(ATTESTATORES)).exists()
     has_stage_seal = any(
         entry["kind"] == "stage-seal"
@@ -6857,13 +5675,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     isolated_crop_failure = False
     if args.operation == "reread":
         if live_chairs:
-            # A live reread is a second request to a chair that already answered
-            # this act, at a new ordinal. Nothing about it is wrong in principle
-            # -- it is what principle 7 bounds recovery with -- but it needs
-            # its own residency, its own per-response publication and its own
-            # answer to what an act-scoped reread of a page witness means, and
-            # none of that is built. Refused by name rather than half-performed
-            # into a pass that starts a chair and cannot publish what it hears.
+            # A live reread needs its own residency and publication, not yet built.
             raise ContractError(
                 "this run's witness chairs serve live, and no live reread is built: a reread "
                 "asks one chair for one act again, and the live boundary here publishes a whole "
@@ -6890,11 +5702,8 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             )
         ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
         try:
-            # Read in both fixture postures: `declarations_for` refuses a
-            # fixture that contradicts itself at this ordinal, which is a fact
-            # about the sealed inputs rather than about who answers. The live
-            # resolver below then reads none of it. A real submission has no
-            # fixture, so its declaration set is empty by name.
+            # Read even for a live fixture run, to refuse a self-contradicting
+            # fixture; the live resolver then ignores it.
             declarations = (
                 real_declarations(ordinal) if real else declarations_for(context, ordinal)
             )
@@ -6904,17 +5713,13 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
                 ordinal,
                 declarations,
                 index,
-                # A live pass always reuses a pair already sealed at this
-                # ordinal: a live chair cannot reproduce immutable bytes, so
-                # asking again could only produce a collision (principle 4).
+                # A live chair cannot reproduce immutable bytes (principle 4).
                 resume_incomplete_pass=bool(live_chairs) or not has_prior_boundary,
                 resolve=pending_live_attempt if live_chairs else None,
                 fixture_declared=not real,
             )
         except ContractError as error:
-            # An ordinary preflight refusal holds this pass before it writes any
-            # witness artifact. An accounting imbalance is a broken partition, not
-            # a holdable request refusal; it must still reach the fatal boundary.
+            # Held before any write; an accounting imbalance stays fatal.
             if isinstance(error, FatalAccounting):
                 raise
             print(f"Attestatores refused this pass: {error}", file=sys.stderr)
@@ -6955,9 +5760,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     if recorded == 0:
         raise ContractError("no chair produced an outcome for any act")
 
-    # The tally is part of closing this pass and can still expose a fatal
-    # accounting imbalance.  Give it the derived inventory it reconciles, then
-    # publish the completion seal only after that refusal boundary has passed.
+    # Write the inventory for the tally, and seal only after it passes.
     context.finish()
     tally = attempt_tally(context.tree, context=context, acts=acts, chairs=context.witness_chairs)
     if tally["hold"]:
@@ -6968,9 +5771,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     context.seal_boundary()
     context.finish()
     if isolated_crop_failure:
-        # Every chair still has its explicit non-reading artifact, so retention
-        # completed and later stages can make that partial state visible. This is
-        # distinct from an UNKNOWN evidence tally, which is the only stage-3 hold.
+        # Not a hold: every chair has a non-reading record, and later stages show it.
         print("Attestatores recorded one or more refused proposal crops", file=sys.stderr)
     return EXIT_COMPLETE
 
