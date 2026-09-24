@@ -30,7 +30,7 @@ what this stage is about to publish. On a real submission nothing can (the
 Designator refuses `--operation recover` by name), and the pointer becomes
 `unresolved_observation_hold`'s loud held-for-review instead, so the act ends as
 a review item and the Armarium still exports partial rather than the run ending
-fatally with no export at all (findings F068/F083).
+fatally with no export at all.
 
 Conditions (1) and (2) are one subtraction, not two tests. Unit 10C retains an
 observation as unclaimed against the *proposal* set alone, so a pointer may sit
@@ -154,9 +154,9 @@ actually cut rather than hardcoded. A Designator hold has two shapes
 sealed, so no region of it is cut and the link really is empty; or the page
 sealed and the near-side region **was** cut while a declared continuation's
 page did not, in which case the link carries that region's real page and
-region ids. Reporting the second shape as empty is what
-`fbf2374` fixed — it dropped a flagged page's only evidence whenever the held
-act was the one act touching it.
+region ids. Reporting the second shape as empty was a defect that dropped a flagged page's
+only evidence whenever the held act was the one act touching it; it is fixed
+now.
 
 ## `kind="review"`
 
@@ -172,7 +172,7 @@ exactly the reading the review assessed. Ordinary terminal records use
 their hold evidence.
 
 **`attempt_ordinal` is minted from the review's own content, not counted from
-recovery requests (F132).** `current_review` (`pipeline/5_recensor/run.py`)
+recovery requests.** `current_review` (`pipeline/5_recensor/run.py`)
 reads the act's latest sealed review, if any, and `publish_review` reuses its
 `attempt_ordinal` unless the new payload actually differs -- the same
 content-diff "reuse if unchanged" pattern `StageContext.seal_boundary` already
@@ -183,7 +183,7 @@ recovery request within the act's own recovery count, which is what
 `common.stage.current_recovery_request` now reads to find the live request.
 The two fields answer different questions and must not be read for each
 other -- `attempt_ordinal` is the review's identity, `recovery_request_ordinal`
-is the recovery request's -- and before F132 they were silently the same
+is the recovery request's -- and they used to be silently the same
 number only because a second recensor pass always incremented both together;
 a pass that changes the review without a new recovery request (clearing a
 flag the first pass raised, for one) is exactly where they now diverge.
@@ -210,7 +210,7 @@ the act was measured as reconciled. The consequence, stated plainly so nobody re
 route as a measurement: on a real run this stage's review routing is silent about
 cross-act reconciliation, and the only cross-act anomaly computation that reaches the
 review record is the Perlector's Pass C verdict, through `audit_unresolved`. This is a
-disclosure (GOVERNANCE 2 and 10), not a defect this stage repairs: a reconciliation
+disclosure (principles 2 and 8), not a defect this stage repairs: a reconciliation
 measure of its own would be a new instrument, and nothing here invents one.
 
 ## Real ingress
@@ -244,7 +244,7 @@ recovery request is published at all, of either origin**; the act takes
 `unresolved_observation_hold`'s real-route branch and is held for review with the
 unbuilt recrop named as the cause. `wants_recovery` is deliberately untouched by this:
 the act genuinely wants the coverage back, and saying otherwise would hide a real
-finding inside a dispatch fact. See findings F068/F083 — a published request nothing
+finding inside a dispatch fact. A published request nothing
 downstream can answer made the Designator exit 2, the orchestrator abort, and the
 Armarium refuse, leaving a run with no export by any sequence of stage invocations.
 
@@ -262,9 +262,9 @@ pointing at it; no module in the tree drives that shape today
 (`pipeline/test_real_ingress_contexts_e2e.py` is real ingress with a hand-built
 Designator layer and stops at the conservation denominator;
 `pipeline/test_structure_chair_e2e.py` is the live structure chair on the fixture
-route). This is ledger finding F008, and the chain above is stated here as two proven
+route). The chain above is stated here as two proven
 halves rather than as one measured run, so nobody reads it as more than it is
-(GOVERNANCE 10).
+(principle 8).
 
 The nine `expected_acts` readers in this file are unchanged: on a real run the shared
 reader skips the fixture floor by name and recomputes every row from the Designator's
@@ -316,7 +316,7 @@ outcome for that act independently reports `genuinely-empty` too, with the
 configured witness floor met and no chair left unresolved.
 
 This is **unanimity about an absence, never a selection among presences**
-(GOVERNANCE 3): nothing here chooses a reading, and no text is established
+(principle 1): nothing here chooses a reading, and no text is established
 either way. The Perlector already made the direct claim; the witnesses only
 corroborate or contradict it. A single chair that actually read text refuses
 corroboration outright — the act falls through to the ordinary
@@ -333,14 +333,14 @@ reported `genuinely-empty`.
 
 **The seal's own evidence claim is checked before it is published.** The record
 this outcome writes says that named chairs actually read this act and
-independently report the same absence, and until Sol-S1 nothing verified that
-sentence: the Attestatores could mint a completed `genuinely-empty` for every
+independently report the same absence, and this was not always verified: the
+Attestatores could mint a completed `genuinely-empty` for every
 chair from a Designator page-fallback act's identity, without asking anything,
 and this stage read the three artifacts as three independent completed reads.
 Stage 3 no longer produces such a record (`pipeline/3_attestatores/HANDOFF.md`,
-"Outcomes and provenance") — that upstream deletion is the Sol-S1 repair, and
+"Outcomes and provenance") — that upstream deletion closed the gap, and
 this gate is defence in depth against a resealed or foreign artifact rather
-than a second catch for Sol-S1 itself (whose fabricated records carried both
+than a second catch for the same defect (whose fabricated records carried both
 facts, minted by the same buggy writer). `blank_corroboration` requires each
 corroborating chair's current Testimonium to retain the regions it was shown
 and the serving receipt for the attempt; a completed-class outcome missing
@@ -365,7 +365,7 @@ outcome was ever produced.
 ARCHITECTURE's candidate list, spec 09's own words: "coverage vs the proposal-
 set seal **plus a residual-ink check whose input is the page image itself,
 never the proposal set** — a denominator derived only from proposals cannot
-see an act nobody proposed (GOALS 1)." `pipeline/5_recensor/residual_ink.py`
+see an act nobody proposed (goal 2)." `pipeline/5_recensor/residual_ink.py`
 is that check: a pure function over one sealed page's own decoded pixels and
 the page-pixel bounds of every region currently cut on it (proposal and
 recovery, from every act that touches the page), with no witness, no reading,
@@ -386,8 +386,8 @@ proposal at all. `payload["page_coverage"]` (`checked_pages`, `flagged_pages`,
 `unmeasurable_pages`) is recorded for every act, the same way `continuation` is,
 not only when it flags something.
 
-**The paper value this check thresholds against is the Designator's, since
-2026-09-06.** It used to be the page's own raw histogram mode, which on a
+**The paper value this check thresholds against is the Designator's.** It used
+to be the page's own raw histogram mode, which on a
 photographed opening is the bezel, so the check computed approximately zero
 residual ink over a page full of writing and reported every such page clean:
 an independent audit that passed by construction rather than by measurement.
@@ -450,7 +450,7 @@ that is a regression, not a fix. **The same rule now covers `fallback-recrop` on
 a real submission**, where the Designator's recovery pass is equally unbuilt:
 the gate's `recrop_dispatchable` conjunct withholds the request and the act is
 held, which is what the rule above always meant and had not been applied to its
-own kind (F068/F083). `recovery_state` also tracks each kind's own
+own kind. `recovery_state` also tracks each kind's own
 sub-budget (`requests_by_kind`) rather than pooling every request into one
 shared count.
 
@@ -474,11 +474,11 @@ Distinct from the per-act recovery budget above: `common/hard_failure.py` and
 `config/hard_failure.toml` bound how many accounted hard failures (a closed,
 configured list of `(stage, outcome)` pairs — see that config's own comments
 for the proposed list and its reasoning) ONE RUN may carry before it needs
-Tyrel rather than another automatic stage invocation. It is computed fresh
+the project lead rather than another automatic stage invocation. It is computed fresh
 from the artifacts on disk at every stage boundary and every recovery round,
 by `pipeline/orchestrator/run.py`, never by this stage — the Recensor has no
 run-level view and no authority to halt a sequence it does not control. Two
-hard failures is Tyrel's named early warning and does not stop anything; more
+hard failures is the named early-warning threshold and does not stop anything; more
 than two halts the orchestrator at the next stage boundary, with whatever
 finished intact. A recovery round is three sections — every outstanding act's
 recrop, then every reread, then one Recensor pass — and the cap is judged at
