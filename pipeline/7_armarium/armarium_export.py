@@ -1,8 +1,9 @@
 """Deterministic, read-only Armarium product projections.
 
-The only text-bearing input is ``canonical_clean_text`` from the checked Archetypus
-record; every writer receives it from one projection object and none reads a
-witness, Perlectio or other text-shaped field.
+The only source of delivered act text is ``canonical_clean_text`` from the checked
+Archetypus record; every writer receives it from one projection object and none reads
+a witness, Perlectio or other text-shaped field. Salvage records carry their own
+harvested ``content``, written only as salvage, never as act text.
 
 ``EXPORT_MANIFEST.json`` is always the first member. The ZIP is stored with fixed
 metadata, so the container adds no nondeterminism. The bytes are still not
@@ -3686,7 +3687,7 @@ def _verify_logical_partition_claim(
     """Re-derive the clustered act-partition claim from its source evidence.
 
     Recomputed from `logical_accounting` rather than read from the manifest, so a
-    rebuilt package cannot report fewer seal rows than the run produced.
+    claim that disagrees with the package's own accounting is refused.
     """
     claim = manifest["claims"]["act_partition"]
     accounting = sources.get("logical_accounting")
