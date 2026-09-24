@@ -799,7 +799,7 @@ def test_every_typed_approval_retains_an_immutable_checked_record():
             approval.approval_record["subject_ids"].append("mutated-after-check")
 
 
-def test_run_plan_keeps_engineering_declaration_out_of_tyrels_approval_scope():
+def test_run_plan_keeps_engineering_declaration_out_of_the_project_leads_approval_scope():
     reserved = {
         "prove_before_scale_evidence_sha256": digest("scale"),
         "spend_scope_sha256": digest("spend"),
