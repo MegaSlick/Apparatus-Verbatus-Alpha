@@ -37,7 +37,7 @@ verbatus = "operations.operator.entry:main"
 # Nothing is added here without a reason recorded in the pull request that adds it.
 
 [build-system]
-requires = ["setuptools==83.0.0"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 # Kept identical to the pin in .githooks/check-all.sh and .github/workflows/ci.yml.
