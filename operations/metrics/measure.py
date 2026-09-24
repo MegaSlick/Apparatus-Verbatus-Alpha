@@ -25,14 +25,15 @@ def docstring_lines(source: str) -> int:
 
 def main(root: Path) -> None:
     listed = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "*.py"], capture_output=True, text=True, check=True
-    ).stdout.split()
+        ["git", "-C", str(root), "ls-files", "-z", "*.py"], capture_output=True, text=True, check=True
+    ).stdout.split("\0")
     rows = {"src": dict.fromkeys(("files", "lines", "comments", "docstrings", *MARKERS), 0)}
     rows["test"] = dict(rows["src"])
     for name in listed:
-        if name.startswith(EXCLUDED):
+        if not name or name.startswith(EXCLUDED) or not (root / name).is_file():
             continue
-        kind = "test" if Path(name).name.startswith("test_") or "/tests/" in name else "src"
+        is_test = Path(name).name.startswith("test_") or "tests" in Path(name).parts[:-1]
+        kind = "test" if is_test else "src"
         source = (root / name).read_text(encoding="utf-8")
         lines = source.splitlines()
         row = rows[kind]
