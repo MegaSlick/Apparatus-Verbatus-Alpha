@@ -5,8 +5,10 @@ Counts git-tracked .py files only, excluding gold/ and private/.
 """
 
 import ast
+import io
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 EXCLUDED = ("gold/", "private/")
@@ -44,8 +46,13 @@ def main(root: Path) -> None:
         row["lines"] += len(lines)
         row["comments"] += sum(line.lstrip().startswith("#") for line in lines)
         row["docstrings"] += docstring_lines(source)
+        comments = [
+            tok.string
+            for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+            if tok.type == tokenize.COMMENT
+        ]
         for marker in MARKERS:
-            row[marker] += source.count(marker)
+            row[marker] += sum(marker in comment for comment in comments)
     print("| | " + " | ".join(rows["src"]) + " |")
     print("|---" * (len(rows["src"]) + 1) + "|")
     for kind, row in rows.items():

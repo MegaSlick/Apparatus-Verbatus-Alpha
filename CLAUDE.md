@@ -10,9 +10,11 @@
 
 ## Lean mode (Ponytail)
 
-- For a cleanup task, run `/ponytail ultra` first; it reverts to `full` next session.
-- A cleanup change must be net-negative in lines (`git diff --shortstat origin/main...HEAD`);
-  if it is not, stop and say why instead of adding more.
+- For a cleanup task, run `/ponytail ultra` first; the next session starts in the
+  configured default mode (`full`).
+- A cleanup change must be net-negative in lines, uncommitted work included:
+  `git diff --shortstat $(git merge-base origin/main HEAD)`. If it is not, stop and say
+  why instead of adding more.
 - Deleting code deletes the tests that existed only for it. Do not write tests to prove
   a deletion changed nothing; CI is that proof. A cleanup adds no new comments.
 - A review finding may be declined with "not worth the lines".
