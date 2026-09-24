@@ -7,8 +7,8 @@ health, which is computed here from the response and the transport boundary.
 Attempts are append-only: a re-read gets a new ordinal and artifact identity, and
 consumers take the newest contiguous ordinal as current.
 
-`--attempt-ordinal N` runs every chair on every expected act at that ordinal and is
-deterministic. `--operation reread --act <id> --chair <role>` moves one chair on one
+`--attempt-ordinal N` runs every chair on every expected act at that ordinal; running
+it again is a byte-identical resume. `--operation reread --act <id> --chair <role>` moves one chair on one
 act to its next ordinal, so a single failed reading is retried without re-reading
 ink nobody doubted.
 
@@ -461,9 +461,10 @@ def _derives_partition_from_response(resolved: Any, page_captures: Any) -> bool:
 def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The reported boxes a page partition may be derived from, or a named refusal.
 
-    All reported: returned unchanged. None reported: empty, and the caller falls
-    back to the presentation echo. A mix is refused, not filtered: half a record
-    would look like a complete partition (principle 2).
+    All reported: returned unchanged. None reported: empty; the page publisher
+    substitutes the presentation echo. A mix is refused, not filtered: half a
+    record would look like a complete partition (principle 2). An echo is excluded
+    because it restates the image shown, not what the witness reported.
     """
     reported = [item for item in observed if item["bounds_source"] in REPORTED_BOUNDS_SOURCES]
     if reported and len(reported) != len(observed):
@@ -1306,8 +1307,9 @@ def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
         _require_chandra_native_testimonium_scope(payload, page_record=False)
     validate_adapter_metadata(payload)
     validate_retained_response_pairing(payload)
-    # Checked again here because this validator is shared by both writers and by
-    # the tally and crash-resume read-back, which must not republish a bad claim.
+    # Checked again here because this validator is shared by the write path
+    # (`prepared_response`) and by the tally and crash-resume read-back, which
+    # must not republish a bad claim.
     if problem := _confidence_problem(payload.get("witness_reported")):
         raise SchemaRefusal(problem)
     return validate_native_witness_geometry(payload)
@@ -1454,8 +1456,8 @@ def require_appendable_ordinal(
 ) -> None:
     """Allow only a rerun of an attempt that exists, or exactly the next one.
 
-    Any ordinal up to the current one is a resume, which the RunTree refuses if the
-    bytes differ. Lower ordinals are admitted because a reread moves one chair
+    Any ordinal up to the current one is a resume (ordinals are contiguous;
+    `latest_attempt` refuses a gap), which the RunTree refuses if the bytes differ. Lower ordinals are admitted because a reread moves one chair
     ahead, and the orchestrator's ordinal-1 pass must remain a no-op resume.
     """
     records = history.get((act_id, chair), [])
@@ -1491,8 +1493,9 @@ def _refuse_write_collision(
     A reread and a whole pass can reach one identity with different outcomes (an
     undeclared response is `failed` under one and `not-run` under the other). The
     RunTree would refuse only mid-pass, after earlier pairs were published, so
-    every pair is checked first. Raw response blobs retained before this refusal
-    stay in custody.
+    every pair is checked first. Compared on the fields the two write paths can
+    disagree on; provenance does not vary with `reread`. Raw response blobs
+    retained before this refusal stay in custody.
     """
     existing = [
         record
@@ -1594,10 +1597,12 @@ def preflight_appendable_ordinals(
 
     The returned region map lets publication reuse the regions verified here.
 
-    A resumed pass keeps one ordinal for every pair and reuses each pair already
-    sealed at it instead of asking the chair again: a live chair cannot reproduce
-    immutable bytes, an attachment describes one ordinal, and downstream stages
-    refuse a reading ordinal that moves without a recrop (principles 2 and 4).
+    A resumed pass keeps one ordinal for every pair: an attachment describes one
+    ordinal, and downstream stages refuse a reading ordinal that moves without a
+    recrop (principles 2 and 4). With `resume_incomplete_pass`, a pair already
+    sealed at this ordinal is reused rather than re-resolved, since a live chair
+    cannot reproduce immutable bytes; a fixture pass over a completed boundary
+    re-resolves and compares.
 
     `resolve` defaults to the fixture resolver; the live pass passes one that
     returns `PENDING_LIVE_ATTEMPT` so no model is called before anything is written.
@@ -4246,7 +4251,9 @@ def capacity_refusal_attempt(
     The refusal concerns this request only, so it becomes a `failed` attempt and
     the pass continues; one oversized page must not cost every other page. Health
     is the no-response shape, since nothing arrived. `receipt_ref` is the chair's
-    real start, which marks the record as live for a resume.
+    real start, which marks the record as live for a resume. `adapter` keeps the
+    chair's declared capabilities on the record; the default is for a caller with
+    no adapter in hand.
     """
 
     reason = f"{what} was refused before it was sent: {error}"
@@ -5648,7 +5655,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     except ContractError as error:
         print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
         return EXIT_HELD
-    # A stored inventory or a stage seal means a pass completed, so its tally must
+    # A stored inventory or a stage seal means a pass finished writing, so its tally must
     # reconcile even if every Testimonium is gone. Records alone do not trigger
     # it: a crash before the inventory was written leaves nothing to contradict,
     # and the pass resumes at its ordinal, reusing what is sealed.
