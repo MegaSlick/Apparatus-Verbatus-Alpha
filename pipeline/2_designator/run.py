@@ -2943,10 +2943,9 @@ def _live_secondary_provenance(context) -> dict:
     down. What differs is the configured case. The fixture path writes a
     `fixture://` receipt for a configured secondary chair; the live path
     called a real chair and may not write a declared serving moment for one it
-    did not (principle 6). Nothing here serves a secondary chair either: the
-    role is absent by ruling ("keep the optional YOLO
-    secondary proposer absent initially"), and a configured row on a live run
-    is refused by name rather than run through a pass that does not exist.
+    did not (principle 6). No live pass serves a secondary chair, so a
+    configured row on a live run is refused by name rather than run through a
+    pass that does not exist.
     """
     resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
     if isinstance(resolved, AbsentChair):

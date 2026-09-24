@@ -122,8 +122,9 @@ def _perlector_dissent():
 # or went missing, which is a real change to explain, not a golden update.
 #
 # Things that move the digests without any change in behaviour:
-#   - any byte under `config/`, comments included: `run.json` seals each config
-#     file's bytes, so its prose is part of the configuration a run is bound to;
+#   - any byte of a config file the run seals, comments included: `run.json`
+#     seals each such file's bytes, so its prose is part of the configuration a
+#     run is bound to;
 #   - any byte of `pipeline/4_perlector/prompts.py`, whose own source digest is
 #     sealed into every prompt record;
 #   - any string sealed into a record or the export manifest.

@@ -249,7 +249,7 @@ def test_a_sampled_nuda_refuses_when_its_bound_approval_receipt_is_replaced(tmp_
 
 
 def test_a_run_may_not_sample_nuda_without_the_project_leads_predeclared_design(tmp_path):
-    """Hard rule 1: the sampling design is his to approve. A rate with no
+    """The sampling design is the project lead's to approve. A rate with no
     approval reference refuses before anything is written, rather than drawing
     an instrument sample nobody asked for."""
     root = tmp_path / "runs"
