@@ -1,9 +1,7 @@
 """The safe, plain-language façade for the operator's seven words.
 
-This module deliberately has no live provider or S3 adapter.  It joins the
-existing fake-first seams into an offline rehearsal, persists what the operator
-confirmed before an action, and leaves the provider-facing machinery behind the
-surface.
+It has no live provider or S3 adapter: it joins the fake seams into an offline
+rehearsal and records what the operator confirmed before each action.
 """
 
 from __future__ import annotations
@@ -142,15 +140,10 @@ one entry per page and no ceiling at all (F020); the underlying transport trunca
 `notify_bridge`'s own failure-detail string the same way, at 160 characters, so a
 cap here is not a new idea in this codebase, only a missing one on the outbound
 message itself."""
-# The Door's program path, named once. Two spellings of it — the fault drill's
-# call site and the guard that decides the drill forwards real ingress — is how
-# the drill could go on running while quietly stopping injecting: change one and
-# the comparison fails silently, rehearsing a fixture door under a real
-# submission's name.
+# Named once: the fault drill and its real-ingress guard compare against it, and
+# two spellings could drift apart silently.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
-# Read from the transfer that owns these names rather than spelled again here: a
-# second literal copy would keep this stripper green while a newly added upload
-# credential stayed in a stage's environment.
+# Imported, not copied, so a newly added upload credential is stripped too.
 _TRANSFER_CREDENTIAL_ENV = TRANSFER_CREDENTIAL_ENV
 _COPY_CHUNK_BYTES = 1024 * 1024
 FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
@@ -176,17 +169,9 @@ MAX_FETCH_OBJECT_BYTES = 256 * 1024 * 1024
 """One object's bound. A whole-page blob is the largest thing a run tree holds;
 the manifest walk already refuses an artifact above 64 MiB, and a quarter of a
 gigabyte is past any page this project has rendered."""
-# `FakeProvider.bill()` always stamps its cutoff exactly one hour **ahead** of
-# its own clock -- `fake_provider.py`'s `cutoff_at=self.now() + timedelta(hours=1)`
-# -- so a frozen test clock still opens a valid, non-empty billing window. This
-# surface is fixture-only and always closes through that same `bill()`, so its
-# billing-cutoff margin must reach forward far enough to cover that stamp --
-# matching the margin `operations/pod/test_pod_runtime.py` pairs with `.bill()`
-# throughout.
-#
-# **The direction matters.** A reader who believes the cutoff is in the past concludes that a *smaller*
-# margin is the safe direction. It is the opposite, and acting on that reversed
-# belief is exactly the defect below at `_shutdown`.
+# The fake provider stamps its billing cutoff one hour ahead of its clock, so the
+# margin must reach forward at least that far. A smaller margin is not safer: it
+# makes a fixture shutdown report UNVERIFIED.
 FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS = 3600
 
 
@@ -240,12 +225,10 @@ class PreparedLaunch:
 
     @property
     def confirmation_phrase(self) -> str:
-        """The phrase this exact price screen requires, derived from that screen.
+        """The phrase this exact price screen requires.
 
-        `operations/pod/spend.py` builds it from the action, the subject and both
-        hourly rates just displayed, so it cannot be typed from memory or pasted
-        by someone who has not read what is about to bill. There is deliberately
-        no constant here for a caller to reach for instead.
+        It is built from the action, subject and rates shown, so it cannot be
+        typed from memory without reading the price.
         """
 
         if self.result.preview is None:
@@ -295,10 +278,8 @@ class FixtureControllerArmer:
         del action, store, owner_token, policy
         observed = self.now()
         stamp = utc_stamp(observed)
-        # `request` is the sealed request: its `--report-path` has already been
-        # bound to this exact launch token (`launch._bind_report_path_to_launch`).
-        # `_validate_arming_binding` compares that exact value against what this
-        # acknowledgement reports, so a fixture-only constant here can never match.
+        # Echo the sealed request's launch-bound `--report-path`; arming
+        # validation compares it exactly, so a constant would never match.
         command = request.docker_start_cmd
         report_path = command[command.index("--report-path") + 1]
         return ControllerArming(
@@ -406,11 +387,7 @@ class FixtureBootstrapActions:
         return {"state": "recorded-upload", "receipt": str(self.transfer_receipt)}
 
     def materialize_model_store(self) -> dict[str, object]:
-        """Report the required step without fetching weights from this fake-only surface.
-
-        Real acquisition belongs to pod launch; fixture bootstrap must still
-        account for the step explicitly so a green journal cannot omit it.
-        """
+        """Report the step without fetching weights, so a green journal cannot omit it."""
         return {"state": "no-materialization", "mode": "fixture-only; no weights are fetched"}
 
     def verify_chair_cache(self) -> dict[str, object]:
@@ -452,11 +429,8 @@ class FixtureBootstrapActions:
 class UnreconciledActPartitionError(ValueError):
     """A `complete` Armarium export whose act partition does not reconcile.
 
-    Distinct from a plain `ValueError` so `OperatorSurface.run()` and
-    `.export()` can each tell "this record could not be read at all" apart
-    from "this record was read fine and does not add up" -- the record
-    exists, so treating it as missing, or its copy as failed, tells the
-    operator the wrong thing.
+    Its own type, so callers can tell an unreadable record from one that was
+    read and does not add up.
     """
 
 
@@ -482,12 +456,8 @@ class OperatorSurface:
         self.now = now or (lambda: datetime.now(UTC))
         self._present: Presenter = present or print
         candidate = provider or OperatorFakeProvider(now=self.now)
-        # OperatorFakeProvider exactly, not the base FakeProvider: close() calls
-        # clear_failures, _provider_for_record calls seed_existing, and
-        # _shutdown's billing-margin floor is gated on this subclass — a plain
-        # FakeProvider would pass construction, then die at close with a bare
-        # AttributeError and silently skip the floor that keeps a rehearsal's
-        # shutdown from reporting a spurious UNVERIFIED.
+        # OperatorFakeProvider, not the base FakeProvider: close relies on its
+        # extra methods and on the billing-margin floor gated on this subclass.
         if not isinstance(candidate, OperatorFakeProvider):
             raise OperatorError(ErrorCode.LIVE_PROVIDER_BLOCKED)
         self.provider = candidate
@@ -503,13 +473,8 @@ class OperatorSurface:
     def present(self, line: str = "") -> None:
         """Show one line, with terminal control bytes removed on the way out.
 
-        `errors.py` already makes this argument for an error detail. It holds
-        for everything else this surface prints, and for more of it: a recorded
-        pod id, a receipt summary, and a reconciliation row carrying a page
-        census's own refusal reason all reach here from a file or a run tree
-        rather than from a constant. Stripping belongs on the channel, not on
-        one kind of string. The receipt keeps the bytes it was given —
-        principle 4 — the terminal simply does not get to act on them.
+        Much of what is printed comes from files and run trees. Receipts keep the
+        original bytes (principle 4); only the terminal output is stripped.
         """
 
         self._present(strip_control_bytes(line))
@@ -573,13 +538,11 @@ class OperatorSurface:
         """Record the typed value, then let the spend gate validate it once."""
 
         with self._exclusive_paid_launch():
-            # This re-check must remain inside the cross-process claim: the active
-            # receipt does not exist until after the provider call returns.
+            # Inside the cross-process claim: the active receipt does not exist
+            # until the provider call returns.
             self._refuse_if_active_pod()
-            # Read first, so a prepared launch carrying no preview leaves through
-            # this property's own three-part refusal. Reached inside the payload
-            # below it would instead be an attribute error on `None` — a raw
-            # traceback on the money path, which this surface never shows.
+            # Read first, so a missing preview refuses cleanly instead of raising
+            # AttributeError below.
             review = prepared.review_record
             # Only PodRuntime may validate and consume a challenge. This durable
             # receipt commits to the input bytes without retaining a spendable phrase.
@@ -661,9 +624,8 @@ class OperatorSurface:
                     "pod": _pod_record(result.record),
                     "request": _request_record(prepared.request),
                     "confirmation_receipt": self._state_relative(confirmation_receipt),
-                    # Relative to the state root, like every reference a receipt
-                    # makes to a file under it: `close` rejoins it, so a moved
-                    # or restored state directory still finds its own lease.
+                    # State-root relative, so a moved state directory still
+                    # finds its lease.
                     "lease": (
                         self._state_relative(result.lease_path)
                         if result.lease_path is not None
@@ -701,7 +663,7 @@ class OperatorSurface:
         prefix: str = "submission",
         volume: VolumeSpec | None = None,
     ) -> Path:
-        """Run Spec 03's local door before transferring only a sealed manifest."""
+        """Run the local submission door, then transfer only what it sealed."""
 
         try:
             prefix = normalize_transfer_prefix(prefix)
@@ -731,14 +693,11 @@ class OperatorSurface:
         volume: VolumeSpec | None = None,
         target: TransferTarget | None = None,
     ) -> Path:
-        """Transfer only what the sealed submission record names; no pod is queried.
+        """Transfer only what the sealed submission record names; no pod is needed.
 
-        The default target is the local fixture volume, so a rehearsal sends
-        nothing anywhere. `volume` names a real RunPod network volume instead —
-        the one path in this surface that can leave this computer, which is why
-        the operator has to name it and is told exactly what will be contacted
-        before a byte moves. It is still zero GPU-hours either way: storage
-        transfer needs no pod, which is the whole reason this verb runs first.
+        The default target is the local fixture volume. `volume` names a real
+        network volume, the one path here that leaves this computer, so the
+        operator must name it and is told what will be contacted first.
         """
 
         source_path = Path(source)
@@ -787,9 +746,8 @@ class OperatorSurface:
             with tempfile.TemporaryDirectory(prefix="manifest-", dir=snapshot_root) as temporary:
                 manifest_snapshot = Path(temporary) / "sealed-manifest.json"
                 manifest_snapshot.write_bytes(manifest_bytes)
-                # Parse the immutable snapshot before consulting or changing the
-                # target. A malformed ledger is a local refusal, not a partial
-                # transfer, and must never cause a remote read or write.
+                # Parse the snapshot before touching the target: a malformed
+                # ledger is a local refusal and must cause no remote access.
                 submission_door.load_manifest(manifest_snapshot)
                 manifest_key = f"{prefix}-manifest.json"
                 claim_key = f"{prefix}-manifest.sha256"
@@ -833,9 +791,7 @@ class OperatorSurface:
                     prefix=prefix,
                     journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
                 ).resume()
-                # Recheck after the image transfer. A manifest that appeared
-                # concurrently owns this prefix and must be compared before a
-                # new one is published.
+                # Recheck: a manifest that appeared concurrently owns the prefix.
                 remote_manifest = store.inspect(manifest_key, expected_size=len(manifest_bytes))
                 if remote_manifest is not None and (
                     remote_manifest.sha256 != manifest_sha256
@@ -858,23 +814,9 @@ class OperatorSurface:
                         f"target {manifest_key!r} did not verify after publication"
                     )
         except (_UploadManifestConflict, ContractError) as error:
-            # The snapshot is read through `submission_door.load_manifest`
-            # before the target is inspected or a transfer is constructed, and
-            # a malformed or non-canonical manifest raises
-            # `SubmitRefusal` (a `ContractError`), not one of the transfer
-            # exceptions below. A conflicting target manifest is found by that
-            # same preflight boundary. Nothing was sent, so this is never
-            # `UPLOAD_PARTIAL`, which would tell an operator that some files
-            # were verified when none were touched (G13).
-            #
-            # `UPLOAD_REFUSED`, not `UPLOAD_MANIFEST_MISSING`: the record is
-            # present and readable at the path the operator named, and it was
-            # refused for what it says. Sending them to "create or locate the
-            # sealed submission record" would send them looking for a file
-            # sitting where they left it, while `UPLOAD_REFUSED` says exactly
-            # what happened -- nothing transferred, no pod started, correct the
-            # named file -- and is what `submit_and_upload` already reports for
-            # a door refusal of the same record.
+            # Found before anything was sent, so not UPLOAD_PARTIAL. Not
+            # UPLOAD_MANIFEST_MISSING either: the record exists and was refused
+            # for its content.
             self._record_failure(
                 "upload",
                 (
@@ -902,20 +844,13 @@ class OperatorSurface:
                 },
                 descriptor_action="upload",
             )
-            # The cause on the screen as well as in the receipt, like every
-            # sibling refusal here: a receipt path where the reason should be
-            # sends the operator to open a JSON file to learn what to fix.
+            # Show the cause, not just the receipt path.
             raise OperatorError(
                 ErrorCode.UPLOAD_PARTIAL, detail=f"{error} Saved receipt: {receipt}"
             ) from error
-        # F027: derived from the same fact `report` already carries, rather
-        # than hardcoded, so the top-level state and the nested transfer
-        # record can never disagree. Not reachable today through this verb --
-        # `manifest_snapshot` is always written just above before `resume()`
-        # ever checks for it -- but a future caller that reused this receipt
-        # shape with an operator-named path it had not first snapshotted
-        # would otherwise silently print "complete" over a transfer that sent
-        # nothing.
+        # Derived from the report so the top-level state cannot disagree with
+        # the nested transfer record. Always true today: the snapshot is written
+        # before `resume()`.
         transfer_complete = report.submission_manifest_present
         receipt = self._write_action(
             "upload",
@@ -1006,60 +941,18 @@ class OperatorSurface:
     ) -> Path:
         """Bring one run tree back from the volume, every object digest-checked.
 
-        Lists every object under ``<run_prefix>/<run_id>/`` through the volume
-        S3 seam and fetches each into ``<into>/<run_id>/``, then checks it the
-        way the tree checks itself: a blob must hash to its own name, a receipt
-        to its own name, an artifact to the digest its stage manifest recorded,
-        ``run.json`` to its own self-hash, and every stage manifest must equal
-        the manifest the local copy rebuilds from the artifacts that arrived.
-        An object nobody accounts for -- a key outside the tree's own inventory
-        scope -- is a refusal by name; a publication temporary is skipped and
-        its name recorded. A local file that already exists is compared, never
-        replaced: identical bytes are reused, different bytes refuse by name.
+        Each object is checked the way the tree checks itself; an unaccounted
+        key refuses, and an existing local file is compared, never replaced.
+        Serving logs are the exception: no manifest records them and a live
+        chair still appends to them, so they arrive as unverified side evidence
+        and a bad one is refused alone rather than losing the whole run.
 
-        **One class of object in the tree cannot be verified, and says so.** A
-        stage that served a chair leaves the engine's launch log under
-        ``<stage>/serving-logs/``. No manifest records it and nothing ever
-        digested it, so it is fetched as side evidence: digested on arrival,
-        listed in the receipt under ``unverified_serving_logs``, and never
-        counted among what was checked. Refusing the whole tree for it -- which
-        is what happened while the inventory scope did not name the path --
-        brought home nothing at all from a run that had already billed a card.
-
-        It is also the one file here that is still being written. A chair
-        serving right now appends to its log, so an operator who fetches a held
-        run mid-flight and again at the end meets bytes that have grown, and a
-        debug-level log can outgrow ``MAX_FETCH_OBJECT_BYTES``. Neither is a
-        reason to lose the run: a log that will not come home is refused **by
-        itself**, named in ``refused_serving_logs`` and on the screen, and the
-        verified tree still arrives. Every other object in the tree is immutable
-        evidence, and a changed one still refuses the fetch as a whole.
-
-        **The run tree is not the whole record, so the evidence comes too.** A
-        launch's PREFLIGHT tree (``preflight/``) is written outside
-        ``runs/<run_id>/`` and says which chairs were preflighted, against which
-        catalogue digests, at what measured tier -- provenance that has to
-        travel with the record (principle 6) off a volume the retention policy
-        will destroy. Everything under ``evidence_prefixes`` is fetched into
-        ``<into>/evidence/``, each object recorded in the receipt with its
-        digest and the content-addressed ones checked against their own names.
-        Six records lie under neither prefix and are named rather than
-        fetched. Five carry this launch's token in names an operator chose --
-        the bootstrap report, the pod-run report, that report's ``-hold``
-        liveness sibling, the pod-timer runtime report, and the bootstrap
-        journal -- at paths this verb has no way to derive; guessing at them
-        would mean listing the whole volume, which holds the submission's own
-        page images. The sixth, ``pod-transfer-journal.json``, sits at the
-        volume root under a fixed name and is the only durable record of which
-        submission rows were verified against target-observed bytes.
-        ``evidence_keys`` takes their exact keys from the operator,
-        ``operations/pod/README.md`` lists the complete set and how each key is
-        derived, and the receipt names that
-        derivation limit -- with how many keys this call named, never a blanket
-        claim that they went unfetched -- rather than passing over it in silence.
-
-        Zero GPU-hours: this reads storage and needs no pod. Nothing here has
-        run against a real endpoint (``volume_s3.py``, note 3).
+        Preflight evidence under ``evidence_prefixes`` comes too, because it
+        is provenance on a volume that will be destroyed (principle 6). Records
+        at operator-chosen or root paths come only when named in
+        ``evidence_keys`` (operations/pod/README.md lists them): finding them
+        would mean listing the whole volume, which holds page images. Not yet
+        run against a real endpoint.
         """
 
         try:
@@ -1078,13 +971,7 @@ class OperatorSurface:
                 reader = S3VolumeObjectReader(volume)
             except Exception as error:
                 self._record_failure("fetch-run", "volume-unavailable", str(error))
-                # Not UPLOAD_VOLUME_UNAVAILABLE: that code's registered copy
-                # ends "then run `verbatus upload` again", which tells an
-                # operator who asked to bring a run tree home to send files
-                # instead -- and following it brings nothing back. Every other
-                # refusal on this verb is FETCH_RUN_FAILED, whose copy names
-                # `verbatus fetch-run`; the volume detail the other code
-                # carried is kept here in the detail line.
+                # Not UPLOAD_VOLUME_UNAVAILABLE, whose advice is to run upload.
                 raise OperatorError(
                     ErrorCode.FETCH_RUN_FAILED,
                     detail=(
@@ -1106,12 +993,8 @@ class OperatorSurface:
             RecursionError,
             MemoryError,
         ) as error:
-            # `RecursionError` because nesting, not length, defeats the JSON
-            # parser (a hostile `manifest.json` a few thousand brackets deep),
-            # and `MemoryError` because `RunTree.read_bytes` is otherwise
-            # unbounded against a run tree that is itself untrusted input
-            # (G13): both must land as `FETCH_RUN_FAILED`, never as an
-            # unclassified crash.
+            # The fetched tree is untrusted: deep nesting raises RecursionError
+            # in the JSON parser, and `RunTree.read_bytes` is unbounded.
             receipt = self._write_action(
                 "fetch-run",
                 {
@@ -1136,11 +1019,7 @@ class OperatorSurface:
             destination_root / EVIDENCE_DIRECTORY,
         )
         partial = bool(outcome.unmanifested_stages)
-        # What was actually checked, which is not what arrived: a serving log is
-        # counted in `fetched`/`reused` like any other object, and nothing
-        # checked it against anything (principle 8 -- claims are made only
-        # about what was measured). Every count of "verified" below is this one,
-        # and the arrival counts stay beside it rather than standing in for it.
+        # Serving logs arrived but were checked against nothing (principle 8).
         verified_objects = outcome.fetched + outcome.reused - len(outcome.unverified_serving_logs)
         checked_clause = (
             "every one checked"
@@ -1177,14 +1056,11 @@ class OperatorSurface:
                 "run_id": checked_id,
                 "prefix": prefix,
                 "into": str(destination_root),
-                # Which volume the tree came from: the one identifier needed
-                # to go back for a missing object, and the only way to tell
-                # two volumes' runs of the same id apart.
+                # Needed to go back for a missing object, and to tell apart
+                # runs of the same id on two volumes.
                 "volume": _volume_record(volume),
                 "fetched": outcome.fetched,
                 "reused": outcome.reused,
-                # `fetched + reused` minus the serving logs: the objects this
-                # call actually checked against a digest the run tree recorded.
                 "verified_objects": verified_objects,
                 "bytes": outcome.bytes,
                 "stages_verified": list(outcome.stages),
@@ -1314,11 +1190,8 @@ class OperatorSurface:
                     ErrorCode.INVALID_COMMAND,
                     detail="--data-gate-policy is meaningful only with --submission-folder",
                 )
-        # The roster's three halves travel together or not at all: the
-        # orchestrator seals all of them into `config_digest`, and forwarding
-        # one would let the real roster resolve against the fixture catalogue,
-        # or be described to the Perlector by the fixture declaration.
-        # Resolved here, before the fault drill or any child starts.
+        # The three roster files travel together or not at all, or the real
+        # roster would resolve against fixture configuration.
         roster_argv = _roster_argv(
             models_config=models_config,
             serving_recipes_config=serving_recipes_config,
@@ -1332,11 +1205,8 @@ class OperatorSurface:
         if submission_folder is None:
             pages, acts, declared_ok = _declared_work(self.workspace, scenario)
             if not declared_ok:
-                # Not a naming inconvenience: the orchestrator reads the same
-                # fixture from the same place, so a run started here would fail
-                # a moment later for a reason the operator never sees. This is
-                # the condition `NOT_A_CHECKOUT` was written for, said before
-                # anything starts.
+                # The orchestrator reads the same fixture, so refuse before
+                # starting a run that would fail out of sight.
                 raise OperatorError(
                     ErrorCode.NOT_A_CHECKOUT,
                     detail=(
@@ -1355,9 +1225,7 @@ class OperatorSurface:
             )
 
         if prior_state in {"interrupted-recoverable", "started"}:
-            # `started` with no later record is a run that never reported an
-            # end state -- killed, or its terminal closed -- which is the same
-            # resumable position the crash drill records explicitly.
+            # `started` with no end state was killed; it is resumable.
             opening = f"Resuming run {run_id}. {extent}"
         elif prior_state is not None:
             opening = (
@@ -1395,20 +1263,12 @@ class OperatorSurface:
             )
         )
         command.extend(roster_argv)
-        # Every receipt this run writes carries the same identity, whatever its
-        # end state: which run, where its tree is, what was asked for, which
-        # commit and which configuration files (by digest) it ran under, and
-        # when it started. A held run's receipt was the one that most needed
-        # these and had none of them; a later session diagnosing a run from
-        # the state directory alone has nothing else to go on.
+        # Every receipt this run writes carries the same identity facts, since
+        # a later diagnosis may have only the state directory.
         commit, commit_unreadable = _repository_commit_or_reason(self.workspace)
         if commit is not None:
-            # F098: the run tree itself, not only this receipt, must carry the
-            # commit it ran under -- pod_run already passes this to a pod-driven
-            # orchestrator invocation; a laptop-driven run left it out. Omitted
-            # (not a refusal) when unreadable, matching the orchestrator's own
-            # optional --repository-commit and this receipt's own commit_unreadable
-            # field -- a laptop checkout without git history is a real, allowed case.
+            # The run tree records its commit too. Omitted when unreadable: a
+            # checkout without git history is allowed.
             command.extend(("--repository-commit", commit))
         facts: dict[str, Any] = {
             "ingress": ingress_mode,
@@ -1428,10 +1288,8 @@ class OperatorSurface:
                 "data_gate_policy": _config_binding(data_gate_policy),
             },
         }
-        # Written before the child starts, so a run killed by a signal this
-        # process cannot catch (SIGKILL, the pod timer, a closed laptop lid)
-        # still leaves a record naming the run and its tree. `status` used to
-        # report an empty machine over a half-written run tree.
+        # Written before the child starts, so a run killed by an uncatchable
+        # signal still leaves a record naming it.
         self._write_action(
             "run",
             {
@@ -1481,10 +1339,7 @@ class OperatorSurface:
         try:
             completed = self._run_orchestrator(command)
         except KeyboardInterrupt:
-            # Ctrl+C, or SIGTERM turned into the same thing by
-            # `_run_orchestrator`. The child is gone; what it sealed is in the
-            # tree, and the receipt says so instead of the run vanishing from
-            # every screen.
+            # Ctrl+C or SIGTERM. What the child sealed stays in the tree.
             receipt = self._write_action(
                 "run",
                 {
@@ -1514,9 +1369,7 @@ class OperatorSurface:
             "stderr_tail": bounded_tail(completed.stderr),
             "stdout_tail": bounded_tail(completed.stdout),
         }
-        # The stages speak on stderr -- the Door's refusal count, a hold's
-        # reason -- and only the crash drill used to show it. Shown here for
-        # every exit, the way `_run_door_stage` already argues it must be.
+        # Stages report refusals and hold reasons on stderr.
         for line in completed.stderr.rstrip().splitlines():
             self.present(line)
         if completed.returncode not in {0, 3}:
@@ -1537,9 +1390,7 @@ class OperatorSurface:
             )
             self.present(f"Run {run_id} failed: {reason}")
             self._present_review_command(run_root, run_id)
-            # The reason travels on the screen as well as in the receipt: a
-            # path where the cause should be sends the operator to `status`,
-            # which then has to show it -- and did not.
+            # Show the cause, not just the receipt path.
             raise OperatorError(
                 ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}"
             )
@@ -1548,20 +1399,16 @@ class OperatorSurface:
             aggregate = export_payload["aggregate"]
             state = str(aggregate["status"])
             page_records = export_payload.get("pages", [])
-            # A list, or the count is refused: `pages` arrives from an artifact
-            # on disk. Keep this validation inside the read/validation block so
-            # a malformed record cannot publish the happy-path receipt first.
+            # `pages` comes from disk. Validated here so a malformed record
+            # cannot publish the success receipt first.
             if not isinstance(page_records, list):
                 raise ValueError("the Armarium export's page record is not a list")
             if state == "complete":
                 self._require_reconciled_act_partition(export_payload)
         except Exception as error:
             if completed.returncode == 3:
-                # Held before the Armarium -- the Attestatores' hold, or a
-                # staged-mode boundary -- so no export record exists to carry
-                # the reason; the orchestrator named it on stderr and that is
-                # what the receipt keeps. This was filed as a failed run with
-                # no run id and the reason discarded.
+                # Held before the Armarium, so no export record exists; the
+                # reason is the orchestrator's last stderr line.
                 reason = (
                     _last_line(completed.stderr)
                     or _last_line(completed.stdout)
@@ -1686,11 +1533,8 @@ class OperatorSurface:
         for reason in reasons:
             self.present(f"Hold reason: {reason}")
         self._present_review_command(run_root, run_id)
-        # A hold is the pipeline asking a person to decide: the `decision`
-        # moment, sent when the hold happens rather than when someone looks.
-        # `notification_reasons` carries the UNREADABLE marker even when the
-        # display loop above was given an empty list, so the phone hears the
-        # same truth the console showed.
+        # A hold asks a person to decide, so notify now. `notification_reasons`
+        # carries the UNREADABLE marker the console showed.
         self._notify(
             "decision",
             f"Verbatus run {run_id} is held and needs a decision: "
@@ -1705,15 +1549,10 @@ class OperatorSurface:
         )
 
     def _run_orchestrator(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        """Run the orchestrator child, with SIGTERM meaning what SIGINT already means.
+        """Run the orchestrator child, treating SIGTERM like SIGINT.
 
-        `subprocess.run` kills its child and re-raises on `KeyboardInterrupt`,
-        so a Ctrl+C reaches `run` as an interruption it can record. A SIGTERM
-        -- the pod timer, a closed session, `kill` -- ended this process with
-        no output and no receipt at all, leaving a half-written run tree that
-        `status` reported as an empty machine. For the child's lifetime it is
-        turned into the same interruption. SIGKILL cannot be caught by anyone;
-        the receipt `run` writes before this starts covers that case.
+        SIGTERM (the pod timer, a closed session) otherwise ends this process
+        with no receipt. SIGKILL is covered by the receipt `run` writes first.
         """
 
         def interrupted(signum: int, frame: object) -> None:
@@ -1726,8 +1565,7 @@ class OperatorSurface:
             previous = signal.signal(signal.SIGTERM, interrupted)
             installed = True
         except ValueError:
-            # Not the main thread: a handler cannot be installed here, and the
-            # receipt written before the child started still names the run.
+            # Not the main thread; the start receipt still names the run.
             pass
         try:
             return self.runner(
@@ -1740,13 +1578,12 @@ class OperatorSurface:
             )
         finally:
             if installed:
-                # `signal.signal` reports `None` for a handler not installed
-                # from Python; restoring that spelling is a TypeError, and the
-                # default disposition is what such a process had.
+                # `None` means a handler not set from Python; it cannot be
+                # restored as such, and SIG_DFL is what it was.
                 signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
 
     def _present_review_command(self, run_root: Path, run_id: str) -> None:
-        """The one thing `review`, `backup` and `advance` all need and no verb printed."""
+        """Print the read-only review command for a run."""
 
         self.present(f"Review it read-only with: {review_command(run_root, run_id)}")
 
@@ -1755,14 +1592,9 @@ class OperatorSurface:
     def export(self, *, run_id: str | None = None, run_root: Path | None = None) -> Path:
         """Make a local evidence bundle from the base-tree Armarium artifact.
 
-        The run is named first, before any work: with no `run_id` the most
-        recently recorded run is chosen and said so, rather than discovered
-        from a bundle filename after the fact. With one, the latest receipt for
-        that run is used even when another run was recorded since — unless the
-        same `run_id` is recorded under more than one run root, which is not
-        "the same run, recorded twice" but a genuine name collision between
-        two different runs; that is refused rather than guessed at, naming
-        every candidate, with `run_root` as the way to say which one is meant.
+        With no `run_id` the most recent run is chosen and named first. A
+        `run_id` recorded under two run roots is two different runs, so it is
+        refused unless `run_root` says which.
         """
 
         run_records = self._run_receipts()
@@ -1787,13 +1619,8 @@ class OperatorSurface:
             )
 
         def _resolved_run_root(payload: dict[str, Any]) -> Path | None:
-            # `None` for a record this can't resolve, rather than refusing
-            # export outright over it: a record that will not end up selected
-            # (matching[-1], below) should not be able to block export of one
-            # that will, and the one that IS selected is still validated by
-            # this method's own existing try/except a few lines down --
-            # unchanged, so a single malformed record behaves exactly as it
-            # did before this function existed.
+            # `None`, not a refusal: an unselected malformed record must not
+            # block export; the selected one is validated below.
             value = payload.get("run_root")
             return self._state_path(value).resolve() if isinstance(value, str) else None
 
@@ -1823,12 +1650,8 @@ class OperatorSurface:
             run_root = self._state_path(str(run_record["run_root"]))
             self.present(f"Exporting run {recorded_id} from run root {run_root}.")
             export_payload = self._armarium_export(run_root, recorded_id)
-            # The same reconciliation `run()` requires before it will call a
-            # record complete: `export` reads this same record independently
-            # (a run refused for this exact reason still leaves a receipt
-            # `export` can be asked for later), and a record that could not
-            # be called complete there must not be called complete here
-            # either -- principle 2 through whichever verb reads it.
+            # The same reconciliation `run()` requires before calling a record
+            # complete (principle 2).
             aggregate = export_payload["aggregate"]
             if aggregate.get("status") == "complete":
                 self._require_reconciled_act_partition(export_payload)
@@ -1842,12 +1665,8 @@ class OperatorSurface:
             exports_dir.mkdir(parents=True, exist_ok=True)
             self._write_base_armarium_bundle(run_root, recorded_id, staged)
             digest = sha256_file(staged)
-            # Named by content, not only by run id: an earlier export's receipt
-            # is immutable and names both this path pattern and its own digest,
-            # so a second export of the same run — after the run tree changed —
-            # must land beside the first rather than overwrite bytes an earlier
-            # receipt still vouches for (principle 4's argument, applied to the
-            # bundle this stage itself produces).
+            # Content-addressed, so a later export never overwrites bytes an
+            # earlier receipt vouches for (principle 4).
             destination = exports_dir / f"{recorded_id}-armarium-base-{digest}.zip"
             try:
                 os.link(staged, destination, follow_symlinks=False)
@@ -1859,12 +1678,7 @@ class OperatorSurface:
                     ) from None
             staged.unlink()
         except OperatorError as error:
-            # `_write_base_armarium_bundle` refuses an incomplete or unsafe run
-            # tree with an already-shaped OperatorError. Without this arm it
-            # travelled past the handler below: no receipt was written and the
-            # staged file was left behind, so `verbatus status` after a failed
-            # export showed no export at all and the only account of it was one
-            # terminal line.
+            # The bundle writer's own refusal: still clean up and record it.
             staged.unlink(missing_ok=True)
             self._record_failure(
                 "export",
@@ -1885,11 +1699,8 @@ class OperatorSurface:
         table = reconciliation_table(export_payload)
         for line in table:
             self.present(line)
-        # The receipt's state, the exit status and the notice all follow the
-        # aggregate's own status. A receipt hardcoded to `complete` over a
-        # partial run, exiting 0, is the partial result presented as complete
-        # that principle 2 forbids -- the screen was honest, the exit status
-        # and the record were not.
+        # Receipt state, exit status and notice all follow the aggregate's
+        # status, so a partial run is never recorded complete (principle 2).
         aggregate = export_payload.get("aggregate")
         recorded_status = aggregate.get("status") if isinstance(aggregate, dict) else None
         state = recorded_status if isinstance(recorded_status, str) else "unknown"
@@ -1946,11 +1757,7 @@ class OperatorSurface:
     # -- close ---------------------------------------------------------------
 
     def prepare_close(self, *, pod_id: str | None = None) -> PreparedClose:
-        """Resolve the recorded pod and show the close notice — before any confirmation.
-
-        Mirrors prepare_launch/launch: the notice a person reads has to be shown
-        before they are asked to type anything back, never after.
-        """
+        """Resolve the recorded pod and show the close notice before any confirmation."""
 
         launch_receipt = self._active_launch_receipt()
         if launch_receipt is None:
@@ -1985,9 +1792,7 @@ class OperatorSurface:
         try:
             lease_store, lease = self._lease_for_close(launch, record)
         except OperatorError:
-            # The lease error carries the pod's billing note; the volume's
-            # ongoing price is this surface's own to say, and volume_cost.py
-            # requires it "on every close, verified or not".
+            # The volume's ongoing price is shown on every close, verified or not.
             self._show_volume_cost(
                 volume_id=record.volume_id, hourly_usd=str(record.estimate.volume_hourly_usd)
             )
@@ -2138,10 +1943,8 @@ class OperatorSurface:
             for action, path_texts in sorted(descriptor["history"].items()):
                 if action == "active-launch":
                     continue
-                # Read every record of the action first: a run's `started`
-                # receipt is rendered differently once a later receipt of the
-                # same run recorded its end, and that later receipt is further
-                # down the same list.
+                # Load all first: a `started` run receipt renders differently
+                # once a later receipt records its end.
                 loaded: list[tuple[int, Path | None, dict[str, Any] | None, str | None]] = []
                 for number, path_text in enumerate(path_texts, start=1):
                     try:
@@ -2188,8 +1991,6 @@ class OperatorSurface:
                         unreadable.append(f"{label}: {error}")
                         lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
                         continue
-                    # The file every failure message tells the operator to
-                    # preserve, named where they are told to look for it.
                     lines.append(f"  Saved receipt: {receipt_path}")
         for line in lines:
             self.present(line)
@@ -2215,19 +2016,11 @@ class OperatorSurface:
         )
 
     def _close_policy(self) -> tuple[SpendPolicy | None, str | None]:
-        """The reviewed policy for close timing, and why it was unavailable if so.
+        """The reviewed policy for close timing, or why it was unavailable.
 
-        Always the workspace's own `config/spend.toml`, never the `--spend` path
-        `launch` may have been given: nothing records which policy path a launch
-        used, so close has no path to read back even if it wanted one. `launch`
-        must refuse without a reviewed policy, because it spends. `close` must
-        not: an unreadable or unconfigured policy is no reason to leave a pod
-        running, and the ceiling checks a policy carries have nothing to say
-        about stopping one. The second element is the reason close is falling
-        back to `VerifiedShutdown`'s own operational defaults, or `None` when
-        the workspace's policy was read without incident — the caller says so
-        rather than silently substituting a shorter deadline for the reviewed
-        one.
+        Always the workspace's `config/spend.toml`: no launch records which policy
+        path it used. Unlike launch, close never refuses over a missing policy,
+        because leaving a pod running is never safer.
         """
 
         try:
@@ -2236,18 +2029,10 @@ class OperatorSurface:
             return None, str(error)
 
     def _shutdown(self, policy: SpendPolicy | None) -> VerifiedShutdown:
-        """Close timing comes from the reviewed policy, never from a constant here.
+        """Close timing from the reviewed policy, else `VerifiedShutdown`'s defaults.
 
-        A reviewed `shutdown_deadline_seconds` and `shutdown_poll_interval_seconds`
-        are what the operator's own policy says a close may take — read from
-        `_close_policy`'s fixed workspace default, which may not be the policy a
-        `launch --spend` used (see that method's docstring). Where no configured
-        policy is in hand — `close` is deliberately runnable without one, because
-        closing is always the safe direction — `VerifiedShutdown`'s own
-        operational defaults apply. Speeding either up belongs in a test's
-        injected clock, not in the shipped surface: a close that gives up in
-        milliseconds reports UNVERIFIED every time, which is loud, wrong, and the
-        fastest way to teach someone to ignore the one message that matters.
+        Tests speed it up with an injected clock, never a shorter constant: a
+        close that gives up too early always reports UNVERIFIED.
         """
 
         timings: dict[str, float | int] = {
@@ -2256,28 +2041,9 @@ class OperatorSurface:
         if policy is not None and policy.configured:
             margin = policy.billing_cutoff_margin_seconds
             if isinstance(self.provider, OperatorFakeProvider):
-                # **The fixture's stamp sets this floor, not the policy.**
-                # `bill()` puts its cutoff an hour ahead of its own clock, so any
-                # margin short of that makes a perfectly healthy close fail its
-                # billing-evidence check. The no-policy branch above already
-                # carried the floor; the configured branch took the reviewed
-                # number raw, and the whole accepted range is 0-3600 -- so every
-                # value but exactly 3600 turned a good close red. Measured at
-                # 1800, 600 and 0, all three raised
-                # "Close could not verify both pod absence and billing evidence."
-                #
-                # Dormant only because the shipped `config/spend.toml` is
-                # `unconfigured`: the first time the project lead fills it in
-                # with anything but 3600, their first close rehearsal is red
-                # for no real reason.
-                # `_shutdown`'s own docstring calls that "the fastest way to
-                # teach someone to ignore the one message that matters".
-                #
-                # Gated on the fixture provider rather than applied flat, so the
-                # floor disappears of its own accord when a real provider with a
-                # real cutoff arrives and the reviewed policy becomes the honest
-                # number. Today this surface is fixture-only by type, so the
-                # branch is always taken.
+                # The fake provider's cutoff is an hour ahead, so a smaller
+                # reviewed margin would fail every healthy fixture close. Gated on
+                # the fake so a real provider uses the reviewed margin as is.
                 margin = max(margin, FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS)
             timings = {
                 "timeout_seconds": policy.shutdown_deadline_seconds,
@@ -2357,8 +2123,7 @@ class OperatorSurface:
     def _launch_error(self, result: LaunchResult, *, receipt: Path | None = None) -> OperatorError:
         detail = result.detail if receipt is None else f"{result.detail} Saved receipt: {receipt}"
         if result.state is LaunchState.REFUSED_CONFIRMATION:
-            # This shared state needs the gate-owned marker to distinguish a moved
-            # price from a mistyped confirmation without duplicating refusal text.
+            # The gate's marker tells a moved price from a mistyped confirmation.
             if PRICE_MOVE_MARKER in result.detail:
                 return OperatorError(ErrorCode.PRICE_CHANGED, detail=detail)
             return OperatorError(ErrorCode.CONFIRMATION_REQUIRED, detail=detail)
@@ -2387,17 +2152,15 @@ class OperatorSurface:
             LaunchState.REFUSED_RUNTIME_CONTRACT,
             LaunchState.CREATE_UNLEASED,
             LaunchState.CONTROLLERS_UNARMED,
-            # A gate-level lease refusal means the console's earlier lease read raced;
-            # it must keep the same unresolved-close instruction.
+            # The console's earlier lease read raced the gate's.
             LaunchState.REFUSED_ACTIVE_LEASE,
         }:
             return OperatorError(ErrorCode.LAUNCH_UNRESOLVED, detail=detail)
         if result.state is LaunchState.PROVIDER_FAILURE:
             if result.lease_path is not None:
                 return OperatorError(ErrorCode.LAUNCH_UNRESOLVED, detail=detail)
-            # Only a provider failure with no lease can safely use the provider's
-            # wording to choose between retryable codes. State always wins where
-            # a pod may exist and may already be billing.
+            # With no lease no pod can exist, so the provider's wording may pick
+            # between retryable codes.
             if "timeout" in detail.lower():
                 return OperatorError(ErrorCode.PROVIDER_TIMEOUT, detail=detail)
             return OperatorError(ErrorCode.PROVIDER_ERROR, detail=detail)
@@ -2438,12 +2201,7 @@ class OperatorSurface:
         return None
 
     def _load_descriptor(self) -> dict[str, Any] | None:
-        """The descriptor, or the same named refusal `status` gives for an unreadable one.
-
-        Every verb that reads its own records used to let `RecordError` escape
-        to the unclassified handler, whose copy told the operator to photograph
-        the screen and ask for help over a record `status` would have named.
-        """
+        """The descriptor, or the same named refusal `status` gives for an unreadable one."""
 
         try:
             return self.descriptor.load()
@@ -2474,14 +2232,8 @@ class OperatorSurface:
         return loaded
 
     def _state_relative(self, path: Path) -> str:
-        """Record a path under the state root relative to it.
-
-        A receipt that names its run root, its lease or a sibling receipt by
-        absolute path is bound to the directory it was written in; after a copy,
-        a restore or a move every such reference is stale. Under the state root
-        the reference is kept relative and rejoined on read (`_state_path`);
-        anything outside it stays absolute, because there is nothing to rejoin
-        it to.
+        """Record a path under the state root relative to it, so a moved state
+        directory keeps working; paths outside it stay absolute.
         """
 
         try:
@@ -2505,12 +2257,8 @@ class OperatorSurface:
     ) -> Path | None:
         """The backup verb's receipt, so `status` can say which run went where.
 
-        A backup left only a snapshot on its destination and nothing in the
-        operator's own records; the sequence "ran, backed up, exported" could
-        not be read back without the terminal. A failed attempt is recorded the
-        way every other verb's failure is (`_record_failure`: said aloud, never
-        raised over the failure it records). A verified snapshot's receipt is
-        the verb's own result, and failing to write it is the command's failure.
+        A failed attempt is recorded like any verb's failure. For a verified
+        snapshot the receipt is the result, so failing to write it fails the command.
         """
 
         if state != "complete":
@@ -2540,14 +2288,10 @@ class OperatorSurface:
         seal_digest: str,
         reference: Any,
     ) -> Path:
-        """The advance verb's receipt, so `status` can say a boundary was passed (F108).
+        """The advance verb's receipt, so `status` can say a boundary was passed.
 
-        Only the success path: `_advance_with_confirmation` raises
-        `OperatorError(ADVANCE_REFUSED, ...)` directly on every refusal, well
-        before anything here could be reached, so there is no failure state
-        for this call to record. `advance`'s own approval record remains the
-        durable evidence of what happened; this is only what lets `status`
-        find it again without a person remembering which run it was.
+        Success only: refusals are raised before this is reached. The approval
+        record stays the evidence; this lets `status` find it.
         """
 
         return self._write_action(
@@ -2591,9 +2335,8 @@ class OperatorSurface:
             launch = self._read_receipt(launch_receipt)["payload"]
             pod_raw = launch.get("pod")
             if not isinstance(pod_raw, dict):
-                # A plain launch receipt with no pod is a recorded refusal, not an
-                # open cost path. An active-launch pointer without one is a broken
-                # record, and must not read as "nothing is running".
+                # A launch receipt without a pod is a refusal; an active-launch
+                # one is broken and must not read as "nothing is running".
                 if self._descriptor_receipt("active-launch") is None:
                     return
                 raise ValueError("active launch has no pod record")
@@ -2614,13 +2357,9 @@ class OperatorSurface:
     def _open_leases(self) -> tuple[list[tuple[Path, PodLease]], list[str]]:
         """Every durable lease in this state that has not reached a verified close.
 
-        Unreadable leases are returned as evidence rather than skipped because
-        neither caller may infer a verified close from an unreadable record.
-        A symlink is one of those: `operations/pod/launch.py` refuses to read a
-        lease through one at the paid gate, and the console reader that decides
-        whether `status` says "a pod may still be billing" cannot be the lenient
-        one — a lease replaced by a link to some closed record would otherwise
-        report an open pod as absent.
+        Unreadable leases, symlinks included, are returned rather than skipped:
+        no caller may infer a verified close from one, and a link to a closed
+        lease would hide an open pod.
         """
 
         root = self.state_root / "leases"
@@ -2645,12 +2384,7 @@ class OperatorSurface:
         return open_leases, unreadable
 
     def _supervisor_status_lines(self, lease: PodLease) -> list[str]:
-        """Read-only supervisor telemetry for one open lease -- no new verb.
-
-        Every fact here comes from the durable identity file `supervise.py`
-        writes beside the lease and from the lease's own close record; this
-        never asks the provider anything, which keeps `status` a pure read.
-        """
+        """Read-only supervisor telemetry for one open lease, from local files only."""
 
         leases_root = self.state_root / "leases"
         path = _supervisor_identity_path(leases_root, lease.lease_id)
@@ -2660,15 +2394,13 @@ class OperatorSurface:
             return [f"  supervisor: identity file UNREADABLE ({error})."]
         if identity is None:
             return ["  supervisor: absent -- no identity file has been written for this lease yet."]
-        # Built from the token-free projection, never from `identity` itself,
-        # so the capability that closes this lease structurally cannot reach
-        # a terminal (`ps` is public) through this read path.
+        # The token-free projection, so the lease's close capability cannot
+        # reach a terminal.
         telemetry = identity.telemetry()
         try:
             running = _supervisor_peek_running(leases_root, lease.lease_id)
         except Exception as error:
-            # Never let a failure in the lock check swallow the lines below --
-            # "a pod may still be billing" must still be printed.
+            # The billing warning below must still print.
             running = f"UNREADABLE ({error})"
         age = max((self.now() - telemetry["started_at"]).total_seconds(), 0.0)
         if running is True:
@@ -2701,11 +2433,9 @@ class OperatorSurface:
         return lines
 
     def _refuse_if_open_lease(self) -> None:
-        """Refuse durable paid intent whose provider outcome may be unknown.
+        """Refuse while a paid action is armed without a verified close.
 
-        The receipt follows the provider response, but the lease precedes the
-        request. An unclosed lease therefore proves only that a paid action was
-        armed and lacks verified-close evidence, never whether the pod exists.
+        The lease precedes the provider request, so it cannot say whether the pod exists.
         """
 
         open_leases, unreadable = self._open_leases()
@@ -2742,9 +2472,7 @@ class OperatorSurface:
         self.state_root.mkdir(parents=True, exist_ok=True)
         path = self.state_root / ".paid-launch.lock"
         try:
-            # O_NOFOLLOW like every other evidence reader here: the claim that
-            # decides whether two windows may both send a paid create must not
-            # be redirectable through a planted link.
+            # O_NOFOLLOW, so a planted link cannot redirect the claim.
             descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         except OSError as error:
             raise OperatorError(
@@ -2764,8 +2492,7 @@ class OperatorSurface:
                     ),
                 ) from error
             except OSError as error:
-                # Only BlockingIOError proves another holder; every other errno means
-                # this process failed to establish mutual exclusion at all.
+                # Any other error means exclusion could not be established.
                 raise OperatorError(
                     ErrorCode.SAFETY_CHECK_FAILED,
                     detail=(
@@ -2780,19 +2507,11 @@ class OperatorSurface:
                 try:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 except OSError:
-                    # Closing the handle releases the POSIX lock. An unlock
-                    # failure must not replace the paid-launch result this
-                    # block was protecting.
+                    # Closing the handle releases the lock anyway.
                     pass
 
     def _prior_run_state(self, run_id: str) -> str | None:
-        """The state this run's own latest receipt records, whatever ran since.
-
-        The receipts are read by the run id they carry, never chosen by
-        timestamp or filename; only the last run's receipt used to be
-        consulted, so a run interrupted before another one started was
-        greeted as new.
-        """
+        """The state this run's own latest receipt records, matched by run id."""
 
         for _path, payload in reversed(self._run_receipts()):
             if payload.get("run_id") == run_id:
@@ -2826,12 +2545,7 @@ class OperatorSurface:
     def _record_failure(
         self, action: str, state: str, detail: str, *, facts: dict[str, Any] | None = None
     ) -> None:
-        """Record a verb's failure beside its cause, and any identity the verb had.
-
-        `facts` is what the failed step already knew -- the run id and run root
-        an export was reading, the volume a fetch named -- so the receipt says
-        *which* export or backup failed and not only that one did.
-        """
+        """Record a verb's failure; `facts` says which run or volume it concerned."""
 
         try:
             self._write_action(
@@ -2845,8 +2559,7 @@ class OperatorSurface:
                 descriptor_action=action,
             )
         except OperatorError as record_error:
-            # Keep the original operational failure as the command's result,
-            # but never hide that its supporting receipt/index also failed.
+            # The original failure stays the result; the record failure is shown.
             for line in record_error.render().splitlines():
                 self.present(line)
 
@@ -2868,9 +2581,7 @@ class OperatorSurface:
                 descriptor_action="spend-alert",
             )
         except OperatorError as record_error:
-            # A warning and its launch decision already exist. Losing the
-            # receipt is said aloud, but notification bookkeeping cannot become
-            # a paid-action gate.
+            # Shown, but bookkeeping must not gate a paid action.
             for line in record_error.render().splitlines():
                 self.present(line)
 
@@ -2913,10 +2624,8 @@ class OperatorSurface:
         )
         if completed.returncode not in {0, 3}:
             raise OperatorError(ErrorCode.RUN_FAILED, detail=completed.stderr or completed.stdout)
-        # Match the orchestrator's normal Door path: an admitted-but-partial
-        # Door reports its private refusal record on stderr even when its exit
-        # is accepted. The crash drill must not replace that security result
-        # with only its generic interruption message.
+        # A partly admitted Door reports its refusals on stderr even on an
+        # accepted exit; the drill must show them.
         for line in completed.stderr.rstrip().splitlines():
             self.present(line)
 
@@ -2928,17 +2637,8 @@ class OperatorSurface:
         payload = record.get("payload")
         if not isinstance(payload, dict) or not isinstance(payload.get("aggregate"), dict):
             raise ValueError("Armarium export record has no usable aggregate")
-        # The list-valued members every consumer counts or walks: a string here
-        # would render a confident wrong page count into a receipt, and a number
-        # would kill export with a bare TypeError after the bundle exists. The
-        # real producer (`pipeline/7_armarium/run.py`) always writes all three
-        # together, so a record missing one is never an honest partial write --
-        # it is exactly the record a caller sees from a mismatched schema (an
-        # older build, a record fetched from a pod running different code).
-        # Presence is required, not merely the right type when present:
-        # `_exported_work` once treated an absent `delivered`/`non_delivered`
-        # as empty and printed "the recorded acts" instead of refusing --
-        # principle 2's "a partial result is visibly partial" runs through this reader too.
+        # Required lists: the producer always writes all three, so a missing
+        # one means a mismatched schema, not an empty result (principle 2).
         for member in ("pages", "delivered", "non_delivered"):
             if member not in payload:
                 raise ValueError(f"Armarium export record is missing {member}")
@@ -2947,27 +2647,11 @@ class OperatorSurface:
         return payload
 
     def _require_reconciled_act_partition(self, export_payload: dict[str, Any]) -> None:
-        """Refuse an Armarium export claiming `status: complete` whose act
-        partition does not actually reconcile -- called by both `run()` and
-        `export()`, the two verbs that decide "complete" from this same
-        record, so a record either refuses through both or neither.
+        """Refuse a `complete` export unless every expected act appears exactly once.
 
-        `_armarium_export` only proves `delivered`/`non_delivered` are
-        present and are lists; an honest producer always fills them with
-        exactly one entry per expected act -- never both lists, never twice
-        (`pipeline/7_armarium/run.py` refuses to publish otherwise) -- and
-        always carries a matching `expected_acts`. A foreign record -- an
-        older build, a tree fetched from a pod running different code --
-        could still claim `status: complete` with no `expected_acts` to
-        reconcile against, a raw count padded by a duplicated or malformed
-        entry, or an act dropped from one list while doubled in the other; a
-        raw `len()` cannot tell any of those apart from an honest total.
-        `.get(...)` here, not the guaranteed-present read `_armarium_export`
-        would give: this must stay safe for a payload that bypassed that
-        reader entirely (every export test but the reader's own stubs
-        `_armarium_export` directly). Caller decides what "complete" was
-        claiming here: principle 2: "complete" is refused unless everything
-        reconciles.
+        Shared by `run()` and `export()` so both judge "complete" alike. A record
+        from other code could pad or drop acts in ways a raw count misses
+        (principle 2). Uses `.get` because some callers bypass `_armarium_export`.
         """
 
         expected_acts = export_payload.get("expected_acts")
@@ -3009,21 +2693,9 @@ class OperatorSurface:
     def _write_base_armarium_bundle(self, run_root: Path, run_id: str, destination: Path) -> None:
         tree = RunTree(run_root, run_id)
         source = tree.root
-        # **A member of the wrong kind was written as complete, same as a missing one.**
-        # The loop below is `if is_file() ... elif is_dir()`, so an absent `run.json`
-        # matched neither arm, contributed nothing, and the receipt still recorded
-        # `"state": "complete"` -- a bundle short of the record saying which run
-        # produced it, describing itself as whole.
-        #
-        # Checking `exists()` alone closed only half of that: a `7_armarium` that is a **regular
-        # file** exists, takes the `is_file()` arm, and is written as a single
-        # member -- so the bundle ships without any of the Armarium output and
-        # still says complete. That is the same defect through a different door,
-        # which is the shape this whole review keeps finding. So each member is
-        # required to be the *kind* it is expected to be, not merely present.
-        #
-        # Principle 2: "a partial result is visibly partial; 'complete' is refused
-        # unless everything reconciles."
+        # Each member must exist and be the expected kind (file or directory);
+        # otherwise a bundle missing its evidence would still be called
+        # complete (principle 2).
         temporary = destination.with_name(f".{destination.name}.tmp-{secrets.token_hex(16)}")
         root_descriptor: int | None = None
         run_descriptor: int | None = None
@@ -3057,12 +2729,7 @@ class OperatorSurface:
                     archive_names,
                 )
             if not members:
-                # The same defect through one more door. `7_armarium` was proved
-                # to be a directory, never to hold anything: an empty one wrote
-                # zero members, this function returned normally, and `export`
-                # recorded `"state": "complete"` for a bundle carrying `run.json`
-                # and not one established reading. For a parish run that is every
-                # act in it missing, with a receipt vouching for the absence.
+                # An empty `7_armarium` would ship a "complete" bundle with no readings.
                 raise OperatorError(
                     ErrorCode.EXPORT_FAILED,
                     detail=(
@@ -3096,14 +2763,9 @@ class OperatorSurface:
                 ErrorCode.CLOSE_NOTHING, detail="the launch receipt has no exact request"
             )
         request = _request_from_record(request_raw)
-        # This surface's own `now`, not a clock frozen at `record.created_at`:
-        # `bill()` below stamps its billing-capture cutoff from whichever clock
-        # the provider carries, and `VerifiedShutdown` requests its cutoff from
-        # this surface's wall clock. A frozen provider clock and a live request
-        # clock drift apart with every minute between launch and close, and once
-        # that drift exceeds `bill()`'s one-hour buffer, a real, healthy close
-        # reports UNVERIFIED — the one failure this surface exists to avoid
-        # reporting spuriously.
+        # The live clock, not one frozen at creation: the billing cutoff and the
+        # shutdown check must share a clock, or drift past the one-hour buffer
+        # makes a healthy close UNVERIFIED.
         recreated = OperatorFakeProvider(now=self.now)
         try:
             recreated.seed_existing(record, request)
@@ -3126,9 +2788,7 @@ class OperatorSurface:
                 detail="the launch receipt does not name its safety lease",
             )
         try:
-            # Recorded relative to the state root (`launch`), so a moved or
-            # restored state directory still finds the lease it wrote; an
-            # older absolute reference is taken as it is.
+            # State-relative, or absolute in older receipts.
             lease_path = self._state_path(lease_text).resolve()
             lease_root = (self.state_root / "leases").resolve()
             if not lease_path.is_relative_to(lease_root):
@@ -3160,18 +2820,13 @@ class OperatorSurface:
         """One standing moment, reported honestly and never able to fail a verb."""
 
         if self.notifier is notify_bridge.silent:
-            # Every *attempted* send is reported, delivered or not — and this
-            # is not an attempt, so there is nothing to report.
+            # Not an attempt, so nothing to report.
             return
-        # One line, always. A hold reason arrives from an artifact and may
-        # carry a newline; shell_notifier refuses a multi-line message, so the
-        # decision moment would be dropped exactly when a person is needed.
+        # One line: the shell notifier refuses multi-line messages, and hold
+        # reasons from artifacts may contain newlines.
         one_line = " ".join(message.split()) or "no detail recorded"
         if len(one_line) > MAX_NOTIFY_MESSAGE_CHARACTERS:
-            # The suffix counts against the same limit it announces: appending
-            # it after a full-length slice let the notifier receive more than
-            # MAX_NOTIFY_MESSAGE_CHARACTERS, past the very ceiling this exists
-            # to enforce.
+            # The suffix counts toward the limit.
             suffix = "... (truncated; see the run receipt for the full text)"
             one_line = one_line[: MAX_NOTIFY_MESSAGE_CHARACTERS - len(suffix)] + suffix
         try:
@@ -3257,11 +2912,8 @@ def _status_projection(
 ) -> list[str]:
     """Present selected already-recorded ledger facts without deriving a new truth.
 
-    ``state_root`` is where a state-relative path in a receipt (a run root, a
-    bundle) is rejoined for display; the receipt itself keeps the relative
-    spelling so a moved state directory still describes its own files.
-    ``ended_later`` says a later receipt of the same run recorded its end, so a
-    `started` receipt is not read as a run that never came back.
+    ``state_root`` rejoins state-relative paths for display. ``ended_later``
+    means a later receipt recorded this run's end.
     """
 
     lines: list[str] = []
@@ -3277,16 +2929,8 @@ def _status_projection(
             lines.append("  Saved upload statement: zero GPU-hours were used.")
         # Local paths are machine details; the digest is the durable manifest identity.
         recorded_sha256 = payload.get("submission_manifest_sha256")
-        # Only a receipt that claims bytes moved must bind a digest. An upload
-        # refused before any transfer began -- `submission-refused`,
-        # `volume-unavailable` -- never had a sealed record to bind, and demanding
-        # one turned that honest receipt into "UNREADABLE; it was not treated as
-        # success", with `status` then exiting 2. `status` is read-only, is
-        # documented as always safe, and is the verb every failure message sends
-        # the operator to, so it is the one that must keep working after a
-        # failure; breaking it there also teaches them to ignore
-        # STATUS_UNREADABLE. `zero_gpu_hours` above is guarded with `is True` for
-        # exactly the same reason.
+        # Only receipts claiming bytes moved must bind a digest; one refused
+        # before transfer has none, and `status` must keep working after failures.
         if payload.get("state") in {"complete", "partial-transfer"}:
             if not (
                 isinstance(recorded_sha256, str)
@@ -3304,9 +2948,6 @@ def _status_projection(
         run_root = _display_path(payload.get("run_root"), state_root)
         state = payload.get("state")
         if isinstance(run_id, str):
-            # Every run record used to render identically; a state directory
-            # that saw three runs, or one run that failed two ways, showed
-            # three indistinguishable lines.
             lines.append(f"  Run: {run_id}" + (f"; run root: {run_root}" if run_root else "") + ".")
         if isinstance(state, str):
             lines.append(f"  Saved run state: {state}.")
@@ -3519,24 +3160,11 @@ def _load_policy(path: str | Path) -> SpendPolicy:
 def _read_published_lease(path: Path) -> PodLease | None:
     """Read one published lease without writing anything beside it.
 
-    `LeaseStore.load()` takes the writer's advisory lock, and taking it *creates*
-    `.<name>.lock` in the lease directory. `status` is documented — here, in
-    `records.py`, and in this package's README — as reading only, and it is the
-    one verb an operator runs to find a pod that may still be billing: a state
-    directory that cannot be written must not turn every lease into UNREADABLE
-    and hide exactly that (principle 2). A lease is only ever published whole
-    (`os.link` of an fsynced temporary, or `os.replace`), so a lock-free read
-    sees one complete version or another, never a torn one, and
-    `PodLease.from_record` still refuses any record whose seal does not
-    recompute. The authority over a second paid action remains the gate's own
-    locked read in `operations/pod/launch.py`.
-
-    Opened the way `records.sha256_file` opens evidence, and for its reasons:
-    no-follow, so the caller's symlink check cannot be raced between the look
-    and the open; non-blocking and refused unless the open descriptor says
-    regular, so a FIFO planted at a lease name cannot hang `status` forever
-    having printed nothing; and bounded, because a file this tool did not write
-    is the only way one of these reaches a mebibyte.
+    `LeaseStore.load()` creates a lock file, and `status` must work on a
+    read-only state directory (principle 2). Leases are published whole, so a
+    lock-free read is never torn; the paid gate keeps its own locked read.
+    No-follow, non-blocking and regular-only, so a raced link or a FIFO cannot
+    fool or hang `status`; bounded, because only a foreign file is that large.
     """
 
     try:
@@ -3576,10 +3204,10 @@ def _review_record(
     adopted_pod_id: str | None,
     preview: PaidActionPreview,
 ) -> dict[str, object]:
-    """Return the recomputable, phraseless preimage of the UI review digest.
+    """Return the phraseless preimage of the UI review digest.
 
-    A durable record must not retain a spendable challenge, and its digest must
-    cover only bytes a reader can recover from that record.
+    Records must not keep a spendable phrase, and the digest must be
+    recomputable from the record.
     """
 
     return {
@@ -3606,11 +3234,8 @@ def _request_from_record(value: dict[str, Any]) -> PodCreateRequest:
             "interruptible",
             "recovery_only",
         }
-        # Written by every record this surface writes, and read back as the
-        # default when it is absent: a record saved before the field existed
-        # must still load, because the verb that reads it is `close`, and a
-        # close that cannot read its own saved request cannot stop a pod that
-        # is billing.
+        # Optional so older records still load: `close` reads them, and it
+        # must be able to stop a billing pod.
         optional = {"container_disk_gb"}
         if set(value) - optional != required:
             raise ValueError("request has missing or unknown fields")
@@ -3778,15 +3403,8 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
 def _stage_environment() -> dict[str, str]:
     """Pass the ordinary runtime environment, but never a provider credential.
 
-    Used to strip only the two upload-only S3 keys, reasoning that "pipeline
-    stages neither upload nor inspect a network volume" -- true, but no reason
-    to keep RUNPOD_API_KEY (pod creation = money), HF_TOKEN, AWS_*, or any other
-    provider credential either (F016): these processes decode attacker-supplied
-    PDFs, TIFFs, HEICs and PNGs, and talk to the serving endpoint, which is
-    already *more* hostile material than the console/backup/advance/ScanTailor
-    children `credential_free_environment` was built to protect. Built on the
-    same predicate rather than its own list, so a credential shape added there
-    protects a stage subprocess too.
+    Stages decode untrusted images, so no credential may reach them. The shared
+    predicate means a credential shape added there is stripped here too.
     """
 
     return credential_free_environment()
@@ -4082,9 +3700,8 @@ def _repository_commit(workspace: Path) -> str:
 def _repository_commit_or_reason(workspace: Path) -> tuple[str | None, str | None]:
     """The commit a run is about to use, or the reason it could not be read.
 
-    `boot` refuses without one; a run does not, because a workspace that is
-    not a git checkout (a copied tree on a pod) can still run. The receipt then
-    says the commit was unreadable and why, rather than omitting the field.
+    Unlike `boot`, a run proceeds without one: a copied tree on a pod is not a
+    git checkout.
     """
 
     try:
@@ -4096,9 +3713,8 @@ def _repository_commit_or_reason(workspace: Path) -> tuple[str | None, str | Non
 def _config_binding(path: str | Path | None) -> dict[str, Any] | None:
     """One configuration input as the receipt records it: its path and digest.
 
-    Absent inputs stay `None` (the orchestrator's default applies and is
-    sealed by the stage itself). A named file that cannot be digested is
-    recorded with the reason, never silently without a digest.
+    `None` when absent (the stage seals its default); an undigestible file is
+    recorded with the reason.
     """
 
     if path is None:
@@ -4190,16 +3806,9 @@ def _roster_argv(
 ) -> list[str]:
     """The real-roster trio, forwarded together; a partial selection is refused.
 
-    The witness-context declaration joined the pair for the same reason the
-    catalogue was in it: the shipped declaration
-    (`config/witness_context.toml`) says of every chair that it is a synthetic
-    fixture with no real training domain, and under the `named` regime that
-    sentence is handed to the Perlector as fact about the witness whose
-    testimony it is reading. Forwarding a real roster without it seals a run
-    whose own record calls its real witnesses fixtures --
-    `common/stage.py::validate_witness_context_bindings` refuses that at the
-    Door, and refusing it here keeps the console's message about the console's
-    own flags.
+    The shipped witness context calls every chair a synthetic fixture, and the
+    Perlector is told that as fact; a real roster needs its own. The Door also
+    refuses this, but refusing here names the console's own flags.
     """
 
     selected = (models_config, serving_recipes_config, witness_context_config)
@@ -4249,31 +3858,16 @@ class FetchRunOutcome:
     bytes: int
     stages: tuple[str, ...]
     excluded: tuple[str, ...]
-    # A stage whose last write reached no `manifest.json` -- a crash, an
-    # EXIT_FATAL, a SIGKILL, or the pod timer destroying the pod at the hard
-    # deadline can all leave artifacts with no manifest recording them. Such a
-    # stage's artifacts are still verified, individually, through the run
-    # tree's own envelope reader (`RunTree.build_manifest(..., verify_inputs
-    # =False)`, the same checks a stored manifest would have applied) rather
-    # than refused as a whole. Non-empty here means the outcome is
-    # "verified-partial", never "verified".
+    # Stages that died before writing `manifest.json`; their artifacts are
+    # verified by envelope only, so the outcome is "verified-partial".
     unmanifested_stages: tuple[str, ...] = ()
     envelope_only_artifacts: tuple[str, ...] = ()
-    # `<stage>/serving-logs/`: the vLLM launch log a served chair leaves in the
-    # run tree. No manifest records an engine log and nothing ever digested one,
-    # so it cannot be verified the way the rest of the tree is -- but refusing
-    # the whole tree for it, which is what an unnamed path did, threw away the
-    # evidence the run existed to produce. It comes home as side evidence, named
-    # here and digested in the receipt so the local copy can be told apart from
-    # a later one, and never counted among what was verified (principle 8).
+    # Serving logs: in no manifest, so digested on arrival but never counted as
+    # verified (principle 8).
     unverified_serving_logs: tuple[tuple[str, str], ...] = ()
-    # A serving log that did not come home, and why. Named per object rather
-    # than raised: the log is the one append-only file in the tree -- a live
-    # engine is still writing it -- so local bytes that differ from the
-    # volume's, or a debug-level log past `MAX_FETCH_OBJECT_BYTES`, are ordinary
-    # states of a file nobody digested, and taking the whole verified run tree
-    # down for one of them is the failure this verb was fixed to stop. Nothing
-    # is lost silently (principle 2): each is in the receipt and on the screen.
+    # Serving logs that did not come home, and why. A live engine still appends
+    # to them, so a mismatch is refused per log, not for the whole tree
+    # (principle 2).
     refused_serving_logs: tuple[str, ...] = ()
 
 
@@ -4316,9 +3910,8 @@ def _fetch_run_tree(
             f"no {RUN_FILE} under {prefix!r}: there is no run authority to check the rest "
             "against, so nothing was fetched."
         )
-    # Authority first, then the inventories, then everything the inventories
-    # account for -- each verified as it lands, so a mismatch stops the fetch
-    # at the object that failed rather than after a directory full of them.
+    # run.json, then manifests, then the rest, so each object can be verified
+    # as it lands.
     ordered = sorted(
         relative_paths,
         key=lambda item: (
@@ -4333,41 +3926,18 @@ def _fetch_run_tree(
     serving_logs: list[tuple[str, str]] = []
     refused_logs: list[str] = []
     unresolved: dict[str, str] = {}  # every fetched artifact -> its digest, resolved below
-    # Every target this call itself wrote fresh (never one already on disk that
-    # was only compared). A refusal anywhere below -- including one raised well
-    # after the object that turned out bad was fetched, such as the stage
-    # reconciliation at the end -- unwinds every one of them, so a forged
-    # artifact, blob, or receipt this call fetched never survives under its
-    # real name once the fetch as a whole is refused.
+    # Files this call wrote fresh; any refusal removes them all, so no forged
+    # object survives under its real name.
     staged: list[Path] = []
     root = tree.root
     try:
         for relative in ordered:
             target = root / relative
             if _is_serving_log(relative):
-                # Side evidence, and refused per object rather than fatally.
-                # An engine log is in no manifest, is not content-addressed and
-                # is not JSON, so there is nothing to check it against; it is
-                # also the one file in the tree that is still being appended to
-                # while the fetch runs. A second fetch of a held run therefore
-                # meets different bytes than the first brought home, and
-                # `_fetch_or_compare` refuses that -- correctly, for immutable
-                # evidence, and fatally for the whole tree if it were raised
-                # here. The same goes for a log that has grown past
-                # `MAX_FETCH_OBJECT_BYTES`. Both are named and the verified run
-                # tree still comes home.
-                #
-                # Classified before anything is fetched: the arms below verify,
-                # and a log is the one object none of them can speak for.
-                # `_fetch_or_compare`'s own guards still run and still refuse
-                # -- a symlink standing where a log belongs is refused before a
-                # byte is written, exactly as anywhere else in the tree. What
-                # narrows is the blast radius, not the check.
-                # `is_symlink` as well as `exists`: a dangling symlink standing
-                # where a log belongs is refused by `_fetch_or_compare` and is
-                # still something this call did not create, so the cleanup below
-                # must not delete it. Nothing local is removed that this call
-                # did not write.
+                # A log is still appended to while fetched, so a mismatch or
+                # oversize log is refused alone; the same guards still run.
+                # `is_symlink` too, so cleanup never deletes a dangling link
+                # this call did not create.
                 existed = target.exists() or target.is_symlink()
                 parent_existed = target.parent.exists() or target.parent.is_symlink()
                 try:
@@ -4387,8 +3957,7 @@ def _fetch_run_tree(
                 total += log_size
                 fetched += not log_reused
                 reused += log_reused
-                # Digest what arrived so the receipt can name it, and check it
-                # against nothing, because there is nothing to check it against.
+                # Digested for the receipt; there is nothing to check it against.
                 serving_logs.append((relative, _sha256_of(target)))
                 continue
             data_size, was_reused = _fetch_or_compare(reader, prefix + relative, target)
@@ -4406,12 +3975,8 @@ def _fetch_run_tree(
                 for entry in manifest["artifacts"]:
                     expected[entry["relative_path"]] = entry["sha256"]
             elif "/artifacts/" in relative:
-                # Manifests sort before artifacts (see `ordered` above), so every
-                # manifest that exists on the volume is already in `expected`.
-                # An artifact this loop cannot yet place is either the last write
-                # of a stage that never reached `finish()` -- resolved below,
-                # through the tree's own envelope reader, never refused outright
-                # -- or genuinely orphaned, which the resolution pass still refuses.
+                # All stored manifests are already read; an unplaced artifact is
+                # resolved or refused below.
                 unresolved[relative] = _sha256_of(target)
             elif "/blobs/sha256/" in relative or relative.startswith(f"{RECEIPTS_DIR}/"):
                 digest = _sha256_of(target)
@@ -4421,9 +3986,8 @@ def _fetch_run_tree(
                         "the object on the volume is not the one its name claims."
                     )
             else:
-                # A rebuildable index or the derived Recensor receipt: readable
-                # JSON, digested into the receipt, verified by the tree's own
-                # readers when a verb next opens it.
+                # A rebuildable index or derived receipt: checked as JSON here,
+                # verified by the tree's readers when next opened.
                 try:
                     size = target.stat().st_size
                     if size > MAX_RECORD_READ_BYTES:
@@ -4434,27 +3998,12 @@ def _fetch_run_tree(
                         )
                     json.loads(target.read_bytes().decode("utf-8"))
                 except (UnicodeDecodeError, ValueError, RecursionError) as error:
-                    # `RecursionError` because nesting, not length, is what breaks
-                    # the JSON parser -- a hostile volume can otherwise defeat this
-                    # named refusal with a few thousand brackets that fit easily
-                    # inside any size bound (G13).
+                    # Deep nesting raises RecursionError within any size bound.
                     raise FetchRunRefusal(f"{relative} is not readable JSON: {error}") from error
-        # An artifact with no manifest entry is not necessarily orphaned: the
-        # stage that wrote it last may never have reached `finish()` (a crash,
-        # an EXIT_FATAL, a SIGKILL, or the pod timer destroying the pod at the
-        # hard deadline all skip the manifest write). Resolve each such
-        # artifact against the manifest its own writing directory's stage
-        # would derive -- the same envelope, run, and path checks
-        # `build_manifest` always applies -- rather than refusing the whole
-        # tree for a manifest a genuine crash never got to write.
-        # Every artifact a *stored* manifest recorded, taken before the derived
-        # pass below adds any. `unresolved` holds every artifact that arrived,
-        # because the digest comparison at the end checks them all; only the
-        # ones missing from this set were verified by envelope alone, and only
-        # those belong in the receipt's `envelope_only_artifacts`. Reporting
-        # the whole set named manifest-covered artifacts as unmanifested --
-        # a false statement about what was measured (principle 8) and
-        # useless for telling a crashed stage's artifacts from the rest.
+        # An artifact without a manifest entry may come from a stage killed
+        # before `finish()`; resolve it against a manifest derived from its
+        # envelope. Only artifacts outside the stored manifests are reported
+        # as envelope-only (principle 8).
         manifest_recorded = set(expected)
         manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
         unmanifested_stages: set[str] = set()
@@ -4502,12 +4051,8 @@ def _fetch_run_tree(
     except BaseException:
         for path in staged:
             path.unlink(missing_ok=True)
-        # And the directories those files were created in, bottom-up. A refused
-        # fetch that left an empty run-tree skeleton behind put a directory
-        # structure on disk that no completed fetch ever wrote and the partial
-        # receipt does not mention; a later `fetch_run` into the same root then
-        # walks it. `rmdir` removes only what is already empty, so a directory
-        # holding a file an earlier, verified fetch left is untouched.
+        # Then their now-empty directories, bottom-up; `rmdir` leaves any
+        # directory still holding an earlier fetch's files.
         for directory in sorted(
             {parent for path in staged for parent in path.parents if root in parent.parents},
             key=lambda item: len(item.parts),
@@ -4538,15 +4083,8 @@ def _fetch_run_tree(
 def _is_serving_log(relative: str) -> bool:
     """True for `<writing directory>/serving-logs/<name>`, the served engine's own log.
 
-    A classification, not a boundary: `inventory_scope()` has already refused
-    anything that is not under a writing directory's serving-log prefix by the
-    time this is asked.
-
-    The last component must be a name. An S3 listing can carry a zero-byte
-    directory marker whose key ends in `/`, and calling that a log would fetch
-    it to the directory's own path; left unclassified it falls through to the
-    JSON arm and refuses by name, which is the right answer for a key that is
-    not an object anyone wrote.
+    A classification only; the inventory scope is the boundary. An S3
+    directory marker (key ending in `/`) is not a log and is refused later.
     """
 
     parts = relative.split("/")
@@ -4557,14 +4095,8 @@ def _is_serving_log(relative: str) -> bool:
 class FetchEvidenceOutcome:
     """What the evidence pass brought home, and what it did not.
 
-    The run tree is not the whole record of a run that billed a card: the
-    launch's PREFLIGHT evidence -- the golden page, the serving logs, the
-    published serving receipts and launch audits -- lives beside it on the
-    volume and says which chairs were preflighted, against which catalogue
-    digests, at what measured tier. The volume is destroyed under the retention
-    policy, so that provenance has to travel with the record (principle 6),
-    and what could *not* be brought home has to be named rather than left
-    silent (principle 2).
+    Preflight evidence is provenance on a volume that will be destroyed
+    (principle 6); what did not arrive is named (principle 2).
     """
 
     fetched: int
@@ -4586,16 +4118,9 @@ def _fetch_evidence(
 ) -> FetchEvidenceOutcome:
     """Bring the launch's evidence home beside the run tree, each object digested.
 
-    Unlike the run tree, this material carries no manifest to reconcile against:
-    the receipts and audits under it are content-addressed and are checked
-    against their own names, and everything else is recorded in the fetch-run
-    receipt with the digest of the bytes that arrived, which is what lets a
-    later reader say the local copy is the one that was fetched.
-
-    Nothing here refuses the fetch as a whole. The run tree has already been
-    verified when this runs, and losing that verified result because a log file
-    could not be read would be the wrong trade; every object that did not come
-    home is named in the returned refusals and lands in the receipt instead.
+    There is no manifest here: content-addressed objects are checked against
+    their names, the rest only digested. Failures are named per object and
+    never undo the already verified run tree.
     """
 
     fetched = reused = total = 0
@@ -4675,20 +4200,13 @@ def _fetch_or_compare(reader: RunObjectReader, key: str, target: Path) -> tuple[
 
 def _fetched_manifest(tree: RunTree, relative: str) -> dict[str, Any]:
     try:
-        # The record ceiling by name, not the tree's blob-sized default: this
-        # file came off a volume and is about to be parsed, and `json.loads`
-        # costs several times the bytes again in parsed objects, so a manifest
-        # the size an *image* may legitimately be is already too large to read
-        # here (G13). Without the explicit bound, the ceiling that does apply
-        # sits above `MAX_FETCH_OBJECT_BYTES` and can never fire on this path.
+        # The record ceiling, not the blob-sized default: parsing an untrusted
+        # file costs several times its size.
         manifest = json.loads(
             tree.read_bytes(relative, max_bytes=MAX_RECORD_READ_BYTES).decode("utf-8")
         )
     except (UnicodeDecodeError, ValueError, RecursionError, OSError, SchemaRefusal) as error:
-        # `RecursionError` because nesting, not length, is what breaks the JSON
-        # parser -- a hostile `manifest.json` (~10k nesting suffices) is otherwise
-        # a crash on the fetch-run path rather than this named refusal; and
-        # `SchemaRefusal` because that is what the ceiling above raises (G13).
+        # Deep nesting raises RecursionError; the size ceiling raises SchemaRefusal.
         raise FetchRunRefusal(f"{relative} is not a readable manifest: {error}") from error
     if (
         not isinstance(manifest, dict)
@@ -4722,12 +4240,10 @@ def _sha256_of(path: Path) -> str:
 
 
 def _display_usd(amount: Decimal) -> str:
-    """Round a dollar amount to two places for the screen a person reads.
+    """Round a dollar amount to two places for display only.
 
-    Display only — the stored record keeps the exact `Decimal`, and the paid
-    confirmation phrase is derived from the two hourly rates shown just above
-    this line, never from this total, so rounding it here cannot weaken what
-    the typed confirmation actually authorizes.
+    Records keep the exact value, and the confirmation phrase uses the hourly
+    rates, not this total.
     """
 
     return str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
@@ -4748,28 +4264,12 @@ def _human_duration(seconds: int) -> str:
 
 
 def _door_module(workspace: Path):
-    """Load `pipeline/1_exemplar/door.py` by path, under a synthetic name.
+    """Load `pipeline/1_exemplar/door.py` by path from this `workspace`.
 
-    By path, from this exact `workspace`, rather than
-    `importlib.import_module("pipeline.1_exemplar.door")` (which some tests
-    use, and which does resolve despite the digit prefix): that form
-    resolves against this process's own `sys.path`, which need not be this
-    `workspace` at all -- `--workspace` names an arbitrary checkout, and a
-    door loaded from the wrong one would answer for the wrong fixture. door.py
-    is otherwise invoked here only as a subprocess (`DOOR_PROGRAM`), a
-    boundary that gave it a fresh `sys.path` and module cache for free; loaded
-    in-process instead, its own top-level `sys.path.insert` calls would
-    otherwise grow this operator's `sys.path` by three entries on every call,
-    forever, and its bare sibling imports (`admission`, `manifest`,
-    `pdf_render`, `render_config`, `image_formats` — door-private stage files,
-    reached only because `sys.path` briefly names their directory) would
-    permanently occupy those bare names in `sys.modules`, so a second call
-    against a *different* `workspace` would silently reuse the first
-    workspace's cached copies instead of loading the new one's. Both are
-    restored/purged immediately after the load — before the returned module's
-    one method this caller actually calls is ever invoked, so nothing it
-    needs is torn down out from under it, only the traces left for whoever
-    calls this next.
+    By path because `--workspace` may name another checkout than `sys.path`.
+    The door edits `sys.path` and imports bare sibling modules, so both are
+    restored afterwards; otherwise a later call for another workspace would
+    reuse this one's cached modules.
     """
 
     original_sys_path = list(sys.path)
@@ -4788,26 +4288,12 @@ def _door_module(workspace: Path):
 
 
 def _declared_work(workspace: Path, scenario: str) -> tuple[list[str], list[str], bool]:
-    """Name the fixture's declared work for this scenario, before a run exists
-    to read instead — the opening "Checking ..." line's only source, since no
-    Armarium record exists yet to say what actually happened.  Once a run has
-    completed, `_exported_work` reads its real records instead: this function
-    can only ever describe intent, and F030 named exactly the mistake of
-    treating that description as if it were the outcome.
+    """Name the pages and acts this scenario declares, before any run record exists.
 
-    Filters through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario` —
-    the same scenario-gating a real door application would answer — instead of
-    listing every `[[page]]`/`[[act]]` row unconditionally, which named a page
-    (e.g. a scenario-gated page 3) the running scenario never touches (G21,
-    findings F001/F030/F106).
-
-    The third element is `False` exactly when the declared fixture or its
-    stage programs could not be read at all, so the caller can say so — a
-    generic placeholder shown without comment reads as the real page/act
-    list, which it is not. `--scenario` naming a scenario this fixture does
-    not declare is a different failure (a typo, not an unreadable checkout)
-    and is raised directly rather than folded into that placeholder, which
-    would otherwise blame the checkout for what the argument got wrong.
+    Intent only; `_exported_work` reports what actually happened. Pages are
+    filtered by the door's own scenario gating. The third element is `False`
+    when the fixture could not be read; an unknown `--scenario` is raised
+    instead, since it is the argument's fault, not the checkout's.
     """
 
     try:
@@ -4823,10 +4309,7 @@ def _declared_work(workspace: Path, scenario: str) -> tuple[list[str], list[str]
             detail=f"--scenario {scenario!r} could not be resolved against this checkout's "
             f"declared fixture: {error}",
         ) from error
-    # A malformed row past this point (a missing 'ordinal'/'key'/'page_ordinal')
-    # is the same "fixture could not be read" condition as above, not a
-    # different failure -- caught here too rather than left to escape as a
-    # raw KeyError into the operator's unclassified-error path.
+    # A malformed row is also an unreadable fixture.
     try:
         active_ordinals = {page["ordinal"] for page in active_pages}
         pages = [f"page {page['ordinal']}" for page in active_pages]
@@ -4843,32 +4326,12 @@ def _declared_work(workspace: Path, scenario: str) -> tuple[list[str], list[str]
 def _exported_work(
     page_records: list[Any], export_payload: dict[str, Any]
 ) -> tuple[list[str], list[str]]:
-    """Name the pages and acts a completed run's own Armarium record carries —
-    never the fixture's static declaration, which F030 found naming a
-    scenario-gated page never touched, omitting an act the fixture declaration
-    could not know a live run would mint (`ink-free-page`'s fallback act), and
-    still naming a page the Door had in fact refused (`refused-page`). The
-    export record is the run's own account of what happened to every source
-    and every act, which is the only thing this line may describe once one
-    exists — mixing it with a fixture-derived name is the mistake this
-    replaces, not a smaller version of it.
+    """Name the pages and acts a completed run's own Armarium record carries.
 
-    `page_records` is `export_payload["pages"]`, already read and validated as
-    a list by the caller. `delivered`/`non_delivered` together are the export's
-    complete act partition (`pipeline/7_armarium/run.py`'s own comment: every
-    act that is not delivered lands in `non_delivered`, not only held/refused
-    review items) — read defensively here (a non-list value for either is
-    treated as absent, not iterated byte-by-byte) since this function must
-    never be the reason a completed run's own summary line cannot be printed.
-
-    A row this function cannot make sense of is dropped from the *names* it
-    prints, but never invisibly: the caller prints `len(page_records)` (or
-    `expected_acts`) as the total beside these names, and a name silently
-    dropped for being malformed would reopen exactly the names-versus-total
-    mismatch a total that includes it but a name list that omits it, just
-    with "malformed" standing in for "unfiltered."
-    So a drop is disclosed as one more named entry instead, per principle 2:
-    a partial result is visibly partial.
+    Never the fixture declaration, which can name refused or untouched pages
+    and miss minted acts. Read defensively so the summary line always prints;
+    an unreadable row is counted as its own entry so the names match the
+    total (principle 2).
     """
 
     valid_pages = [
