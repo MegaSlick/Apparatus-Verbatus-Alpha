@@ -1,60 +1,44 @@
 # Serving manager
 
-This package starts one already-resolved chair, proves that its loopback vLLM
-endpoint answered, and publishes evidence for that actual serving moment. It
-does not rank chairs, substitute a revision, fall back to a base model, touch a
-provider API, download a model, or claim a GPU fit.
+This package starts one already-resolved chair, proves that its loopback vLLM endpoint
+answered, and publishes evidence for that actual serving moment. It does not rank chairs,
+substitute a revision, fall back to a base model, touch a provider API, download a model,
+or claim a GPU fit.
 
 ## Lifecycle
 
 `ServingManager.start(identity, tier)` requires exactly one profile for
-`(identity.serving_recipe, identity.role, measured placement tier)` from
-`config/serving_recipes.toml`. Zero or multiple matches refuse before launch.
-A real row marked `preflight_state = "proven"` must also carry the
-`preflight_digest` of all its other canonical fields. A stale digest names and
-refuses the edited profile during catalogue load; the manager independently
-retains its launch-time refusal of every state other than `proven`.
-A preflight proves a flag profile *against a checkpoint*, so a proven row also
-carries `preflight_identity_digest`, the digest of that chair's cache
-descriptor (`chair_preflight_identity_digest`). Repointing the chair in
-`config/models.toml` leaves the catalogue row byte-identical, so the row digest
-cannot see it and the manager refuses the mismatch at launch instead.
-`verify_recipes_cover_chairs` performs that same chair-identity reconciliation
-offline, so a repointed chair fails in the test suite without a GPU launch.
-Both halves are stamped after a green preflight and removed together when a row
-returns to `unproven`. Stamp the identity digest *first*: `preflight_digest`
-covers every field of the row except `preflight_state` and itself, and that
-includes `preflight_identity_digest`, so a row digest taken before the identity
-digest is written is stale the moment it lands. `chair_preflight_identity_digest`
-and `profile_preflight_digest` are exported for exactly that stamping.
-`verify_recipes_cover_chairs` proves that lookup offline for every configured
-chair at every configured tier and refuses extra stale rows, so a misspelt
-`serving_recipe`, an unconfigured chair profile, or a newly added placement tier
-is a test failure here rather than a refusal on a rented GPU.
-A profile whose `kind` is `fixture` is the walking skeleton's stand-in and is
-refused *by that name* before any lease, probe or process — it carries no
-vLLM flags to be refused by, and blocking it with an unsatisfiable version pin
-would report the wrong cause.
-A `vllm` row also carries `preflight_state`, and `unproven` refuses launch at
-that same door, by that same name. The one exception is the package's private
-smoke-preflight assembly: it may launch an `unproven` row for qualification,
-and its launch audit records `launch_purpose = "preflight-qualification"` plus
-the row's actual state. It still performs the ordinary snapshot, package,
-readiness, fixture-bound request, receipt publication, and verified-shutdown
-checks. Callers cannot select this purpose through `ServingManager`'s public
-arguments, and fixture or unsupported profiles remain unlaunchable.
-A real row is written from reviewed, locked
-vLLM and model-stack versions, a verified manifest, and a real-silicon
-preflight; the field records whether that preflight has happened for *this
-exact profile*. It is a declaration in a reviewed config file and not a
-measurement — nothing in this package can observe a preflight that ran
-elsewhere — so `proven` means a reviewer asserted it, exactly as a profile's
-GPU figures are planning values rather than a measured fit (GOVERNANCE 10).
-There is deliberately no default: a row written before the field existed
-refuses at parse time rather than reading as proven.
+`(identity.serving_recipe, identity.role, measured placement tier)` from the serving-recipe
+catalogue (`config/serving_recipes.toml`, or `config/serving_recipes_real.toml` for the real
+roster). Zero or several matches refuse before launch. `verify_recipes_cover_chairs` checks
+that lookup offline for every configured chair at every tier and refuses stale rows, so a
+misspelt `serving_recipe`, a missing profile or a new tier fails in the test suite rather
+than on a rented GPU.
 
-After that smoke preflight, render review candidates from the retained report
-and its content-addressed evidence without editing the catalogue:
+**Which rows can launch.**
+
+- A `kind = "fixture"` row is the walking skeleton's stand-in and is refused *by that name*
+  before any lease, probe or process.
+- A `vllm` row carries `preflight_state`, and anything but `proven` refuses at launch.
+  There is no default: a row without the field refuses at parse time. `proven` is a
+  reviewer's declaration in a reviewed file, not a measurement this package can make, just
+  as a profile's GPU figures are planning values.
+- A proven row carries `preflight_digest` (of every field except `preflight_state` and
+  itself) and `preflight_identity_digest` (the chair's cache descriptor,
+  `chair_preflight_identity_digest`), because a preflight proves flags *against a
+  checkpoint*: repointing the chair in `config/models.toml` leaves the row byte-identical,
+  so only the identity digest catches it, at launch and in `verify_recipes_cover_chairs`. A
+  stale row digest refuses at catalogue load. **Stamp the identity digest first**: the row
+  digest covers it. Both are removed together when a row returns to `unproven`;
+  `chair_preflight_identity_digest` and `profile_preflight_digest` are exported for
+  stamping.
+- The one exception is the package's private smoke-preflight assembly, which may launch an
+  `unproven` row for qualification. Its launch audit records
+  `launch_purpose = "preflight-qualification"` and the row's state, and every other check
+  still runs. Callers cannot select this purpose through `ServingManager`.
+
+**Qualifying a row.** After a smoke preflight, render review candidates from the retained
+report and its content-addressed evidence; this never edits the catalogue:
 
 ```console
 python -m operations.serving.qualify \
@@ -66,729 +50,418 @@ python -m operations.serving.qualify \
   --output /runpod-volume/serving-qualification-<token>.json
 ```
 
-The verifier requires a green completed preflight, exact cache and placement
-coverage, one fixture-bound served read per configured chair, positive service
-and fixture request counts, the same recipe and placement file digests, all
-three referenced serving artifacts with matching content digests, and the
-content-addressed page-witness token. It recomputes that token's digest and the
-semantic output digest for the exact expected witness line before it emits
-candidate `preflight_identity_digest` and `preflight_digest` values only for
-the measured tier. A reviewer writes the identity digest first, then the
-profile digest, and keeps every other tier unproven until separately measured.
-This verifier currently supports full checkpoints only. It refuses adapter
-candidates because the existing adapter identity names a base role without
-binding that base's resolved checkpoint; independently proving a replacement
-base cannot prove the adapter/base combination. The current real roster uses
-full checkpoints and is unaffected by this restriction.
-The recipe and `config/pod_placement.toml` byte digests are both part of the
-run configuration digest. Production assembly requires the `StageContext` that
-`open_context()` revalidated and the `StageContextReceiptPublisher` for that
-same context, and the registry must be that context's own registry. This keeps
-one authority behind construction and publication of the identity-bearing
-receipt. Assembly parses each supplied TOML from the hashed bytes and refuses a
-path substitution before any probe, lease, or subprocess action.
+It requires a green completed preflight, exact cache and placement coverage, one
+fixture-bound served read per chair, positive request counts, matching recipe and placement
+file digests, all three serving artifacts with matching digests, and the page-witness token,
+whose digest and expected semantic output it recomputes. It emits candidate digests for the
+measured tier only; a reviewer writes the identity digest, then the row digest, and leaves
+every other tier unproven. It refuses adapter chairs: an adapter's identity names a base
+role without binding that base's checkpoint, so proving a base cannot prove the pair. The
+real roster uses full checkpoints.
 
-Before launch it asserts every exact profile package pin, re-verifies the
-named snapshot, acquires a non-blocking pod/GPU-scoped `flock` lease supplied
-by the caller, and refuses an already-answering loopback endpoint. There is no
-log-directory default: the pod assembler must give every manager for the same
-card the same stable lock path. The launcher passes that lock descriptor to
-the exact vLLM child, so a controller crash cannot release the lease while its
-child remains resident. The default command is
-`sys.executable -m vllm.entrypoints.cli.main serve`: the executable and the
-inspected installed distribution therefore come from the same Python
-environment. The module is `vllm.entrypoints.cli.main`, not `vllm` itself —
-checked against the pinned vLLM 0.27.1's own published wheel, not assumed:
-`vllm/__main__.py` is absent from its central directory (and from the tree at
-v0.10.1, v0.27.1, and v0.28.0), so `python -m vllm` raises `No module named
-vllm.__main__` before a request is ever served, while `vllm.entrypoints.cli.main`
-is the module vLLM's own `[project.scripts] vllm =
-"vllm.entrypoints.cli.main:main"` console script points at and it ends with
-`if __name__ == "__main__": main()`. That equality between launcher and
-inspected interpreter is enforced, not merely defaulted — a supplied
-`command_prefix` naming a different interpreter is refused at construction
-unless the caller also supplies the `PackageInspector` for the environment it
-launches. Otherwise the exact package pin would pass against distributions the
-engine never imports, and the launch audit's `runtime_packages.observed` would
-measure the wrong Python.
+**Assembly.** Production assembly takes the `StageContext` that `open_context()`
+revalidated, the `StageContextReceiptPublisher` for that context, and that context's own
+registry, so one authority builds and publishes the identity-bearing receipt. The recipe and
+placement files are parsed from the bytes that were hashed into the run configuration
+digest, and a path substitution refuses before any probe, lease or subprocess.
 
-**Where the pinned stack comes from.** This package asserts the pins; it never
-installs them. For the real catalogue the installer is the pod: `pyproject.toml`
-carries a `pod` dependency group — `vllm 0.27.1`, `transformers 5.14.1`,
-`qwen-vl-utils 0.0.14`, under `sys_platform == 'linux' and platform_machine ==
-'x86_64'` markers — resolved in `uv.lock`, and `operations/pod/bootstrap.py`
-syncs it with `--group pod`. Those versions and every
-`required_packages` row in `config/serving_recipes_real.toml` are the same
-bytes, and `operations/pod/test_pod_run.py` fails if they ever stop being: a
-group that drifted from the catalogue would mean a pod that downloads about ten
-gigabytes of wheels and is then refused by the pin assertion above, on a billing
-card. `operations/pod/README.md`'s "The serving stack, re-planned and locked"
-carries why those three versions and no others, chair by chair, with the vendor
-pages and the date they were read. Nothing there is a claim that the stack has
-run: the versions were chosen from published metadata, every real row is still
-`unproven`, and the first boot is what turns an installable stack into a served
-one.
+**Launch.** Before launch the manager asserts every exact package pin, re-verifies the
+snapshot, takes the caller's non-blocking pod/GPU `flock` lease (no default path: every
+manager for one card must share it), and refuses an endpoint that already answers. The lock
+descriptor is passed to the vLLM child, so a controller crash cannot release the lease while
+the child is resident.
 
-The command uses the verified base snapshot; gives the API a stable
-`--served-model-name`; and passes the typed profile flags. For a Hugging Face
-chair it duplicates the exact commit in `--revision` and
-`--tokenizer-revision`, which exist to stop vLLM resolving a *mutable* Hub ref.
-A local-repository chair gets neither: it has no Git revision by contract, its
-pin is the digest manifest the snapshot was verified against byte for byte, and
-naming a revision it does not have would be inventing provenance. That case is
-not hypothetical — ARCHITECTURE requires a locally trained checkpoint to be
-"*called* like any other model, from its own model repository," which is the
-Perlector chair. Adapters are static:
-one `--lora-modules` entry, `--max-loras 1`, a configured supported
-`--max-lora-rank`, and the verified base source reference. It never calls a
-dynamic adapter-update endpoint.
+The command is `sys.executable -m vllm.entrypoints.cli.main serve`. **Not `python -m vllm`**:
+vLLM 0.27.1's wheel has no `vllm/__main__.py`, and `vllm.entrypoints.cli.main` is what its
+`vllm` console script points at. The launching interpreter must be the inspected one: a
+`command_prefix` naming another interpreter is refused unless the caller also supplies a
+`PackageInspector` for that environment, or the pin check and the audit's
+`runtime_packages.observed` would measure the wrong Python.
 
-The manager also passes vLLM's `--no-enable-log-requests` hard safety flag.
-Golden-page bytes and transcriptions are not serving diagnostics, so a recipe
-cannot quietly turn request logging on.
+This package asserts pins; it never installs them. For the real catalogue the pod installs
+them: the `pod` dependency group (`vllm 0.27.1`, `transformers 5.14.1`,
+`qwen-vl-utils 0.0.14`) is locked in `uv.lock` and synced by `operations/pod/bootstrap.py`,
+and `operations/pod/test_pod_run.py` fails if it drifts from the catalogue's
+`required_packages` (a drifted group would download ~10 GB and then be refused on a billing
+card). `operations/pod/README.md`, "The serving stack, re-planned and locked", explains the
+versions. No real row has been served yet.
 
-The lease spans endpoint probing, launch, and verified shutdown. It is released
-only after the child exits and a bounded `/health` poll observes a definite TCP
-connection refusal; a timeout or other ambiguous loopback failure is not proof
-of absence. If cleanup cannot prove the owned child and endpoint are gone, it reports
-`VLLM_STOP_FAILED` and retains the lease. `recover_failed_start()` can retry only
-that same owned cleanup; it cannot launch another chair around it.
+The command uses the verified base snapshot, a stable `--served-model-name`, and the typed
+profile flags. A Hugging Face chair gets its exact commit in `--revision` and
+`--tokenizer-revision`, which stop vLLM resolving a mutable Hub ref. A local-repository
+chair (the Perlector, a locally trained checkpoint "called like any other model") gets
+neither: its pin is the digest manifest, and naming a revision it lacks would invent
+provenance. Adapters are static: one `--lora-modules` entry, `--max-loras 1`, a supported
+`--max-lora-rank`; the dynamic adapter-update endpoint is never called. The manager always
+passes `--no-enable-log-requests`, because golden-page bytes and transcriptions are not
+diagnostics and a recipe must not turn request logging on.
+
+**Shutdown.** The lease spans probing, launch and verified shutdown. It is released only
+after the child exits and a bounded `/health` poll sees a definite TCP connection refusal; a
+timeout or other ambiguous failure is not proof of absence. Otherwise the stop reports
+`VLLM_STOP_FAILED` and keeps the lease. `recover_failed_start()` retries only that same
+cleanup; it cannot launch another chair around it.
 
 ## Readiness and adapter proof
 
-Readiness is a bounded poll of the exact child and its fresh launch log. It fails
-on an exited child and named `CUDA out of memory`, `EngineDeadError`,
-`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL`, or `VLLM_ERROR`
-signatures. Of those, `VLLM_ERROR` has no producer today: vLLM never prints it
-— it was the old pipeline *wrapper script's* own echo, and this poll reads only
-the child's log. It is reserved for a future launch wrapper that writes there,
-and claims nothing about vLLM's output. Spec 04 requires a red preflight to carry useful
-remediation, and spec 12 requires an operator-facing error to say what happened;
-these two adapter failures therefore receive named refusals instead of collapsing
-into a watchdog timeout. The old pipeline's launch scripts are historical evidence
-for the two strings, not the authority for keeping them. Their broader
-`RuntimeError|ValueError` grep is deliberately not carried — this poll re-reads
-the whole tail every interval, so one benign line naming either word would abort
-a start that was going to succeed. Success
-requires all of:
+Readiness is a bounded poll of the exact child and its fresh launch log. It fails early on
+an exited child or a named log signature: `CUDA out of memory`, `EngineDeadError`,
+`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL`, or `VLLM_ERROR` (reserved for
+a launch wrapper that writes to this log; vLLM never prints it). Broad words like
+`RuntimeError` are deliberately not matched: the poll re-reads the whole tail, so one benign
+line would abort a good start. Success requires all of:
 
 - `/health` HTTP 200;
 - a parsed `/v1/models` `data[]` containing the exact served ID; and
-- a non-streaming OpenAI-compatible response with that exact model ID and a
-  non-blank output.
+- a non-streaming OpenAI-compatible response with that exact model ID and non-blank output.
 
-A bare HTTP 200, a substring such as `reader-api-shadow`, or a routing stub
-cannot publish a receipt.
+A bare HTTP 200, a substring such as `reader-api-shadow`, or a routing stub cannot publish a
+receipt.
 
-An adapted chair must supply deterministic calibration. The manager sends the
-same manager-owned (temperature zero, fixed seed) request to the base and adapter
-IDs, then refuses when their semantic-output digests are equal.
-`AdapterCalibration.from_image_fixture()` builds a visual calibration only from
-local fixture bytes: one non-empty `data:image/...;base64,...` URI with its
-SHA-256. Remote, `file:`, blank, malformed, and digest-mismatched images refuse
-before launch. `ServingSmokeReader` hashes the local golden fixture again, so the
-embedded request bytes and smoke fixture cannot drift. Merely advertising an
-adapter in `/v1/models` is never treated as activity proof. A tower/connector
-profile additionally requires this image-bearing calibration; a text-only
-difference cannot certify that visual path. The sealed calibration request is
-rebuilt from canonical bytes, so a later nested-object mutation cannot replace
-its image URL. A visual request must place its one image in an actual OpenAI
-`chat-completions` `role=user` `messages[].content[]` image block; an ignored
-extension field called `image_url` is not visual evidence.
+**A 4xx on the readiness probe is deterministic** and stops the loop at once: the engine is
+up and rejecting the exact body every poll resends, so waiting to `startup_timeout_seconds`
+would spend GPU time to learn nothing. A 5xx or connection failure retries.
 
-**What this proves, and what it does not.** A base/adapter digest difference is
-necessary evidence, not attribution: nothing here runs a base-versus-base control to
-establish that the calibration is deterministic on the serving engine at all before a
-difference is read as adapter activity, so vLLM-level nondeterminism (continuous
-batching, chunked prefill, batch composition) could in principle produce a difference
-neither request caused. Symmetrically, a genuinely active adapter that happens to
-answer the calibration identically to its base is refused — a real, uncorrupted chair
-declined, loudly, never silently. Neither the calibration prompt nor the fixture is
-constrained to be discriminative; `calibration_for` is a free caller seam. **Whoever
-wires the real rollout must choose a calibration that is known to differ between the
-configured base and adapter before launch**, not merely one that is well-formed.
+**A timeout says which kind of not-ready it was**: **still loading** (quoting the newest
+progress line), **connection refused** (nothing in the log shows loading), or **answered but
+never ready**, followed by a bounded, credential-scrubbed log tail. These call for opposite
+responses: raise the row's `startup_timeout_seconds`, or find what is broken. Every row
+still ships the unmeasured 300 s; the header of `config/serving_recipes_real.toml` says how
+to derive each value once the first boot measures a volume read rate.
+
+**Adapter proof.** An adapted chair must supply deterministic calibration: the manager sends
+the same request (temperature zero, fixed seed) to the base and adapter IDs and refuses when
+their semantic-output digests are equal. `AdapterCalibration.from_image_fixture()` accepts
+only local fixture bytes: one non-empty `data:image/...;base64,...` URI with its SHA-256;
+remote, `file:`, blank, malformed or mismatched images refuse before launch. A
+tower/connector profile requires this image calibration, since text cannot certify the
+visual path. The image must sit in a real `role=user` `messages[].content[]` image block;
+an extension field named `image_url` is not visual evidence. The sealed request is rebuilt
+from canonical bytes, so later mutation cannot swap its image. Listing an adapter in
+`/v1/models` is never proof of activity.
+
+**What this does not prove.** A digest difference is necessary, not sufficient: with no
+base-versus-base control, engine nondeterminism (continuous batching, chunked prefill) could
+produce a difference. And an active adapter that happens to answer like its base is refused,
+loudly. **Whoever wires the real rollout must choose a calibration known to differ between
+base and adapter.**
 
 ## Receipt and launch audit
 
-`chair-serving-receipt.v1` remains closed. It holds what answered: identity,
-revision/manifest, tokenizer revision, seed, context/pixel caps, engine/version,
-dtype, base identity when applicable, endpoint, and observed launch time. Its
-`pixel_cap` is the **total pixel count** the profile gave vLLM — the third
-place this one word appears in two units, after `config/pod_placement.toml`'s
-longest-edge cap and a serving profile's `max_pixels`. A receipt's `pixel_cap`
-and a placement plan's are not comparable directly; see the capacity check
-below for the relation that is sound. It has
-no stable API alias, PID, profile/tier, command, full package map, readiness
-evidence, or adapter-output proof.
+`chair-serving-receipt.v1` is closed. It holds what answered: identity, revision/manifest,
+tokenizer revision, seed, context and pixel caps, engine and version, dtype, base identity
+where applicable, endpoint and launch time. Its `pixel_cap` is the **total pixel count**
+given to vLLM, unlike `config/pod_placement.toml`'s longest-edge cap; the two are not
+directly comparable (see the capacity check below).
 
-Those fields are a separate `serving-launch-audit.v1`: producer, launch and ready
-times, endpoint, served ID, typed profile, PID, explicit model/tokenizer pins,
-argv digest, required-and-observed runtime package maps, primary/base identities
-and manifests, readiness digests, and adapter activation.
-It also carries the exact serving-recipe and placement-file digests that the
-sealed context authorized.
-`StageContextReceiptPublisher` uses `StageContext.write_serving_receipt` and
-writes this audit as a content-addressed stage blob through
-`write_serving_launch_audit`. It then writes `serving-evidence.v1`, a
-content-addressed manifest linking the receipt and audit references. A manager
-start succeeds only when all three immutable references return; a successful
-handle cannot silently drop the audit or its linkage. They are exposed on the
-`ServiceHandle` and copied as references beside pod smoke evidence.
+Everything else — producer, times, served ID, typed profile, PID, explicit pins, argv
+digest, required and observed package maps, identities and manifests, readiness digests,
+adapter activation, and the serving-recipe and placement digests the sealed context
+authorized — is in `serving-launch-audit.v1`, a content-addressed stage blob written by
+`StageContextReceiptPublisher` through `write_serving_launch_audit`. A third blob,
+`serving-evidence.v1`, links receipt and audit. A start succeeds only when all three
+references return; they are exposed on the `ServiceHandle` and copied beside pod smoke
+evidence.
 
 ## `generation_config`: `"vllm"` or `"auto"`
 
-A row's `generation_config` is `"vllm"` (vLLM's own uniform defaults) or
-`"auto"`, and `"auto"` is admitted only for a witness (Attestator) row —
-`config.py` refuses it at catalogue-parse time for any other chair, with the
-reason: a witness's vendor-shipped `generation_config.json` is itself a
-pinned artifact of that chair's revision, so deferring to it is not an
-unaudited default; the Perlector and Designator carry no vendor generation
-defaults to defer to. When a proven row is `"auto"`, `manager.start` reads
-`generation_config.json` from the verified base snapshot before ever
-launching a process and records its SHA-256 as `generation_config_digest` in
-the launch audit's `profile` block (`null` for a `"vllm"` row) — so `"auto"`
-is a value pinned by the chair's own revision, not a moving target, and a
-missing or unreadable file refuses by name before any GPU-hours are spent.
+`"vllm"` uses vLLM's uniform defaults. `"auto"` is admitted only for a witness (Attestator)
+row, refused at catalogue parse for any other chair: a witness's vendor-shipped
+`generation_config.json` is a pinned artifact of its revision, while the Perlector and
+Designator have no vendor defaults to defer to. For an `"auto"` row, `manager.start` reads
+that file from the verified snapshot before launching and records its SHA-256 as
+`generation_config_digest` in the audit's `profile` block (`null` for `"vllm"`); a missing
+or unreadable file refuses by name.
 
 ## Hybrid-attention prefix caching
 
-(`manager.assert_processor_geometry` already checks a row's declared
-`patch_size`/`merge_size` against the checked-out chair's own
-`processor_config.json`/`preprocessor_config.json` at launch, entirely
-offline — landed alongside the request-shape work this unit builds on.)
+Chandra-2 (`datalab-to/chandra-ocr-2`, serving `attestator_1` and `designator_structure`)
+and the Perlector (`Qwen/Qwen3.8-27B`) are hybrid Mamba/attention (`qwen3_5`) checkpoints.
+`manager.start` refuses either with `enable_prefix_caching` on: prefix caching over
+recurrent state costs memory, and this catalogue's rows run up to four sequences. vLLM
+v0.27.1 itself keeps it opt-in for hybrid models (`arg_utils.py`: `not
+model_config.is_hybrid`). The check keys on the exact `repo`, never the role, because test
+fixtures reuse role names under `example/...` repositories.
+`config/serving_recipes_real.toml` sets `enable_prefix_caching = false` for those three
+rows, so the refusal guards against a future edit.
 
-Chandra-2 (`datalab-to/chandra-ocr-2`, serving both the `attestator_1` and
-`designator_structure` roles) and the Perlector (`Qwen/Qwen3.8-27B`) are both
-hybrid Mamba/attention (`qwen3_5`) checkpoints. `manager.start` refuses to
-launch either one with `enable_prefix_caching` on. vLLM v0.27.1 itself keeps
-prefix caching over recurrent state opt-in for hybrid models rather than
-unsupported (`arg_utils.py`'s own default is `not model_config.is_hybrid`,
-commented "keep it opt-in for now") — the caution here is this project's:
-it only costs recurrent-state memory for the privilege (hostile review
-2026-09-06 item L; this catalogue's own rows for these chairs range
-`max_num_seqs` 1-4 across tiers, so a blanket "nothing else is ever
-resident" claim would not hold at every tier). The check is
-keyed on the identity's exact `repo`, never on role — role names
-(`attestator_1`, `perlector`, ...) are reused throughout this package's test
-suite as generic fixture identifiers unrelated to these two checkpoints, and
-every such fixture is pinned at an `example/...` placeholder rather than a
-real vendor repository, so the two never collide. The catalogue *schema*
-still admits `enable_prefix_caching` either way — the corrected value for the
-real rows is `config/serving_recipes_real.toml`, a row-data change outside
-this file's ownership.
+`manager.assert_processor_geometry` also checks a row's `patch_size`/`merge_size` against
+the chair's own `processor_config.json`/`preprocessor_config.json` at launch, offline.
 
-**Reconciled by U15:** `config/serving_recipes_real.toml` now sets
-`enable_prefix_caching = false` for exactly the three rows above
-(attestator_1, designator_structure, perlector), so the refusal above cannot
-fire on a shipped row. The prior text here described the opposite value as
-still committed; that was true only before U15 moved the rows (Tyrel's
-ruling, 2026-09-06 §10, per `workbench/active/VENDOR_SYSTEMS_DESIGN_2026-09-06.md`,
-"Serving rows").
+## Prompt-token accounting
 
-## Prompt-token accounting and a deterministic readiness rejection
+Every real profile launches with `--enable-prompt-tokens-details`, which adds
+`usage.prompt_tokens_details.multimodal_tokens` beside the always-present
+`usage.prompt_tokens`. Without it, a silently dropped `mm_processor_kwargs`
+(vllm-project/vllm#49015, #54527) would read a page at the wrong scale with no error.
 
-`usage.prompt_tokens` is present on every real vLLM v0.27.1 response
-regardless of launch flags. Every real profile now also launches with
-`--enable-prompt-tokens-details`, which gates a different field:
-`usage.prompt_tokens_details.multimodal_tokens`, a per-modality breakdown of
-the tokens already counted in `prompt_tokens` (hostile review item H) —
-without the flag, that breakdown is simply absent, and a silently dropped
-`mm_processor_kwargs` (vllm-project/vllm#49015, #54527) would otherwise read
-a page at the wrong scale with no error anywhere.
-`preflight.reconcile_usage_against_capacity` compares the observed
-`prompt_tokens` against the laptop's own image/text token arithmetic within a
-caller-supplied per-chair tolerance and returns a `UsageReconciliation`; a
-mismatch is published through `.to_finding()` as a `usage-capacity-mismatch`
-finding, never raised, because what a mismatch *means* is a GOVERNANCE 10
-question, not a hard-coded verdict. When the response carries the
-`multimodal_tokens` breakdown, `localized_to` compares the image half and the
-text half independently and can name which one moved even on a *mixed* real
-request — Chandra, DAI, and Churro all send image and text together, so this
-is the case that matters for every real request, not only the image-only or
-text-only ones a scalar-only comparison could ever tell apart. Without that
-breakdown it falls back to naming a half only when the *other* half carries
-no expected tokens at all, and is honestly `"unlocalized"` otherwise rather
-than guessed at from one scalar.
+`preflight.reconcile_usage_against_capacity` compares observed `prompt_tokens` with the
+laptop's own image and text token arithmetic within a per-chair tolerance. A mismatch is
+published through `.to_finding()` as `usage-capacity-mismatch`, never raised, because what
+it means is a judgement for review. With the `multimodal_tokens` breakdown, `localized_to`
+names whether the image or text half moved even on a mixed request (every real chair sends
+both); without it, it names a half only when the other half expects no tokens, and
+otherwise says `"unlocalized"`.
 
-`_wait_until_ready`'s readiness loop now tells apart an engine that is not
-warmed up yet from one that has fully initialized and is rejecting the exact
-probe body every poll resends: a probe HTTP status in `4xx` is named
-deterministic and breaks the loop immediately, rather than retrying to
-`startup_timeout_seconds` (real GPU-hours on the live path) to learn nothing
-new. A `5xx`/connection failure still retries as before — that is ordinary
-boot-time unavailability.
+## Env-override files and static preflight assertions
 
-When the loop does run out of budget, the refusal says which kind of not-ready
-it was. `VLLM_WATCHDOG_TIMEOUT: loopback endpoint unavailable` was the same
-sentence whether the engine was minutes into reading a 51.7 GiB checkpoint off
-a network volume or had never opened its port, and those call for opposite
-responses — raise this row's `startup_timeout_seconds`, or go and find out what
-is broken. The launch log was already being read every poll for fatal
-signatures and simply never reached the refusal, so the watchdog now names
-**still loading** (quoting the newest progress line it found), **connection
-refused** (nothing in the log shows loading) or **answered but never ready**
-(the endpoint was reachable), and carries a bounded, credential-scrubbed tail
-of that log. The diagnosis and the last readiness answer stay on the first
-line, ahead of the tail. `config/serving_recipes_real.toml`'s header records
-how each row's `startup_timeout_seconds` should be derived once the first boot
-has measured a volume read rate; the values themselves are still the
-unmeasured 300 every row shipped with, because replacing one guess with
-another is not a measurement.
+`manager.assert_no_discoverable_local_env` refuses a real launch when an env-override file
+(`local.env`, or `.env`/`.env.*` other than the tracked `.env.example`) is in the working
+directory the vLLM child inherits. Nothing sealed or audited would see what such a file
+injects (a Hub token enabling a forbidden fetch, a proxy, an engine flag). It runs inside
+`ServingManager.start`, the one door every real launch passes, whether through
+`ServingSmokeReader.read` or `ChairClient.__enter__`.
 
-## Env-override files and three static preflight assertions
+Three static assertions keep `proven` from resting on a smoke string alone:
 
-`manager.assert_no_discoverable_local_env` refuses a real launch the moment
-an env-override file (`local.env`, or `.env`/`.env.*` other than the tracked
-`.env.example` — this repository's own credential-filename convention,
-per `.gitignore` and `.githooks/check_ingress.py`) is discoverable in the
-process's current working directory — the same directory an owned vLLM
-subprocess inherits with no explicit `cwd`. Nothing in this package's
-config-inputs sealing or launch audit would ever see a value such a file
-silently injected into that subprocess's environment (a Hub token enabling a
-network fetch the real path forbids, a proxy, an engine flag). It is checked
-inside `ServingManager.start` itself, not only from the smoke-preflight
-lifecycle: `start` is the one door every real launch already passes through,
-whether it arrives through `ServingSmokeReader.read` or directly through
-`ChairClient.__enter__`, so a check placed anywhere upstream of it would
-guard only the caller that happened to run it.
-
-Three further preflight primitives exist toward hostile review item A's
-static-assertion gap, so `proven` cannot be earned by a smoke string alone.
-One is wired into production; the other two are not, for reasons specific to
-each, recorded here rather than left for a reader to discover by grep:
-
-- `assert_image_before_text_on_wire(content)` (`http.py`) — refuses a
-  rendered chat request whose first content part is not the image, checked
-  against the exact list that serializes onto the wire. This means anything
-  only because `render_vllm_argv` pins `--chat-template-content-format
-  openai`: under vLLM's `string` format every image placeholder is hoisted
-  ahead of the text regardless of a caller's own part order
-  (vllm-project/vllm#14047), which would make a rendered-body check pass no
-  matter what order the caller assembled — so the format is pinned, and this
-  check runs against the rendered body, never the pre-render call, so it
-  still catches an adapter that built the wrong order. **Wired**: `http.py`'s
-  `assert_wire_part_order` walks every rendered request's `role=user`
-  content lists that carry an image and calls this primitive on each one,
-  from inside `request_body` itself — the one seam every request this
-  package renders already passes through (the golden-page smoke, the
-  readiness probe, both adapter-calibration probes, and every pipeline
-  reading). It correctly skips the readiness probe's bare string content, a
-  non-`user` role (Churro's system-turn text preamble), and a text-only user
-  content list with no image part at all. One door sits downstream of this
-  seam and is not itself checked: `ServiceHandle.request_reading` POSTs a
-  caller-already-built body verbatim, so a future caller that reached it
-  without building that body through `request_body` first would bypass this
-  check entirely. Today's only caller, `ChairClient.read`, always builds
-  through `request_body`, so the claim holds in practice, not by
-  construction — a new caller of `request_reading` must keep doing the
-  same.
-- `assert_resized_pixels_within_trained_geometry(...)` — refuses a
-  post-resize image outside a chair's own declared trained pixel range.
-  **Not wired.** Its two `trained_*` parameters are the *vendor's* declared
-  training range (model card, `processor_config.json`); nothing in this
-  repository carries that per chair today. What exists instead is each
-  serving row's own `min_pixels`/`max_pixels`
-  (`config/serving_recipes_real.toml`) — this package's own
-  `--mm-processor-kwargs` values, which `common/request_capacity.py`'s
-  `smart_resize` already clamps into by construction. Wiring the assertion
-  to those row values would make it a tautology that can only ever observe
-  our own resize arithmetic, never a chair actually read outside its
-  trained scale — a metric that cannot be measured is a failure, not a
-  pass. Wiring it needs the vendor's declared range carried as cited data
-  first (`cleanroom/README.md`'s procedure), one vendor at a time.
-- `assert_generation_config_key_coverage(...)` — refuses a vendor
-  `generation_config.json` key that is neither sent on the wire nor named,
-  with a reason, as deliberately withheld. It is wired only for the one chair
-  whose complete vendor file is carried (`attestator_2`/DAI). DAI's retained
-  `dai-atr.v2` model view records the split under its actual
-  `generation_config = "auto"` posture: `repetition_penalty`, `top_k`, and
-  `top_p` are also sent verbatim; token ids are delegated to the pinned
-  snapshot under `auto` (with the secondary EOS redundantly explicit); vendor
-  `temperature = 0.1` and `do_sample = true` are intentionally superseded by
-  the governed temperature-zero reading; and `transformers_version` is
-  metadata. The token-id fields are recorded as delegated to the engine's
-  pinned snapshot under `auto`, not as observed application. This is an account
-  of configuration and request construction, not proof that the live engine
-  applied every resolved default. The launch
-  audit's linked `generation_config_digest` is the observation point for the
-  file vLLM actually read.
+- `assert_image_before_text_on_wire(content)` (`http.py`) — **wired.** `request_body` runs
+  it, through `assert_wire_part_order`, on every rendered `role=user` content list that
+  carries an image (the smoke, readiness probe, calibration probes and every reading). It is
+  meaningful because `render_vllm_argv` pins `--chat-template-content-format openai`; under
+  vLLM's `string` format images are hoisted ahead of text regardless of order
+  (vllm-project/vllm#14047). `ServiceHandle.request_reading` POSTs a body verbatim, so a
+  future caller that did not build its body through `request_body` would bypass the check;
+  today's only caller, `ChairClient.read`, does.
+- `assert_resized_pixels_within_trained_geometry(...)` — **not wired.** It needs each
+  vendor's declared training pixel range, which no chair's data carries yet. Wiring it to
+  the rows' own `min_pixels`/`max_pixels` would only check our own resize arithmetic
+  (`common/request_capacity.py`'s `smart_resize` already clamps into them), which measures
+  nothing. Carry the vendor ranges as cited data first (`cleanroom/README.md`).
+- `assert_generation_config_key_coverage(...)` — refuses a vendor `generation_config.json`
+  key neither sent nor named as withheld with a reason. **Wired only for DAI**
+  (`attestator_2`), the one chair whose full vendor file is carried. Under DAI's `"auto"`
+  posture, `repetition_penalty`, `top_k` and `top_p` are also sent verbatim; token ids are
+  delegated to the pinned snapshot (the secondary EOS sent redundantly); the vendor's
+  `temperature = 0.1` and `do_sample = true` are superseded by temperature-zero reading;
+  `transformers_version` is metadata. This accounts for configuration and request
+  construction, not for what the engine applied; the audit's `generation_config_digest`
+  records the file vLLM read.
 
 ## Pod seam
 
-`assemble_serving_smoke_reader()` is the narrow production assembly seam. It
-reads and validates the local recipe and placement catalogues while constructed;
-it does not start a process, open a socket, contact a provider, or load weights.
-The caller supplies the run-sealed `StageContext`, its same-context receipt
-publisher, the existing registry, page-specific smoke call, calibration function,
-the measured `GpuProfile`, and explicit pod/GPU lease. The plain factory binds
-that profile into the returned reader, so the documented seam is ready to read
-without a caller mutating it afterward. `assemble_serving_preflight_callback()`
-builds the `Callable[[], dict[str, object]]` that the existing
-`SubprocessBootstrapActions` already accepts, using the existing `PreflightRunner`.
-When that callback executes, it creates and verifies the exact local log root
-before its default GPU probe measures disk there; construction itself does not
-create the directory.
+`assemble_serving_smoke_reader()` is the production assembly seam. Construction reads and
+validates the recipe and placement catalogues and does nothing else: no process, socket,
+provider or weights. The caller supplies the run-sealed `StageContext`, its receipt
+publisher, the registry, the page-specific smoke call, the calibration function, the
+measured `GpuProfile` and the pod/GPU lease. `assemble_serving_preflight_callback()` builds
+the callable `SubprocessBootstrapActions` accepts, around `PreflightRunner`; it creates and
+verifies its log root only when called.
 
-The reader starts one named chair, runs the page-specific smoke request, records
-the service evidence, and stops the exact child in `finally`; no healthy-chair
-fallback exists. A nominally green smoke result is refused unless the callable
-completed at least one `ServiceHandle.request_fixture_image()` during its run:
-that method requires the one active OpenAI chat image to hash to the golden-page
-fixture. The callback must put the returned response's SHA-256 in
-`SmokeResult.receipt["fixture_response_sha256"]`; the reader accepts only if it
-names the final successful fixture request, then records manager-owned response
-and output digests alongside the fixture SHA-256 and request counts. It retains
-no page bytes or response text. The image helper canonicalizes one plain JSON
-snapshot before validation and POSTing, so a mutable mapping cannot show the
-guard an image then serialize text-only content. The reader refuses, before it can launch, a
-serving profile whose dtype is not exactly the one preflight measured (no floor exists for any
-other dtype, so this is an exact-match requirement, not a ceiling) or whose capacity —
-memory fraction, context length, pixel budget, batch size — exceeds the measured placement
-plan.
+The reader starts one named chair, runs the smoke request, records the evidence and stops
+the child in `finally`; there is no fallback chair. A green smoke result is refused unless
+the call completed a `ServiceHandle.request_fixture_image()`, which requires the single
+image to hash to the golden-page fixture, and put that response's SHA-256 in
+`SmokeResult.receipt["fixture_response_sha256"]`. The reader records response and output
+digests, the fixture SHA-256 and request counts, never page bytes or response text. The
+image helper validates one canonical JSON snapshot, so a mutable mapping cannot pass the
+check and then serialize differently.
 
-A smoke result with no GPU/CPU utilization samples makes preflight red with
-`utilization-missing`; an empty instrument cannot leave as a green measurement.
-The sampler remains the injected responsibility of the page-specific smoke
-callable, and no threshold here claims a card is saturated.
+Before launch the reader refuses a profile whose dtype differs from the one preflight
+measured (an exact match, not a floor), or whose memory fraction, context length, pixel
+budget or batch size exceeds the measured placement plan. **`pixel_cap` and `max_pixels`
+are different units**: the placement caps a longest edge, the profile's `max_pixels` is a
+total count, so the check compares `max_pixels` with the square of the edge cap. The
+overloaded word is a naming defect in the placement file.
 
-**The capacity check knows that `pixel_cap` and `max_pixels` are not the same
-unit.** `config/pod_placement.toml` caps a longest edge in pixels; a serving
-profile's `max_pixels` is a total count going straight to vLLM. Compared
-directly — which is how this arrived — every realistic profile is refused for
-busting a plan it fits, since the old pipeline's own proven 2359296 (1536x1536)
-is larger than a 1792 side cap. The sound relation is the square, and that is
-what is checked. One word carrying two meanings is the real defect; renaming the
-placement field belongs to whoever owns that file.
+A smoke result with no GPU/CPU utilization samples makes preflight red
+(`utilization-missing`); sampling is the smoke callable's job, and no threshold here claims
+a card is saturated.
 
-The committed catalogue holds **fixture rows only**, and they carry no flags:
-no port, no memory fraction, no context or pixel cap. A fixture profile cannot
-be launched, so writing plausible planning numbers for a chair this package
-refuses to start would put unbenchmarked figures into a reviewed config file.
-
-The assembly remains caller-injected:
-`assemble_serving_preflight_callback` produces the callable
-`SubprocessBootstrapActions` accepts. Spec 04's utilization readings remain the
-page-specific smoke callable's responsibility; preflight is red when that
-callable supplies no samples.
+The committed fixture catalogue has **fixture rows only**, with no port, memory, context or
+pixel figures: a row this package refuses to launch should not carry unbenchmarked numbers.
 
 ## The golden-page vision smoke callable
 
-`VisionSmokeCall` is the production page-specific callable that seam expects.
-It asks the chair for a **page witness** — an unguessable string printed on the
-golden page and deliberately absent from the prompt — and requires the answer to
-be exactly `PAGE-WITNESS: <witness>`. The lifecycle already proves the request
-carried the exact local fixture bytes; this adds the semantic half, that
-something on the far side of the wire read them. An answer assembled from the
-prompt alone yields the literal `PAGE-WITNESS: <the page witness string>`, is
-marked format-invalid, and makes preflight refuse the chair. The receipt records
-the resolved identity and revision, the
-`served_model_id` the *response body itself* named (`parse_openai_answer` refuses
-a response whose `model` is not the exact served alias, so this is per-answer and
-not per-connection state), the response digest that binds the receipt to the one
-request just made, and `sha256(witness)` — never the witness, the prompt, or the
-answer text. The durable smoke record carries the witness digest and a content
-address for the witness token. The token is retained separately under
-the preflight evidence root, so the offline qualifier can recompute both that
-digest and the exact expected semantic-output digest without retaining the raw
-response or putting the witness plaintext in the report.
+`VisionSmokeCall` asks the chair for a **page witness**, an unguessable string printed on
+the golden page and absent from the prompt, and requires exactly `PAGE-WITNESS: <witness>`.
+The lifecycle already proves the request carried the fixture bytes; this proves something
+read them. An answer built from the prompt alone yields the literal
+`PAGE-WITNESS: <the page witness string>`, is format-invalid, and fails preflight. The
+receipt records identity and revision, the `served_model_id` the response body itself named
+(`parse_openai_answer` refuses any other alias), the response digest, and `sha256(witness)`
+— never the witness, prompt or answer. The witness token is retained separately under the
+preflight evidence root so the qualifier can recompute both digests.
 
-**Whose job the witness is.** The witness proves a page read only because the
-fixture author rendered it into the page's pixels, so that author owns its
-entropy, lifetime, and rotation. The caller draws it from a CSPRNG over the
-URL-safe ASCII token alphabet. This callable refuses only values that cannot do
-the job whatever their origin: outside the 32-to-128-character bound, blank values,
-whitespace, non-token characters, or a value present in the prompt. It cannot
-measure how a supplied string was generated. A weak or reused witness can be
-guessed or memorized and make the smoke falsely green without a page read;
-entropy and rotation are preconditions supplied by the fixture author.
+**The fixture author owns the witness's entropy, lifetime and rotation**; the pod draws it
+from a CSPRNG over the URL-safe token alphabet. The callable refuses only what cannot work
+whatever its origin: under 32 or over 128 characters, blank, whitespace, non-token
+characters, or present in the prompt. A weak or reused witness could be guessed and turn the
+smoke falsely green.
 
-The request declares `image/png` and the sealed request bytes are checked as a
-complete, decodable PNG under both a 64 MiB encoded-byte ceiling and the
-measured placement's pixel bound, because
-nothing else on this path inspects them for format — `AdapterCalibration` binds
-their digest and `ServingSmokeReader` re-hashes the local fixture, and
-`PreflightRunner` takes any `Path`. Checking
-the request snapshot matters: reopening the path could validate replacement
-bytes after the request was assembled. A non-PNG golden page is refused by name
-rather than travelling under a declaration the bytes do not support.
+The request declares `image/png`, and the sealed request bytes must be a complete, decodable
+PNG under a 64 MiB encoded ceiling and the measured placement's pixel bound; nothing else on
+this path checks the format. The snapshot is checked rather than the path, which could be
+replaced after the request was built.
 
-The callable accepts at most 1,024 typed utilization samples for its one request.
-That is far beyond the ordinary instrument's needs while keeping a broken sampler
-from amplifying one smoke result into an unbounded durable record.
+At most 1,024 utilization samples are accepted per request, so a broken sampler cannot
+inflate the durable record. `SmokeResult.nonempty` is reported independently of
+`shape_valid`; a blank answer is already refused by `parse_openai_answer` and reaches the
+runner as `smoke-read-failed`.
 
-`SmokeResult.nonempty` reports the parsed outputs independently of
-`shape_valid`: multiple nonempty choices fail shape and format without falsely
-claiming that their text was empty. `parse_openai_answer` already refuses a
-blank choice, so a blank answer reaches the runner as `smoke-read-failed`,
-earlier and louder than a format flag would be.
-
-**One call at a time.** `ServiceHandle` records its last fixture request on
-itself and `ServingSmokeReader` corroborates the returned receipt against that
-record after the callable returns, so a handle carries one smoke call at a time.
-Two concurrent calls on one handle would cross those records. Nothing reaches
-this seam concurrently today — `ServingManager.start` refuses a second start
-while a handle is active, and `PreflightRunner` reads its chairs in sequence — so
-the precondition is stated rather than locked: a lock inside the handle would not
-make the reader's read-after-write atomic, and would advertise a concurrency this
-seam does not support.
+**One call at a time.** `ServiceHandle` records its last fixture request on itself and the
+reader checks the receipt against it afterwards, so two concurrent calls on one handle would
+cross records. Nothing is concurrent today (`ServingManager.start` refuses a second start
+while a handle is active, and `PreflightRunner` reads chairs in sequence); a lock in the
+handle would not make the reader's read-after-write atomic.
 
 ## Client
 
-`client.ChairClient` is the one client a stage holds for one chair, across
-every reading in a pass. It composes an already-built `ServingManager`; it
-never starts a pod, never picks between chairs, and never retries, re-samples,
-or edits a response (GOVERNANCE 7). Enter it as a context manager — `__enter__`
-calls `manager.start` and then re-reads the published receipt back through the
-tree (`read_receipt`, production `context.tree.read_run_receipt`), refusing
-with `ReceiptDriftRefusal` (`CHAIR_RECEIPT_DRIFT`) and stopping the service
-unless the receipt still names this exact chair and revision — nothing is
-read from a start whose own record has already drifted. `__exit__` always
-stops the handle; a `ServiceStopError` from an unverified shutdown propagates
-rather than being swallowed.
+`client.ChairClient` is the one client a stage holds for one chair across a pass. It
+composes a built `ServingManager` and never starts a pod, picks a chair, retries, re-samples
+or edits a response (principle 3). Use it as a context manager: `__enter__` calls
+`manager.start`, then re-reads the published receipt through the tree
+(`read_receipt=context.tree.read_run_receipt` in production) and refuses with
+`ReceiptDriftRefusal` (`CHAIR_RECEIPT_DRIFT`), stopping the service, unless it still names
+this exact chair and revision. `__exit__` always stops the handle; a `ServiceStopError`
+propagates. If the drift stop itself fails, the drift refusal is raised with the stop
+failure chained as its `__cause__`.
 
-A refused receipt drift stops the handle before raising; if that shutdown
-itself cannot be verified (`ServiceStopError`), the drift refusal is what the
-caller sees — the stop failure is chained onto it (`__cause__`), never
-allowed to replace the drift diagnosis GOVERNANCE 2 exists to keep.
+**Request shape, decided by the stages.** The stages build the messages and this package
+sends them unchanged.
 
-**What a reading request looks like, and who decides each part of it.** The
-stages build the messages and this package puts them on the wire unchanged, so
-two facts about the shape are settled outside here and named for a reader who
-finds them surprising in a recorded body. First, **the image part comes before
-the text part** in a chair's user turn: every chat template these occupants
-ship emits content parts in list order, and all three were fine-tuned with the
-vision block first, so that order is the token sequence the model was trained
-on (`pipeline/3_attestatores/live_witness.py::_user_content`,
-`pipeline/2_designator/structure_pass.py::page_request`). Second, **a chair's
-`max_tokens` is `min(its declared upstream bound, max_model_len − the request's
-own image and prompt cost)`, with the row term expressed by sending no field**
-(`common/request_capacity.py::sendable_max_tokens`) — sending our own count of
-the row's remainder would risk an HTTP 400 the engine's own count would not,
-while the declared bound, sent only where it is strictly smaller, is what stops
-a chair generating far past the length its own publisher runs it at. Alongside
-it travel the few decoding values the request must make explicit:
-`repetition_penalty` for Churro, a redundant `stop_token_ids` for DAI's second
-EOS id under its `"auto"` posture, and `chat_template_kwargs` for both Chandra
-chairs. All of them ride
-`generation_sent`, so the retained `chair-call-record.v2` says exactly what went
-out.
+- **The image part comes before the text part** in a chair's user turn: each chair's chat
+  template emits parts in list order, and each was fine-tuned with the vision block first
+  (`pipeline/3_attestatores/live_witness.py::_user_content`,
+  `pipeline/2_designator/structure_pass.py::page_request`).
+- **`max_tokens` is `min(the chair's declared upstream bound, max_model_len − the request's
+  image and prompt cost)`**, with the second term expressed by sending no field
+  (`common/request_capacity.py::sendable_max_tokens`): our own count of the remainder could
+  earn an HTTP 400 the engine's count would not, while the declared bound, sent only when
+  smaller, stops a chair generating far past its publisher's length.
+- The few explicit decoding values — Churro's `repetition_penalty`, DAI's redundant second
+  EOS in `stop_token_ids`, both Chandra chairs' `chat_template_kwargs` — ride
+  `generation_sent`, so the call record shows exactly what went out.
 
-`ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request,
-in this order: refuse an unbuildable request (a `kind` other than
-`chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`,
-`seed`, or `n` — those are the manager's and the decoding policy's alone; an
-image whose digest does not match the claimed `image_sha256s`, exactly and in
-order) before anything is built or sent; build the body with the sealed
-decoding temperature and the profile's seed (except for the Designator
-structure chair's bounded, sealed recovery-seed override); POST through
-`ServiceHandle.request_reading`; **retain the raw response through the caller's
-`retain` callable, before anything is checked** — when vLLM refuses a request it
-says why in the body of a non-200, and that sentence is the artefact a rented
-card exists to produce, so it reaches disk before any refusal can discard it
-(this used to run the other way round, and the refusal's own docstring claimed
-otherwise); classify a non-200 or wrong-model response without attributing its
-content; write a closed `chair-call-record.v2`, including the HTTP status and
-separate requested and observed model fields; and only then raise that refusal
-with both retained references. A valid-source response proceeds to content
-parsing — a content/choices problem becomes
-`parse_problem` on the returned `ChairResponse`, never a raised exception,
-because a malformed body from a witness or reader is retained evidence, not a
-stage abort; and then writes one `chair-call-record.v2` blob (the closed
-field set in `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`, canonical
-bytes) before returning. Consumers continue to accept sealed v1 call records;
-v2 adds only the observed HTTP status. A body that names no model at all is retained and
-parsed the same as any other malformed body, but `parse_openai_reading`'s own
-comparison (`payload.get("model") != expected_model_id`) cannot distinguish
-"no model was named" from "the wrong model was named" — both come back as
-`CHAIR_RESPONSE_MODEL_MISMATCH`. `read` remaps that one ambiguous case to
-`CHAIR_RESPONSE_INVALID` when the body itself carries no `model` field, so
-the recorded `parse_problem` never asserts a foreign-source observation that
-was never made (GOVERNANCE 10).
+**`ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request:**
 
-`prepare_chandra_native` / `read_chandra_native` is the one narrow exception.
-It is available only to page-scoped `attestator_1` with adapter `chandra.v1`
-under the exact `decoding.v3` recipe. The prepared dispatch fixes one of seven
-declared temperature/top-p pairs; the stage must publish and pass a durable
-attempt-intent reference before the POST. Its `chandra-native-call-record.v1`
-binds that reference, so the three identical 0.8/0.95 request schedules remain
-distinct physical attempts. These calls omit a per-request seed because the
-pinned upstream client omits it; the server launch seed remains on the serving
-receipt. `chat_template_kwargs.enable_thinking=false` remains a local vLLM
-0.27/template compatibility field and is recorded as such, not attributed to
-the upstream vLLM 0.17 recipe. The method still issues exactly one HTTP call;
-the Attestatores stage owns the bounded vendor loop and its durable evidence.
+1. Refuse an unbuildable request before building anything: a `kind` other than
+   `chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`, `seed` or
+   `n` (the manager's and decoding policy's alone); image digests that do not match
+   `image_sha256s` exactly and in order.
+2. Build the body with the sealed decoding temperature and the profile's seed (except the
+   Designator structure chair's sealed recovery-seed override), and POST through
+   `ServiceHandle.request_reading`.
+3. **Retain the raw response through the caller's `retain` callable before checking
+   anything**: when vLLM refuses a request it says why in the body of a non-200, and that
+   sentence must reach disk before any refusal can discard it.
+4. Classify a non-200 or wrong-model response, write a closed `chair-call-record.v2` (HTTP
+   status, requested and observed model), then raise with both retained references.
+5. Otherwise parse. A content or choices problem becomes `parse_problem` on the returned
+   `ChairResponse`, never an exception, because a malformed witness body is evidence, not a
+   stage abort. Write one `chair-call-record.v2` (fields in
+   `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`) and return. Sealed v1 records are
+   still accepted.
 
-If that POST raises before a complete HTTP response is available, the client
-retains `chair-transport-failure.v1` instead. It carries the same exact request,
-identity, receipt, decoding, generation, and capacity facts as a call record;
-all response-derived fields are explicitly null, and its closed transport
-problem records request delivery and response completion as `unknown`. No raw
-response or partial-token claim is invented. The typed
-`ChairTransportFailure` names that record so a stage can retain one terminal
-attempt rather than repeat a request whose engine-side completion is unknown.
+`parse_openai_reading` cannot tell "no model named" from "wrong model named" (both are
+`CHAIR_RESPONSE_MODEL_MISMATCH`), so `read` reports a body with no `model` field as
+`CHAIR_RESPONSE_INVALID` rather than claim a foreign source it never observed.
 
-**The capacity record travels with the request, and the client neither
-computes nor checks it.** `ChairRequest.capacity` is the caller's own
-`common.request_capacity` record: whether this request's images, prompt and
-answer budget fit the sealed row it is about to be sent to. Only the caller
-knows which prompt and which answer shape a call is, so the arithmetic belongs
-to the stage; what belongs here is carrying it. `read` copies it onto the
-`chair-call-record.v2` blob — `null` where the caller states none, as the
-readiness probe and `smoke.py` do — so every stage that keeps a reading can
-reach the arithmetic that admitted it through the call record it already names,
-without a second reference.
+**Transport failure.** If the POST raises before a complete response exists, the client
+retains `chair-transport-failure.v1` instead: the same request, identity, receipt, decoding,
+generation and capacity facts, every response field null, delivery and completion recorded
+as `unknown`. `ChairTransportFailure` names it so a stage can keep one terminal attempt
+rather than repeat a request whose engine-side completion is unknown.
 
-It is sealed at construction, all the way down. A capacity record is not flat —
-`request_fits` returns an `images` list of per-image dictionaries — and every
-builder passes that record straight in while keeping its own reference to it,
-so freezing the outer mapping alone left the nested data live and a later write
-could have made the retained receipt disagree with the evidence the request was
-admitted on. `ChairRequest` takes a detached recursive snapshot instead,
-canonicalized through `canonical_bytes` (a record the writer could not hold is
-refused there and then, as `CHAIR_REQUEST_INVALID`, rather than inside receipt
-serialization after the wire call) and then deep-frozen.
+**Chandra native calls.** `prepare_chandra_native` / `read_chandra_native` is the one narrow
+exception, for page-scoped `attestator_1` with adapter `chandra.v1` under the exact
+`decoding.v3` recipe. Each prepared dispatch fixes one of seven declared temperature/top-p
+pairs, and the stage must publish and pass a durable attempt-intent reference before the
+POST; `chandra-native-call-record.v1` binds it, so the three identical 0.8/0.95 attempts stay
+distinct. These calls send no per-request seed because the pinned upstream client sends
+none (the launch seed stays on the serving receipt).
+`chat_template_kwargs.enable_thinking=false` is a local compatibility field for vLLM 0.27
+and this template, recorded as such, not attributed to the upstream vLLM 0.17 recipe. Each
+call is still one HTTP request; the Attestatores stage owns the vendor retry loop and its
+evidence.
 
-**The reading parser, against the probe parser.** `http.parse_openai_reading`
-is not `parse_openai_answer` reused: a readiness probe must prove the engine
-can answer at all, so it refuses blank content. A witness or reader's
-legitimate output can be the empty string (`genuinely-empty`), so the reading
-parser accepts one choice with `content == ""` and refuses only a missing or
-non-string content, never an empty one. Its `finish_reason` is always the
-engine's own word, verbatim — missing or `null` become `None`, and nothing
-here maps an unrecognized string to anything; that mapping is the stages' job
-(§1.6 of the seam spec), not this parser's.
+**Capacity.** `ChairRequest.capacity` is the caller's `common.request_capacity` record of
+whether the request fits the sealed row; only the caller knows the prompt and answer shape,
+so the client neither computes nor checks it. `read` copies it into the call record (`null`
+where none is stated, as for the readiness probe and `smoke.py`). `ChairRequest` takes a
+detached, canonicalized, deep-frozen snapshot, because the record is nested and builders
+keep their own reference; a record `canonical_bytes` cannot hold is refused at construction
+as `CHAIR_REQUEST_INVALID`.
 
-**`request_timeout_seconds`** is a per-profile field (`config.py`,
-`config/serving_recipes_real.toml`) because a non-streaming generation of
-real length returns nothing until it is done, and the manager's own
-readiness/adapter probes stay on their own short, hardcoded budgets — a slow
-reading must never be able to stretch those.
+**Reading parser versus probe parser.** A readiness probe must prove the engine answers, so
+`parse_openai_answer` refuses blank content. A witness can legitimately return the empty
+string (`genuinely-empty`), so `http.parse_openai_reading` accepts `content == ""` and
+refuses only missing or non-string content. Its `finish_reason` is the engine's own word;
+missing or `null` becomes `None`, and mapping unknown words is the stages' job.
 
-`serving_mode_for(recipes, identity, tier)` is the live/fixture selector: a
-three-name lookup (`recipe`, `chair`, `tier`) in the sealed serving-recipe
-catalogue, never a ranking. Every row for one `(recipe, chair)` is collected
-first — if all of them are fixture rows, the chair is fixture regardless of
-tier. Otherwise a tier is required (`SERVING_MODE_UNRESOLVED` without one);
-the profile at that exact tier decides, with an `UnsupportedProfile` refusing
-by its own recorded reason and a fixture row at that tier refused when any
-other tier for the same chair is not a fixture row — a catalogue may not be
-half fixture for one chair — and that refusal names whichever posture the
-other tiers actually hold (live, unsupported, or both) rather than asserting
-they are live. A tier with no configured row at all for
-this chair is also this function's own vocabulary:
-`config.ServingRecipes.for_identity`'s zero-match
-`ServingConfigurationError` is caught and re-raised as
-`ServingModeRefusal("SERVING_MODE_UNRESOLVED", ...)`, so a caller catching
-this function's refusals to report a placement-tier problem never sees a
-bare configuration error instead.
+**`request_timeout_seconds`** is per profile, because a non-streaming generation returns
+nothing until it is done; the manager's own readiness and adapter probes keep their own
+short budgets, which a slow reading must never stretch.
 
-`fakes.py` (`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`,
-`FakePackages`, `FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`, and
-the structure-chair builders `structure_box_1000`, `structure_layout_block`,
-`structure_answer_body`, `structure_blank_page_body`,
-`scripted_structure_answer`, `scripted_structure_refusal`,
-`scripted_structure_cut_off`) is a shared fake endpoint for stage tests built against `ChairClient` — mirrors of
-this package's own `test_manager.py` fakes, not moved from there, so that
-suite stays untouched. `ScriptedAnswer.finish_reason` takes an explicit
-`ABSENT` sentinel distinct from `None`: `None` scripts a JSON `null`, `ABSENT`
-omits the key from the wire entirely, and the reading parser treats both the
-same way — verbatim absence, never a default. `FakeEndpoint` auto-answers a
-manager's one readiness POST (recognized structurally: it is always the first
-POST a fresh instance sees, made inside `ServingManager.start` before any
-reading is possible) without consuming a scripted answer, so every
-`ScriptedAnswer` a test schedules is consumed by an actual `ChairClient.read`
-call. Its optional `assert_retained_before_next_request` flag proves
-response-as-arrival by construction: when set, the fake refuses a reading
-request until the *exact* raw bytes it served for the previous reading — its
-own sha256, checked through `FakeBlobStore.has`, not merely the store's
-overall size — are already on disk in the shared `FakeBlobStore`. A count
-alone is satisfied by any retention order, since the client also writes one
-`chair-call-record.v2` blob per read; naming the digest is what actually
-pins retain-before-parse from outside the client, without reading its
-source. The strongest proof of that ordering, though, lives in
-`test_client.py`: a test that monkeypatches `parse_openai_reading` itself to
-raise, and shows the raw bytes were already retained before that call ever
-ran — the one case a passing-response check like this fake's cannot reach,
-because retain-after-parse and retain-before-parse look identical whenever
-parsing succeeds.
+**`serving_mode_for(recipes, identity, tier)`** selects live or fixture by a three-name
+lookup (`recipe`, `chair`, `tier`), never a ranking. If every row for the chair is fixture,
+the chair is fixture at any tier. Otherwise a tier is required (`SERVING_MODE_UNRESOLVED`
+without one), and the row at that tier decides: an `UnsupportedProfile` refuses with its
+reason, and a fixture row beside non-fixture rows for the same chair refuses, naming what
+the other tiers hold. A tier with no row is re-raised as
+`ServingModeRefusal("SERVING_MODE_UNRESOLVED", ...)`, so callers see one refusal vocabulary.
 
-The structure-chair builders take rectangles in the sealed page's own pixels
-and return **Chandra's layout HTML** — the grammar that chair is asked for
-since `verbatus-structure-prompt.v3` carried the vendor's own prompt bytes —
-whose normalized `data-bbox` values convert back to exactly those rectangles,
-found by search over the 0-1000 grid and checked through
-`common.structure_answer.to_page_bounds` itself rather than by a second
-closed-form formula: a builder that re-derived the arithmetic could agree with
-a converter that had changed underneath it. Each builder then reads the body it
-built back through `common/chandra_layout.py::parse_layout_html`, the grammar
-that will read it live, and checks that it resolves to the rectangles it was
-asked for — so a drifted builder fails in the builder rather than as an
-unexplained hold three stages downstream.
+## Fakes for stage tests
 
-`structure_layout_block` writes one top-level `<div>` and is the way to script
-the answers rectangles cannot express: a malformed or absent `data-bbox`, a
-label outside the vendor's own nineteen, a `Blank-Page`.
-`structure_blank_page_body` is the page a chair reports as blank, which is what
-the retired JSON contract spelled as an empty act list — there is no empty-list
-shape in this grammar, and an answer with no `<div>` in it is a refusal rather
-than an empty page. `scripted_structure_refusal` is keyed by the
-`PARSE_OUTCOMES` code and verifies the body reaches that outcome and no other;
-it scripts the two of the grammar's six that a body's *shape* can reach, the
-other four being properties of the wire bytes and measured in
-`common/test_chandra_layout.py`. `scripted_structure_cut_off` truncates a real
-answer before its first block closes and sets the `length` stop word, which is
-what a page whose transcription overran `max_model_len` actually looks like —
-and under this grammar the truncated body still reads, with an
-`unclosed-block` finding, so the fixture proves the page is held on the stop
-word alone rather than on a shape the parser could not take.
+`fakes.py` holds a fake endpoint and builders for stage tests against `ChairClient`
+(`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`, `FakePackages`,
+`FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`, and the structure-chair builders).
+They mirror `test_manager.py`'s own fakes rather than sharing them.
 
-`FakeEndpoint`'s optional `sticky_after_stop` flag mirrors
-`test_manager.py`'s own fake: it keeps the loopback health endpoint answering
-after its bound process is told to exit, the exact ambiguity
-`ServingManager._assert_endpoint_absent` exists to catch, for a test that
-needs `ChairClient.__enter__`'s own `handle.stop()` to fail.
+- `ScriptedAnswer.finish_reason` distinguishes `None` (a JSON `null`) from the `ABSENT`
+  sentinel (key omitted); the parser treats both as absence.
+- `FakeEndpoint` answers a manager's one readiness POST (always the first POST it sees)
+  without consuming a scripted answer, so each `ScriptedAnswer` is consumed by a real
+  `ChairClient.read`.
+- `assert_retained_before_next_request` refuses a reading request until the exact bytes it
+  served last time are in the shared `FakeBlobStore` by digest (a count would be satisfied
+  by the call record alone). The strongest proof of retain-before-parse is in
+  `test_client.py`, which makes `parse_openai_reading` raise and shows the bytes were
+  already kept.
+- `sticky_after_stop` keeps `/health` answering after the process is told to exit, for tests
+  that need `handle.stop()` to fail.
+
+The structure-chair builders (`structure_box_1000`, `structure_layout_block`,
+`structure_answer_body`, `structure_blank_page_body`, `scripted_structure_answer`,
+`scripted_structure_refusal`, `scripted_structure_cut_off`) take rectangles in the sealed
+page's pixels and return **Chandra's layout HTML**, whose `data-bbox` values are found by
+search over the 0–1000 grid and checked through `common.structure_answer.to_page_bounds`
+itself, so the builder cannot agree with a converter that changed. Each builder reads its
+body back through `common/chandra_layout.py::parse_layout_html` and checks the rectangles,
+so a drifted builder fails in the builder, not three stages later.
+
+- `structure_layout_block` writes one top-level `<div>`, for answers rectangles cannot
+  express: a bad or missing `data-bbox`, a label outside the vendor's nineteen,
+  `Blank-Page`.
+- `structure_blank_page_body` is a page the chair reports blank; this grammar has no
+  empty-list shape, and a body with no `<div>` is a refusal.
+- `scripted_structure_refusal` is keyed by `PARSE_OUTCOMES` code and covers the two
+  outcomes a body's shape can reach; the other four are wire-byte properties tested in
+  `common/test_chandra_layout.py`.
+- `scripted_structure_cut_off` truncates an answer before its first block closes and sets
+  the `length` stop word, as an overrun of `max_model_len` looks. The truncated body still
+  parses (with an `unclosed-block` finding), so the page is held on the stop word alone.
 
 ## End to end
 
-`pipeline/test_live_reading_seam_e2e.py` is where the whole seam runs as one
-run: the real stage programs carry a tree to the Designator, the
-Attestatores reads it through three live witness chairs, the Perlector reads it
-through a live chair, and the Recensor, Archetypus and Armarium then consume
-what those two wrote. Every chair answers through `fakes.py`; nothing starts a
-pod. What makes the run live there is the same thing that makes it live on a
-card — a tmp catalogue whose rows say `kind = "vllm"` for all four servable
-chairs at all three tiers — so the selector under test is the sealed one, not a
-test-only switch.
+`pipeline/test_live_reading_seam_e2e.py` runs the whole seam: the real stage programs carry
+a tree through the Designator, three live witness chairs, a live Perlector, the Recensor,
+Archetypus and Armarium. Every chair answers through `fakes.py`; no pod starts. The run is
+live the same way it would be on a card — a temporary catalogue with `kind = "vllm"` rows for
+all four chairs at all three tiers — so the selector under test is the sealed one.
 
-Two facts that suite establishes and no single-stage suite can. First, a live
-run reaches a **sealed terminal export**: both acts are read and every reading
-names the exact bytes its engine sent. That export is **held for review** on
-this tree, and the hold is the rules working rather than a defect. Chandra
-reads under its vendor's own layout grammar and attaches by its own block
-geometry; DAI reads its act crops; Churro reads its vendor's
-`HistoricalDocument` grammar, which carries no coordinate vocabulary anywhere,
-so it reports no geometry, does not attach, and two of a floor of three count.
-Attaching an aligned page witness that reports no geometry is the Perlector's
-`anchor-line` basis, which lands with the Perlector attachment unit. Even once
-it does, one scripted run over a fixture whose page text is exactly its two
-acts is not a proven pipeline (GOVERNANCE 10): a real register page carries
-material no proposal covers, and testimony content coverage will hold it.
-Second, two independent drivers reach the same
-fixture tree byte for byte: the orchestrator's own subprocess chain on one
-side, and — on the other — the identical driver this module uses for the live
-seam, pointed at the committed fixture catalogue, with `--placement-tier`
-supplied and both stage `main`s called in-process rather than as subprocesses.
-That equality says this seam's own driving code takes the fixture path
-unchanged; whether the fixture tree itself has moved relative to history is
-`pipeline/orchestrator/test_orchestrator_acceptance.py`'s `HAPPY_RUN_TREE_DIGEST`
-pin to say, not this suite.
+- **A live run reaches a sealed terminal export**, with every reading naming the exact bytes
+  its engine sent. The export is **held for review**, and that is the rules working: Churro
+  reads its vendor's `HistoricalDocument` grammar, which has no coordinates, so it does not
+  attach and two witnesses fall short of the floor of three. Attaching a witness without
+  geometry is the Perlector's `anchor-line` basis, not yet built. Even then, one scripted run
+  over a fixture is not a proven pipeline (principle 8).
+- **Two independent drivers reach the same fixture tree byte for byte**: the orchestrator's
+  subprocess chain, and this suite's driver pointed at the committed fixture catalogue with
+  `--placement-tier` and in-process stage `main`s. Whether the fixture tree itself moved is
+  `pipeline/orchestrator/test_orchestrator_acceptance.py`'s `HAPPY_RUN_TREE_DIGEST` to say.
 
-`pipeline/test_structure_chair_e2e.py` runs the same shape of run one stage
-earlier: the Designator's own live pass against a scripted
-`designator_structure` chair, so the acts the roster then witnesses, reads,
-reviews and exports are the ones a *model* drew rather than the ones a fixture
-declared. It imports the live-seam suite's driver rather than copying it, so
-the two suites' claims stay comparable; the one difference is the catalogue,
-which marks `designator_structure` live as well. Its export is held for the
-same Churro-shaped reason, which is how it says that replacing declared acts
-with proposed ones moved the denominator and not the coverage.
+`pipeline/test_structure_chair_e2e.py` starts one stage earlier, with the Designator's live
+pass against a scripted `designator_structure` chair, so the acts downstream are ones a
+*model* drew. It imports the live-seam driver rather than copying it; only the catalogue
+differs. Its export is held for the same Churro reason, which shows that replacing declared
+acts with proposed ones moved the denominator, not the coverage.
