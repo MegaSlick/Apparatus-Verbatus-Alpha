@@ -1,0 +1,29 @@
+# Only code is indexed. Graphify sends documents and images to a model, and real
+# register material must never leave this machine, so this is an allowlist: every
+# file is excluded, then only code types (and the two public design documents) are
+# let back in. .gitignore alone does not exclude files git already tracks.
+*
+!*/
+!*.py
+!*.sh
+!*.toml
+!*.json
+!/ARCHITECTURE.md
+!/GLOSSARY.md
+
+# Local working areas and data, excluded even for code types.
+.venv/
+build/
+gold/
+private/
+workbench/
+scriptorium/
+raw/
+quarantine/
+graphify-out/
+proof/fixtures/
+operations/triage/measured/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
