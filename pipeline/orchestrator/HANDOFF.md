@@ -27,10 +27,10 @@ request from leaving half a round behind it, and screening the route here is wha
 Designator's refusal reaching an operator as a bare `pipeline/2_designator/run.py exited 2`.
 `report_undispatchable_recoveries` then names every refused act and request before the
 `ContractError` is raised — this module writes no file of its own, so the run's own output
-is where it records a dispatch it would not make (GOVERNANCE 2); the durable evidence is the
+is where it records a dispatch it would not make (principle 2); the durable evidence is the
 immutable request artifact and its `recovery-requested` review, which nothing here touches.
 
-Since findings F068/F083 the Recensor no longer publishes a real-ingress request at all, so
+The Recensor no longer publishes a real-ingress request at all, so
 the route branch is a backstop over a tree written before that gate landed. It is still
 checked: a bound nobody checks is not a bound.
 

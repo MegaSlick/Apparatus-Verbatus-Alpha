@@ -92,7 +92,7 @@ rate and approval reference, the Perlector instrument rate and approval
 reference, and `draft_fed`, which `real_run_policy_digest` closes under one
 name. A real run resumed with a different `--models-config` would otherwise
 publish stage-3 testimony naming one model and stage-4 dossiers naming another,
-every check green, which is GOVERNANCE 6 broken silently on the one path that
+every check green, which is principle 6 broken silently on the one path that
 will ever carry real material.
 
 **A real run created before these three names cannot be resumed under this
@@ -136,7 +136,7 @@ filename; a source never silently drops.
 
 Declared synthetic fixtures remain the only ledger-free route. They carry the
 same core source rows but not a real filename ledger. Neither route needs an
-approval-record artifact — cut 2026-08-09, see "Data handling and scope" below.
+approval-record artifact — see "Data handling and scope" below.
 
 ## Decoder routes and alarms
 
@@ -174,11 +174,11 @@ painted into the sealed pixels; embedded-image extraction is not used.
 in `run.json`; each page's `render_contract` records the configured target, the
 code-bounded target, and the whole `effective_dpi` actually used. Pixel/byte caps and
 the 72-DPI floor stay in code. **300 rests on geometry, not on measured accuracy**:
-it was chosen on Tyrel's instruction 2026-08-05 from line pitch and x-height against
+it was chosen from line pitch and x-height against
 real material, and because a 400-DPI page exceeds the reading models' own resize
 ceiling while costing 1.78x the pixels to render, store and keep until export. It has
-still never been checked against reading accuracy on his approved real sample, which
-GOVERNANCE 9 asks for before scale. The reasoning is in `config/pdf_render.toml`'s
+still never been checked against reading accuracy on an approved real sample, which
+principle 10 asks for before scale. The reasoning is in `config/pdf_render.toml`'s
 own header.
 
 ## Door `kind="admission"`
@@ -252,8 +252,8 @@ the duplicate report is sealed and announced and before the Door seals its own
 boundary, naming the submitted ordinals of every group — ordinals only, never
 filenames, because the message goes to a terminal and the sealed report is where
 the filenames belong. The whole submission is refused and no file is dropped:
-choosing which copy to discard is an automated exclusion, which GOVERNANCE reserves
-to Tyrel, and choosing to read the merged page once would decide silently whether
+choosing which copy to discard is an automated exclusion, which is reserved
+for the project lead, and choosing to read the merged page once would decide silently whether
 identical bytes are one page shot twice or an export that wrote one scan under two
 names. There is deliberately no `--allow-duplicate-sources`. The remedy the message
 names is a re-submission whose `--submission-manifest` names each distinct scan
@@ -275,7 +275,7 @@ per identity is tractable (`sealed_submission_rows` was built for it; the census
 one row per ordinal and `expected_refs` is a set, so only the Designator's
 `page_records` keying by ordinal breaks), but it would leave the operator with a run
 that silently reads one page where two files were submitted. Whether the pipeline
-may make that call automatically is Tyrel's, not a session's.
+may make that call automatically is the project lead's decision, not a session's.
 
 The one `kind="seal"`, subject `corpus-seal`, is self-hashed and has one census row
 per submitted ordinal — per *ordinal*, not per page, so a merged page contributes a
@@ -353,7 +353,7 @@ master's.
   into that raw frame space rather than silently applying EXIF orientation.
 - **The apply recipe's library versions are a record, not an enforcement.** The
   frozen `triage-raster-apply-v1` recipe is compared exactly; the Pillow, pillow-heif
-  and libheif versions beside it are provenance under GOVERNANCE 6 and are *not*
+  and libheif versions beside it are provenance under principle 6 and are *not*
   compared against the running host. Refusing on version drift would make every
   archived run unverifiable on the next routine upgrade. The byte comparison is the
   property; when it fails and the recorded versions differ from this host's, the
@@ -450,9 +450,8 @@ Real input is fail-closed on living inside a storage root
 `config/data_handling_policy.json` names — the submitted folder, the run root,
 the filename ledger, and any triage decision manifest or cluster records all check
 against it before a byte is read, and none of the record files may live inside the
-submitted folder. **Cut 2026-08-09,
-per Tyrel's ruling that session:** real input no longer also needs a current
-data-gate approval-record artifact; none of this material ever reaches git
+submitted folder. **Real input no longer also needs a current
+data-gate approval-record artifact:** none of this material ever reaches git
 regardless of any such sign-off. The local gate package is
 [`operations/submit/README.md`](../../operations/submit/README.md).
 It retains all run material, exports, and filename ledger until the whole run is
