@@ -198,7 +198,7 @@ def _validate_coverage(
     # harder than the claim. Each branch below now names its own disagreement
     # and quotes the numbers that disagree. Order is preserved from the old
     # chain, so a receipt that is malformed in several ways at once still
-    # refuses on the same one it always did. Found by CodeRabbit.
+    # refuses on the same one it always did.
     for field in ("configured", "floor", "unresolved_chairs"):
         value = coverage[field]
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -357,7 +357,7 @@ def _validate_coverage(
             raise SchemaRefusal("Recensor partition receipt has malformed shortfalls")
         # Every granularity count describes configured chairs, so none may exceed
         # the configured count — a shortfall tally larger than the roster is not a
-        # measurement (CodeRabbit chain-end review; host disposition: fixed).
+        # measurement.
         configured = coverage["configured"]
         if health_unrecorded > configured or any(
             value > configured for value in shortfalls.values()
@@ -395,7 +395,7 @@ def _validate_reference(reference: Any, what: str) -> None:
 EMPTY_DENOMINATOR_REASON: Final = (
     "the Designator proposed no acts at all, so this receipt has no denominator to "
     "reconcile; a run that marked nothing out on its pages cannot be complete "
-    "(GOALS 1: a missed act is worse than a poorly read one)"
+    "(goal 2: a missed act is worse than a poorly read one)"
 )
 
 

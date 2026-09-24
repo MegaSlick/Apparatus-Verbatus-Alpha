@@ -11,7 +11,7 @@ anything, on a card that bills by the hour.
 
 Nothing here downscales, clamps, or reserves.  It computes the exact count and
 says whether the row can hold it, so the refusal happens on this laptop rather
-than on rented silicon (GOVERNANCE 10: the number is measured, and what is not
+than on rented silicon (principle 8: the number is measured, and what is not
 measured is named as such).
 
 Where the arithmetic comes from
@@ -91,7 +91,7 @@ the pinned revision by the same test as the rest.
 **What the bound is not.**  It bounds this repository's rendering of the prompt.
 Whether vLLM's own assembly agrees with these counts token for token has never
 been observed, here or anywhere in this tree, so the bound is an upper bound on
-a measurement rather than a guarantee of admission (GOVERNANCE 10).
+a measurement rather than a guarantee of admission (principle 8).
 
 **What only a pod can settle**: whether vLLM's own prompt assembly agrees with
 these counts token for token.  vLLM's OpenAI server applies the same chat
@@ -657,10 +657,9 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
     {
         # Re-measured for `verbatus-structure-prompt.v3` -- the carried vendor
         # prompt (`common/chandra_layout.py::OCR_LAYOUT_PROMPT`) replacing this
-        # repository's own v2 instruction, on tonight's ruling that each witness
+        # repository's own v2 instruction, under the ruling that each witness
         # is asked in its developers' own bytes. **325 -> 593**, measured
-        # 2026-09-07 by the harness of `TOKEN_COST_REPORT_2026-09-05.md`
-        # section 3 at the same pinned revision, in the message shape
+        # at the same pinned revision, in the message shape
         # `structure_pass.page_request` builds (one `user` turn, image part
         # first). The same run reproduces the superseded 325 exactly over the
         # superseded v2 text, which is what says the two numbers are comparable
@@ -682,7 +681,7 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
                 revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
             ),
         ),
-        # Re-measured 2026-09-07 for the carried vendor prompt: Chandra's own
+        # Re-measured for the carried vendor prompt: Chandra's own
         # `OCR_LAYOUT_PROMPT` (`common/chandra_layout.py`) replaces the
         # repository's retired `_LIVE_INSTRUCTION` at this chair, so the number
         # this chair is admitted on is the cost of the text it now actually
@@ -721,7 +720,7 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
                 revision="e371095d4ffe585f31f4974462931ddbac61ff64",
             ),
         ),
-        # Re-measured 2026-09-07 for the two vendor-attested framings this
+        # Re-measured for the two vendor-attested framings this
         # chair can now be asked in (`common/churro_document.py`), which
         # replace the two this repository wrote for it. Both are system-only
         # single-sentence instructions where the retired pair were a two-message
@@ -778,7 +777,7 @@ PERLECTOR_TOKENS_PER_WORD: Final = (120, 73)
 
 # --- and the upper bound admission actually rests on ---------------------------
 #
-# Measured 2026-09-06 on the session host, offline, with the pinned Perlector
+# Measured offline, with the pinned Perlector
 # tokenizer and its own chat template: 168 prompts rendered through
 # `pipeline/4_perlector/prompts.py::build_prompt` for recipe
 # `unproven-real-perlector` -- 1/3/5 testimonia x 0/5/25/100/400/800/1,200 words
@@ -881,7 +880,7 @@ def perlector_prompt_tokens(text: str) -> tuple[int, str]:
     over prose, and the JSON scaffolding a dossier carries costs more per word.
     A request this returns a number for is not thereby proved to fit -- it is
     proved not to fit when even the floor overruns the row.  Nothing pads it:
-    a margin nobody measured is not a measurement (GOVERNANCE 10).
+    a margin nobody measured is not a measurement (principle 8).
     """
 
     words = len(text.split())
@@ -958,23 +957,21 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # actually answers in: `attestator_1`'s 1,520 was a Chandra page JSON and its
 # grammar is now HTML (U9), and `attestator_3`'s 1,631 was the closed JSON
 # object this repository invented for Churro, whose coordinate channel is
-# retired (U10).  U14 re-runs both with `TOKEN_COST_REPORT_2026-09-05.md`
-# section 8's own harness and its own `FRENCH_ACT` body -- the same 800 words
-# `designator_structure`'s row below was re-taken over -- which is what keeps
-# all five rows comparable with each other; sealing a chair here over a body
-# the others were not measured on would make the rows mean different things.
-# `u14_final.py` (kept beside this repository's report of the run) reproduces
-# the superseded 1575 and 1520 exactly as its control, which is what says the
-# new numbers were taken by the same measurement rather than a different one
-# in the same units.
+# retired (U10).  U14 re-runs both with the same harness and the same
+# `FRENCH_ACT` body -- the same 800 words `designator_structure`'s row below
+# was re-taken over -- which is what keeps all five rows comparable with each
+# other; sealing a chair here over a body the others were not measured on
+# would make the rows mean different things. Reproducing the superseded 1575
+# and 1520 exactly as its control is what says the new numbers were taken by
+# the same measurement rather than a different one in the same units.
 #
 # **`attestator_1`, 1520 -> 1645.**  It shares one prompt and one grammar with
 # `designator_structure` -- both send `chandra_layout.OCR_LAYOUT_PROMPT` and
 # are read by `chandra_layout.parse_layout_html` -- so the same fixture (six
 # `<div data-bbox=... data-label="Text"><p>...</p></div>` blocks, apostrophes
 # entity-escaped to `&#x27;`, the spelling the parser accepts and the dearer
-# of the two the grammar admits) costs the two chairs the same, measured
-# 2026-09-07: **1645**, identical to `designator_structure`'s own re-measurement
+# of the two the grammar admits) costs the two chairs the same: **1645**,
+# identical to `designator_structure`'s own re-measurement
 # below because it is the same text tokenized by the same tokenizer.
 #
 # **`attestator_3`, 1631 -> 1905.**  Churro's grammar carries `Line` elements
@@ -998,7 +995,7 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # `designator_structure` moved with `verbatus-structure-prompt.v3`, for the
 # same reason as `attestator_1`: its declared response shape is no longer the
 # `verbatus-structure-answer.v1` JSON object but Chandra's own layout HTML
-# (`common/chandra_layout.py`). Re-measured 2026-09-07 by this section's own
+# (`common/chandra_layout.py`). Re-measured by this section's own
 # harness -- the same `FRENCH_ACT` to 800 words in the same six blocks, the same
 # tokenizer at the same pinned revision -- at **1575 -> 1645**.
 #
@@ -1018,7 +1015,7 @@ def perlector_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str
 # (`html.parser` with `convert_charrefs=True`), so a body that spells its
 # apostrophes `&#x27;` is a valid answer under the grammar this chair is read
 # by, and a reserve covering only the cheaper spelling would under-reserve a
-# body the parser accepts -- a cut-off answer is a missed act (GOALS 1). 1645 is
+# body the parser accepts -- a cut-off answer is a missed act (goal 2). 1645 is
 # therefore an upper bound over the two spellings the grammar admits, and both
 # measurements are recorded here so a later reader can see which was sealed and
 # why. Neither number changes what any shipped row does: a whole 300-dpi page
@@ -1041,7 +1038,7 @@ MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 # request reserves, because reserving a whole page's answer for a request that
 # asked for one act would refuse calls that measurably work -- DAI on an
 # ordinary crop is the one chair sound at every tier, and refusing it would
-# cost acts (GOALS 1) to protect against an overrun that cannot happen.
+# cost acts (goal 2) to protect against an overrun that cannot happen.
 #
 # A *page-fallback* act -- an act whose bounds are the whole page -- is not
 # admitted by the back door here: its crop is a whole 300-dpi page, so it is

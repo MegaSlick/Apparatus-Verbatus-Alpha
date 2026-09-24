@@ -7,8 +7,6 @@ bytes after binding"); this file exercises the helper's own refusal branches
 directly, so it fails red if either of its two checks is weakened. It does NOT
 run the Door: the presence of both Door call sites is pinned separately by
 `pipeline/1_exemplar/test_door.py::test_each_door_path_enforces_the_shard_limit_at_run_creation`.
-
-Sonnet audit-and-repair seat 1, R0.
 """
 
 from __future__ import annotations
@@ -58,8 +56,7 @@ def test_a_shard_config_that_changed_since_binding_is_refused_before_use():
 def test_a_run_missing_the_sealed_shard_digest_entirely_is_refused():
     """A `sealed_config_digests` mapping that names no shard entry at all must
     refuse rather than silently treat every observed digest as unbound — and by
-    its own name, not the changed-since-binding message (strengthened at the
-    chain-end CodeRabbit pass).
+    its own name, not the changed-since-binding message.
     """
     with pytest.raises(ContractError, match="sealed no digest"):
         require_corpus_frame_shard(1, {})

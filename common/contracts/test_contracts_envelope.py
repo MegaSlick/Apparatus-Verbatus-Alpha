@@ -167,7 +167,7 @@ def test_a_producer_disagreeing_with_the_stage_is_refused():
 
 
 def test_a_missing_adapter_revision_is_refused():
-    """GOVERNANCE 6 — every stored reading carries the resolved identity and
+    """Principle 6 — every stored reading carries the resolved identity and
     revision of the model that produced it, at the moment it was produced."""
     envelope = sound_envelope()
     envelope["producer"] = {"stage": "designator", "adapter_revision": ""}

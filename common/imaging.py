@@ -16,7 +16,7 @@ at the door, where decoding is the point.
 
 This module keeps its tiny grayscale codec for deterministic synthetic fixtures.
 The project may also use ordinary imaging libraries where full decoding is needed:
-Tyrel's ruling permits basic tools such as Pillow and PDFium, and the Exemplar uses
+The project lead's ruling permits basic tools such as Pillow and PDFium, and the Exemplar uses
 them to preserve real source pages rather than refusing formats for lack of a
 decoder.
 
@@ -113,10 +113,10 @@ def _point_scalable(image: Image.Image) -> Image.Image:
     is touched, and every scaling path in this module names all four modes in
     `_HIGH_PRECISION_SCALE` — so a page in one of the three reached the `point`
     call and came back out of `grayscale_rows` as "sealed page bytes are not a
-    decodable image", which drops the page (GOALS 1) while blaming the scan.
+    decodable image", which drops the page (goal 2) while blaming the scan.
     A big-endian 16-bit TIFF opens as exactly `I;16B` (`TiffImagePlugin.OPEN_INFO`
     maps `MM` at 16 bits per sample to it), so this is a source the door admits,
-    not a mode only a synthetic fixture can reach. Found by CodeRabbit.
+    not a mode only a synthetic fixture can reach.
 
     `convert("I")` is the one hop measured to keep the samples on 12.3.0:
     `I;16L` and `I;16B` convert to `I` exactly, while `convert("I;16")` puts every
@@ -183,7 +183,7 @@ def _refuse_unreadable_palette_alpha(image: Image.Image) -> None:
     same measurement of something not on the page the two refusals above exist to
     prevent, reached by the one route neither of them looked down. The crop path
     already asks the palette (`_encode_crop_deterministic`, `resize_png_lanczos`);
-    this is the reading path asking the same question. Found by CodeRabbit.
+    this is the reading path asking the same question.
 
     **Defence in depth, and said as that rather than as a fixed bug.** No decoder
     in this stack was measured to produce it: PNG, GIF, BMP, TIFF and WebP were
@@ -197,7 +197,7 @@ def _refuse_unreadable_palette_alpha(image: Image.Image) -> None:
 
     Only the entries the page actually uses are asked. A palette carries 256 slots
     whatever the page draws with, and refusing a readable page for a transparent
-    colour nothing on it references would cost an act (GOALS 1) for a byte that
+    colour nothing on it references would cost an act (goal 2) for a byte that
     changes no pixel. `getcolors` counts indices on the already-bounded page, so
     this is one pass over at most `MAX_PIXELS` samples and no RGBA materialisation.
     """
@@ -250,8 +250,6 @@ def _refuse_unreadable_transparency(image: Image.Image) -> None:
     A crop is the other case and behaves differently on purpose: it is a display
     image, PNG can carry the transparency, and `crop_png` does carry it. This is
     only about turning a page into grey *values* a stage will then count.
-
-    Found by CodeRabbit reviewing the transparency fix.
     """
     if "transparency" in image.info:
         raise _UnreadableTransparency(
@@ -268,10 +266,10 @@ def _refuse_unreadable_transparency(image: Image.Image) -> None:
         return
     # A page whose alpha channel is entirely opaque carries no transparency to
     # lose, and refusing it would cost a page for a channel that says nothing
-    # (GOALS 1). One channel of the already-bounded page, so the check is a scan
+    # (goal 2). One channel of the already-bounded page, so the check is a scan
     # of at most `MAX_PIXELS` bytes and never an RGBA materialisation.
     # `getchannel`, not `split()[alpha]`: splitting materialises every band to
-    # read one of them. Found by CodeRabbit.
+    # read one of them.
     minimum, _maximum = image.getchannel(alpha).getextrema()
     if minimum < 255:
         raise _UnreadableTransparency(
@@ -287,7 +285,7 @@ def _grayscale_samples(image: Image.Image) -> Image.Image:
     `convert("L")` maps a high-precision sample straight through instead of
     scaling it, so 1024 and 65535 both land on 255 and a 16-bit scan reads as
     near-white — a page of ink returned as a blank one, which is a missed act
-    (GOALS 1) produced by the reader rather than by the page. The crop path has
+    (goal 2) produced by the reader rather than by the page. The crop path has
     scaled these modes by `_HIGH_PRECISION_SCALE` since it was written; this is
     the same policy at the one other place that reads sample values, so the
     grey a stage measures and the grey a model is shown come from one rule.
@@ -493,7 +491,7 @@ def _transparency_to_decoded_range(image: Image.Image, source_bit_depth: int | N
     *not* for 16. The record is validated in the source's range before it is
     converted, so an out-of-range record is still refused by name — a record is
     never identified as 16-bit by being larger than 255, which would silently
-    rescale a corrupt 8-bit record instead of refusing it. Found by CodeRabbit.
+    rescale a corrupt 8-bit record instead of refusing it.
 
     Mode `1` is deliberately absent: Pillow already reports a 1-bit page's record
     in the 0/255 terms its decoded samples use, and converting again would refuse
@@ -680,8 +678,8 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     **A refusal here is never a refused page.** `crop_png`, `dimensions` and
     `grayscale_rows` all fall back to Pillow on a ValueError from this function,
     so a real scan that this narrow codec declines still decodes — which is why
-    strictness here costs no act (GOALS 1) and why a chunk this decoder cannot
-    carry has to be a refusal rather than a silent drop (GOVERNANCE 2): the
+    strictness here costs no act (goal 2) and why a chunk this decoder cannot
+    carry has to be a refusal rather than a silent drop (principle 2): the
     fallback path preserves the colour profile and the transparency this one
     would have thrown away.
     """
@@ -738,8 +736,7 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
             if not seen_ihdr:
                 # PNG requires IHDR first, and without this an IDAT ahead of it is
                 # simply collected: a later, valid IHDR would then decode a stream
-                # made of bytes from before the header that describes it. Found by
-                # CodeRabbit.
+                # made of bytes from before the header that describes it.
                 raise ValueError("corrupt PNG: image data arrives before its IHDR")
             idat.extend(data)
         elif tag == b"IEND":
@@ -812,7 +809,7 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
         # not image data and not part of any stream this module wrote, and
         # accepting them is the same smuggling channel as bytes after IEND, one
         # layer down. The door's own PNG walker refuses the identical shape
-        # (`_inflate_exactly`). Found by CodeRabbit.
+        # (`_inflate_exactly`).
         raise ValueError("corrupt PNG: image data carries bytes past the end of its own stream")
     if len(raw) != expected:
         raise ValueError("corrupt PNG: decompressed data has the wrong length")
@@ -931,11 +928,11 @@ def convert_png_to_rgb(png_bytes: bytes) -> bytes:
     pages as identity PNGs (``pipeline/1_exemplar/image_formats.py::
     _PNG_IDENTITY_MODES``) and ``crop_png`` cuts crops in those modes, so a
     refusal here would leave a page the door legitimately admitted with no
-    legal Churro presentation at all -- an act lost to a rule, which GOALS 1
+    legal Churro presentation at all -- an act lost to a rule, which goal 2
     ranks below a poorly read one. The drop is not silent: the presentation
     records ``colour_mode: "rgb"``, this function replays it before the blob
     digest is believed, and the alpha samples themselves stay in the sealed
-    page, which nothing here touches (GOVERNANCE 4).
+    page, which nothing here touches (principle 4).
 
     Every mode a sealed crop can arrive in is handled; anything else is refused
     by name rather than converted on a guess.

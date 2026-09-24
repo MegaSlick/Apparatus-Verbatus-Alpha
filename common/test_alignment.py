@@ -59,7 +59,7 @@ def test_alignment_carries_matching_spans_through_markup_normalization():
     assert result["deadline_in_force"] is posix_alarm_available
 
 
-# --- F-X1 (R4 audit, Opus seat 3): the ampersand that ate the markup ---------
+# --- F-X1: the ampersand that ate the markup ---------------------------------
 
 
 def test_a_literal_ampersand_does_not_swallow_the_markup_after_it():
@@ -102,7 +102,7 @@ def test_an_ampersand_terminated_far_past_any_entity_stays_a_literal_ampersand()
     assert view["loss"]["markup_characters"] == 0
 
 
-# --- BREAKER battery (R4 audit, Sonnet seat 1) ------------------------------
+# --- BREAKER battery -----------------------------------------------------
 
 
 def test_markup_that_decodes_to_the_same_text_keeps_independent_raw_offsets():
@@ -182,7 +182,7 @@ def test_an_all_markup_input_normalizes_to_a_genuinely_zero_width_offset_map():
 )
 def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map(monkeypatch):
     """The timeout path must say `unaligned` -- never return a spans list that
-    stopped partway through and pretend it was complete (GOVERNANCE 2/10).
+    stopped partway through and pretend it was complete (principle 2 / principle 8).
 
     The deadline is forced deterministically: a matcher that sleeps past the
     timeout stands in for the real one, so the alarm always fires. Racing
@@ -190,7 +190,7 @@ def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map(monke
     -- a fast runner finishes the comparison and goes red for no code reason,
     and a loaded runner is what makes it pass, so a genuine loss of the
     deadline would not reliably show up either. Since the sealed deadline was
-    raised above the slowest input the pair bound admits (hostile review C),
+    raised above the slowest input the pair bound admits,
     forcing it is not merely the robust way to test this path but the only
     way: no admissible input reaches 25 seconds.
     """
@@ -326,7 +326,7 @@ def test_an_alarm_firing_at_the_cancellation_point_is_a_record_not_an_exception(
     assert "spans" not in result
 
 
-# --- The matcher's contract (hostile review C) -------------------------------
+# --- The matcher's contract --------------------------------------------------
 #
 # Written while trying to replace `difflib` with RapidFuzz, and kept after that
 # swap was refused on measurement. They pin what `align_to_anchor`'s callers
@@ -339,10 +339,10 @@ def test_an_alarm_firing_at_the_cancellation_point_is_a_record_not_an_exception(
 def _matcher_limits() -> AlignmentLimits:
     """The shipped limits, loaded, never a copy of them.
 
-    CodeRabbit pass 1. Restating 100,000 / 10^8 / 25 here would have made the
+    Restating 100,000 / 10^8 / 25 here would have made the
     two tests below assert against numbers that agree with
     `config/alignment.toml` only until someone edits it -- and the deadline is
-    the number hostile review C is about, so a test that cannot notice it
+    the number under scrutiny, so a test that cannot notice it
     changing is the wrong test.
     """
     return load_alignment_limits()[0]
@@ -370,7 +370,7 @@ def test_every_matched_span_names_text_that_is_actually_equal(witness, anchor, e
     bookkeeping. A matcher that returned nothing at all would satisfy every
     assertion in the loop below while turning aligned records into `unaligned`
     ones -- and an unaligned page witness leaves the act's witness floor, so
-    the silent-empty regression costs coverage (GOALS 1) exactly where this
+    the silent-empty regression costs coverage (goal 2) exactly where this
     file is meant to be watching. Only the two empty-input rows may return
     nothing.
     """
@@ -426,7 +426,7 @@ def test_offsets_are_codepoint_indices_even_past_the_basic_multilingual_plane():
 
 
 def test_a_shared_act_opening_attaches_to_the_act_the_witness_actually_read():
-    """The property that refused the RapidFuzz swap (hostile review C), pinned
+    """The property that refused the RapidFuzz swap, pinned
     so it is not lost the next time someone reaches for a faster matcher.
 
     Register acts open with the same formula, so a page of them contains the
@@ -470,20 +470,19 @@ def test_the_page_that_set_the_deadline_still_aligns_under_the_sealed_limits():
     A fired deadline is `unaligned`, an unaligned page witness is not
     `comparable`, and an incomparable chair leaves the act's witness floor -- so
     a comparison that is merely slow is recorded as coverage that is missing
-    (GOALS 1). The input below is what made five seconds too short: 7,500
+    (goal 2). The input below is what made five seconds too short: 7,500
     characters of register prose whose acts repeat one formula verbatim, which
     is what a scribe copying one form actually produces, and which is the shape
     Ratcliff-Obershelp works hardest on. It measures 10.1 s. Under the five
     seconds this config used to carry it came back `unaligned`, and a page that
     had been read perfectly well was recorded as an act nobody corroborated.
 
-    The bar is the sealed deadline itself, not a fraction of it derived here
-    (CodeRabbit pass 3): the claim is "this page aligns under the shipped
-    limits", and a second invented threshold would be a different, weaker
-    claim. Marked `full` so a ten-second alignment stays out of the fast loop
-    (CodeRabbit pass 2, which also asked for the timing to go away entirely --
-    declined: the deadline's adequacy is this change's whole subject, and a
-    claim no test can notice going wrong is not a claim).
+    The bar is the sealed deadline itself, not a fraction of it derived here:
+    the claim is "this page aligns under the shipped limits", and a second
+    invented threshold would be a different, weaker claim. Marked `full` so a
+    ten-second alignment stays out of the fast loop. The timing is kept rather
+    than removed: the deadline's adequacy is this change's whole subject, and
+    a claim no test can notice going wrong is not a claim.
 
     What no deadline value can claim is that nothing reaches it: two different
     low-entropy chair responses at the pair ceiling measure 283.9 s, so the

@@ -76,7 +76,7 @@ PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 # The rounding rule each resizing operation's own publisher applies -- and so,
 # read as a key set, which operations resize at all. Ours and Churro's truncate
 # (`int()`); Chandra's snaps to its 28-pixel patch grid, and calling that
-# `floor` would be a record that reads false (GOVERNANCE 10).
+# `floor` would be a record that reads false (principle 8).
 _DIMENSION_ROUNDING: Final = {
     "crop-resize-preserve-aspect": "floor",
     "chandra-scale-to-fit.v1": "grid-28",
@@ -261,7 +261,7 @@ CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
 # declared, not measured -- the design defers calibrating them against
 # Chandra's own `detect_repeat_token` thresholds to Stage 2, and a threshold
 # nobody has measured says so rather than wearing a measurement's authority
-# (GOVERNANCE 10).
+# (principle 8).
 _REPETITION_WINDOW: Final = 24
 _REPETITION_MIN_REPEATS: Final = 3
 
@@ -544,7 +544,7 @@ def validate_observed(
 
     A span addresses this Testimonium's exact retained string in code points,
     never the normalized alignment view. It may be null, but it may not name an
-    offset the record cannot answer (GOALS 5).
+    offset the record cannot answer (goal 4).
     """
     if not isinstance(value, list):
         raise SchemaRefusal("a Testimonium observed block is not a list")
@@ -688,7 +688,7 @@ def validate_presented_page_binding(
     A record could therefore name page 1 and carry page 2's real, digest-bound
     pixels: self-consistent, readable, and a lie about which ink a witness saw.
     Its observed boxes would then be validated against page 1's dimensions and
-    read, by any later coverage derivation, as page 1 geometry (GOALS 5;
+    read, by any later coverage derivation, as page 1 geometry (goal 4;
     ARCHITECTURE invariant 3).
 
     Region callers also bind the sealed Designator record. An adapter-crop is an
@@ -825,7 +825,7 @@ def _truncation_from_stop_word(transport_stop_reason: str) -> tuple[bool | None,
     cut-off word" made an engine that reported *nothing* indistinguishable from
     one that reported a natural stop, so a live Churro page whose wire carried
     no ``finish_reason`` could only be published as ``truncated: false`` — a
-    completed boundary nobody observed, which GOVERNANCE 10 refuses. The third
+    completed boundary nobody observed, which principle 8 refuses. The third
     state is the honest one: unknown, and said so in the basis, exactly the
     shape `validate_content_health` already closes and the live boundary
     (`pipeline/3_attestatores/live_witness.py::_content_health`) already
@@ -870,7 +870,7 @@ def validate_page_testimonium_payload(
     # shown, are two separate fields. Left unreconciled, a record can name page
     # 2 while carrying page 5's presentation and page-5 observed boxes; a
     # consumer keying on `page_ordinal` would then read page-5 geometry as page
-    # 2's (GOALS 5, ARCHITECTURE invariant 3). The Perlector checks this at its
+    # 2's (goal 4, ARCHITECTURE invariant 3). The Perlector checks this at its
     # own seam; closing it here means every consumer of the shared contract gets
     # it, including the Recensor's coverage derivation.
     presented = payload["presented"]
@@ -1053,7 +1053,7 @@ def validate_retained_response_refs(
 
 # A declared, deliberately UNMEASURED routing rule.  Unit 10 records only the
 # unambiguous zero-overlap case; calibrating a near-overlap threshold would be a
-# measurement claim GOVERNANCE 10 does not permit until something has actually
+# measurement claim principle 8 does not permit until something has actually
 # been measured.
 UNROUTED_OBSERVATION_OVERLAP: Final = {"rule": "positive-area", "status": "unmeasured"}
 
@@ -1074,7 +1074,7 @@ def validate_reportable_observations(observed: Any) -> list[dict[str, Any]]:
     it does do is index `ordinal`, `bounds_source`, and `bounds` on every row,
     so a row that is not a closed observation leaves that consumer as a raw
     KeyError instead of a named refusal — from stages whose whole contract is
-    that a fault arrives with its cause attached (GOVERNANCE 2).
+    that a fault arrives with its cause attached (principle 2).
     """
     if not isinstance(observed, list):
         raise SchemaRefusal("a Testimonium observed block is not a list")
@@ -1371,7 +1371,7 @@ _VENDOR_IDENTITY_FIELDS: Final = frozenset({"repository", "sha", "carried_string
 #: capture *under the name the record carries*: a name no dispatcher answers to
 #: is a record that can never be re-derived, and it would be discovered as a
 #: `KeyError` at re-derivation rather than as a refusal at the seam that wrote
-#: it (GOVERNANCE 2).
+#: it (principle 2).
 NATIVE_CAPTURE_PARSERS: Final = frozenset({"html", "xml", "text"})
 #: The one name still written in this tree at this commit, admitted so this
 #: contract can land ahead of the unit that retires it, and separate so that
@@ -1512,7 +1512,7 @@ def detect_repetition(raw: bytes | bytearray | str) -> dict[str, Any] | None:
     existing caller and every retained default keeps working unchanged.
 
     It never re-rolls, never scores, and never gates: it returns a finding the
-    caller records beside the bytes (GOVERNANCE 11 -- recovery recovers
+    caller records beside the bytes (principle 7 -- recovery recovers
     coverage, not quality).
 
     Text is accepted directly as well as bytes. A caller that already holds the
@@ -1576,7 +1576,7 @@ def derive_churro_capture(
     `None` for a retention that asks for no parse at all. Any other name is
     refused rather than answered `not-requested`: a record naming a parser this
     seam did not run would be a finished attempt wearing the look of one nobody
-    started (GOVERNANCE 2).
+    started (principle 2).
 
     The grammar's own findings travel with the reading, ahead of the post-hoc
     scan's. They are facts about this response that the page text alone cannot
@@ -1638,7 +1638,7 @@ def derive_churro_capture(
             # sentence becomes the capture's `outcome` rather than a short token
             # derived from it. It is the only thing that says *which* root
             # element arrived, and a record that dropped it would name the
-            # surprise without naming what the surprise was (GOVERNANCE 2).
+            # surprise without naming what the surprise was (principle 2).
             parse = {
                 "state": "unrecognized-shape",
                 "parser": parser,
@@ -1656,7 +1656,7 @@ def derive_churro_capture(
         # The parse outcome wins over a repeated tail, as `failed` already did:
         # a body this parser could not place is the more load-bearing fact about
         # the capture, and the repetition stays recorded in `findings` either
-        # way, so nothing is lost by the precedence (GOVERNANCE 2).
+        # way, so nothing is lost by the precedence (principle 2).
         if finding["kind"] == "post-hoc-repetition" and parse["state"] not in {
             "failed",
             "unrecognized-shape",
@@ -1846,7 +1846,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
 def validate_vendor_identity(value: Any) -> dict[str, Any]:
     """Close which vendor pin the bytes beside this capture were taken from.
 
-    GOVERNANCE 6 requires every stored reading to carry the resolved identity
+    principle 6 requires every stored reading to carry the resolved identity
     and revision of the *model* that produced it, and it already does. This is
     the other half of the same obligation once a chair runs its vendor's own
     system: the prompt bytes, the message shape and the output grammar are the
@@ -1929,7 +1929,7 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         raise SchemaRefusal("a page Testimonium native capture has no raw-response reference")
     # A shape check alone (any two non-empty strings) let a malformed or
     # forged reference stand as this record's own claim to be traceable back
-    # to retained bytes (ARCHITECTURE invariant 2, GOALS 5) -- the same
+    # to retained bytes (ARCHITECTURE invariant 2, goal 4) -- the same
     # `{relative_path, sha256}` shape is held to `is_sha256` everywhere else
     # this pipeline closes a blob reference; this was the one place it was not.
     if (
@@ -1973,7 +1973,7 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     # naming a parser, and a parse naming a parser no grammar answers to, have
     # different fixes -- and the second is the one that would otherwise surface
     # as a `KeyError` from inside `verify_native_capture_bytes` rather than as
-    # a refusal at the seam that wrote it (GOVERNANCE 2).
+    # a refusal at the seam that wrote it (principle 2).
     if state == "not-requested":
         if parser is not None:
             raise SchemaRefusal(

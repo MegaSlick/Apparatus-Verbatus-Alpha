@@ -193,7 +193,7 @@ def _validate_details(identity: ChairIdentity, details: ServingDetails) -> None:
     # **The adapter half is bound to the configuration, not merely well formed.**
     # An adapter chair is an adapter *of* a named base, and the base artifact
     # genuinely participates in the reading, so a receipt that omitted it or named
-    # some other chair lost the identity of a model that answered — GOVERNANCE 6
+    # some other chair lost the identity of a model that answered — principle 6
     # applies to every model in the serving moment, not only the one in the role.
     if details.adapter_identity is not None:
         _validate_identity(details.adapter_identity)

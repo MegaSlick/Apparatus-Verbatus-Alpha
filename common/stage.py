@@ -141,9 +141,7 @@ DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "perlector_audit.toml"
 )
 
-# Spec 08's run-level blind/named toggle, from Tyrel's 2026-07-30 ruling
-# (courtroom_doctrine.md, formalized in spec_08 — not ARCHITECTURE.md, which
-# does not define this regime). Named here once, so the CLI flag, the
+# Spec 08's run-level blind/named toggle. Named here once, so the CLI flag, the
 # config-digest binding, every stage's shared parser and the Perlectio schema
 # agree on the closed set: a value added in one place and missed in another
 # would let a run start under a regime every Perlectio it produced is then
@@ -282,8 +280,8 @@ WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
 # time it is called, so it cannot drift from what the tree holds" -- and that
 # property is bought by walking, validating and digesting every artifact in the
 # stage. Consumers ask for it per *act*, and the cost is then acts × artifacts
-# with a SHA-256 in the inner step. Measured on the 2026-09-15 live run, against
-# four pages: 1.31 s per Designator build over 554 artifacts, 1.59 s per
+# with a SHA-256 in the inner step. Measured on a four-page live run:
+# 1.31 s per Designator build over 554 artifacts, 1.59 s per
 # Attestatores build over 2114, and a Recensor pass over 516 held acts spending
 # three quarters of an hour on nothing else. The Armarium had already reached
 # the same conclusion for itself (`_cached_manifest`, "against a stated scale of
@@ -437,9 +435,9 @@ STRUCTURE_CALL_FIELDS: Final = frozenset(
 # later reader can tell what the chair was asked through without inferring it
 # from the shape of what came back.
 STRUCTURE_CALL_KIND: Final = "chat-completions"
-# The `config/decoding.toml` section the structure pass runs under. Tyrel ruled
-# on 2026-09-02 that the Designator's structure pass may run at a variable
-# temperature, sealed and recorded per run, so its re-run variance is a clue
+# The `config/decoding.toml` section the structure pass runs under. The
+# Designator's structure pass may run at a variable temperature, sealed and
+# recorded per run, so its re-run variance is a clue
 # beside the witnesses, while every Attestator keeps `reading_of_record`. The
 # two postures are different sealed sections, so naming the wrong one is a
 # posture reported rather than executed.
@@ -481,9 +479,8 @@ class StageChairProtocol(ChairProtocol, Protocol):
 # Recorded rather than only folded into `config_digest`, because a digest that
 # exists only inside a hash can be *verified* against a candidate file and never
 # *named*: a later reader holding the run tree alone could not say which
-# data-handling policy governed admission (CodeRabbit CF01), which
-# `config/README.md` stated as a limitation of the run authority rather than of
-# the reader. The map is small, immutable, self-hashed with the rest of the
+# data-handling policy governed admission, a limitation of the run authority
+# rather than of the reader. The map is small, immutable, self-hashed with the rest of the
 # authority, and every entry in it is already bound into `config_digest`, so it
 # adds a readable name for a fact the run was already sealed to.
 SEALED_CONFIG_DIGESTS_FIELD: Final = "sealed_config_digests"
@@ -721,7 +718,7 @@ class StageContext:
 
         Empty when nothing is sampled. `run_config_bindings` requires the exact
         recognized selector for a non-zero rate; the Perlector later resolves
-        that selector to Tyrel's typed approval-record reference in the run tree.
+        that selector to the typed approval-record reference in the run tree.
 
         Argv on both routes, backed by `config_digest` on the fixture route and
         by the `run-policy` digest on the real one. See `witness_context`.
@@ -1759,7 +1756,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     parser.add_argument(
         "--perlector-instrument-approval-ref",
         default="",
-        help="Tyrel's reference for the predeclared prior-draft instrument design",
+        help="the project lead's reference for the predeclared prior-draft instrument design",
     )
     parser.add_argument(
         "--perlector-protocol-config",
@@ -1802,7 +1799,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--nuda-approval-ref",
         default="",
         help=(
-            "Tyrel's reference for the predeclared Lectio nuda sampling design; "
+            "the project lead's reference for the predeclared Lectio nuda sampling design; "
             "required whenever --nuda-per-mille is not 0"
         ),
     )
@@ -1828,7 +1825,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
             "without it. Deliberately NOT sealed into config_digest: it is a measured "
             "runtime fact of the card, not run configuration, so it carries no "
             "'--no-placement-tier' companion and is simply omitted from a fixture "
-            "run's argv. GOVERNANCE 6 — 'the record itself protects the past' — is "
+            "run's argv. Principle 6 — 'the record itself protects the past' — is "
             "why the receipt records the caps that actually bound the serving "
             "moment (the launch audit's profile.tier) rather than folding this into "
             "the reproducibility contract config_digest exists to protect."
@@ -1895,16 +1892,15 @@ def validate_witness_context_bindings(
         )
     if not isinstance(nuda_approval_ref, str):
         raise ContractError("nuda_approval_ref must be a string")
-    # Spec 08: Lectio nuda "runs on a predeclared, Tyrel-approved sampling
-    # design... fixed before the run". Hard rule 1 is what makes that a refusal
-    # rather than a note: the sampling design is his to approve, and a run that
-    # draws an unapproved sample has decided something nobody asked it to. The
-    # reference is sealed beside the rate, so a run cannot later claim an
-    # approval it was not started under.
+    # Spec 08: Lectio nuda "runs on a predeclared, project-lead-approved
+    # sampling design... fixed before the run". The sampling design needs the
+    # project lead's approval, and a run that draws an unapproved sample has
+    # decided something nobody asked it to. The reference is sealed beside the
+    # rate, so a run cannot later claim an approval it was not started under.
     if nuda_per_mille and nuda_approval_ref != NUDA_APPROVAL_SUBJECT:
         raise ContractError(
-            f"a Lectio nuda rate of {nuda_per_mille}/1000 needs Tyrel's predeclared sampling "
-            f"design selector {NUDA_APPROVAL_SUBJECT!r} in --nuda-approval-ref; an arbitrary "
+            f"a Lectio nuda rate of {nuda_per_mille}/1000 needs the project lead's predeclared "
+            f"sampling design selector {NUDA_APPROVAL_SUBJECT!r} in --nuda-approval-ref; an arbitrary "
             "string is not an approval record"
         )
     if (
@@ -1924,7 +1920,7 @@ def validate_witness_context_bindings(
     ):
         raise ContractError(
             f"a Perlector prior-draft control rate of {perlector_instrument_per_mille}/1000 "
-            "needs Tyrel's predeclared sampling design selector "
+            "needs the project lead's predeclared sampling design selector "
             f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} in "
             "--perlector-instrument-approval-ref; an arbitrary string is not an approval record"
         )
@@ -1981,7 +1977,7 @@ def real_run_policy_digest(
             # A behaviour-changing mode, sealed like every other one. Without it
             # a run created ordinarily could be resumed under
             # `--mechanics-qualification` and pass both reuse checks, mixing
-            # ordinary and mechanics-only artefacts in one tree (CodeRabbit).
+            # ordinary and mechanics-only artefacts in one tree.
             "mechanics_qualification": mechanics_qualification,
         }
     )
@@ -2398,8 +2394,7 @@ def require_corpus_frame_shard(
     if bound is None:
         # A run that sealed no shard digest at all is a different fault from one
         # whose config changed after binding; naming them apart tells an operator
-        # whether to look at the binding step or at the file (CodeRabbit
-        # chain-end review; host disposition: fixed).
+        # whether to look at the binding step or at the file.
         raise ContractError(
             "this run sealed no digest for the corpus-frame shard configuration; "
             "a shard may not be created under an unbound policy"
@@ -2471,7 +2466,7 @@ def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     chair. `attestor_4` for `attestator_4` fails the `attestator_` prefix, so it
     never enters `witness_chairs`, no stage resolves it, and no artifact anywhere
     names it: a configured model was silently never asked for anything and the run
-    still reported `complete`. GOVERNANCE 2 refuses complete unless everything
+    still reported `complete`. Principle 2 refuses complete unless everything
     reconciles, and a chair in the roster is something to reconcile.
 
     Absences count as addressed: an absent chair is a decision already recorded.
@@ -2481,7 +2476,6 @@ def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     participates in the reading and its identity travels in the serving receipt as
     `adapter_identity`. Reporting it unaddressed forced a perfectly valid adapter
     roster to `partial` for a chair that *is* accounted for, one indirection away.
-    Found by CodeRabbit on pull request 16.
     """
     addressed = set(models.witness_chairs) | {
         DESIGNATOR_CHAIR,
@@ -2523,7 +2517,7 @@ def fixture_serving_details(identity: ChairIdentity) -> ServingDetails:
     values in the same sense as the synthetic pages, and they say so —
     `fixture://` for an endpoint, `fixture` for a dtype. Reading them as a
     measurement of a real serving moment would be exactly the confusion
-    GOVERNANCE 10 forbids.
+    principle 8 forbids.
 
     Two consequences worth knowing until the pipeline adopts spec 04's real
     serving-manager callback. Endpoint and start time are confined to the run
@@ -2619,7 +2613,7 @@ def validate_serving_provenance(
     # (`unaddressed_chairs` names the whole role set). A witness Testimonium
     # carrying a structure-chair call, or a structure call attributed to a
     # witness role, would be a reading claiming a serving moment that was not
-    # its own — GOVERNANCE 6, and the same fabricated-moment refusal spec D §7
+    # its own — principle 6, and the same fabricated-moment refusal spec D §7
     # names.
     if provenance.get("engine_call") is not None:
         if producer_stage != DESIGNATOR:
@@ -2667,8 +2661,7 @@ def validate_serving_provenance(
     # the closed schema admits it, and the absent branch returned before this line.
     # Without this check a configured chair carried an unread `absence` record beside
     # a full identity: two contradictory claims about the same chair, sealed into a
-    # reading, and the reading still verified. Found by the Terra review seat, which
-    # reproduced it with a fabricated absence for a chair that never existed.
+    # reading, and the reading still verified.
     if "absence" in provenance:
         raise SchemaRefusal(
             f"configured chair {chair!r} carries an absence record; a chair is configured "
@@ -2743,9 +2736,9 @@ def _validate_structure_chair_call(context: StageContext, call: Any) -> None:
 
     `decoding_policy` is a *name*, not a value. The Designator's structure pass
     runs under `config/decoding.toml`'s `[structure]` section while every
-    Attestator reads at `reading_of_record` (Tyrel, 2026-09-02), so provenance
-    naming the wrong section would report a posture the pass did not run under —
-    GOVERNANCE 10's confusion of a claim with a measurement, and the reason the
+    Attestator reads at `reading_of_record`, so provenance naming the wrong
+    section would report a posture the pass did not run under — principle 8's
+    confusion of a claim with a measurement, and the reason the
     temperature itself is deliberately *not* copied here: a number beside the
     name could disagree with the sealed bytes, and then two artifacts in one run
     would say different things about one run's decoding.
@@ -2975,7 +2968,7 @@ def _verify_real_act_denominator(
     A row matching more than one minted class is refused as ambiguous, and a
     row matching none and carrying no region is refused as unevidenced. Nothing
     tries the classes in turn until one verifies: the evidence decides the
-    class, or nothing does (GOVERNANCE 3, hard rule 8).
+    class, or nothing does (principle 1).
     """
     fallbacks_by_subject = _designator_records_by_subject(context, "page-fallback")
     # One index of this run's own pages, built once. A region's page is checked
@@ -3611,8 +3604,8 @@ def _verify_proposal_act_row(
     perfectly self-consistent act over any rectangle at all: identity
     recomputes, the act key agrees with the region that carries it, and every
     downstream stage reads, witnesses and establishes text over ink no model
-    ever proposed. GOVERNANCE 10 is the rule that forbids it (the claim is "the
-    structure chair marked this out"), and GOVERNANCE 6 is the rule it would
+    ever proposed. Principle 8 is the rule that forbids it (the claim is "the
+    structure chair marked this out"), and principle 6 is the rule it would
     break next, since the reading would carry the chair's provenance for a
     rectangle the chair never returned.
 
@@ -3641,7 +3634,7 @@ def _verify_proposal_act_row(
     same "prove its premise" step `_verify_page_fallback_act_row` makes, so a
     status pointing at bytes that have since changed refuses instead of
     resolving. And the **rectangle** must appear in that answer's own act list,
-    exactly — no nearest match, no containment, no tolerance (hard rule 8: a
+    exactly — no nearest match, no containment, no tolerance (principle 1: a
     "nearest" rectangle is a selection among candidates dressed as arithmetic).
 
     Two smaller bindings sit alongside. The answer's own `engine_call` must be
@@ -3840,7 +3833,7 @@ def _verify_structural_act_row(
     claiming a continuation with no far-page region names one that was never
     cut; a row denying one while a far-page region exists would drop a
     published continuation crop silently downstream (the Attestatores append
-    the far page only when the flag is set) -- exactly the loss GOALS 1 calls
+    the far page only when the flag is set) -- exactly the loss goal 2 calls
     worse than a poorly read act. So the far-page count is checked against the
     flag in both directions.
 
@@ -3991,8 +3984,7 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     # hashing per process, so a seal carrying more than one bad extra row named a
     # different act in the refusal on every run. The refusal was always correct
     # and always fired; which act it accused was a coin flip, which is the kind of
-    # evidence nobody can act on twice. Found by the Opus read of this branch,
-    # which demonstrated five different orders over six keys in five runs.
+    # evidence nobody can act on twice.
     # One read of the hold artifacts for both directions. Each
     # `_designator_records_by_subject` call walks the stage's whole manifest and
     # opens every record of its kind, and a page held for over-bound residuals is
@@ -4025,7 +4017,7 @@ def _verify_every_conservation_residual_is_accounted(
     rows, not the reconciliation — reports 0 over ink the stage itself measured
     and no crop claimed.
 
-    GOVERNANCE 2 is a rule about the missing row as much as the forged one, and
+    Principle 2 is a rule about the missing row as much as the forged one, and
     the Designator's own docstring already promises the stronger reading: a run
     that "found ink no crop claimed has not completed". This is that promise
     checked at the first consumer rather than asserted by the producer.
@@ -4383,7 +4375,7 @@ def _verify_minted_act_rows(
     at a declaration their run does not have.
 
     Two units the Designator may add beyond what the fixture declares, and no
-    others. Both exist for GOALS 1's "a missed act is worse than a poorly read
+    others. Both exist for goal 2's "a missed act is worse than a poorly read
     act", and neither may be trusted merely because the seal's own producer
     wrote it down — that is the same reasoning `expected_acts` already applies
     to every fixture-derived row above.
@@ -4405,10 +4397,10 @@ def _verify_minted_act_rows(
     against their own records.
 
     A **page-fallback** act is the predetermined crop grid cut over a page the
-    structure pass found no ink on (Tyrel, 2026-08-11: "If the designator sees
-    no text it should default to predetermined crops ... and send the crops down
-    stream to be read by everything"). It is `proposed`, because cutting crops
-    nothing will read would be the pointless half of that ruling, and its
+    structure pass found no ink on: when the designator sees no text, it
+    defaults to predetermined crops and sends them downstream to be read by
+    everything. It is `proposed`, because cutting crops
+    nothing will read would be the pointless half of that policy, and its
     identity must recompute against the page's own `structure-status` record,
     which is what independently says the structure pass found nothing there.
 
@@ -4551,7 +4543,7 @@ def _verify_page_fallback_act_row(
     saying the structure pass genuinely fell back to tiles on that page. A
     fallback act minted over a page whose structure pass *did* detect something
     therefore refuses here, which is exactly the claim-about-what-was-measured
-    GOVERNANCE 10 forbids.
+    principle 8 forbids.
     """
     record = fallbacks_by_subject.get(act_id)
     if record is None:
@@ -4627,7 +4619,7 @@ def _verify_page_residual_act_row(
     The hold's own `residual_component_count` is held to the record's. It is the
     number a reviewer reads off the review item, and a hold free to name a
     different one would put a figure in front of a person that no artifact in the
-    run supports. GOVERNANCE 10: the count is a measurement, so it is checked
+    run supports. Principle 8: the count is a measurement, so it is checked
     against the thing that measured it.
 
     The `reason_code` and `blocking_page_ordinal` are checked too, and they are
@@ -4856,7 +4848,7 @@ def _designator_records_by_subject(context, kind: str) -> dict[str, dict[str, An
     differ in their attempt, so both reach the manifest, and a dict built by
     comprehension kept whichever the manifest order visited last -- one act
     verified against a rectangle chosen by artifact-hash ordering, which is a
-    picker with no one at the controls (GOVERNANCE 3, hard rule 8).
+    picker with no one at the controls (principle 1).
     """
     records: dict[str, dict[str, Any]] = {}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
@@ -5362,16 +5354,15 @@ def run_stage(main) -> int:
 def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) -> dict[str, Any]:
     """The current record for a subject: the latest attempt, with its honest status.
 
-    "Current" is derived, never stored as a pointer — Tyrel's retention ruling of
-    2026-07-30 — so this is the one place that derivation happens and the only
-    place it can be got wrong.
+    "Current" is derived, never stored as a pointer, so this is the one place
+    that derivation happens and the only place it can be got wrong.
 
     A record with no attempt ordinal is FATAL rather than treated as ordinal zero.
-    That defaulting cost this build an hour: three readers each defaulted a missing
-    ordinal to 0, `>` never fired, and each picked whichever record the filesystem
-    listed first. The orchestrator read a stale "recovery-requested" that way and
-    dispatched a second recrop over the top of the first. An evidence channel that
-    cannot be read makes the answer unknown; it never resolves in the run's favour.
+    Defaulting a missing ordinal to 0 lets `>` never fire, so whichever record the
+    filesystem lists first wins by accident — for example, a stale
+    "recovery-requested" read as current, dispatching a second recrop over the
+    top of the first. An evidence channel that cannot be read makes the answer
+    unknown; it never resolves in the run's favour.
 
     **`operation` is what binds the ordinal to the sealed identity, and it is why
     this function cannot be called without naming one.** The envelope proves that
@@ -5380,10 +5371,9 @@ def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) 
     subject/operation/ordinal it is supposed to bind. `attempt_ordinal` lives in the
     payload, outside that derivation, and this function used to select on it alone.
     So the field that decides which reading is current was the one field in the
-    chain nothing recomputed. Demonstrated on a real run tree before this change: a
-    second `perlectio` for one act, carrying different text and `attempt_ordinal:
-    99`, validated as an envelope and became the current reading over the record
-    that had actually read the ink.
+    chain nothing recomputed: a second `perlectio` for one act, carrying different
+    text and `attempt_ordinal: 99`, would validate as an envelope and become the
+    current reading over the record that had actually read the ink.
 
     The caller knows its own operation — the Perlector reads `perlegere`, the
     Recensor recenses, a chair reads `read:<chair>` — so the identity can be
@@ -5394,7 +5384,7 @@ def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) 
 
     Ordinals must also be the contiguous run 1..N. Attempts are append-only and
     never reused, so a gap means an attempt that existed is no longer here — which
-    is the one thing GOVERNANCE 2 does not allow to pass quietly — and it is also
+    is the one thing principle 2 does not allow to pass quietly — and it is also
     what stops an honestly-derived attempt 99 from being manufactured beside
     attempt 1 and outranking it.
     """
@@ -5622,7 +5612,7 @@ def latest_per_chair(records: list[dict[str, Any]], what: str) -> list[dict[str,
     """One record per chair: each chair's own latest attempt, honest status kept.
 
     Attestatores attempts are append-only per (act, chair) — a failed re-read shows
-    as `failed` with the earlier success intact as history (GOVERNANCE 4) — so any
+    as `failed` with the earlier success intact as history (principle 4) — so any
     consumer of a flat list of testimonium records for one act has to collapse each
     chair's own history down to its current attempt before treating the group as
     evidence. `pipeline/5_recensor/run.py` did this collapsing inline;
@@ -5658,10 +5648,9 @@ def require_current_witness_basis(
     the reading's own basis references, and neither route passes back through
     `latest_per_chair`. So a Testimonium appended after the reading was
     established is structurally invisible at the point where the export decides
-    whether to say `complete`, and the sealed export keeps saying it (audit
-    Opus-F2, 2d).
+    whether to say `complete`, and the sealed export keeps saying it.
 
-    GOVERNANCE 2 is the rule this serves and it is unconditional: "'complete' is
+    Principle 2 is the rule this serves and it is unconditional: "'complete' is
     refused unless everything reconciles." A basis citing an attempt that has
     since been superseded has not reconciled, whatever the reading itself says.
     `pipeline/3_attestatores/run.py::require_open_witness_layer` closes the door
