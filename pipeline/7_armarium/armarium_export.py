@@ -19,7 +19,7 @@ sealed projection produces identical bytes *for a given SQLite build*, and
 different bytes across builds: measured at 3.46.1 in a Linux chamber against
 3.53.4 on the maintainer's machine, with the same rows, schema and page size.
 Content-addressing it in the run tree therefore binds the toolchain as well as
-the data, which is carried to Tyrel rather than settled here.
+the data, which is carried to the project lead rather than settled here.
 """
 
 from __future__ import annotations
@@ -311,9 +311,9 @@ class ArmariumProjection:
     # "proposal-seal expected acts", and for a cluster the two numbers differ:
     # a two-capture physical act is two seal rows and one logical act. Exporting
     # the logical count under the local count's name is a claim about something
-    # that was not measured (GOVERNANCE 10), and dropping the local count
+    # that was not measured (principle 8), and dropping the local count
     # entirely loses the evidence a reader needs to reconcile the bundle against
-    # the seal (GOVERNANCE 2). So a clustered run carries both, and the ledger
+    # the seal (principle 2). So a clustered run carries both, and the ledger
     # says which is which -- consult §5.2's "the terminal ledger reports both
     # counts explicitly". `None` is the ordinary image-local run, where the two
     # numbers are the same number and the claim already says so.
@@ -766,7 +766,7 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
 # sample was ever taken for. Every one of them is recorded somewhere in the run
 # tree or in a sealed configuration; none of them qualified the word on the
 # deliverable. This block is where the export says so, in its own voice, on
-# every bundle -- GOVERNANCE 10's "a metric that cannot be measured is a
+# every bundle -- principle 8's "a metric that cannot be measured is a
 # failure, not a pass", carried to the last boundary.
 #
 # Derived, never constant: every entry's `status` and `detail` come from the
@@ -825,7 +825,7 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
 _GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
     {"configuration", "calibrated_for_this_corpus", "sample_count"}
 )
-# Where a reader goes to check each row against the evidence itself (GOALS 5).
+# Where a reader goes to check each row against the evidence itself (goal 4).
 _NOT_MEASURED_RECORDED_IN: Final = {
     _TESTIMONY_COVERAGE: (
         "each act's Recensor review, fields `testimony_content_coverage` and "
@@ -1270,7 +1270,7 @@ def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
 
 
 def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
-    """Package integrity *and* GOVERNANCE 5's one text, in a single extraction.
+    """Package integrity *and* principle 5's one text, in a single extraction.
 
     ``verify_export_bundle`` deliberately answers only "is this package internally
     whole", and a package can pass it with two literal formats carrying different
@@ -1311,7 +1311,7 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
     the text it describes, so a format that silently diverged on one of them --
     present, well-formed, but *different* from what the other formats say -- fails
     identity exactly as a diverging literal would (U3: these are projected
-    readings like the text they sit beside, and GOVERNANCE 5 does not stop at the
+    readings like the text they sit beside, and principle 5 does not stop at the
     characters). A `text_status` that read `partial` in one product and
     `established` in another would be two deliverables disagreeing about whether
     the same act is damaged.
@@ -1391,7 +1391,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
     A `mapped` page carries `remeasured: None`, not a zeroed measurement: this
     stage re-measures only the pages Unit 9 actually flagged, and writing zeros
     for the rest would put a measurement nobody took into the record
-    (GOVERNANCE 10). The absence is recorded as absence.
+    (principle 8). The absence is recorded as absence.
 
     An `ink-not-measurable` page carries `remeasured: None` for a stronger
     version of the same reason: the Ink Map could not infer its paper value, so
@@ -1559,7 +1559,7 @@ def _act_partition_claim(
     number, and the seal's own row count travels beside it with the membership
     that reconciles the two -- so a reader holding the bundle and the Designator
     seal can see why 2 became 1, instead of finding a bundle that claims to have
-    counted seal rows and reports the wrong total for them (GOVERNANCE 10).
+    counted seal rows and reports the wrong total for them (principle 8).
     """
     claim = {
         "denominator": _ACT_PARTITION_DENOMINATOR,
@@ -1605,7 +1605,7 @@ def _validate_logical_act_conservation(
     exact-identity, not heuristic: a member act_id or act_key that also names a
     row of this projection is the duplicate.
 
-    **Vanish (GOVERNANCE 2, invariant 8).** A clustered run's act denominator
+    **Vanish (principle 2, invariant 8).** A clustered run's act denominator
     is `logical_expected_count`, which is smaller than the proposal seal's row
     count by construction. Without `local_proposal_rows` beside it, a member act
     that never reached any logical act is invisible -- the arithmetic still
@@ -1808,7 +1808,7 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
         # under a sealed cap of 0 -- no reader was asked and the exhausted-cap
         # projection minted real spans onto delivered acts anyway. Calling that
         # second case unproduced would deny a measurement that partly happened
-        # (GOVERNANCE 10; the independent review of 2026-09-11).
+        # (principle 8; the independent review of 2026-09-11).
         return "not-measured"
     if instrument == _GEOMETRY_CALIBRATION:
         return (
@@ -1982,7 +1982,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     # two different facts under one number. A delivered `malformed` act is a
     # broken tree rather than a count: the Recensor holds one, so it can only
     # reach here through a projection that did not come from a run
-    # (the independent review of 2026-09-11, and CodeRabbit at the same site).
+    # (an independent review found the same site).
     assessed_count = 0
     not_assessed_count = 0
     for act in projection.acts:
@@ -2052,7 +2052,7 @@ def _require_damage_record(
     is the one field that says whether the reading leaving the pipeline is whole,
     and a value read out of a row and believed is an assertion, not a check: a
     package could say `established` over an act whose own gap list records ink the
-    Perlector could not read, which is exactly the shape GOVERNANCE 2 refuses. The
+    Perlector could not read, which is exactly the shape principle 2 refuses. The
     two damage layers travel in every literal format, so every reader of one --
     the projection boundary and each product verifier on a clean machine -- can
     derive the word for itself and refuse the row if it disagrees.
@@ -2232,7 +2232,7 @@ def _reject_act_salvage_namespace(act: dict[str, Any]) -> None:
     is expected, and its harvested scrap becoming established text through a writer
     that only ever asked whether a `canonical_clean_text` field was present. Spec 11
     test 4 is that "no code path from this stage writes act text under any
-    circumstance": promotion is a pipeline re-entry Tyrel approves, never an export
+    circumstance": promotion is a pipeline re-entry the project lead approves, never an export
     act, so a record carrying any of these discriminants is refused by name rather
     than left to fail on a missing key somewhere downstream.
     """
@@ -3762,7 +3762,7 @@ def _export_manifest(
         "claims": {
             # Measured, not constant. A status that says `partial` on every run
             # whatever happened cannot distinguish the run that lost something from
-            # the run that did not, which is the distinction GOVERNANCE 2 exists to
+            # the run that did not, which is the distinction principle 2 exists to
             # keep visible.
             "status": ledger["status"],
             "partial_reasons": ledger["unresolved_reasons"],
@@ -3806,7 +3806,7 @@ def _export_manifest(
             "transcription_annotations": _transcription_annotations_claim(formats.formats),
             "uncertainty": _uncertainty_claim(formats.formats),
             # Labelled a proposal because it is one: spec 11 leaves the choice of
-            # convention to Tyrel at this gate, and nothing hashed depends on it.
+            # convention to the project lead at this gate, and nothing hashed depends on it.
             # `renders_canonical_uncertainty` is the declaration R8 owes: the
             # record DOES carry the layer now, the `uncertainty:` field beside each
             # literal carries it into the product, and this rendering deliberately

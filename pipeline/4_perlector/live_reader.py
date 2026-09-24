@@ -12,7 +12,7 @@ docstring on ``reader.py`` explains why: ``lectio-nuda`` and ``lectio-prior``
 are built from identical dossier arguments and carry the same
 ``dossier_digest`` and ``rendered_sha256``, so a reader that let its
 generation vary with the label rather than the evidence would make
-GOVERNANCE 10's contrast measure the pipeline's own routing instead of the
+Principle 8's contrast measure the pipeline's own routing instead of the
 model. ``read`` below reads ``pass_kind`` in exactly two places: the closed
 membership check, and the delivery hand-off to ``validate_audit_delivery``.
 Nothing else in this module ever inspects it.

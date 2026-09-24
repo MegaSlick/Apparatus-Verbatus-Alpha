@@ -8,9 +8,9 @@ twice, and its export then reached through `consolidated_literal`, `reader_text`
 `literal`, `text`, `markdown` for whichever was non-empty. Every closed field set
 in this file exists to stop that being rebuilt one field at a time — including
 `_REGION_FIELDS`, because a region is embedded whole and travels into the export
-whole (GOVERNANCE 5: one established text, projected identically).
+whole (principle 5: one established text, projected identically).
 
-**The three silences, which must never collapse** (Tyrel, 2026-08-05). Nothing
+**The three silences, which must never collapse.** Nothing
 there — `no_readable_text`, a positive finding carrying its own evidence. Ink
 present and unread by a human. Ink the machine could not see. The last two are
 indistinguishable from inside the pipeline and both are gaps, inside `partial`;
@@ -19,7 +19,7 @@ ordinary material either way — "It is not a fatal error there might be blank
 pages" — so the refusals here are about the confusion, never about blankness.
 
 **A witness variant is evidence beside a gap, never a substitute inside `text`**
-(Tyrel, 2026-07-30: "we don't want it making shit up").
+(ruling: "we don't want it making shit up").
 
 **Write-once is enforced a layer down**, by the run tree refusing different bytes
 under one identity. What this stage adds is that it never tries: a revised
@@ -499,9 +499,9 @@ def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
     """Refuse a status the text does not support.
 
     Spec 10 test 3: an empty `text` with `established` status is refused at the
-    schema. `no_readable_text` is a positive finding (Tyrel, 2026-08-05) and
+    schema. `no_readable_text` is a positive finding and
     requires its own evidence reference — an unlabeled empty string is never
-    proof that a page was blank (4c: GOVERNANCE 2's exact enemy).
+    proof that a page was blank (4c: principle 2's exact enemy).
     """
     if text_status not in TEXT_STATUSES:
         raise SchemaRefusal(f"text_status {text_status!r} is not one of {sorted(TEXT_STATUSES)}")
@@ -1006,7 +1006,7 @@ def _require_the_partition_this_reading_was_made_over(
     ``logical_act_id`` alone would make that provenance the caller's assertion
     rather than the reading's -- a row naming five captures stapled to a joint
     autopsia that only ever presented two, and an established record claiming
-    evidence its own reading never demonstrated (consult §5.1, hard rule 6).
+    evidence its own reading never demonstrated (principle 8).
 
     The dossier's ``cross_capture_autopsia`` closes it. It is a full
     ``cross-capture-autopsia.v1`` (``assemble_reader_input`` puts the validated

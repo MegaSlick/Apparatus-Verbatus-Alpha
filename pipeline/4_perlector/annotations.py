@@ -10,7 +10,7 @@ bounds must be zero-width inside `text`, so a declared gap cannot carry text.
 No count of agreeing witnesses can widen it -- the schema does not read
 `witness_evidence` at all when deciding whether the gap's span is legal. This
 does not claim to identify an undeclared model echo elsewhere in `text`; Lectio
-nuda and dissent are the instruments for that behaviour (GOVERNANCE 7).
+nuda and dissent are the instruments for that behaviour (principle 3).
 
 An uncertain span is the opposite case: text the Perlector *did* read, held
 with less confidence, with alternatives noted. It carries real characters on
@@ -34,9 +34,9 @@ _SPAN_FIELDS: Final = frozenset({"start", "end", "alternatives", "confidence"})
 _GAP_FIELDS: Final = frozenset({"position", "start", "end", "witness_evidence"})
 # A gap's evidence names the chair, what it reported, and *which artifact said
 # so*. The chair alone is a claim about a witness; the digest-checked reference
-# is the witness's own sealed record, which is what GOALS 5 means by a result
+# is the witness's own sealed record, which is what goal 4 means by a result
 # returning to the witnesses that saw it. Without it a displayed
-# "(illegible -- witnesses agree: Tyrel)" cannot be traced back to the
+# "(illegible -- witnesses agree: Chair-A)" cannot be traced back to the
 # Testimonium it came from.
 _EVIDENCE_FIELDS: Final = frozenset({"chair", "testimonium_id", "reference", "variant"})
 
@@ -124,7 +124,7 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
             )
         # The firewall. A gap whose bounds are not equal claims characters of
         # `text` for a position where sight failed -- exactly the substitution
-        # GOVERNANCE 3 and spec_08 forbid by name, whatever those characters
+        # principle 1 and spec_08 forbid by name, whatever those characters
         # happen to equal. Checked before anything about the position label or
         # the evidence it carries, because this is the one rule that must hold
         # regardless of what else about the gap is true.
@@ -245,7 +245,7 @@ def validate_annotations(payload: dict[str, Any], *, outcome: str | None = None)
 #                 anchor to the text (an offset past its end, a gap with width,
 #                 an unknown confidence); the problem is retained here and the
 #                 layers stay empty, so a broken report is a visible fault
-#                 rather than an empty confident list (GOVERNANCE 10)
+#                 rather than an empty confident list (principle 8)
 ASSESSMENT_ASSESSED: Final = "assessed"
 ASSESSMENT_NOT_ASSESSED: Final = "not-assessed"
 ASSESSMENT_MALFORMED: Final = "malformed"

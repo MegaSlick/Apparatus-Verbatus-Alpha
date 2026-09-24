@@ -1,6 +1,6 @@
 """The run-level hard-failure cap, driven over the real orchestrator.
 
-Tyrel's ruling, 2026-08-05: two hard failures in a run is an early warning and
+Two hard failures in a run is an early warning and
 the run keeps going; more than two halts it at the next stage boundary, with
 whatever finished intact. Distinct from `pipeline/5_recensor/test_recovery_
 budget_exhaustion.py` and friends, which exercise the PER-ACT recovery budget —
@@ -9,7 +9,7 @@ this is the separate, RUN-level mechanism `common/hard_failure.py` builds.
 The two-act synthetic fixture cannot organically produce three distinct hard
 failures (there are only two acts, and a `truncated` Perlectio no longer counts
 — see `config/hard_failure.toml`'s own comment: a dense page is not a damaged
-one, the old pipeline's own Tyrel-ruled distinction), so every hard failure
+one, a distinction ruled by the old pipeline), so every hard failure
 here is forged directly onto a real tree — the same technique every tamper
 test in `test_orchestrator_acceptance.py` already uses to reach a state the
 happy path cannot. `truncated-reading` is still used as the driving scenario,
@@ -205,7 +205,7 @@ def test_exactly_two_hard_failures_is_only_a_warning_and_the_run_continues(tmp_p
     run_through_perlector(root, "r", "truncated-reading")
     tree = RunTree(root, "r")
     # a1's real `truncated` Perlectio does not count; two forged failures is
-    # exactly two, Tyrel's named "early warning" -- the run must not stop early.
+    # exactly two, the named "early warning" -- the run must not stop early.
     forge_perlector_failure(tree, "fake-hard-failure-subject-1")
     forge_perlector_failure(tree, "fake-hard-failure-subject-2")
 
@@ -278,8 +278,8 @@ def test_an_unmeasurable_direct_entry_cap_refuses_instead_of_writing(tmp_path):
 
 
 def test_a_real_truncated_reading_alone_never_mentions_the_cap(tmp_path):
-    """A dense page is not a damaged one (the old pipeline's own Tyrel-ruled
-    distinction, carried into `config/hard_failure.toml`'s comment). One
+    """A dense page is not a damaged one (a distinction carried over from the
+    old pipeline, into `config/hard_failure.toml`'s comment). One
     genuine truncated Perlectio, with nothing forged, must not move the tally
     at all -- the run proceeds exactly as an ordinary held act would."""
     root = tmp_path / "runs"
@@ -471,7 +471,7 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
     )
     assert first.returncode == 0, first.stderr
 
-    # A comment-only edit: the threshold is Tyrel's ruling and `RULED_THRESHOLD`
+    # A comment-only edit: the threshold is ruled and `RULED_THRESHOLD`
     # refuses to move either way, so the swap this seal has to catch is any change
     # to the bytes at all -- which is exactly what a digest says and what a reader
     # of `config_digest` alone could not attribute to this file.

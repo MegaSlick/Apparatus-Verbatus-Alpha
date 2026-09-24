@@ -17,7 +17,7 @@ salvage tier. Every delivered act carries the Archetypus's own established-text
 status and transcription annotation layer, so an act the pipeline knows is
 damaged is visibly partial in the products and in the run's own verdict. The
 separate *semantic* annotation layer remains only a boundary contract pending
-Tyrel's ARCHITECTURE approval.
+the project lead's ARCHITECTURE approval.
 
 Every bundle also carries `claims.not_measured`: this build's five instruments,
 each with what this run actually recorded for it. `DELIVERED` is reachable over

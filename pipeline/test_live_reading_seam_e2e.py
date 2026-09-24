@@ -39,12 +39,12 @@ which.
 **What the third witness costs, said here because the floor depends on it.**
 A chair attached by `anchor-line` counts at this act only because ANOTHER
 chair's response located its text. That is placement, not selection — nothing
-compares the two readings or prefers one (GOVERNANCE 3, hard rule 8) — but it
+compares the two readings or prefers one (principle 1) — but it
 means "three witnesses" here is two independent readings and one dependent
 placement, and any later claim about witness independence has to say so.
 
-**A delivered offline e2e is not a proven pipeline** (GOVERNANCE 10, hard rule
-1). One scripted run over a synthetic fixture reaches `delivered`; nothing
+**A delivered offline e2e is not a proven pipeline** (principle 8). One
+scripted run over a synthetic fixture reaches `delivered`; nothing
 follows about a real page. A real register carries headers, folio numbers and
 marginalia no proposal covers, Churro will transcribe them, and that page will
 hold on content coverage — the rule working, not a regression.
@@ -963,7 +963,7 @@ def test_every_finish_reason_travels_verbatim_from_the_wire_to_both_records(live
 
 
 def test_the_receipts_on_provenance_are_the_receipts_the_chairs_really_published(live_seam):
-    """GOVERNANCE 6: the record protects the past, so it names the real moment.
+    """Principle 6: the record protects the past, so it names the real moment.
 
     A fixture posture writes a declared `fixture://` receipt. Every record this
     run wrote must instead name the receipt its own client re-read through the
@@ -993,7 +993,7 @@ def _reviews(live_seam) -> list[dict[str, Any]]:
 
 
 def _assert_the_continuation_page_is_unmeasured_by_name(reviews: list[dict[str, Any]]) -> None:
-    """Tyrel's ruling on Unit 12 F2, asserted on a live tree.
+    """Ruling on Unit 12 F2, asserted on a live tree.
 
     Page 2 carries a2's continuation region and both page witnesses transcribe
     its whole text. No attachment on it can ever be `aligned` -- the Perlector
@@ -1053,12 +1053,12 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
     which is why it is now asserted BY NAME below rather than left to
     `reasons == []` to imply.
 
-    **A delivered offline e2e is not a proven pipeline** (GOVERNANCE 10, hard
+    **A delivered offline e2e is not a proven pipeline** (principle 8, hard
     rule 1). The claim is that one scripted run over a fixture whose page text
     is exactly its two acts reaches `delivered`, and nothing more. A real
     register page carries headers, folio numbers and marginalia the Designator
     did not propose; Churro will transcribe them; that page will hold on content
-    coverage, and that is the rule working (GOALS 1), not a regression.
+    coverage, and that is the rule working (goal 2), not a regression.
     """
     assert live_seam.tail == {
         "pipeline/5_recensor/run.py": EXIT_COMPLETE,
@@ -1076,7 +1076,7 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
         assert content["shortfall"] is False, content
         for chair, measured in content["by_chair"].items():
             assert measured["uncovered_non_whitespace"]["count"] == 0, (chair, measured)
-    # The third named half, since Tyrel's F2 ruling: the page neither act is
+    # The third named half, since the F2 ruling: the page neither act is
     # primary on. Delivered, and visibly unmeasured rather than silently clean.
     _assert_the_continuation_page_is_unmeasured_by_name(_reviews(live_seam))
     assert len(export["payload"]["delivered"]) == 2, export["payload"]["delivered"]
@@ -1141,7 +1141,7 @@ def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_se
     these acts on the `anchor-line` basis instead. The two page witnesses'
     observations are asserted to differ in kind for exactly that reason: one
     chair's boxes are never attributed to another, and nothing selects among them
-    (GOVERNANCE 3, hard rule 8).
+    (principle 1).
 
     **What the third witness costs, said here because the floor depends on it.**
     Churro is attached AND comparable only because Chandra's response located
@@ -1343,9 +1343,9 @@ def test_a_page_witness_whose_text_is_not_this_page_attaches_to_nothing(designat
     1).
 
     So the alignment is kept -- it is evidence, and evidence is never discarded
-    (GOVERNANCE 4) -- while the measurement beside it says what it is worth, and
+    (principle 4) -- while the measurement beside it says what it is worth, and
     the attachment does not happen. The act is then honestly one witness short,
-    which is a visible partial rather than a silent overcount (GOVERNANCE 2/10).
+    which is a visible partial rather than a silent overcount (principle 2/10).
 
     The other two chairs are asserted attached in the same breath: if the
     fixture ever stopped attaching anybody, this test would pass for the wrong
@@ -1414,7 +1414,7 @@ def test_a_page_witness_whose_text_is_not_this_page_attaches_to_nothing(designat
 def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held(
     designated, tmp_path
 ):
-    """The absence is measured, never filled in (GOVERNANCE 10).
+    """The absence is measured, never filled in (principle 8).
 
     The witness publishes an unknown truncation over a boundary nobody
     observed, and the Perlector holds the reading as `unknown` rather than

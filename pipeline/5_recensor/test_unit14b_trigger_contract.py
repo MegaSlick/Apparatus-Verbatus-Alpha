@@ -507,7 +507,7 @@ def test_a_retained_observation_with_no_readable_bounds_is_refused_not_skipped(o
     """A malformed pointer is a fatal accounting gap, exactly like a missing map row.
 
     Silently skipping it would let a corrupted or mis-shaped witness record
-    disappear behind an empty result -- the same silent loss GOVERNANCE 2
+    disappear behind an empty result -- the same silent loss principle 2
     refuses, and the one this gate exists to catch for every other malformed
     shape it reads (dimensions, rows, runs, missing map).
     """
@@ -735,7 +735,7 @@ def test_real_route_uses_the_same_budget_hold_when_recovery_is_not_admitted():
     """The route is the reason, and it outranks whatever the grant would say.
 
     Reporting a spent page grant or an exhausted budget on a run where no recrop
-    can be cut at all would name the wrong fault (GOVERNANCE 10), and would send
+    can be cut at all would name the wrong fault (principle 8), and would send
     an operator looking for a budget to raise. The evidence itself stays visible
     either way: a still-confirmed pointer never reaches an accepted review.
     """
@@ -869,7 +869,7 @@ def test_the_live_caller_passes_the_floor_it_read_from_the_sealed_table():
 # with every other page of the same container. The sealed Exemplar page's own
 # `source_sha256` is the identity the physical-act partition and the
 # cross-capture autopsia both use, and `verify_sealed_page_pixels` has already
-# proved it verifies (CodeRabbit, PR #78).
+# proved it verifies.
 _DIGEST = "a" * 64
 
 

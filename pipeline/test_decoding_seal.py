@@ -121,7 +121,7 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, body: s
     # invites then collides with it.
     # `Path.exists()` follows symlinks, so a dangling `runs` link would pass it
     # while the refusal had still left an artefact; `os.path.lexists` sees the
-    # link itself (CodeRabbit round 3 on PR #91).
+    # link itself.
     assert not os.path.lexists(run_root), tree_snapshot(run_root)
 
 

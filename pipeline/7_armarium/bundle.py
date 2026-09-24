@@ -3,7 +3,7 @@
 `run.py` builds the product, verifies it, and seals it as a content-addressed blob
 referenced by the `export` artifact. That is the right home for it -- the run's own
 record then says an export happened and names its digest -- but a blob inside a run
-tree has not left the pipeline, and GOALS 4 is that everything read leaves it. This
+tree has not left the pipeline, and goal 5 is that everything read leaves it. This
 program is the last step: read the sealed blob, verify it again from the outside, and
 publish it to an operator-chosen destination.
 
@@ -261,7 +261,7 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             # one at the destination. A published product a recipient cannot read
             # is not published. Set from the umask the way `mkdir` would, so the
             # bundle looks like every other directory this operator makes rather
-            # than like a temporary one. Found by CodeRabbit.
+            # than like a temporary one.
             umask = os.umask(0)
             os.umask(umask)
             os.chmod(staging, 0o777 & ~umask)

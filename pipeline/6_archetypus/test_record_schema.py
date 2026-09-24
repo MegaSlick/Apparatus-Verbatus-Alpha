@@ -199,7 +199,7 @@ def test_status_is_the_record_level_literal_and_never_mirrors_text_status():
 
 
 def test_dissent_travels_by_reference_and_never_by_value():
-    """Tyrel's 4d. The pointer is the Perlectio; no dissent rows are copied in."""
+    """Ruling 4d. The pointer is the Perlectio; no dissent rows are copied in."""
     record = make_record()
     assert record["dissent_ref"] == READING_REF
     assert record["dissent_ref"] == record["perlectio_ref"]
@@ -310,7 +310,7 @@ def test_record_validation_refuses_a_resealed_region_missing_a_crop_fact():
 
 
 def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():
-    """Tyrel's 4d is that dissent travels *to this record's own Perlectio*.
+    """Ruling 4d is that dissent travels *to this record's own Perlectio*.
 
     A `dissent_ref` naming some other artifact would send a reader looking for
     this act's dissent at a reading this record did not establish from.
@@ -587,7 +587,7 @@ def test_only_a_completed_reading_may_establish_text(outcome):
     stage-08/stage-10 field-name seam harmless — stage 08 writes gaps only under
     `no-readable-text`, which classes as unresolved, and *this* is what refuses
     it. A protection nothing exercises is a protection nobody would notice
-    losing, and this one is load-bearing for a claim made to Tyrel about two
+    losing, and this one is load-bearing for a claim made about two
     other branches.
     """
     with pytest.raises(FatalAccounting, match="may only come"):
@@ -622,7 +622,7 @@ def test_a_completed_reading_is_not_refused_by_that_guard():
 
 # --- The act-attachment view is required, not merely checked when present -------
 #
-# Opus audit-and-repair seat 3, R0. F-O2: `accepted_primed_perlectio` checked the
+# Audit-and-repair seat 3, R0. F-O2: `accepted_primed_perlectio` checked the
 # R0 act-attachment dossier view only `if attachment is not None`, so a resealed
 # reading that had simply dropped the field walked past the whole page-witness
 # custody chain -- reference shape, direct-input binding, and the digest-checked

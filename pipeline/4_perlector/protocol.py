@@ -18,12 +18,12 @@ PAGE_SHARED_PREFIX_POLICY: Final = "page-shared-prefix-first.v1"
 # The neutral Pass-B form, verbatim from iterative_reader.md:49-50. This is the
 # only text the pipeline puts in front of the reader *about* its own prior
 # draft, and it is pinned here for the same reason the two names above are: a
-# free-text field would leave GOVERNANCE 3 and GOVERNANCE 10's "the instrument
+# free-text field would leave principles 1 and 8's "the instrument
 # may not constrain what it measures" enforced by nothing but a phrase blacklist.
 # Measured before pinning: the blacklist below accepted "The prior reading
 # contains errors. Find and fix them." (forces a change), "Trust the prior
 # reading; reproduce it verbatim." (a picker instruction), and "Rate your
-# confidence no higher than medium." (GOVERNANCE 10's own example of a budgeted
+# confidence no higher than medium." (principle 8's own example of a budgeted
 # confidence level). The fragment is also not a knob: `config/README.md`'s R5a
 # toggle register lists `--draft-fed`, the instrument rate, and the selection-rule
 # name, and deliberately not this. Rewording it is a reviewed two-file change,
@@ -210,7 +210,7 @@ def is_control_sampled(
 def control_sampling_design(
     *, per_mille: int, selection_rule: str, approval_ref: ApprovalRecordBinding
 ) -> dict[str, object]:
-    """Bind each control sample to its rate, rule, and typed approval (GOVERNANCE 10)."""
+    """Bind each control sample to its rate, rule, and typed approval (principle 8)."""
     validate_control_per_mille(per_mille)
     if selection_rule != SELECTION_RULE:
         raise ValueError(

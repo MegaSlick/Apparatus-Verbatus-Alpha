@@ -59,7 +59,7 @@ def test_any_gap_forces_partial_even_with_full_text():
 
 def test_any_gap_forces_partial_even_with_empty_text():
     """A whole-act gap: ink believed present, wholly unread. This must never
-    read as `no_readable_text` -- Tyrel, 2026-08-05: "we could not read it"
+    read as `no_readable_text` -- "we could not read it"
     must never quietly become "there was nothing to read"."""
     assert archetypus.derive_text_status("", [_gap(0)]) == "partial"
 

@@ -6,7 +6,7 @@ page render with its transform, and every Testimonium verbatim with **witness
 identity and factual context only** -- model name, resolved provenance, and its
 training domain stated as fact, "never pipeline-asserted worth... no
 reliability scores, no error rates, no 'usually better,' no ordering by
-quality" (Tyrel's ruling, 2026-07-30). No numeric trust weights, no preferred
+quality" (ruling). No numeric trust weights, no preferred
 order, no primary flag: presentation order is deterministic, because the bytes
 must reproduce, but it carries no meaning and no reader may take one from it.
 """
@@ -85,7 +85,7 @@ def load_witness_context(path: Path) -> dict[str, dict[str, str]]:
     # itself: a declaration file that is not valid UTF-8 raises it rather than
     # `TOMLDecodeError`, and it escaped this handler as a raw traceback where
     # every other malformed-file case is a named refusal. `common/stage.py`
-    # already catches it for the same reason. Found by CodeRabbit.
+    # already catches it for the same reason.
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ContractError(
             f"witness context declaration at {path} could not be read: {error}"
@@ -140,8 +140,8 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
         # wheels bundle their own zlib, so `rendered.save(...)` produces
         # different bytes on Linux than on macOS — and a run-time blob's bytes
         # name its content-addressed path and every artifact digest downstream.
-        # Found by PR #31's CI, whose Linux runner re-derived both acceptance
-        # pins to values no macOS machine could reproduce.
+        # A Linux CI runner once re-derived both acceptance pins to values
+        # no macOS machine could reproduce.
         grayscale = rendered.convert("L")
         samples = grayscale.tobytes()
         deterministic = encode_grayscale_png_deterministic(
@@ -505,7 +505,7 @@ def build_dossier(
         raise SchemaRefusal("a prior-draft view cannot exist without its referenced draft")
     # Swept before the digest is taken: a preference-bearing field sealed into
     # the digest is already in the record by the time anyone could object. This
-    # is the guard standing over GOVERNANCE 3, so it runs on the production path
+    # is the guard standing over principle 1, so it runs on the production path
     # and not only in the tests.
     assert_no_order_bearing_field(dossier)
     dossier["dossier_digest"] = digest_of(dossier)
@@ -615,7 +615,7 @@ def assert_no_order_bearing_field(value: Any, path: str = "$") -> None:
     that reintroduces a trust/order/preferred field is caught immediately
     rather than argued about at review.
 
-    This is the last member of the no-picker family (GOVERNANCE 3) to stop
+    This is the last member of the no-picker family (principle 1) to stop
     recursing. The family is enumerated and guarded in
     `common/test_preference_screen_walks.py`; the round that converted it
     reported four screens and complete coverage, and there were six -- this one

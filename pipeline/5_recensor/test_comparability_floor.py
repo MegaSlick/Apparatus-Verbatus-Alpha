@@ -6,7 +6,7 @@ toward the floor only where it is **attached AND comparable**. Without that
 pair, a chair could be
 geometrically attached, produce no comparable text at all, satisfy the floor,
 and land in a run that called itself complete while every dissent row for it
-read `compared: "unknown"` -- GOVERNANCE 2 and 10 in one record.
+read `compared: "unknown"` -- principle 2 and 10 in one record.
 
 Two things are proven here that the arithmetic-level test in
 `common/contracts/test_contracts_algebra.py` cannot prove, because it builds its

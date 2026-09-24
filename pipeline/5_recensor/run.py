@@ -5,9 +5,9 @@ gives every expected act exactly one outcome. Three of those outcomes end the ac
 here; two send it onward. Nothing it does touches a reading.
 
 **Recovery is bounded and recorded.** The budget comes from `config/recovery.toml`,
-whose absolute cap is Tyrel's "PURE ABSOLUTE, STOP AT 3". When the budget is spent
+whose absolute cap is "PURE ABSOLUTE, STOP AT 3". When the budget is spent
 the act is held for review — it is never re-rolled until it looks better, because
-recovery recovers coverage and not quality (GOVERNANCE 11). Every request is an
+recovery recovers coverage and not quality (principle 7). Every request is an
 artifact, so nothing can disappear inside a loop.
 
 **It does not select among witnesses.** Witness outcomes are aggregated into a
@@ -546,7 +546,7 @@ def act_cross_capture_coverage(
         # Continuation acts are ordinary in these registers, so this is the
         # common case and not an edge. Until the instrument can classify each
         # page on its own grid and combine the results, such a view is recorded
-        # as unmeasured rather than measured wrongly (GOVERNANCE 2 and 10).
+        # as unmeasured rather than measured wrongly (principles 2 and 8).
         if surveyed and len(view["page_ids"]) > 1:
             visibility_state = "unresolved"
             visible_cells = []
@@ -668,8 +668,7 @@ def act_attachment_facts(
     # act_attachment_view selects it. The local sort this replaces defaulted a
     # missing ordinal to 0 and took the last record blind, so a duplicate or
     # gapped ordinal chain picked an arbitrary attachment where the strict
-    # helper refuses — the same two-predicates-drifting shape as F-O1/F-O3
-    # (CodeRabbit chain-end review, critical; host disposition: fixed).
+    # helper refuses — the same two-predicates-drifting shape as F-O1/F-O3.
     record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
     payload = record.get("payload")
     entries = payload.get("attachments") if isinstance(payload, dict) else None
@@ -1104,7 +1103,7 @@ def blank_corroboration(
     the Perlector's own direct examination of the ink (autopsia, not testimony)
     already produced `no-readable-text`, and this asks only whether the witnesses
     corroborate or contradict that finding. A single chair that actually read
-    text is exactly the disagreement GOALS 1 says must never be silently
+    text is exactly the disagreement goal 2 says must never be silently
     resolved — it holds the act for a human, and never outvotes the dissenter.
 
     A recovery region is witness-uncovered by contract: the inherited
@@ -1119,7 +1118,7 @@ def blank_corroboration(
     The floor is checked against `completed` below, never against
     `coverage["under_witnessed"]`: that flag is `ATTESTATORES`'s own
     COMPLETED class, which also counts an approval-bound `excluded` chair
-    (`common/contracts/outcomes.py`) — a chair Tyrel excluded from witnessing
+    (`common/contracts/outcomes.py`) — a chair excluded from witnessing
     at all, not one that read the ink and found nothing. `under_witnessed`
     can therefore be `False` while the actual reading evidence is one chair
     short of the floor; trusting it here would let an excluded chair stand
@@ -1131,7 +1130,7 @@ def blank_corroboration(
     disclosed rather than hidden), but it may not corroborate a TERMINAL
     blank: the page's Chandra anchor exists yet locates no line for this act,
     so the geometry does not reconcile, and confirmed-blank is a proved
-    absence -- the act holds for a human instead (GOVERNANCE 2/9; GOALS 1:
+    absence -- the act holds for a human instead (principle 2/9; goal 2:
     the unproved direction costs a review, never an act). `no-page-anchor` is
     the different fact of a page with no anchor at all -- an ink-free or
     fallback page has nothing for Chandra to anchor, and refusing blank there
@@ -1778,7 +1777,7 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
         # The bytes measured, digested — not the separate earlier read
         # `sealed_page_images` verified. Verifying one read and measuring
         # another records a finding derived from pixels nobody checked, which is
-        # a metric that was not measured passing as one (GOVERNANCE 10).
+        # a metric that was not measured passing as one (principle 8).
         image_bytes = context.tree.read_bytes(page["payload"]["image_path"])
         if digest_bytes(image_bytes) != page["payload"]["source_sha256"]:
             raise FatalAccounting(
@@ -2929,11 +2928,11 @@ def continuation_unmeasured_reason(
     because it is real and somebody has to be able to act on it. What is refused
     is calling it a shortfall: no span of a declared act can enter the union its
     page text was diffed against, by declaration rather than by measurement
-    (GOVERNANCE 10).
+    (principle 8).
 
     Two situations, and the sentence names which one it is describing. Where the
     chair has no aligned spans on the page at all, the whole page is unmeasured
-    and this is the page's own `reason` — the wording Tyrel's ruling produced,
+    and this is the page's own `reason` — the ruled wording,
     unchanged. Where it does have some, only the declared acts' share is
     unmeasured; the page carries a real verdict and this rides beside it as
     `unmeasured_reason`, scoped to those acts, because the page-wide sentence
@@ -3007,7 +3006,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # for ink a proposal does in fact cover, and the witness's
             # observation is published as an unrouted-observation finding. That
             # is manufactured coverage evidence driving bounded recovery
-            # (GOVERNANCE 10, 11), which is why the range checks belong here and
+            # (principles 7 and 8), which is why the range checks belong here and
             # not only in the sibling reader.
             if (
                 not isinstance(bounds, dict)
@@ -3216,7 +3215,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # and raises the page's shortfall. Suppressing it because some
             # other act on the page declared itself unanchorable would hide a
             # real coverage loss behind a neighbour's declaration, which is
-            # the missed act GOALS 1 puts above every other cost. Tyrel's
+            # the missed act goal 2 puts above every other cost. The
             # ruling (Unit 12 F2) withholds the verdict where the measurement
             # cannot be made; here it can be.
             finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
@@ -3228,7 +3227,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
         # and `by_chair` stayed empty. Leaving the seeded `shortfall: False`
         # would publish a clean text measurement nobody took, indistinguishable
         # from a page whose witnesses were read and covered everything
-        # (GOVERNANCE 10) -- the very restatement `NO_PAGE_CONTENT_COVERAGE`
+        # (principle 8) -- the very restatement `NO_PAGE_CONTENT_COVERAGE`
         # exists to avoid for pages that reach no measurement at all. The
         # unclaimed observations stay: they are geometry, and they still route
         # bounded recovery.
@@ -3242,7 +3241,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # where one act's spans are aligned and another's are declared
             # unanchorable. That verdict is a measurement and outranks the
             # unmeasured one; the reason still records what could not be
-            # measured beside it, so neither half is lost (GOVERNANCE 2).
+            # measured beside it, so neither half is lost (principle 2).
             finding.setdefault(
                 "unmeasured_reason",
                 continuation_unmeasured_reason(
@@ -3250,7 +3249,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ),
             )
             continue
-        # Tyrel's ruling on Unit 12's F2: unmeasured by name.
+        # Ruling on Unit 12's F2: unmeasured by name.
         # Before it, this page's uncovered text became `shortfall: True` on a
         # page no act's review reads, so the verdict reached nothing and the
         # export said DELIVERED over it. `None` is this module's existing
@@ -3313,7 +3312,7 @@ def geometry_coverage_for(findings: dict[int, dict], ordinal: int) -> dict:
     absent record means the page never reached that stage — a door refusal, whose
     acts are already held for the page loss itself. Defaulting to
     `ink_measurable: False` here would restate a measurement nobody took, in a
-    record byte-identical to a real unmeasurable page's (GOVERNANCE 10). The
+    record byte-identical to a real unmeasurable page's (principle 8). The
     absence is recorded as absence instead, and every act gets its own object for
     the reason `testimony_content_for_page` does.
     """
@@ -3350,7 +3349,7 @@ def testimony_content_for_continuation_pages(
     and `review_route_from_findings` treats `None` as "no measurement exists" —
     routing them would be routing an absence. What they do is make the absence
     visible in the act's own record, in the export, and in the Armarium's
-    per-act restatement, which is what GOVERNANCE 2 asks of a partial result.
+    per-act restatement, which is what principle 2 asks of a partial result.
 
     Present and empty for an act that spans one page, for the reason
     `page_coverage_for`'s `checked_pages` is: a consumer that only ever sees the
@@ -3413,8 +3412,8 @@ def review_route_from_findings(
     # object (the re-proof's truncation record) that carries no vocabulary a
     # preference could ride in, so the walk cannot currently refuse anything --
     # it matches on keys, and the free text is a value. Said plainly
-    # rather than left reading as a screen that catches something (GOVERNANCE
-    # 10). It is kept because the day one of these carries vocabulary is the
+    # rather than left reading as a screen that catches something (principle
+    # 8). It is kept because the day one of these carries vocabulary is the
     # day the routing decision could. The screens that do bite are
     # `publish_review` and the recovery payload, which see the nested coverage
     # objects.
@@ -3478,7 +3477,7 @@ def review_route_from_findings(
             # happened, whatever text the call returned, so nothing here is
             # delivered on the strength of it. The reason names the
             # instrument's verdict and the sealed signals, not a word the
-            # engine may never have spoken (GOVERNANCE 10).
+            # engine may never have spoken (principle 8).
             reasons.append(
                 "the Perlector's audit re-proof of this act did not complete: "
                 f"{_describe_termination(audit_reproof_truncation)}, so the flag(s) it was "
@@ -3522,7 +3521,7 @@ def review_route_from_findings(
         # output, like a cut-off generation: the text may stand, but whatever
         # the reader tried to say about its own doubts was lost, and an act
         # delivered over that loss would carry an empty layer that reads as
-        # confidence. Held, never re-rolled (GOVERNANCE 11).
+        # confidence. Held, never re-rolled (principle 7).
         #
         # The retained problem is quoted into the reason, not merely pointed
         # at. It is the only sentence that says what went wrong, and before
@@ -3574,7 +3573,7 @@ def publish_review(
     """Write a review only after rejecting witness-selection vocabulary.
 
     A review's identity is not a pure function of the act's own recovery
-    history: `page_coverage_for` (GOALS 1, HANDOFF.md) deliberately derives a
+    history: `page_coverage_for` (goal 2, HANDOFF.md) deliberately derives a
     review's content from every act sharing its page, so a page-wide fact can
     legitimately change an act's review between Recensor passes even when that
     act never itself recovers. Minting the next ordinal from the act's own
@@ -3743,7 +3742,7 @@ def write_partition_receipt(context, budget: dict) -> None:
     verdict — the page-level residual-ink and continuation facts are recorded in
     the review payloads this receipt cites, and a page nobody cut a region on is
     outside every denominator here. Claiming otherwise would be exactly the
-    "complete" GOVERNANCE 2 refuses.
+    "complete" principle 2 refuses.
     """
     for stage in (DESIGNATOR, ATTESTATORES, PERLECTOR, RECENSOR):
         if not context.tree.manifest_agrees_with_disk(stage):
@@ -4118,7 +4117,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
         # The cap is enforced at the request boundary rather than by convention
         # (spec 09's third test): the kind's own allowance, the pooled total, and
-        # Tyrel's absolute cap all have to permit this request before it is made.
+        # the project lead's absolute cap all have to permit this request before it is made.
         # `allowed` can only ever be the smaller of the three today, but a policy
         # is a file somebody edits and a bound nobody checks is not a bound.
         if (
@@ -4333,8 +4332,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # Archetypus copies `payload["text"]` out of whatever the latest reading
         # is, so a `truncated` or `failed` Perlectio carrying stale text would be
         # established as the one text and a `not-run` one would crash on the
-        # missing field. GOALS 2 is accuracy against the ink; text nobody
-        # successfully read is not a reading, and GOVERNANCE 2 says it may not
+        # missing field. goal 1 is accuracy against the ink; text nobody
+        # successfully read is not a reading, and principle 2 says it may not
         # vanish behind a successful status either. Held, visibly, outcome named.
         blank_evidence = None
         if reading_class is not OutcomeClass.COMPLETED:
@@ -4371,7 +4370,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # carries witness text outside every aligned attachment, or
                     # whose Perlector exhausted its audit re-proof cap, would be
                     # sealed complete over a shortfall this stage had already
-                    # measured (GOVERNANCE 2; invariant 6). The three page-level
+                    # measured (principle 2; invariant 6). The three page-level
                     # conditions above are named separately because they are
                     # already refused before the route is consulted; this
                     # subsumes the scenario hold `act_key not in
@@ -4387,7 +4386,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # published, so this cause appears only in the chain below
                     # and `confirmed-blank` would silently override it. An act
                     # sealed COMPLETED-class over measured, unclaimed ink is the
-                    # missed act GOALS 1 puts above every other failure.
+                    # missed act goal 2 puts above every other failure.
                     and observation_hold is None
                 )
                 else None
@@ -4413,7 +4412,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # it, and which pages this check found no ink outside coverage
                 # on. That is narrower than "clear": the check never looks
                 # inside the act's own crop, so the field is named for exactly
-                # what it measured and no more (GOVERNANCE 10). The `reason`
+                # what it measured and no more (principle 8). The `reason`
                 # above stays, for a human reading one record.
                 blank_evidence = {
                     "perlector_outcome": latest["outcome"],
@@ -4450,7 +4449,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "held-for-review",
                 f"page(s) {flagged_pages} carry ink outside every region currently cut on "
                 "them (a residual-ink check against the page image itself, never the "
-                "proposal set — GOALS 1: a missed act is worse than a poorly read one); "
+                "proposal set — goal 2: a missed act is worse than a poorly read one); "
                 "accepting this act would leave that ink unaccounted for",
             )
         elif findings_route is not None:

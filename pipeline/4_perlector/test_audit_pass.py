@@ -522,7 +522,7 @@ def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_pa
         # compares the instrument against its own generator, so an edit that
         # made the generator directional would agree with its own output
         # everywhere. This is the one place the delivered text is held still
-        # from outside the instrument (GOVERNANCE 10).
+        # from outside the instrument (principle 8).
         for reproof in request["reproofs"]:
             start = reproof["location"]["start"]
             end = reproof["location"]["end"]
@@ -610,7 +610,7 @@ def test_a_directional_or_empty_audit_request_is_refused_at_the_delivery_boundar
     it is stored. `payload.audit.reproofs` was already held to `neutral_prompt`
     exactly; the request now goes through the same screen, so a prompt telling
     the reader which way to argue cannot reach a reader by travelling on the
-    delivered copy instead of the sealed one (GOVERNANCE 10)."""
+    delivered copy instead of the sealed one (principle 8)."""
     request = audit.audit_request(
         act_key="a1",
         attempt_ordinal=1,
@@ -748,7 +748,7 @@ def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tm
     still sealed -- they are what the exhausted-cap uncertainty spans point at --
     but no reader is called at all. Recording that as an absent request is the
     difference between "a re-proof confirmed this span" and "nothing re-examined
-    it", which is exactly the distinction GOVERNANCE 10 asks a measurement to
+    it", which is exactly the distinction principle 8 asks a measurement to
     keep.
     """
     exhausted = tmp_path / "exhausted.toml"
@@ -1266,7 +1266,7 @@ def test_change_record_names_the_narrowest_flag_that_located_the_change():
 
 
 def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(tmp_path):
-    """A sealed cap of 2 with Tyrel's reference would be recorded but never run."""
+    """A sealed cap of 2 with an approval reference would be recorded but never run."""
     approved = tmp_path / "approved.toml"
     approved.write_text(
         'schema = "perlector-audit.v3"\n'
@@ -1368,7 +1368,7 @@ def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path
     raised.write_text(
         'schema = "perlector-audit.v3"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'
     )
-    with pytest.raises(ContractError, match="Tyrel's approval reference"):
+    with pytest.raises(ContractError, match="the project lead's approval reference"):
         audit.load(raised)
 
     exhausted = tmp_path / "exhausted.toml"
@@ -1616,7 +1616,7 @@ def test_the_chain_binds_an_assessed_readers_span_to_the_text_it_publishes(tmp_p
     The prefix rule leaves what follows the projection to the reader, and this
     is the last check before the Recensor publishes, so a span past the end of
     the text is refused here rather than carried to a review record and printed
-    as offsets that do not anchor (CodeRabbit on PR #115).
+    as offsets that do not anchor.
     """
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
@@ -1785,8 +1785,7 @@ def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_
     Half of this test is the repair itself: the pass-scoped stop-reason row that
     lets a fixture say "Pass B stopped, the re-proof was cut off" did not exist
     before it, so the pre-repair failure is the audit's own `reproduce.py` (two
-    delivered acts under a complete aggregate, exit 0), retained under
-    workbench/raw/independent-audit-2026-09-10 and re-reproduced on 0aa08db7e4.
+    delivered acts under a complete aggregate, exit 0), re-reproduced on 0aa08db7e4.
     """
     result = _run(tmp_path / "runs", scenario="audit-reproof-cutoff")
     assert result.returncode == 3, result.stderr
@@ -1820,8 +1819,8 @@ def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_
     # one, bound rather than taken on the record's word: `validate_truncation_
     # record` re-derives `length_suspicious` from the record's own measure, so
     # a record naming a floor nobody sealed agrees with itself perfectly and
-    # can clear a hold the sealed policy would have held (CodeRabbit on PR
-    # #117). The Perlector passes the sealed floor at both of its own call
+    # can clear a hold the sealed policy would have held. The Perlector
+    # passes the sealed floor at both of its own call
     # sites, which is why the run above published at all.
     sealed_floor = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][
         protocol.TRUNCATION_TABLE
@@ -2696,7 +2695,7 @@ def test_the_recensor_routes_on_the_examination_and_refuses_a_contradicting_bool
 
 
 def test_a_sealed_reproof_call_must_name_the_digest_of_the_response_it_retains():
-    """CodeRabbit on the correction: the two digests are one fact stated twice."""
+    """The two digests are one fact stated twice."""
     reference = {"relative_path": "4_perlector/blobs/sha256/" + "a" * 64, "sha256": "a" * 64}
     call = {
         "call_record_ref": {
@@ -2811,7 +2810,7 @@ def test_the_audited_truncation_takes_an_already_measured_record_without_remeasu
 
 @pytest.mark.parametrize("bad", [["complete"], {"state": "complete"}, 7])
 def test_an_unhashable_or_non_string_vocabulary_value_is_refused_by_name_not_typeerror(bad):
-    """CodeRabbit on PR #112: a list or object at a frozenset check must be a refusal."""
+    """A list or object at a frozenset check must be a refusal, not a TypeError."""
     with pytest.raises(SchemaRefusal, match="unknown truncation classification"):
         audit.validate_truncation_record(
             {**_COMPLETE_TRUNCATION, "classification": bad}, label="a test record"
@@ -2848,7 +2847,7 @@ def test_an_emptied_reproof_is_re_measured_beside_the_text_it_publishes():
     still counted those characters, and `validate_finding` binds `measure.
     characters` to the published text -- so the producer's own `validate_chain`
     raised `SchemaRefusal` on a correct record and the pass stopped before the
-    later acts were processed (CodeRabbit on PR #117).
+    later acts were processed.
 
     Read from source for the reason `test_live_perlector.py::
     _reading_inputs_composition` reads its own property from source: reaching

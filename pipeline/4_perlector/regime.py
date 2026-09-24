@@ -1,6 +1,6 @@
 """The witness regime: named or blinded, and the pseudonym scheme blinding uses.
 
-Tyrel's 2026-07-30 ruling (courtroom_doctrine.md, formalized in spec_08):
+Ruling (courtroom_doctrine.md, formalized in spec_08):
 `witness_context = named | blinded` is run-level configuration. Named is the
 default; blinded exists so that if training ever shows the named regime
 breeding bias toward a particular witness, the switch flips without a rebuild.

@@ -135,7 +135,7 @@ def test_unicode_offsets_anchor_by_code_point_and_a_repeated_word_by_position():
 # "alpha beta" is already refused by the gap schema for contradicting the text
 # it sits beside, and the rule that a *reader* may never report one -- an empty
 # reading is the `no-readable-text` outcome, not a doubt -- would then be a
-# branch no case reaches (GOVERNANCE 10).
+# branch no case reaches (principle 8).
 @pytest.mark.parametrize(
     ("report", "text", "problem_fragment"),
     [
@@ -493,7 +493,7 @@ def test_the_union_keeps_every_entry_including_an_exact_repeat():
 
     A fixture cannot declare a doubt at offsets the audit has not computed yet,
     so this case is unreachable end to end; the rule is asked here rather than
-    left as a branch nothing measures (GOVERNANCE 10).
+    left as a branch nothing measures (principle 8).
     """
     perlector = _perlector()
     projected = {"start": 3, "end": 7, "alternatives": [], "confidence": "low"}
@@ -617,7 +617,7 @@ def test_the_instrument_records_carry_the_doubt_report_too(tmp_path):
     below raises each to 1000 per mille with its approval reference exactly as
     `test_prior_protocol.py` does. Named because the first version of this test
     ran the plain `happy` scenario and looped over two empty collections: two
-    assertions that never executed and read as a pass (GOVERNANCE 10; the
+    assertions that never executed and read as a pass (principle 8; the
     independent review of 2026-09-11).
     """
     root = tmp_path / "runs"
@@ -632,7 +632,7 @@ def test_the_instrument_records_carry_the_doubt_report_too(tmp_path):
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     )
-    # A sampled instrument is Tyrel's decision and the Perlector resolves the
+    # A sampled instrument is the project lead's decision and the Perlector resolves the
     # approval record it was told to; the run refuses without one on disk. The
     # records are rebuilt from the flags by the sibling suite's own deterministic
     # helper rather than copied, so a change to the binding cannot leave this

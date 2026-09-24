@@ -130,15 +130,15 @@ def _perlector_dissent():
 # Re-pinned for the round-two merge. The recovery policy values are unchanged,
 # but its corrected explanatory text changes the policy file hash deliberately
 # sealed into run.json and therefore every downstream artifact config digest.
-# Re-pinned again for the CodeRabbit pass on PR #17: an admitted door source now
+# Re-pinned again: an admitted door source now
 # records `admitted_source_sha256`, the digest this door actually computed for the
 # submitted file. Duplicate accounting used to group on `declared_sha256`, which a
 # `SourceEntry` may legally omit — so a legal admission made the duplicate report
 # fatal, and fatal *after* every admission had already been published. The artifact
 # count is unchanged (42 and 46 below); only the bytes of the admission payloads
 # moved, which is what a deliberate record change looks like here.
-# Re-pinned once more on 2026-08-05: the shipped PDF render target moved from 400 to
-# 300 DPI on Tyrel's instruction, so every PDF-derived page is a different — and
+# The shipped PDF render target moved from 400 to
+# 300 DPI, so every PDF-derived page is a different — and
 # deliberately different — set of pixels. Artifact counts are again unchanged.
 #
 # Re-pinned again the same day for a *comment* in `config/pdf_render.toml`, which is
@@ -149,12 +149,10 @@ def _perlector_dissent():
 # seal behaving correctly — a run records exactly the configuration text it ran under —
 # but it means a documentation-only edit to anything under `config/` lands here.
 #
-# Re-pinned 2026-08-05 for the same reason a third time, this time a comment in
-# `config/recovery.toml`: it still asked Tyrel to confirm which mechanism his "stop at 3"
-# ruling governed, months after ruling #18 answered it (he blessed both, and set the
-# run-level threshold at more than two). A stale question standing in a merged config is
-# how a settled decision gets re-litigated, so the prose was corrected and these two pins
-# moved with it. Nothing about the pipeline's behaviour changed.
+# A comment in `config/recovery.toml` once left it unclear which mechanism the
+# "stop at 3" rule governed; both apply, and the run-level threshold is more than
+# two. The prose was corrected and these two pins moved with it. Nothing about
+# the pipeline's behaviour changed.
 #
 # Moved for the System 09 (Recensor) merge — 42 → 43 and 46 → 47 — for four
 # deliberate, recorded changes, not behavioural drift in the pinned scenarios:
@@ -189,7 +187,7 @@ def _perlector_dissent():
 # every non-image entry remains byte-bound.
 #
 # Moved once more, same pattern as the two entries above: a stage-09 pre-push
-# CodeRabbit pass dropped a `door.py:278-300` line-number citation from
+# A later pass dropped a `door.py:278-300` line-number citation from
 # `config/hard_failure.toml`'s comments (a stable reference stays; a line range
 # that drifts as the file is edited does not). File counts and scenario
 # behaviour are unchanged; only the sealed config digest moved.
@@ -255,8 +253,7 @@ def _perlector_dissent():
 #
 # **Deliberately not re-pinned.** Re-pinning for macOS would break CI, and picking
 # either platform's bytes decides by accident a question that should be decided on
-# purpose: whether a run's identity binds pixels or bytes. Carried to Tyrel in
-# workbench/raw/stage-prs/THE_ONE_DECISION.md.
+# purpose: whether a run's identity binds pixels or bytes.
 #
 # Re-pinned for the rebase of the System 08 build onto the merged System 09 tree:
 # both movements above are now in one tree, so the counts are 45 (happy) and 49
@@ -267,7 +264,7 @@ def _perlector_dissent():
 # page-render blobs decode through Pillow in that helper; the project's minimal
 # filter-0 decoder still covers every fixture page.
 #
-# Moved once more by the pre-push CodeRabbit round: the Lectio nuda dossier's
+# Moved once more, pre-push: the Lectio nuda dossier's
 # region rows no longer carry `witness_covered` (coverage is witness-derived and
 # the baseline saw no witnesses), `builder_sha256` binds the whole prompt module
 # rather than one function's source, and the witness-context declaration gate
@@ -280,7 +277,7 @@ def _perlector_dissent():
 # real-submission door digest gained the four spec-08 settings. Counts
 # unchanged; digests re-measured.
 #
-# And once more after PR #31's CI failed on exactly the hazard this block
+# And once more after CI failed on exactly the hazard this block
 # documents: the page-render blobs were written by Pillow, whose Linux wheels
 # bundle a different zlib than macOS ships, so the blob bytes — and the
 # content-addressed digests sealed into every downstream artifact — differed
@@ -296,12 +293,12 @@ def _perlector_dissent():
 # trees therefore gain one file each and every downstream digest moves with the
 # payload shape. A deliberate record change, not drift.
 #
-# Re-pinned for the rebase onto the merged System 08 tree (PR #31): the counts are
+# Re-pinned for the rebase onto the merged System 08 tree: the counts are
 # 46 (happy) and 50 (review) -- the merged tree's 45/49 plus this branch's
 # index.json per run -- and both digests were re-measured from real orchestrator
 # runs under `semantic_snapshot_digest`.
 #
-# Moved once more by the pre-push CodeRabbit round: the index's count field is
+# Moved once more, pre-push: the index's count field is
 # now named `record_count` for what it actually holds (records summarized, with
 # `validate_index` proving the tie to the Recensor's accepted set), which
 # changes `index.json`'s bytes under both scenarios. Counts unchanged at 46 and
@@ -362,14 +359,14 @@ def _perlector_dissent():
 # structure-failure), which enters `config_digest` and moves every
 # downstream artifact digest with it.
 #
-# Re-pinned for CodeRabbit round 1 on the stage-06 candidate. Every conservation
+# Re-pinned for review round 1 on the stage-06 candidate. Every conservation
 # record now attributes its independent scan's background source and value. A
 # held structure pass can therefore keep null structure evidence while the later
 # conservation measurement states the threshold it actually used. Counts stay
 # 53/57; both digests were re-measured from real orchestrator runs through this
 # module's `orchestrate` and `semantic_snapshot_digest` helpers.
 #
-# Re-pinned for CodeRabbit round 2. The padding calibration harness now makes
+# Re-pinned for review round 2. The padding calibration harness now makes
 # its caller state whether the supplied gold set belongs to this corpus, and
 # the shipped padding config's generation note records that requirement. The
 # config is sealed byte-for-byte, so this explanatory correction deliberately
@@ -377,7 +374,7 @@ def _perlector_dissent():
 # Both values below were measured from fresh real runs through this module's
 # `orchestrate` and `semantic_snapshot_digest` helpers.
 #
-# Re-pinned for CodeRabbit round 3 after adding the scenario-only ink-free page
+# Re-pinned for review round 3 after adding the scenario-only ink-free page
 # that drives a minted page-fallback act through the real witness and Perlector
 # programs. The full parsed fixture is part of `config_digest`, so declaring the
 # new page and scenario moves every artifact in happy and review even though that
@@ -445,7 +442,7 @@ def _perlector_dissent():
 # Fresh real orchestrator runs measured 54 files for happy (exit 0) and 58 files
 # for review (exit 3); the counts and digests below came from those same trees.
 #
-# Re-pinned for Stage SM CodeRabbit round 1 after correcting
+# Re-pinned for Stage SM review round 1 after correcting
 # `pod_placement.toml`'s square-image arithmetic. Its 1344, 1792 and 2304 are
 # longest-edge pixel caps, not total counts; the corrected comment says that
 # misread as totals they would describe roughly 37x37, 42x42 and exactly 48x48
@@ -486,13 +483,13 @@ def _perlector_dissent():
 # 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
 # established, unmoved by R6.
 #
-# Re-pinned for R6 CodeRabbit round 3 because every Recensor review's testimony
+# Re-pinned for R6 review round 3 because every Recensor review's testimony
 # coverage fact replaces per-character uncovered offsets with lossless half-open
 # ranges plus their explicit count. That field-shape change moves recorded bytes
 # but writes no new files: fresh real runs through this module's own helpers held
 # at 64 files for happy (exit 0) and 71 for review (exit 3).
 #
-# Re-measured for R6 CodeRabbit round 4 finding A after an unmeasured page's
+# Re-measured for R6 review round 4 finding A after an unmeasured page's
 # testimony content coverage changed from the measured-clean shape to None-valued
 # `by_chair`/`shortfall` plus a reason. Neither acceptance scenario exercises that
 # unavailable shape -- every reviewed page has reported page-witness text -- so
@@ -506,7 +503,7 @@ def _perlector_dissent():
 # 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
 # established, unmoved by R6 and R8 alike.
 #
-# Re-pinned for R8 CodeRabbit round 2 finding 2. The acts.sqlite column named
+# Re-pinned for R8 review round 2 finding 2. The acts.sqlite column named
 # `uncertainty_spans_json` actually stores the complete canonical uncertainty
 # layer, so it is now truthfully named `uncertainty_json`. Only that SQLite
 # schema identifier changed; fresh runs through this module's own helpers held
@@ -562,7 +559,7 @@ def _perlector_dissent():
 # with the reproof and export themes merged plus this theme — fresh runs
 # through this module's own helpers; counts and exits held at 64/0 and 71/3.)
 #
-# Re-pinned for Opus-F3: act crops are evidence written during a run, and
+# Re-pinned for F3: act crops are evidence written during a run, and
 # `common/imaging.py::crop_png` now writes them through this project's own
 # deterministic encoder on both paths instead of `zlib.compress(level=9)` and
 # Pillow's PNG writer. The pixels are unchanged — `semantic_snapshot` already
@@ -640,12 +637,12 @@ def _perlector_dissent():
 # changed — through this module's own `orchestrate` and `semantic_snapshot_digest`
 # helpers, per the Tier-0 loop lesson that a pin measured mid-branch is a pin
 # measured against a tree nobody pushed. They moved a second time when the
-# CodeRabbit round reworded `config/designator_geometry.toml`'s caveat, which is
+# A later round reworded `config/designator_geometry.toml`'s caveat, which is
 # that lesson arriving on schedule: the first measurement was taken before the
 # review, and a review that changes a sealed configuration file changes the pins
 # with it.)
-# Re-pinned once more, for `config/hard_failure.toml` alone. Tyrel confirmed the
-# hard-failure cap and declined to re-open its outcome taxonomy, so the file's
+# `config/hard_failure.toml` was re-pinned alone: the hard-failure cap is
+# confirmed and its outcome taxonomy is not reopened, so the file's
 # "PROPOSED, NOT YET APPROVED" header became false and was rewritten to record the
 # ruling. The file is sealed into every run by its bytes (`sealed_config_digests`
 # gained `hard-failure` in the T7 family), so a comment in it moves both scenarios'
@@ -698,7 +695,7 @@ def _perlector_dissent():
 # `expand_sources`; the fixture route these runs take submits none, so the report
 # returns None and no artifact reaches the tree. The pins did move at the merge that
 # landed the report, but for the typed render-origin validator and the page-identity
-# refusal composed in the same commit. Found by CodeRabbit.
+# refusal composed in the same commit.
 #
 # Re-pinned for Unit 10A: adapter names and scopes enter models_digest and
 # config_digest, so the pins bind those provenance fields even though artifact
@@ -729,12 +726,12 @@ def _perlector_dissent():
 # repair records held, refused-page, and absent-chair paths as `presented: {}` /
 # `observed: []`, rather than inventing an image no chair saw; that moves the
 # review tree but no artifact kind. Counts remain 84/0 and 97/3.
-# Sonnet audit seat (10B, seat 2 of 4): the absence repair's page-scope gate
+# Audit seat (10B, seat 2 of 4): the absence repair's page-scope gate
 # (`reading`, i.e. WITNESS_READING_OUTCOMES) was narrower than its act-scope
 # twin (`attempted`, i.e. ATTEMPTED_WITNESS_OUTCOMES) and collapsed a page
 # witness that was genuinely shown pixels and returned an unusable response
 # into the same `presented: {}` fact as a chair never shown an image at all
-# (GOVERNANCE 2). Confirmed live in this exact fixture: attestator_3's page-2
+# (principle 2). Confirmed live in this exact fixture: attestator_3's page-2
 # Testimonium in the "review" scenario, whose sole contributing act (a2's
 # continuation) fails for that chair. Fixed by `page_witness_attempted`
 # (`pipeline/3_attestatores/run.py`), gating page-scope `presented` on
@@ -744,7 +741,7 @@ def _perlector_dissent():
 # has every contributing act fail for a page-scoped chair). Counts unchanged at
 # 84/0 and 97/3. Re-measured through this module's own `orchestrate` and
 # `semantic_snapshot_digest` helpers at canonical run id "r".
-# Opus audit seat (10B, seat 3 of 4): the fixture's disagreeing native
+# Audit seat (10B, seat 3 of 4): the fixture's disagreeing native
 # observation moves, so the sealed fixture/config authority moves with it. The
 # box was x 0..20 by y 230..250, which overlapped act a2's own page-1 crop by
 # eight pixels each way — genuinely proposed ink, reported as unaccounted only
@@ -811,9 +808,9 @@ def _perlector_dissent():
 # Re-measured through this module at canonical run id "r": 88/0. Review has no
 # native captures, so its 109 files and digest remain unchanged.
 #
-# Opus audit seat (10C, seat 3 of 4): the declared fixture gains one scenario,
+# Audit seat (10C, seat 3 of 4): the declared fixture gains one scenario,
 # `coverage-recovery`, and the single native observation that scenario needs.
-# Sonnet's recorded gap was that the coverage-triggered recovery origin had no
+# The recorded gap was that the coverage-triggered recovery origin had no
 # isolated test: in `review` that stimulus sits beside a scenario-declared
 # recrop on a1 and a scenario hold on a2, so no assertion there can tell the
 # two origins apart. The new scenario declares neither, which makes the
@@ -833,7 +830,7 @@ def _perlector_dissent():
 # unrouted observation for coverage recovery. Fresh canonical-id `r` runs
 # measured 86 files/exit 0 for happy and 111 files/exit 3 for review through
 # this module's `orchestrate` and `semantic_snapshot_digest` helpers.
-# Unit 11 Sonnet re-pin: `ink-free-page`'s minted `page-fallback:3` act declared
+# Unit 11 re-pin: `ink-free-page`'s minted `page-fallback:3` act declared
 # a whole-page Chandra `raw_response` (previous re-pin, below) whose native
 # block quantized to a box that both (a) fell outside the sealed page by one
 # pixel, holding the run before the Perlector ever established a reading for
@@ -859,13 +856,13 @@ def _perlector_dissent():
 # Measured twice from fresh final-candidate runs at canonical run id "r": 86/0
 # for happy and 111/3 for review.
 #
-# Unit 11 Opus re-pin (final seat), and the last one in this unit: the durable
+# Unit 11 re-pin (final seat), and the last one in this unit: the durable
 # page Testimonium now names the retained responses its own derived geometry was
 # quantized from, and the rule that quantized them (`raw_response_refs`,
 # `adapter_metadata`). The act-scoped Testimonia already carried both, but they
 # are the compatibility bridge Unit 14 deletes, and the page record is the one a
 # page-scoped occupant actually produces -- so the record holding the integers
-# held no route back to the floats they came from (GOALS 5; ARCHITECTURE
+# held no route back to the floats they came from (goal 4; ARCHITECTURE
 # invariant 3). Two payload fields on the one Chandra page record whose geometry
 # is native; a record whose observations are only the presentation echo reports
 # no conversion, because none happened. No new artifact, no new blob, no
@@ -979,7 +976,7 @@ def _perlector_dissent():
 # canonical run id `r` in two independent roots through the same helpers after
 # this final semantic byte: happy reproduced its existing digest and review
 # reproduced the replacement below.
-# Unit 14B Opus audit: the Armarium's edge hold is now derived, on both sides,
+# Unit 14B audit: the Armarium's edge hold is now derived, on both sides,
 # from one recorded ink-map row per sealed page carried in `sources.json`
 # (`armarium-sources.v3`), so the clean-machine verifier recomputes the held set
 # from the package's own source graph instead of reading it back out of the
@@ -990,12 +987,12 @@ def _perlector_dissent():
 # (happy 97/0, review 106/3). Measured twice in independent temporary roots at
 # canonical run id "r" through this module's own `orchestrate` and
 # `semantic_snapshot_digest` helpers.
-# Unit 14B Opus audit, again in both trees: an audit draft's
+# Unit 14B audit, again in both trees: an audit draft's
 # `flag_location_basis` named every chair that reported, not the chairs whose
 # retained text departs from the reading. On this very fixture both acts raise
 # two `testimony-diff` flags and the basis named three chairs -- attestator_1
 # agreed with the reading exactly and was recorded as the basis of a flag it
-# did not raise (GOVERNANCE 10, consult §4.7: a fact re-derived over a wider
+# did not raise (principle 8, consult §4.7: a fact re-derived over a wider
 # denominator than its writer counted on). The two producers are now held to
 # the same count. Counts and exits unchanged (happy 97/0, review 106/3); both
 # re-measured twice in independent roots at run id "r".
@@ -1003,7 +1000,7 @@ def _perlector_dissent():
 # placement seal): both sides above measured trees missing the other's
 # change; the value below is measured on THIS tree, twice, independent
 # roots, rid "r", via this module's own helpers.
-# Unit 19B Sonnet audit round 2: consult §3.2 step 7 and §7 forbidden shape 19
+# Unit 19B audit round 2: consult §3.2 step 7 and §7 forbidden shape 19
 # named `page_id = page_ids[0]` a representative-singular picker shape and
 # required its removal from the audit draft/finding payload; it is now gone
 # from `common/perlector_audit.py`'s closed field sets, so the byte this
@@ -1030,7 +1027,7 @@ def _perlector_dissent():
 # (review). Measured twice in independent temporary roots at canonical run id
 # "r" through this module's own `orchestrate` and `semantic_snapshot_digest`
 # helpers.
-# Unit 19B Opus audit: the lectio-prior and lectio-nuda dossiers no longer
+# Unit 19B audit: the lectio-prior and lectio-nuda dossiers no longer
 # carry `witness_covered` on their region rows. `build_dossier` omits that key
 # entirely when it is handed no testimonia, and the pre-19B path built each
 # unprimed pass with `testimonia=[]`; the combined path builds one dossier with
@@ -1091,7 +1088,7 @@ def _perlector_dissent():
 # attempt, not the page Testimonium's -- `review`'s attestator_3 has a failed a2
 # attempt beside a page-1 Testimonium that read a1 and records `read` -- so the
 # record named a non-reading page Testimonium that had in fact read
-# (GOVERNANCE 10). The reason now names the attempt in that case
+# (principle 8). The reason now names the attempt in that case
 # (`non-reading-act-attempt-<outcome>`) and keeps
 # `non-reading-page-testimonium-<outcome>` for a native page capture, which is
 # the only path where the page record's own attempt supplies it. One string on
@@ -1111,7 +1108,7 @@ def _perlector_dissent():
 # (118 -> 106); happy holds 95 files. Measured twice at two independent run
 # roots through this module's own helpers at canonical run id "r".
 # Union re-pin: see the Unit 17 seam entry above the happy digest.
-# Unit 14B Sonnet audit: fix pass 2's "restoration" above was the regression,
+# Unit 14B audit: fix pass 2's "restoration" above was the regression,
 # not the fix. Unit 10C's own `unclaimed_observations` is a witness's report --
 # a native/derived box the Attestatores reported, with no ink evidence behind
 # it -- and consult §4.5 (`/out/CONSULT_REPORT.md`, BINDING) requires Unit 9's
@@ -1124,7 +1121,7 @@ def _perlector_dissent():
 # review recovery round fix pass 2 restored was therefore spent on a2 (which
 # `hold_acts` declares should go straight to a hold) for no evidence at all --
 # a witness's own unconfirmed report picking a pipeline action for itself,
-# exactly what GOVERNANCE 3 forbids. Restoring the ink gate removes that
+# exactly what principle 1 forbids. Restoring the ink gate removes that
 # wasted round: a1's recovery request now names its true origin ("the crop may
 # be incomplete", not the coverage-origin phrase, since its own box is equally
 # unconfirmed by ink), and a2 goes directly to held-for-review, without an
@@ -1134,7 +1131,7 @@ def _perlector_dissent():
 # temporary roots at canonical run id "r" through this module's own
 # `orchestrate` and `semantic_snapshot_digest` helpers: happy reproduced its
 # existing digest and review reproduced the value below.
-# Unit 14B Opus audit: Sonnet's ink gate above is confirmed and unchanged -- the
+# Unit 14B audit: The ink gate above is confirmed and unchanged -- the
 # marginal box still sits over measured-zero ink, so review keeps 106 files at
 # exit 3 and no recovery round returns. This digest moved once for the Armarium
 # source-graph byte named above the happy digest, and once more here: review's
@@ -1150,7 +1147,7 @@ def _perlector_dissent():
 # placement seal): both sides above measured trees missing the other's
 # change; the value below is measured on THIS tree, twice, independent
 # roots, rid "r", via this module's own helpers.
-# Unit 19B Sonnet audit round 2: same `page_id` removal as the happy digest
+# Unit 19B audit round 2: same `page_id` removal as the happy digest
 # above. Review's own recovery/audit chains lose the same one key per act;
 # no file count or exit change (106 files, exit 3). Measured twice in
 # independent temporary roots at canonical run id "r" through this module's
@@ -1162,7 +1159,7 @@ def _perlector_dissent():
 # stays 3 and file count moves 106 -> 107. Measured twice in independent
 # temporary roots at canonical run id "r" through this module's own
 # `orchestrate` and `semantic_snapshot_digest` helpers.
-# Unit 19B Opus audit: same `witness_covered` removal from the unprimed
+# Unit 19B audit: same `witness_covered` removal from the unprimed
 # dossiers as the happy digest above. Review publishes a lectio-prior for
 # every act it reads, including the recovered ones, so the same one key leaves
 # each of them; file count stays 107 and the exit stays 3. Measured twice in
@@ -1192,7 +1189,7 @@ def _perlector_dissent():
 # independent temporary roots through this module's own `orchestrate` and
 # `semantic_snapshot_digest` at canonical run id "r".
 #
-# Re-pinned at the GitHub review of PR #74: a page Testimonium binds every
+# Re-pinned at review: a page Testimonium binds every
 # retained response it derived from in its envelope `inputs`, not only a Churro
 # `native_capture`. `RunTree.read_artifact` verifies `inputs` and nothing else,
 # so a Chandra partition's `raw_response_refs` were bytes no ordinary consumer
@@ -1419,8 +1416,8 @@ def _perlector_dissent():
 # `semantic_snapshot_digest` helpers. The two roots agreed exactly on both
 # scenarios: happy exited 0 at 96 files, review exited 3 at 107 files. The snapshot
 # counts held, so they are re-stated below unchanged rather than re-pinned.
-# Merge re-pin (real-page robustness PR2 merged with the live reading seam,
-# PR #85). Both parent branches' causes are in this tree at once and neither
+# Merge re-pin (real-page robustness work merged with the live reading seam).
+# Both parent branches' causes are in this tree at once and neither
 # touches the other's bytes: Section C's `designator_grouping.toml` binding,
 # residual fields and structure-status geometry are orthogonal to the reading
 # seam's `prompts.py` module-source digest, and neither fixture scenario
@@ -1435,7 +1432,7 @@ def _perlector_dissent():
 # Section D re-pin, and the cause is one line of configuration.
 # `config/decoding.toml` gained a `[structure]` section: the Designator's
 # structure pass runs under its own sealed decoding posture and never under
-# `reading_of_record` (Tyrel, 2026-09-02), and `common/decoding.py` requires the
+# `reading_of_record`, and `common/decoding.py` requires the
 # section rather than treating it as optional, so the shipped file carries it.
 # Every run seals that file's bytes, so its digest moved
 # (aafb4c8bec41e46ed8d1af8f3e9ec4545e8a2a32c6787999327f6068dcdeb0e3 ->
@@ -1476,9 +1473,6 @@ def _perlector_dissent():
 # and Honesty/Shared disclosure contracts account for 96/107 becoming 100/111 files.
 # All three control comparisons have zero unexplained leaves or reference failures.
 # The v7/v8-aware reducer and its persisted-integrity checks remain intact.
-# Evidence: workbench/raw/codex-queue-2026-09-08/grouping/acceptance-integrated-7ce178e0,
-# acceptance-causal-attribution-7ce178e0-bound.json and acceptance-output-review-7ce178e0.md.
-# Earlier attribution text is preserved beside them and in Git history.
 # Three fixed 17-page surveys reproduce 14 measured/3 refused and every deterministic
 # field. Their grouping rectangles are a coverage surrogate, not served final crops,
 # pairwise continuation proof or a full real-material pipeline trial. A separate
@@ -1514,9 +1508,6 @@ def _perlector_dissent():
 # The embedded main-versus-original control is identical to its retained inventory.
 # All six comparisons have exhaustive item assignments and zero ambiguous pairs.
 # The semantic reducer and v7/v8 integrity checks are unchanged.
-# Evidence: workbench/raw/codex-queue-2026-09-08/audit-gates/
-# acceptance-integrated-26dd5e07/measurement.json,
-# acceptance-output-review-26dd5e07.md and acceptance-output-assignments-26dd5e07.json.
 # Measurement SHA256: 9f058088b692424d2725f93c7fed47c38f5904bfe6d6cadcbc703e8c1eedf634.
 # Historical calibration has 47 pages, 44 measurable and 3 refused; all measurable
 # pages contain a spanning component. Group rectangles are a coverage surrogate;
@@ -1555,9 +1546,6 @@ def _perlector_dissent():
 # outcome, category, crop geometry, count, terminal status, file count or exit code
 # changes. The pins below are read from these two tests' own computation over the
 # candidate; the bare-CLI measurement attributes the change and does not mint the pin.
-# Evidence: workbench/raw/audit-fixes-2026-09-10/f1-pin-attribution/ and
-# f1-fix-suites/pytest.log (retained outside Git, like every other evidence
-# directory this file cites).
 # The reader's own doubt report (independent audit of 2026-09-10, F2), measured
 # three times as the branch was reviewed and corrected: first at a4833a2a14, then
 # at c1353558e5 (which widened the three instrument records by the same field),
@@ -1599,9 +1587,6 @@ def _perlector_dissent():
 # exit code changes. The pins below are read from these two tests' own
 # computation over the candidate; the bare-CLI measurement attributes the change
 # and does not mint the pin.
-# Evidence: workbench/raw/audit-fixes-2026-09-11/f2-pin-attribution/round3/ and
-# f2-fix/pins-round3.log (retained outside Git, like every other evidence
-# directory this file cites).
 # The pre-launch review's G1 correction (2026-09-14, F082/F088/F089): the
 # truncation instrument's length signal made scale-invariant under a floor
 # sealed in `config/perlector_protocol.toml`, and the coverage audit's noise
@@ -1633,8 +1618,6 @@ def _perlector_dissent():
 # exit code changes. The pins below are read from these two tests' own
 # computation over the candidate; the attribution attributes the change and
 # does not mint the pin.
-# Evidence: workbench/raw/prelaunch-g1-2026-09-14/pin-attribution/ (retained
-# outside Git, like every other evidence directory this file cites).
 # The independent audit of that correction (2026-09-14) moved the pins once
 # more, and the attribution was taken the same way: two fresh runs of the
 # audited head 48cd47e7's own tree (exported with `git archive`, run under its
@@ -1647,7 +1630,7 @@ def _perlector_dissent():
 #
 # 1. `length_floor_characters_per_page` added to every truncation `measure`
 #    block -- the floor the signal was judged under, now on the record so a
-#    reader holding the record alone re-derives `length_suspicious` (GOVERNANCE
+#    reader holding the record alone re-derives `length_suspicious` (principle
 #    6). Happy: 4 on `payload.truncation` and 2 on `payload.reproof_truncation`;
 #    review: 6 and 3. Nothing else was added and nothing removed.
 # 2. In the export manifest, the `designator-geometry-calibration` survey gains
@@ -1660,7 +1643,7 @@ def _perlector_dissent():
 # and `config/designator_grouping.toml` both changed bytes -- `self_hash`,
 # `sha256`, and the references that carry them). In the exported `acts.jsonl`
 # every difference is a reference digest: no established text, outcome,
-# category, crop geometry or count moved (GOVERNANCE 5).
+# category, crop geometry or count moved (principle 5).
 # Evidence: the comparison scripts and both run trees were built in this
 # session's scratch and are not retained in Git.
 # Both digests moved again on this branch, and for one reason: the audit
@@ -1671,7 +1654,7 @@ def _perlector_dissent():
 # which is the evidence that this is the same inventory with a changed record
 # shape rather than an artifact appearing or going missing: the two assertions
 # that pin the counts passed while these two failed. No established text,
-# outcome, category, crop geometry or count moved (GOVERNANCE 5); the new field
+# outcome, category, crop geometry or count moved (principle 5); the new field
 # is `null` wherever no re-proof departed from the semi-final, which is every
 # act in the fixture scenarios.
 #
@@ -1701,7 +1684,7 @@ def _perlector_dissent():
 # Everything else below it is a digest cascade (`self_hash`, `sha256` references,
 # `artifact_inventory`, `blob_inventory`, and the manifest/index entries that
 # carry them). No established text, outcome, category, crop geometry or count
-# moved (GOVERNANCE 5); the two count assertions above this comment passed while
+# moved (principle 5); the two count assertions above this comment passed while
 # only the two digest assertions failed.
 # F132 gave the Recensor review its own attempt model (`pipeline/5_recensor/
 # run.py::publish_review`/`current_review`): a review's own recense ordinal is
@@ -2508,7 +2491,7 @@ def file_identities(root: Path) -> dict[str, tuple[int, int]]:
 
     A digest cannot tell a reused artifact from one deleted and rewritten with
     the same bytes, so a test that only compares digests proves the tree is
-    right and says nothing about the claim in its own name (GOVERNANCE 10).
+    right and says nothing about the claim in its own name (principle 8).
     Identity can tell them apart: `RunTree` publishes through a temporary that
     is then `os.link`-ed or `os.replace`-d into place, so every write lands a
     *new* inode, while both reuse paths (`_publish_bytes` on identical bytes,
@@ -3703,7 +3686,7 @@ def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
 
 
 def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happy_run):
-    """Tyrel's ruling on Unit 12's F2, on the principal fixture.
+    """Unit 12's F2 rule, on the principal fixture.
 
     Both acts are marked out on page 1; a2 continues onto page 2, and both page
     witnesses transcribe page 2's whole text. No attachment there can ever be
@@ -3717,7 +3700,7 @@ def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happ
     non-whitespace characters nothing accounted for. Now the observation is kept
     and the verdict is withheld: `shortfall: None`, the reason naming the cause,
     the chairs, the page and the count, restated on the act that spans the page
-    in its review, in the manifest entry, and in the export (GOVERNANCE 2). The
+    in its review, in the manifest entry, and in the export (principle 2). The
     happy path still establishes both acts — this is a visible partial, not a
     hold — and the Perlector gap that would make the measurement real is filed.
     """
@@ -3983,7 +3966,7 @@ def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_bl
     receipt minted and trusted-boundary health recorded — and the Recensor then
     sealed `confirmed-blank`, stating that three chairs had actually and
     independently read the page. The conclusion was true of that white page; the
-    evidence was not, and the same shape over a page with ink is GOALS 1's worst
+    evidence was not, and the same shape over a page with ink is goal 2's worst
     failure arriving as a green run.
 
     So: no response, no reading. Every chair is `not-run`, nothing claims a
@@ -4434,7 +4417,7 @@ def test_a_conservation_residual_the_seal_never_minted_is_refused(tmp_path):
     be caught as unaccounted evidence, because a residual that never became a
     hold leaves no artifact behind. Before this check the run reconciled
     perfectly and exited `complete` over ink the stage itself measured and no
-    crop claimed, which is exactly what GOVERNANCE 2 refuses.
+    crop claimed, which is exactly what principle 2 refuses.
     """
     root = tmp_path / "runs"
     _run_through_designator(root)
@@ -4793,7 +4776,7 @@ def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(ha
 
 
 def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happy_run):
-    """GOALS 3/5: page two retains and audits the pixels a2 contributes there."""
+    """Principle 1 and goal 4: page two retains and audits the pixels a2 contributes there."""
     _, tree = happy_run
     a2 = next(
         act
@@ -5084,7 +5067,7 @@ def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_wit
     records in `pipeline/5_recensor/test_comparability_floor.py`, and the
     arithmetic in `common/contracts/test_contracts_algebra.py`; claiming this
     scenario exercises it would report an instrument that did not run
-    (GOVERNANCE 10).
+    (principle 8).
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "structured-witness")
@@ -5337,7 +5320,7 @@ def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
 def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proof(tmp_path):
     """An accepted reading is not itself evidence that the page was blank.
 
-    Tyrel ruled blank pages ordinary, and also distinguished them from unread ink.
+    Blank pages are ordinary, and distinguished from unread ink.
     The outcome algebra therefore leaves silence unresolved until the Recensor
     retains a blank proof.  Acceptance alone must not manufacture that proof.
     """
@@ -5630,7 +5613,7 @@ def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path)
     reference only where the stage's own derivation has already reached
     `no_readable_text` reads past the Recensor's finding everywhere else, so the
     contradiction resolves in favour of whichever claim the derivation reaches
-    first and leaves no trace of the other (GOVERNANCE 2).
+    first and leaves no trace of the other (principle 2).
     """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
@@ -5862,7 +5845,7 @@ def test_the_run_authority_names_the_commit_the_code_ran_at(tmp_path):
 
 
 def test_a_run_whose_caller_names_no_commit_records_none_rather_than_a_placeholder(tmp_path):
-    """GOVERNANCE 10: not measured is recorded as not measured, never invented."""
+    """Principle 8: not measured is recorded as not measured, never invented."""
 
     root = tmp_path / "runs"
     journal = tmp_path / "timings.json"
@@ -5925,7 +5908,7 @@ def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tm
     `repository_commit` used to be reached from the Door's own argv build and
     from the timing journal, so a manual or semi run starting later -- with no
     journal configured, nothing else reads it -- could accept a malformed
-    revision and go on to execute stages (CodeRabbit on PR #117).
+    revision and go on to execute stages.
     """
 
     root = tmp_path / "runs"
@@ -5961,7 +5944,7 @@ def test_a_timing_journal_inside_the_run_tree_is_refused_before_anything_runs(tm
 
     A journal under the run directory would add mutable bytes to an immutable
     tree once per stage invocation and change the byte identity the rerun,
-    resume and restore checks all rest on (CodeRabbit on PR #117).
+    resume and restore checks all rest on.
     """
 
     root = tmp_path / "runs"
@@ -5978,7 +5961,7 @@ def test_a_timing_journal_belonging_to_another_run_is_left_unchanged(tmp_path):
     Nothing checked the identity of an existing journal before appending, so
     the first run's entries were kept while the top-level `run_id` was replaced
     with the second's -- a file attributing one run's stage timings to another
-    (CodeRabbit on PR #117). The conflict is reported on stderr like every other
+    -- the conflict is reported on stderr like every other
     journal fault, because a stopwatch never fails a stage.
     """
 
@@ -6068,7 +6051,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     before = snapshot(root)
 
     # Unit 11 adds the same two retained Chandra-response blobs before review's
-    # recovery loop; its append-only invariant is unchanged. Unit 14B Sonnet
+    # recovery loop; its append-only invariant is unchanged. Unit 14B
     # audit: fewer than 118 -- the ink-confirmation gate (consult §4.5) removes
     # the second recovery round a2's unconfirmed witness box used to spend
     # (see the REVIEW_RUN_TREE_DIGEST comment above).
@@ -6270,7 +6253,7 @@ def _pixels(bounds: dict) -> set[tuple[int, int]]:
 
 
 def test_the_recovery_recrop_actually_widened_the_crop_it_was_asked_for(review_run):
-    """GOVERNANCE 11: "Recovery exists for **completeness and coverage**."
+    """Principle 7: "Recovery exists for **completeness and coverage**."
 
     This scenario is the walking skeleton's single proof that bounded recovery
     works, so what it spends the `fallback_recrop` budget on has to be a crop
@@ -6365,7 +6348,7 @@ def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(r
 
 
 def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
-    """Unit 14B Sonnet audit: a2 no longer requests a spurious second recovery.
+    """Unit 14B audit: a2 no longer requests a spurious second recovery.
 
     Before the correction, a2 (which `hold_acts` declares should go straight
     to a hold) independently satisfied `wants_recovery` from the same page's
@@ -6438,7 +6421,7 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
     particular region; it is not permission to omit a continuation region from
     the Perlector's image basis.  Both sides must remain there even where a2 is
     never recovered at all -- exactly the case `review` now exercises (Unit
-    14B Sonnet audit: a2's own second reading here used to come from the same
+    14B audit: a2's own second reading here used to come from the same
     unconfirmed marginal witness box `REVIEW_RUN_TREE_DIGEST` above documents;
     it is refused there for the same lack of ink evidence). The stronger claim
     -- that a genuine recovery recrop keeps the far side of a real continuation
@@ -6470,7 +6453,7 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
 
 
 def test_recovery_stayed_inside_its_budget(review_run):
-    """Unit 14B Sonnet audit: one request, not two -- see the comment on
+    """Unit 14B audit: one request, not two -- see the comment on
     `test_the_recovery_request_and_both_reading_attempts_survive`."""
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
@@ -6479,7 +6462,7 @@ def test_recovery_stayed_inside_its_budget(review_run):
     # page_level_reread`, 1 + 1 in config/recovery.toml, separately bounded by
     # `absolute_cap = 3`. The exact value, not merely "within the cap": `<= 3`
     # is also satisfied by a budget that silently collapsed to 0 or 1, so it
-    # could not fail for the regression it names (GOVERNANCE 10).
+    # could not fail for the regression it names (principle 8).
     assert len(requests) == 1
     allowed = [request["payload"]["budget_allowed"] for request in requests]
     assert allowed == [2], "the configured recovery budget is one recrop plus one reread"
@@ -6513,7 +6496,7 @@ def test_the_held_act_appears_in_the_review_output_and_forces_partial(review_run
 
 
 def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
-    """GOALS 3: a witness reading is never itself an output. The established text
+    """Principle 1: a witness reading is never itself an output. The established text
     must not equal any witness's reported words *by accident of the fixture*
     either, so the fixture deliberately makes two chairs disagree."""
     _, tree = review_run
@@ -6593,7 +6576,7 @@ def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_v
     assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
     # The counterfactual, on this run's own retained evidence: the exemption is
     # still there and still bites. The retained Testimonium carries the verbatim
-    # report and no derived view (GOVERNANCE 4), and on that record
+    # report and no derived view (principle 4), and on that record
     # `is_comparable` is False — so what lifted it above is the view
     # `dissent_testimonia` builds, not a relaxed rule.
     assert "comparison_reported" not in testimonium["payload"]
@@ -7478,7 +7461,7 @@ def truncated_reading_run(tmp_path_factory):
 
 
 def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_run):
-    """GOALS 2 is accuracy against the ink, and GOVERNANCE 2 refuses a loss hidden
+    """Goal 1 is accuracy against the ink, and principle 2 refuses a loss hidden
     behind a successful status. Text nobody successfully read is neither, so it is
     held — visibly, with the outcome that caused it named in the reason."""
     _, tree = truncated_reading_run
@@ -7540,7 +7523,6 @@ def test_the_recensor_refuses_a_testimonium_from_a_chair_the_run_never_sealed(tm
     came from. So a testimonium under a role `run.json` never named raised the
     completed count: two real witnesses and one stranger read as three, and
     `under_witnessed` came back False on a run that was genuinely short a witness.
-    Found by CodeRabbit on pull request 16.
     """
     root = tmp_path / "runs"
     for program in (
