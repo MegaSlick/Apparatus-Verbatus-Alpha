@@ -1,37 +1,18 @@
 """Perlector: reads the ink, with the testimonia as fallible clues.
 
-The fake here proves wiring and nothing else — its text comes from the fixture, so
-it demonstrates exactly zero about reading. What it *does* prove is the shape of
-the record, and the shape is where principle 1 either holds or quietly fails:
+The record verifies its region evidence (digest against the sealed reference, decoded
+size against the claimed transform), records every region and testimonium it saw by
+reference, and never counts witnesses: dissent is computed after the reading is fixed
+and cannot reach back into it (principle 1).
 
-  It verifies the region evidence.        The stage reads the bytes, checks their
-                                          digest against the sealed reference, and
-                                          decodes them to confirm the image is the
-                                          size the transform claims. The fixture
-                                          reader observes pixels only to prove a
-                                          page-fallback act empty; ordinary text
-                                          remains declared fixture text.
-  It records its basis.                   The region it read, and every testimonium
-                                          it saw, by reference.
-  It never counts witnesses.              No branch anywhere in this file reads how
-                                          many chairs agreed. The dissent record is
-                                          computed *after* the reading is fixed,
-                                          and cannot reach back into it.
+The sealed serving-recipe row picks the reader. A `kind = "vllm"` row for the Perlector
+chair selects `live_reader.VLLMReader`; any other row selects the fixture reader, whose
+text comes from the fixture and proves wiring only. A real submission has no fixture
+declaration, so a non-live row there refuses (`fixture_reader_for`).
 
-Which reader answers is the sealed serving-recipe row's business, not this file's: a
-`kind = "vllm"` row for the resolved Perlector chair selects `live_reader.VLLMReader`
-behind one `ChairClient`, and every other catalogue selects the fixture reader above.
-Nothing downstream of the reader call changes with that choice — the record shape, the
-truncation instrument and the Recensor's routing are the same either way. HANDOFF.md's
-"Live reader" section carries the mapping, the refusals and the resume rule. On a real
-submission there is no declaration for the fixture reader to read from, so a non-live
-row there refuses by name (`fixture_reader_for`), and a declared reading failure has no
-counterpart: a real reading's non-completion is the engine's own stop reason.
-
-Dissent is structural, not evaluative: it records where the reading departed from
-each witness, which makes parroting measurable without new instrumentation. It is
-not a quality signal — most lines in a register are easy and every witness agrees,
-and zero dissent there is the correct output.
+Dissent records where the reading departed from each witness, which makes parroting
+measurable. It is not a quality signal: on easy lines every witness agrees and zero
+dissent is correct.
 
     python pipeline/4_perlector/run.py --run-root <dir> --run-id <id>
 """
@@ -153,12 +134,9 @@ _ACT_LOCAL_READING_FAILURES: Final = (
     EndpointUnavailable,
 ) + _CHAIR_TRANSPORT_FAILURE_TYPES
 
-# A sampling gate has to inspect the shared receipt directory because the sealed
-# experiment selector cannot contain the content address of the approval that
-# targets that selector's own config digest.  Bounds turn a planted directory
-# into a named refusal instead of an unbounded preflight.  Real receipts are a
-# few kilobytes; these ceilings allow a large alpha run while keeping both one
-# object and the aggregate scan finite.
+# The sealed selector cannot hold the digest of an approval that targets its own config
+# digest, so the sampling gate scans the receipt directory. These bounds make a planted
+# directory a named refusal; real receipts are a few kilobytes.
 MAX_SAMPLING_APPROVAL_RECEIPTS: Final = 100_000
 MAX_SAMPLING_APPROVAL_RECEIPT_BYTES: Final = 4 * 1024 * 1024
 MAX_SAMPLING_APPROVAL_SCAN_BYTES: Final = 1024 * 1024 * 1024
@@ -175,13 +153,10 @@ def _receipt_name_digest(name: str) -> str | None:
 
 
 def _open_receipts_directory(tree) -> int | None:
-    """Open the canonical receipt directory one component at a time, no-follow.
+    """Open the receipt directory one component at a time without following links.
 
-    ``RunTree.resolve`` deliberately resolves symlinks before its spelling-based
-    containment check.  That is suitable for ordinary movable references, but
-    not for this security gate: a receipt alias could be changed through its
-    other name after approval was checked.  Directory descriptors keep every
-    lookup anchored to the inode that was actually opened.
+    `RunTree.resolve` follows symlinks, so a receipt alias could change through its other
+    name after the approval was checked; descriptors pin each lookup to the opened inode.
     """
     no_follow = getattr(os, "O_NOFOLLOW", None)
     directory = getattr(os, "O_DIRECTORY", None)
@@ -409,14 +384,10 @@ def _sampling_receipts(context, *, subject: str) -> list[tuple[ApprovalRecordRef
 def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> ApprovalRecordBinding:
     """Resolve one sealed experiment selector to its checked approval record.
 
-    The sealed selector avoids a hash fixed point: an approval cannot both be
-    addressed by its content and target a configuration containing that address.
-    Candidates pass path, digest, schema, self-hash, approver, sole-subject,
-    action, and exact-version checks before the binding reaches either arm.
-
-    The record authenticates integrity and a claimed approver, not authorship;
-    run-tree write authority remains the trust boundary. Authenticating the human
-    act itself would require an out-of-band signature.
+    The selector names the subject, not the record's digest: an approval cannot be
+    addressed by its content and also target a config that contains that address. The
+    record proves integrity and a claimed approver, not authorship; write access to the
+    run tree is the trust boundary.
     """
     if approval_ref != subject:
         raise ContractError(
@@ -444,10 +415,8 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
         )
 
     candidate, record = candidates[0]
-    # "exclusion" and "salvage-promotion" approve a different governed action
-    # entirely; a sampling design is filed under "other" so a record meant to
-    # authorize an exclusion can never double as a sampling approval by coincidence
-    # of subject text.
+    # Sampling approvals use action "other", so an exclusion or salvage-promotion record
+    # that happens to share the subject text cannot double as one.
     if record["action"] != "other":
         raise ContractError(
             f"approval record {candidate.relative_path!r} for experiment {subject!r} has "
@@ -472,15 +441,11 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
 
 
 def regions_of(context, act_id: str) -> list[dict]:
-    """Every Designator region for this act, its own provenance verified first.
+    """Every Designator region for this act, each with its provenance verified.
 
-    `pipeline/3_attestatores/run.py::proposed_regions` already validates the
-    identical artifact kind before showing a region to a witness; reading it here
-    unvalidated would let a tampered Designator provenance reach a real reading
-    while the equivalent tamper on a Testimonium is refused. A region always
-    carries a receipt-backed provenance -- `structure_provenance` refuses before
-    any region is cut if the Designator chair is absent or unverifiable -- so
-    every region validated here requires one.
+    The Attestatores validate these records before showing them to a witness; the
+    reading must refuse the same tamper. Every region carries receipt-backed
+    provenance, so a receipt is required.
     """
     records = []
     for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
@@ -497,12 +462,10 @@ def regions_of(context, act_id: str) -> list[dict]:
 
 
 def _region_ordinal(record: dict) -> int:
-    """The sort key, refused by name rather than escaping as a raw `KeyError`.
+    """The sort key, refused by name rather than as a raw `KeyError`.
 
-    Ordering happens before `verify_region` validates the region, so this is
-    the one place a resealed record whose payload lost `attempt_ordinal` is
-    read — and a stage boundary that answers untrusted input with a traceback
-    is the one thing the Designator's own tests assert never appears in stderr.
+    Ordering runs before `verify_region`, and untrusted input must not surface as a
+    traceback.
     """
     ordinal = record.get("payload", {}).get("attempt_ordinal")
     if not isinstance(ordinal, int) or isinstance(ordinal, bool):
@@ -511,12 +474,10 @@ def _region_ordinal(record: dict) -> int:
 
 
 def act_regions(context, act_id: str) -> tuple[list[dict], list[dict]]:
-    """Every region for this act, and the original-proposal subset of it.
+    """Every region for this act, and its original-proposal subset.
 
-    One spelling, because the preflight and the reading loop both need the pair
-    and both refuse the same way. A second copy of the filter is how the two
-    come to disagree about what counts as a proposal region, which is the fact
-    the witness-coverage record is built on.
+    Preflight and the reading loop share this so they cannot disagree about which
+    regions are proposals; the witness-coverage record depends on that.
     """
     regions = regions_of(context, act_id)
     proposals = [region for region in regions if region["payload"].get("origin") == "proposal"]
@@ -536,7 +497,7 @@ def _region_reference(region: dict) -> dict[str, str]:
 
 
 def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
-    """Validate native presentation, rather than the retired shared-crop premise."""
+    """Validate an act Testimonium's native presentation, regions and inputs."""
     payload = record["payload"]
     presented = payload.get("presented") if isinstance(payload, dict) else None
     if not isinstance(presented, dict):
@@ -545,9 +506,8 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
     unpresented = payload.get("unpresented_regions")
     attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
     if not attempted:
-        # Ahead of the image-evidence refusal, which names none of this: a
-        # stripped record whose retained response survives passes that rule and
-        # still holds the bytes the chair answered with.
+        # Before the image-evidence refusal, which a stripped record that kept its
+        # retained response would pass.
         if payload.get("raw_response_ref") is not None:
             raise SchemaRefusal(
                 "a non-attempted Testimonium retains a provider response. The record would say "
@@ -634,11 +594,8 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
             "does not speak for"
         )
 
-    # One spelling of this refusal, called from both paths rather than hoisted
-    # above them. Order is load-bearing: a forged region presentation also has
-    # the wrong inputs, and checking those first would answer "wrong blobs" for
-    # a record whose actual fault is that it presents a recovery crop as a
-    # witness basis. The specific fault has to be the one the operator reads.
+    # Called last on both paths: a forged region presentation also has the wrong inputs,
+    # and the operator must read the specific fault, not "wrong blobs".
     def _require_bound_inputs() -> None:
         if record.get("inputs") != expected_inputs:
             raise SchemaRefusal(
@@ -696,9 +653,8 @@ def validate_page_testimonium_record(
             "digest-bound attachments"
         )
     if not attempted:
-        # Same order and same reason as the act-scoped seam above: the retained
-        # response is checked first because the image-evidence refusal below
-        # does not mention it, and a stripped record keeps it.
+        # As in the act-scoped check: before the image-evidence refusal, which a
+        # stripped record that kept its response would pass.
         if payload.get("native_capture") is not None or payload.get("raw_response_refs"):
             raise SchemaRefusal(
                 "a non-attempted page Testimonium retains a provider response. The record would "
@@ -747,10 +703,8 @@ def validate_page_testimonium_record(
         expected_inputs = [
             {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
         ]
-        # Every retained response the record derived from, in the payload's own
-        # order: the partition's responses, then a native capture. Each is
-        # bound beside the presented pixels so an ordinary artifact read
-        # re-hashes it, rather than trusting a nested reference nobody opens.
+        # Each retained response is bound beside the presented pixels, so an ordinary
+        # artifact read re-hashes it instead of trusting a nested reference.
         retained = list(payload.get("raw_response_refs", []))
         capture = payload.get("native_capture")
         if capture is not None:
@@ -759,19 +713,10 @@ def validate_page_testimonium_record(
         if native_inference is not None:
             for row in validate_chandra_trace(native_inference)["attempts"]:
                 retained.extend((row["intent_ref"], row["attempt_ref"]))
-        # Named once each, before the sort, exactly as the producer names them
-        # (`pipeline/3_attestatores/run.py::_named_once`). One retained response
-        # can honestly appear twice in the payload -- a page whose partition was
-        # derived from the very bytes its own native capture describes reaches
-        # the same content-addressed blob through `raw_response_refs` and
-        # through `native_capture`, and a page-edge overshoot finding is
-        # required to make that blob traceable through `raw_response_refs` while
-        # the capture still names it. It is one response, not two, and
-        # `common/contracts/envelope.validate_input_refs` refuses a repeated
-        # path outright, so a record that listed it twice could never have been
-        # written; concatenating without de-duplication here therefore built an
-        # expectation no publishable record can meet, and refused a correct
-        # record one stage after it was correctly published.
+        # De-duplicated as the producer does: one response can reach the same blob
+        # through both `raw_response_refs` and `native_capture`, and
+        # `validate_input_refs` refuses a repeated path, so a doubled expectation could
+        # never be met.
         expected_inputs = sorted(
             _distinct_inputs(expected_inputs + retained),
             key=lambda item: (item["relative_path"], item["sha256"]),
@@ -825,15 +770,11 @@ def sealed_proposal_regions(context) -> list[dict]:
 
 
 def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[dict]:
-    """Every chair's current testimonium for this act — the latest attempt only.
+    """Every chair's current testimonium for this act: the latest attempt only.
 
-    Attempts are append-only (principle 4): a failed re-read is recorded beside
-    the earlier success, never over it. Every record is still read and its
-    provenance still validated, but only each chair's latest attempt is returned
-    as evidence — the same collapsing `pipeline/5_recensor/run.py::chair_outcomes`
-    already does for the identical artifacts, so dissent, witness-coverage, and the
-    Perlectio's own recorded basis cannot see a superseded attempt as though it
-    were still live.
+    Attempts are append-only (principle 4). Every record is validated, but only each
+    chair's latest attempt is evidence, as in the Recensor's `chair_current_attempts`, so
+    dissent, witness coverage and the recorded basis never see a superseded attempt.
     """
     records = []
     for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
@@ -866,18 +807,14 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """Read page scope independently from the sealed model configuration.
+    """Read page scope from the sealed model configuration, not from upstream records.
 
-    A consumer may not inherit trust across a stage boundary: this side must not
-    take the Attestatores' validation, or a fixture declaration, for the sealed
-    authority. Uniqueness keeps duplicates from disappearing into a set, and the
-    roster check below prevents a scope claim for a nonexistent chair from
-    silently erasing page coverage.
+    A consumer may not inherit trust across a stage boundary. The uniqueness and roster
+    checks stop a duplicate or a nonexistent chair from silently erasing page coverage.
     """
     roster = context.witness_chairs
-    # `type(chair) is not str` rather than `isinstance`: set construction and
-    # refusal formatting both invoke subclass-defined behaviour, so the exact
-    # built-in string is required first (work/boundary-named-refusals).
+    # Exact `str`, not `isinstance`: set construction and refusal formatting would run
+    # subclass code.
     if (
         not isinstance(roster, list)
         or any(type(chair) is not str for chair in roster)
@@ -925,11 +862,8 @@ ATTACHMENT_FIELDS: Final = frozenset(
 def _validate_attachment_shape(attachment: Any) -> None:
     """The one closed-shape rule for an attachment, applied wherever it is read.
 
-    `type(chair) is not str` rather than `isinstance`: the value becomes a set
-    and dict key below, and both set construction and refusal formatting invoke
-    subclass-defined behaviour, so the exact built-in string is required first.
-    Kept in one place because a second, looser copy of a closed schema is how a
-    field added to one list quietly escapes validation in the other.
+    The chair must be an exact `str`: it becomes a set and dict key, where a subclass
+    could run its own code.
     """
     if (
         not isinstance(attachment, dict)
@@ -953,18 +887,13 @@ def act_attachment_view(
     page_testimonia_seen: dict[str, dict] | None = None,
     all_proposal_regions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Validate the R0 attachment that makes a page witness act-addressable.
+    """Validate the attachment that makes a page witness act-addressable.
 
-    R4 owns alignment; until then this is the chair's complete delivered act
-    reading as an interim span, retained beside the page Testimonium and surfaced
-    in the dossier rather than silently treating page completion as an act-level
-    read.
-
-    `testimonia` is this act's *current* attempt per chair, already collapsed by
-    `testimonia_of`. The attachment is a derived view of one attempt, so it is
-    checked against that collapse rather than trusted on its own: see the
-    per-chair reconciliation below. `bases` are the verified regions the
-    Perlector read and therefore the independent page denominator.
+    Until real alignment exists, the attachment carries the chair's complete delivered
+    act reading as an interim span, surfaced in the dossier so page completion is never
+    taken for an act-level read. It is reconciled against `testimonia`, the current
+    attempt per chair. `bases` are the verified regions the Perlector read, the
+    independent page denominator.
     """
     act_id = act["act_id"]
     current = {record["payload"]["chair"]: record for record in testimonia}
@@ -991,16 +920,11 @@ def act_attachment_view(
         raise SchemaRefusal("an act-attachment record has no attachment list")
     configured = set(context.witness_chairs)
     page_ids = {basis["source_page_ordinal"]: basis["source_page_id"] for basis in bases}
-    # The run-global scope reading is validated first, and by the strictest of
-    # the readings that met here: exact strings, no duplicates hiding in a set,
-    # and no chair outside this run's sealed roster. It must fail before any
-    # per-attachment diagnostic can misattribute its malformation to a chair record.
+    # The run-global scope is validated first, so its malformation is never
+    # misattributed to one chair's attachment.
     page_chairs = declared_page_witness_chairs(context)
-    # Validate every value that becomes a set/dict key before pair accounting.
-    # JSON booleans compare equal to integers in Python (`True == 1`), and an
-    # unhashable JSON value would otherwise escape as a raw TypeError here. The
-    # attachment is untrusted evidence read from disk, so neither may reach the
-    # denominator as though it named a real page.
+    # Validate every value that becomes a set or dict key first: JSON `true == 1` in
+    # Python, and an unhashable value would escape as a raw TypeError.
     for attachment in attachments:
         _validate_attachment_shape(attachment)
         page_ordinal = attachment["page_ordinal"]
@@ -1034,9 +958,8 @@ def act_attachment_view(
             "its witness denominator is duplicated or incomplete; rebuild the attachment "
             "from the sealed regions and configured chairs"
         )
-    # Attachment accounting is per (chair, page), but this dossier field names
-    # witnesses. Count a chair once even when its evidence spans several pages;
-    # otherwise the reader is told a two-chair roster contains four witnesses.
+    # Accounting is per (chair, page), but the dossier counts witnesses: a chair counts
+    # once however many pages it spans.
     page_witness_chairs: set[str] = set()
     comparison_views: dict[str, str] = {}
     edge_deltas: dict[str, list[dict[str, Any]]] = {}
@@ -1062,17 +985,8 @@ def act_attachment_view(
                 "Text cannot count for an act when witness geometry did not attach to it. "
                 "Rebuild both facts from the retained Testimonium."
             )
-        # A plain `if`, not an `elif`. The two rules are independent -- one about
-        # comparable text without attachment, one about a span or basis an
-        # unattached view may not carry -- and chained, the second read as the
-        # alternative to the first, which is not what it checks. The outcomes are
-        # the same either way; what changes is where the next branch added here
-        # gets wired.
-        #
-        # Two separate faults inside it, and each names its own field. This branch
-        # is reached by page-witness attachments as well as act-scoped ones, so the
-        # refusal may not call every row an "act view"; and a row whose only fault
-        # is its basis sent the operator to a `span` that was already null.
+        # Independent of the rule above. Page witnesses reach this too, so each refusal
+        # names its own field rather than calling every row an act view.
         if not attachment["attached"]:
             if attachment["attachment_basis"] != "unattached":
                 raise SchemaRefusal(
@@ -1083,18 +997,9 @@ def act_attachment_view(
                 raise SchemaRefusal("an unattached attachment claims an alignment span")
         chair = attachment["chair"]
         attachment_page = attachment["page_ordinal"]
-        # The attachment describes one attempt, and the reread path
-        # (`pipeline/3_attestatores/run.py::reread_pass`) appends a new act-scoped
-        # attempt without rewriting it — D8 leaves page-witness reread addressing
-        # to R3. Unchecked, the record then presents a superseded attempt's
-        # outcome and delivered-character count as this act's live attachment,
-        # which is exactly what `testimonia_of`'s latest-attempt collapse exists
-        # to stop ("cannot see a superseded attempt as though it were still
-        # live"), and what R0's own `granularity_basis` claims is impossible:
-        # `attached` IS the current act outcome before R4 alignment. Refuse the
-        # divergence rather than count a stale span or a stale reading as
-        # current. R4 replaces this reconciliation with real alignment. Found in
-        # audit; F-O1.
+        # A reread appends a new attempt without rewriting the attachment, so a stale
+        # attachment could present a superseded outcome as live. For an act-scoped chair
+        # `attached` must equal the current outcome.
         chair_testimonium = current.get(chair)
         if chair_testimonium is None:
             raise FatalAccounting(
@@ -1107,17 +1012,9 @@ def act_attachment_view(
                 f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
                 "current Testimonium outcome"
             )
-        # NOT exempted for a page witness, unlike the `attached`/outcome check just
-        # above: `content_health` is recorded from this act's own per-chair attempt
-        # (`attempts_by_pair` in `pipeline/3_attestatores/run.py`) for every chair,
-        # page witness or not -- a targeted reread (`reread_pass`) appends a new
-        # attempt to that exact same per-(act, chair) `testimonium` stream whether
-        # or not the chair is page-scoped, so a page witness's attachment can go
-        # stale after a reread exactly as an act-scoped one can (REOPENED F-O1):
-        # `attached` legitimately differs from the chair's outcome for a page
-        # witness (alignment can honestly fail against live text), but the health
-        # of the attempt the attachment actually describes must always still be
-        # this chair's current one.
+        # Not exempted for page witnesses: a reread appends to the same per-(act, chair)
+        # stream either way. `attached` may differ from a page witness's outcome, but
+        # the health must be the current attempt's.
         if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
             raise SchemaRefusal(
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
@@ -1128,17 +1025,9 @@ def act_attachment_view(
             raise SchemaRefusal(
                 f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
             )
-        # The act-scoped Testimonium carries the same scope claim a second time, as
-        # its optional `page_witness` flag, and `pipeline/4_perlector/dissent.py`
-        # trusts that flag directly: a record wearing it emits `compared: "unknown"`
-        # instead of a real comparison. The attachment's copy is checked above and
-        # this one was checked nowhere, so a resealed Testimonium for an ordinary
-        # act-scoped chair could silence that chair's dissent row — the structural
-        # parroting instrument switched off behind a well-formed and plausible
-        # reason, which is the one failure mode ARCHITECTURE's dissent section
-        # exists to make measurable. Two spellings of one fact, so both are
-        # reconciled against the run's own declaration. Found in fresh-context
-        # review (P2).
+        # `dissent.py` trusts the Testimonium's own `page_witness` flag and skips the
+        # comparison for it, so a resealed flag could silence an act-scoped chair's
+        # dissent row. Reconcile this copy against the run's declaration too.
         if chair_testimonium["payload"].get("page_witness", False) is not expected_page_witness:
             raise SchemaRefusal(
                 f"act {act_id} Testimonium for chair {chair!r} claims a page-witness scope this "
@@ -1160,14 +1049,9 @@ def act_attachment_view(
             )
             page_payload = testimonium.get("payload")
             validate_page_testimonium_record(context, testimonium, all_proposal_regions)
-            # Collected for the caller's routing sweep rather than examined here:
-            # a page Testimonium belongs to a (page, chair) pair, not to this act,
-            # so its observations must be judged once per run and not once per act
-            # that happens to sit on the page. This is the only digest-checked read
-            # of these records the Perlector makes, which is why the sink hangs
-            # here instead of a second walk of the Attestatores manifest -- a
-            # second walk would need its own current-attempt collapse and would be
-            # the third mirror of the Recensor's (see `current_page_testimonia`).
+            # Collected for the caller's run-wide routing sweep: a page Testimonium
+            # belongs to a (page, chair) pair, not to this act. This is the Perlector's
+            # only digest-checked read of these records.
             if page_testimonia_seen is not None and isinstance(page_payload, dict):
                 page_testimonia_seen[testimonium["artifact_id"]] = testimonium
             native_capture = page_payload.get("native_capture")
@@ -1183,23 +1067,9 @@ def act_attachment_view(
                         "native capture to an adapter other than that chair's configured boundary"
                     )
                 verify_native_capture_blob(context.tree, native_capture)
-            # The SEALED PROPOSAL geometry, never every current basis region.
-            # The writer computes this attachment from `proposed_regions`
-            # (`pipeline/3_attestatores/run.py`) and cannot do otherwise: a
-            # recovery region does not exist when a witness runs, and the reread
-            # rule forbids new testimony after a reading. Re-deriving here over
-            # a recovery crop as well therefore does not check the writer, it
-            # contradicts it -- and it contradicts it in exactly the case Unit
-            # 10C exists for. A page witness reporting ink outside every
-            # proposal routes to a fallback recrop; the expanded crop then
-            # overlaps the observation the proposal missed, and the reread
-            # refused the act's own attachment record as forged. That is
-            # retrospective coverage arriving through the attachment door
-            # (consult 4.1, wall 1: a recovery crop may not become coverage
-            # after the fact), and it turned a recoverable coverage finding
-            # into a hard stage failure.
-            # A recovery crop postdates testimony and therefore cannot expand
-            # the sealed-proposal denominator used to attach that testimony.
+            # Sealed proposal geometry only, as the writer used. A recovery crop
+            # postdates testimony, so it may not enlarge the denominator that attached
+            # it after the fact.
             page_bases = [
                 basis
                 for basis in bases
@@ -1213,19 +1083,10 @@ def act_attachment_view(
                 if native_capture is not None
                 else chair_testimonium["outcome"]
             )
-            # Re-derived through the one shared rule the producer used
-            # (`common/contracts/outcomes.py::page_attachment_basis`), never a
-            # second local spelling of it: a page witness attaches on its own
-            # reported ink over this act's sealed proposal, or -- only where it
-            # reported none -- on an alignment that located this act's anchor
-            # line inside its page text. The second basis is what lets a chair
-            # whose grammar carries no geometry at all count at this act
-            # (`anchor-line`, in ATTACHMENT_BASES since the set was closed);
-            # without it every act sat one witness under a floor of three on a
-            # shortfall that had not happened. Still a derivation, not an
-            # assertion: `attached` and the basis label are both recomputed from
-            # the retained page Testimonium, so a resealed record cannot claim
-            # either one.
+            # Re-derived through the producer's shared rule: a page witness attaches on
+            # its own ink over this act's sealed proposal or, only where it reported
+            # none, on an anchor line located in its page text. Both `attached` and the
+            # basis are recomputed, so a resealed record cannot claim either.
             derived_basis = page_attachment_basis(
                 reading=attachment_outcome in WITNESS_READING_OUTCOMES,
                 geometry_overlaps=any(
@@ -1285,23 +1146,9 @@ def act_attachment_view(
                     f"{role!r} its own primary-page fact contradicts; the page relationship "
                     "is false; rebuild the page Testimonium from the attachment denominator"
                 )
-            # The alignment only. `attached` is deliberately NOT checked here,
-            # and was: the pair contradicted each other for a page witness that
-            # really did report geometry over a continuation region. The
-            # geometric derivation a few lines above requires `attached` to
-            # equal that overlap, and this rule required it to be false whatever
-            # the overlap said -- so a chair whose response covers the
-            # continuation half of an act could satisfy neither rule in either
-            # state, and no honest record existed. Unreachable while no served
-            # page witness parsed; reachable the moment one did
-            # (`pipeline/3_attestatores/HANDOFF.md`), which is why it is fixed
-            # rather than documented. What the continuation page genuinely lacks
-            # is an ANCHOR -- the anchor is derived from the act's own primary
-            # page, so there is no comparison view to compute here even when the
-            # geometry attaches -- and that is exactly what this now says. An
-            # attached-but-unaligned entry is already a shape the branches below
-            # admit: `geometric-overlap` basis, a null span, and an explicit
-            # unaligned reason.
+            # Only the alignment is fixed on a continuation page, not `attached`: a page
+            # witness can honestly report geometry there. What the page lacks is an
+            # anchor, which comes from the act's primary page.
             if not is_act_primary_page and attachment["alignment"] != {
                 "status": "unaligned",
                 "reason": "continuation-page-no-act-anchor",
@@ -1317,36 +1164,23 @@ def act_attachment_view(
                     f"act {act_id} appears more than once in a page Testimonium's "
                     "unjoined-attempt record"
                 )
-            # An act the page join omitted is disclosed with the attempt outcome
-            # that explains it, and that outcome must be the one the attachment
-            # records. Not `bool(rows) != attached`, which was this check before:
-            # it read every omission as a failure, so the moment the join could
-            # omit a genuine reading -- a structured native object it cannot
-            # concatenate -- the honest disclosure of that omission became a
-            # refusal, and staying silent stayed legal. Absence of a row still
-            # means the act joined, so an unattached act must always be named.
-            # Found in audit; F-O7.
+            # An omitted act is disclosed with the attempt outcome that explains it, and
+            # a reading outcome may still be omitted (a structured native object cannot
+            # be joined). No row means the act joined.
             row = current_unjoined[0] if current_unjoined else None
             disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
-            # Joining a response into the retained page body only proves that
-            # the bytes arrived. It does not prove a bounded text alignment can
-            # attach them to this act (notably a genuine empty response has no
-            # span). An omitted response can never be attached; a joined one may
-            # still be explicitly unaligned.
+            # Joining only proves the bytes arrived. A joined response may still be
+            # unaligned (an empty response has no span), but an omitted one can never
+            # attach.
             if not disclosed and attachment["attached"]:
                 raise SchemaRefusal(
                     f"act {act_id} attachment disagrees with its page Testimonium's "
                     "unjoined-attempt record"
                 )
             alignment = attachment["alignment"]
-            # The exact label, not membership in the two admissible ones. A
-            # widened basis set makes the weaker check ("is it one of these?")
-            # look sufficient while letting a record attached on its own
-            # geometry be filed as `anchor-line`, or the reverse -- and the two
-            # are not interchangeable, because the second says the chair counts
-            # here only because ANOTHER chair's anchor located its text. The
-            # label is evidence about independence and is re-derived like every
-            # other fact on this record.
+            # The exact label: `anchor-line` says the chair counts only because another
+            # chair's anchor located its text, so the label is evidence about
+            # independence.
             if attachment["attached"] and attachment["attachment_basis"] != derived_basis:
                 raise SchemaRefusal(
                     f"act {act_id} page attachment for chair {chair!r} names basis "
@@ -1383,10 +1217,8 @@ def act_attachment_view(
                         and alignment.get("anchor_chair") is not None
                     )
                     or span != alignment.get("witness_span")
-                    # F087: whether align_to_anchor's own SIGALRM backstop was
-                    # actually armed for this match, not only whether it finished
-                    # -- an unbounded run that happened to finish reads identically
-                    # to a bounded one otherwise.
+                    # Whether the alignment's SIGALRM backstop was armed, not only
+                    # whether it finished.
                     or not isinstance(alignment.get("deadline_in_force"), bool)
                 ):
                     raise SchemaRefusal("an attached page witness has no computed alignment")
@@ -1394,18 +1226,8 @@ def act_attachment_view(
                 witness_span = alignment["witness_span"]
                 if not isinstance(page_text, str):
                     raise SchemaRefusal("an attached page witness has no textual comparison view")
-                # `witness_span` indexes the RAW page reading. It is stored that
-                # way at the one storage point (`pipeline/3_attestatores/run.py`
-                # clips in the normalized space the matcher measured in, then
-                # translates through the alignment's own `offset_map`), so the
-                # raw text is the space this slice belongs in and every consumer
-                # of the field shares it. F-X3's requirement is met by
-                # `act_comparison_view` stripping the SLICE: the premise
-                # `dissent.is_comparable` rests on -- that `comparison_reported`
-                # is a markup-stripped view and therefore safe to diff -- must
-                # hold whichever space the offsets came from, and a raw slice
-                # handed on unstripped would carry whatever markup it cut
-                # through. Found in audit; F-X3, recomposed by R6's F-G2.
+                # `witness_span` indexes the raw page reading. The slice is stripped of
+                # markup because dissent assumes a markup-free comparison view.
                 comparison_views[chair] = act_comparison_view(page_text, witness_span)
             elif attachment["attached"] and (
                 not isinstance(alignment, dict)
@@ -1432,9 +1254,8 @@ def act_attachment_view(
                 or alignment.get("status") != "unaligned"
                 or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
             ):
-                # The producer emits exactly {status, reason}; a reason-free
-                # mapping would validate while leaving the operator no
-                # statement of why comparison failed.
+                # The producer emits exactly {status, reason}; without a reason the
+                # operator cannot tell why comparison failed.
                 raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
             page_witness_chairs.add(chair)
             # Geometry alone cannot satisfy the witness floor: this act must also
@@ -1489,18 +1310,10 @@ def act_attachment_view(
         # A blinded dossier may show that page evidence exists, but not the
         # chair names embedded in its retained attachment artifact.
         "page_witness_count": len(page_witness_chairs),
-        # Stated exactly, because the count above was chosen to disclose an
-        # aggregate and this does not: `comparison_views` is keyed per chair,
-        # relabeled through `witness_label` in `dossier.build_dossier`, and
-        # present only for page witnesses. A blinded reader therefore learns
-        # WHICH pseudonyms are page-scoped -- scope, never identity, but with
-        # a roster of three where one chair is act-scoped that narrows a
-        # witness from one-in-three to one-in-two and names the act-scoped
-        # chair outright. U3 requires the act-anchored view and the view has
-        # to be attributable to a label for dissent to use it, so this is the
-        # cost of the instrument rather than an oversight; it is recorded here
-        # so R5a/R5b, which own the dossier's reference-based act views, can
-        # weigh it deliberately. R4 audit, F-X5.
+        # Keyed per chair (relabelled in `dossier.build_dossier`) and present only for
+        # page witnesses, so a blinded reader learns which pseudonyms are page-scoped:
+        # scope, never identity. Dissent needs a view attributable to a label; this is
+        # its cost.
         "comparison_views": comparison_views,
         "edge_deltas": ordered_edge_deltas(edge_deltas),
     }
@@ -1550,24 +1363,14 @@ def sealed_proposal_edge_deltas(
 
 
 def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
-    """One act's markup-stripped slice of a page reading, from a RAW span.
+    """One act's markup-stripped slice of a page reading, from a raw span.
 
-    Since the wave composed R4's per-act clip with R6's raw translation,
-    `witness_span` indexes the RAW page-Testimonium text at the one storage
-    point (`pipeline/3_attestatores/run.py`) — every consumer of the field
-    shares that space. The slice is therefore taken from the raw bytes, and
-    the markup stripping F-X3 requires (a comparison view safe to diff — a
-    raw slice would carry whatever markup it cut through) is applied to the
-    slice itself, not to the whole page before slicing.
+    `witness_span` indexes the raw page-Testimonium text, so the slice is cut from the
+    raw text and markup is stripped from the slice, keeping the view safe to diff.
     """
-    # Both bounds, not only the end: this reads an artifact back from disk, so
-    # it is the last gate before untrusted numbers become a comparison view. A
-    # slice is the one place a malformed offset does not announce itself:
-    # `text[-3:2]` is a perfectly good Python expression and a silently wrong
-    # comparison view, which dissent would then read as departure from a
-    # witness that said no such thing -- or as corroborating a blank it never
-    # reported. The Recensor's own consumer of this field checks the same
-    # three conditions.
+    # Both bounds: a malformed offset gives a silently wrong slice (`text[-3:2]` is
+    # valid Python), which dissent would read as a departure the witness never made. The
+    # Recensor checks the same three conditions.
     if not isinstance(witness_span, dict) or set(witness_span) != {"start", "end"}:
         raise SchemaRefusal("an attached page witness carries no two-bound comparison span")
     start, end = witness_span["start"], witness_span["end"]
@@ -1581,43 +1384,21 @@ def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
 def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) -> list[dict]:
     """Give dissent a safe comparison view without changing retained testimony.
 
-    Two sources, one per scope, and neither writes anything back to the
-    Attestatores record: the copy exists precisely so the retained Testimonium
-    stays the verbatim bytes principle 4 requires while dissent gets something
-    it can honestly diff.
+    Dissent gets a copy; the retained Testimonium stays verbatim (principle 4).
 
-    * A **page witness** gets this act's anchored, markup-stripped slice of its
-      page reading, computed by `act_attachment_view`. Absence still means the
-      recorded alignment is explicitly unaligned, and `dissent.dissent_against`
-      says so by name.
-    * An **act-scoped chair whose format declares `can_express_uncertainty`**
-      gets its own retained text with exactly the RecordGold bracket markers
-      removed (`common/alignment.py::bracket_marker_view`). Without it such a
-      chair is `compared: "unknown"` forever: `dissent.is_comparable` refuses to
-      diff a format that may embed alternative-reading markup inline, and
-      `markup_text_view` -- which removes TAG markup -- does not touch
-      `[UNCERTAIN]`/`[CROSSED_OUT]`. That is the instrument ARCHITECTURE names
-      for catching a reader that learned to agree with witnesses going dark on
-      the one chair whose grammar says most about the ink it was unsure of.
+    * A page witness gets this act's anchored, markup-stripped slice of its page
+      reading from `act_attachment_view`; without one, `dissent_against` reports it
+      unaligned.
+    * An act-scoped chair whose format declares `can_express_uncertainty` gets its text
+      with the bracket markers removed (`bracket_marker_view`). Otherwise
+      `dissent.is_comparable` refuses to diff it and that chair's dissent goes dark.
 
-    **The gate is the capability, and that is narrower than it can prove.** A
-    format capability is two booleans; nothing in the record names WHICH
-    notation a chair uses. The only act-scoped chair the roster binds is DAI,
-    whose notation is exactly these two bracket tokens (the RecordGold card's),
-    so the view is the right one for every producer that can reach this line --
-    including once `dai.v1` declares the capability, which is ordered after this
-    wiring precisely so that declaring it truthfully never costs a dissent row.
-    It
-    would be the wrong one for a future act-scoped chair that expressed
-    uncertainty some other way -- its markers would survive and read as
-    disagreement. Named rather than assumed away (principle 8), and it is the
-    mirror of the hazard `dissent.is_comparable` already records for page
-    witnesses; the fix for both is a notation field on the capability, not a
-    silent widening here.
+    The capability says a chair can mark uncertainty, not which notation it uses. The
+    bracket view fits the only act-scoped chair bound today, but another chair's markers
+    would survive and read as disagreement (principle 8).
 
-    Nothing selects among witnesses (principle 1): every chair
-    that reported gets a view derived from its OWN retained bytes, dissent is
-    computed after the reading is fixed, and no view is ever fed back into it.
+    Every view derives from the chair's own retained bytes, after the reading is fixed
+    (principle 1).
     """
     views = attachment_view["comparison_views"]
     result = []
@@ -1632,12 +1413,8 @@ def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) 
             continue
         capabilities = payload.get("format_capabilities")
         reported = payload.get("payload")
-        # `is True`, not truthiness: this is read from a retained record, and a
-        # non-boolean at a boolean field must not decide a comparison view. The
-        # producer's own seam refuses anything else
-        # (`live_witness._format_capabilities_for`), so a value that is not
-        # exactly `True` here is either an honest `False` or a record no
-        # producer wrote, and both mean "do not strip".
+        # `is True`: a non-boolean read back from a retained record must not decide a
+        # comparison view.
         if (
             isinstance(capabilities, Mapping)
             and capabilities.get("can_express_uncertainty") is True
@@ -1651,19 +1428,10 @@ def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) 
 def verify_region(context, region: dict) -> dict:
     """Prove the region handed over is the region the reference describes.
 
-    Three checks, because each catches a different lie: the digest catches bytes
-    that changed under a sealed reference, decoding catches a reference pointing at
-    something that is not an image, and the dimensions catch a crop that does not
-    match the transform it claims to be.
-
-    The underlying cause is carried into the refusal text, not only onto the
-    exception chain. `run_stage` prints the refusal it catches, so a cause left
-    behind on `__cause__` reached nobody: every one of those distinct faults —
-    a missing blob, a relabelled act, a transform outside the page — arrived at
-    the operator as the same nine words, and the one thing they needed to know,
-    which of them it was, had been thrown away one frame down (principle 2).
-    The boundary's own messages name ordinals and run-tree-relative paths, never
-    a submitted filename, so nothing this adds to stderr crosses the logging rule.
+    The digest catches changed bytes, decoding catches a non-image, and the dimensions
+    catch a crop that does not match its transform. The cause goes into the refusal
+    text because `run_stage` prints only the refusal (principle 2); these messages name
+    ordinals and run-relative paths, never a submitted filename.
     """
     try:
         return verify_exemplar_crop_lineage(context.tree, context.run, region)
@@ -1673,34 +1441,21 @@ def verify_region(context, region: dict) -> dict:
         ) from error
 
 
-# Moved into dossier.py so the dossier derives witness coverage from the same
-# testimonia it carries; re-exported here for its callers and tests.
+# Re-exported from dossier.py, which derives witness coverage from the testimonia it
+# carries.
 witnessed_region_ids = dossier_module.witnessed_region_ids
 
 
 def real_ingress(context) -> bool:
-    """Whether this context's run authority names the real route.
-
-    Delegates to `common.stage.is_real_ingress`, the same reader the shared
-    constructor and `expected_acts` use, so the two cannot disagree about
-    which route a run is on.
-    """
+    """Whether this run authority names the real route, by the shared reader."""
     return is_real_ingress(context.run)
 
 
 def declared_reading_failure(context, act_key: str) -> str | None:
     """The non-completed outcome this scenario declares for an act, if any.
 
-    The fixture is the authority on what a scenario does, exactly as it is for a
-    witness failure. A reading that did not succeed still carries whatever text
-    it managed, which is the shape that matters: it is what let a `truncated`
-    reading be established as the one text.
-
-    A real submission declares nothing, so this is `None` there by name rather
-    than by an empty table: a real reading's non-completion is the engine's own
-    stop reason, carried through `truncation.classify`, and no declaration
-    stands in for it. The branch lives here so the call site does not have to
-    know which route it is on.
+    A real submission declares nothing: its non-completion is the engine's own stop
+    reason, carried through `truncation.classify`.
     """
     if real_ingress(context):
         return None
@@ -1713,16 +1468,10 @@ def declared_reading_failure(context, act_key: str) -> str | None:
 def fixture_reader_for(context, chair: ChairIdentity | AbsentChair, serving_mode: str):
     """The reader a non-live pass reads through, or `None` when there is nothing to read with.
 
-    Live mode is `None` here on both routes: the loop starts the chair on first
-    use (`_live_reader`), so a resumed pass whose acts are all sealed never
-    loads a model to read nothing. On the fixture route the reader exists from
-    this line, exactly as before. On a real submission there is no declaration
-    for it to read from: a configured chair whose sealed serving-recipe row is
-    not live refuses by name, because a declared text cannot stand in for a
-    reading of real ink; an absent chair reads nothing and needs no reader --
-    every act publishes the same explicit `not-run` record it does on the
-    fixture route -- so it gets `None` rather than a refusal about a reader it
-    would never have consulted.
+    Live mode returns `None`: the loop starts the chair on first use, so a resumed pass
+    with every act sealed never loads a model. On a real submission a non-live row
+    refuses, because a declared text cannot stand in for real ink; an absent chair reads
+    nothing and needs no reader.
     """
     if serving_mode == "live":
         return None
@@ -1749,14 +1498,9 @@ def perlector_chair(context) -> ChairIdentity | AbsentChair:
 def preflight_testimonia_denominator(context, acts: list[dict]) -> None:
     """Validate the run declaration and every requested witness denominator before writes.
 
-    A Perlectio is immutable, so one published over a short denominator cannot
-    be corrected: restoring the missing witness changes the bytes under the same
-    reading identity, and the run can no longer resume normally. Checking the
-    whole requested set first is what stops a malformed act discovered late from
-    leaving an unfixable reading behind it.
-
-    The run-global page-witness declaration is checked even when every act is
-    held, because those acts still publish immutable ``not-run`` Perlectiones.
+    A Perlectio is immutable, so one published over a short denominator cannot be
+    corrected. The page-witness declaration is checked even when every act is held,
+    because held acts still publish `not-run` Perlectiones.
     """
     declared_page_witness_chairs(context)
     for act in acts:
@@ -1775,24 +1519,11 @@ def provenance_for(
 ) -> dict:
     """Project one Perlector outcome's immutable provenance.
 
-    A record for a reading that never happened — a held act, or an absent chair —
-    names what would have read and stops there. Manufacturing a receipt for it
-    would be a serving moment nobody observed.
-
-    A reading that *did* happen re-verifies the configured snapshot first, at the
-    moment it is produced rather than once at run creation: principle 6 is about
-    identity when the reading was made, and a receipt captured at serve time and
-    copied forward is the weaker claim spec 02 names and refuses.
-
-    `receipt_ref` is the live chair's own receipt, published by the serving
-    manager when the service actually started and read back by
-    `ChairClient.__enter__` before any reading was taken. It is passed only in
-    live mode, and it is not an optimisation: `fixture_serving_details` declares
-    `fixture://` for an endpoint and `fixture` for a dtype, so minting one
-    beside a reading a real engine produced would put a declared fixture value
-    where a measurement belongs (principle 8). Fixture mode passes nothing and
-    writes the declared receipt exactly as before, which is what leaves its bytes
-    where they were.
+    An outcome that attempted no reading (a held act, an absent chair) names what would
+    have read and carries no receipt. An attempted reading re-verifies the snapshot when
+    it is made (principle 6). `receipt_ref` is the live chair's own receipt, passed only
+    in live mode: a fixture receipt beside a real engine's reading would put a declared
+    value where a measurement belongs (principle 8).
     """
     if receipt_ref is not None and not attempted:
         raise SchemaRefusal(
@@ -1805,9 +1536,8 @@ def provenance_for(
             "would name a serving moment this chair never had"
         )
     regime = {
-        # Ruling: witness identity travels under a run-level
-        # toggle, and every Perlectio records the regime it ran under, because a
-        # reading's provenance includes what its reader was shown.
+        # A reading's provenance includes what its reader was shown, so every Perlectio
+        # records its witness regime.
         "witness_regime": context.witness_context,
         "adapter_revision": context.adapter_revision,
     }
@@ -1845,14 +1575,8 @@ def provenance_for(
 def bound_serving_recipes(context, recipes_path: str):
     """The serving catalogue, proved to be the exact bytes this run sealed.
 
-    Only the recipe catalogue is read, so only its digest is compared.
-    `operations.serving.assembly._load_bound_configuration` additionally re-reads
-    and re-digests `config/pod_placement.toml` because pod preflight parses that
-    table to *choose* a tier; this stage never does. The tier arrives already
-    measured on `--placement-tier`, and the manager still carries the run-sealed
-    pair into every launch audit, where `StageContext.write_serving_launch_audit`
-    refuses one that differs. Digesting a file nothing here reads would be a
-    check on bytes this stage cannot act on.
+    Only the catalogue is digested: the placement table is read only by pod preflight
+    to choose a tier, which arrives here measured on `--placement-tier`.
     """
     inputs = context.serving_config_inputs
     if inputs is None:
@@ -1875,22 +1599,10 @@ def bound_serving_recipes(context, recipes_path: str):
 def perlector_serving_mode(context, args, chair: ChairIdentity | AbsentChair) -> str:
     """`"fixture"` or `"live"`, from the sealed serving-recipe row kind alone.
 
-    No new configuration key decides this and none is added: the catalogue
-    `--serving-recipes-config` names is already sealed into `config_digest`
-    through `serving_config_inputs`, so the fact is one the run authority
-    already states (spec 08 §5). `--placement-tier` is the one thing that must
-    be supplied beside it, and it is deliberately unsealed — a measured runtime
-    fact of the card, not run configuration.
-
-    Resolved once, before the run partition is published and before any chair is
-    started, so a live catalogue named without a tier refuses while the tree is
-    still exactly as this invocation found it.
-
-    An absent chair resolves to fixture without consulting the catalogue: it
-    reads nothing at all — every act publishes an explicit not-run record naming
-    the absence — so there is no resolved identity to look a row up by, and
-    inventing one to ask about would be asking which engine an absence would
-    have used.
+    The catalogue is already sealed into `config_digest`; `--placement-tier` is a
+    measured fact of the card and deliberately unsealed. Resolved before anything is
+    published or started, so a live row without a tier refuses on an untouched tree. An
+    absent chair is `fixture`: it reads nothing and has no identity to look a row up by.
     """
     if isinstance(chair, AbsentChair):
         return "fixture"
@@ -1902,18 +1614,9 @@ def perlector_serving_mode(context, args, chair: ChairIdentity | AbsentChair) ->
 class ResidentChair:
     """The one live chair a Perlector pass holds, and the promise it is stopped.
 
-    A holder rather than a `with` block around the pass, because the pass is six
-    hundred lines that have nothing to do with serving and every line of it would
-    have moved to gain the guarantee. `main` closes this in a `finally`; the pass
-    also closes it explicitly before it seals, so on the ordinary path the
-    service is verified down *before* the completion boundary is written and a
-    failed shutdown cannot be reported over a sealed stage. `close` is idempotent
-    for exactly that reason.
-
-    A `ServiceStopError` propagates. An unverified shutdown of a child this
-    process started must be reported: shutdown is verified rather than
-    inferred, and swallowing it in cleanup is how a run
-    reports success over a service nobody proved was gone.
+    `main` closes it in a `finally`, and the pass closes it before sealing, so a failed
+    shutdown is never reported over a sealed stage; `close` is idempotent for that
+    reason. A `ServiceStopError` propagates: an unverified shutdown must be reported.
     """
 
     __slots__ = ("client",)
@@ -1930,13 +1633,8 @@ class ResidentChair:
 def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temperature: int):
     """Build the production `serving_factory(context, chair, tier) -> ChairClient`.
 
-    Returned as a closure rather than exposed as a bare function so the one
-    parameter list `main` injects against stays `(context, chair, tier)`: a test
-    passes `operations.serving.fakes.fake_serving_factory`, and production passes
-    nothing and gets this. The seam is a dependency injection point, never a
-    choice among engines — which engine answers is the sealed row's business
-    (`perlector_serving_mode`), and this factory is only reached once that row
-    has already said `live`.
+    Tests inject a fake through the same signature. It is reached only after the sealed
+    row has said `live`; it never chooses an engine.
     """
 
     def factory(context, chair: ChairIdentity, tier: str) -> ChairClient:
@@ -1952,25 +1650,14 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
                 if getattr(context.args, "mechanics_qualification", False)
                 else None
             ),
-            # A live chair's engine logs, inside the run tree so they travel
-            # with the evidence they belong to. They sit beside this stage's
-            # artifacts and blobs rather than among them: `_stage_blob_inventory`
-            # walks `<stage>/blobs` alone, so an engine still writing its log
-            # while the stage seals cannot make the witnessed inventory false.
-            # `RunTree.serving_log_path` is the one place the directory is
-            # spelled, and `inventory_scope()` names the same one, which is what
-            # lets `fetch-run` bring the logs home as unverified side evidence
-            # instead of refusing the whole served tree at the first one it
-            # lists. The residency lease is not here: see
-            # `POD_RESIDENCY_LOCK_PATH`.
+            # Engine logs sit in the run tree beside the stage's blobs, not among them:
+            # the sealed inventory walks `<stage>/blobs` only, so a log still being
+            # written cannot falsify it. `fetch-run` brings them home as unverified side
+            # evidence.
             log_root=context.tree.resolve(context.tree.serving_log_path(context.stage)),
-            # One card, one resident chair, one lease -- and the card belongs
-            # to the pod, not to this run tree. `POD_RESIDENCY_LOCK_PATH` is
-            # the container-local path the pod preflight and the other serving
-            # stages take, so the Attestatores' witness chairs and this reader
-            # contend for one lease even when they run under different run ids,
-            # and the lock is not asked of a network mount that is not known to
-            # honour one.
+            # The card belongs to the pod, not the run tree: every serving stage takes
+            # this container-local lease, so chairs contend for it across run ids, and
+            # no network mount is trusted to honour a lock.
             residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
             producer="pipeline/4_perlector/run.py",
         )
@@ -1981,10 +1668,8 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
             retain=partial(retain_chair_bytes, context),
             decoding_config_sha256=decoding_config_sha256,
             record_temperature=record_temperature,
-            # Wired bare. `ChairClient.__enter__` copies
-            # `ServiceHandle.receipt_reference` into a plain `dict` before it
-            # calls this, which is exactly the type `RunTree.read_run_receipt`
-            # requires, so no stage-side conversion is left to do.
+            # `ChairClient.__enter__` passes a plain dict, which is what
+            # `read_run_receipt` requires.
             read_receipt=context.tree.read_run_receipt,
         )
 
@@ -1994,13 +1679,8 @@ def default_serving_factory(recipes, *, decoding_config_sha256: str, record_temp
 def retain_chair_bytes(context, data: bytes) -> dict[str, str]:
     """Store one chair response or call record under its own digest.
 
-    The client retains before it parses, so this runs before anything has looked
-    at the body: it is the durability half of response-as-arrival (principle 2),
-    and it is a property of the client rather than of this stage's publication
-    order. Guarded after the seal for the reason `StageContext._write_serving_blob`
-    is — this writes into the stage's own blob directory, whose inventory digest
-    the completion seal witnessed, and a write afterwards makes that inventory
-    false while the symptom lands on the next stage.
+    The client retains before it parses (principle 2). Refused after the seal, which
+    witnessed this stage's blob inventory; a later write would make it false.
     """
     if context.sealed:
         raise SchemaRefusal(
@@ -2012,16 +1692,11 @@ def retain_chair_bytes(context, data: bytes) -> dict[str, str]:
 
 
 def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict[str, str]]:
-    """Bind the two blobs a live reading's own record names as direct inputs.
+    """Bind the two blobs a live reading's record names as direct inputs.
 
-    A fixture reading has no engine behind it, sets no `engine_call`, and adds
-    nothing here — which is what keeps its envelope, and the acceptance pin over
-    it, exactly where they were.
-
-    Each reference is re-derived from the bytes on disk and compared to what the
-    reader claimed, rather than copied: a record naming a response that is not
-    there, or whose digest has moved, would otherwise publish an input list that
-    reads as evidence and resolves to nothing.
+    A fixture reading has no `engine_call` and adds nothing. Each reference is
+    re-derived from the bytes on disk, so a record cannot name a response that is
+    absent or has changed.
     """
     if engine_call is None:
         return []
@@ -2063,37 +1738,30 @@ def _live_reader(
     serving_factory,
     service: "ResidentChair",
 ) -> tuple[VLLMReader, dict[str, str]]:
-    """Start this run's one chair and return the reader that speaks to it.
+    """Start this run's one chair; return its reader and receipt reference.
 
-    The receipt reference comes back beside the reader because every record this
-    pass publishes must name the receipt of the service that actually answered —
-    `ChairClient.__enter__` has already read it back through the tree and refused
-    a receipt that no longer names this chair and revision (principle 6).
+    Every record the pass publishes names the receipt of the service that answered,
+    which `ChairClient.__enter__` has checked names this chair and revision
+    (principle 6).
     """
     factory = serving_factory or default_serving_factory(
         bound_serving_recipes(context, args.serving_recipes_config),
         decoding_config_sha256=decoding_sha256,
-        # The sealed reading-of-record posture, taken from the bytes this run
-        # bound and rechecked. `ChairClient` refuses anything but 0 rather than
-        # coercing one, so a policy that said otherwise is a named refusal here
-        # instead of a silent zero on every call record.
+        # The sealed reading-of-record temperature; `ChairClient` refuses anything but 0
+        # rather than coercing it.
         record_temperature=decoding_policy["reading_of_record"]["temperature"],
     )
-    # Assigned before it is entered: a `ChairClient` that fails partway through
-    # `__enter__` has already stopped whatever it started, and `close` on one
-    # that never started is a no-op — but the assignment is what makes that
-    # true of every future failure between these two lines as well.
+    # Assigned before entering so `close` covers any failure from here on; closing an
+    # unstarted client is a no-op.
     service.client = factory(context, chair, args.placement_tier)
     service.client.__enter__()
     reader = VLLMReader(
         client=service.client,
         chair=chair,
         protocol_config=protocol_config,
-        # No sealed output bound exists and this section does not invent one:
-        # vLLM bounds generation by `max_model_len`, so an engine `"length"`
-        # then honestly means the context itself was exhausted rather than that
-        # the harness cut the reading short. A sealed bound belongs with the
-        # variance-experiment section, which will need one too.
+        # No sealed output bound: vLLM bounds generation by `max_model_len`, so an
+        # engine `"length"` means the context was exhausted, not that the harness cut
+        # the reading.
         max_tokens=None,
     )
     return reader, dict(service.client.handle.receipt_reference)
@@ -2102,15 +1770,9 @@ def _live_reader(
 def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
     """One entry per path, in first-named order, refusing two digests for one path.
 
-    Used at exactly two seams, both places where one content-addressed blob is
-    honestly reachable by two names: a live re-proof answering with the same
-    bytes as the establishing call, and a page Testimonium whose partition was
-    derived from the very bytes its own native capture describes. Both are
-    content-addressed, so an engine that answered the same bytes twice names one
-    blob twice and the envelope would carry a duplicate input. Two *different*
-    digests under one path cannot happen in a content-addressed store, so if it
-    ever does, something has rewritten a blob and this refuses rather than
-    picking one.
+    One content-addressed blob can honestly be reached twice (a re-proof answering the
+    same bytes; a page partition and its native capture). Two digests under one path
+    means a blob was rewritten.
     """
     distinct: dict[str, dict[str, str]] = {}
     for reference in references:
@@ -2125,21 +1787,11 @@ def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return list(distinct.values())
 
 
-# Every artifact one reading attempt publishes *before* its Perlectio is sealed,
-# named by kind and by the reading operation its attempt identity derives from.
-# The pass publishes them in this order, so an act interrupted mid-attempt
-# leaves some prefix of this list on disk with no Perlectio beside it, and a
-# resume has to answer for exactly that prefix instead of walking into an
-# `IncompatibleReuse` on the first one it republishes from a second live answer.
-# Named for the Perlectio and not for the establishing reading: the last two are
-# published *after* that reading, and the Perlectio is the one thing all five
-# come before. A name that is wrong about two of its own entries is worse than no
-# name, because a later reader takes it at its word.
-# The two of those the audit loop writes, after the establishing reading has
-# already happened and its text is frozen into their bytes. Nothing this pass
-# can do reproduces that text from a live chair, so an attempt interrupted after
-# one of them is the one prefix a resume can answer neither by reusing nor by
-# reading again.
+# `PRE_PERLECTIO_ARTIFACTS` lists, in publication order, every artifact an attempt
+# publishes before its Perlectio; it is named for the Perlectio because its last two
+# entries follow the establishing reading. Those two are written by the audit loop after
+# the establishing text is frozen into their bytes. A live chair cannot reproduce that
+# text, so an attempt interrupted after one of them can be neither reused nor read again.
 _AUDIT_ROUND_KINDS: Final = frozenset({"audit-draft", "audit-finding"})
 
 
@@ -2150,10 +1802,8 @@ def _attempt_artifact_id(act_id: str, kind: str, operation: str, ordinal: int) -
 def _reading_already_sealed(context, act_id: str, ordinal: int, *, act_key: str) -> bool:
     """Whether this run tree already holds this act's Perlectio at this ordinal.
 
-    A completed reading or not-run acknowledgement already answers the retry
-    question by existence. An operational failure is different: its shared
-    closed evidence contract is validated before the live chair is skipped, so
-    malformed failure bytes cannot become a permanent resume bypass.
+    A failed Perlectio is validated before the chair is skipped, so malformed failure
+    bytes cannot become a permanent resume bypass.
     """
     attempt = perlector_attempt_id(act_id, "perlegere", ordinal)
     identifier = artifact_id(PERLECTOR, "perlectio", act_id, attempt)
@@ -2170,15 +1820,9 @@ def _reading_already_sealed(context, act_id: str, ordinal: int, *, act_key: str)
 def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
     """Which pre-Perlectio artifacts of this attempt are already on disk.
 
-    An act reached by a *completed* attempt has a Perlectio, and
-    `_reading_already_sealed` answers for it before this is ever asked. What is
-    left is an attempt that stopped part-way — an abort, an HTTP failure, a
-    timeout, an OOM kill, a SIGKILL — after one of these publications and before
-    the Perlectio. Each is immutable, so a live resume that simply read the act
-    again would republish Pass A from a second live answer and be refused, with
-    no forward path at all: the artifact cannot be removed, so the refusal
-    repeats on every retry and the run is dead one act into a resume with every
-    other act still unread. That is the failure this answer exists to end.
+    An attempt that stopped part-way (abort, timeout, OOM, SIGKILL) leaves immutable
+    artifacts; a resume that simply read again would republish them from a second live
+    answer and be refused on every retry.
     """
     return frozenset(
         kind
@@ -2190,29 +1834,13 @@ def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
 
 
 def _sealed_prior_draft(context, act_id: str, ordinal: int) -> dict[str, Any] | None:
-    """This attempt's already-published Pass A, in the shape the arms take it.
+    """This attempt's already-published Pass A, in the shape `_publish_lectio_prior` returns.
 
-    Principle 4: the retained draft is this attempt's evidence and is never
-    overwritten. Reusing it is also the only honest answer available — the bytes
-    on disk are what the interrupted attempt actually produced, and a second
-    live Pass A would answer differently — so a resumed act pays for the arms it
-    has not yet run and no more. What is returned is exactly what
-    `_publish_lectio_prior` returns, so the establishing dossier cannot tell a
-    resumed prior from a freshly published one; what distinguishes them is the
-    provenance each record carries, and that stays on each record.
-
-    **The pair a resumed act seals spans two serving sessions, deliberately.**
-    Its `self_revision` measures this invocation's establishing text against the
-    interrupted invocation's Pass A, and the Perlectio carries no flag saying so
-    — a reader follows `provenance.receipt_ref` on the referenced `lectio-prior`
-    to see it. That is traceable rather than marked, and it is as far as this
-    can drift: `RunTree._verify_artifact_run` refuses any artifact produced
-    under a different `config_digest` than the run authority, so a reused prior
-    can never come from another model, revision or sealed configuration. What is
-    left is a same-configuration, different-session pairing, and the alternative
-    — re-asking Pass A to keep the pair inside one session — is the overwrite
-    Principle 4 forbids. Whether the record should also *say* it is such a pair
-    is a change to a closed payload shape, and is not decided here.
+    The retained draft is the interrupted attempt's evidence and is never overwritten
+    (principle 4); a second live Pass A would answer differently. A resumed act's
+    `self_revision` therefore pairs two serving sessions, traceable through each record's
+    `receipt_ref`. The run tree refuses artifacts from another `config_digest`, so the
+    pair never spans models or configurations.
     """
     identifier = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
     if not context.tree.has_artifact(PERLECTOR, "lectio-prior", identifier):
@@ -2225,12 +1853,10 @@ def _sealed_prior_draft(context, act_id: str, ordinal: int) -> dict[str, Any] | 
 
 
 def with_engine_call(payload: dict, result: dict, fields: frozenset) -> frozenset:
-    """Carry a live reading's engine call on its record, and a fixture one's nothing.
+    """Carry a live reading's engine call on its record; a fixture reading carries none.
 
-    The `_NOT_RUN_CAPACITY_FIELDS` precedent: a field that exists only on one
-    shape of record widens the closed set for that shape rather than becoming
-    optional inside one set, so every record is still validated against a schema
-    that names exactly what it carries.
+    The field widens the closed set for that shape rather than becoming optional, so
+    every record is validated against exactly what it carries.
     """
     engine_call = result.get("engine_call")
     if engine_call is None:
@@ -2258,14 +1884,10 @@ def _page_renders_for(context, bases: list[dict]) -> list[dict]:
 
 
 def _whole_act_gap(testimonia: list[dict], references: dict[str, dict]) -> list[dict]:
-    """The one gap an unreadable act carries: zero-width, evidence attached,
-    never a character inside `text` (the establishment firewall,
-    `annotations.py`).
+    """The one gap an unreadable act carries: zero-width, never a character in `text`.
 
-    Each variant travels with the digest-checked reference to the Testimonium
-    that reported it, so a displayed "⟨illegible — witnesses agree: …⟩" leads
-    back to the sealed record rather than to a chair name somebody would then
-    have to go looking for.
+    Each variant carries the digest-checked reference to its Testimonium, so a displayed
+    variant leads back to the sealed record.
     """
     evidence = [
         {
@@ -2287,14 +1909,9 @@ def _whole_act_gap(testimonia: list[dict], references: dict[str, dict]) -> list[
 def _region_pixels(bases: list[dict]) -> int:
     """The page-space area an act's regions cover: their union per page, summed.
 
-    The union and not the sum, since 2026-09-14. A fallback recrop re-cuts the
-    ink its original crop already covers, and summing the two counted the
-    shared ink twice: fixture act a1's recovered attempt measured 41,412 px for
-    an 18,612 px crop and its 22,800 px recrop. Invisible under the retired
-    absolute floor, and under a scale-honest one it held every recovered act as
-    length-suspicious -- the very failure F082 names, on the recovery path. A
-    single region is unchanged; regions on different pages (a continuation
-    act, or captures of one page) never overlap and still add.
+    A fallback recrop re-cuts ink its original crop covers; summing would count that
+    ink twice and mark every recovered act length-suspicious. Regions on different
+    pages never overlap and still add.
     """
     by_page: dict[str, list[tuple[int, int, int, int]]] = {}
     for basis in bases:
@@ -2306,12 +1923,9 @@ def _region_pixels(bases: list[dict]) -> int:
 
 
 def _union_area(rectangles: list[tuple[int, int, int, int]]) -> int:
-    """The area covered by at least one of a few axis-aligned rectangles.
+    """The area covered by at least one rectangle, by coordinate compression.
 
-    Coordinate compression: every cell of the grid the rectangles' edges draw
-    is either inside some rectangle or inside none, so the union is the sum of
-    the covered cells. Exact in integers; quadratic in the handful of regions
-    one act carries.
+    Exact in integers; quadratic in the handful of regions one act carries.
     """
     xs = sorted({x for rectangle in rectangles for x in (rectangle[0], rectangle[2])})
     ys = sorted({y for rectangle in rectangles for y in (rectangle[1], rectangle[3])})
@@ -2329,12 +1943,8 @@ def _union_area(rectangles: list[tuple[int, int, int, int]]) -> int:
 def _page_pixels(page_renders: list[dict]) -> int:
     """The sealed area of every distinct page an act's regions were cut from.
 
-    The denominator the truncation instrument's length signal scales a region
-    against (`truncation.is_length_suspicious`). Read from the page renders'
-    own recorded transform -- the source dimensions of the sealed Exemplar
-    page -- and summed over the pages a continuation act spans, exactly as
-    `_region_pixels` sums its regions, so the two are the same ratio on every
-    act.
+    The truncation length signal's denominator, summed over pages as `_region_pixels`
+    sums regions, so the two form one ratio.
     """
     return sum(
         render["transform"]["source_dimensions"]["w"]
@@ -2350,14 +1960,10 @@ def _reading_image_inputs(
     *,
     autopsia: dict[str, Any],
 ) -> list[dict]:
-    """Every image blob the reading saw and its partition authority.
+    """Every image blob the reading saw, and its partition authority, as direct inputs.
 
-    The dossier records these references as payload facts; the envelope input
-    list independently binds them as direct evidence.  Omitting page context
-    there would let a Perlectio claim it saw a render that its own provenance
-    never retained as an input. The cross-capture partition is equally direct:
-    it is the authority for which capture set had to be presented, so a reading
-    whose dossier cites it must bind the same immutable bytes as an input.
+    The envelope binds what the dossier cites, so a Perlectio cannot claim a page
+    render or partition its provenance never retained.
     """
     inputs = {
         reference["relative_path"]: reference
@@ -2382,13 +1988,8 @@ def _reading_image_inputs(
     return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
-# Every field an established-reading Perlectio payload carries. Closed, and
-# checked before publication rather than described in the handoff and hoped
-# for: spec 08's schema test asks that a Perlectio "missing identity, missing
-# dissent, missing regime record, or with annotation spans outside text bounds"
-# be refused, and three of those four are fields that would simply be absent
-# rather than wrong. An absent field is the failure mode a per-field type check
-# never sees.
+# Closed and checked before publication: a missing field (identity, dissent, regime) is
+# the failure a per-field type check never sees.
 _PERLECTIO_FIELDS: Final = frozenset(
     {
         "act_key",
@@ -2410,16 +2011,9 @@ _PERLECTIO_FIELDS: Final = frozenset(
     }
 )
 
-# The same, for the instrument record. It carries no `basis` -- a nuda reading
-# has no witness basis to record, which is the whole point of it -- and it does
-# carry the sampling design it was drawn under.
-#
-# The doubt report is carried on every record kind a reader answers on, not only
-# on the published Perlectio. The reader answers the same way on an instrument
-# call as on the establishing one, Lectio nuda is the instrument ARCHITECTURE
-# names for telling a reader that reads ink from one that agrees with witnesses
-# -- so a doubt reported there is a measurement -- and principle 2 says a
-# result is not lost quietly (the independent review of 2026-09-11).
+# The instrument record: no `basis`, since a nuda reading has no witnesses, and its
+# sampling design. Every record kind carries the doubt report, because a doubt reported
+# on an instrument call is a measurement too (principle 2).
 _LECTIO_NUDA_FIELDS: Final = frozenset(
     {
         "act_key",
@@ -2490,9 +2084,7 @@ _NOT_RUN_CAPACITY_FIELDS: Final = _NOT_RUN_ABSENT_FIELDS | {
 def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
     """Refuse a not-run Perlectio missing part of the record it claims.
 
-    Deliberately the common closed field-set check: a not-run payload has no
-    completed reading to validate. Capacity holds additionally validate their
-    retained autopsia and direct partition input at their production branch.
+    Capacity holds validate their autopsia and partition input where they are produced.
     """
     missing = sorted(fields - set(payload))
     unexpected = sorted(set(payload) - fields)
@@ -2504,11 +2096,10 @@ def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
 
 
 def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
-    """Translate only observed engine/transport failures into retained facts.
+    """Translate only observed engine and transport failures into retained facts.
 
-    Contract and schema errors deliberately return ``None``: swallowing one of
-    those as an engine incident would make a broken producer look like a card
-    failure and permit the stage to seal over an integrity defect.
+    Contract and schema errors return `None`: recorded as an engine incident, one would
+    let the stage seal over an integrity defect.
     """
     if isinstance(error, EngineSignalRefusal):
         return {
@@ -2713,10 +2304,7 @@ def validate_reading_payload(
 ) -> None:
     """Refuse a reading payload that is missing part of the record it claims.
 
-    Producer-local and deliberately so: `validate_serving_provenance` already
-    refuses a wrong-schema provenance wherever a Perlectio is *consumed*, and
-    this is the matching check at the moment one is written, so a defect
-    surfaces where it was introduced rather than one stage later.
+    Checked when written, so a defect surfaces where it was introduced.
     """
     refuse_capture_preference(payload, what="a Perlector reading")
     missing = sorted(fields - set(payload))
@@ -2728,14 +2316,9 @@ def validate_reading_payload(
         )
     if outcome == "read" and (not isinstance(payload["text"], str) or not payload["text"].strip()):
         raise SchemaRefusal("a completed reading cannot establish an empty text")
-    # The caller's field set decides which record shape this is: a Perlectio
-    # payload smuggling `basis: None` must refuse as a missing witness basis,
-    # never slip down the unprimed branch with every witness gone from the
-    # record. Two record kinds are unprimed since R5a -- Lectio nuda and the
-    # universal Pass-A `lectio-prior` -- so the branch is named for the
-    # condition rather than for one of its two occupants, and so are its
-    # refusals: a refusal that says "Lectio nuda" over a lectio-prior record
-    # sends the next reader to the wrong artifact.
+    # The caller's field set decides the record shape, so a Perlectio carrying `basis:
+    # None` refuses rather than passing as unprimed. Lectio nuda and lectio-prior are
+    # both unprimed, so the refusals name the condition.
     is_unprimed = "basis" not in fields
     basis = payload.get("basis")
     if is_unprimed:
@@ -2812,19 +2395,15 @@ def validate_reading_payload(
             )
         validate_input_refs([prior_draft["reference"]])
     elif lectio_kind == "primed-without-prior":
-        # Key presence, not value: the dossier field-set check above admits the
-        # {prior_draft, prior_draft_view} key combination, so a None prior_draft
-        # beside a view key would slip a value-only test.
+        # Key presence, not value: the shape check admits these keys, so a None
+        # prior_draft beside a view key would pass a value test.
         if "prior_draft" in reading_dossier or "prior_draft_view" in reading_dossier:
             raise SchemaRefusal(
                 "a Perlectio claims primed-without-prior but carries prior-draft data"
             )
     elif lectio_kind is not None:
-        # `None` is the two kinds whose field sets exclude the key entirely
-        # (lectio-nuda and lectio-prior). Any other value matched neither
-        # branch above, so its prior-draft evidence would publish uninspected
-        # and the defect would surface one stage later at the Archetypus —
-        # the opposite of what this validator promises.
+        # `None` is the kinds whose field sets exclude the key. Any other value would
+        # publish its prior-draft evidence uninspected.
         raise SchemaRefusal(
             f"a Perlector reading names unknown lectio kind {lectio_kind!r}; a kind this "
             "validator cannot name would publish its prior-draft evidence unchecked"
@@ -2858,12 +2437,9 @@ def validate_reading_payload(
             "a Perlector dossier does not account for exactly its Testimonium basis"
         )
     else:
-        # Label-for-label, not merely count-for-count: a sealed reading must not
-        # show one witness set in the prompt while its basis, dissent and export
-        # record another. Named labels are the chairs themselves; blinded labels
-        # are re-derived from the run's own identity when the caller supplies it
-        # (the production publish path always does — the bare form exists for
-        # schema tests that assert other refusals).
+        # Label for label: the prompt must show the witness set its basis, dissent and
+        # export record. Blinded labels are re-derived only when the caller supplies the
+        # run identity.
         basis_chairs = {row["chair"] for row in basis["testimonia"] if isinstance(row, dict)}
         dossier_labels = {
             row["witness_label"] for row in dossier_testimonia if isinstance(row, dict)
@@ -2897,13 +2473,9 @@ def validate_reading_payload(
         or not isinstance(protocol_record["draft_fed"], bool)
     ):
         raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
-    # Two statements of one fact: the run-level `draft_fed` the record declares
-    # and the per-act view its dossier names. Both derive from the same flag in
-    # `main()`, so this cannot fire on the production path -- and that is the
-    # point. `self_revision` is only interpretable against a known feeding
-    # state, so a record that claimed `draft_fed` true while its dossier
-    # withheld the draft would make the Pass-A->B change rate (a standing metric
-    # under design v2.1) mean nothing, with nothing in the record saying so.
+    # `draft_fed` and the dossier's view state one fact twice. `self_revision` is only
+    # interpretable against a known feeding state, so they must agree even though
+    # production derives both from one flag.
     prior_draft_view = reading_dossier.get("prior_draft_view")
     if protocol_record is not None and prior_draft_view is not None:
         declared_view = "fed" if protocol_record["draft_fed"] else "withheld"
@@ -2918,13 +2490,9 @@ def validate_reading_payload(
             "call was not given the sealed protocol bytes it reproduces from -- a cwd-relative "
             "reload is not a sealed-config recheck"
         )
-    # The record's own two policy names, bound to the sealed bytes rather than
-    # merely present. `prompt.page_shared_prefix_policy` is already reproduced
-    # from `protocol_config` by the prompt check below, so a payload could
-    # declare one rule in its `protocol` block while its prompt was built under
-    # another, and nothing said so. Unfireable on the production path for the
-    # same reason the draft_fed cross-check above is, and recorded here for the
-    # same reason: what these two names mean is what the run sealed.
+    # Bind the record's policy names to the sealed bytes: the prompt check below
+    # reproduces only the prefix policy, so the `protocol` block could otherwise name a
+    # different rule.
     if protocol_record is not None:
         declared = (protocol_record["selection_rule"], protocol_record["page_shared_prefix_policy"])
         sealed = (protocol_config["selection_rule"], protocol_config["page_shared_prefix_policy"])
@@ -2976,10 +2544,8 @@ def validate_reading_payload(
     if "audit" not in fields:
         annotations.validate_annotations(payload, outcome=outcome)
         return
-    # The re-proof locations are offsets in the frozen semi-final, which may
-    # be longer than the corrected final after a deletion. The full shared
-    # chain check binds them to the audit draft before publication; this
-    # payload-only shape check therefore does not guess a bound from final text.
+    # Re-proof offsets index the frozen semi-final, which may be longer than the final;
+    # the chain check binds them before publication, so no bound is guessed here.
     audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
     annotations.validate_annotations(payload, outcome=outcome)
 
@@ -2987,26 +2553,10 @@ def validate_reading_payload(
 def _validate_sealed_doubt(payload: dict, *, fields: frozenset) -> None:
     """Refuse a sealed doubt report this producer would never have written.
 
-    The field is in every reading record's closed set, so its presence is
-    already proved; what was never asked is whether its *content* is the record
-    this module builds. A malformed one published here reaches the Recensor as
-    state `None` -- no hold -- and fails at the Archetypus, one stage after the
-    branch that introduced it (the independent review of 2026-09-11).
-
-    The layer rule is asked only of the records with no audit behind them. On
-    those, every span is the reader's own, so a span beside a state that says
-    the reader was never asked is a contradiction. On the established Perlectio
-    the layer is the union of the exhausted-cap projection and the reader's
-    report, and only `common/perlector_audit.validate_chain` -- which can read
-    the finding -- can say which span is whose; it applies exactly this rule
-    there.
-
-    What makes that exemption safe is one call, named here so a later path
-    cannot lose it silently: `_read_the_acts` runs `audit.validate_chain` on the
-    assembled reading immediately before the one `perlectio` publish. A path
-    that published an established Perlectio without it would leave this rule
-    unenforced on the only record kind exempted from it (the independent review
-    of 2026-09-11).
+    A malformed report would reach the Recensor as no hold and fail only at the
+    Archetypus. The layer rule applies only to records with no audit, where every span
+    is the reader's own. On an established Perlectio only `audit.validate_chain`, which
+    `_read_the_acts` runs before the publish, can tell whose span is whose.
     """
     record = payload["uncertainty_assessment"]
     if not isinstance(record, dict) or set(record) != {"state", "problem"}:
@@ -3079,13 +2629,9 @@ def _reproof_call(
 def _assessed(result: dict[str, Any], *, text: str) -> dict[str, Any]:
     """The reader's doubt report over `text`, as the closed record the Perlectio seals.
 
-    A reader with no `assessment` key is read as `not-assessed`: the producer
-    never invents a doubt report on a reader's behalf. A report the annotation
-    schema cannot anchor to the exact text -- an offset past its end, a gap with
-    width, an unknown confidence -- becomes a `malformed` record carrying the
-    refusal as its problem, with empty layers: the fault stays visible where a
-    reader would look for the doubt, and never becomes an empty confident list
-    (audit finding F2; principle 8).
+    No `assessment` key means `not-assessed`: the producer never invents a report. A
+    report that cannot anchor to the exact text becomes `malformed`, carrying the
+    refusal as its problem, never an empty confident list (principle 8).
     """
     report = result.get("assessment")
     if report is None:
@@ -3101,25 +2647,15 @@ def _union_with_projection(
 ) -> list[dict[str, Any]]:
     """The published span layer: the exhausted-cap projection, then the reader's own.
 
-    Nothing is dropped, including an exact repeat. Two entries covering the same
-    characters with the same alternatives and confidence are two instruments
-    doubting the same thing, and no artifact in this run holds the reader's
-    report separately -- so dropping the repeat would erase the only trace that
-    the reader agreed with the audit, which is a fact and not a duplication.
-    The review surface coalesces such a pair into one line naming both
-    instruments; the layer keeps both. The stage HANDOFF says so where it
-    describes this order.
+    An exact repeat is kept: it is two instruments doubting the same thing, and no other
+    artifact holds the reader's report, so dropping it would erase the reader's
+    agreement with the audit.
     """
     return projected + list(reader_spans)
 
 
 def _sealed_assessment(assessment: dict[str, Any]) -> dict[str, Any]:
-    """The two fields of a doubt report that the record seals.
-
-    The spans and gaps the report carried are published in the record's own two
-    annotation layers, so what is sealed here is the state and the problem: one
-    shape, written in one place, for every record kind that carries one.
-    """
+    """The sealed state and problem; the report's spans and gaps go in the record's layers."""
     return {"state": assessment["state"], "problem": assessment["problem"]}
 
 
@@ -3128,21 +2664,14 @@ def _published_doubt(
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """One call's doubt report as the record publishes it: sealed state, spans, gaps.
 
-    Over an unreadable act the whole-act gap is the one annotation the outcome
-    allows, so the report is re-asked against the empty text the record actually
-    publishes rather than emptied beneath a state that still says `assessed`.
-    A report that cannot anchor to that text becomes `malformed` and is visible;
-    nothing is dropped in silence (independent audit of 2026-09-10, F2).
+    Over an unreadable act the report is re-asked against the empty text actually
+    published, so a report that cannot anchor becomes `malformed` and visible.
     """
     if outcome == "no-readable-text":
         reasked = _assessed(result, text="")
-        # A span cannot anchor to an empty text, so a reported span already
-        # comes back `malformed`. A zero-width `leading` or `trailing` gap at
-        # offset 0 does validate over one, and would then be discarded in favour
-        # of the outcome's whole-act gap under a state still saying the reader
-        # was asked and answered. Over an empty text those are the same claim,
-        # but "nothing is dropped in silence" has to be literally true: a report
-        # with any layer of its own is `malformed` here, and visible.
+        # A zero-width edge gap validates over empty text but would be replaced by the
+        # whole-act gap under an `assessed` state, so any layer of its own makes the
+        # report `malformed` rather than silently dropped.
         if reasked["uncertain_spans"] or reasked["gaps"]:
             reasked = annotations.malformed_assessment(
                 "the reader's doubt report was set aside: it reports a doubt of its own over "
@@ -3176,25 +2705,16 @@ def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, t
 
 
 def _publishes_empty(text: str) -> bool:
-    """The one emptiness rubric, shared rather than spelled twice.
-
-    `_resolve_outcome` decides `no-readable-text` with it, and the audit's
-    containment check projects a re-proof through it before measuring what
-    that re-proof would actually publish. Two spellings would let the audit
-    measure an envelope over text the projection then threw away.
-    """
+    """The one emptiness rubric, shared with the audit so both measure the published text."""
     return not text.strip()
 
 
 def _reconciled_truncation(*, declared_failure: str | None, truncation_record: dict) -> dict:
     """Keep the published truncation record from contradicting a declared failure.
 
-    A declared failure stands in for a real engine's own report that a reading
-    did not complete, and nothing about *why* need show in the text's shape --
-    so the three computed signals can land on `complete` under an outcome that
-    means "not established complete" (HANDOFF.md, verbatim). The signals stay
-    exactly as measured; only the classification is raised to `unknown`, because
-    the instrument did not itself confirm a cutoff. Something outside it did.
+    A declared failure stands in for an engine's report that the reading did not
+    complete, which the text's shape need not show. The signals stay as measured; the
+    classification rises to `unknown`, since the instrument did not see the cutoff.
     """
     if (
         declared_failure == "truncated"
@@ -3205,13 +2725,9 @@ def _reconciled_truncation(*, declared_failure: str | None, truncation_record: d
 
 
 def _sealed_length_floor(protocol_config: dict[str, Any] | None) -> int | None:
-    """This run's sealed truncation floor, for the validators that bind to it.
+    """This run's sealed truncation floor, or `None` when no sealed protocol reached this pass.
 
-    `None` where no sealed protocol reached this pass: `validate_reading_payload`
-    already refuses a reading that carries a protocol record without one, and
-    the unsealed test route substitutes a protocol dict with no `[truncation]`
-    table at all. A declared absence, never a guessed default -- the floor a
-    re-proof record is held to must be the one this run sealed or nothing.
+    Never a guessed default: a re-proof is held to the floor this run sealed or to none.
     """
 
     if not isinstance(protocol_config, dict):
@@ -3236,25 +2752,13 @@ def _audited_truncation(
 ) -> dict:
     """The truncation instrument, re-measured over an audit-changed reading.
 
-    Three of the four declared signals are computed over the reading text and
-    the fourth is the engine's own word on why it stopped, so a Pass-C re-proof
-    that changes the text invalidates the whole record: the published Perlectio
-    would otherwise state what the *pre-audit* text looked like, and `outcome`
-    is derived from that record. The re-proof's own stop reason was dropped
-    entirely, so a re-proof generation cut off mid-emission could replace
-    established text while the record still read `complete` — the reading
-    delivered as an output would be the truncated one (ARCHITECTURE: "it reads
-    through to the end; truncation is a failure, not an output").
-
-    **Pass C may only ever make this worse.** The re-proof is span-scoped and
-    H8-bounded to the flagged location, so it cannot restore ink a cut-off Pass
-    B never read. A clean re-proof over a truncated semi-final therefore keeps
-    the earlier classification: the recomputed signals describe the published
-    text, but the verdict never improves.
+    A re-proof that changes the text invalidates the Pass-B record, stop reason
+    included; otherwise a cut-off re-proof could replace text while the record said
+    `complete`. The verdict never improves: a span-scoped re-proof cannot restore ink a
+    cut-off Pass B never read.
     """
-    # `measured` is the caller's already-taken measurement over the same text
-    # and stop word (the re-proof's own termination record); passing it in makes
-    # this visibly the same measurement rather than two that happen to agree.
+    # `measured` is the caller's measurement of the same text and stop reason, passed in
+    # so this is visibly one measurement.
     audited = _reconciled_truncation(
         declared_failure=declared_failure,
         truncation_record=measured
@@ -3293,11 +2797,8 @@ def _audit_semi_final(
         raise FatalAccounting(
             f"Perlectio for {act_id} does not bind its starting page and crop geometry"
         )
-    # Proved before it becomes a sort key: `bounds.get` handed a crop record
-    # that lost either number a (None, None) geometry_order, and comparing
-    # None with an integer ends the whole page's flag pass in an unnamed
-    # TypeError -- the same failure the `_region_ordinal` refusal exists to
-    # prevent.
+    # Proved before it becomes a sort key: comparing None with an integer would end the
+    # page's flag pass in an unnamed TypeError.
     if any(
         not isinstance(bounds.get(side), int) or isinstance(bounds.get(side), bool)
         for side in ("x", "y")
@@ -3328,10 +2829,8 @@ def _audit_semi_final(
         "act_id": act_id,
         "page_id": page_id,
         "order": order,
-        # The act's own crop position, independent of the sequence it was
-        # declared and processed in -- reusing `order` here would make declared
-        # and geometric identical by construction, so the "order" flag class
-        # could never fire (audit finding H1).
+        # The crop position, independent of declared order; otherwise the "order" flag
+        # class could never fire.
         "geometry_order": (bounds.get("y"), bounds.get("x")),
         "text": text,
         "testimonia": reports,
@@ -3342,12 +2841,10 @@ def _audit_semi_final(
 
 
 def audit_page_ids(bases: list[dict[str, Any]]) -> list[str]:
-    """The complete canonical page set for one act's page audit.
+    """The complete page set for one act's page audit, sorted.
 
-    Page sequence remains on each immutable region basis. This field is only a
-    denominator, so retaining ordinal traversal here would give its list order
-    an accidental representative meaning after the singular ``page_id`` was
-    removed.
+    Only a denominator: page sequence lives on each region basis, so list order carries
+    no meaning.
     """
     page_ids = sorted({basis["source_page_id"] for basis in bases})
     if not page_ids:
@@ -3383,11 +2880,8 @@ def _sealed_sibling_semi_finals(
 ) -> list[dict[str, Any]]:
     """Read same-page sibling Perlectiones as immutable recovery context.
 
-    `RunTree.build_manifest` and `read_artifact` both validate every envelope's
-    self-hash, derived path, run/config binding, and input bytes. The sibling
-    text below therefore comes from the sealed Perlectio in the tree, never a
-    reconstruction from fixture or source text. Only rows are returned; the
-    publication loop remains over `pending`, so a sibling cannot be republished.
+    Sibling text comes from the sealed, validated Perlectio, never a reconstruction.
+    Only rows are returned, so a sibling cannot be republished.
     """
     current_ids = {row["act_id"] for row in current}
     page_ids = {row["page_id"] for row in current}
@@ -3407,13 +2901,9 @@ def _sealed_sibling_semi_finals(
     for act_id in sorted(sibling_ids, key=order_by_id.__getitem__):
         records = records_by_subject[act_id]
         if not records:
-            # Never a skip: by the time a recovery pass runs, every expected
-            # act carries a Perlectio -- a held one carries `not-run`, handled
-            # below. Zero artifacts means a reading that existed is no longer
-            # here, and a page flag pass computed over a short row set would
-            # seal a different flag set than the page's evidence supports. A
-            # missing middle row can remove its own comparison or create a new
-            # adjacency between its former neighbours.
+            # Every expected act carries a Perlectio by now (a held one carries
+            # `not-run`). A missing one would shrink the page's flag comparisons or
+            # invent adjacency between its neighbours.
             raise FatalAccounting(
                 f"act {act_id} has no Perlectio, so recovery cannot determine whether it "
                 "shares a contributing page; the page denominator is unknown; restore its "
@@ -3423,11 +2913,8 @@ def _sealed_sibling_semi_finals(
             records, f"sealed sibling Perlectio for {act_id}", operation="perlegere"
         )
         payload = reading.get("payload")
-        # Operational failures never produced Pass-B text and therefore were
-        # absent from the original frozen page comparison.  They may be skipped
-        # only after the shared failed-Perlectio validator proves their complete
-        # identity, provenance, retained evidence and phase contract; a malformed
-        # record must still abort rather than disappearing from the denominator.
+        # Operational failures never produced Pass-B text, so they are skipped, but only
+        # once the failed-Perlectio validator proves them; a malformed record aborts.
         if reading["outcome"] == "failed":
             validate_failed_perlectio(
                 context,
@@ -3436,12 +2923,8 @@ def _sealed_sibling_semi_finals(
                 expected_act_key=payload.get("act_key") if isinstance(payload, dict) else None,
             )
             continue
-        # A held/not-run sibling was absent from the original frozen Pass-B
-        # collection too, so it contributes no row to a later recovery audit.
-        # Only validated operational failures and this outcome skip. Any other
-        # outcome whose payload lost its text is malformed evidence. Dropping it
-        # would quietly shrink the page's cross-act flag comparisons exactly like
-        # the zero-record case above.
+        # A not-run sibling was also absent from the original Pass-B collection. Any
+        # other outcome without text is malformed and may not be dropped.
         if reading["outcome"] == "not-run":
             continue
         if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
@@ -3499,24 +2982,12 @@ def flag_location_basis(
 ) -> list[dict[str, str]]:
     """Name the chair and retained-text derivation behind testimony-diff flags.
 
-    Only a report whose exact comparison with the semi-final produced one of
-    the frozen testimony-diff locations is named.  An agreeing witness is
-    evidence in the dossier, but it did not locate that flag and must not be
-    attributed as though it did.  This records a location basis only; it does
-    not promote testimony into a reading or make boundary geometry a text flag.
-
-    Each row names the location it accounts for.  Without it the record could
-    not say *which* flag a chair located: two rows beside two flags proved only
-    that the lists were the same length, and a basis row could be read against
-    the wrong flag with nothing able to detect it.  The span is already computed
-    here to decide membership, so carrying it costs nothing and makes the
-    binding checkable where the record is validated.
+    Only a report whose comparison with the semi-final produced a frozen flag location
+    is named; an agreeing witness did not locate the flag. Each row names its location,
+    so it cannot be read against the wrong flag.
     """
-    # `audit.WITNESS_DERIVED_LOCATION_CLASSES`, not the literal it holds today.
-    # The validator expects a basis row for every flag of a witness-derived
-    # class; a producer filtering on a hardcoded name would emit none for a
-    # class added to that constant, and every draft carrying the new class
-    # would be refused with no Perlectio published for those acts.
+    # The shared constant, not a literal: the validator expects a basis row for every
+    # witness-derived class, including ones added later.
     located_classes: dict[tuple[int, int], str] = {}
     for flag in flags:
         if flag.get("class") in audit.WITNESS_DERIVED_LOCATION_CLASSES:
@@ -3763,9 +3234,8 @@ def _publish_lectio_prior(
         inputs=reading_inputs,
         payload=payload,
     )
-    # The same derivation `_sealed_prior_draft` reads this record back by, in
-    # one spelling: two that agreed only by inspection would let a resume reuse
-    # a different artifact than the one this pass published.
+    # The derivation `_sealed_prior_draft` reads back by, so a resume reuses exactly
+    # this artifact.
     prior_artifact_id = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
     return {
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
@@ -3809,10 +3279,8 @@ def _publish_primed_without_prior(
         )
         for record in testimonia
     }
-    # `context.run` is the run authority `open_context` already read and
-    # verified from disk, and nothing writes `run.json` after the Door creates
-    # it. Re-reading it here would re-verify the same bytes once per sampled
-    # act, and once more per act at the sampling decision below.
+    # `context.run` was verified when opened and nothing rewrites `run.json`, so it is
+    # not re-read per act.
     membership = context.run["corpus_frame_membership"]
     control_assessment, control_spans, control_gaps = _published_doubt(
         result,
@@ -3917,40 +3385,14 @@ def _logical_sampling_decisions(context, logical_act_id: str) -> tuple[bool, boo
 def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     """Run the pass, and guarantee any chair it started is stopped.
 
-    Both parameters are dependency seams, not runtime choices. `registry_factory`
-    supplies the chair implementation; `serving_factory` supplies the client a
-    live chair is read through, and is reached only when the sealed
-    serving-recipe row for the resolved Perlector chair already says the chair is
-    live (`perlector_serving_mode`). Passing one does not make a run live and
-    omitting one does not make a run fixture: no argument to this function
-    decides which engine answers.
+    Both parameters are test seams; neither decides which engine answers, which is the
+    sealed serving-recipe row's business. `_read_the_acts` stops the chair before
+    sealing; the `finally` covers a pass that raised first.
 
-    The `finally` is the guarantee, not the ordinary path — `_read_the_acts`
-    stops the chair itself before it seals, so a failed shutdown is never
-    reported over a sealed stage. This one catches the exceptional path, where
-    the pass raised before it reached its own shutdown.
-
-    **A response refusal arrives in this stage's own exit vocabulary.**
-    `ChairResponseRefusal` is a `ServingError`, which is a `RuntimeError` and
-    not a `ContractError`, so `run_stage` could not see it: a non-200 from the
-    engine — vLLM's own account of a context overflow, the single most likely
-    first answer on a real card — left the stage with a Python traceback and
-    exit 1 rather than the named refusal and `EXIT_FATAL` every other refusal in
-    this stage produces. The refusal itself is unchanged and is not caught any
-    earlier than here: `live_reader` and `ChairClient` keep their posture, the
-    bytes stay retained, and the detail the client built (the retained
-    reference, and the head of the engine's own body) travels verbatim into the
-    message this stage exits on.
-
-    The clause is the whole class, not the non-200 alone: every `CHAIR_RESPONSE_*`
-    code — the wrong-model refusal raised before any parse included — is one way
-    an engine's answer failed to be a reading, and all of them are the same kind
-    of fact about the run. `ChairRequestRefusal`, the sibling half of that pair,
-    is deliberately **not** caught. It says this stage built a request that may
-    not go on the wire — an unsupported kind, a manager-owned field, an image
-    digest that does not match the bytes — which is a defect in this code rather
-    than an account of the run, and a traceback naming the construction site is
-    worth more there than a named exit. The inconsistency is the intended one.
+    `ChairResponseRefusal` is a `RuntimeError`, which `run_stage` does not catch, so it
+    is re-raised as a `ContractError` to exit as a named refusal. `ChairRequestRefusal`
+    is deliberately not caught: it means this code built a bad request, and a traceback
+    at the construction site is worth more.
     """
     service = ResidentChair()
     try:
@@ -3969,15 +3411,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
     decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
-    # Resolved here, before the run partition is published and long before a
-    # chair is started: the sealed catalogue and `--placement-tier` are all this
-    # answer needs, and a live catalogue named without a tier must refuse while
-    # the tree is still exactly as this invocation found it.
+    # Resolved before anything is published or started, so a live row without a tier
+    # refuses on an untouched tree.
     chair = perlector_chair(context)
     serving_mode = perlector_serving_mode(context, args, chair)
-    # Resolved here too, before the run partition is published and before any
-    # chair is started: a real submission with a non-live row refuses here, by
-    # name, while the tree is still exactly as this invocation found it.
+    # Likewise, a real submission with a non-live row refuses here.
     reader = fixture_reader_for(context, chair, serving_mode)
     witness_context_table = dossier_module.load_witness_context(
         Path(context.witness_context_config_path)
@@ -4005,9 +3443,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
 
-    # A recovery re-reads only the acts that were recovered. Re-reading the rest
-    # would add an attempt nobody requested to an act nothing happened to, and an
-    # attempt tally that counts work no stage asked for stops meaning anything.
+    # A recovery re-reads only the recovered acts; an attempt nobody requested would
+    # make the attempt tally meaningless.
     expected = expected_acts(context)
     declared_order = {act["act_id"]: order for order, act in enumerate(expected)}
     wanted = [act for act in expected if args.act in (None, act["act_id"])]
@@ -4032,24 +3469,16 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     all_proposal_regions = sealed_proposal_regions(context)
     reported_unrouted: set[tuple[str, int]] = set()
 
-    # A live chair is started on first use, not here. `reader`, resolved above
-    # before the run partition was published, already exists; in live mode the
-    # loop below starts a chair the first time an act actually clears capacity
-    # and needs a reading, so a resumed pass whose acts are all already sealed
-    # -- or all over capacity -- never loads a 27B model onto a card that bills
-    # by the hour to read nothing. `service` owns the shutdown from the moment
-    # the client exists.
+    # A live chair starts on first use, so a resumed pass with every act sealed or over
+    # capacity never loads a model on a card billed by the hour.
     receipt_ref: dict[str, str] | None = None
 
     for act in wanted:
         act_id = act["act_id"]
         if act["outcome"] == "held":
-            # A held act's proposal is incomplete — its page or its continuation
-            # never sealed. Reading whatever regions exist would produce a
-            # reading of part of an act, and it reads through to the end:
-            # truncation is a failure, not an output. The act is acknowledged
-            # with an explicit unresolved outcome rather than skipped, because
-            # a unit this stage never mentions is invariant #10's imbalance.
+            # A held act's proposal is incomplete, and reading part of an act would
+            # deliver a truncation as output. It is acknowledged with an explicit
+            # outcome, never skipped, so no unit goes unaccounted.
             payload = {
                 "act_key": act["act_key"],
                 "attempt_ordinal": 1,
@@ -4071,12 +3500,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             acknowledged += 1
             continue
 
-        # Read once, before the ordinal is derived from it: the same region set
-        # answers both which attempt this is and which crops are read, and
-        # `_next_attempt` refuses an unplaceable origin here rather than leaving
-        # the next stage to discover it over an immutable Perlectio. Every act
-        # reaching this line already had its regions walked and validated by
-        # `preflight_testimonia_denominator`, absent chair or not.
+        # One region read answers both the attempt ordinal and the crops read, so
+        # `_next_attempt` refuses an unplaceable origin before any immutable Perlectio
+        # exists.
         regions, proposal_regions = act_regions(context, act_id)
         ordinal = _next_attempt(context, act_id, regions)
         if isinstance(chair, AbsentChair):
@@ -4105,30 +3531,15 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         if serving_mode == "live" and _reading_already_sealed(
             context, act_id, ordinal, act_key=act["act_key"]
         ):
-            # **A live act sealed at this ordinal is never asked again.** Fixture
-            # readers are deterministic, so a resumed fixture pass recomputes the
-            # same ordinal, republishes the same bytes and the store reuses them
-            # (`_next_attempt`'s own docstring). A live chair cannot promise that:
-            # the second reading's bytes differ, the store refuses the collision
-            # (`IncompatibleReuse`), and the run ends loudly one act into a
-            # resume. The act is already recorded, so the honest resume is to
-            # leave it recorded and read the rest — principle 4, evidence is
-            # never overwritten. Counted apart from `read`, because this
-            # invocation did not read it and a tally that said otherwise would be
-            # this pass measuring work it did not do.
+            # A live act sealed at this ordinal is never asked again: a second reading
+            # would differ and the store refuses it (principle 4). Counted apart from
+            # `read`: this invocation did not read it.
             resumed += 1
             continue
 
-        # The scenario's declared engine behaviour stands in for a real
-        # engine's own report and, when present, decides `reading` and
-        # `outcome` together: a declared `no-readable-text` means nothing was
-        # read, not that the fixture's normal act text happens to still apply.
-        # That stand-in is only honest when there is no real report to stand
-        # in for. Checked here, before any chair is started or arm published:
-        # a live pass answering a declared act is a misconfiguration knowable
-        # from the fixture and the act key alone, and this stage must refuse
-        # while the tree is still exactly as this invocation found it --
-        # Principle 8 names exactly this override.
+        # A declared engine outcome stands in for a real engine's report, so it is valid
+        # only when no engine answers. A live pass over a declared act refuses here,
+        # before any chair starts or arm is published (principle 8).
         declared_failure = declared_reading_failure(context, act["act_key"])
         if serving_mode == "live" and declared_failure is not None:
             raise ContractError(
@@ -4137,33 +3548,17 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "declared stand-in cannot override an engine that reported"
             )
 
-        # What an interrupted earlier attempt at this identity already left on
-        # disk. Fixture readers reproduce their own bytes, so a fixture resume
-        # republishes identically and the store reuses; only a live pass has to
-        # answer for a partial attempt at all.
+        # Only a live pass must answer for a partial earlier attempt; fixture readers
+        # republish identical bytes.
         sealed_arms = (
             _sealed_pass_kinds(context, act_id, ordinal) if serving_mode == "live" else frozenset()
         )
         audit_round_sealed = sorted(sealed_arms & _AUDIT_ROUND_KINDS)
         if audit_round_sealed:
-            # The establishing reading happened, and its text is frozen inside
-            # an immutable audit record — but the Perlectio that would have
-            # carried it never sealed. Reading the act again would produce a
-            # different semi-final and refuse against that record forever, and
-            # there is no second source for the text it froze. So the act is
-            # held here, explicitly, naming the retained evidence: the run
-            # resumes and reads every other act, and the Recensor routes this
-            # one to review rather than the whole run dying on a reuse nobody
-            # can clear. Principle 2 — visibly partial, never silently absent.
-            #
-            # Named by digest-checked reference and not only in prose, so the
-            # reader routed here reaches the bytes instead of rebuilding an
-            # attempt identity by hand. `inputs` is outside the closed
-            # `_NOT_RUN_HELD_FIELDS` payload shape, so this costs that schema
-            # nothing. Every arm the attempt sealed is named, not only the audit
-            # pair that forced the hold: they are all evidence of the same
-            # interrupted attempt, and what survives of it should be legible
-            # from one record.
+            # The establishing text is frozen in an audit record but its Perlectio never
+            # sealed, and a new reading would refuse against that record forever. Hold
+            # the act with the attempt's artifacts named, and read the rest (principle
+            # 2).
             held_inputs = [
                 context.artifact_ref(
                     PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
@@ -4220,17 +3615,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         for finding in unrouted:
             reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
-            # Named on stderr before this stage seals, never silently normalized
-            # into the closest act. The Recensor independently re-derives the
-            # same finding from this observed geometry and the sealed proposal
-            # denominator, then may route it through bounded coverage recovery.
-            # It does not trust the page record's optional retained snapshot.
+            # Named on stderr, never normalized into the nearest act. The Recensor
+            # re-derives the same finding independently from the geometry and the sealed
+            # denominator.
             print(f"non-fatal finding: {finding}", file=sys.stderr)
 
-        # Which regions any witness actually saw. Ink uncovered by a recovery
-        # recrop was never shown to a witness, and saying so is the difference
-        # between a gap in the record and a gap nobody can see. It changes nothing
-        # about the reading — the Perlector reads the ink either way.
+        # Ink uncovered only by a recovery recrop was never shown to a witness;
+        # recording that keeps the gap visible. The reading itself is unaffected.
         witnessed = witnessed_region_ids(testimonia, bases)
         for basis in bases:
             basis["witness_covered"] = basis["region_id"] in witnessed
@@ -4278,10 +3669,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             continue
 
         if reader is None:
-            # First act of a live pass that actually clears capacity and needs
-            # reading. One chair for the whole run, entered once here and
-            # stopped once at the end: the sequential-serving posture, and the
-            # reason this is a single `is None` rather than a per-act start.
+            # One chair for the whole run, started by the first act that needs a
+            # reading.
             reader, receipt_ref = _live_reader(
                 context,
                 args,
@@ -4305,18 +3694,12 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             act_attachment=attachment_view,
         )
 
-        # The unprimed instrument, sampled by the run's own predeclared design
-        # (`nuda_per_mille`, fixed before the run) -- an independent artifact
-        # from the establishing pass, decided once per logical act rather than
-        # once per capture, exactly as the control sample below is.
+        # The unprimed instrument, sampled by the run's predeclared design once per
+        # logical act, as the control is.
         nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
 
-        # An arm an interrupted attempt already published is not asked for a
-        # second time. The sampling decision above is unchanged -- it is the
-        # run's own predeclared design and is derived, not stored -- so an arm
-        # already on disk stays sampled and stays counted; what is dropped is
-        # only the reader call that would have produced bytes the immutable
-        # record refuses. An arm that was never reached is still run.
+        # Sampling is derived, not stored, so an arm already on disk stays sampled; only
+        # the reader call that would produce refused bytes is skipped.
         nuda_due = nuda_sampled and nuda.LECTIO_NUDA_KIND not in sealed_arms
         control_due = control_sampled and "primed-without-prior" not in sealed_arms
         sealed_prior = _sealed_prior_draft(context, act_id, ordinal) if sealed_arms else None
@@ -4436,16 +3819,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         primed_dossier = _reseal_dossier(passes["perlectio"]["dossier"])
         result = passes["perlectio"]["result"]
         prior = primed_dossier["prior_draft"]
-        # The prompt is reproduced from the retained dossier. In the fed arm it
-        # is also the reader dossier; in the withheld arm `combined.py` removed
-        # the prior text before the call and restored it only on this separate
-        # evidence copy. The prompt builder ignores a withheld prior, so both
-        # objects render the same bytes without giving the reader a side channel.
+        # The prompt is reproduced from the retained dossier. In the withheld arm
+        # `combined.py` removed the prior text before the call; the prompt builder
+        # ignores a withheld prior, so both copies render the same bytes.
         prompt = prompts.prompt_evidence(chair, primed_dossier, protocol_config, protocol_sha256)
 
-        # `declared_failure` was resolved and, in live mode, already refused
-        # before any reader call above -- this is the one remaining use of the
-        # value, deciding `reading` and `outcome` together.
+        # Already refused for live mode above; here it decides `reading` and `outcome`
+        # together.
         reading = "" if declared_failure == "no-readable-text" else result["text"]
         truncation_record = _reconciled_truncation(
             declared_failure=declared_failure,
@@ -4512,11 +3892,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "draft_fed": context.draft_fed,
             },
         }
-        # The record names the call its published text came from. Here that is
-        # the establishing pass; the audit loop below re-points it at the
-        # re-proof's own call in exactly the case where the re-proof's text is
-        # the one published, beside `truncation` and `self_revision`, which move
-        # for the same reason.
+        # The call the published text came from; the audit loop re-points it at the
+        # re-proof's call when that text is published.
         payload_fields = with_engine_call(payload, result, _PERLECTIO_FIELDS)
         pending.append(
             {
@@ -4527,14 +3904,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "payload": payload,
                 "fields": payload_fields,
                 "outcome": outcome,
-                # Deliberately NOT the decoded pixels: holding every act's
-                # delivered images until the audit loop reaches it would grow
-                # peak memory with the number of acts on the run -- a parish
-                # of several hundred acts is several hundred sets of
-                # page-sized buffers held at once, and the failure mode is an
-                # OOM kill after the drafts are on disk and before any
-                # Perlectio is published. The rare re-proof rebuilds its
-                # pixels from the same sealed artifacts instead.
+                # Not the decoded pixels: holding every act's images until the audit
+                # loop would grow memory with the act count and risk an OOM kill before
+                # any Perlectio publishes. A re-proof rebuilds its pixels from the
+                # sealed artifacts.
                 "region_pixels": region_pixels,
                 "page_pixels": page_pixels,
                 "declared_failure": declared_failure,
@@ -4603,28 +3976,16 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         draft_ref = context.input_ref(draft.relative_path)
         final_text = payload["text"]
-        # Captured once, here, before anything below can mutate `payload["text"]`
-        # on an accepted rewrite: the frozen semi-final every containment check
-        # and the finding's `flag_text_length` measure against, whether or not
-        # a re-proof ever runs.
+        # The frozen semi-final, captured before an accepted rewrite changes
+        # `payload["text"]`.
         pre_audit_text = payload["text"]
-        # The truncation instrument's verdict on the re-proof call itself, or
-        # `None` while no re-proof has been delivered. Measured over the
-        # re-proof's own text and stop word, *before* that text is compared with
-        # the frozen semi-final -- because the comparison is exactly what used to
-        # stand in for completion. A re-proof that ran out of output space and
-        # returned the established text byte for byte kept Pass B's `complete`
-        # record and a resolved audit, and two such acts were delivered as a
-        # complete export (independent audit of 2026-09-10, finding F1). The
-        # examination state and `unresolved` are derived from this record below
-        # by the same shared function `validate_finding` re-derives them with.
+        # The truncation verdict on the re-proof call itself, measured before its text
+        # is compared with the semi-final: a cut-off re-proof that returned the
+        # established text verbatim must not pass as complete.
         reproof_truncation: dict[str, Any] | None = None
-        # The plan this act's frozen flags imply, computed once by the function
-        # `validate_chain` re-derives it with and `audit.audit_request` builds
-        # the reader's copy from. What is sealed below, what the reader is
-        # handed, and what every later consumer recomputes are therefore the
-        # same computation over the same frozen flags rather than three
-        # spellings that have to be kept agreeing.
+        # Computed once by the function `validate_chain` re-derives it with and
+        # `audit_request` builds from, so the sealed, delivered and recomputed plans are
+        # one computation.
         reproofs = audit.reproof_plan(
             flags, text_length=len(final_text), policy_schema=audit_policy["schema"]
         )
@@ -4633,11 +3994,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         uncertainty: list[dict[str, Any]] = []
         reproof_edits: list[dict[str, Any]] | None = None
         payload_fields = row["fields"]
-        # A re-proof reading is evidence of this Perlectio whether or not it
-        # changed the text: it is the second thing that looked at this act's
-        # pixels, and its response is what the `change_record` below reports on.
-        # Bound as an input in both cases; named by `payload["engine_call"]` only
-        # when its text is the one published.
+        # A re-proof is evidence whether or not it changed the text, so it is always
+        # bound as an input; `engine_call` names it only when its text is published.
         reproof_inputs: list[dict[str, str]] = []
         reproof_call_record: dict[str, Any] | None = None
         # The same predicate `validate_chain` re-derives from the frozen draft:
@@ -4647,31 +4005,16 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             base_prompt_text = prompts.build_prompt(
                 chair.serving_recipe, chair.role, payload["dossier"], protocol_config
             )
-            # Exactly one reader invocation for this act and audit round.  The
-            # list of neutral locations is retained on the Perlectio below;
-            # no flag result can reopen this page's frozen calculation.
-            #
-            # Re-proof must reload the establishing pass's complete atomic
-            # presentation; limiting it to the flagged page would reintroduce a
-            # capture-local reader call.
+            # Exactly one reader call per act and audit round, over the establishing
+            # pass's complete atomic presentation; a flagged-page subset would be a
+            # capture-local call.
             reproof_pixels = atomic_delivered_pixels(
                 row["autopsia"], read_bytes=context.tree.read_bytes, max_images=max_images
             )
-            # Ordering constraint: `payload["text"]` and `payload["dossier"]`
-            # are read here, BEFORE the re-proof result overwrites the final
-            # text below — the request must carry the frozen semi-final its
-            # locations index into, and the dossier must stay the sealed one.
-            #
-            # The instrument, delivered rather than only sealed. The draft is
-            # already published, so its reference names bytes that exist and
-            # carries their digest: the request the reader receives is bound to
-            # the exact frozen semi-final its locations index into. `pass_kind`
-            # stays routing -- everything the reader needs to know about this
-            # pass is in the request (`reader.py`'s module docstring).
-            #
-            # The dossier goes through untouched. It used to travel as
-            # `{**dossier, "semi_final_text": ...}`, which handed the reader an
-            # object whose own `dossier_digest` no longer covered its contents.
+            # Read before the re-proof result overwrites the final text: the request
+            # carries the frozen semi-final its locations index into, bound by the
+            # published draft's digest. The dossier goes through untouched so its
+            # `dossier_digest` still covers it.
             audit_request = audit.audit_request(
                 act_key=row["act"]["act_key"],
                 attempt_ordinal=payload["attempt_ordinal"],
@@ -4681,10 +4024,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 policy_schema=audit_policy["schema"],
             )
             request_digest = audit.audit_digest(audit_request)
-            # The producer enforces the delivery contract itself, so the
-            # obligation binds whichever reader sits in the chair rather than
-            # resting on each implementation remembering to call the seam's
-            # validator (FixtureReader also calls it; twice is harmless).
+            # Enforced by the producer so it binds whichever reader sits in the chair.
             validate_audit_delivery(
                 payload["dossier"], pass_kind="audit-reproof", audit_request=audit_request
             )
@@ -4721,11 +4061,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     payload=failure_payload,
                 )
                 continue
-            # A Pass-C reply is a set of exact, draft-anchored edits, never a
-            # second whole-act reading.  Assembly validates every original
-            # substring and all requested locations before it can affect the
-            # established text; it therefore cannot silently carry a rewrite
-            # from outside the flagged spans into this record.
+            # A Pass-C reply is a set of exact draft-anchored edits, never a second
+            # whole reading; assembly validates every edit before it can touch the
+            # established text.
             try:
                 final_text, reproof_response = audit.assemble_reproof_response(
                     reproof["text"], audit_request
@@ -4784,62 +4122,29 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
                 stop_reason=reproof["stop_reason"],
             )
-            # assemble_reproof_response already checked every exact edit and
-            # refused escaping or contradictory replacements. This block binds
-            # the accepted text to its producing call; an unchanged result keeps
-            # Pass B's text provenance. Completion is measured separately above.
+            # The edits are already checked; this binds the accepted text to its
+            # producing call. Unchanged text keeps Pass B's provenance.
             if final_text != payload["text"]:
                 payload["text"] = final_text
-                # The doubt report travels with the call whose text is
-                # published: a re-proof's spans are anchored to the re-proof's
-                # own text, and Pass B's to Pass B's, so nothing is re-anchored
-                # by guesswork and nothing is silently dropped.
-                #
-                # Both layers are replaced outright, which subsumes the case a
-                # separate branch used to clear here: a Pass-B `no-readable-text`
-                # act carried the whole-act gap, and a re-proof that restored
-                # readable text would have published established text beside a
-                # gap claiming the act was empty. The re-proof's own report
-                # cannot carry a whole-act gap -- `annotations.validate_assessment`
-                # refuses a reader-reported one by name, and an unassessed or
-                # malformed report carries no layers at all -- so after this
-                # assignment the old condition can no longer be true, and the
-                # branch that tested it was a line nobody could say was for
-                # anything (the independent review of 2026-09-11).
+                # The doubt report travels with the call whose text is published, so
+                # nothing is re-anchored by guesswork. Replacing both layers also drops
+                # a Pass-B whole-act gap, which a re-proof's own report can never carry.
                 reproof_assessment = _assessed(reproof, text=final_text)
                 payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
                 payload["uncertain_spans"] = list(reproof_assessment["uncertain_spans"])
                 payload["gaps"] = list(reproof_assessment["gaps"])
-                # `engine_call` names the call the published text came from, so
-                # it moves with the text. Leaving the establishing call's record
-                # here would bind a published reading to a response that did not
-                # produce it -- the same false provenance `truncation` and
-                # `self_revision` below were repaired for (audit finding H6).
+                # `engine_call` moves with the text, so a published reading never names
+                # a response that did not produce it.
                 payload_fields = with_engine_call(payload, reproof, payload_fields)
                 if reproof_call_record is not None:
                     payload["prompt"] = copy.deepcopy(reproof_call_record["audit_prompt"])
                 payload["dissent"] = dissent_against(
                     final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
                 )
-                # self_revision was computed against the pre-audit Pass-B
-                # reading (audit finding H6); an audit-changed text is the one
-                # actually published, so the recorded self-revision must
-                # describe *its* departure from Pass A, not a reading that
-                # never left the Perlector.
+                # Self-revision describes the published text's departure from Pass A.
                 payload["self_revision"] = departures(final_text, row["prior"]["text"])
-                # The truncation instrument is the same case as `self_revision`
-                # and was the last field still describing a reading nobody
-                # published: three of its four signals are computed over the
-                # reading text, and `outcome` is derived from the record, so an
-                # audit-changed text left both stating what the *pre-audit* text
-                # looked like -- and the re-proof's own engine word on why it
-                # stopped was dropped entirely, so a re-proof cut off mid-emission
-                # could replace established text while the record still read
-                # `complete` (ARCHITECTURE: "truncation is a failure, not an
-                # output"; principle 8).
-                #
-                # Pass C may only ever make this worse -- see
-                # `_audited_truncation`.
+                # Re-measured over the published text with the re-proof's own stop
+                # reason; `_audited_truncation` never lets Pass C improve the verdict.
                 payload["truncation"] = _audited_truncation(
                     pass_b=payload["truncation"],
                     declared_failure=row["declared_failure"],
@@ -4856,28 +4161,13 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     text=final_text,
                 )
                 if row["outcome"] == "no-readable-text":
-                    # One emptiness rubric everywhere: the Pass-B path empties
-                    # `text` for this outcome (whitespace was never established
-                    # ink) and attaches the whole-act gap so the absence
-                    # travels with the witness evidence that corroborates it.
-                    # A re-proof that turned the reading unreadable published
-                    # neither -- an act saying "nothing readable here" while
-                    # carrying whitespace as its text and no evidence of the
-                    # absence.
+                    # As on the Pass-B path, unreadable text is published empty, with
+                    # the whole-act gap carrying the witness evidence.
                     final_text = ""
                     payload["text"] = ""
-                    # Re-measured beside the emptied text, not left describing
-                    # the whitespace that was thrown away. The sealed
-                    # termination is bound to the text the finding publishes --
-                    # `validate_finding` refuses a record whose `characters`
-                    # disagrees with it -- so a re-proof that returned "   "
-                    # sealed a three-character measure over a published empty
-                    # reading and took the whole pass down inside the
-                    # producer's own `validate_chain`.
-                    # The signals move with it: an empty reading is never
-                    # length-suspicious and never ends abruptly, which is the
-                    # same rubric the Pass-B `no-readable-text` path measures
-                    # under.
+                    # Re-measured over the emptied text: `validate_finding` binds the
+                    # sealed termination to the published text. An empty reading is
+                    # never length-suspicious or abrupt.
                     reproof_truncation = truncation.classify(
                         final_text,
                         region_pixels=row["region_pixels"],
@@ -4885,13 +4175,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                         truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
                         stop_reason=reproof["stop_reason"],
                     )
-                    # Through the one rubric the Pass-B path uses, so the
-                    # re-proof's report is re-asked against the text this record
-                    # now publishes rather than emptied under a state still
-                    # saying `assessed`. That would have sealed "the reader
-                    # assessed this act and reported nothing" over a report that
-                    # was thrown away -- the exact false confidence F2 exists to
-                    # remove (the independent review of 2026-09-11).
+                    # Re-asked against the empty text, so the record never says
+                    # `assessed` over a report that was thrown away.
                     (
                         payload["uncertainty_assessment"],
                         payload["uncertain_spans"],
@@ -4917,13 +4202,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # Record the exact validated edits; downstream validation replays
             # them against the frozen draft and the published text.
             changes = audit.change_records_from_edits(reproof_edits)
-        # One derivation, shared with every consumer: what became of the
-        # re-examination, and whether that leaves the flags unresolved. Only an
-        # exhausted cap mints exhausted-cap spans; an incomplete re-proof is an
-        # incomplete examination, recorded as that and routed to review by the
-        # Recensor on that fact, never dressed as a span or as a truncation of a
-        # text that did in fact complete. Invalid edit responses have already
-        # taken the act-local failure path and do not reach this derivation.
+        # One shared derivation of the examination and whether the flags stay
+        # unresolved. Only an exhausted cap mints spans; an incomplete re-proof is
+        # recorded as an incomplete examination for the Recensor to route, never as a
+        # span or a truncation.
         examination = audit.examination_state(
             flags,
             audit_policy["round_cap"],
@@ -4950,22 +4232,14 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "examination": examination,
             "reproof_truncation": reproof_truncation,
             "reproof_edits": reproof_edits,
-            # The retained response the termination above was measured over,
-            # where the reader has an engine behind it: the fixture chamber has
-            # none and seals `None`. Named on the finding because the
-            # Perlectio's own `engine_call` stays Pass B's whenever the text is
-            # unchanged, and a later reader must still be able to find the
-            # re-proof's response and check the sealed verdict against it.
+            # The re-proof's retained response (none for the fixture reader), named here
+            # because the Perlectio's `engine_call` stays Pass B's when the text is
+            # unchanged.
             "reproof_call": reproof_call_record if reproof_truncation is not None else None,
         }
         audit.validate_finding(
             finding_payload,
-            # The text this act actually publishes, which is `final_text` in
-            # every branch that published the re-proof and the frozen
-            # semi-final in the one that refused it. `final_text` still names
-            # the rejected rewrite there, and validating the finding against a
-            # reading this stage declined to publish is the same false
-            # provenance the projection block is careful to avoid.
+            # The text this act actually publishes, never a rejected rewrite.
             text=payload["text"],
             flag_text=draft_payload["semi_final_text"],
         )
@@ -4978,10 +4252,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             payload=finding_payload,
         )
         finding_ref = context.input_ref(finding.relative_path)
-        # R5b's uncertainty is carried on the existing Perlectio layer until
-        # R8 reconciles the canonical export schema.  An unresolved flag never
-        # silently remains a clean `read`: it becomes an explicit span and the
-        # Recensor consumes the companion `unresolved` fact below.
+        # An unresolved flag never stays a clean `read`: it becomes an explicit span on
+        # the Perlectio layer, and the Recensor consumes the `unresolved` fact. The
+        # projected spans carry no instrument label; only `payload["audit"]` and the
+        # finding say which are the audit's.
         payload["uncertain_spans"] = _union_with_projection(
             [
                 {
@@ -5001,22 +4275,12 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "unresolved": unresolved,
             "examination": examination,
             "reproofs": reproofs,
-            # Which request the reader was actually handed, or `None` where
-            # none was: an act with no flag has nothing to re-prove, and an act
-            # whose sealed cap is spent records its flags as exhausted-cap
-            # uncertainty instead of running a round it may not run. Both are
-            # honest absences, and a record that could not tell them from a
-            # delivered re-proof is the ambiguity `reproofs` alone used to
-            # carry.
+            # The request actually delivered, or `None` when nothing needed re-proof or
+            # the cap was spent; `reproofs` alone cannot tell these apart.
             "request_digest": request_digest,
         }
-        # Dedup is scoped to the re-proof's own references: those are the only
-        # ones a live engine can legitimately repeat, when a re-proof answers
-        # with the same bytes as the establishing call and the content-addressed
-        # store names the same path twice. `row["inputs"]` (the image, testimonia,
-        # attachment and prior references) can never legitimately repeat, so a
-        # duplicate there stays under the envelope's own double-count refusal
-        # instead of being silently absorbed here.
+        # Dedup only the re-proof's references, which can repeat the establishing call's
+        # bytes; a duplicate in `row["inputs"]` stays under the envelope's refusal.
         reading_inputs = (
             row["inputs"]
             + [
@@ -5060,10 +4324,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     if read == 0 and acknowledged == 0 and resumed == 0:
         raise ContractError("the Perlector read no act and acknowledged no held act")
 
-    # Before the seal, not after it: a chair still resident while the completion
-    # boundary is written would let a failed shutdown be reported over a sealed
-    # stage. `main`'s own `finally` still holds for the paths that never reach
-    # this line, and `close` is idempotent so the two never fight.
+    # Before the seal, so a failed shutdown is never reported over a sealed stage;
+    # `close` is idempotent with `main`'s `finally`.
     service.close()
     context.seal_boundary()
     context.finish()
@@ -5073,57 +4335,17 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
 def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
     """Which reading attempt this is, derived from the act rather than from history.
 
-    Counting existing Perlectiones and adding one would make the answer depend on
-    how many times the stage had been *invoked*, so a rerun of an unchanged run
-    would append a reading nobody asked for and the Archetypus would then point at
-    it. The reading attempt is instead a function of the act's own state: one
-    reading of the proposal, and one more for each recovery region cut since. A
-    rerun that changed nothing therefore recomputes the same ordinal, produces the
-    same bytes, and is reused rather than rewritten.
+    One reading of the proposal plus one per recovery region cut since, so a rerun that
+    changed nothing recomputes the same ordinal and reuses the same bytes. Witness
+    testimony is not counted: a Testimonium primes a reading and never makes a new
+    attempt (principles 1, 7).
 
-    **The one attempt model, and the one reader for it.** Witness testimony does
-    not appear in this derivation, and that is the model rather than an omission:
-    a Testimonium is a clue that primes a reading, never the ink the reading is
-    established from, so a second look by a witness does not make a second reading
-    attempt exist (principles 1, 7). `pipeline/3_attestatores/run.py::reread_pass`
-    therefore closes its own window at the reading rather than moving this number.
-
-    Counted through `recovery_region_count`, the same shared reader the Recensor,
-    Archetypus and Armarium ask, because this copy asked only whether an origin
-    equalled `"recovery"` and silently counted every other value — including an
-    unknown or malformed one — as zero. A resealed Designator tree carrying origin
-    `"mystery"` was therefore read and published here at attempt 1 and became fatal
-    only at the next stage, by which time this Perlectio was already immutable and
-    the retry had nowhere to go. Refused before any model call or publication now
-    (Sol-S5).
-
-    **A crashed pass resumes here; it does not append here.** Unit 2 asks what a
-    Perlector pass interrupted mid-stage does about the acts it already read, and
-    the answer is: nothing. Probing this act's identities and landing on the first
-    free one was tried and is wrong, because this ordinal is not free-floating —
-    `recovery_region_count` is re-derived by the Recensor, the Archetypus and the
-    Armarium, each of which requires an act's reading count to equal its recovery
-    crop count plus one. A resumed pass that appended a second reading for an act
-    with no recrop therefore sealed its own boundary, reported success, and left
-    the run dead one stage later on `act ... carries 2 Perlectio attempt(s) for 0
-    recovery crop(s)`. `witness_bound_reading_acts` states the same rule from the
-    Attestatores side: a reading is made only by a crop, and new ink after a
-    reading routes through a Recensor recovery request, which mints a region and
-    moves this number.
-
-    So a resume recomputes the same ordinal and republishes. A fixture chair
-    reproduces its own bytes, so that republication is byte-identical and the
-    RunTree reuses it. **A live chair does not**, and that case is no longer
-    hypothetical: `_read_the_acts` handles it before this number is used again,
-    by leaving a sealed Perlectio alone (`_reading_already_sealed`), by reusing
-    the arms an interrupted attempt already published (`_sealed_pass_kinds`,
-    `_sealed_prior_draft`), and by holding an act whose audit round sealed
-    without its Perlectio. Where a republication still collides it is refused
-    (`IncompatibleReuse`) rather than allowed to overwrite immutable evidence:
-    loud, nothing written, nothing lost. The forward path from that refusal is
-    the one the design already has — a Recensor recovery request — and it is
-    deliberately not a second reading minted here, because a reading nobody
-    requested is what principle 7 refuses and what all three consumers reject.
+    Counted by the shared `recovery_region_count`: the Recensor, Archetypus and Armarium
+    each require an act's reading count to equal its recovery crops plus one, and it
+    refuses an unknown origin before any model call. A resume therefore recomputes this
+    ordinal rather than appending. `_read_the_acts` handles a live chair's
+    non-reproducible bytes; any remaining collision is refused (`IncompatibleReuse`)
+    rather than overwriting evidence.
     """
     return recovery_region_count(act_id, regions) + 1
 
