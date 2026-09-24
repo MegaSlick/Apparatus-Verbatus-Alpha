@@ -128,8 +128,7 @@ acknowledgement is durably bound to the exact lease, pod and hard deadline.
   durable final record.
 
 **Starting `supervise.py` means a long-lived process while a pod bills.** Treat it as
-unattended long-running work and arrange to learn promptly if it dies (Claude sessions:
-`~/.claude/WAKE_PLAYBOOK.md`).
+unattended long-running work and arrange to learn promptly if it dies.
 
 ### `controller_armer.py`: arming both controllers
 
@@ -231,6 +230,7 @@ bootstrap checked and measured, and `--data-gate-policy` inside the repository. 
 | 3 / 4 | held / halted (the orchestrator's own) |
 | 5 | a red bootstrap step |
 | 6 | the orchestrator could not start or exited outside its vocabulary |
+| 7 | `--dry-run`: plan validated and printed, nothing ran |
 
 It refuses by name: no `--`; a `--hold-only` plan; a report path that is the bootstrap's or
 lacks the launch token; a run root or submission outside the volume or missing; a policy
@@ -278,7 +278,8 @@ any is reported `held` (exit 3), since the timings are what the first live run m
 
 One short line through `operations/notify/notify.sh` at launch (lease, card, hourly
 ceiling), at close (lease, verified state, `billed Ns from creation` — no stop time is
-observed), and at each balance observation. A message with a credential shape or URL is
+observed), and at each balance observation (taken only at the create and adopt gates). A
+message with a credential shape or URL is
 never sent. A failed ping never changes a launch or close decision. `--notify` gates every
 notification, balance included; the balance hook is installed through the provider's
 duck-typed `set_balance_notify` or `RunPodProvider(balance_notify=...)`, both off by
@@ -305,14 +306,15 @@ in the launch record's `balance_notification`, not refused.
   of this action's cost to its deadline and every liability in the same lease root. An
   unavailable or stalled source refuses by name (one gate runs after `create` has returned
   a billing pod, before anything can stop it). Observations older than 60 s or future-dated
-  are unusable.
+  are unusable. The balance is read only at the create and adopt gates, never again while a
+  pod is live.
 - **One live pod.** Create and adopt serialize under one lock and refuse
   (`refused-active-lease`) while any lease in the root is short of `closed-verified`:
   otherwise two affordable launches leave two pods billing behind one record. This refusal
   spends no challenge. An unreadable or unverified lease makes the liability unknowable and
   refuses.
-- **Alerts.** `account_balance_alert_usd` sends notification-only warnings above the floor,
-  suppressed for fifteen minutes after one lands; two safe readings re-arm it. The
+- **Alerts.** `account_balance_alert_usd` sends notification-only warnings when a gate's
+  reading is above the floor but below the alert line, suppressed for fifteen minutes after one lands; two safe readings re-arm it. The
   template's `$50.00` is unverified against RunPod.
 - **One lease root per provider account.** Separate roots cannot see each other's
   liabilities, and nothing can enforce this without an account identifier.
@@ -407,8 +409,9 @@ Renders the plain-language request the project lead reads before the drill: the 
 reviewed card and rate, the hard lifetime (900 s or the policy ceiling), the ceilings, the
 full-lifetime cost, the expected immediate close, the exact command with
 `--record-fixture`, and the request JSON with `--image`, `--volume-id`,
-`--repository-commit` and `--hard-deadline` marked unsupplied until given. `cli.py create`
-will not load the JSON until `hard_deadline` is filled. An unconfigured policy renders a
+`--repository-commit` and `--hard-deadline` marked unsupplied until given. Only
+`hard_deadline` is filled by hand; the `VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS` placeholder is
+sealed from the spend policy on every create or adopt. An unconfigured policy renders a
 refusal, exit 2. The text authorizes nothing.
 
 ## The pod timer and its report
@@ -453,7 +456,7 @@ comes from**.
 
 `<volume>` is `--volume-mount-path`, `<token>` the launch token, `<stem>` the bootstrap
 report's filename stem. **A key is the volume path with `<volume>/` removed**:
-`/runpod-volume/pod-run-report-<token>.json` is `--evidence-key pod-run-report-<token>.json`.
+`<volume>/pod-run-report-<token>.json` is `--evidence-key pod-run-report-<token>.json`.
 A key that still starts with `/` is refused by name in the receipt's `refusals`.
 
 **Fetched by prefix, no key needed:**

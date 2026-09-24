@@ -268,8 +268,9 @@ unconfigured and refuses rather than inventing values.
 **UNVERIFIED CLOSE is the one message to stop and act on:** open the provider's console
 and look. The tool never promises no future charge; it reports only what it could see.
 
-Close timing comes from the workspace's `config/spend.toml`; if that is missing or
-unreadable, close says so and uses the built-in operational deadline. It never reads the
+Close timing comes from the workspace's `config/spend.toml`; if that is missing, unreadable
+or still unconfigured (the checked-in state), close says so and uses the built-in
+operational deadline. It never reads the
 policy a `launch --spend` named, because no record keeps that path.
 
 ## When something goes wrong
@@ -332,7 +333,7 @@ elsewhere and still read.
    first needs a served chair. Use the shipped real trio together; a custom roster needs
    an operator-authored witness declaration. The pod's run is
    `python -m operations.pod.pod_run`, and `fetch-run` brings its tree home.
-5. **`export` produces a base Armarium evidence bundle**, not Spec 11's product export,
+5. **`export` produces a base Armarium evidence bundle**, not the product export,
    and says so on screen.
 6. **The fixture pod is given a fixed cost at close.** It measures nothing.
 

@@ -104,6 +104,15 @@ constructs a channel over the volume this launch mounts and the argv that
 starts `supervise.py` (its own ``--provider-factory`` and ``--spend`` values),
 and returns `ChannelControllerArmer` -- or `ObservingControllerArmer`, which
 performs the identical read and never arms, for the first authorized boot.
+
+**Alternatives declined.**
+- Acknowledge over the notify topic: puts a bearer secret in the pod, and a notification's
+  delivery must never change a decision.
+- SSH or exec into the pod to read the report: a second transport and credential for a fact
+  the volume already holds.
+- Keep `arming.FailClosedControllerArmer` past the first boot: that boot could never be green.
+- Do the RunPod v2 migration in the same change: it is separate work and would hide under
+  controller work.
 """
 
 from __future__ import annotations

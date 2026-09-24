@@ -42,12 +42,12 @@ report and its content-addressed evidence; this never edits the catalogue:
 
 ```console
 python -m operations.serving.qualify \
-  --report /runpod-volume/bootstrap-report-<token>.json \
-  --evidence-root /runpod-volume/preflight/bootstrap-report-<token> \
+  --report <volume>/bootstrap-report-<token>.json \
+  --evidence-root <volume>/preflight/bootstrap-report-<token> \
   --models-config config/models-real.toml \
   --serving-recipes-config config/serving_recipes_real.toml \
   --placement-config config/pod_placement.toml \
-  --output /runpod-volume/serving-qualification-<token>.json
+  --output <volume>/serving-qualification-<token>.json
 ```
 
 It requires a green completed preflight, exact cache and placement coverage, one
