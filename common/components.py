@@ -110,11 +110,24 @@ def label_components_reference(pixels: set, *, gap_tolerance_px: int) -> list[Co
     return [component for component, _members in components]
 
 
+def runs_in_row(bits: bytes | bytearray) -> list[tuple[int, int]]:
+    """One translated 0/1 scanline as maximal half-open ink runs."""
+    runs: list[tuple[int, int]] = []
+    start = bits.find(1)
+    while start >= 0:
+        end = bits.find(0, start)
+        if end < 0:
+            end = len(bits)
+        runs.append((start, end))
+        start = bits.find(1, end)
+    return runs
+
+
 def ink_runs_by_row(pixels) -> dict[int, list[tuple[int, int]]]:
     """The pixel set as maximal horizontal runs, one ascending list per scanline.
 
-    A run is `(x0, x1)`, half-open at `x1`, exactly as `conservation._Run`
-    carries it. Splitting on the first missing x rather than on the first blank
+    A run is `(x0, x1)`, half-open at `x1`, as `runs_in_row` gives it.
+    Splitting on the first missing x rather than on the first blank
     *pixel* is the same rule: this function's input is already the ink set, so
     "absent from the set" is "blank". Duplicates are tolerated by comparing with
     `>` rather than `!=`, because the declared input is a set but a caller is
@@ -167,11 +180,6 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     bounds, same `gap_tolerance_px` semantics, and the same total order (origin
     `(top, left)`, ties broken by sorted `(x, y)` ink), with `test_structure.py`
     comparing the two implementations directly on every page shape.
-
-    The technique is `conservation._components`', written beside it rather
-    than imported, since `common/` may not import a stage; `test_conservation.py`
-    compares both against `label_components_reference`, the pixel-set
-    definition they answer to.
     """
     return [
         component
@@ -189,7 +197,7 @@ def label_component_runs(
     The whole of the labelling lives here and `label_components` is the wrapper
     that throws the runs away, so there is one implementation of "connected"
     rather than two that could drift. A run is `(y, x0, x1)`, half-open at `x1`,
-    the same shape `ink_runs_by_row` produces and `conservation._Run` carries.
+    the same shape `ink_runs_by_row` produces.
 
     The input is runs rather than a pixel set because the caller that needs the
     runs back (`common/residual_ink.py`) already holds the page as translated
@@ -244,8 +252,7 @@ def label_component_runs(
                 union(left, right)
         # Earlier scanlines within the Chebyshev radius. Runs on one scanline
         # ascend in both x0 and x1, so one forward pointer per row pair
-        # replaces the full cross product. This is `conservation._components`'
-        # sweep; see this function's docstring for why it is not imported.
+        # replaces the full cross product.
         for previous_y in range(y - radius, y):
             previous = indices_by_row.get(previous_y)
             if not previous:
