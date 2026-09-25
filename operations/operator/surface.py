@@ -1448,9 +1448,7 @@ class OperatorSurface:
                 ),
                 # The aggregate's own reasons, kept where `status` can show
                 # them before any export exists.
-                "reasons": [
-                    reason if isinstance(reason, str) else str(reason) for reason in reasons
-                ],
+                "reasons": [str(reason) for reason in reasons],
                 "reasons_unreadable": malformed,
                 "expected_acts": expected if isinstance(expected, int) else None,
                 "pages_accounted_for": len(page_records),
@@ -1633,24 +1631,16 @@ class OperatorSurface:
                         "the bytes its name claims"
                     ) from None
             staged.unlink()
-        except OperatorError as error:
-            # The bundle writer's own refusal: still clean up and record it.
+        except (OperatorError, OSError, zipfile.BadZipFile) as error:
             staged.unlink(missing_ok=True)
             self._record_failure(
                 "export",
                 "local-copy-failed",
-                str(error.detail or error),
+                str(error.detail or error) if isinstance(error, OperatorError) else str(error),
                 facts={"run_id": recorded_id, "run_root": self._state_relative(run_root)},
             )
-            raise
-        except (OSError, zipfile.BadZipFile) as error:
-            staged.unlink(missing_ok=True)
-            self._record_failure(
-                "export",
-                "local-copy-failed",
-                str(error),
-                facts={"run_id": recorded_id, "run_root": self._state_relative(run_root)},
-            )
+            if isinstance(error, OperatorError):
+                raise
             raise OperatorError(ErrorCode.EXPORT_FAILED, detail=str(error)) from error
         table = reconciliation_table(export_payload)
         for line in table:
@@ -1678,9 +1668,7 @@ class OperatorSurface:
                 "sha256": digest,
                 "reconciliation": table,
                 "reasons": (
-                    [reason if isinstance(reason, str) else str(reason) for reason in reasons]
-                    if isinstance(reasons, list)
-                    else None
+                    [str(reason) for reason in reasons] if isinstance(reasons, list) else None
                 ),
                 "assumption": "Spec 11 is not in this tree; this is a copy of the base Armarium evidence, not a Spec 11 product bundle.",
             },
@@ -1801,6 +1789,13 @@ class OperatorSurface:
                 "built-in operational deadline instead."
             )
         report = self._shutdown(policy).close(record, reason="manual operator close")
+        recorded = {
+            "pod_id": record.pod_id,
+            "confirmation_receipt": self._state_relative(confirmation_receipt),
+            "close_report": report.to_record(),
+            "lease": self._state_relative(lease_store.path),
+            "spend_policy_error": policy_error,
+        }
         try:
             lease_store.record_close(
                 owner_token=lease.owner_token,
@@ -1812,14 +1807,10 @@ class OperatorSurface:
             receipt = self._write_action(
                 "close",
                 {
+                    **recorded,
                     "summary": "Close is UNVERIFIED because the safety lease could not record the provider evidence.",
-                    "pod_id": record.pod_id,
-                    "confirmation_receipt": self._state_relative(confirmation_receipt),
-                    "close_report": report.to_record(),
                     "lease_reconciled": False,
-                    "lease": self._state_relative(lease_store.path),
                     "lease_record_error": str(error),
-                    "spend_policy_error": policy_error,
                 },
                 descriptor_action="close",
             )
@@ -1846,12 +1837,8 @@ class OperatorSurface:
                     if report.verified
                     else "Close is UNVERIFIED; manual reconciliation is required."
                 ),
-                "pod_id": record.pod_id,
-                "confirmation_receipt": self._state_relative(confirmation_receipt),
-                "close_report": report.to_record(),
+                **recorded,
                 "lease_reconciled": True,
-                "lease": self._state_relative(lease_store.path),
-                "spend_policy_error": policy_error,
             },
             descriptor_action="close",
         )
