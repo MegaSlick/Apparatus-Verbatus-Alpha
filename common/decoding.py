@@ -10,7 +10,6 @@ from typing import Any, Final, Mapping
 from common.chandra_native_retry import validate_policy_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
-from common.contracts.identities import artifact_id, attempt_id, derive
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
 MAX_DECODING_CONFIG_BYTES: Final = 64 * 1024
@@ -136,13 +135,6 @@ def _validate_decoding_policy(policy: Any) -> None:
         raise ContractError("decoding variance_experiment passes must be an integer of at least 2")
 
 
-def variance_experiment_id(policy: dict[str, Any]) -> str:
-    """Name the sealed variance plan, rather than an invocation that happens to run it."""
-    _validate_decoding_policy(policy)
-    variance = policy["variance_experiment"]
-    return derive("variance-experiment", variance)
-
-
 def structure_recovery_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     """Return the sealed structure recovery policy, including legacy v1 semantics.
 
@@ -159,29 +151,3 @@ def structure_recovery_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         "max_attempts": structure["recovery_max_attempts"],
         "seed_schedule": structure["recovery_seed_schedule"],
     }
-
-
-def variance_pass_attempt_id(policy: dict[str, Any], pass_ordinal: int) -> str:
-    """Derive one experimental pass, never a retry of a record reading.
-
-    The experiment's label, seed, and declared pass count are folded into the
-    subject first.  A pass then has its own ``variance-pass`` operation and
-    ordinal, which keeps it outside the identity space of ordinary ``read`` or
-    ``perlegere`` attempts even when it sees the same act.
-    """
-    experiment_id = variance_experiment_id(policy)
-    passes = policy["variance_experiment"]["passes"]
-    if (
-        not isinstance(pass_ordinal, int)
-        or isinstance(pass_ordinal, bool)
-        or not 1 <= pass_ordinal <= passes
-    ):
-        raise ContractError(f"variance pass ordinal must be in the sealed range 1..{passes}")
-    return attempt_id(experiment_id, "variance-pass", pass_ordinal)
-
-
-def variance_pass_artifact_id(
-    stage: str, kind: str, subject_id: str, policy: dict[str, Any], pass_ordinal: int
-) -> str:
-    """The immutable artifact identity for one pass of the sealed experiment."""
-    return artifact_id(stage, kind, subject_id, variance_pass_attempt_id(policy, pass_ordinal))
