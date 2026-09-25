@@ -1,15 +1,15 @@
 """Build the run partition and atomic presentation before any Perlector call.
 
 The partition covers the complete proposal seal even when recovery selects one
-act. This read loop has no capture-alignment input, so it refuses any resolved
-physical-act group before publishing a reading rather than reading its local
-members separately.
+act. This read loop has no capture-alignment input and no cross-capture read, so
+every act on a registered re-shoot is held by name rather than read from one
+capture; the rest of the run is read.
 """
 
 from __future__ import annotations
 
 import sys
-from typing import Any
+from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes
 from common.contracts.errors import SchemaRefusal
@@ -84,11 +84,19 @@ def _local_act_row(context, act: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+CROSS_CAPTURE_READ_NOT_BUILT: Final = "cross-capture-read-not-built"
+# The one finding a registered re-shoot produces while no alignment is built.
+# Every other finding is a defect in the denominator itself.
+_HELD_FINDINGS: Final = frozenset({"capture-page-alignment-unresolved"})
+
+
 def build_run_partition(
     context, expected: list[dict[str, Any]]
-) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+) -> tuple[dict[str, Any] | None, dict[str, str] | None, dict[str, str | None]]:
     """Seal the complete readable local-to-logical denominator once per run.
 
+    Also returns each act this loop must hold rather than read, mapped to the
+    partition finding behind the hold (``None`` for a resolved clustered act).
     Held acts have hold evidence rather than a sealed source page, so they
     cannot supply the source digest required by a partition row.
     """
@@ -105,7 +113,7 @@ def build_run_partition(
     if not local_acts:
         # The partition schema refuses an empty denominator, and the read loop
         # short-circuits every held act before dereferencing these sentinels.
-        return None, None
+        return None, None, {}
     register_bytes = read_snapshot(context.tree, context.run)
     proposal_seal_ref = context.artifact_ref(
         DESIGNATOR,
@@ -120,38 +128,36 @@ def build_run_partition(
         capture_alignments=[],
         source_ledger=_verified_source_ledger(context),
     )
-    _refuse_a_partition_this_loop_cannot_read(partition)
+    holds = cross_capture_holds(partition)
     digest, published = context.tree.put_blob(PERLECTOR, canonical_bytes(partition))
-    return partition, {"relative_path": published.relative_path, "sha256": digest}
+    return partition, {"relative_path": published.relative_path, "sha256": digest}, holds
 
 
-def _refuse_a_partition_this_loop_cannot_read(partition: dict[str, Any]) -> None:
-    """Stop before publication if the local-act loop cannot honor the denominator.
+def cross_capture_holds(partition: dict[str, Any]) -> dict[str, str | None]:
+    """Every local act on a registered re-shoot, which this loop holds instead of reading.
 
-    Findings make the partition non-total. Physical-act groups would be visited
-    once per local member, producing capture-local Perlectiones for one logical
-    act even when the group currently has only one proposed member.
+    Reading one member alone would publish a capture-local Perlectio for one
+    physical act (consult §7.9, §7.15); the cross-capture read is Unit 19C/19D's.
+    Any other partition finding refuses the run before anything is published.
     """
-    if partition["findings"]:
-        codes = sorted({f"{row['code']}:{row['act_id']}" for row in partition["findings"]})
+    defects = sorted(
+        f"{row['code']}:{row['act_id']}"
+        for row in partition["findings"]
+        if row["code"] not in _HELD_FINDINGS
+    )
+    if defects:
         raise SchemaRefusal(
             "physical-act partition: this run's local-to-logical correspondence is not total, "
-            f"so no act is read: {', '.join(codes)}"
+            f"so no act is read: {', '.join(defects)}"
         )
-    unreadable = sorted(
-        group["logical_act_id"]
-        for group in partition["logical_acts"]
-        if group["identity_scope"] != "image-local-singleton"
-        or len(group["member_local_acts"]) != 1
-    )
-    if unreadable:
-        raise SchemaRefusal(
-            "physical-act partition: this run resolves a clustered logical act "
-            f"({', '.join(unreadable)}), and the Perlector read loop still presents one local "
-            "act's own regions at a time. Reading it here would publish one capture-local "
-            "Perlectio per member instead of one combined autopsia (consult §7.9, §7.15); the "
-            "cross-capture read loop is Unit 19C/19D's."
-        )
+    holds: dict[str, str | None] = {row["act_id"]: row["code"] for row in partition["findings"]}
+    for group in partition["logical_acts"]:
+        if (
+            group["identity_scope"] != "image-local-singleton"
+            or len(group["member_local_acts"]) != 1
+        ):
+            holds.update((member["act_id"], None) for member in group["member_local_acts"])
+    return holds
 
 
 def logical_act_id_for(partition: dict[str, Any], act_id: str) -> str:

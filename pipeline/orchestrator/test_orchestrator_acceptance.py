@@ -33,7 +33,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of,
 from common.contracts.envelope import build_envelope, validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
-from common.contracts.identities import artifact_id, attempt_id
+from common.contracts.identities import artifact_id, attempt_id, physical_page_id
 from common.contracts.stages import (
     ARCHETYPUS,
     ARMARIUM,
@@ -49,6 +49,7 @@ from common.contracts.stages import (
     WRITING_DIRECTORIES,
 )
 from common.contracts.uncertainty import from_perlectio
+from common.corpus_register import append_records, empty_register, register_digest
 from common.fixture_identity import page_identity
 from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
@@ -159,6 +160,7 @@ def orchestrate(
     placement_tier: str | None = None,
     stage_timing_journal: Path | None = None,
     repository_commit: str | None = None,
+    corpus_register: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     if nuda_per_mille and nuda_approval_ref == NUDA_APPROVAL_SUBJECT:
@@ -216,6 +218,8 @@ def orchestrate(
         command.extend(("--stage-timing-journal", str(stage_timing_journal)))
     if repository_commit is not None:
         command.extend(("--repository-commit", repository_commit))
+    if corpus_register is not None:
+        command.extend(("--corpus-register", str(corpus_register)))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -2462,6 +2466,68 @@ def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_bl
         == "confirmed-blank"
         for row in tree.build_manifest(RECENSOR)["artifacts"]
     )
+
+
+def test_a_confirmed_re_shoot_holds_its_own_act_and_the_rest_of_the_run_is_exported(tmp_path):
+    """One confirmed re-shoot once refused the whole run before any act was read.
+
+    The register confirms page 3's capture as one of two captures of a physical
+    page. No cross-capture read exists, so the act on that capture is held by
+    name; page 1's acts are still read, established and exported.
+    """
+    page_three = next(
+        page for page in load_fixture(str(ROOT / "proof"))["page"] if page["ordinal"] == 3
+    )
+    physical_page = physical_page_id("synthetic-corpus", "volume-1", "leaf-3")
+    register = tmp_path / "register.json"
+    append_records(
+        register,
+        [
+            {
+                "kind": "physical-page",
+                "corpus_id": "synthetic-corpus",
+                "volume_id": "volume-1",
+                "designation": "leaf-3",
+                "physical_page_id": physical_page,
+                "appending_run": "triage",
+            },
+            {
+                "kind": "membership",
+                "physical_page_id": physical_page,
+                "members": sorted([page_three["sha256"], "f" * 64]),
+                "predecessor": None,
+                "appending_run": "triage",
+            },
+        ],
+        expected_digest=register_digest(empty_register()),
+    )
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "ink-free-page", corpus_register=register)
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+
+    readings = {
+        record["payload"]["act_key"]: record
+        for record in (
+            tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+            for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+            if entry["kind"] == "perlectio"
+        )
+    }
+    assert sorted(readings) == ["a1", "a2", "page-fallback:3"]
+    held = readings["page-fallback:3"]
+    assert held["outcome"] == "not-run"
+    assert held["payload"]["hold"] == {
+        "code": "cross-capture-read-not-built",
+        "partition_finding": "capture-page-alignment-unresolved",
+    }
+
+    export = export_of(tree)
+    assert sorted(item["act_key"] for item in export["delivered"]) == ["a1", "a2"]
+    (entry,) = export["non_delivered"]
+    assert entry["act_key"] == "page-fallback:3"
+    assert entry["category"] == "held-for-review"
+    assert export["aggregate"]["status"] == "partial"
 
 
 def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_path):

@@ -456,6 +456,22 @@ with its reason, not a fabricated text. `truncated-reading` and
 declaration at all — the detector's own authority) exercise the three paths
 end to end; Recensor treats every non-completed outcome as a visible hold.
 
+**Acts on a registered re-shoot are held, not read.** The physical-act partition is
+built once per run from the sealed corpus-register snapshot, with no capture
+alignments: no alignment producer and no cross-capture read (Unit 19C/19D) is built.
+An act whose capture the register records as a member of a physical page therefore
+gets the partition finding `capture-page-alignment-unresolved`, and an act in a
+resolved multi-capture group has no finding but still cannot be read one capture at a
+time. Both are published as `not-run` with the closed shape `{act_key,
+attempt_ordinal, reason, hold, provenance}`, where `hold = {code:
+"cross-capture-read-not-built", partition_finding}` (`partition_finding` is `null`
+for a resolved group) and the published partition blob is the record's input. The rest
+of the run is read, and the held acts reach the Recensor, Archetypus and Armarium as
+held. Reading one capture would establish that capture's text for the physical act,
+which is a pick (principle 1); refusing the run would lose every other act's reading.
+Any other partition finding is a defect in the denominator and still refuses the run
+before any Perlectio is published (`logical_reading.cross_capture_holds`).
+
 ## `kind="lectio-nuda"`
 
 **Never `kind="perlectio"`.** The subject is the act identity and the attempt is

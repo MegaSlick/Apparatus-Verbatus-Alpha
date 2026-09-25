@@ -1963,22 +1963,15 @@ def test_logical_act_export_conserves_each_member_exactly_once(tmp_path):
             )
 
 
-def test_the_perlector_read_loop_refuses_a_clustered_partition_rather_than_reading_it(tmp_path):
+def test_the_perlector_read_loop_holds_a_clustered_partition_rather_than_reading_it(tmp_path):
     """The named gap 19D's composed acceptance rests on, pinned so it cannot go quiet.
 
-    19D wires no production entrypoint to the logical Archetypus/Armarium
-    functions, and that is honest only because the stage upstream of them
-    refuses to publish a clustered Perlectio at all: `run.py`'s loop presents
-    one local act's own regions at a time, so a clustered partition would get
-    one capture-local Perlectio per member (§7.9, §7.15).  19B says so in a
-    docstring and raises; nothing measured it.  Without this test the refusal
-    could be deleted or weakened in a later slice and the *silent* per-member
-    read it exists to prevent would arrive with every suite still green.
-
-    When the cross-capture read loop does land, this test is the deliberate
-    edit that records it -- which is the point.
+    `run.py`'s loop presents one local act's own regions at a time, so reading a
+    clustered act would publish one capture-local Perlectio per member (§7.9,
+    §7.15). Each member is held instead. When the cross-capture read loop lands,
+    this test is the deliberate edit that records it.
     """
-    from logical_reading import _refuse_a_partition_this_loop_cannot_read  # noqa: PLC0415
+    from logical_reading import CROSS_CAPTURE_READ_NOT_BUILT, cross_capture_holds  # noqa: PLC0415
 
     fixture = _fixture()
     register_path, physical_page, _physical_act = _register(tmp_path, fixture)
@@ -1988,11 +1981,49 @@ def test_the_perlector_read_loop_refuses_a_clustered_partition_rather_than_readi
     assert logical_act["identity_scope"] == "physical-act"
     assert len(logical_act["member_local_acts"]) == 2
 
-    with pytest.raises(SchemaRefusal) as refusal:
-        _refuse_a_partition_this_loop_cannot_read(clustered)
-    message = str(refusal.value)
-    assert "clustered logical act" in message
-    assert logical_act["logical_act_id"] in message
+    assert cross_capture_holds(clustered) == {
+        member["act_id"]: None for member in logical_act["member_local_acts"]
+    }
+    assert CROSS_CAPTURE_READ_NOT_BUILT == "cross-capture-read-not-built"
+
+
+def test_a_confirmed_re_shoot_without_alignments_holds_only_its_own_acts(tmp_path):
+    """The production shape: the Perlector builds no capture alignment.
+
+    Every act on a registered capture is held by the finding that names why; an
+    act on an unrelated capture stays a readable singleton.
+    """
+    from logical_reading import cross_capture_holds  # noqa: PLC0415
+
+    fixture = _fixture()
+    register_path, _physical_page, _physical_act = _register(tmp_path, fixture)
+    unrelated_source = "c" * 64
+    unrelated_bounds = {"x": 1, "y": 1, "w": 10, "h": 10}
+    unrelated = {
+        "act_id": act_id("pg_3333333333333333", "proposal", unrelated_bounds),
+        "act_key": "unrelated-act",
+        "page_id": "pg_3333333333333333",
+        "page_ordinal": 3,
+        "source_sha256": unrelated_source,
+        "proposal_refs": ["proposal:unrelated"],
+    }
+    local_rows = _local_rows(fixture)
+    register_bytes = register_path.read_bytes()
+    partition = build_physical_act_partition(
+        register=register_bytes,
+        register_digest=register_digest(register_bytes),
+        proposal_seal_ref={
+            "relative_path": "2_designator/artifacts/proposal-seal.json",
+            "sha256": digest_bytes(b"unit19b proposal seal"),
+        },
+        local_acts=[*local_rows, unrelated],
+        capture_alignments=[],
+        source_ledger={row["source_sha256"] for row in local_rows} | {unrelated_source},
+    )
+    assert cross_capture_holds(partition) == {
+        row["act_id"]: "capture-page-alignment-unresolved" for row in local_rows
+    }
+    assert [row["act_id"] for row in partition["local_to_logical"]] == [unrelated["act_id"]]
 
 
 def test_neither_established_stage_dispatches_by_logical_act_yet():
@@ -2000,9 +2031,9 @@ def test_neither_established_stage_dispatches_by_logical_act_yet():
 
     `establish_logical_record`, `build_logical_index`, the delivered logical
     projection, and the cross-capture review projection exist and are proved
-    by the composition fixture above; no `main()` calls one, because no
-    clustered Perlectio can be published for them to consume (see the test
-    above).  Asserting the absence keeps the two halves of the gap tied
+    by the composition fixture above; no `main()` calls one, because the
+    Perlector holds every clustered act rather than publishing a clustered
+    Perlectio for them to consume (see the test above).  Asserting the absence keeps the two halves of the gap tied
     together: a future slice that wires either stage must flip this test in the
     same change that makes the refusal above reachable, rather than leaving a
     half-wired path nobody notices.
@@ -2036,6 +2067,6 @@ def test_neither_established_stage_dispatches_by_logical_act_yet():
         }
         assert not called & set(logical_callables), (
             f"{path.name}::main now dispatches by logical act; the composed-acceptance gap "
-            "this test records has closed, and the Perlector refusal test above must close "
+            "this test records has closed, and the Perlector hold test above must close "
             "with it"
         )

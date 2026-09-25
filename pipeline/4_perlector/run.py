@@ -2105,6 +2105,7 @@ _NOT_RUN_CAPACITY_FIELDS: Final = _NOT_RUN_ABSENT_FIELDS | {
     "logical_act_id",
     "cross_capture_autopsia",
 }
+_NOT_RUN_CROSS_CAPTURE_FIELDS: Final = _NOT_RUN_HELD_FIELDS | {"hold"}
 
 
 def _require_closed_schema(payload: dict, fields: frozenset, *, what: str) -> None:
@@ -3701,7 +3702,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
 
     # Recovery may narrow `wanted`, but the partition denominator remains the
     # complete proposal seal for every invocation.
-    partition, partition_ref = logical_reading.build_run_partition(context, expected)
+    partition, partition_ref, holds = logical_reading.build_run_partition(context, expected)
     max_images = protocol_config.get("max_images")
     if not isinstance(max_images, int) or isinstance(max_images, bool):
         max_images = None
@@ -3725,7 +3726,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         + bool(context.nuda_per_mille)
         + bool(context.perlector_instrument_per_mille)
     )
-    unread = _acts_left_to_read(context, wanted) if serving_mode == "live" else 0
+    unread = (
+        _acts_left_to_read(context, [act for act in wanted if act["act_id"] not in holds])
+        if serving_mode == "live"
+        else 0
+    )
     if unread:
         startup = (
             bound_serving_recipes(context, args.serving_recipes_config)
@@ -3756,6 +3761,32 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                         "not read, because a reading of part of an act would be a "
                         "truncation delivered as an output"
                     ),
+                    "provenance": provenance_for(context, chair, attempted=False),
+                },
+            )
+            acknowledged += 1
+            continue
+
+        if act_id in holds:
+            _publish_not_run(
+                context,
+                act_id=act_id,
+                ordinal=1,
+                fields=_NOT_RUN_CROSS_CAPTURE_FIELDS,
+                inputs=[partition_ref],
+                payload={
+                    "act_key": act["act_key"],
+                    "attempt_ordinal": 1,
+                    "reason": (
+                        "the corpus register records this act's capture as one of several "
+                        "captures of one physical page, and no cross-capture read is built; "
+                        "reading this capture alone would establish one capture's text for "
+                        "the physical act"
+                    ),
+                    "hold": {
+                        "code": logical_reading.CROSS_CAPTURE_READ_NOT_BUILT,
+                        "partition_finding": holds[act_id],
+                    },
                     "provenance": provenance_for(context, chair, attempted=False),
                 },
             )
