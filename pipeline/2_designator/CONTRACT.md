@@ -221,15 +221,23 @@ page A that reaches the bottom edge with every group on page B that reaches the
 top edge, carries no anchor and shares a column with it, so a folio number,
 catchword or second column at an edge cannot hide a crossing beside it. Each
 pair is one record; its subject is `<page A id>:page-break:<n>`, `n` the pair's
-place in page position order, with no attempt binding.
+place among all edge pairs in page position order, with no attempt binding. A
+pair skipped as declared keeps its `n`, so the numbers can have gaps; they are
+stable across runs and resumes. There is no ceiling on records per page pair:
+the count is the product of the two pages' edge groups that share a column, and
+the rate on real consecutive pages is unmeasured.
 
-Each group is mapped to the proposed acts over it that lie nearest that edge,
-every tie named; a side with no proposed act over its group is published empty,
-never dropped (that ink is also unclaimed, and conservation holds it). No pair
+Each group is mapped to every proposed act over it whose own edge lies within
+that page's edge reach, or, when none does, to the ones nearest that edge; this
+over-holds rather than delivering a crossing act whole because a neighbour
+reached one pixel further. A side with no proposed act over its group is
+published empty, never dropped (that ink is also unclaimed, and conservation
+holds it). No pair
 forms when either page was cut into fallback tiles, by the chair or because the
 scan found no group, since the grid touches both edges on every page; nor from a
-structure-held page, nor from an act whose continuation the fixture declares
-(that pair is already linked).
+structure-held page. An act whose continuation the fixture declares is dropped
+from the head side as already linked; the pair is skipped only when that leaves
+the head side empty.
 
 ```text
 authoritative (always false)
@@ -1498,7 +1506,7 @@ into fallback tiles; and pages that are not consecutive sealed ordinals. Such an
 act is still delivered as two whole acts without a finding, so no run over real
 material may yet be described as having accounted for every page-crossing act.
 Side-by-side ink is one scanned group, so two columns crossing together arrive
-as one candidate naming every act at the edge. The `page_edge_reach_bp` provenance caveat in
+as one candidate naming every act within the edge reach. The `page_edge_reach_bp` provenance caveat in
 `config/designator_grouping.toml` still says this check is recorded rather than
 acted on; that file's bytes are sealed into every run's digest, so it is
 corrected here, and the caveat is stale.
@@ -1998,9 +2006,10 @@ tolerance the test is plain interval intersection, which — unlike an absolute
 because there is no length in it to scale. Zero is also the strict end. On
 `act-group` a miss is only a `false`, but the same test decides which acts
 `continuation-candidate` holds, so a miss there delivers a split act as two
-whole acts with no finding. Whether real consecutive pages need slack is
-unmeasured: it is to be measured on the 127-page calibration set before a real
-run is trusted. Slack here would be a page-width
+whole acts with no finding. Whether real pages need slack is unmeasured, and
+the 127-page calibration set cannot answer it: its pages are not consecutive.
+It must be measured on a sample of consecutive pages from one register before a
+real run is trusted. Slack here would be a page-width
 proportion (`margin_bp`'s basis, not the six height-based fields'), and if a real
 corpus ever shows consecutive pages need it, it enters the config as a basis
 point and arrives as a required keyword.

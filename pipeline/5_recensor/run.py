@@ -2923,35 +2923,62 @@ def review_route_from_findings(
     if unreconciled:
         reasons.append("the act did not reconcile and needs a human")
     if continuation_candidate:
-        reasons.append(
-            "the Designator's geometry names this act in a continuation candidate: one act "
-            "reaches a page's bottom edge and the next page opens on an unanchored act at its "
-            "top edge; whether they are one act is a review decision, so neither half is "
-            "delivered as a whole act"
-        )
+        reasons.append(CONTINUATION_CANDIDATE_REASON)
     if not reasons:
         return None
     return "held-for-review", "; ".join(reasons)
 
 
-def continuation_candidate_refs(context, sealed_act_ids: set[str]) -> dict[str, list[dict]]:
+CONTINUATION_CANDIDATE_REASON = (
+    "the Designator's geometry names this act in a continuation candidate: one act "
+    "reaches a page's bottom edge and the next page opens on an unanchored act at its "
+    "top edge; whether they are one act is a review decision, so neither half is "
+    "delivered as a whole act"
+)
+
+
+def with_candidate_reason(reason: str, named: bool) -> str:
+    """A named act's reason names the candidate whichever cause held it first."""
+    if not named or CONTINUATION_CANDIDATE_REASON in reason:
+        return reason
+    return f"{reason}; {CONTINUATION_CANDIDATE_REASON}"
+
+
+def _candidate_act_ids(record: dict) -> list[str]:
+    payload = record.get("payload")
+    try:
+        acts = [act["act_id"] for side in ("acts_a", "acts_b") for act in payload[side]]
+    except (KeyError, TypeError) as error:
+        raise FatalAccounting(
+            f"Designator continuation candidate {record.get('artifact_id')} is malformed: "
+            f"it names its acts outside acts_a/acts_b lists of act_id records ({error!r})"
+        ) from error
+    if not all(isinstance(act_id, str) for act_id in acts):
+        raise FatalAccounting(
+            f"Designator continuation candidate {record.get('artifact_id')} is malformed: "
+            "an act_id is not a string"
+        )
+    return acts
+
+
+def continuation_candidate_refs(context, proposed_act_ids: set[str]) -> dict[str, list[dict]]:
     """Each act Designator continuation candidates name, with every naming candidate's
-    reference. A candidate claiming authority or naming an act outside the proposal
-    seal is refused: it may flag sealed acts for review, never introduce one."""
+    reference. A malformed candidate, one claiming authority, or one naming an act the
+    proposal seal does not propose is refused: it may flag proposed acts for review,
+    never introduce or reopen one."""
     named: dict[str, list[dict]] = {}
     for record in _records_of_kind(context, DESIGNATOR, "continuation-candidate"):
-        payload = record["payload"]
-        if payload.get("authoritative") is not False:
+        acts = _candidate_act_ids(record)
+        if record["payload"].get("authoritative") is not False:
             raise FatalAccounting(
                 f"Designator continuation candidate {record['artifact_id']} is not marked "
                 "authoritative: false; the link between two acts is not the Designator's"
             )
-        acts = [act["act_id"] for side in ("acts_a", "acts_b") for act in payload[side]]
-        outside = sorted(set(acts) - sealed_act_ids)
+        outside = sorted(set(acts) - proposed_act_ids)
         if outside:
             raise FatalAccounting(
                 f"Designator continuation candidate {record['artifact_id']} names act(s) "
-                f"{outside} that are not in the proposal seal"
+                f"{outside} that the proposal seal does not propose"
             )
         reference = context.artifact_ref(
             DESIGNATOR, "continuation-candidate", record["artifact_id"]
@@ -3297,7 +3324,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # Counted from the tree: an in-memory counter would reset after the requested recrop.
     funded_pages = observation_funded_pages(context, expected_acts(context))
     candidate_refs = continuation_candidate_refs(
-        context, {act["act_id"] for act in expected_acts(context)}
+        context,
+        {act["act_id"] for act in expected_acts(context) if act["outcome"] == "proposed"},
     )
 
     held = 0
@@ -3548,7 +3576,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 subject_id=act_id,
                 outcome="recovery-requested",
                 prior=current_review(context, act_id),
-                inputs=[reading_ref, request_ref],
+                inputs=[reading_ref, request_ref, *candidate_refs.get(act_id, [])],
                 payload={
                     "act_key": act_key,
                     # The request this review answers, distinct from the review's own
@@ -3570,6 +3598,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "audit_examination": audit_examination,
                     "uncertainty_assessment": assessment_record,
                     "cross_capture_coverage": cross_coverage,
+                    **(
+                        {"continuation_candidate_refs": candidate_refs[act_id]}
+                        if act_id in candidate_refs
+                        else {}
+                    ),
                 },
             )
             held += 1
@@ -3703,7 +3736,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             + candidate_refs.get(act_id, []),
             payload={
                 "act_key": act_key,
-                "reason": reason,
+                "reason": with_candidate_reason(reason, act_id in candidate_refs),
                 "coverage": coverage,
                 "geometry_coverage": geometry_coverage,
                 "testimony_content_coverage": content_coverage,

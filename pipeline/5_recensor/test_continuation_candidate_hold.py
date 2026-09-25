@@ -117,3 +117,24 @@ def test_a_candidate_claiming_authority_is_refused(monkeypatch):
 def test_a_candidate_naming_an_act_outside_the_seal_is_refused(monkeypatch):
     with pytest.raises(FatalAccounting, match="proposal seal"):
         _refs(monkeypatch, [_candidate("x", ["a"], ["unsealed"])])
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"authoritative": False, "acts_b": []},
+        {"authoritative": False, "acts_a": "a", "acts_b": []},
+        {"authoritative": False, "acts_a": [{"act_key": "a"}], "acts_b": []},
+    ],
+)
+def test_a_malformed_candidate_is_refused_by_name(monkeypatch, payload):
+    with pytest.raises(FatalAccounting, match="malformed"):
+        _refs(monkeypatch, [{"artifact_id": "x", "payload": payload}])
+
+
+def test_another_hold_cause_still_names_the_candidate():
+    reason = recensor.with_candidate_reason("page(s) [1] carry ink outside every region", True)
+    assert reason.startswith("page(s) [1]")
+    assert "continuation candidate" in reason
+    assert recensor.with_candidate_reason(reason, True) == reason
+    assert recensor.with_candidate_reason("coverage reconciles", False) == "coverage reconciles"

@@ -286,3 +286,83 @@ def test_the_fixture_pass_records_an_undeclared_crossing(tmp_path, monkeypatch):
     (candidate,) = _records(context, "continuation-candidate")
     assert [act["act_key"] for act in candidate["payload"]["acts_a"]] == ["a2"]
     assert candidate["payload"]["acts_b"] == []
+
+
+def test_an_act_ending_one_pixel_short_of_its_neighbour_is_named_too(
+    submitted, tmp_path, monkeypatch
+):
+    """Merged columns share one edge group; an act within the edge reach is at the
+    edge whether or not it is the lowest."""
+    root, catalogue = _live_run(
+        submitted, tmp_path, "two-column", _pages(_page(*TWO_COLUMN_HEAD), _page(*TWO_COLUMN_TAIL))
+    )
+    left, right = TWO_COLUMN_HEAD
+    _run_designator(
+        root,
+        catalogue,
+        tmp_path,
+        monkeypatch,
+        [
+            _answer(((left, "HEAD"), ({**right, "h": right["h"] - 1}, "HEAD"))),
+            _answer(tuple((bounds, "TAIL") for bounds in TWO_COLUMN_TAIL)),
+        ],
+    )
+    (candidate,) = _candidates(root)
+    rows = _rows(root)
+    assert candidate["payload"]["acts_a"] == _named(rows, "proposal:1:0", "proposal:1:1")
+
+
+class _PublishingContext:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, **record):
+        self.published.append(record)
+
+    def artifact_ref(self, stage, kind, artifact_id):
+        return {"relative_path": f"{kind}/{artifact_id}", "sha256": "0" * 64}
+
+
+def test_a_declared_continuation_drops_only_its_own_act_from_the_pair():
+    """Two acts tie at the edge of one group; the fixture declares only one's
+    continuation, so the other is still named."""
+    thresholds = type("Thresholds", (), {"page_edge_reach_px": 7})()
+    group_a = {"bounds": {"x": 20, "y": 150, "w": 160, "h": 110}, "anchors": []}
+    group_b = {"bounds": {"x": 20, "y": 0, "w": 160, "h": 60}, "anchors": []}
+    analyses = {
+        ordinal: {
+            "structure_evidence": "detected",
+            "groups": [group],
+            "height": 260,
+            "thresholds": thresholds,
+        }
+        for ordinal, group in ((1, group_a), (2, group_b))
+    }
+    acts = {
+        1: [
+            {
+                "act_id": "linked",
+                "act_key": "a1",
+                "bounds": {"x": 20, "y": 150, "w": 80, "h": 110},
+                "linked": True,
+            },
+            {
+                "act_id": "free",
+                "act_key": "a2",
+                "bounds": {"x": 100, "y": 150, "w": 80, "h": 110},
+                "linked": False,
+            },
+        ],
+        2: [],
+    }
+    context = _PublishingContext()
+    designator._publish_continuation_candidates(
+        context,
+        {1: {"subject_id": "p1"}, 2: {"subject_id": "p2"}},
+        analyses,
+        {1: {"relative_path": "s1"}, 2: {"relative_path": "s2"}},
+        acts,
+        {"config_sha256": "0" * 64},
+    )
+    (record,) = context.published
+    assert record["payload"]["acts_a"] == [{"act_id": "free", "act_key": "a2"}]

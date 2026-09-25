@@ -1273,17 +1273,19 @@ def _publish_act_group(
     )
 
 
-def _acts_at_edge(acts: list[dict], group_bounds: dict, *, bottom: bool) -> list[dict]:
-    """The acts over a page-edge group that lie nearest that edge, every tie included."""
+def _acts_at_edge(
+    acts: list[dict], group_bounds: dict, *, reach: int, bottom_of: int | None
+) -> list[dict]:
+    """The acts over a page-edge group whose own edge lies within the page's edge
+    reach, or the nearest to the edge when none does; over-holding is safe."""
     over = [act for act in acts if _overlap_area(act["bounds"], group_bounds)]
-    if bottom:
-        edge = [act["bounds"]["y"] + act["bounds"]["h"] for act in over]
-        nearest = max(edge, default=None)
+    if bottom_of is None:
+        gaps = [act["bounds"]["y"] for act in over]
     else:
-        edge = [act["bounds"]["y"] for act in over]
-        nearest = min(edge, default=None)
+        gaps = [bottom_of - act["bounds"]["y"] - act["bounds"]["h"] for act in over]
+    limit = max(reach, min(gaps, default=0))
     return sorted(
-        (act for act, position in zip(over, edge, strict=True) if position == nearest),
+        (act for act, gap in zip(over, gaps, strict=True) if gap <= limit),
         key=lambda act: act["act_key"],
     )
 
@@ -1299,9 +1301,8 @@ def _publish_continuation_candidates(
     """Name every crossing of an adjacent page break that the geometry shows.
 
     `acts_by_page` holds every page marked out by detection, with its proposed
-    acts (possibly none); `linked` marks an act whose
-    continuation the fixture declares, and a crossing from it is already
-    linked. The record is not authoritative: it enters no act and no seal, and
+    acts (possibly none); `linked` marks an act whose continuation the fixture
+    declares, which is dropped from the head side as already linked. The record is not authoritative: it enters no act and no seal, and
     the Recensor holds every act it names, since a head alone is truncated and
     a tail alone has no heading. Whether they are one act stays unmade here. A
     side with no proposed act over its group is published empty, never
@@ -1326,10 +1327,19 @@ def _publish_continuation_candidates(
         )
         for index, pair in enumerate(pairs):
             group_a, group_b = pair["page_a_group"]["bounds"], pair["page_b_group"]["bounds"]
-            acts_a = _acts_at_edge(acts_by_page[ordinal_a], group_a, bottom=True)
-            if any(act["linked"] for act in acts_a):
+            at_edge = _acts_at_edge(
+                acts_by_page[ordinal_a],
+                group_a,
+                reach=edge_reach_a,
+                bottom_of=analysis_a["height"],
+            )
+            # A declared continuation runs forward, so it links only the head side.
+            acts_a = [act for act in at_edge if not act["linked"]]
+            if at_edge and not acts_a:
                 continue
-            acts_b = _acts_at_edge(acts_by_page[ordinal_b], group_b, bottom=False)
+            acts_b = _acts_at_edge(
+                acts_by_page[ordinal_b], group_b, reach=edge_reach_b, bottom_of=None
+            )
             payload = {
                 "authoritative": False,
                 "page_a": {"page_id": pages[ordinal_a]["subject_id"], "page_ordinal": ordinal_a},
