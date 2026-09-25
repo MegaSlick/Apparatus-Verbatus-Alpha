@@ -23,7 +23,7 @@ from .holdout import HELD_SPLIT, load_holdout, refuse_held_out_page, validate_ho
 
 DESCRIPTION = """The fetcher: one polite `urllib.request` client over a `recordgold-fetch-plan.v1`.
 
-`SPEC.md` §5.1, per identifier: `info.json` once, then the full-resolution image
+Per identifier: `info.json` once, then the full-resolution image
 (`full/full` first, `max` on 400/501, size used recorded per page), decoded
 dimensions verified against `info.json`, EXIF orientation refused if present and
 not `1`, every record's region verified inside the page, and the response bytes
@@ -81,7 +81,7 @@ class FetchRefusal(CorpusRefusal):
     reasons = FETCH_REFUSAL_REASONS | FETCH_RUN_REFUSAL_REASONS | FETCH_LOG_REFUSAL_REASONS
 
 
-# Declares the project and a contact, per `SPEC.md` §5.1's politeness list. A
+# Declares the project and a contact. A
 # real run against a real server should pass a config carrying an operator's own
 # contact; this default names the project so an operator forgetting to override
 # it still identifies the traffic honestly.
@@ -142,7 +142,7 @@ class FetchHalt(Exception):
 
 
 class Http403Stop(FetchHalt):
-    """The server returned 403. `SPEC.md` §5.1: stop the whole run on first 403."""
+    """The server returned 403: stop the whole run on the first one."""
 
 
 class RequestCeilingReached(FetchHalt):
@@ -165,7 +165,7 @@ def _default_clock() -> str:
 class _NoCrossHostRedirect(urllib.request.HTTPRedirectHandler):
     """Refuses a redirect whose target host differs from the request's own host.
 
-    `SPEC.md` §5.1: "no cross-host redirects." Raising here — rather than letting
+    No cross-host redirects. Raising here — rather than letting
     the handler silently follow — is what makes this a refusal instead of a quiet
     hop to a server this fetcher never declared it would talk to.
     """
@@ -229,9 +229,9 @@ def _read_bounded(response: Any, max_bytes: int, expected_length: int | None) ->
     server declared a `Content-Length` — refuses a body whose length disagrees
     with it in either direction. Short: a server or connection that closes
     mid-transfer must not be mistaken for one that finished, or a truncated
-    JPEG would be cached and recorded as a completed fetch (`SPEC.md` §5.1's
-    "an interrupt loses at most one in-flight body" requires the interrupted
-    one to leave no record at all). Long: a proxy or misbehaving origin that
+    JPEG would be cached and recorded as a completed fetch (an interrupt
+    loses at most one in-flight body and leaves no record of it). Long: a proxy or
+    misbehaving origin that
     concatenates bytes past the declared length must not have the overrun
     silently folded into the cached body — a decoder that tolerates trailing
     bytes would hash and store the wrong page without complaint.
@@ -259,7 +259,7 @@ def _read_bounded(response: Any, max_bytes: int, expected_length: int | None) ->
 
 @dataclass
 class FetchConfig:
-    """Every knob `SPEC.md` §5.1's politeness list names, in one place."""
+    """Every politeness knob, in one place."""
 
     cache_root: Path
     info_root: Path
@@ -759,8 +759,8 @@ def run_fetch(
 ) -> RunResult:
     """Fetch every plan page carrying `split`, sequentially, halting the run on `FetchHalt`.
 
-    `SPEC.md` §5.4: the fetcher defaults to `val`; a caller that wants `test`
-    passes `split="test"` explicitly (and, per §5.4, should also pass
+    The fetcher defaults to `val`; a caller that wants `test`
+    passes `split="test"` explicitly (and should also pass
     `enforce_holdout=False` — deliberately fetching the held split is not the
     same mistake as a `val` build accidentally including a held page).
 
@@ -930,11 +930,11 @@ def main(argv: list[str] | None = None) -> RunResult:
 
     `--split test` additionally requires `--release-test-split`, and every other
     `--split` refuses it: deliberately fetching the held-out split is not the
-    same mistake as a `val` or `train` build silently including a held page
-    (`SPEC.md` §5.4 point 2), so releasing it needs a second, explicit flag
-    rather than falling out of `--split` alone, and hold-out enforcement is on
-    for every split but the one the flag deliberately releases. The distinct
-    root §5.4 asks for is simply whichever `--cache-root`/`--info-root`/
+    same mistake as a `val` or `train` build silently including a held page, so
+    releasing it needs a second, explicit flag rather than falling out of `--split`
+    alone, and hold-out enforcement is on
+    for every split but the one the flag deliberately releases. A run's distinct
+    root is simply whichever `--cache-root`/`--info-root`/
     `--output-dir` the operator passes for that run — this module keeps no
     default of its own that would let a `val` and a `test` run collide on one
     directory by accident.

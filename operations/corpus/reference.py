@@ -1,6 +1,6 @@
 """Reference records: RecordGold expert truth, joined to a sealed page.
 
-`SPEC.md` §5.3(a)/(b): RecordGold truth is a *reference* corpus, not a `gold/`
+RecordGold truth is a *reference* corpus, not a `gold/`
 record. `gold/core.py` requires two independently-named human readings and derives
 `outcome` from adjudicating them (`gold/core.py:922-1069`, `:795-811`,
 `:1656-1664`); RecordGold supplies one expert reading, unnamed, from a third
@@ -32,7 +32,7 @@ re-fetch and re-shard, and never accepted where an `act_` identity is expected.
 brief's shorthand for an act -- `{record_id, physical_act_id, region}` -- names
 the fields this module's identities section introduces; it is not a claim that
 `compare.py` can score CER/WER against a checked reference with no text to check
-against. `SPEC.md` Section 5.3(d) requires compare.py to score every matched act
+against. compare.py scores every matched act
 with the existing `normalization.py`/`scoring.py` instruments, and a reference
 record with no text cannot supply that reference string. Carrying `text_sha256`
 alongside `text` mirrors `rows.py`'s own convention and lets a reader verify the
@@ -167,14 +167,14 @@ def build_reference_page(
     `records` is the caller's own per-act facts for this page: each entry is
     `{"record_id": str, "region": {x,y,w,h}, "split": str, "text": str,
     "text_sha256": str}`, in RecordGold's page
-    pixel space (the sealed raster's own coordinate frame — `SPEC.md` §5.1 point
-    3's dimension check is what makes that frame trustworthy). `physical_act_id`
+    pixel space (the sealed raster's own coordinate frame — `fetch.py`'s
+    dimension check is what makes that frame trustworthy). `physical_act_id`
     is minted here, from the physical page identity and each record's own
     `record_id`, never accepted as caller-supplied: a reference record cannot
     silently carry a forged join key.
 
     `split` is the split this reference set is built to serve — the caller's own
-    declared role for this page (`SPEC.md` §5.4's `val`/`test` roles) — and must
+    declared role for this page (`val` or `test`) — and must
     be a split actually present among `records`; `splits_present` is derived from
     the records themselves, not restated by the caller, so a mismatch between the
     two can never enter unnoticed.

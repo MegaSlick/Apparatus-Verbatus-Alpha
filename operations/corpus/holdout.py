@@ -1,6 +1,6 @@
 """The hold-out ledger: which pages and records the `test` split protects.
 
-Built from the row snapshot alone — `SPEC.md` §5.4's strongest mechanism, ahead of
+Built from the row snapshot alone — the strongest hold-out mechanism, ahead of
 "the fetcher defaults to `val`" and "the submission builder refuses by name": an
 identifier ledger derivable before a single byte is fetched, so a page can never
 even be requested under the wrong split by a builder that forgot a flag.
@@ -9,20 +9,20 @@ Every IIIF identifier carrying at least one `test`-split record is *held*.
 `refuse_held_out_page` is the predicate the submission builder calls before
 writing a page into a submission folder — it never returns a reading,
 never picks among candidates, it only says whether a page may proceed, so it
-refuses rather than answers. Two distinct refusals, both closed vocabulary from
-`SPEC.md` §5.1: `holdout-page` for a page that is nothing but held-out material,
+refuses rather than answers. Two distinct refusals: `holdout-page` for a page that is
+nothing but held-out material,
 and the stronger `cross-split-page` for a page that also carries a non-held
-split's records — the case `SPEC.md` §5.4 names explicitly ("a page carrying test
-records cannot be used for calibration without exposing held-out material").
+split's records, since a page carrying test records cannot be used for
+calibration without exposing held-out material.
 
-Measured from the real snapshot (§5.5's "before a byte is fetched" promise): the
+Measured from the real snapshot, before a byte is fetched: the
 three splits are **page-disjoint** in this export — no identifier in `val` or
 `train` also carries a `test` record — so `cross-split-page` never fires against
-real data today. It is still load-bearing, not decorative: `SPEC.md` §6 names the
-disjointness as unverified until measured, and this file's own tests exercise it
+real data today. It is still load-bearing, not decorative: disjointness is a
+measurement of one export, not a guarantee, and this file's own tests exercise it
 against a synthetic cross-split page precisely because the real corpus cannot.
 
-"Append-only" (`SPEC.md` §5.1) means this ledger is only ever *derived*, never
+"Append-only" means this ledger is only ever *derived*, never
 hand-edited: rebuilding it from one row snapshot is deterministic and idempotent
 — the same snapshot always produces byte-identical bytes and the same self-hash —
 and shrinking or growing the hold-out set means producing a new row snapshot, not

@@ -15,9 +15,9 @@ RecordGold's `record_url` is a IIIF Image API 2 crop request, e.g.
     format         jpg
 
 Every field but the region is a closed vocabulary, and this parser refuses
-anything outside it **by name** rather than normalising it — `SPEC.md` §6 records
-this as unverified territory ("the exact `record_url` region semantics beyond the
-one example"), and the measured snapshot proves the caution earned its keep: 40 of
+anything outside it **by name** rather than normalising it — the `record_url`
+region semantics beyond one example were unverified, and the measured snapshot proves
+the caution earned its keep: 40 of
 7,720 rows across `val`/`train` carry `rotation=180`, which this parser refuses
 rather than silently fetching an image whose boxes would not line up with its
 pixels.
@@ -36,7 +36,7 @@ names the collection (`Ardennes`, `Tours`, `Ile de Ré`) but two collections
 identifier path is a page. The identifier's last `/`-segment is the page's own
 filename (`designation`); everything before it is the volume path. Those two,
 joined with the row's `source`, feed `common.contracts.identities.physical_page_id`
-— the `pac_`-ladder anchor `SPEC.md` §5.3(c) requires, because a RecordGold box
+— the `pac_`-ladder anchor, because a RecordGold box
 must never be minted as an `act_*` identity (those bind *originally minted*
 bounds; the Designator will never mint this exact rectangle). `source` is joined
 into the volume string as `f"{source}/{volume}"`, so a `source` carrying its own
@@ -142,8 +142,8 @@ class ParsedRecordUrl(NamedTuple):
 def unsafe_segment(segment: str) -> bool:
     """Whether a decoded identifier path segment is unsafe to carry into a filesystem path.
 
-    `SPEC.md` §5.1 turns `volume`/`designation` directly into a submission path in
-    U3; this parser's contract is to refuse anything it does not recognise rather
+    `volume`/`designation` become a submission path directly in `submission.py`;
+    this parser's contract is to refuse anything it does not recognise rather
     than normalise it, so a traversal or control-character segment is refused here
     rather than passed through.
     """

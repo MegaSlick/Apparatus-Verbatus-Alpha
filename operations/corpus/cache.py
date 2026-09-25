@@ -1,6 +1,6 @@
 """The content-addressed cache and the never-re-fetch request ledger.
 
-`SPEC.md` §5.1 ("Resumable / never re-fetch") is two stores with different keys:
+Resumable, never re-fetching, is two stores with different keys:
 
   cache/<response-sha256>.jpg      the bytes themselves, addressed by their own
                                     digest — two identifiers that return the same
@@ -15,8 +15,8 @@ network call: `load_request_record` returning non-`None` means "do not ask the
 server this question again." The response store is where the answer's bytes
 live; a request record and a response file are written only after a fetch has
 *fully* completed, so a run killed mid-body leaves neither — the request will be
-retried, not silently treated as answered (`SPEC.md` §5.1's "an interrupt loses
-at most one in-flight body").
+retried, not silently treated as answered: an interrupt loses at most one
+in-flight body.
 
 Both writes are atomic creates, never overwrites: `_write_new_file` hard-links a
 completed temp file onto its destination, which raises `FileExistsError`
@@ -65,7 +65,7 @@ class CacheUnusable(CacheRefusal):
     """The cache root itself cannot hold the store — not one page's problem."""
 
 
-# The general request-key formula from `SPEC.md` §5.1 covers every kind of
+# The request-key formula covers every kind of
 # request this package issues, not only image fetches. `info.json` has no
 # region/size/rotation/quality/format of its own, so it fills those fields with
 # the fixed sentinel `"info"` rather than omitting them — one formula, one

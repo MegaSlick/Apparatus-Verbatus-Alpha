@@ -1,6 +1,6 @@
 """The per-page sidecar: `recordgold-page-records.v1`, sealed outside the folder.
 
-`SPEC.md` §5.1 fixes this shape and one hard rule about it: **never store the
+One hard rule binds this shape: **never store the
 submission ordinal.** The join key back to the sealed Exemplar page is
 `page.sha256` — which for a single-frame JPEG on the `admit-or-fan-out` route
 equals the admitted source digest (`pipeline/1_exemplar/CONTRACT.md`) — and that
@@ -12,10 +12,9 @@ what makes "never carries an ordinal" a property this package enforces rather th
 a habit a future edit could quietly break.
 
 This sidecar carries no `physical_act_id` and no comparator-facing identity — that
-ladder (`pac_` identities, §5.3) belongs to U4's `reference.py`, which reads the
+ladder (`pac_` identities) belongs to U4's `reference.py`, which reads the
 fetch plan for it. This file only records what a submission actually sealed: the
-fetched bytes' own facts, and each record's split, region, and expert text, exactly
-as `SPEC.md` §5.1 lists them.
+fetched bytes' own facts, and each record's split, region, and expert text.
 """
 
 from pathlib import Path

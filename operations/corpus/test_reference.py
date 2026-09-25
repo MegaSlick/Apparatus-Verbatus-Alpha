@@ -78,7 +78,7 @@ def test_physical_act_id_matches_the_declared_ladder():
 def test_physical_act_id_never_derived_from_the_box():
     """Two reference pages with the same record_id but different boxes mint one id.
 
-    `SPEC.md` Section 5.3(c): `physical_act_id` binds the declared page and
+    `physical_act_id` binds the declared page and
     `record_id`, never the box. A derivation from the box would produce two
     different ids for what is, by RecordGold's own record_id, one act.
     """

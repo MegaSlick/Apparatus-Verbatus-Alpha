@@ -12,11 +12,10 @@ subclass), it selects nothing about the *reading* (the pipeline already decided
 what it proposed; this only pairs a proposal with a reference box after the
 fact), and it drops nothing on either side: every unmatched reference act is
 reported as a MISS and every unmatched pipeline act is reported, not scored.
-`SPEC.md` Section 5.3(d) names this boundary exactly this way.
 
 `plan.py`'s own `records_per_page_distribution`, measured over the sealed row
 snapshot, is what `MAX_ACTS_PER_PAGE` is set against (1,165 pages, mean 6.59
-records/page, maximum 30) -- not `SPEC.md` Section 5.6's 2.5-3.5 estimate,
+records/page, maximum 30) -- not the earlier 2.5-3.5 estimate,
 which this package had already replaced with a measurement before this cap
 was chosen (see `_best_assignment`).
 
@@ -46,8 +45,8 @@ absurd input rather than silently degrading to an approximation.
 **Scoring.** A matched pair's CER/WER comes from the sealed instruments this
 package does not reimplement: `operations.spike_perlector.normalization`'s
 `graphemic-v1` profile and `operations.spike_perlector.scoring.score_response`.
-This module supplies the reference text (carried on the reference act, `SPEC.md`
-Section 5.3(b)/(d)) and each matched pipeline act's hypothesis text, obtained from
+This module supplies the reference text (carried on the reference act) and each matched
+pipeline act's hypothesis text, obtained from
 a caller-supplied mapping rather than an assumed Perlector artifact shape:
 `compare.py` owns the join and the scoring call, not the Perlector's internal
 kinds, and inventing a read of an unverified internal shape here would be
@@ -360,8 +359,8 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
     """Every sealed Designator proposal region, read-only, grouped with its page sha256.
 
     Only `origin: "proposal"` regions -- a recovery crop's bounds are a Recensor
-    request, not a detected act, and `SPEC.md` Section 5.3(d) is explicit that the
-    matrix runs over "sealed proposal regions." Returns
+    request, not a detected act, and the matrix runs over sealed proposal
+    regions only. Returns
     `[{"act_id", "bounds", "page_sha256"}, ...]`.
 
     This reads a tree it did not produce, so a proposal region's shape is
@@ -694,7 +693,7 @@ def compare_page(
     Every reference act not selected by the assignment is a MISS. Every pipeline
     act not selected is reported, not scored -- `reference_page`'s
     `completeness: "records-only"` means an unmatched pipeline act is not
-    evidence of a false positive (`SPEC.md` Section 5.3(b)). A matched pair
+    evidence of a false positive. A matched pair
     without a supplied hypothesis is refused by name rather than silently scored
     as empty: the caller promised a mapping covering every act it expects
     compare_page to score.

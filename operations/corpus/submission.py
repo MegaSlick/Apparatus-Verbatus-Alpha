@@ -16,14 +16,13 @@ from .sidecar import build_sidecar, write_sidecar
 
 DESCRIPTION = """The submission builder: cached page bytes, hard-linked, sealed, and admitted.
 
-`SPEC.md` §5.2 fixes the shape a Door admission needs and what must never appear
-in it. This module builds that shape from three already-validated artifacts (a
-fetch plan, the row snapshot it was built from, and the hold-out ledger) plus
+This module builds the shape a Door admission needs from three already-validated
+artifacts (a fetch plan, the row snapshot it was built from, and the hold-out ledger) plus
 `FetchedPage`, this module's own locally-defined interface for one
 already-cached page body per IIIF identifier, named by content and never
 re-copied — see its docstring below for why the interface stays local.
 
-**Refusal order, in the sequence §5.2 and §5.4 name:** a page in the hold-out
+**Refusal order:** a page in the hold-out
 ledger is refused by name (`holdout-page` or the stronger `cross-split-page`,
 `holdout.refuse_held_out_page`) before this module ever asks whether the page was
 fetched; a page carrying an unsafe `source`/`volume`/`designation` path segment is
@@ -32,7 +31,7 @@ path; a page naming a record absent from the row snapshot is refused
 `record-not-in-row-snapshot` before any byte of it is written; a page with no
 supplied bytes is refused `page-not-fetched`; two identifiers whose fetched bytes
 are byte-identical are refused `duplicate-page-bytes` on the second occurrence,
-per §5.1's dedupe-before-submit rule — a merged page is unrecoverable at the
+deduplicated before submission — a merged page is unrecoverable at the
 Exemplar boundary (see the Exemplar `CONTRACT.md`'s corpus-seal section), so
 this is the last place it can be caught cheaply — and a page is only
 registered against later duplicates once it
@@ -49,13 +48,13 @@ snapshot.** Each of the three carries (or, for the snapshot, is) a
 `source_row_snapshot_self_hash`/`self_hash`; `build_submission` refuses
 `mismatched-row-snapshot` unless all three agree, because a hold-out ledger
 derived from a different snapshot cannot be trusted to protect this plan's
-held-out pages — §5.4's strongest mechanism is only as strong as the binding
+held-out pages — the strongest hold-out mechanism is only as strong as the binding
 that guarantees it was computed over the same rows.
 
 **The submission folder carries images only, and this is checked, not assumed.**
 `operations/submit/inventory.py` inventories every regular file under a submitted
 folder and `submit.build_manifest` names each one as a submitted source
-(`SPEC.md` §5.1: "the single most likely build mistake"). `refuse_non_image_files`
+(the single most likely build mistake). `refuse_non_image_files`
 is the standing guard against that: it is called on every folder this module
 writes, and it is also the function a caller (or a test) can run against a folder
 someone else has touched, independent of a build.
@@ -65,13 +64,13 @@ root (`sidecars/<shard-id>/...`), never under `submissions/<shard-id>/...` — t
 disjoint trees rather than one tree with a filter, so there is no filename
 convention standing between an accidental sidecar and a refused Door admission.
 
-**Partitioning.** `SPEC.md` §5.2 caps a submission at 1000 pages and names
+**Partitioning.** A submission is capped at 1000 pages, with
 `(split, source, volume)` as the partition key; `content_aware_shards` is
-explicitly not this problem (§4: "Unit 8's, it reasons about triage split pairs
+explicitly not this problem ("Unit 8's, it reasons about triage split pairs
 ... a RecordGold submission has none of"). This module sorts admitted pages by
 that exact key (plus `designation`, for a fully deterministic order) and slices
 the sorted list into shards of at most `max_pages_per_shard` — simple, exact for
-this corpus's page counts (§5.6: val ≈ 225-315 pages, comfortably under the cap
+this corpus's page counts (val ≈ 225-315 pages, comfortably under the cap
 in one shard), and it never invents a triage manifest to get there.
 """
 
@@ -106,8 +105,8 @@ class FetchedPage(NamedTuple):
     """One already-cached page body, named by content — this module's own contract.
 
     `operations/corpus/{fetch,cache}.py` is the tracked producer of the
-    `private/corpora/recordgold/cache/<response-sha256>.jpg` files `SPEC.md`
-    §5.1 lays out, but nothing here reads that cache layout directly: the one
+    `private/corpora/recordgold/cache/<response-sha256>.jpg` files, but nothing here
+    reads that cache layout directly: the one
     fact this module needs from a fetch is a local, already-cached JPEG file
     plus the response metadata `sidecar.build_sidecar`'s `iiif` block requires.
 
@@ -135,7 +134,7 @@ class FetchedPage(NamedTuple):
 def refuse_non_image_files(folder: Path) -> None:
     """Refuse a submission folder that carries anything but `.jpg` regular files.
 
-    `SPEC.md` §5.1: a sidecar or a stray file such as `.DS_Store` left inside the
+    A sidecar or a stray file such as `.DS_Store` left inside the
     submission folder is named by `inventory.py` as a submitted source and the
     Door refuses it `unrecognized-format` — a failure this guard turns into a
     named, pre-submission refusal instead. Every entry is walked without
@@ -176,7 +175,7 @@ def _sort_key(page: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _partition_key(page: dict[str, Any]) -> tuple[Any, ...]:
-    """`(split, source, volume)` — the partition key `SPEC.md` §5.2 names.
+    """`(split, source, volume)` — the partition key.
 
     Deliberately excludes `designation`: that varies per page within a volume and
     would make every "group" exactly one page, defeating partitioning entirely.
@@ -190,8 +189,8 @@ def partition_into_shards(
 ) -> list[list[tuple[dict[str, Any], FetchedPage]]]:
     """Sort admitted pages by `(split, source, volume, designation)` and cap each slice.
 
-    `SPEC.md` §5.2's `<=1000 pages` is the sealed cap (`common/stage.py`) and names
-    `(split, source, volume)` as the partition key: a shard boundary never crosses
+    `<=1000 pages` is the sealed cap (`common/stage.py`) and
+    `(split, source, volume)` the partition key: a shard boundary never crosses
     that group, so every shard carries pages from exactly one split and one
     source. Within a group this is a plain slice of the deterministically sorted
     list, not a bin-packing search — exact for page counts far below the cap.
@@ -528,7 +527,7 @@ def build_submission(
     if nested_by_identity or nested_by_spelling:
         raise SubmissionRefusal(
             "malformed-record: the sidecars root must not be the submissions root or nest "
-            "inside it — SPEC.md 5.1 requires sidecars outside the submission folder"
+            "inside it — sidecars live outside the submission folder"
         )
 
     admitted, refusals = _admit_pages(plan, holdout, fetched_pages, rows_by_id)

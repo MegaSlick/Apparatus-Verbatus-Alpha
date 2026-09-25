@@ -1,7 +1,7 @@
 """The row snapshot: the three RecordGold parquets, once, as canonical JSON.
 
-`pyproject.toml` carries no parquet reader (recorded decision, `SPEC.md` §4:
-"a 40 MB compiled runtime dependency to read 1.9 MB of metadata once"). A one-shot
+`pyproject.toml` carries no parquet reader: a 40 MB compiled runtime dependency
+to read 1.9 MB of metadata once. A one-shot
 scratch converter outside this repository reads the parquets with a throwaway
 `pyarrow` environment and calls `build_snapshot` here to write the sealed JSON this
 package actually depends on. Everything downstream — `plan.py`, `holdout.py`, and
@@ -105,7 +105,7 @@ def validate_row(row: Any, index: int) -> dict[str, Any]:
     for field in ("start_date", "end_date"):
         value = row[field]
         # The parquet carries these as years (int64), not date strings — measured
-        # 1548-1806 (SPEC.md's intake notes). Booleans are ints in Python and are
+        # 1548-1806. Booleans are ints in Python and are
         # refused explicitly so a stray flag can never pass as a year.
         if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
             raise RowRefusal(
