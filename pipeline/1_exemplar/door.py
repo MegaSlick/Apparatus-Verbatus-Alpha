@@ -1110,42 +1110,7 @@ def process_sources(
                     "source_sha256": actual_digest,
                 }
             seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
-            _, published = tree.put_blob(DOOR, decision.store_bytes)
-            inputs = [context.input_ref(published.relative_path)]
-            extra: dict[str, Any] = {
-                "sha256": decision.digest,
-                # The submitted file's digest; differs from `sha256` only for a
-                # rendered page. Duplicate accounting groups on it because every
-                # admission has one.
-                "admitted_source_sha256": actual_digest,
-                "stored_at": published.relative_path,
-                "geometry": {"width": decision.geometry[0], "height": decision.geometry[1]},
-            }
-            if decision.rendered_from is not None:
-                extra["rendered_from"] = decision.rendered_from
-            if source.triage_row is not None:
-                # The master must remain addressable independently so the sealed
-                # derivative can be re-applied from its exact source bytes.
-                assert data is not None
-                _, parent = tree.put_blob(DOOR, data)
-                extra["parent_frame"] = {
-                    "sha256": actual_digest,
-                    "stored_at": parent.relative_path,
-                    "source_frame_index": source.source_frame_index or 0,
-                }
-                # A no-op `keep` over a deterministic PNG makes derivative and
-                # master one blob; envelope inputs may not repeat.
-                if parent.relative_path != published.relative_path:
-                    inputs.append(context.input_ref(parent.relative_path))
-            if duplicate_of is not None:
-                extra["duplicate_of"] = duplicate_of
-            _publish(
-                context,
-                source,
-                outcome="admitted",
-                payload_extra=extra,
-                inputs=inputs,
-            )
+            _publish_admission(context, tree, source, decision, data, actual_digest, duplicate_of)
             admitted += 1
     except BaseException as primary:
         # Cleanup must not replace a refusal already in flight; its failure
@@ -1159,6 +1124,47 @@ def process_sources(
         close_active_pdf()
 
     return admitted
+
+
+def _publish_admission(
+    context: StageContext,
+    tree: RunTree,
+    source: SourceEntry,
+    decision: _Decision,
+    data: bytes | None,
+    actual_digest: str,
+    duplicate_of: dict[str, Any] | None,
+) -> None:
+    _, published = tree.put_blob(DOOR, decision.store_bytes)
+    inputs = [context.input_ref(published.relative_path)]
+    extra: dict[str, Any] = {
+        "sha256": decision.digest,
+        # The submitted file's digest; differs from `sha256` only for a
+        # rendered page. Duplicate accounting groups on it because every
+        # admission has one.
+        "admitted_source_sha256": actual_digest,
+        "stored_at": published.relative_path,
+        "geometry": {"width": decision.geometry[0], "height": decision.geometry[1]},
+    }
+    if decision.rendered_from is not None:
+        extra["rendered_from"] = decision.rendered_from
+    if source.triage_row is not None:
+        # The master must remain addressable independently so the sealed
+        # derivative can be re-applied from its exact source bytes.
+        assert data is not None
+        _, parent = tree.put_blob(DOOR, data)
+        extra["parent_frame"] = {
+            "sha256": actual_digest,
+            "stored_at": parent.relative_path,
+            "source_frame_index": source.source_frame_index or 0,
+        }
+        # A no-op `keep` over a deterministic PNG makes derivative and
+        # master one blob; envelope inputs may not repeat.
+        if parent.relative_path != published.relative_path:
+            inputs.append(context.input_ref(parent.relative_path))
+    if duplicate_of is not None:
+        extra["duplicate_of"] = duplicate_of
+    _publish(context, source, outcome="admitted", payload_extra=extra, inputs=inputs)
 
 
 def _source_mismatch(source: SourceEntry, actual_digest: str, actual_size: int) -> str | None:
