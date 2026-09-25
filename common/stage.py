@@ -35,8 +35,14 @@ from common.chandra_presentation import (
     STRUCTURE_REQUEST_IMAGE_SCHEMA,
 )
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record
-from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, verify_self_hash
-from common.contracts.envelope import build_envelope, verify_input_bytes
+from common.contracts.canonical import (
+    canonical_bytes,
+    digest_bytes,
+    digest_of,
+    is_plain_int,
+    verify_self_hash,
+)
+from common.contracts.envelope import build_envelope, digest_ref, verify_input_bytes
 from common.contracts.errors import (
     ContractError,
     FatalAccounting,
@@ -49,7 +55,6 @@ from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import (
     BOUNDARY_OUTCOMES,
-    _is_int,
     classify,
 )
 from common.contracts.outcomes import (
@@ -191,7 +196,7 @@ def _validate_triage_modes_config(raw: bytes, path: str | Path) -> None:
     if set(record) != set(TRIAGE_MODES) or any(
         not isinstance(policy, dict)
         or set(policy) != {"review_at_or_below_confidence"}
-        or not _is_int(policy["review_at_or_below_confidence"])
+        or not is_plain_int(policy["review_at_or_below_confidence"])
         or not 0 <= policy["review_at_or_below_confidence"] <= 4
         for policy in record.values()
     ):
@@ -1295,26 +1300,9 @@ def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> lis
 
 
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
-    """Validate a content-addressed reference before sealing it into evidence.
-
-    A string-shape check only; containment (including symlinks) is
-    ``RunTree.resolve()``'s job when the path is read.
-    """
-
-    if not isinstance(value, Mapping) or set(value) != {"relative_path", "sha256"}:
-        raise SchemaRefusal(f"serving evidence {label} reference has unknown or missing fields")
-    relative_path = value["relative_path"]
-    digest = value["sha256"]
-    if (
-        not isinstance(relative_path, str)
-        or not relative_path
-        or relative_path.startswith("/")
-        or ".." in relative_path.split("/")
-        or not isinstance(digest, str)
-        or not is_sha256(digest)
-    ):
-        raise SchemaRefusal(f"serving evidence {label} reference is malformed")
-    return {"relative_path": relative_path, "sha256": digest}
+    """A string-shape check only; containment (including symlinks) is
+    ``RunTree.resolve()``'s job when the path is read."""
+    return digest_ref(value, f"serving evidence {label} reference")
 
 
 def _serving_config_inputs(value: object, label: str) -> dict[str, str]:
@@ -1586,7 +1574,7 @@ def validate_witness_context_bindings(
 
 
 def _require_sampling_knobs(name: str, per_mille: Any, maximum: int, approval_ref: Any) -> None:
-    if not _is_int(per_mille) or not 0 <= per_mille <= maximum:
+    if not is_plain_int(per_mille) or not 0 <= per_mille <= maximum:
         raise ContractError(
             f"{name}_per_mille must be an integer in [0, {maximum}], got {per_mille!r}"
         )
@@ -1905,7 +1893,7 @@ def load_corpus_frame_policy(path: str | Path) -> tuple[dict[str, int], str]:
     if set(record) != {"max_pages_per_shard"}:
         raise ContractError("corpus-frame shard configuration has the wrong closed schema")
     limit = record["max_pages_per_shard"]
-    if not _is_int(limit) or not 1 <= limit <= 1000:
+    if not is_plain_int(limit) or not 1 <= limit <= 1000:
         raise ContractError("corpus-frame max_pages_per_shard must be an integer in [1, 1000]")
     return {"max_pages_per_shard": limit}, digest_bytes(raw)
 
@@ -2260,7 +2248,7 @@ def expected_acts(context) -> list[dict[str, Any]]:
     count = payload.get("count")
     if not isinstance(acts, list) or not acts:
         raise FatalAccounting("the Designator proposal seal names no expected acts")
-    if not _is_int(count) or count != len(acts):
+    if not is_plain_int(count) or count != len(acts):
         raise FatalAccounting(
             "the Designator proposal seal count does not reconcile with its expected-act rows"
         )
@@ -2276,7 +2264,7 @@ def expected_acts(context) -> list[dict[str, Any]]:
             )
         if (
             any(not isinstance(act[name], str) or not act[name] for name in _EXPECTED_ACT_NAMES)
-            or not _is_int(act["page_ordinal"])
+            or not is_plain_int(act["page_ordinal"])
             or not isinstance(act["has_continuation"], bool)
             or not isinstance(act["evidence"], list)
         ):
@@ -2486,9 +2474,9 @@ def _verify_structure_attempt_chain(
         not isinstance(policy, Mapping)
         or set(policy) != {"max_attempts", "seed_schedule"}
         or policy.get("seed_schedule") not in {"fixed-base", "base-plus-attempt-ordinal-minus-one"}
-        or not _is_int(policy.get("max_attempts"))
+        or not is_plain_int(policy.get("max_attempts"))
         or not 1 <= policy["max_attempts"] <= 3
-        or not _is_int(ordinal)
+        or not is_plain_int(ordinal)
         or not isinstance(references, list)
         or len(references) != ordinal
         or not 1 <= ordinal <= policy.get("max_attempts", 0)
@@ -2544,7 +2532,7 @@ def _verify_structure_attempt_chain(
             or attempt.get("attempt_ordinal") != expected_ordinal
             or attempt.get("attempt_policy") != policy
             or attempt.get("attempts") != prior
-            or not _is_int(attempt.get("attempt_seed"))
+            or not is_plain_int(attempt.get("attempt_seed"))
             or attempt.get("decoding") != payload.get("decoding")
         ):
             raise FatalAccounting(
@@ -2894,7 +2882,7 @@ def verify_structure_attempt_call(
         or (
             schema == CHAIR_CALL_RECORD_SCHEMA
             and (
-                not _is_int(call.get("response_status"))
+                not is_plain_int(call.get("response_status"))
                 or not 100 <= call["response_status"] <= 599
             )
         )
@@ -3307,7 +3295,7 @@ def sealed_residual_presentation_policy(context) -> dict[str, int]:
     )
     names = ("residual_aggregate_max_pixel_count", "residual_aggregate_max_area_px")
     if set(table) != set(names) | {"provenance"} or any(
-        not _is_int(table.get(name)) or table[name] < 0 for name in names
+        not is_plain_int(table.get(name)) or table[name] < 0 for name in names
     ):
         raise FatalAccounting(
             "the sealed Designator residual presentation policy is not the closed pair of "
@@ -3354,7 +3342,7 @@ def _verify_residual_component_partition(
         )
     policy = sealed_residual_presentation_policy(context)
     if any(
-        not _is_int(payload.get(name)) or payload.get(name) != value
+        not is_plain_int(payload.get(name)) or payload.get(name) != value
         for name, value in policy.items()
     ):
         raise FatalAccounting(
@@ -3384,7 +3372,7 @@ def _verify_residual_component_partition(
             if (
                 not isinstance(bounds, Mapping)
                 or set(bounds) != {"x", "y", "w", "h"}
-                or any(not _is_int(bounds[k]) for k in bounds)
+                or any(not is_plain_int(bounds[k]) for k in bounds)
                 or bounds["x"] < 0
                 or bounds["y"] < 0
                 or bounds["w"] <= 0
@@ -3856,7 +3844,7 @@ def _payload_of(record: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _is_count(value: Any) -> bool:
-    return _is_int(value) and value >= 0
+    return is_plain_int(value) and value >= 0
 
 
 def _verify_residual_traces_to_conservation(
@@ -4238,7 +4226,7 @@ def exemplar_page_ids(context) -> dict[int, str]:
         page = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
         payload = page.get("payload")
         ordinal = payload.get("ordinal") if isinstance(payload, Mapping) else None
-        if not _is_int(ordinal):
+        if not is_plain_int(ordinal):
             raise FatalAccounting(
                 f"Exemplar page {page.get('artifact_id')!r} has no integer ordinal, so it "
                 "cannot be matched to one submitted source"
@@ -4319,7 +4307,7 @@ def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) 
     ordinals: dict[int, str] = {}
     for record in records:
         ordinal = record.get("payload", {}).get("attempt_ordinal")
-        if not _is_int(ordinal):
+        if not is_plain_int(ordinal):
             raise FatalAccounting(
                 f"a {what} artifact carries no attempt ordinal, so which attempt is "
                 "current cannot be derived. A guess here silently picks a stale record"
@@ -4385,7 +4373,7 @@ def current_recovery_request(
         or request_ref not in review.get("inputs", [])
         or not isinstance(reading_ref, dict)
         or reading_ref not in review.get("inputs", [])
-        or not _is_int(ordinal)
+        or not is_plain_int(ordinal)
         or review_payload.get("recovery_policy") != recovery_policy
     ):
         raise ContractError(

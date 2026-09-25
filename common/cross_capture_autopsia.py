@@ -11,7 +11,8 @@ import copy
 import unicodedata
 from typing import Any, Callable, Final
 
-from common.contracts.canonical import digest_bytes, digest_of, is_sha256
+from common.contracts.canonical import digest_bytes, digest_of, is_sha256, walk_dicts
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 from common.physical_act_partition import source_ledger_from_run
 
@@ -55,20 +56,7 @@ def _is_printable_nfc(value: str) -> bool:
 
 
 def _ref(value: Any, what: str) -> dict[str, str]:
-    if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
-        raise SchemaRefusal(f"cross-capture autopsia: {what} is not a digest-bound reference")
-    path = value["relative_path"]
-    if not isinstance(path, str) or not path:
-        raise SchemaRefusal(f"cross-capture autopsia: {what} has no path")
-    # Same containment idiom as `common/contracts/envelope.py::validate_input_refs`
-    # and `common/runtree/store.py::RunTree.resolve`: a reference is relative to
-    # the run root, and this schema is the boundary that seals it -- a caller
-    # downstream trusting this shape as already-checked must not be the first
-    # place a traversal path is actually refused.
-    if path.startswith("/") or ".." in path.split("/"):
-        raise SchemaRefusal(f"cross-capture autopsia: {what} path {path!r} escapes the run tree")
-    _sha(value["sha256"], f"{what} sha256")
-    return dict(value)
+    return digest_ref(value, f"cross-capture autopsia: {what}")
 
 
 def _ref_list(value: Any, what: str) -> list[dict[str, str]]:
@@ -82,43 +70,20 @@ def _ref_list(value: Any, what: str) -> list[dict[str, str]]:
 def _reject_preference(value: Any) -> None:
     """Refuse a nested capture-preference claim anywhere in an untrusted payload.
 
-    Iterative and cycle-aware, like `corpus_register.refuse_capture_preference`:
-    this runs ahead of any shape check on arbitrary caller input (in-memory
-    lists, not a parsed document), so depth is this walk's own list rather than
-    the interpreter stack, and a self-referential value is refused rather than
-    hung on forever. Only containers open on the current path are tracked, so a
-    view object genuinely shared between two entries stays permitted -- it is
-    refused later, by name, as a duplicate capture rather than here as a loop.
+    Runs ahead of any shape check on in-memory caller input; a view object
+    shared between two entries is refused later, by name, as a duplicate
+    capture rather than here as a loop.
     """
-    pending: list[tuple[str, Any]] = [("value", value)]
-    open_path: set[int] = set()
-    while pending:
-        kind, current = pending.pop()
-        if kind == "exit":
-            open_path.discard(current)
-            continue
-        if isinstance(current, (dict, list, tuple)):
-            marker = id(current)
-            if marker in open_path:
-                raise SchemaRefusal(
-                    "cross-capture autopsia: a presentation contains itself, so no sweep "
-                    "of it can terminate and a preference field below the loop could "
-                    "never be found; the presentation is refused"
-                )
-            open_path.add(marker)
-            pending.append(("exit", marker))
-        if isinstance(current, dict):
-            for key, item in current.items():
-                lowered = str(key).lower()
-                if any(fragment in lowered for fragment in _FORBIDDEN):
-                    raise SchemaRefusal(
-                        f"cross-capture autopsia: forbidden preference field {key!r}"
-                    )
-                pending.append(("value", item))
-        elif isinstance(current, (list, tuple)):
-            # A tuple serializes exactly like a list through `canonical_bytes`,
-            # so it must be walked the same way here too.
-            pending.extend(("value", item) for item in current)
+    cycle = (
+        "cross-capture autopsia: a presentation contains itself, so no sweep "
+        "of it can terminate and a preference field below the loop could "
+        "never be found; the presentation is refused"
+    )
+    for record in walk_dicts(value, cycle):
+        for key in record:
+            lowered = str(key).lower()
+            if any(fragment in lowered for fragment in _FORBIDDEN):
+                raise SchemaRefusal(f"cross-capture autopsia: forbidden preference field {key!r}")
 
 
 def _view(row: Any) -> dict[str, Any]:

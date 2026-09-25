@@ -27,6 +27,7 @@ import json
 from typing import Any
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
+from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import DESIGNATOR, writing_directory
 from common.runtree.store import BLOBS_DIR
@@ -52,11 +53,10 @@ def _sha(value: Any, what: str) -> str:
 
 def custody_reference(value: object, prefix: str, what: str) -> dict[str, str]:
     """A closed digest reference that must name the given custody root."""
-    if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
-        raise SchemaRefusal(f"{what} is not its closed schema")
-    if not isinstance(value["relative_path"], str) or not value["relative_path"].startswith(prefix):
+    reference = digest_ref(value, what)
+    if not reference["relative_path"].startswith(prefix):
         raise SchemaRefusal(f"{what} does not name {prefix}")
-    return {"relative_path": value["relative_path"], "sha256": _sha(value["sha256"], what)}
+    return reference
 
 
 def retain_chandra_response(

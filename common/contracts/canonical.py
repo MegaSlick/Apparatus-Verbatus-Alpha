@@ -26,7 +26,10 @@ loud one instead.
 
 import hashlib
 import json
+from collections.abc import Iterator
 from typing import Any
+
+from .errors import SchemaRefusal
 
 # v1 envelopes carry the attempt binding and a self-hash, so a v0 run is not
 # reusable under them.
@@ -218,6 +221,39 @@ def canonical_text(value: Any) -> str:
 def digest_bytes(data: bytes) -> str:
     """The digest of raw bytes — an image, a blob, a file already on disk."""
     return hashlib.sha256(data).hexdigest()
+
+
+def walk_dicts(value: Any, cycle_refusal: str) -> Iterator[dict]:
+    """Yield every dict nested in `value` through dicts, lists and tuples.
+
+    Iterative, so depth costs this worklist and never the interpreter stack.
+    Only containers open on the current path are tracked: a value shared
+    between siblings is walked at each position, and an ancestor reached again
+    is refused with `cycle_refusal` rather than walked forever.
+    """
+    pending: list[tuple[bool, Any]] = [(False, value)]
+    open_path: set[int] = set()
+    while pending:
+        exiting, current = pending.pop()
+        if exiting:
+            open_path.discard(current)
+            continue
+        if not isinstance(current, (dict, list, tuple)):
+            continue
+        marker = id(current)
+        if marker in open_path:
+            raise SchemaRefusal(cycle_refusal)
+        open_path.add(marker)
+        pending.append((True, marker))
+        if isinstance(current, dict):
+            yield current
+            current = current.values()
+        pending.extend((False, item) for item in current)
+
+
+def is_plain_int(value: Any) -> bool:
+    """An `int` that is not a `bool`, which `isinstance` alone would admit."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def is_sha256(value: Any) -> bool:

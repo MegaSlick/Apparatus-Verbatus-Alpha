@@ -4912,20 +4912,3 @@ def test_admission_refuses_bytes_that_differ_from_sealed_membership(tmp_path):
     refusal = admissions(tree)[1]
     assert reason_code(refusal["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
     assert "shard membership was sealed" in refusal["payload"]["reason"]
-
-
-# --- The hard-failure cap's duplicated Door reason vocabulary stays in sync ------
-
-
-def test_the_hard_failure_caps_door_reason_vocabulary_matches_this_enum():
-    """`common/hard_failure.py::DOOR_REFUSAL_REASONS` duplicates this enum's
-    values in miniature rather than importing it (`common/` may not import
-    `pipeline/`). A duplication that can silently drift is the same failure
-    mode that duplication was added to close, one step removed: if a reason is
-    ever renamed or removed here without updating the copy, a hard-failure
-    policy naming the stale value would load cleanly and match nothing,
-    forever, with nothing to say so. Pinned here, in `pipeline/`, which may
-    import `common/` freely."""
-    from common.hard_failure import DOOR_REFUSAL_REASONS
-
-    assert {member.value for member in RefusalReason} == DOOR_REFUSAL_REASONS

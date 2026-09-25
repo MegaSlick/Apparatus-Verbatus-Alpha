@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from common.contracts.canonical import is_plain_int
 from common.contracts.errors import SchemaRefusal
 
 _BASE_FIELDS = frozenset(
@@ -14,7 +15,7 @@ _RANGE_FIELDS = frozenset({"start", "end"})
 
 
 def _plain_non_negative_integer(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return is_plain_int(value) and value >= 0
 
 
 def _validate_chair_measurement(role: object, measurement: object) -> int:

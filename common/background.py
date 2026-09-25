@@ -23,7 +23,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, is_plain_int
 from common.contracts.errors import ContractError
 
 # Fraction points below a page's inferred background value, deducted from it to
@@ -38,6 +38,14 @@ from common.contracts.errors import ContractError
 # `common/test_designator_recensor_ink_calibration.py` reads it as a source
 # literal against the sealed `max_ink_bp` measured at this level.
 PRIMARY_MARGIN: Final = 20
+
+# Deliberately not derived or configured: a fixed 2 below background is
+# smaller than any derived margin, so the Designator's secondary scan and
+# conservation, and the Perlector's page-fallback reader, are strictly more
+# sensitive than the primary scan on every page, never the reverse. A derived
+# value could invert that on some page, trading a visible over-count for a
+# possible silent loss.
+SECONDARY_MARGIN: Final = 2
 
 # The denominator of every basis-point fraction this module is handed. The
 # sealed policy states its fractions in the same basis points
@@ -231,7 +239,6 @@ def _dark_distribution(
         # `translate`. The histogram loop above iterates any sequence of ints,
         # so a caller handing this module a list-of-lists page gets that far and
         # then dies with a message naming neither the scanline nor the reason.
-        # `conservation._unit_ink_runs` guards the same assumption the same way.
         if not isinstance(row, (bytes, bytearray)):
             raise ContractError(f"scanline {y} is not grayscale bytes")
         interior_dark += row[band_x : width - band_x].translate(table).count(1)
@@ -463,7 +470,7 @@ def infer_background(
 
 
 #: Names this policy refuses wherever they appear: `PRIMARY_MARGIN` and
-#: `structure.SECONDARY_MARGIN`, absolute 8-bit offsets an AST pin in
+#: `SECONDARY_MARGIN`, absolute 8-bit offsets an AST pin in
 #: `common/test_designator_recensor_ink_calibration.py` reads as source
 #: literals, which a per-run config value would make unenforceable statically.
 FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
@@ -491,7 +498,7 @@ def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
             f"{sorted(fields)}, got {sorted(payload)}"
         )
     ordinal = payload["page_ordinal"]
-    if not _plain_int(ordinal) or ordinal <= 0:
+    if not is_plain_int(ordinal) or ordinal <= 0:
         raise ContractError(
             "the ink-not-measurable payload page_ordinal is not a positive plain integer"
         )
@@ -533,7 +540,7 @@ def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> d
             "page_ordinal, ink_measurable, background, ink, edge, and edge_findings"
         )
     ordinal = payload["page_ordinal"]
-    if not _plain_int(ordinal) or ordinal <= 0:
+    if not is_plain_int(ordinal) or ordinal <= 0:
         raise ContractError(
             "the measured ink-map payload page_ordinal is not a positive plain integer"
         )
@@ -564,7 +571,7 @@ def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> d
         "contrast_below_background",
         "ink_threshold",
     ):
-        if not _plain_int(background[field]):
+        if not is_plain_int(background[field]):
             raise ContractError(f"the measured ink-map background {field} is not a plain integer")
     if not 0 <= background["background_level"] <= 255 or not 0 <= background["dark_mode"] <= 255:
         raise ContractError("the measured ink-map background levels are outside 8-bit range")
@@ -591,18 +598,6 @@ def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> d
             "the measured ink-map background config_sha256 is not lowercase SHA-256 hex"
         )
     return {"page_ordinal": ordinal, "background_config_sha256": digest}
-
-
-def _plain_int(value: Any) -> bool:
-    """An `int` that is not a `bool`.
-
-    `bool` is an `int` subclass, so an unqualified `isinstance` reads `True` as
-    the basis point `1`. A fifth copy of this two-line predicate rather than an
-    import: `geometry`, `grouping.py`, `conservation.py` and
-    `pipeline/0_triage/manifest.py` each own theirs for the same reason this
-    module owns this one -- `common/` may not import a stage.
-    """
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def round_half_up_bp(dimension: int, bp: int) -> int:
@@ -671,7 +666,7 @@ def validate_background_table(
         raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
     values = {name: table[name] for name in BACKGROUND_BP_FIELDS}
     for name in ("max_interior_dark_bp", "max_ink_bp"):
-        if not _plain_int(values[name]) or not 0 <= values[name] <= BASIS_POINTS:
+        if not is_plain_int(values[name]) or not 0 <= values[name] <= BASIS_POINTS:
             raise ContractError(
                 f"the grouping configuration's {where} {name} is not a basis-point "
                 f"integer in 0..{BASIS_POINTS}"
@@ -682,7 +677,7 @@ def validate_background_table(
     # stays under 5000. Zero is refused because it derives no margin at all,
     # leaving every page on the floor.
     if (
-        not _plain_int(values["ink_margin_bp"])
+        not is_plain_int(values["ink_margin_bp"])
         or not 0 < values["ink_margin_bp"] < BASIS_POINTS // 2
     ):
         raise ContractError(
@@ -693,7 +688,7 @@ def validate_background_table(
             "measures at, where that test's two dark counts stop being subsets of the ink "
             "they are published as fractions of"
         )
-    if not _plain_int(values["band_bp"]) or not 0 < values["band_bp"] < BASIS_POINTS // 2:
+    if not is_plain_int(values["band_bp"]) or not 0 < values["band_bp"] < BASIS_POINTS // 2:
         raise ContractError(
             f"the grouping configuration's {where} band_bp is not a basis-point "
             f"integer strictly between 0 and {BASIS_POINTS // 2}; a band of zero has no "
@@ -759,7 +754,7 @@ def resolve_background_policy(config: dict[str, Any], width: int, height: int) -
     `load_background_config` result, since both carry the sealed block under
     `background` -- which is what keeps one resolver for three stages.
     """
-    if not _plain_int(width) or not _plain_int(height) or width <= 0 or height <= 0:
+    if not is_plain_int(width) or not is_plain_int(height) or width <= 0 or height <= 0:
         raise ContractError(f"page {width}x{height} does not have positive integer dimensions")
     background = config["background"]
     return {

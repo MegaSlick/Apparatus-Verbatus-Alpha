@@ -28,6 +28,7 @@ from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Any, Final
 
+from .canonical import is_plain_int
 from .errors import ApprovalRefusal, FatalAccounting, SchemaRefusal
 from .stages import (
     ARCHETYPUS,
@@ -128,7 +129,7 @@ def anchor_line_located(alignment: Any) -> bool:
     if not isinstance(span, Mapping):
         return False
     start, end = span.get("start"), span.get("end")
-    if not all(_is_int(bound) for bound in (start, end)):
+    if not all(is_plain_int(bound) for bound in (start, end)):
         return False
     if end <= start:
         return False
@@ -138,16 +139,12 @@ def anchor_line_located(alignment: Any) -> bool:
     anchor_characters = match.get("anchor_characters")
     matched = match.get("matched_characters")
     longest = match.get("longest_matched_run")
-    if not all(_is_int(value) for value in (anchor_characters, matched, longest)):
+    if not all(is_plain_int(value) for value in (anchor_characters, matched, longest)):
         return False
     # An incoherent measurement refuses rather than clamps.
     if not 0 <= longest <= matched <= anchor_characters or anchor_characters <= 0:
         return False
     return longest >= min(ANCHOR_LINE_RUN_FLOOR, anchor_characters)
-
-
-def _is_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: Any) -> str:

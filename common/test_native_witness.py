@@ -586,7 +586,7 @@ def test_page_retained_response_digest_is_lowercase_hex():
         "relative_path": "3_attestatores/blobs/sha256/" + "z" * 64,
         "sha256": "z" * 64,
     }
-    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+    with pytest.raises(SchemaRefusal, match="sha256 is not a lowercase sha256"):
         validate_retained_response_refs({"raw_response_refs": [reference]})
 
 
@@ -600,7 +600,7 @@ def test_page_retained_response_digest_shape_is_the_module_wide_one():
     """
     digest = "A" * 64
     reference = {"relative_path": f"3_attestatores/blobs/sha256/{digest}", "sha256": digest}
-    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+    with pytest.raises(SchemaRefusal, match="sha256 is not a lowercase sha256"):
         validate_retained_response_refs({"raw_response_refs": [reference]})
 
 
@@ -722,7 +722,7 @@ def _page_with_churro_capture() -> dict:
             lambda value: value["native_capture"]["raw_response_ref"].update(
                 relative_path=f"3_attestatores/blobs/sha256/{'A' * 64}", sha256="A" * 64
             ),
-            "invalid raw-response reference",
+            "sha256 is not a lowercase sha256",
         ),
         (
             lambda value: value["native_capture"].update(schema="attestatores-model-view.v9"),
@@ -1385,14 +1385,14 @@ def test_native_capture_refuses_a_raw_response_reference_that_is_not_a_real_sha2
     """
     value = _native_capture()
     value["raw_response_ref"]["sha256"] = sha256
-    with pytest.raises(SchemaRefusal, match="invalid raw-response reference"):
+    with pytest.raises(SchemaRefusal, match="sha256 is not a lowercase sha256"):
         validate_native_capture(value)
 
 
 def test_native_capture_refuses_a_blank_relative_path():
     value = _native_capture()
     value["raw_response_ref"]["relative_path"] = ""
-    with pytest.raises(SchemaRefusal, match="invalid raw-response reference"):
+    with pytest.raises(SchemaRefusal, match="has no relative_path"):
         validate_native_capture(value)
 
 

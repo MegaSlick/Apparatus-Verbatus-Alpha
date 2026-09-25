@@ -1910,8 +1910,8 @@ claimed-aware residual labeling pass rather than a change to the shared
 `label_components` that `structure.py`'s own full-page scan also depends on
 and has no notion of "claimed" to give — a change worth its own design and
 test pass. Named here rather than fixed quietly or left undiscovered. (Both
-sides of that shared adjacency are run-oriented — `conservation._components` and
-`structure.label_components` — and both are checked against the retired
+sides of that shared adjacency label runs through one function,
+`common.components.label_component_runs`, and both are checked against the retired
 pixel-set labeller, `structure._label_components_reference`. The defect
 described above is unchanged by that substitution: it is a property of the
 adjacency rule, not of how the rule is computed.)
@@ -1985,18 +1985,16 @@ bit-identically to its retired constant on the 200×260 fixture pages, so no
 fixture geometry changed. Three are bare counts: `max_residual_components`,
 `max_secondary_proposals` and `fallback_bands`.
 
-Two do **not** move and never will. `structure.PRIMARY_MARGIN` and
-`SECONDARY_MARGIN` are *absolute* 8-bit ink-intensity offsets, not geometry;
-`common/test_designator_recensor_ink_calibration.py` is an AST pin that reads
-`SECONDARY_MARGIN` as a source literal and cross-checks it against the
-Recensor's own contrast constant, and a per-run value would make that
+Two do **not** move and never will. `PRIMARY_MARGIN` and `SECONDARY_MARGIN`
+(both in `common/background.py`) are *absolute* 8-bit ink-intensity offsets, not
+geometry; `common/test_designator_recensor_ink_calibration.py` cross-checks
+`SECONDARY_MARGIN` against the Recensor's own contrast constant, and a per-run value would make that
 cross-stage invariant unenforceable statically. The config's closed schema
 refuses both names wherever they are written. What the config *does* carry, since
 the ink margin became a per-page derivation, is `[grouping.background]
 ink_margin_bp` — a fraction of the distance between a page's own two grey-level
 population modes, not an offset, which is why it can be sealed while those two
-cannot. `SECONDARY_MARGIN` is not derived from it and the pin still compares two
-literals.
+cannot. `SECONDARY_MARGIN` is not derived from it.
 
 **`gap_tolerance_px` stays absolute at 3, and must never be scaled — do not
 "fix" this by reflex.** It is a stroke-connectivity radius, not a page-layout

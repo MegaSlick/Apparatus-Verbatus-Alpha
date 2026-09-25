@@ -23,22 +23,20 @@ deliberate two-sided change.
 Ink is tracked as runs and active claimed rectangles rather than per-pixel
 sets, keeping memory O(page pixels + ink runs) instead of O(ink pixels); the
 retired pixel-set implementation is kept in `test_conservation.py` as the
-oracle this one is checked against. Connectivity labelling here (`_components`)
-is separate from `structure.label_components` because the two work over
-different objects -- runs here, pixels there -- and that same oracle holds
-both to one meaning of "connected".
+oracle this one is checked against. Residual runs are labelled by
+`common.components.label_component_runs`, the one meaning of "connected".
 """
 
 from __future__ import annotations
 
-import heapq
 from collections import defaultdict
-from functools import cmp_to_key
-from typing import Iterator, TypedDict
+from typing import TypedDict
 
 import geometry
 from structure import SECONDARY_MARGIN, _ink_threshold
 
+from common.components import label_component_runs, runs_in_row
+from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
 
 
@@ -53,47 +51,6 @@ class ReconciliationResult(TypedDict):
 # per page from sealed config and must pass it explicitly.
 
 
-class _Run(TypedDict):
-    """One horizontal stretch of contiguous ink on scanline `y`, half-open at `x1`.
-
-    `x1 - x0 == ink_count` always; the two are carried separately because
-    `_components` reads the span while the accounting reads the count. Tolerated
-    blank gaps are bridged in `_components`' connectivity, never inside a run.
-    """
-
-    x0: int
-    x1: int
-    ink_count: int
-    y: int
-
-
-def _plain_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _unit_ink_runs(row: object, threshold: int, y: int) -> list[_Run]:
-    """Exact contiguous ink runs: one run per unbroken stretch, a single blank
-    pixel ends it. Gap tolerance is deliberately not applied here -- it belongs
-    to `_components`, which decides *connected*, not *ink* -- or a tolerated
-    gap would count as ink `_subtract_claims` charges a crop for.
-    """
-    if not isinstance(row, (bytes, bytearray)):
-        raise ContractError(f"scanline {y} is not grayscale bytes")
-    runs: list[_Run] = []
-    start: int | None = None
-    for x, value in enumerate(row):
-        if value <= threshold:
-            if start is None:
-                start = x
-        elif start is not None:
-            runs.append({"x0": start, "x1": x, "ink_count": x - start, "y": y})
-            start = None
-    if start is not None:
-        end = len(row)
-        runs.append({"x0": start, "x1": end, "ink_count": end - start, "y": y})
-    return runs
-
-
 def _merged_claim_intervals(active: list[geometry.Bounds]) -> list[tuple[int, int]]:
     intervals = sorted((bounds["x"], bounds["x"] + bounds["w"]) for bounds in active)
     merged: list[tuple[int, int]] = []
@@ -105,144 +62,32 @@ def _merged_claim_intervals(active: list[geometry.Bounds]) -> list[tuple[int, in
     return merged
 
 
-def _subtract_claims(run: _Run, claims: list[tuple[int, int]]) -> tuple[int, list[_Run]]:
+def _subtract_claims(
+    run: tuple[int, int], claims: list[tuple[int, int]]
+) -> tuple[int, list[tuple[int, int]]]:
     """Split an ink run around claims, counting actual ink rather than area.
 
     `claims` must arrive merged and sorted (`_merged_claim_intervals`); overlapping
     claims would otherwise be counted twice.
     """
-    residual: list[_Run] = []
+    x0, x1 = run
+    residual: list[tuple[int, int]] = []
     claimed = 0
-    cursor = run["x0"]
+    cursor = x0
     for start, end in claims:
         if end <= cursor:
             continue
-        if start >= run["x1"]:
+        if start >= x1:
             break
         if cursor < start:
-            residual.append(
-                {
-                    "x0": cursor,
-                    "x1": min(start, run["x1"]),
-                    "ink_count": min(start, run["x1"]) - cursor,
-                    "y": run["y"],
-                }
-            )
-        covered_start, covered_end = max(cursor, start), min(run["x1"], end)
+            residual.append((cursor, min(start, x1)))
+        covered_start, covered_end = max(cursor, start), min(x1, end)
         if covered_start < covered_end:
             claimed += covered_end - covered_start
             cursor = covered_end
-    if cursor < run["x1"]:
-        residual.append(
-            {"x0": cursor, "x1": run["x1"], "ink_count": run["x1"] - cursor, "y": run["y"]}
-        )
+    if cursor < x1:
+        residual.append((cursor, x1))
     return claimed, residual
-
-
-def _components(runs: list[_Run], gap: int) -> list[dict]:
-    """Label residual runs with the legacy Chebyshev gap rule, without pixels."""
-    if not runs:
-        return []
-    parent = list(range(len(runs)))
-
-    def find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        left_root, right_root = find(left), find(right)
-        if left_root != right_root:
-            parent[right_root] = left_root
-
-    by_row: dict[int, list[int]] = defaultdict(list)
-    for index, run in enumerate(runs):
-        by_row[run["y"]].append(index)
-    radius = gap + 1
-    for y in sorted(by_row):
-        current = by_row[y]
-        # Claim-splitting can leave several residual runs on one scanline;
-        # rejoin adjacent ones within the tolerated gap before looking back.
-        for left, right in (
-            (current[index], current[index + 1]) for index in range(len(current) - 1)
-        ):
-            if runs[right]["x0"] - runs[left]["x1"] <= gap:
-                union(left, right)
-        for previous_y in range(max(0, y - radius), y):
-            previous = by_row.get(previous_y)
-            if not previous:
-                continue
-            # Runs on a row are disjoint and strictly left-to-right, so one
-            # forward pointer per row pair replaces the full cross product:
-            # once a previous-row run is wholly left of `left` (its right edge
-            # plus radius still short of `left`'s start), it is behind every
-            # later `left` too and `start` never revisits it.
-            start = 0
-            for left in current:
-                while (
-                    start < len(previous)
-                    and runs[previous[start]]["x1"] + radius <= runs[left]["x0"]
-                ):
-                    start += 1
-                for offset in range(start, len(previous)):
-                    right = previous[offset]
-                    if runs[right]["x0"] >= runs[left]["x1"] + radius:
-                        break
-                    union(left, right)
-    groups: dict[int, list[_Run]] = defaultdict(list)
-    for index, run in enumerate(runs):
-        groups[find(index)].append(run)
-    entries = []
-    for group in groups.values():
-        x0 = min(run["x0"] for run in group)
-        x1 = max(run["x1"] for run in group)
-        y0 = min(run["y"] for run in group)
-        y1 = max(run["y"] for run in group) + 1
-        entries.append(
-            (
-                {
-                    "bounds": {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
-                    "pixel_count": sum(run["ink_count"] for run in group),
-                },
-                group,
-            )
-        )
-
-    # Published order must not depend on union-find insertion order: components
-    # sharing a (top, left) origin are broken by comparing their ink itself,
-    # over a lazily merged run stream so memory stays proportional to runs.
-    def origin(entry: tuple[dict, list[_Run]]) -> tuple[int, int]:
-        return (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"])
-
-    entries.sort(key=origin)
-    ordered: list[dict] = []
-    span_start = 0
-    for index in range(1, len(entries) + 1):
-        if index == len(entries) or origin(entries[index]) != origin(entries[span_start]):
-            span = entries[span_start:index]
-            if len(span) > 1:
-                span.sort(key=cmp_to_key(_compare_ink_streams))
-            ordered.extend(component for component, _group in span)
-            span_start = index
-    return ordered
-
-
-def _pixel_stream(group: list[_Run]) -> Iterator[tuple[int, int]]:
-    """A tied component's ink in sorted (x, y) order, lazily, via a heap merge
-    of its runs (each run already yields ascending x for a fixed y).
-    """
-    return heapq.merge(*(((x, run["y"]) for x in range(run["x0"], run["x1"])) for run in group))
-
-
-def _compare_ink_streams(left: tuple[dict, list[_Run]], right: tuple[dict, list[_Run]]) -> int:
-    """Lexicographic sorted-pixel comparison without materialising either side."""
-    for left_pixel, right_pixel in zip(
-        _pixel_stream(left[1]), _pixel_stream(right[1]), strict=False
-    ):
-        if left_pixel != right_pixel:
-            return -1 if left_pixel < right_pixel else 1
-    return left[0]["pixel_count"] - right[0]["pixel_count"]
 
 
 def reconcile(
@@ -265,13 +110,13 @@ def reconcile(
     one: that the published residual components sum back to the residual ink
     counted, so no residual pixel is missing from a region a reviewer can see.
     """
-    if not _plain_int(width) or not _plain_int(height) or width <= 0 or height <= 0:
+    if not is_plain_int(width) or not is_plain_int(height) or width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to scan")
     if len(rows) != height:
         raise ContractError(f"expected {height} scanlines, got {len(rows)}")
-    if not _plain_int(gap_tolerance_px) or gap_tolerance_px < 0:
+    if not is_plain_int(gap_tolerance_px) or gap_tolerance_px < 0:
         raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")
-    if not _plain_int(review_priority_min_dimension_px) or review_priority_min_dimension_px < 0:
+    if not is_plain_int(review_priority_min_dimension_px) or review_priority_min_dimension_px < 0:
         raise ContractError(
             f"review priority threshold {review_priority_min_dimension_px} is negative"
         )
@@ -286,8 +131,11 @@ def reconcile(
     active: list[geometry.Bounds] = []
     intervals: list[tuple[int, int]] = []
     total = claimed = 0
-    residual_runs: list[_Run] = []
+    residual_by_row: dict[int, list[tuple[int, int]]] = {}
+    ink = bytes(value <= threshold for value in range(256))
     for y, row in enumerate(rows):
+        if not isinstance(row, (bytes, bytearray)):
+            raise ContractError(f"scanline {y} is not grayscale bytes")
         if len(row) != width:
             raise ContractError(f"scanline {y} has width {len(row)}, expected {width}")
         opening, closing = starts.get(y), ends.get(y)
@@ -296,12 +144,20 @@ def reconcile(
                 active.remove(bounds)
             active.extend(opening or ())
             intervals = _merged_claim_intervals(active)
-        for run in _unit_ink_runs(row, threshold, y):
-            total += run["ink_count"]
+        residual_row: list[tuple[int, int]] = []
+        for run in runs_in_row(row.translate(ink)):
+            total += run[1] - run[0]
             covered, residual = _subtract_claims(run, intervals)
             claimed += covered
-            residual_runs.extend(residual)
-    components = _components(residual_runs, gap_tolerance_px)
+            residual_row.extend(residual)
+        if residual_row:
+            residual_by_row[y] = residual_row
+    components = [
+        component
+        for component, _runs in label_component_runs(
+            residual_by_row, gap_tolerance_px=gap_tolerance_px
+        )
+    ]
     accounted = []
     for component in components:
         bounds = component["bounds"]

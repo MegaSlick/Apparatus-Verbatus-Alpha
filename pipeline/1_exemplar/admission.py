@@ -25,7 +25,6 @@ its own bytes must keep them (principle 4 — the Exemplar is the immutable sour
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import Final, NamedTuple
 
 import image_formats
@@ -39,6 +38,7 @@ from image_formats import (
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
+from common.contracts.stages import RefusalReason
 
 # A raster format: decoded, and then admitted as its own unmodified bytes when the
 # decoder reports one frame, or fanned out to one ordinal per frame when it reports
@@ -50,23 +50,6 @@ RENDER_PAGES: Final = "render-pages"
 ALWAYS_A_CONTAINER: Final = frozenset({"pdf"})
 ACTIONS: Final = frozenset({ADMIT_OR_FAN_OUT, RENDER_PAGES})
 SNIFFABLE_FORMATS: Final = image_formats.SNIFFABLE_FORMATS
-
-
-class RefusalReason(str, Enum):
-    """Closed alarm vocabulary for damage and decoder failures.
-
-    A format-policy refusal deliberately does not exist.  `UNSUPPORTED_VARIANT`
-    names a real decoder gap so it is visible work for the pipeline, rather than a
-    routine reason to abandon a submitted page.
-    """
-
-    EMPTY = "empty"
-    UNREADABLE = "unreadable"
-    TOO_LARGE = "too-large"
-    UNRECOGNIZED_FORMAT = "unrecognized-format"
-    CORRUPT = "corrupt"
-    UNSUPPORTED_VARIANT = "unsupported-variant"
-    DIGEST_MISMATCH = "digest-mismatch"
 
 
 class AdmissionOutcome(NamedTuple):

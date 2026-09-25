@@ -71,7 +71,7 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
-from common.corpus_register import read_register_file  # noqa: E402
+from common.corpus_register import read_register_path  # noqa: E402
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
@@ -1942,7 +1942,7 @@ def _read_corpus_register(register_path: str | None) -> bytes | None:
     if register_path is None:
         return None
     try:
-        return read_register_file(register_path)
+        return read_register_path(register_path)
     except (OSError, ContractError) as error:
         raise ContractError(
             "the corpus register could not be read before run creation; no run or admission "

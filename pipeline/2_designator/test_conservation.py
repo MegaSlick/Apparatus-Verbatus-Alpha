@@ -75,7 +75,7 @@ def _legacy_reference(width, height, rows, claimed_bounds, gap_tolerance_px):
 
     Labels through `structure._label_components_reference`, not the current
     row-oriented `structure.label_components` -- otherwise this would compare
-    `conservation._components`'s row runs against another row-run labeller
+    `conservation`'s row runs against the same row-run labeller
     rather than the independent pixel-set definition both answer to.
     """
     pixels = ink_pixels(width, height, rows, background=BACKGROUND, margin=SECONDARY_MARGIN)

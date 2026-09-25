@@ -503,9 +503,7 @@ def test_a_page_of_int_lists_is_refused_by_name_inside_the_dark_distribution_tes
     loop above it iterates any sequence of integers, so a caller handing this
     module a list-of-lists page gets all the way to the surround test and then
     fails with an `AttributeError` naming neither the scanline nor the reason.
-    `conservation._unit_ink_runs` guards the same assumption the same way, and
-    this is the test that says so -- without one a named refusal can quietly
-    become an unnamed one again.
+    Without this test a named refusal can quietly become an unnamed one again.
 
     The page has to reach the surround test to reach the guard, so it is a
     framed one: a dark border around a lighter interior, in lists of ints.

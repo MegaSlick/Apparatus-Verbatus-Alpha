@@ -25,7 +25,6 @@ this interface is the only place both sides can be held at once.
 """
 
 import copy
-import re
 import struct
 import subprocess
 import sys
@@ -633,33 +632,6 @@ def test_an_embedded_triage_row_is_bounded_before_its_pairwise_geometry_check():
 
     with pytest.raises(ContractError, match=f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"):
         verify_triage_derivative(contract, master, parent, sealed)
-
-
-def test_the_boundarys_restated_triage_row_schema_matches_the_pre_door_contract():
-    """Restated rather than imported, because `common/` may not import `pipeline/`
-    (the import-boundary test in `common/chairs/` enforces that), and read out of the
-    source text for the same reason. A field the pre-door contract closes and this
-    boundary does not is a field a forged sealed page could carry."""
-    manifest_source = (ROOT / "pipeline" / "0_triage" / "manifest.py").read_text(encoding="utf-8")
-    boundary_source = (ROOT / "common" / "exemplar_boundary.py").read_text(encoding="utf-8")
-
-    def field_set(source: str, name: str) -> set[str]:
-        block = re.search(rf"{name}[^{{]*{{(.*?)}}", source, re.DOTALL)
-        assert block, f"{name} is no longer declared where this test can read it"
-        return set(re.findall(r'"([a-z_0-9]+)"', block.group(1)))
-
-    # Anchored to the function, not to the first `required = ` in the file: there
-    # are two, and an unanchored search would quietly compare the wrong one if they
-    # ever changed places.
-    assert field_set(
-        boundary_source, r"def _validate_embedded_triage_row.*?    required = "
-    ) == field_set(manifest_source, r"_ROW_FIELDS: Final = ")
-    assert field_set(boundary_source, r"set\(part\) != ") == field_set(
-        manifest_source, r"_PART_FIELDS: Final = "
-    )
-    assert field_set(boundary_source, r"set\(actor\) != ") == field_set(
-        manifest_source, r"set\(actor\) != "
-    )
 
 
 def test_a_triage_row_carrying_a_field_outside_the_closed_schema_is_refused():

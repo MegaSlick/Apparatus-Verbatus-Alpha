@@ -480,7 +480,7 @@ def test_record_validation_refuses_gap_evidence_with_a_non_digest_reference():
         "variant": "Maria",
     }
     gap = {"position": "internal", "start": 2, "end": 2, "witness_evidence": [evidence]}
-    with pytest.raises(SchemaRefusal, match="has no sha256 digest"):
+    with pytest.raises(SchemaRefusal, match="sha256 is not a lowercase sha256"):
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
 
 
