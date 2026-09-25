@@ -1,10 +1,11 @@
 """Structural checks and decoder-backed raster helpers for the door.
 
 "Real" means structural, not photometric: each validator walks the container far
-enough to prove the bytes are a genuine, uncorrupted instance of the format they
-claim, and reads true geometry off them, without reconstructing actual pixels. A
-file that passes is provably the format it claims; what its pixels show is not
-this module's question, and Pillow supplies ordinary raster decoding for that.
+enough to check the bytes are structurally consistent with the format they claim,
+and reads true geometry off them, without reconstructing actual pixels. A file
+that passes is structurally consistent with the format it claims; what its pixels
+show is not this module's question, and Pillow supplies ordinary raster decoding
+for that.
 
 Every walk is bounded before it begins: these bytes are untrusted local input, and
 an unbounded inflate or iteration over a file-declared number is a loop counter an
@@ -12,7 +13,8 @@ attacker controls. The limits below are admission policy — a source past one o
 them is refused outright, never partially inspected.
 
 Door-private (`pipeline/1_exemplar/`): nothing outside this stage imports it, so
-structural inspection only ever happens once, at admission.
+this stage is the only caller — a raster page can still be decoded, and checked,
+more than once, as `render_raster_page` does.
 """
 
 import struct
@@ -814,12 +816,13 @@ def validate_tiff(data: bytes) -> ImageGeometry:
     """Prove one image directory whose stored samples reconcile with its geometry.
 
     Proven: classic (32-bit offset) little- or big-endian TIFF; one image directory
-    with every entry's value inside the file; the baseline tags a reader needs to
-    know what the samples are (PhotometricInterpretation, Compression, BitsPerSample,
-    SamplesPerPixel); and the strip or tile inventory reconciled against the declared
-    geometry, so the segment count is what the image's own rows and tiles require.
-    For an uncompressed image each segment must hold at least its required row
-    bytes.
+    with every entry the validator interprets holding a value inside the file (an
+    entry of unrecognised type it never reads is skipped uninspected); the baseline
+    tags a reader needs to know what the samples are (PhotometricInterpretation,
+    Compression, BitsPerSample, SamplesPerPixel); and the strip or tile inventory
+    reconciled against the declared geometry, so the segment count is what the
+    image's own rows and tiles require. For an uncompressed image each segment must
+    hold at least its required row bytes.
 
     Not proven: a compressed image's stored byte counts cannot be reconciled without
     decompressing, which is pixel reconstruction, so only its segment count is

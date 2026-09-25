@@ -411,10 +411,9 @@ def _code_ref_check(code_ref: str) -> dict[str, Any]:
     head = _checkout_commit()
     if head is None:
         return {"state": "no-checkout-found", "checkout_head": None}
-    # Any honest abbreviation of the head, not the three lengths this module
-    # happened to think of: git abbreviates to whatever is unambiguous, and this
-    # repository's own commit tables use ten. Seven is git's own floor, below
-    # which a prefix names too much.
+    # Seven is this evaluator's own floor, not git's: git accepts unique
+    # abbreviations from four characters, and this repository's own commit
+    # tables use ten.
     matches = len(code_ref) >= 7 and head.startswith(code_ref)
     state = "matches-checkout" if matches else "differs-from-checkout"
     return {"state": state, "checkout_head": head}

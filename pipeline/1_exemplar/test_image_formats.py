@@ -872,9 +872,10 @@ def test_a_classic_tiff_past_the_retired_5000_page_cap_keeps_its_denominator():
     The directories are spaced rather than packed: chaining them the minimum six
     bytes apart would be the amplification shape
     `test_a_chain_of_empty_directories_cannot_declare_more_pages_than_bytes_allow`
-    refuses, not this test. A real page of this era costs ~128 bytes at Pillow's
-    absolute smallest, so a document declaring 5,001 pages weighs at least this
-    much, and the count still passes with no page-count cap anywhere near it.
+    refuses, not this test. This fixture spaces empty directories 40 bytes apart,
+    with no image data behind any of them; it shows that a 5,001-directory chain
+    passes the byte floor and that counting has no nearby page-count cap, not that
+    real pages of this length would render.
     """
     pages = 5_001
     stride = 40
