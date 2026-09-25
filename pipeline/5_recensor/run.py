@@ -1526,6 +1526,16 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
     return findings
 
 
+def _region_page_ordinals(act_regions: list[dict]) -> set[int]:
+    """The source pages of every region with an object payload and transform."""
+    return {
+        region["payload"]["transform"]["source_page_ordinal"]
+        for region in act_regions
+        if isinstance(region.get("payload"), dict)
+        and isinstance(region["payload"].get("transform"), dict)
+    }
+
+
 def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dict[str, list[int]]:
     """The residual-ink fact every review records: which pages this act's regions were
     cut from, and which of those are flagged.
@@ -1535,15 +1545,9 @@ def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dic
     "never checked". One derivation for every review shape, including a held act, so a
     flagged page's only evidence is never dropped.
     """
-    ordinals = sorted(
-        {
-            region["payload"]["transform"]["source_page_ordinal"]
-            for region in act_regions
-            if isinstance(region.get("payload"), dict)
-            and isinstance(region["payload"].get("transform"), dict)
-        }
-    )
-    present = [ordinal for ordinal in ordinals if ordinal in findings]
+    present = [
+        ordinal for ordinal in sorted(_region_page_ordinals(act_regions)) if ordinal in findings
+    ]
     # A refused background is a third state beside checked-and-clear and never-checked,
     # listed apart from both.
     unmeasurable = {
@@ -2787,15 +2791,7 @@ def testimony_content_for_continuation_pages(
     (principle 2). Present and empty for a one-page act, so "no continuation" differs
     from "never derived".
     """
-    ordinals = sorted(
-        {
-            region["payload"]["transform"]["source_page_ordinal"]
-            for region in act_regions
-            if isinstance(region.get("payload"), dict)
-            and isinstance(region["payload"].get("transform"), dict)
-        }
-        - {primary_ordinal}
-    )
+    ordinals = sorted(_region_page_ordinals(act_regions) - {primary_ordinal})
     return [
         {"page_ordinal": ordinal, **testimony_content_for_page(findings, ordinal)}
         for ordinal in ordinals
@@ -2997,28 +2993,23 @@ def publish_review(
             f"the Recensor review of {subject_id!r} has malformed measurement evidence "
             f"in {measurement_field}: {error}"
         ) from error
-    ordinal = 1 if prior is None else prior["payload"]["attempt_ordinal"]
+
+    def publish_at(ordinal: int) -> dict:
+        return context.publish(
+            kind="review",
+            subject_id=subject_id,
+            outcome=outcome,
+            attempt=attempt_id(subject_id, "recense", ordinal),
+            inputs=inputs,
+            payload={**payload, "attempt_ordinal": ordinal},
+        )
+
+    if prior is None:
+        return publish_at(1)
     try:
-        return context.publish(
-            kind="review",
-            subject_id=subject_id,
-            outcome=outcome,
-            attempt=attempt_id(subject_id, "recense", ordinal),
-            inputs=inputs,
-            payload={**payload, "attempt_ordinal": ordinal},
-        )
+        return publish_at(prior["payload"]["attempt_ordinal"])
     except IncompatibleReuse:
-        if prior is None:
-            raise
-        ordinal = prior["payload"]["attempt_ordinal"] + 1
-        return context.publish(
-            kind="review",
-            subject_id=subject_id,
-            outcome=outcome,
-            attempt=attempt_id(subject_id, "recense", ordinal),
-            inputs=inputs,
-            payload={**payload, "attempt_ordinal": ordinal},
-        )
+        return publish_at(prior["payload"]["attempt_ordinal"] + 1)
 
 
 def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
