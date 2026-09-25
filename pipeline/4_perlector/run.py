@@ -3781,10 +3781,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     "act_key": act["act_key"],
                     "attempt_ordinal": ordinal,
                     "reason": (
-                        "the corpus register records this act's capture as one of several "
-                        "captures of one physical page, and no cross-capture read is built; "
-                        "reading this capture alone would establish one capture's text for "
-                        "the physical act"
+                        "the corpus register records this act's capture as a member of a "
+                        "physical page, and no read across a physical page's captures is "
+                        "built yet; reading this capture alone could establish one capture's "
+                        "text for the physical act"
                     ),
                     "hold": {
                         "code": CROSS_CAPTURE_READ_NOT_BUILT,

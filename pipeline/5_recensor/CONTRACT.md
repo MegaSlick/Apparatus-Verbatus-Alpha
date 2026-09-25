@@ -169,7 +169,11 @@ recorded nowhere at all.
 The Perlectio reference is both a payload fact and a direct input: it names
 exactly the reading the review assessed. Ordinary terminal records use
 `accepted` or `held-for-review`; held Designator acts instead directly input
-their hold evidence.
+their hold evidence. An act the Perlector held with `hold.code =
+"cross-capture-read-not-built"` is terminal here too: never sent to recovery, it gets a
+`held-for-review` review whose inputs are that `not-run` Perlectio and its cut crops,
+with `perlectio_ref`, the hold code and remedy in `reason`, `recoveries_used = 0`, and
+`null` audit, uncertainty and cross-capture coverage.
 
 **`attempt_ordinal` is minted from the review's own content, not counted from
 recovery requests.** `current_review` (`pipeline/5_recensor/run.py`)

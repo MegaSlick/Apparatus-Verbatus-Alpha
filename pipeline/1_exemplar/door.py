@@ -1519,8 +1519,10 @@ def require_confirmed_re_shoots(context: StageContext, cluster_report: str | Non
 
     Only a register membership tells later stages that captures show one page; without
     it each capture becomes its own act, and one physical act is read and exported once
-    per capture with nothing linking them. A cluster is confirmed only when one current
-    membership of a page in its own corpus holds every member. The submission is
+    per capture with nothing linking them. A cluster is confirmed when every member sits
+    in a current membership of some physical page of the cluster's own corpus: one
+    cluster may span several pages with different members (a split opening), and the
+    sealed cluster report carries no page ids to check page by page. The submission is
     refused whole before the seal, so no page is lost.
     """
     if cluster_report is None:
@@ -1531,21 +1533,23 @@ def require_confirmed_re_shoots(context: StageContext, cluster_report: str | Non
         for record in validate_register_bytes(register)["records"]
         if record["kind"] == "physical-page"
     }
-    pages = [
-        (corpus_of[page], members)
+    confirmed = {
+        (corpus_of[page], capture)
         for page, (_digest, members) in membership_heads(register).items()
-    ]
+        for capture in members
+    }
     try:
         clusters = json.loads(context.tree.read_bytes(cluster_report))["payload"]["clusters"]
         unconfirmed = sorted(
             cluster["cluster_id"]
             for cluster in clusters
-            if not any(
-                corpus == cluster["corpus_id"]
-                and {member["source_frame_sha256"] for member in cluster["members"]} <= members
-                for corpus, members in pages
+            if not cluster["members"]
+            or any(
+                (cluster["corpus_id"], member["source_frame_sha256"]) not in confirmed
+                for member in cluster["members"]
             )
         )
+        named = ", ".join(unconfirmed)
     except (KeyError, TypeError, ValueError) as error:
         raise ContractError(
             f"the door re-shoot cluster report at {cluster_report} is malformed ({error!r}); "
@@ -1553,15 +1557,15 @@ def require_confirmed_re_shoots(context: StageContext, cluster_report: str | Non
         ) from error
     if unconfirmed:
         raise ContractError(
-            f"unconfirmed-re-shoot: triage links re-shoot cluster(s) {', '.join(unconfirmed)}, "
-            "but no page of that corpus in the corpus register this run was created with "
-            "holds every capture in them, so each capture would be read and exported as a "
-            "separate act. Nothing is sealed and no page is dropped: the submission is "
-            f"refused whole, and the sealed cluster report at {cluster_report} names each "
-            "member. Confirm the cluster into the corpus register (or remove the triage "
-            "link if the captures are not one page), then resubmit under a new run id with "
-            "--corpus-register; this run id stays bound to the register and triage inputs "
-            "it was created with and refuses reuse"
+            f"unconfirmed-re-shoot: triage links re-shoot cluster(s) {named}, but the corpus "
+            "register this run was created with does not record every capture in them as a "
+            "member of a physical page of that corpus, so each capture would be read and "
+            "exported as a separate act. Nothing is sealed and no page is dropped: the "
+            f"submission is refused whole, and the sealed cluster report at {cluster_report} "
+            "names each member. Confirm the cluster into the corpus register (or remove the "
+            "triage link if the captures are not one page), then resubmit under a new run id "
+            "with --corpus-register; this run id stays bound to the register and triage "
+            "inputs it was created with and refuses reuse"
         )
 
 

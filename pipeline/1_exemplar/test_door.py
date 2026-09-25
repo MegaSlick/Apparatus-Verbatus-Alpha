@@ -1722,15 +1722,12 @@ def test_a_re_shoot_the_register_does_not_confirm_is_refused_before_the_seal(tmp
 @pytest.mark.parametrize(
     "pages",
     [
-        {
-            "opening-7a": ("parish-a", _pair_digests()[:1]),
-            "opening-7b": ("parish-a", _pair_digests()[1:]),
-        },
         {"opening-7": ("parish-b", _pair_digests())},
+        {"opening-7": ("parish-a", _pair_digests()[:1])},
     ],
-    ids=["members-on-different-pages", "another-corpus"],
+    ids=["another-corpus", "a-member-unregistered"],
 )
-def test_a_re_shoot_is_confirmed_only_by_one_page_of_its_own_corpus(tmp_path, pages):
+def test_a_re_shoot_is_confirmed_only_when_its_corpus_registers_every_member(tmp_path, pages):
     context, _digests = _admitted_re_shoot_pair(
         tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
     )
@@ -1738,10 +1735,21 @@ def test_a_re_shoot_is_confirmed_only_by_one_page_of_its_own_corpus(tmp_path, pa
         door.require_confirmed_re_shoots(context, door.publish_cluster_report(context))
 
 
-def test_a_re_shoot_the_register_confirms_is_admitted(tmp_path):
+@pytest.mark.parametrize(
+    "pages",
+    [
+        {"opening-7": ("parish-a", _pair_digests())},
+        # A split opening: each leaf holds a different subset of the cluster.
+        {
+            "opening-7-left": ("parish-a", _pair_digests()[:1]),
+            "opening-7-right": ("parish-a", _pair_digests()[1:]),
+        },
+    ],
+    ids=["one-page", "pages-with-different-members"],
+)
+def test_a_re_shoot_the_register_confirms_is_admitted(tmp_path, pages):
     context, _digests = _admitted_re_shoot_pair(
-        tmp_path,
-        register_bytes=_re_shoot_register(tmp_path, {"opening-7": ("parish-a", _pair_digests())}),
+        tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
     )
     door.require_confirmed_re_shoots(context, door.publish_cluster_report(context))
 

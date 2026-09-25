@@ -3330,12 +3330,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 context,
                 act,
                 reason=(
-                    f"{cross_capture_hold}: the corpus register records this act's capture as "
-                    "one of several captures of one physical page, and the Perlector held it "
-                    "because no cross-capture read is built (Unit 19C/19D); reading one "
-                    "capture would establish that capture's text for the physical act. Until "
-                    "that read exists, review the act against every capture the register "
-                    "names for its page"
+                    f"{cross_capture_hold}: the corpus register records this act's capture as a "
+                    "member of a physical page, and the Perlector held it because no read "
+                    "across a physical page's captures is built yet; reading this capture "
+                    "alone could establish one capture's text for the physical act. Until that "
+                    "read exists, review the act against every capture the register names "
+                    "for its page"
                 ),
                 regions=state["regions"],
                 perlectio_ref=context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"]),
