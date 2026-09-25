@@ -331,7 +331,7 @@ def read_doubt_marks(raw: str) -> tuple[str, dict[str, Any]]:
             gap_offsets.append(length)
             continue
         reading, *alternatives = body.split("|")
-        if not reading or reading == "?":
+        if not reading or reading == "?" or "" in alternatives:
             return raw, malformed_assessment(f"the doubt mark {match.group(0)!r} names no reading")
         spans.append(
             {

@@ -366,6 +366,7 @@ def test_validate_annotations_requires_a_text_field():
         ("[[?]]", "", "assessed", 0, 0),
         ("[[?]]\n[[?]]", "\n", "assessed", 0, 0),
         ("a [[?|b]]", "a [[?|b]]", "malformed", 0, 0),
+        ("a [[b|]]", "a [[b|]]", "malformed", 0, 0),
         ("a [[b", "a [[b", "malformed", 0, 0),
         ("a ]] b", "a ]] b", "malformed", 0, 0),
         ("a [[x [[y]] z]]", "a [[x [[y]] z]]", "malformed", 0, 0),

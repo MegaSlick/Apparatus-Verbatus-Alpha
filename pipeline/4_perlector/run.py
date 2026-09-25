@@ -2130,6 +2130,8 @@ def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
     let the stage seal over an integrity defect.
     """
     if isinstance(error, RequestCapacityRefusal):
+        if error.capacity is None:
+            raise error
         return {
             "phase": phase,
             "kind": "request-capacity",
@@ -4232,6 +4234,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                             },
                         ),
                     )
+                    if reproof_assessment["state"] == "malformed":
+                        payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
                     payload["dissent"] = dissent_against(
                         "", dissent_testimonia(row["testimonia"], row["attachment_view"])
                     )
