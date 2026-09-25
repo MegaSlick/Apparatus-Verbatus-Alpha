@@ -37,6 +37,8 @@ from common.corpus_register import register_digest as read_register_digest
 
 PARTITION_SCHEMA: Final = "physical-act-partition.v1"
 PROPOSAL_SCHEMA: Final = "correspondence-proposal.v1"
+# The Perlector's hold on an act whose capture the register clusters, read by the Recensor.
+CROSS_CAPTURE_READ_NOT_BUILT: Final = "cross-capture-read-not-built"
 _TEXTUAL_FIELDS: Final = frozenset(
     {"text", "ocr", "testimonium", "lectio", "perlectio", "edit_distance"}
 )

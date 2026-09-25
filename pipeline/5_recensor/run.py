@@ -87,6 +87,7 @@ from common.perlector_audit import (  # noqa: E402
     validate_chain,
 )
 from common.perlector_failure import validate_failed_perlectio  # noqa: E402
+from common.physical_act_partition import CROSS_CAPTURE_READ_NOT_BUILT  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
 from common.recovery import (  # noqa: E402
     FALLBACK_RECROP,
@@ -3177,53 +3178,75 @@ def declared_recovery(scenario: dict | None, act_key: str) -> bool:
     return act_key in scenario["recover_acts"]
 
 
-def _publish_designator_hold_review(
+def cross_capture_hold_of(reading: dict, act_id: str) -> str | None:
+    """The Perlector's named hold on an act it cannot read from one capture, or `None`.
+
+    Such an act is terminal here like a Designator hold: a recrop cannot help, and a
+    request would only make the Perlector repeat its hold.
+    """
+    hold = reading["payload"].get("hold") if reading["outcome"] == "not-run" else None
+    if hold is None:
+        return None
+    if not isinstance(hold, dict) or hold.get("code") != CROSS_CAPTURE_READ_NOT_BUILT:
+        raise FatalAccounting(f"act {act_id}'s not-run Perlectio carries an unknown hold {hold!r}")
+    return hold["code"]
+
+
+def _publish_hold_review(
     context,
     act: dict,
     *,
+    reason: str,
+    regions: list[dict],
     budget: dict,
     coverage: dict,
     geometry_coverage: dict,
     content_coverage: dict,
     content_findings: dict[int, dict],
     page_findings: dict[int, dict],
+    hold_path: str | None = None,
+    perlectio_ref: dict | None = None,
 ) -> None:
-    """An explicit review for a Designator-held act, so its terminal category derives.
+    """An explicit review for an act an upstream stage held, so its terminal category derives.
 
+    Either the Designator held it (`hold_path`) or the Perlector did (`perlectio_ref`).
     A hold may still have a cut near-side region (only a continuation's page failed to
     seal), so the page facts come from what was cut rather than being reported empty.
     """
-    act_id = act["act_id"]
-    hold, hold_path = designator_hold(context, act_id)
-    hold_regions = artifacts_for(context, DESIGNATOR, "region", act_id)
+    held_by = [context.input_ref(hold_path)] if hold_path is not None else [perlectio_ref]
     publish_review(
         context,
-        subject_id=act_id,
+        subject_id=act["act_id"],
         outcome="held-for-review",
-        prior=current_review(context, act_id),
-        inputs=[context.input_ref(hold_path)]
-        + [context.input_ref(region["payload"]["image_path"]) for region in hold_regions],
+        prior=current_review(context, act["act_id"]),
+        # One crop image can back several regions; an input is listed once.
+        inputs=held_by
+        + [
+            context.input_ref(path)
+            for path in dict.fromkeys(region["payload"]["image_path"] for region in regions)
+        ],
         payload={
             "act_key": act["act_key"],
-            "reason": f"the Designator held this act: {hold['payload']['reason']}",
+            "reason": reason,
             "coverage": coverage,
             "geometry_coverage": geometry_coverage,
             "testimony_content_coverage": content_coverage,
             "testimony_content_coverage_continuation": (
                 testimony_content_for_continuation_pages(
-                    content_findings, hold_regions, act["page_ordinal"]
+                    content_findings, regions, act["page_ordinal"]
                 )
             ),
-            "continuation": recensor_continuation_link(hold_regions, act_id),
-            "page_coverage": page_coverage_for(hold_regions, page_findings),
+            "continuation": recensor_continuation_link(regions, act["act_id"]),
+            "page_coverage": page_coverage_for(regions, page_findings),
             "recoveries_used": 0,
             "budget_allowed": budget["allowed"],
             "absolute_cap": budget["absolute_cap"],
-            # No Perlectio, so no audit: distinct from audited-and-resolved (False).
+            # No reading was audited: distinct from audited-and-resolved (False).
             "audit_unresolved": None,
             "audit_examination": None,
             "uncertainty_assessment": None,
             "cross_capture_coverage": None,
+            **({"perlectio_ref": perlectio_ref} if perlectio_ref is not None else {}),
         },
     )
 
@@ -3270,9 +3293,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         geometry_coverage = geometry_coverage_for(geometry_inputs, act["page_ordinal"])
 
         if act["outcome"] == "held":
-            _publish_designator_hold_review(
+            hold, hold_path = designator_hold(context, act_id)
+            _publish_hold_review(
                 context,
                 act,
+                reason=f"the Designator held this act: {hold['payload']['reason']}",
+                regions=artifacts_for(context, DESIGNATOR, "region", act_id),
+                hold_path=hold_path,
                 budget=budget,
                 coverage=coverage,
                 geometry_coverage=geometry_coverage,
@@ -3297,6 +3324,30 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # the Archetypus can prove it establishes that reading.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
+        cross_capture_hold = cross_capture_hold_of(latest, act_id)
+        if cross_capture_hold is not None:
+            _publish_hold_review(
+                context,
+                act,
+                reason=(
+                    f"{cross_capture_hold}: the corpus register records this act's capture as "
+                    "one of several captures of one physical page, and the Perlector held it "
+                    "because no cross-capture read is built (Unit 19C/19D); reading one "
+                    "capture would establish that capture's text for the physical act. Until "
+                    "that read exists, review the act against every capture the register "
+                    "names for its page"
+                ),
+                regions=state["regions"],
+                perlectio_ref=context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"]),
+                budget=budget,
+                coverage=coverage,
+                geometry_coverage=geometry_coverage,
+                content_coverage=content_coverage,
+                content_findings=content_findings,
+                page_findings=page_findings,
+            )
+            held += 1
+            continue
         audit_facts = audit_state(context, latest, act_id, expected_act_key=act["act_key"]) or {}
         audit_unresolved = audit_facts.get("unresolved")
         audit_examination = audit_facts.get("examination")

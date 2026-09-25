@@ -1971,7 +1971,7 @@ def test_the_perlector_read_loop_holds_a_clustered_partition_rather_than_reading
     §7.15). Each member is held instead. When the cross-capture read loop lands,
     this test is the deliberate edit that records it.
     """
-    from logical_reading import CROSS_CAPTURE_READ_NOT_BUILT, cross_capture_holds  # noqa: PLC0415
+    from logical_reading import cross_capture_holds  # noqa: PLC0415
 
     fixture = _fixture()
     register_path, physical_page, _physical_act = _register(tmp_path, fixture)
@@ -1984,7 +1984,6 @@ def test_the_perlector_read_loop_holds_a_clustered_partition_rather_than_reading
     assert cross_capture_holds(clustered) == {
         member["act_id"]: None for member in logical_act["member_local_acts"]
     }
-    assert CROSS_CAPTURE_READ_NOT_BUILT == "cross-capture-read-not-built"
 
 
 def test_a_confirmed_re_shoot_without_alignments_holds_only_its_own_acts(tmp_path):

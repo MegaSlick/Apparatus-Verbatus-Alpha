@@ -17,7 +17,10 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR
 from common.corpus_register import read_snapshot
 from common.cross_capture_autopsia import build_autopsia_from_run
-from common.physical_act_partition import build_physical_act_partition, source_ledger_from_run
+from common.physical_act_partition import (
+    build_physical_act_partition,
+    source_ledger_from_run,
+)
 
 
 def _source_sha256_of_page(context, page_id: str) -> str:
@@ -84,7 +87,6 @@ def _local_act_row(context, act: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-CROSS_CAPTURE_READ_NOT_BUILT: Final = "cross-capture-read-not-built"
 # The one finding a registered re-shoot produces while no alignment is built.
 # Every other finding is a defect in the denominator itself.
 _HELD_FINDINGS: Final = frozenset({"capture-page-alignment-unresolved"})
@@ -139,6 +141,11 @@ def cross_capture_holds(partition: dict[str, Any]) -> dict[str, str | None]:
     Reading one member alone would publish a capture-local Perlectio for one
     physical act (consult §7.9, §7.15); the cross-capture read is Unit 19C/19D's.
     Any other partition finding refuses the run before anything is published.
+
+    A group forms only through a capture alignment, so while ``capture_alignments``
+    is empty every such act is held by its finding and the group branch below is
+    unreachable. Once alignments are built, a confirmed re-shoot resolves into a
+    group and is held with ``None`` until the cross-capture read replaces the hold.
     """
     defects = sorted(
         f"{row['code']}:{row['act_id']}"

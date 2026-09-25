@@ -89,6 +89,7 @@ from common.perlector_failure import (  # noqa: E402
     PRE_PERLECTIO_ARTIFACTS,
     validate_failed_perlectio,
 )
+from common.physical_act_partition import CROSS_CAPTURE_READ_NOT_BUILT  # noqa: E402
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -3768,15 +3769,17 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             continue
 
         if act_id in holds:
+            # Derived, not fixed: an act re-asked after a recrop gets its next ordinal.
+            ordinal = _next_attempt(context, act_id, act_regions(context, act_id)[0])
             _publish_not_run(
                 context,
                 act_id=act_id,
-                ordinal=1,
+                ordinal=ordinal,
                 fields=_NOT_RUN_CROSS_CAPTURE_FIELDS,
                 inputs=[partition_ref],
                 payload={
                     "act_key": act["act_key"],
-                    "attempt_ordinal": 1,
+                    "attempt_ordinal": ordinal,
                     "reason": (
                         "the corpus register records this act's capture as one of several "
                         "captures of one physical page, and no cross-capture read is built; "
@@ -3784,7 +3787,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                         "the physical act"
                     ),
                     "hold": {
-                        "code": logical_reading.CROSS_CAPTURE_READ_NOT_BUILT,
+                        "code": CROSS_CAPTURE_READ_NOT_BUILT,
                         "partition_finding": holds[act_id],
                     },
                     "provenance": provenance_for(context, chair, attempted=False),
