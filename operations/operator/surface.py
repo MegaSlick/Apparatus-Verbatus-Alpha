@@ -2694,13 +2694,7 @@ class OperatorSurface:
                 )
             if not members:
                 # An empty `7_armarium` would ship a "complete" bundle with no readings.
-                raise OperatorError(
-                    ErrorCode.EXPORT_FAILED,
-                    detail=(
-                        "the Armarium evidence bundle cannot be written as complete: "
-                        "7_armarium holds no evidence files"
-                    ),
-                )
+                raise _incomplete_bundle("7_armarium holds no evidence files")
             try:
                 os.link(temporary, destination, follow_symlinks=False)
             except FileExistsError as error:
@@ -3383,34 +3377,36 @@ def _sha256_regular_file_nofollow(path: Path) -> str:
         raise OSError(
             f"the existing content-addressed export is not a readable file: {path}"
         ) from error
-    digest = hashlib.sha256()
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise OSError(f"the existing content-addressed export is not a regular file: {path}")
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            while chunk := handle.read(_COPY_CHUNK_BYTES):
-                digest.update(chunk)
-        after = os.fstat(descriptor)
-        observed_before = (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        )
-        observed_after = (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        )
-        if observed_after != observed_before:
+            digest = hashlib.file_digest(handle, "sha256")
+        if not _unchanged(before, os.fstat(descriptor)):
             raise OSError(f"the existing content-addressed export changed while read: {path}")
         return digest.hexdigest()
     finally:
         os.close(descriptor)
+
+
+_FILE_IDENTITY = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+_DIRECTORY_IDENTITY = ("st_dev", "st_ino", "st_mtime_ns", "st_ctime_ns")
+
+
+def _unchanged(
+    before: os.stat_result, after: os.stat_result, *, fields: tuple[str, ...] = _FILE_IDENTITY
+) -> bool:
+    """Whether two observations of one open file agree: same inode, not rewritten."""
+
+    return all(getattr(before, field) == getattr(after, field) for field in fields)
+
+
+def _incomplete_bundle(reason: str) -> OperatorError:
+    return OperatorError(
+        ErrorCode.EXPORT_FAILED,
+        detail=f"the Armarium evidence bundle cannot be written as complete: {reason}",
+    )
 
 
 def _open_bundle_root(source: Path) -> int:
@@ -3452,52 +3448,23 @@ def _open_expected_member(
     try:
         named = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
     except FileNotFoundError as error:
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                f"the Armarium evidence bundle cannot be written as complete: {label} is missing"
-            ),
-        ) from error
+        raise _incomplete_bundle(f"{label} is missing") from error
     if stat.S_ISLNK(named.st_mode):
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                "the Armarium evidence bundle cannot be written as complete: "
-                f"{label} is a symbolic link, not a {expected_kind}"
-            ),
-        )
+        raise _incomplete_bundle(f"{label} is a symbolic link, not a {expected_kind}")
     expected = stat.S_ISDIR(named.st_mode) if directory else stat.S_ISREG(named.st_mode)
     if not expected:
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                "the Armarium evidence bundle cannot be written as complete: "
-                f"{label} is not a {expected_kind}"
-            ),
-        )
+        raise _incomplete_bundle(f"{label} is not a {expected_kind}")
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
     if directory:
         flags |= os.O_DIRECTORY
     try:
         descriptor = os.open(name, flags, dir_fd=parent_descriptor)
     except OSError as error:
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                "the Armarium evidence bundle cannot be written as complete: "
-                f"{label} changed before it could be opened safely"
-            ),
-        ) from error
+        raise _incomplete_bundle(f"{label} changed before it could be opened safely") from error
     opened = os.fstat(descriptor)
     if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
         os.close(descriptor)
-        raise OperatorError(
-            ErrorCode.EXPORT_FAILED,
-            detail=(
-                "the Armarium evidence bundle cannot be written as complete: "
-                f"{label} changed between check and open"
-            ),
-        )
+        raise _incomplete_bundle(f"{label} changed between check and open")
     return descriptor
 
 
@@ -3533,22 +3500,7 @@ def _write_bundle_descriptor(
     ):
         while chunk := input_handle.read(_COPY_CHUNK_BYTES):
             output_handle.write(chunk)
-    after = os.fstat(descriptor)
-    observed_opened = (
-        opened.st_dev,
-        opened.st_ino,
-        opened.st_size,
-        opened.st_mtime_ns,
-        opened.st_ctime_ns,
-    )
-    observed_after = (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-        after.st_ctime_ns,
-    )
-    if observed_after != observed_opened:
+    if not _unchanged(opened, os.fstat(descriptor)):
         raise OperatorError(
             ErrorCode.EXPORT_FAILED,
             detail=f"the Armarium evidence member changed while copied: {archive_name}",
@@ -3606,27 +3558,8 @@ def _write_bundle_directory(
             finally:
                 os.close(child)
         else:
-            raise OperatorError(
-                ErrorCode.EXPORT_FAILED,
-                detail=(
-                    "the Armarium evidence bundle cannot be written as complete: "
-                    f"{label} is not a regular file"
-                ),
-            )
-    after = os.fstat(directory_descriptor)
-    observed_before = (
-        before.st_dev,
-        before.st_ino,
-        before.st_mtime_ns,
-        before.st_ctime_ns,
-    )
-    observed_after = (
-        after.st_dev,
-        after.st_ino,
-        after.st_mtime_ns,
-        after.st_ctime_ns,
-    )
-    if observed_after != observed_before:
+            raise _incomplete_bundle(f"{label} is not a regular file")
+    if not _unchanged(before, os.fstat(directory_descriptor), fields=_DIRECTORY_IDENTITY):
         raise OperatorError(
             ErrorCode.EXPORT_FAILED,
             detail=f"the Armarium evidence directory changed while copied: {source_prefix}",
@@ -4196,11 +4129,8 @@ def _fetched_manifest(tree: RunTree, relative: str) -> dict[str, Any]:
 
 
 def _sha256_of(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as handle:
-        while chunk := handle.read(_COPY_CHUNK_BYTES):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _display_usd(amount: Decimal) -> str:
