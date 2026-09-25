@@ -46,6 +46,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
 
+from common.chairs.models import is_hf_revision
 from common.chairs.receipts import receipt_record, validate_receipt
 from common.contracts.approval import ApprovalRecordReference, validate_approval_record
 from common.contracts.canonical import (
@@ -284,7 +285,7 @@ class RunTree:
                 )
             authority[_SEALED_CONFIG_DIGESTS_FIELD] = dict(sorted(sealed_config_digests.items()))
         if repository_commit is not None:
-            if not _is_full_commit(repository_commit):
+            if not is_hf_revision(repository_commit):
                 raise SchemaRefusal(
                     "a run's repository_commit must be forty lowercase hexadecimal "
                     "characters; a short or decorated revision names a commit only against "
@@ -513,10 +514,7 @@ class RunTree:
         from common.recensor_receipt import validate_recensor_partition_receipt
 
         path = self.resolve(self.recensor_partition_receipt_path())
-        try:
-            record = _read_json(path)
-        except OSError as error:  # pragma: no cover - _read_json already refuses
-            raise SchemaRefusal(f"Recensor partition receipt could not be read: {error}") from error
+        record = _read_json(path)
         checked = validate_recensor_partition_receipt(record)
         if checked["run_id"] != self.run_id or checked["config_digest"] != self._run_authority():
             raise SchemaRefusal("Recensor partition receipt does not belong to this run authority")
@@ -1376,14 +1374,6 @@ def _run_creation_lock(parent: Path) -> Iterator[None]:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)
-
-
-def _is_full_commit(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 40
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def _existing_partition_receipt(target: Path, relative: str) -> dict[str, Any] | None:
