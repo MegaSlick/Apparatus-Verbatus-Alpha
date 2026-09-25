@@ -19,7 +19,7 @@ cent of audited ink on 44 real pages, and counting it flagged every page. It is
 re-derived here from the same bytes at the page's own derived margin (the
 Designator's record carries only whole-page boxes, which mask nothing). At this
 module's looser contrast the writing merged into it and hid missed ink on 41 of
-44 real pages; a way to use one contrast for both would be welcome. It is taken
+44 real pages, so the two passes use two contrasts; unifying them is open. It is taken
 out of `total_ink_pixels` and `outside_ink_pixels`; `page_ink_pixels` and
 `page_spanning_ink_pixels` keep the whole-page figure on the record.
 

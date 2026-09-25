@@ -173,7 +173,8 @@ def prompt_evidence(
     module's code — not one function's, because a builder renders through
     helpers — with comments and docstrings stripped, so any edit to prompt
     text or builder logic changes this record's own claim about itself, and an
-    edit to prose alone does not.
+    edit to prose alone does not. A Python upgrade that adds AST fields moves it
+    too, refused loudly by `request_capacity`: treat one as a digest event.
     """
     builder = _builder_for(chair.serving_recipe)
     protocol_config = protocol_config or _DEFAULT_PROTOCOL

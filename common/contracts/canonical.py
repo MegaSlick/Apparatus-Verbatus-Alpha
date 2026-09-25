@@ -274,7 +274,7 @@ def _ast_value(value: Any) -> Any:
         return [_ast_value(item) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    return repr(value)
+    raise TypeError(f"no canonical form for a {type(value).__name__} constant")
 
 
 def ast_digest(node: ast.AST) -> str:

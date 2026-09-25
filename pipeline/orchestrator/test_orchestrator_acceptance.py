@@ -125,7 +125,7 @@ def _perlector_dissent():
 #   - any byte of a config file the run seals, comments included: `run.json`
 #     seals each such file's bytes, so its prose is part of the configuration a
 #     run is bound to;
-#   - any byte of `pipeline/4_perlector/prompts.py`, whose own source digest is
+#   - any code change in `pipeline/4_perlector/prompts.py`, whose code digest is
 #     sealed into every prompt record;
 #   - any string sealed into a record or the export manifest.
 #

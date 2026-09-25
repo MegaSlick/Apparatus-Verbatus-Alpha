@@ -383,7 +383,9 @@ text or builder logic renames every Perlectio it prompts rather than hiding
 behind an unchanged recipe name. It is the module's syntax tree with comments
 and docstrings stripped (`common.contracts.canonical.code_digest`): a code
 change anywhere in `prompts.py` moves the claim, even one that does not change
-the rendered bytes; a comment or docstring edit does not.
+the rendered bytes; a comment or docstring edit does not. A Python upgrade that adds
+AST fields also moves it, and `common/request_capacity.py` refuses loudly until
+it is re-pinned: an interpreter upgrade is a digest event.
 
 ### `truncation` — the instrument, not an assumption
 
