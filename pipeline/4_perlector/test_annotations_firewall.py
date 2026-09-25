@@ -356,3 +356,22 @@ def test_validate_annotations_enforces_bidirectional_consistency_when_outcome_su
 def test_validate_annotations_requires_a_text_field():
     with pytest.raises(SchemaRefusal, match="no text field"):
         annotations.validate_annotations({})
+
+
+@pytest.mark.parametrize(
+    "raw,text,state,spans,gaps",
+    [
+        ("plain ink", "plain ink", "assessed", 0, 0),
+        ("[[?]] a [[b]] [[?]]", " a b ", "assessed", 1, 2),
+        ("[[?]]", "", "assessed", 0, 0),
+        ("a [[b", "a [[b", "malformed", 0, 0),
+        ("a ]] b", "a ]] b", "malformed", 0, 0),
+        ("a [[x [[y]] z]]", "a [[x [[y]] z]]", "malformed", 0, 0),
+        ("a [[|y]]", "a [[|y]]", "malformed", 0, 0),
+    ],
+)
+def test_doubt_marks_parse_or_leave_the_answer_as_returned(raw, text, state, spans, gaps):
+    published, report = annotations.read_doubt_marks(raw)
+    assert (published, report["state"]) == (text, state)
+    assert (len(report["uncertain_spans"]), len(report["gaps"])) == (spans, gaps)
+    assert annotations.validate_assessment(report, published) == report

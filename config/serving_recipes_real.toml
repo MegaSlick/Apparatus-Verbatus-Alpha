@@ -161,37 +161,19 @@
 # Perlector rows 1800s — both UNMEASURED planning values, not a claim that any
 # reading has ever been timed on real silicon.
 #
-# `startup_timeout_seconds` IS 300 ON EVERY ROW EXCEPT THE OBSERVED
-# `designator_structure` / `generic-80gb-plus` DIAGNOSTIC EXCEPTION, AND 300 IS A
-# PLACEHOLDER, NOT A SIZE.  It is the whole budget
-# `operations/serving/manager.py::_wait_until_ready` allows from process launch
-# to a healthy endpoint, an exact `/v1/models` id match and a completed
-# inference probe; on expiry the chair is killed, PREFLIGHT goes red and the
-# bootstrap closes the pod with the model fetch and the wheel install already
-# paid for.  Five minutes is the same number for a 3B Churro and for the
-# Perlector's Qwen3.8-27B, whose weights measure 51.7 GiB of bf16 (the
-# repository's own safetensors sizes, above) and must be read off a network
-# volume before a CUDA graph is captured — `enforce_eager = false` on every
-# row — so the read alone plausibly outlasts the bound.
-#
-# HOW THE VALUE SHOULD BE DERIVED, once there is anything to derive it from:
-#
-#     startup_timeout_seconds  >=  weight bytes / measured volume read rate
-#                                + graph capture and engine warm-up
-#                                + margin
-#
-# Only one of those terms is quantified in this tree (the Perlector's 51.7 GiB);
-# the volume read rate is exactly what the first authorized boot can measure,
-# and the capture and warm-up terms are what the first real chair start
-# reports.  **The unmeasured rows deliberately remain at 300 until then.**
-# The one exception records its own evidence beside the row: its 300-second
-# cold startup timed out while still progressing, and an isolated 600-second
-# retry completed only with a warm cache.  That permits this row-specific
-# watchdog allowance; it does not qualify a 600-second cold start.  A watchdog
-# expiry says whether the engine was *still loading* or whether the port was
-# simply *refusing*, and carries the launch-log tail that shows which — so the
-# next red is readable and the project lead can set each remaining row from a measurement
-# rather than from a guess.
+# `startup_timeout_seconds` is the whole budget `manager.py::_wait_until_ready`
+# allows from process launch to a healthy endpoint, the exact model id and a
+# completed inference probe; on expiry the chair is killed and PREFLIGHT goes
+# red.  It should cover weight bytes / volume read rate + torch.compile +
+# profiling and warm-up + margin.  Rows still at 300 are unmeasured placeholders.
+# Two rows are sized from retained vLLM logs: `designator_structure` on
+# `generic-80gb-plus`, and the Perlector on `generic-80gb-plus` (a cold start
+# measured about 375 s on 2026-09-22/23: weights 95 s off the volume,
+# torch.compile 107 s, profiling 76 s, multimodal warm-up 20 s).  The Perlector
+# keeps torch.compile: its 90-107 s is paid once per start, while eager mode's
+# cost to each of a run's ~34-51 calls on this hybrid-attention model is
+# unmeasured.  A persisted compile cache would not help a first start on a
+# fresh volume.
 schema = "serving-recipes.v1"
 
 # Chandra fills the Designator structure chair and Attestator 1.  They have
@@ -674,7 +656,7 @@ enable_tower_connector_lora = false
 max_lora_rank = 64
 generation_config = "vllm"
 preflight_state = "unproven"
-startup_timeout_seconds = 300  # UNMEASURED placeholder, least plausible here: 51.7 GiB / volume read rate + graph capture (see the header)
+startup_timeout_seconds = 600  # measured cold start ~375 s (see the header) plus 60% margin
 poll_interval_seconds = 2
 request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }

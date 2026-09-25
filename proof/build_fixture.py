@@ -102,7 +102,7 @@ PRIOR_READINGS = tuple(
 
 # The reader's own doubt report, per scenario, act and optional pass. In
 # `reader-doubt`, a2 is assessed with no doubt, so an empty list must mean "no
-# doubt" honestly. Undeclared scenarios stay `not-assessed`, like the live reader.
+# doubt" honestly. Undeclared scenarios stay `not-assessed`.
 # In `audit-change` each doubt is anchored to the text of its own pass; the
 # Perlectio carries only the re-proof's, because that text is the one published.
 READER_ASSESSMENTS = (
