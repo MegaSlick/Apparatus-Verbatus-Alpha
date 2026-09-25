@@ -353,9 +353,8 @@ def test_a_format_with_a_reader_that_still_fails_is_worded_about_the_bytes():
     file a real decoding failure under work we have not done.
     """
     # This one-byte change stays inside a complete GIF block sequence, so the
-    # framing validator rightly leaves actual LZW decoding to Pillow. It gives this
-    # test a real decoder-side failure rather than the older incomplete fake GIF,
-    # which now correctly fails the structural completeness check first.
+    # framing validator leaves actual LZW decoding to Pillow, giving a real
+    # decoder-side failure.
     data = bytearray(_one_pixel_gif())
     data[33] ^= 1
     outcome = inspect_source(bytes(data), declared_sha256=None, policy=POLICY)

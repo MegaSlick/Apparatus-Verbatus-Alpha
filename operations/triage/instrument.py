@@ -64,9 +64,7 @@ JPEG_REMEASURE_FAILURE: Final = (
     "re-measure the JPEG case before making any determinism claim."
 )
 # Every sentence the sealed recipe declares and the validator then checks is written
-# once here. Both halves used to hold their own copy, wrapped differently, so a typo
-# corrected in one would have made the validator refuse every recipe the producer
-# builds — the producer unable to commit a confirmation at all, over a sentence.
+# once here, so the two can never drift into disagreeing wording for the same rule.
 PROXY_REDUCTION: Final = "Pillow.Image.reduce(integer BOX average, nearest integer sample)"
 PROXY_INTEGER_FACTOR_RULE: Final = "smallest k with max(width,height)/k <= declared_max_edge"
 OFFSET_SELECTION: Final = (
@@ -699,12 +697,9 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         raise InstrumentRefusal(
             "triage producer recipe candidate selection has the wrong closed schema"
         )
-    # The cell *count* is the invariant, exactly as `load_config` reads it: 16 is what
-    # bounds `global_prefilter_agreeing_cells`, and the columns and rows are declared
-    # tunable and UNMEASURED. Demanding the literal [4, 4] shipped today would refuse a
-    # recipe this module's own configuration loader had just accepted, and refuse it
-    # with a message naming 16 cells for a grid that has 16 — sending an operator to
-    # count cells in a file that is already correct.
+    # The cell *count* is the invariant, exactly as load_config reads it: 16 bounds
+    # global_prefilter_agreeing_cells, while the columns and rows themselves are
+    # declared tunable and UNMEASURED, so a fixed [4, 4] literal must not be demanded.
     grid = selection["global_prefilter_grid"]
     if not isinstance(grid, list) or len(grid) != 2:
         raise InstrumentRefusal(
@@ -978,21 +973,10 @@ def _verdict_for_metrics(
 ) -> str:
     agreement_reaches_link = agreeing * 1000 >= config.link_agreement_per_mille * overlapping
     # Two questions, and no third: is the disagreement small, or is it confined to a
-    # couple of regions? Either answer means a re-shoot.
-    #
-    # `blob_share_per_mille` was once a floor the *largest* component had to reach,
-    # which made the verdict run backwards against its own evidence. Admitting the
-    # negligible case fixed one blob but not two: at the shipped values forty
-    # disagreeing cells split across two regions of twenty scored "unrelated" — the
-    # verdict that tells a human to stop looking — while thirty-one cells in one
-    # region scored "near-duplicate". A re-shoot of one opening with two small ink or
-    # shadow differences lands in exactly that band, and two frames of one physical
-    # page then enter the corpus as two pages with nothing downstream able to see it.
-    #
-    # The component count is what separates diffuse disagreement from localized, so
-    # the floor is not needed beside it once "too small to argue about" is admitted on
-    # its own. What is still refused is a large disagreement scattered across many
-    # regions — two different pages that happen to agree in most cells.
+    # couple of regions? Either answer means a re-shoot. The component count already
+    # separates diffuse disagreement from localized, so `blob_share_per_mille` need
+    # only gate the negligible case; what is still refused is a large disagreement
+    # scattered across many regions — two different pages agreeing in most cells.
     negligible = (overlapping - agreeing) * 1000 < config.blob_share_per_mille * overlapping
     near_duplicate = agreement_reaches_link and (negligible or components <= 2)
     complementary = (

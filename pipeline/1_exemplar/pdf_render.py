@@ -143,11 +143,11 @@ def open_document(source: bytes | str | Path | BinaryIO) -> OpenPdf:
     return OpenPdf(document, pages)
 
 
-# `/Pages` nodes may share one child across several `/Kids`, so PDFium's page count
-# trusts a compounding `/Count` rather than the distinct page objects on disk: a ~2KB
-# file of self-sharing nodes opens cleanly and reports 500,000+ pages. This floor is
-# not the page cap ruling 17 retired — a reel's count stays the document's to declare.
-# It is also not a corruption test; see `_refuse_implausible_page_count`.
+# /Pages nodes may share one child across several /Kids, so PDFium's page count
+# trusts a compounding /Count rather than the distinct page objects on disk: a
+# ~2KB file of self-sharing nodes opens cleanly and reports 500,000+ pages. This
+# floor bounds that; it is not a page cap (a reel's count is the document's to
+# declare) nor a corruption test — see _refuse_implausible_page_count.
 MIN_BYTES_PER_DECLARED_PAGE: Final = 32
 
 

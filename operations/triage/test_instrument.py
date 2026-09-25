@@ -220,14 +220,13 @@ def test_a_pair_at_exactly_tau_link_is_still_only_recorded_candidate_evidence():
 def test_one_disagreeing_cell_is_negligible_rather_than_unrelated():
     """The verdict must not run backwards against its own evidence.
 
-    The blob share was once a floor the largest disagreeing component had to reach,
-    which sent the tightest agreements — one to thirty of 3072 cells at the shipped
-    values — past both clauses to "unrelated", while a hundred-cell blob was recorded
-    near-duplicate. A re-shoot read as unrelated is how two frames of one physical page
-    both enter the corpus as separate pages. The share still keeps a tiny difference
-    from being argued about; it no longer disqualifies the pair for being too similar.
-    Recorded without tuning against a synthetic corpus: the shipped values stay
-    UNMEASURED, and a large diffuse disagreement is still not near-duplicate.
+    A tiny disagreement (one to thirty of 3072 cells at the shipped values) must
+    reach near-duplicate, not "unrelated" — a re-shoot read as unrelated is how
+    two frames of one physical page both enter the corpus as separate pages. The
+    blob share only keeps a tiny difference from being argued about; it must not
+    disqualify a pair for being too similar. Recorded without tuning against a
+    synthetic corpus: the shipped values stay UNMEASURED, and a large diffuse
+    disagreement is still not near-duplicate.
     """
     config = instrument.load_config()
     count = config.grid_columns * config.grid_rows

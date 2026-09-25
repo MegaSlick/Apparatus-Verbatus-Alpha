@@ -68,10 +68,8 @@ SEAL_SUBJECT = "corpus-seal"
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    # One constructor for both ingress routes. The real route used to build its
-    # context here by hand and never asked for the Door's completion seal, so a
-    # hand-driven Exemplar after a refusing Door still sealed pages; the shared
-    # constructor asks on both routes, in the same order, before anything writes.
+    # One constructor for both ingress routes, so both ask for the Door's
+    # completion seal in the same order before anything writes.
     context = open_stage_context(args, EXEMPLAR, registry_factory=registry_factory)
     tree = context.tree
     _verify_existing_corpus_seal(tree)
@@ -818,9 +816,8 @@ def _verify_render_contract(
 def _verify_refusal(admission: dict[str, Any]) -> None:
     if admission["inputs"]:
         raise ContractError("a refused source must not claim an admitted-blob input")
-    # Refuses anything outside `admission.RefusalReason`. The free-text reasons the
-    # skeleton wrote are exactly what spec 03 replaced, and a consumer that accepted
-    # one because it happened to be a string would have replaced nothing.
+    # Refuses anything outside admission.RefusalReason: an arbitrary string here
+    # would let a refusal reason mean nothing in particular.
     reason_code(admission["payload"].get("reason"))
 
 

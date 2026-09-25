@@ -285,13 +285,13 @@ def test_the_policy_is_read_once_so_its_digest_is_of_the_bytes_that_were_parsed(
 
 
 def test_a_render_policy_rewritten_while_the_door_binds_cannot_split_the_run(tmp_path, monkeypatch):
-    """The recorded settings and the sealed digest can no longer disagree.
+    """The recorded settings and the sealed digest must never disagree.
 
-    The door used to resolve `PdfRenderSettings` from this file and then let
-    `run_config_bindings` open it a second time for the digest. A rewrite landing
-    between those reads produced a run that exited 0 while `run.json` recorded one
-    target DPI and its `config_digest` bound the bytes of another — a proof run
-    claiming a configuration it did not execute, reproduced at a one-DPI edit.
+    Two reads of the render policy file — one to resolve `PdfRenderSettings`,
+    another for `run_config_bindings`'s digest — could straddle a rewrite and
+    produce a run that exited 0 while `run.json` recorded one target DPI and its
+    `config_digest` bound the bytes of another: a proof run claiming a
+    configuration it did not execute. There must be exactly one read.
 
     The rewrite here lands at exactly that instant: the moment the one read
     returns. There is no second read for it to reach, so the run records the

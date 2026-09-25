@@ -513,16 +513,15 @@ def test_a_chain_of_empty_directories_cannot_declare_more_pages_than_bytes_allow
     """Six bytes may not buy a page ordinal, however many times it is repeated.
 
     A directory the chain walk accepts costs two bytes of entry count and four of
-    next-offset, and nothing in that shape requires an actual image. Chaining empty
-    directories six bytes apart therefore declared one page per six submitted bytes:
-    measured before the floor existed, 1.2 MB fanned out to 200,000 ordinals through
-    the real `expand_sources` in 0.25 seconds, and the 64 MiB source ceiling put the
-    worst case near eleven million. Each ordinal is a decode attempt and an artifact.
+    next-offset, and nothing in that shape requires an actual image, so chaining
+    empty directories six bytes apart declares one page per six submitted bytes;
+    the 64 MiB source ceiling puts the worst case near eleven million ordinals,
+    each one a decode attempt and an artifact.
 
     This is the TIFF half of the page-tree amplification already refused in
-    `pdf_render`, and it is deliberately not the page cap ruling 17 retired: a real
-    reel's page count is the document's to declare, and the test below proves a
-    genuine thousand-page TIFF still passes with room to spare.
+    `pdf_render`. It is deliberately not a page cap: a real reel's page count is
+    the document's to declare, and the test below proves a genuine thousand-page
+    TIFF still passes with room to spare.
     """
     pages = 10_000
     stride = 6
@@ -669,11 +668,9 @@ def test_no_complete_gif_prefix_is_admitted_after_its_header():
 
 
 def test_a_project_corruption_verdict_is_not_relabelled_as_a_decoder_gap():
-    """`FormatRefusal` subclasses `ValueError`, and the broad clause used to catch
-    it: a `corrupt` verdict this module raised itself came back out as
-    `unsupported`, with its real reason inside a parenthesis. Ruling 2 makes those
-    two different sentences to write — damaged bytes, or a reader this build owes —
-    so collapsing them into the wrong one loses the alarm's meaning."""
+    """FormatRefusal subclasses ValueError, so the broad decoder-error clause must
+    not also catch a `corrupt` verdict this module raised itself and relabel it
+    `unsupported` — damaged bytes and a reader this build owes are different facts."""
     with pytest.raises(FormatRefusal) as caught:
         decode_raster(_two_frame_gif(), page_index=7)
     assert caught.value.verdict is image_formats.FormatVerdict.CORRUPT
@@ -684,9 +681,8 @@ def test_a_project_corruption_verdict_is_not_relabelled_as_a_decoder_gap():
 
 
 def test_validate_tiff_refuses_a_strip_too_small_for_the_geometry_it_declares():
-    """The shipped fixture used to declare 6x5 pixels behind a one-byte strip, and
-    "the strip is inside the file" was the whole of the check. An uncompressed image
-    stores exactly what its rows occupy or it is not that image."""
+    """An uncompressed image stores exactly what its rows occupy, or it is not
+    that image; a strip merely being inside the file is not enough."""
     with pytest.raises(FormatRefusal, match="needs 30"):
         validate_tiff(tiff(6, 5, strip_bytes=1))
 
@@ -702,8 +698,7 @@ def test_an_uncompressed_tiff_can_retain_padding_after_its_last_strip():
 
 
 def test_validate_tiff_refuses_a_header_declaring_far_more_pixels_than_it_stores():
-    """The sharper form: a 123-byte file declaring a million pixels, which the old
-    validator accepted because the one stored byte was technically inside it."""
+    """A 123-byte file declaring a million pixels behind one stored byte is refused."""
     with pytest.raises(FormatRefusal, match=r"stores 1 byte\(s\) where .* needs 1000000"):
         validate_tiff(tiff(1000, 1000, strip_bytes=1))
 
@@ -783,10 +778,7 @@ def test_an_arithmetic_coded_frame_needs_no_huffman_table_at_all():
 
 def test_a_conforming_lossless_jpeg_carries_no_quantization_table_and_is_admitted():
     """A lossless frame does not quantize, so it legally carries no DQT and its Tq
-    field is zero. The first form of this repair exempted lossless frames from the
-    *Huffman* check and not the *quantization* one, so it still refused every
-    conforming lossless JPEG while its own test passed — because the builder emitted
-    a DQT no real lossless encoder would."""
+    field is zero; the quantization check, not only the Huffman one, must exempt it."""
     for marker in (0xC3, 0xC7, 0xCB, 0xCF):
         assert validate_jpeg(
             jpeg(
@@ -844,17 +836,13 @@ def test_structurally_damaged_tiff_bytes_refuse_before_a_decoder_sees_them():
 def test_a_layout_this_walker_cannot_read_defers_to_the_real_decoder():
     """An `unsupported ...` structural verdict is about this module, not the file.
 
-    Spec 03: structural validation "may no longer decide a real file is inadmissible
-    because nothing here reconstructs its pixels". `validate_tiff` refuses BigTIFF by
-    name — it walks 32-bit offsets and says so — but the installed decoder reads
-    BigTIFF perfectly well, and a large archival scan in that layout is exactly the
-    "real, uncorrupted file refused by policy" ruling 2 deletes. So the decoder
-    answers instead, and the file is admitted.
+    `validate_tiff` refuses BigTIFF by name — it only walks 32-bit offsets — but
+    the installed decoder reads BigTIFF perfectly well, so the decoder answers
+    instead and the file is admitted rather than refused as damaged.
 
-    BigTIFF is sniffed as TIFF for this to be the route it takes. Left unsniffed it
-    would be admitted anyway, through the unknown-magic fallback — but by accident
-    rather than by name, and it would turn into `unrecognized-format` the day that
-    fallback is ever tightened.
+    BigTIFF is sniffed as TIFF for this to be the route it takes. Left unsniffed
+    it would be admitted anyway through the unknown-magic fallback, but by
+    accident rather than by name.
     """
     output = BytesIO()
     Image.new("RGB", (8, 6), (12, 34, 56)).save(output, format="TIFF", big_tiff=True)
@@ -881,16 +869,12 @@ def _tiff_tag_value_offset(data: bytes, tag: int) -> int:
 def test_a_classic_tiff_past_the_retired_5000_page_cap_keeps_its_denominator():
     """The document declares the page count; a project policy number does not.
 
-    The directories are spaced rather than packed, and the spacing is the point.
-    This test used to chain them six bytes apart, which is the least the walk will
-    accept — and that is byte-for-byte the amplification shape
+    The directories are spaced rather than packed: chaining them the minimum six
+    bytes apart would be the amplification shape
     `test_a_chain_of_empty_directories_cannot_declare_more_pages_than_bytes_allow`
-    now refuses, so the two tests asserted opposite things about identical bytes.
-    Ruling 17 retired the 5,000-page *cap*, which is what this test exists to hold:
-    a document says how many pages it has. It never said six bytes buy a page. A
-    real page of this era costs ~128 bytes at Pillow's absolute smallest, so a
-    document declaring 5,001 pages weighs at least this much, and the count still
-    passes with no policy number anywhere near it.
+    refuses, not this test. A real page of this era costs ~128 bytes at Pillow's
+    absolute smallest, so a document declaring 5,001 pages weighs at least this
+    much, and the count still passes with no page-count cap anywhere near it.
     """
     pages = 5_001
     stride = 40
