@@ -235,8 +235,7 @@ def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
     records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
     return {
         record["payload"]["chair"]: {
-            # The identity is required to reject an attachment that combines a
-            # current outcome with a superseded Testimonium payload.
+            # Rejects an attachment pairing a current outcome with a superseded payload.
             "artifact_id": record["artifact_id"],
             "outcome": record["outcome"],
             "content_health": record["payload"].get("content_health"),
@@ -576,8 +575,6 @@ def act_attachment_facts(
     records = artifacts_for(context, ATTESTATORES, "act-attachment", act_id)
     if not records:
         raise FatalAccounting(f"act {act_id} has no derived act-attachment record")
-    # The shared derivation of "current" the Perlector uses; it refuses a duplicate or
-    # gapped ordinal chain.
     record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
     payload = record.get("payload")
     entries = payload.get("attachments") if isinstance(payload, dict) else None
@@ -604,14 +601,11 @@ def act_attachment_facts(
                 f"act {act_id} attachment entry for chair {entry['chair']!r} has no known attachment basis"
             )
         health = entry.get("content_health")
-        # A malformed health record and an absent one are different facts: only
-        # the absent one is honestly "health not recorded", and only the
-        # malformed one tells the operator to look at the artifact.
+        # Malformed is not absent: only an absent record means "health not recorded".
         if health is not None and not isinstance(health, dict):
             raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
         truncated = health.get("truncated") if isinstance(health, dict) else None
-        # Likewise malformed versus absent: a non-boolean read as act-scoped would skip
-        # the alignment check and fail later, blaming the Testimonium.
+        # A non-boolean read as act-scoped would skip the alignment check.
         page_witness = entry.get("page_witness")
         if not isinstance(page_witness, bool):
             raise FatalAccounting(
@@ -672,14 +666,10 @@ def act_attachment_facts(
                     "across its pages; one act attempt cannot have two health records; "
                     "restore the attempt's single recorded health"
                 )
-            # A page witness has one row per contributing page but one act attempt, so
-            # rows merge and a continuation without an anchor cannot erase the primary
-            # page's attachment. Whole rows merge, never OR-ed booleans, so no
-            # combination appears that no single page supplied.
+            # One row per contributing page, one act attempt: whole rows merge, never
+            # OR-ed booleans, so no combination appears that no single page supplied.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
-            # Only rows of one attempt merge (the health check above holds that), so
-            # filling a missing basis from a sibling page borrows nothing.
             # `act-line-not-located` is sticky, or `blank_corroboration` would treat a
             # failed alignment as checked geometry.
             bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
@@ -1063,9 +1053,6 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "chairs and nothing may add one after the seal"
         )
     attachments = act_attachment_facts(context, act_id, current_attempts)
-    # A page witness's attachment is an independent computed fact: it may have read its
-    # page while alignment honestly stayed unaligned, so it is not forced to match the
-    # act outcome.
     unaccounted = sorted(set(outcomes) ^ set(attachments))
     if unaccounted:
         raise FatalAccounting(
@@ -1073,10 +1060,8 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"chair(s) {unaccounted}; an absent fact would silently read as unattached, and "
             "an extra one would attach a chair that never testified for this act"
         )
-    # An act-scoped chair's `attached` restates its current Testimonium outcome. A
-    # reread appends an attempt without a new attachment, so a mismatch means the floor
-    # would count a superseded attempt. Page witnesses are exempt: their alignment check
-    # above is the independent fact.
+    # A reread appends an attempt without a new attachment, so a mismatch means a
+    # superseded attempt. Page witnesses are exempt: their alignment is their own fact.
     superseded = sorted(
         chair
         for chair, outcome in outcomes.items()
@@ -1089,9 +1074,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"outcome for chair(s) {superseded}; the witness floor may not be counted from "
             "a superseded attempt"
         )
-    # For every chair, page witnesses included: attachment health comes from this
-    # per-(act, chair) stream. The Perlector's `act_attachment_view` makes the same
-    # check.
+    # Every chair, page witnesses included; the Perlector's `act_attachment_view` agrees.
     stale_health = sorted(
         chair
         for chair, fact in attachments.items()
@@ -1169,11 +1152,7 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
         if review.get("outcome") != "recovery-requested":
             continue
         payload = _payload(review, f"recovery-requested review of {act_id}")
-        # The review's own recense ordinal, a function of its content, bound to its
-        # sealed identity below.
-        ordinal = payload.get("attempt_ordinal")
-        # The position of the request this review answers, which differs from the
-        # recense ordinal.
+        review_ordinal = payload.get("attempt_ordinal")
         request_ordinal = payload.get("recovery_request_ordinal")
         request_ref = payload.get("recovery_request_ref")
         matching_request = next(
@@ -1187,8 +1166,8 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
         if (
             matching_request is None
             or request_ref not in review.get("inputs", [])
-            or not _plain_int(ordinal)
-            or review.get("attempt_id") != attempt_id(act_id, "recense", ordinal)
+            or not _plain_int(review_ordinal)
+            or review.get("attempt_id") != attempt_id(act_id, "recense", review_ordinal)
             or not _plain_int(request_ordinal)
         ):
             raise FatalAccounting(
@@ -1493,13 +1472,10 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
     regions = regions_by_source_page(context)
     if not regions:
         return {}
-    # The sealed file the Designator and Ink Map read, bound at open; only the band
-    # widths vary per page.
     background_config = load_background_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", background_config["config_sha256"])
-    # `[coverage_audit]` from the same sealed bytes, with the Designator's page-spanning
-    # bound, so the component this audit sets aside is the one that stage accounts for.
-    # Only an unclaimed remainder is held.
+    # The Designator's own page-spanning bound, so this audit sets aside the component
+    # that stage accounts for.
     coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
     context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
     pages = sealed_page_images(context) if sealed_pages is None else sealed_pages
@@ -1529,9 +1505,7 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
                 coverage_policy=resolve_coverage_audit_policy(coverage_config, width, height),
             )
         except BackgroundInferenceRefusal as error:
-            # Without a paper value there is no ink count, and zero would be a false
-            # clean page. The refusal is recorded and carried to every act touching the
-            # page.
+            # Without a paper value zero ink would be a false clean page.
             findings[ordinal] = {
                 "ink_measurable": False,
                 "named_finding": INK_NOT_MEASURABLE,
@@ -2848,9 +2822,8 @@ def review_route_from_findings(
     ``None`` means the corresponding measurement does not exist and therefore
     routes like ``False``; absence is not a measured shortfall.
     """
-    # A shape guard: no current route input carries vocabulary a preference could ride
-    # in, so this cannot refuse anything yet. `publish_review` and the recovery payload
-    # are the screens that bite.
+    # A shape guard that cannot refuse anything yet; `publish_review` and the recovery
+    # payload are the screens that bite.
     refuse_capture_preference(
         {
             "cross_capture_occluded_everywhere": cross_capture_occluded_everywhere,
@@ -2898,10 +2871,7 @@ def review_route_from_findings(
         )
     if audit_unresolved:
         if audit_examination == EXAMINATION_INCOMPLETE:
-            # The re-proof ran but did not classify complete. The establishing reading
-            # stands with its own provenance, but the re-examination never happened; the
-            # reason names the instrument's verdict, not an engine word that may not
-            # exist (principle 8).
+            # Names the instrument's verdict, not an engine word that may not exist.
             reasons.append(
                 "the Perlector's audit re-proof of this act did not complete: "
                 f"{_describe_termination(audit_reproof_truncation)}, so the flag(s) it was "
@@ -2910,9 +2880,6 @@ def review_route_from_findings(
                 "re-examination that never finished"
             )
         elif audit_examination == EXAMINATION_REPROOF_REJECTED:
-            # The re-proof completed but rewrote text outside every flag: a reader's
-            # overreach, not a truncation. The rewrite was refused and the Pass-B
-            # reading stands.
             reasons.append(
                 "the Perlector's audit re-proof for this act completed but rewrote text "
                 "outside every location its own flag identified; the rewrite is refused rather "
@@ -2933,10 +2900,7 @@ def review_route_from_findings(
                 "to hold for"
             )
     if assessment_malformed:
-        # An unanchorable doubt report loses what the reader said about its doubts, and
-        # delivering over it would read as confidence. Held, never re-rolled (principle
-        # 7). The retained problem is quoted: it is the only sentence saying what went
-        # wrong.
+        # Held, never re-rolled. The problem is quoted: it alone says what went wrong.
         reason = (
             "the reader's doubt report over this act could not be anchored to its text and is "
             "retained as a malformed assessment; the act is held rather than delivered with "
@@ -3090,9 +3054,7 @@ def preflight_review_evidence(context, budget: dict) -> None:
                 "one recorded recrop and no reading may appear unrequested"
             )
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
-        # The earliest stage that can refuse a reading whose witness basis was
-        # superseded; the Archetypus and the export check it too, since any may be
-        # reached first.
+        # The Archetypus and the export check this too, since any may be reached first.
         require_current_witness_basis(
             act_id,
             latest,
