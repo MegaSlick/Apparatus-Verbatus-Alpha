@@ -864,12 +864,11 @@ class RunPodProvider(_RunPodAdapter):
         # separate "still pulling a fifteen-gigabyte image" from "started and
         # silent". `lastStartedAt` is the only field in this body that can --
         # it is null until the pod first runs (the same documented behaviour
-        # `_record` relies on when it falls back to the observation instant) --
-        # and it was previously read only there, where it becomes
-        # `PodRecord.created_at` and is therefore invisible to anything
-        # watching a pod come up. Surfaced here so a waiter can bound and
-        # record the container-start wait separately from whatever it is
-        # really waiting for (`controller_armer.ChannelControllerArmer`).
+        # `_record` relies on when it falls back to the observation instant).
+        # Surfacing it here, not only where it becomes `PodRecord.created_at`,
+        # lets a waiter bound and record the container-start wait separately
+        # from whatever it is really waiting for
+        # (`controller_armer.ChannelControllerArmer`).
         #
         # A malformed value is reported as absent rather than raised: this is a
         # read-only observation, not a gate, and the same reasoning that keeps

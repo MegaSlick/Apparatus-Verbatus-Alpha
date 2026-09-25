@@ -968,10 +968,10 @@ class PreflightRunner:
     ) -> tuple[bool, str]:
         """Derive the receipt's assembly claim from what this run actually did.
 
-        This used to be the constant `False`, with a note that called every
-        result "fixture-only".  On a rented card that was a false record of a
-        paid measurement: the receipt disowned the one measurement it was bought
-        to make (principle 8 -- claims are made only about what was actually
+        A constant `False` here, with every result called "fixture-only",
+        would be a false record of a paid measurement on a rented card: the
+        receipt would disown the one measurement it was bought to make
+        (principle 8 -- claims are made only about what was actually
         measured, and an understatement is as untrue as an overstatement).
 
         Both halves must hold, and each is a fact the layer that produced it
