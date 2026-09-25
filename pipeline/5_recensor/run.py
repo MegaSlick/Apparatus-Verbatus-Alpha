@@ -2934,15 +2934,30 @@ def review_route_from_findings(
     return "held-for-review", "; ".join(reasons)
 
 
-def continuation_candidate_refs(context) -> dict[str, dict]:
-    """Each act a Designator continuation candidate names, with that candidate's reference."""
-    named = {}
+def continuation_candidate_refs(context, sealed_act_ids: set[str]) -> dict[str, list[dict]]:
+    """Each act Designator continuation candidates name, with every naming candidate's
+    reference. A candidate claiming authority or naming an act outside the proposal
+    seal is refused: it may flag sealed acts for review, never introduce one."""
+    named: dict[str, list[dict]] = {}
     for record in _records_of_kind(context, DESIGNATOR, "continuation-candidate"):
+        payload = record["payload"]
+        if payload.get("authoritative") is not False:
+            raise FatalAccounting(
+                f"Designator continuation candidate {record['artifact_id']} is not marked "
+                "authoritative: false; the link between two acts is not the Designator's"
+            )
+        acts = [act["act_id"] for side in ("acts_a", "acts_b") for act in payload[side]]
+        outside = sorted(set(acts) - sealed_act_ids)
+        if outside:
+            raise FatalAccounting(
+                f"Designator continuation candidate {record['artifact_id']} names act(s) "
+                f"{outside} that are not in the proposal seal"
+            )
         reference = context.artifact_ref(
             DESIGNATOR, "continuation-candidate", record["artifact_id"]
         )
-        for side in ("act_a", "act_b"):
-            named[record["payload"][side]["act_id"]] = reference
+        for act_id in acts:
+            named.setdefault(act_id, []).append(reference)
     return named
 
 
@@ -3281,7 +3296,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     proposal_geometry: dict[str, dict] = {}
     # Counted from the tree: an in-memory counter would reset after the requested recrop.
     funded_pages = observation_funded_pages(context, expected_acts(context))
-    candidate_refs = continuation_candidate_refs(context)
+    candidate_refs = continuation_candidate_refs(
+        context, {act["act_id"] for act in expected_acts(context)}
+    )
 
     held = 0
     for act in expected_acts(context):
@@ -3683,7 +3700,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # `latest`, not `readings[0]`: manifest order is a hash.
             inputs=[reading_ref]
             + [context.input_ref(reference["image_path"]) for reference in basis_regions]
-            + ([candidate_refs[act_id]] if act_id in candidate_refs else []),
+            + candidate_refs.get(act_id, []),
             payload={
                 "act_key": act_key,
                 "reason": reason,
@@ -3704,6 +3721,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "uncertainty_assessment": assessment_record,
                 "cross_capture_coverage": cross_coverage,
                 **({"blank_evidence": blank_evidence} if blank_evidence is not None else {}),
+                **(
+                    {"continuation_candidate_refs": candidate_refs[act_id]}
+                    if act_id in candidate_refs
+                    else {}
+                ),
             },
         )
 

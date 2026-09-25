@@ -6,8 +6,11 @@ a decision for review; it holds both acts so neither is delivered as a whole
 act, and the export says partial.
 """
 
+import importlib.util
 import sys
 from pathlib import Path
+
+import pytest
 
 PIPELINE = Path(__file__).resolve().parents[1]
 for directory in (PIPELINE, PIPELINE / "2_designator"):
@@ -23,6 +26,7 @@ from test_structure_chair_e2e import (  # noqa: E402
     seal_rows,
 )
 
+from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import verify_final_seal  # noqa: E402
@@ -49,8 +53,67 @@ def test_both_acts_are_read_then_held_and_the_export_is_partial(tmp_path):
         assert review["outcome"] == "held-for-review"
         assert "continuation candidate" in review["payload"]["reason"]
         assert candidate_path in {reference["relative_path"] for reference in review["inputs"]}
+        assert [
+            reference["relative_path"]
+            for reference in review["payload"]["continuation_candidate_refs"]
+        ] == [candidate_path]
     for key in ("proposal:1:0", "proposal:2:1"):
         assert reviews[act_ids[key]]["outcome"] == "accepted"
+        assert "continuation_candidate_refs" not in reviews[act_ids[key]]["payload"]
 
     export = verify_final_seal(tree)
     assert export["payload"]["aggregate"]["status"] == "partial"
+
+
+def _load_recensor():
+    path = PIPELINE / "5_recensor" / "run.py"
+    spec = importlib.util.spec_from_file_location("recensor_candidate_refs_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+recensor = _load_recensor()
+
+
+class _Context:
+    def artifact_ref(self, stage, kind, artifact_id):
+        return {"relative_path": f"{stage}/{kind}/{artifact_id}", "sha256": "0" * 64}
+
+
+def _candidate(artifact_id: str, acts_a: list[str], acts_b: list[str], **payload) -> dict:
+    return {
+        "artifact_id": artifact_id,
+        "payload": {
+            "authoritative": False,
+            "acts_a": [{"act_id": act, "act_key": act} for act in acts_a],
+            "acts_b": [{"act_id": act, "act_key": act} for act in acts_b],
+            **payload,
+        },
+    }
+
+
+def _refs(monkeypatch, records, sealed=("a", "b", "c")):
+    monkeypatch.setattr(recensor, "_records_of_kind", lambda *_args: iter(records))
+    return recensor.continuation_candidate_refs(_Context(), set(sealed))
+
+
+def test_an_act_that_ends_one_break_and_opens_the_next_cites_both(monkeypatch):
+    refs = _refs(
+        monkeypatch, [_candidate("first", ["a"], ["b"]), _candidate("second", ["b"], ["c"])]
+    )
+    assert [ref["relative_path"] for ref in refs["b"]] == [
+        "designator/continuation-candidate/first",
+        "designator/continuation-candidate/second",
+    ]
+    assert len(refs["a"]) == len(refs["c"]) == 1
+
+
+def test_a_candidate_claiming_authority_is_refused(monkeypatch):
+    with pytest.raises(FatalAccounting, match="authoritative"):
+        _refs(monkeypatch, [_candidate("x", ["a"], ["b"], authoritative=True)])
+
+
+def test_a_candidate_naming_an_act_outside_the_seal_is_refused(monkeypatch):
+    with pytest.raises(FatalAccounting, match="proposal seal"):
+        _refs(monkeypatch, [_candidate("x", ["a"], ["unsealed"])])

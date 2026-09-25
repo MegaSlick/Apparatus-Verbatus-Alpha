@@ -431,8 +431,7 @@ def test_a_trailing_group_touching_the_bottom_pairs_with_an_unanchored_leading_g
     leading = body_component(0, 30)  # top touches page edge, no anchor
     page_b_groups = group([leading], PAGE_W, page_a_h)
 
-    candidate = continuation(page_a_groups, page_a_h, page_b_groups)
-    assert candidate is not None
+    (candidate,) = continuation(page_a_groups, page_a_h, page_b_groups)
     assert candidate["page_a_group"]["body_members"] == [trailing]
     assert candidate["page_b_group"]["body_members"] == [leading]
 
@@ -446,7 +445,7 @@ def test_an_anchored_leading_group_is_a_new_act_not_a_continuation():
     leading = body_component(0, 30)
     page_b_groups = group([anchor, leading], PAGE_W, page_a_h)
 
-    assert continuation(page_a_groups, page_a_h, page_b_groups) is None
+    assert continuation(page_a_groups, page_a_h, page_b_groups) == []
 
 
 def test_a_trailing_group_far_from_the_bottom_edge_is_not_a_continuation():
@@ -457,7 +456,7 @@ def test_a_trailing_group_far_from_the_bottom_edge_is_not_a_continuation():
     leading = body_component(0, 30)
     page_b_groups = group([leading], PAGE_W, page_a_h)
 
-    assert continuation(page_a_groups, page_a_h, page_b_groups) is None
+    assert continuation(page_a_groups, page_a_h, page_b_groups) == []
 
 
 def test_columns_that_do_not_overlap_are_not_a_continuation():
@@ -468,12 +467,56 @@ def test_columns_that_do_not_overlap_are_not_a_continuation():
     leading = component(150, 0, 20, 20)  # far right, touches top
     page_b_groups = group([leading], PAGE_W, page_a_h)
 
-    assert continuation(page_a_groups, page_a_h, page_b_groups) is None
+    assert continuation(page_a_groups, page_a_h, page_b_groups) == []
 
 
 def test_no_continuation_when_either_page_marked_out_nothing():
-    assert continuation([], 300, [component(0, 0, 10, 10)]) is None
-    assert continuation([component(0, 0, 10, 10)], 300, []) is None
+    assert continuation([], 300, [component(0, 0, 10, 10)]) == []
+    assert continuation([component(0, 0, 10, 10)], 300, []) == []
+
+
+def _edge_group(x: int, y: int, w: int, h: int, *, anchored: bool = False) -> dict:
+    """A group as `group_page` returns it, built directly: the scan merges
+    side-by-side components into one row group, so separate columns and a
+    detached folio box are stated here rather than grown from pixels."""
+    member = component(x, y, w, h)
+    return {
+        "bounds": member["bounds"],
+        "body_members": [member],
+        "anchors": [member] if anchored else [],
+        "rationale": "test group",
+    }
+
+
+def test_two_columns_crossing_one_page_break_are_two_candidates():
+    page_a = [_edge_group(20, 200, 70, 100), _edge_group(110, 220, 70, 80)]
+    page_b = [_edge_group(20, 0, 70, 40), _edge_group(110, 2, 70, 60)]
+    pairs = continuation(page_a, PAGE_H, page_b)
+    assert [
+        (pair["page_a_group"]["bounds"]["x"], pair["page_b_group"]["bounds"]["x"]) for pair in pairs
+    ] == [
+        (20, 20),
+        (110, 110),
+    ]
+
+
+def test_a_folio_number_at_the_bottom_edge_does_not_hide_the_crossing():
+    """The folio box is the lowest group on the page and shares no column with
+    the next page's opening; comparing only the lowest group would miss the act."""
+    act = _edge_group(20, 150, 140, 148)
+    folio = _edge_group(175, 290, 15, 10)
+    leading = _edge_group(20, 0, 140, 40)
+    (pair,) = continuation([act, folio], PAGE_H, [leading])
+    assert pair["page_a_group"] is act
+    assert pair["page_b_group"] is leading
+
+
+def test_an_anchored_group_at_the_top_edge_does_not_hide_an_unanchored_one():
+    trailing = _edge_group(20, 250, 160, 50)
+    heading = _edge_group(20, 0, 60, 20, anchored=True)
+    tail = _edge_group(100, 1, 80, 30)
+    (pair,) = continuation([trailing], PAGE_H, [heading, tail])
+    assert pair["page_b_group"] is tail
 
 
 # --- refusals ---------------------------------------------------------------------
@@ -594,16 +637,15 @@ def test_find_continuation_candidate_uses_each_page_s_own_edge_reach():
             edge_reach_a_px=3,
             edge_reach_b_px=4,
         )
-        is None
+        == []
     )
-    candidate = find_continuation_candidate(
+    (candidate,) = find_continuation_candidate(
         page_a_groups,
         page_a_h,
         page_b_groups,
         edge_reach_a_px=3,
         edge_reach_b_px=5,
     )
-    assert candidate is not None
     assert candidate["page_a_group"]["body_members"] == [trailing]
     assert candidate["page_b_group"]["body_members"] == [leading]
 
@@ -618,7 +660,7 @@ def test_find_continuation_candidate_uses_each_page_s_own_edge_reach():
             edge_reach_a_px=2,
             edge_reach_b_px=5,
         )
-        is None
+        == []
     )
 
 
@@ -637,13 +679,13 @@ def test_find_continuation_candidate_shares_a_column_with_no_slack_at_all():
     page_a_groups = group([trailing], PAGE_W, PAGE_H)
 
     touching = component(100, 0, 60, 30)  # x-range [100, 160): first column 100, no shared pixel
-    assert continuation(page_a_groups, PAGE_H, group([touching], PAGE_W, PAGE_H)) is None
+    assert continuation(page_a_groups, PAGE_H, group([touching], PAGE_W, PAGE_H)) == []
 
     overlapping = component(99, 0, 60, 30)  # x-range [99, 159): shares column 99 with trailing
-    assert continuation(page_a_groups, PAGE_H, group([overlapping], PAGE_W, PAGE_H)) is not None
+    assert continuation(page_a_groups, PAGE_H, group([overlapping], PAGE_W, PAGE_H)) != []
 
     apart = component(101, 0, 60, 30)  # x-range [101, 161]: one pixel clear of it
-    assert continuation(page_a_groups, PAGE_H, group([apart], PAGE_W, PAGE_H)) is None
+    assert continuation(page_a_groups, PAGE_H, group([apart], PAGE_W, PAGE_H)) == []
 
     with pytest.raises(TypeError):
         continuation(page_a_groups, PAGE_H, group([apart], PAGE_W, PAGE_H), column_overlap_px=1)

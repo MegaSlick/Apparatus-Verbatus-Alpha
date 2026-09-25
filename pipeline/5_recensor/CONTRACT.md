@@ -158,15 +158,17 @@ region ids. Reporting the second shape as empty was a defect that dropped a flag
 only evidence whenever the held act was the one act touching it; it is fixed
 now.
 
-**A continuation candidate holds both acts it names.** The Designator publishes
-`continuation-candidate` (not authoritative) when one act reaches a page's
-bottom edge and the next page opens on an unanchored act at its top edge, with
-no declared continuation between them. `continuation_candidate_refs` reads every
-such record, and `review_route_from_findings(continuation_candidate=True)` holds
-each named act for review after it is read: the head alone is a truncation and
-the tail alone has no heading. The review cites the candidate as an input. The
-link stays unmade and neither act is merged; the export is partial until a
-review decides.
+**A continuation candidate holds every act it names.** The Designator publishes
+`continuation-candidate` (not authoritative) for each crossing its geometry shows
+between adjacent pages with no declared continuation. `continuation_candidate_refs`
+reads every such record and refuses one that is not `authoritative: false` or
+that names an act outside the proposal seal. Each named act is read, then held
+by `review_route_from_findings(continuation_candidate=True)`: a head alone is a
+truncation and a tail alone has no heading. Its review lists every naming
+candidate, as inputs and as `payload["continuation_candidate_refs"]`, so an act
+that ends one break and opens the next cites both; the field is absent on a
+review no candidate names. The link stays unmade and no act is merged; the
+export is partial until a review decides.
 
 ## `kind="review"`
 

@@ -146,19 +146,19 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _refuse_text_fields(value, path: str = "$") -> None:
+def _refuse_text_fields(value, path: str = "$", *, kind: str = "act-group") -> None:
     """Walk a payload and refuse any forbidden content-bearing key, at any depth."""
     if isinstance(value, dict):
         for key, item in value.items():
             if isinstance(key, str) and key.lower() in _FORBIDDEN_TEXT_KEYS:
                 raise ContractError(
                     f"payload at {path}.{key} carries a forbidden content field; a "
-                    "Designator act-group artifact carries no text at the schema boundary"
+                    f"Designator {kind} artifact carries no text at the schema boundary"
                 )
-            _refuse_text_fields(item, f"{path}.{key}")
+            _refuse_text_fields(item, f"{path}.{key}", kind=kind)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            _refuse_text_fields(item, f"{path}[{index}]")
+            _refuse_text_fields(item, f"{path}[{index}]", kind=kind)
 
 
 # What an act-group's `detected_bounds` rests on, as a field so consumers can
@@ -1254,7 +1254,7 @@ def _publish_act_group(
                 edge_reach_a_px=analysis["thresholds"].page_edge_reach_px,
                 edge_reach_b_px=continuation_analysis["thresholds"].page_edge_reach_px,
             )
-            is not None
+            != []
         )
         payload["continuation"] = {
             "declared_bounds": continuation_bounds,
@@ -1273,14 +1273,19 @@ def _publish_act_group(
     )
 
 
-def _act_over(acts: list[dict], group_bounds: dict, *, trailing: bool) -> dict | None:
-    """The act a page-edge group belongs to: of the acts over it, the one nearest that edge."""
+def _acts_at_edge(acts: list[dict], group_bounds: dict, *, bottom: bool) -> list[dict]:
+    """The acts over a page-edge group that lie nearest that edge, every tie included."""
     over = [act for act in acts if _overlap_area(act["bounds"], group_bounds)]
-    if not over:
-        return None
-    if trailing:
-        return max(over, key=lambda act: (act["bounds"]["y"] + act["bounds"]["h"], act["act_key"]))
-    return min(over, key=lambda act: (act["bounds"]["y"], act["act_key"]))
+    if bottom:
+        edge = [act["bounds"]["y"] + act["bounds"]["h"] for act in over]
+        nearest = max(edge, default=None)
+    else:
+        edge = [act["bounds"]["y"] for act in over]
+        nearest = min(edge, default=None)
+    return sorted(
+        (act for act, position in zip(over, edge, strict=True) if position == nearest),
+        key=lambda act: act["act_key"],
+    )
 
 
 def _publish_continuation_candidates(
@@ -1291,13 +1296,16 @@ def _publish_continuation_candidates(
     acts_by_page: dict[int, list[dict]],
     grouping_policy: dict,
 ) -> None:
-    """Name each adjacent page pair whose geometry says an act may cross the break.
+    """Name every crossing of an adjacent page break that the geometry shows.
 
-    `acts_by_page` holds each page's proposed acts that no declared continuation
-    already links. The record is not authoritative: it enters no act and no
-    seal, and the Recensor holds both acts it names, since the head alone is
-    truncated and the tail alone has no heading. Whether they are one act stays
-    unmade here.
+    `acts_by_page` holds every page marked out by detection, with its proposed
+    acts (possibly none); `linked` marks an act whose
+    continuation the fixture declares, and a crossing from it is already
+    linked. The record is not authoritative: it enters no act and no seal, and
+    the Recensor holds every act it names, since a head alone is truncated and
+    a tail alone has no heading. Whether they are one act stays unmade here. A
+    side with no proposed act over its group is published empty, never
+    dropped: that ink is also unclaimed, and conservation holds it.
     """
     for ordinal_a in sorted(acts_by_page):
         ordinal_b = ordinal_a + 1
@@ -1309,49 +1317,50 @@ def _publish_continuation_candidates(
             continue
         edge_reach_a = analysis_a["thresholds"].page_edge_reach_px
         edge_reach_b = analysis_b["thresholds"].page_edge_reach_px
-        found = grouping.find_continuation_candidate(
+        pairs = grouping.find_continuation_candidate(
             analysis_a["groups"],
             analysis_a["height"],
             analysis_b["groups"],
             edge_reach_a_px=edge_reach_a,
             edge_reach_b_px=edge_reach_b,
         )
-        if found is None:
-            continue
-        group_a, group_b = found["page_a_group"]["bounds"], found["page_b_group"]["bounds"]
-        act_a = _act_over(acts_by_page[ordinal_a], group_a, trailing=True)
-        act_b = _act_over(acts_by_page[ordinal_b], group_b, trailing=False)
-        if act_a is None or act_b is None:
-            continue
-        payload = {
-            "authoritative": False,
-            "page_a": {"page_id": pages[ordinal_a]["subject_id"], "page_ordinal": ordinal_a},
-            "page_b": {"page_id": pages[ordinal_b]["subject_id"], "page_ordinal": ordinal_b},
-            "act_a": {"act_id": act_a["act_id"], "act_key": act_a["act_key"]},
-            "act_b": {"act_id": act_b["act_id"], "act_key": act_b["act_key"]},
-            "group_a_bounds": group_a,
-            "group_b_bounds": group_b,
-            "edge_reach_a_px": edge_reach_a,
-            "edge_reach_b_px": edge_reach_b,
-            "grouping_config_sha256": grouping_policy["config_sha256"],
-        }
-        _refuse_text_fields(payload)
-        context.publish(
-            kind="continuation-candidate",
-            subject_id=act_a["act_id"],
-            outcome="proposed",
-            inputs=[
-                status_refs[ordinal_a],
-                status_refs[ordinal_b],
-                *(
-                    context.artifact_ref(
-                        DESIGNATOR, "act-group", artifact_id(DESIGNATOR, "act-group", act_id)
-                    )
-                    for act_id in (act_a["act_id"], act_b["act_id"])
-                ),
-            ],
-            payload=payload,
-        )
+        for index, pair in enumerate(pairs):
+            group_a, group_b = pair["page_a_group"]["bounds"], pair["page_b_group"]["bounds"]
+            acts_a = _acts_at_edge(acts_by_page[ordinal_a], group_a, bottom=True)
+            if any(act["linked"] for act in acts_a):
+                continue
+            acts_b = _acts_at_edge(acts_by_page[ordinal_b], group_b, bottom=False)
+            payload = {
+                "authoritative": False,
+                "page_a": {"page_id": pages[ordinal_a]["subject_id"], "page_ordinal": ordinal_a},
+                "page_b": {"page_id": pages[ordinal_b]["subject_id"], "page_ordinal": ordinal_b},
+                "acts_a": [{"act_id": a["act_id"], "act_key": a["act_key"]} for a in acts_a],
+                "acts_b": [{"act_id": a["act_id"], "act_key": a["act_key"]} for a in acts_b],
+                "group_a_bounds": group_a,
+                "group_b_bounds": group_b,
+                "edge_reach_a_px": edge_reach_a,
+                "edge_reach_b_px": edge_reach_b,
+                "grouping_config_sha256": grouping_policy["config_sha256"],
+            }
+            _refuse_text_fields(payload, kind="continuation-candidate")
+            context.publish(
+                kind="continuation-candidate",
+                subject_id=f"{pages[ordinal_a]['subject_id']}:page-break:{index}",
+                outcome="proposed",
+                inputs=[
+                    status_refs[ordinal_a],
+                    status_refs[ordinal_b],
+                    *(
+                        context.artifact_ref(
+                            DESIGNATOR,
+                            "act-group",
+                            artifact_id(DESIGNATOR, "act-group", act["act_id"]),
+                        )
+                        for act in acts_a + acts_b
+                    ),
+                ],
+                payload=payload,
+            )
 
 
 def _claimed_regions_by_page(context) -> dict[int, list[dict]]:
@@ -2330,7 +2339,9 @@ def initial_pass(context) -> bool:
     _refuse_duplicate_proposal_bounds(context)
     expected = []
     seal_inputs = []
-    unlinked_acts: dict[int, list[dict]] = {}
+    proposed_acts: dict[int, list[dict]] = {
+        ordinal: [] for ordinal in pages if ordinal not in failures
+    }
     for act in context.fixture["act"]:
         row, evidence = _account_for_declared_act(
             context,
@@ -2345,12 +2356,17 @@ def initial_pass(context) -> bool:
         )
         expected.append(row)
         seal_inputs.extend(evidence)
-        if row["outcome"] == "proposed" and continuation_for(context.fixture, act["key"]) is None:
-            unlinked_acts.setdefault(act["page_ordinal"], []).append(
-                {"act_id": row["act_id"], "act_key": act["key"], "bounds": act_bounds(act)}
+        if row["outcome"] == "proposed":
+            proposed_acts[act["page_ordinal"]].append(
+                {
+                    "act_id": row["act_id"],
+                    "act_key": act["key"],
+                    "bounds": act_bounds(act),
+                    "linked": continuation_for(context.fixture, act["key"]) is not None,
+                }
             )
     _publish_continuation_candidates(
-        context, pages, page_cache, status_refs, unlinked_acts, grouping_policy
+        context, pages, page_cache, status_refs, proposed_acts, grouping_policy
     )
 
     # Fallback tiles are cut before conservation, which must see them as claims
@@ -2660,6 +2676,7 @@ def _publish_live_proposals(
         page_record = pages[ordinal]
         analysis = page_cache[ordinal]
         minted: list[tuple[str, str, dict]] = []
+        acts_by_page[ordinal] = []
         for act in answer.mint:
             bounds = structure_pass.validated_rectangle(act, analysis["width"], analysis["height"])
             act_id = derive_minted_act_id(page_record["subject_id"], "proposal", bounds)
@@ -2681,8 +2698,8 @@ def _publish_live_proposals(
                 _seal_row(act_id, act_key, page_record["subject_id"], ordinal, "proposed", evidence)
             )
             minted.append((act_id, act_key, bounds))
-            acts_by_page.setdefault(ordinal, []).append(
-                {"act_id": act_id, "act_key": act_key, "bounds": bounds}
+            acts_by_page[ordinal].append(
+                {"act_id": act_id, "act_key": act_key, "bounds": bounds, "linked": False}
             )
         _publish_live_act_groups(context, page_record, analysis, minted)
     return rows, acts_by_page

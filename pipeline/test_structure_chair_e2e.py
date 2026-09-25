@@ -1447,9 +1447,7 @@ def page_break_run(work: Path) -> SimpleNamespace:
 def test_an_act_split_across_a_page_break_is_held_not_delivered_complete(tmp_path):
     """Two acts the chair drew for one act are read, held for review, and never delivered.
 
-    Before the Designator recorded the pair, the head (no tail) and the tail
-    (no heading) were each delivered as a whole act and the run reported
-    complete. The link itself stays unmade: both acts remain their own records.
+    The link stays unmade: both acts remain their own records.
     """
     run = page_break_run(tmp_path)
     assert run.exits == (EXIT_COMPLETE, EXIT_COMPLETE, EXIT_COMPLETE)
@@ -1457,8 +1455,8 @@ def test_an_act_split_across_a_page_break_is_held_not_delivered_complete(tmp_pat
     rows = seal_rows(run.run_root)
     assert sorted(rows) == ["proposal:1:0", "proposal:1:1", "proposal:2:0", "proposal:2:1"]
     (candidate,) = artifacts(run.run_root, DESIGNATOR, "continuation-candidate")
-    assert candidate["payload"]["act_a"]["act_key"] == PAGE_BREAK_HEAD
-    assert candidate["payload"]["act_b"]["act_key"] == PAGE_BREAK_TAIL
+    assert [act["act_key"] for act in candidate["payload"]["acts_a"]] == [PAGE_BREAK_HEAD]
+    assert [act["act_key"] for act in candidate["payload"]["acts_b"]] == [PAGE_BREAK_TAIL]
 
     assert run.tail["pipeline/5_recensor/run.py"] == EXIT_HELD
     export = verify_final_seal(RunTree(run.run_root, RUN_ID))

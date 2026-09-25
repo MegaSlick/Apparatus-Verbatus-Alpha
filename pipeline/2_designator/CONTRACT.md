@@ -204,39 +204,47 @@ corroborations. A brace-linked pair is unaffected — `grouping.group_page`
 returns two distinct groups sharing one anchor, so each act claims its own.
 `continuation.geometric_corroboration` is `grouping.find_continuation_candidate`'s
 independent, page-edge-based check for whether the *geometry itself* looks like
-a page-break continuation; it is recorded, never gating, because a declared
-continuation whose crops do not happen to touch either page's edge (as in this
-stage's own synthetic fixture) is still a genuine continuation. **Continuation
+a page-break continuation; on `act-group` it is recorded, never gating, because
+a declared continuation whose crops do not happen to touch either page's edge (as
+in this stage's own synthetic fixture) is still a genuine continuation. The same
+check over undeclared pages is not only recorded: it decides which acts
+`continuation-candidate` holds for review. **Continuation
 ownership is settled and is the Recensor's** — see "Continuation ownership"
 below; this record is corroboration, never the relation itself.
 
 ## `kind="continuation-candidate"`
 
-One record per adjacent page pair whose geometry says an act may cross the page
-break, on both paths, published after the proposals and before the seal. Its
-subject is the head act's identity, with no attempt binding.
-`grouping.find_continuation_candidate` runs over the two pages' scanned groups:
-page A's trailing group reaches its bottom edge, page B's leading group reaches
-its top edge, carries no anchor and shares a column with it. Each group is then
-mapped to the proposed act over it, the one nearest that edge. A page cut into
-fallback tiles never forms a pair, since the grid touches both edges on every
-page; nor does a structure-held page, a page with no proposed act, or an act
-whose continuation the fixture declares (that pair is already linked).
+One record per crossing the geometry shows between two adjacent sealed pages
+that detection marked out, on both paths, published after the proposals and
+before the seal. `grouping.find_continuation_candidate` pairs every group on
+page A that reaches the bottom edge with every group on page B that reaches the
+top edge, carries no anchor and shares a column with it, so a folio number,
+catchword or second column at an edge cannot hide a crossing beside it. Each
+pair is one record; its subject is `<page A id>:page-break:<n>`, `n` the pair's
+place in page position order, with no attempt binding.
+
+Each group is mapped to the proposed acts over it that lie nearest that edge,
+every tie named; a side with no proposed act over its group is published empty,
+never dropped (that ink is also unclaimed, and conservation holds it). No pair
+forms when either page was cut into fallback tiles, by the chair or because the
+scan found no group, since the grid touches both edges on every page; nor from a
+structure-held page, nor from an act whose continuation the fixture declares
+(that pair is already linked).
 
 ```text
 authoritative (always false)
 page_a = {page_id, page_ordinal}, page_b = {page_id, page_ordinal}
-act_a = {act_id, act_key}, act_b = {act_id, act_key}
+acts_a = [{act_id, act_key}], acts_b = [{act_id, act_key}]
 group_a_bounds, group_b_bounds          the scanned groups that met the edges
 edge_reach_a_px, edge_reach_b_px        each page's own resolved edge reach
 grouping_config_sha256
 ```
 
-Inputs cite both pages' `structure-status` and both acts' `act-group` records.
-The payload passes `_refuse_text_fields`. It enters no act and no seal, and the
-Designator's exit code ignores it: both acts stay `proposed`, are witnessed and
-read, and the Recensor holds both for review (see its contract). The link stays
-unmade; a candidate is a flag for review, never the relation.
+Inputs cite both pages' `structure-status` and every named act's `act-group`
+record. The payload passes `_refuse_text_fields`. It enters no act and no seal,
+and the Designator's exit code ignores it: the named acts stay `proposed`, are
+witnessed and read, and the Recensor holds each for review (see its contract).
+The link stays unmade; a candidate is a flag for review, never the relation.
 
 ## `kind="page-fallback"`
 
@@ -1284,7 +1292,7 @@ The fixture Perlector separately decodes every delivered tile and returns
 below the page's inferred background. The Recensor confirms the blank only after
 those declared witness reports and the Perlector's observed-empty reading exist.
 
-`continuation-candidate` is read by the Recensor, which holds both acts it names.
+`continuation-candidate` is read by the Recensor, which holds every act it names.
 `act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop` and
 `structure-status` have no consumer downstream of this stage today.
 `structure-status` is the exception in one direction only: it is not *read* by a
@@ -1402,7 +1410,7 @@ This stage's proposal-seal `has_continuation` flag is therefore a proposal, and
 `grouping.find_continuation_candidate`'s independent geometric check is recorded
 on `act-group` as `continuation.geometric_corroboration` — evidence for whoever
 reads the act, never a gate here. The same check over undeclared adjacent pages
-publishes `continuation-candidate`, which proposes nothing: it names two acts for
+publishes `continuation-candidate`, which proposes nothing: it names acts for
 review.
 
 ## What this contract does not settle
@@ -1482,11 +1490,18 @@ answers one page at a time, so an act that crosses a page break comes back as
 two acts: a head with no tail and a tail with no heading. When the geometry
 shows it (see `kind="continuation-candidate"`), both acts are read and then held
 for review, and the export is partial rather than complete. Nothing joins them
-yet. What this does not catch: a break the scan's groups do not show, such as a
-tail that opens beside a margin anchor, a page whose last group stops short of
-the edge reach, or a page cut into fallback tiles. Such an act is still
-delivered as two whole acts without a finding, so no run over real material may
-yet be described as having accounted for every page-crossing act.
+yet. What this does not catch: a tail the scan groups with a margin anchor (an
+anchored group is read as a new act); a head or tail that stops short of its
+page's edge reach; a crossing between two groups that share no pixel column,
+which includes a reading-order break from one column into another; a page cut
+into fallback tiles; and pages that are not consecutive sealed ordinals. Such an
+act is still delivered as two whole acts without a finding, so no run over real
+material may yet be described as having accounted for every page-crossing act.
+Side-by-side ink is one scanned group, so two columns crossing together arrive
+as one candidate naming every act at the edge. The `page_edge_reach_bp` provenance caveat in
+`config/designator_grouping.toml` still says this check is recorded rather than
+acted on; that file's bytes are sealed into every run's digest, so it is
+corrected here, and the caveat is stale.
 
 **Recovery from a structural hold.** Spec 06's test 4 asks for three things: the
 page held with a named reason, no silent gap downstream, and "the recovery
@@ -1980,14 +1995,17 @@ the shape of the ninth/tenth/eleventh above. The parameter is gone. What was
 being defaulted to zero is not a threshold but the absence of one: with no
 tolerance the test is plain interval intersection, which — unlike an absolute
 8px overlap — means the same thing on a 3508px scan as on a 260px fixture,
-because there is no length in it to scale. Zero is also the strict end, and this
-check is recorded rather than gating, so the direction of a miss is a `false` on
-an act-group record, never a lost continuation. Slack here would be a page-width
+because there is no length in it to scale. Zero is also the strict end. On
+`act-group` a miss is only a `false`, but the same test decides which acts
+`continuation-candidate` holds, so a miss there delivers a split act as two
+whole acts with no finding. Whether real consecutive pages need slack is
+unmeasured: it is to be measured on the 127-page calibration set before a real
+run is trusted. Slack here would be a page-width
 proportion (`margin_bp`'s basis, not the six height-based fields'), and if a real
 corpus ever shows consecutive pages need it, it enters the config as a basis
 point and arrives as a required keyword.
 `test_grouping.py::test_find_continuation_candidate_shares_a_column_with_no_slack_at_all`
-holds all three halves down: touching x-ranges do not corroborate, one shared
+holds all three halves down: touching x-ranges do not pair, one shared
 pixel does, and the keyword is refused. `_x_range` reports the half-open pixel
 span `[x, x+w)`, so two ranges that meet exactly at an endpoint share no pixel
 column at all — a review-round correction to this same test (`grouping.py`'s
