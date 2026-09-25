@@ -973,68 +973,34 @@ class RunPodProvider(_RunPodAdapter):
         what absorbs billing lag instead.
         """
 
-        started = require_utc(started_at, "billing start")
-        cutoff = require_utc(cutoff_at, "billing cutoff")
-        if started >= cutoff:
-            raise ProviderFailure("billing window start must precede its cutoff")
-        query = urllib.parse.urlencode(
-            {
-                "podId": pod_id,
-                "startTime": _rfc3339(started),
-                "endTime": _rfc3339(cutoff),
-                "bucketSize": "hour",
-                "grouping": "podId",
-            }
+        started, cutoff = _billing_window(started_at, cutoff_at)
+        response = self.transport.request(
+            "GET", _billing_path(pod_id, started, cutoff, grouping="podId")
         )
-        response = self.transport.request("GET", f"/billing/pods?{query}")
         if response.status != 200:
             raise ProviderFailure(
                 f"RunPod pod billing returned HTTP {response.status}: {_body_summary(response.body)}"
             )
         rows = _array(response.body, "RunPod billing")
+
+        def unavailable(reason: str) -> CostCapture:
+            return _unavailable(pod_id, started, cutoff, reason)
+
         lines: list[CostLine] = []
         for row in rows:
-            if not isinstance(row, dict):
-                return _unavailable(
-                    pod_id, started, cutoff, "RunPod billing returned a non-object record"
-                )
-            row_pod = row.get("podId")
-            if not isinstance(row_pod, str) or row_pod != pod_id:
-                return _unavailable(
-                    pod_id,
-                    started,
-                    cutoff,
-                    "RunPod billing returned a record that does not name the requested pod; "
-                    "cost attribution is unverifiable",
-                )
+            problem = _billing_row_problem(row, pod_id)
+            if problem is not None:
+                return unavailable(problem)
             try:
                 bucket = _timestamp(row.get("time"), "billing record time")
                 amount = as_decimal(row.get("amount"), "RunPod billing amount")
             except (ProviderFailure, ValueError) as error:
-                return _unavailable(
-                    pod_id,
-                    started,
-                    cutoff,
-                    f"RunPod billing record is structurally unverifiable: {error}",
-                )
+                return unavailable(f"RunPod billing record is structurally unverifiable: {error}")
             billed_ms = row.get("timeBilledMs")
             if not isinstance(billed_ms, int) or isinstance(billed_ms, bool) or billed_ms < 0:
-                return _unavailable(
-                    pod_id, started, cutoff, "RunPod billing record has an invalid timeBilledMs"
-                )
-            # `time` is the *bucket start*, so the hour bucket containing the
-            # pod's creation legitimately begins before the requested window.
-            # One bucket width of slack before the start is allowed for exactly
-            # that; anything earlier, or anything after the cutoff, came from a
-            # window this call did not ask for and cannot be totalled.
-            if bucket < started - _BUCKET_WIDTH or bucket > cutoff:
-                return _unavailable(
-                    pod_id,
-                    started,
-                    cutoff,
-                    "RunPod billing record lies outside the requested window by more than one "
-                    "bucket; cost attribution is unverifiable",
-                )
+                return unavailable("RunPod billing record has an invalid timeBilledMs")
+            if _outside_requested_window(bucket, started, cutoff):
+                return unavailable(_OUTSIDE_WINDOW)
             lines.append(
                 CostLine(
                     amount,
@@ -1043,11 +1009,8 @@ class RunPodProvider(_RunPodAdapter):
                 )
             )
         if not lines:
-            return _unavailable(
-                pod_id,
-                started,
-                cutoff,
-                "RunPod billing returned no records for a pod that ran; zero was not inferred",
+            return unavailable(
+                "RunPod billing returned no records for a pod that ran; zero was not inferred"
             )
         return CostCapture(
             pod_id,
@@ -1068,14 +1031,7 @@ class RunPodProvider(_RunPodAdapter):
             raise ProviderFailure(
                 f"RunPod pod-list GET returned HTTP {response.status}: {_body_summary(response.body)}"
             )
-        rows = _array(response.body, "RunPod pod-list")
-        result: list[dict[str, object]] = []
-        for index, row in enumerate(rows):
-            if not isinstance(row, dict):
-                raise ProviderFailure(f"RunPod pod-list entry {index} is not an object")
-            _text(row.get("id"), f"RunPod pod-list entry {index} id")
-            result.append(row)
-        return result
+        return _pod_list_entries(_array(response.body, "RunPod pod-list"))
 
     def _record(self, payload: Mapping[str, object]) -> PodRecord:
         pod_id = _text(payload.get("id"), "RunPod pod id")
@@ -1153,12 +1109,7 @@ def _runtime_contract(
     if not isinstance(command, list) or not all(isinstance(part, str) and part for part in command):
         raise ProviderFailure(f"RunPod pod {pod_id} reports no dockerStartCmd to verify against")
     template = payload.get("templateId")
-    environment = payload.get("env")
-    if not isinstance(environment, Mapping) or environment.get(RUNPOD_ROUTE_ENV) != "v1":
-        raise ProviderFailure(
-            f"RunPod pod {pod_id} env does not seal {RUNPOD_ROUTE_ENV}=v1; its pod-side "
-            "timer could not close it through the route that created it"
-        )
+    _require_sealed_route(pod_id, payload, "v1")
     return PodRuntimeContract(
         interruptible=False,
         gpu_type=gpu_type,
@@ -1327,19 +1278,8 @@ class RunPodV2Provider(_RunPodAdapter):
         that does not name this pod cannot attribute the records to it.
         """
 
-        started = require_utc(started_at, "billing start")
-        cutoff = require_utc(cutoff_at, "billing cutoff")
-        if started >= cutoff:
-            raise ProviderFailure("billing window start must precede its cutoff")
-        query = urllib.parse.urlencode(
-            {
-                "podId": pod_id,
-                "startTime": _rfc3339(started),
-                "endTime": _rfc3339(cutoff),
-                "bucketSize": "hour",
-            }
-        )
-        response = self.transport.request("GET", f"/billing/pods?{query}")
+        started, cutoff = _billing_window(started_at, cutoff_at)
+        response = self.transport.request("GET", _billing_path(pod_id, started, cutoff))
         if response.status != 200:
             raise ProviderFailure(
                 f"RunPod pod billing returned HTTP {response.status}: "
@@ -1398,15 +1338,9 @@ class RunPodV2Provider(_RunPodAdapter):
             )
         lines: list[CostLine] = []
         for row in records:
-            if not isinstance(row, dict):
-                return unavailable("RunPod billing returned a non-object record", window_start)
-            row_pod = row.get("podId")
-            if not isinstance(row_pod, str) or row_pod != pod_id:
-                return unavailable(
-                    "RunPod billing returned a record that does not name the requested pod; "
-                    "cost attribution is unverifiable",
-                    window_start,
-                )
+            problem = _billing_row_problem(row, pod_id)
+            if problem is not None:
+                return unavailable(problem, window_start)
             try:
                 bucket = _timestamp(row.get("startTime"), "billing record startTime")
                 bucket_end = _timestamp(row.get("endTime"), "billing record endTime")
@@ -1419,19 +1353,12 @@ class RunPodV2Provider(_RunPodAdapter):
                 return unavailable(
                     "RunPod billing record ends at or before it starts", window_start
                 )
-            # `startTime` is the bucket start, so the hour containing creation
-            # legitimately begins before the requested window; one bucket of
-            # slack before it, and nothing after the cutoff. A resolved window,
-            # when the provider declared one, bounds every record as well.
-            outside = bucket < started - _BUCKET_WIDTH or bucket > cutoff
+            # A resolved window, when the provider declared one, bounds every record too.
+            outside = _outside_requested_window(bucket, started, cutoff)
             if window_end is not None:
                 outside = outside or bucket < window_start or bucket_end > window_end
             if outside:
-                return unavailable(
-                    "RunPod billing record lies outside the requested window by more than one "
-                    "bucket; cost attribution is unverifiable",
-                    window_start,
-                )
+                return unavailable(_OUTSIDE_WINDOW, window_start)
             lines.append(
                 CostLine(
                     amount,
@@ -1557,11 +1484,7 @@ class RunPodV2Provider(_RunPodAdapter):
                     "RunPod pod-list response carries no readable pagination.hasNextPage; this "
                     "page cannot be shown to be the last"
                 )
-            for index, row in enumerate(pods):
-                if not isinstance(row, dict):
-                    raise ProviderFailure(f"RunPod pod-list entry {index} is not an object")
-                _text(row.get("id"), f"RunPod pod-list entry {index} id")
-                rows.append(row)
+            rows.extend(_pod_list_entries(pods))
             next_cursor = pagination.get("nextCursor")
             if not pagination["hasNextPage"]:
                 if next_cursor is not None:
@@ -1720,12 +1643,7 @@ def _v2_runtime_contract(
         )
     command = _v2_start_argv(pod_id, payload)
     margin = _billing_cutoff_margin_from_environment(pod_id, payload)
-    environment = payload.get("env")
-    if not isinstance(environment, Mapping) or environment.get(RUNPOD_ROUTE_ENV) != "v2":
-        raise ProviderFailure(
-            f"RunPod pod {pod_id} env does not seal {RUNPOD_ROUTE_ENV}=v2; its pod-side "
-            "timer could not close it through the route that created it"
-        )
+    _require_sealed_route(pod_id, payload, "v2")
     image = _text(payload.get("image"), f"RunPod pod {pod_id} image")
     template = payload.get("template")
     if V2_ON_DEMAND_BASIS is None:
@@ -1955,6 +1873,68 @@ def _parse_billing_cutoff_margin(value: object, label: str) -> int:
         return parse_billing_cutoff_margin_seconds(value, label)
     except ValueError as error:
         raise ProviderFailure(str(error)) from error
+
+
+def _require_sealed_route(pod_id: str, payload: Mapping[str, object], route: str) -> None:
+    environment = payload.get("env")
+    if not isinstance(environment, Mapping) or environment.get(RUNPOD_ROUTE_ENV) != route:
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} env does not seal {RUNPOD_ROUTE_ENV}={route}; its pod-side "
+            "timer could not close it through the route that created it"
+        )
+
+
+def _pod_list_entries(rows: list[object]) -> list[dict[str, object]]:
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ProviderFailure(f"RunPod pod-list entry {index} is not an object")
+        _text(row.get("id"), f"RunPod pod-list entry {index} id")
+    return rows  # type: ignore[return-value]
+
+
+def _billing_window(started_at: datetime, cutoff_at: datetime) -> tuple[datetime, datetime]:
+    started = require_utc(started_at, "billing start")
+    cutoff = require_utc(cutoff_at, "billing cutoff")
+    if started >= cutoff:
+        raise ProviderFailure("billing window start must precede its cutoff")
+    return started, cutoff
+
+
+def _billing_path(pod_id: str, started: datetime, cutoff: datetime, **extra: str) -> str:
+    query = {
+        "podId": pod_id,
+        "startTime": _rfc3339(started),
+        "endTime": _rfc3339(cutoff),
+        "bucketSize": "hour",
+        **extra,
+    }
+    return f"/billing/pods?{urllib.parse.urlencode(query)}"
+
+
+def _billing_row_problem(row: object, pod_id: str) -> str | None:
+    if not isinstance(row, dict):
+        return "RunPod billing returned a non-object record"
+    row_pod = row.get("podId")
+    if not isinstance(row_pod, str) or row_pod != pod_id:
+        return (
+            "RunPod billing returned a record that does not name the requested pod; "
+            "cost attribution is unverifiable"
+        )
+    return None
+
+
+_OUTSIDE_WINDOW: Final = (
+    "RunPod billing record lies outside the requested window by more than one "
+    "bucket; cost attribution is unverifiable"
+)
+
+
+def _outside_requested_window(bucket: datetime, started: datetime, cutoff: datetime) -> bool:
+    """A record's timestamp is its bucket start, so the hour containing the pod's
+    creation may begin up to one bucket before the requested window; anything
+    earlier, or after the cutoff, came from a window this call did not ask for."""
+
+    return bucket < started - _BUCKET_WIDTH or bucket > cutoff
 
 
 def _path_id(value: str) -> str:
