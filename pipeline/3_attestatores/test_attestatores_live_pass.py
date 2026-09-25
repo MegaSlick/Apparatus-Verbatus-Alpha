@@ -163,14 +163,14 @@ attestatores = _load_attestatores()
 
 
 # What each chair's stand-in row states, per chair, as the shipped real
-# catalogue states it at its smallest tier. Churro's system string (27) plus
-# its dense-page answer against the vendor's `HistoricalDocument` grammar
-# (1,905) and one image token no longer fits a 2,048 context; Chandra's
-# `OCR_LAYOUT_PROMPT` (593) plus its dense-page answer (1,645) and one image
-# token overruns it too. The row moves to what the shipped catalogue states
-# for these chairs at every tier (8,192), never the arithmetic or the pixels:
-# this fixture mirrors the real catalogue's own row rather than deriving one
-# from local arithmetic.
+# catalogue states it at its smallest tier. Chandra's `OCR_LAYOUT_PROMPT`
+# (593) plus its dense-page answer (1,645) and one image token add to 2,239,
+# which overruns a 2,048 context; Churro's system string (27) plus its
+# dense-page answer against the vendor's `HistoricalDocument` grammar (1,905)
+# and one image token add to 1,933, which still fits 2,048. The row moves to
+# what the shipped catalogue states for these chairs at every tier (8,192)
+# regardless, never the arithmetic or the pixels: this fixture mirrors the
+# real catalogue's own row rather than deriving one from local arithmetic.
 LIVE_ROW_CONTEXTS: dict[str, int] = {"attestator_1": 8192, "attestator_3": 8192}
 
 
