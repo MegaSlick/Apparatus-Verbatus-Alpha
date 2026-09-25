@@ -223,13 +223,11 @@ class DeterministicChairRegistry:
     skeleton and every offline test", living beside the tests rather than in
     `proof/` — `proof/` holds fixture *data*, and a fake implementation is code.
 
-    **It is an ordinary module of an ordinary package, and it ships.** An earlier
-    version of this docstring said it "only ever loads under pytest, so that
-    nothing shipped can reach it"; `pyproject.toml` includes `common.*` wholesale,
-    so `import common.chairs.conftest` works in any installed copy. A fake
-    answering under a configured chair's name is the exact failure the framework
-    exists to refuse, and a claim about packaging that nothing checked was not
-    stopping it. The constructor guard below is: outside a pytest session this
+    **It is an ordinary module of an ordinary package, and it ships**:
+    `pyproject.toml` includes `common.*` wholesale, so `import
+    common.chairs.conftest` works in any installed copy, and packaging alone
+    does not keep a fake from answering under a configured chair's name. The
+    constructor guard below does that instead: outside a pytest session this
     class refuses to exist at all.
 
     Independence, in the sense spec 02 defines: it does not import, subclass or
@@ -273,14 +271,9 @@ class DeterministicChairRegistry:
     def ensure(self, identity):
         """Verify the pinned snapshot, by its own reading of the manifest artifact.
 
-        It used to return a `VerifiedSnapshot` naming a directory it had created
-        itself and copy `identity.digest_manifest` into the answer, so the shared
-        contract suite could not tell an implementation that verifies from one
-        that asserts — and `exercise_contract` checks only the value's type and
-        identity, so an implementation with no verification at all passed it. The
-        hashing below is deliberately this class's own rather than
+        The hashing below is deliberately this class's own rather than
         `manifests.verify_snapshot`: two implementations that call one verifier
-        agree because they are one verifier.
+        agree because they are one verifier, not because either one verifies.
         """
         from common.chairs.errors import DigestMismatchRefusal, UnresolvedChairRefusal
         from common.chairs.models import VerifiedSnapshot

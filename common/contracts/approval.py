@@ -117,10 +117,9 @@ def synthetic_fixture_ingress_record() -> dict[str, str]:
 def real_ingress_record() -> dict[str, str]:
     """Return the ingress record for a real submission.
 
-    Carries no approval evidence: this mode used to bind a
-    data-gate policy hash and an approval reference here. Real material never
-    reaches git regardless of any run-level sign-off, so the record now says only
-    which of the two known routes created the run.
+    Carries no approval evidence: real material never reaches git regardless of
+    any run-level sign-off, so this names only which of the two known routes
+    created the run.
     """
     return {"mode": REAL_INGRESS}
 
