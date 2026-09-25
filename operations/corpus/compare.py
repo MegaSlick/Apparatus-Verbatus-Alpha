@@ -82,14 +82,12 @@ SCHEMA = "reference-comparison.v1"
 # per run would make "how many misses" a knob rather than a measurement.
 PREDECLARED_IOU_THRESHOLD = Fraction(1, 2)
 
-# A sanity bound on the assignment's size, not a state-space limit -- the
-# matcher is polynomial (`O(size**3)`), so this no longer guards exponential
-# blow-up. Set well above this corpus's own measured maximum:
+# A sanity bound on the assignment's size, not a state-space limit -- the matcher
+# is polynomial (O(size**3)). Set well above this corpus's own measured maximum:
 # `plan.py`'s `records_per_page_distribution`, over the sealed row snapshot,
-# reports 1,165 pages at a mean of 6.59 records/page and a maximum of 30 (the
-# `SPEC.md` Section 5.6 figure of 2.5-3.5 records/page was an estimate this
-# package had already replaced with that measurement). A page whose reference
-# or eligible-pipeline count exceeds this cap is refused by name rather than
+# reports 1,165 pages at a mean of 6.59 records/page and a maximum of 30. A page
+# whose reference or
+# eligible-pipeline count exceeds this cap is refused by name rather than
 # scored, on the working assumption that a page this crowded is malformed
 # input, not a real page of this corpus.
 MAX_ACTS_PER_PAGE = 128
@@ -454,7 +452,7 @@ class ReadOnlyRunTree:
     # Named one by one rather than passed through by `__getattr__`, so a method
     # added to `RunTree` shows up as a change here rather than slipping through
     # a catch-all. `test_compare.py` reconciles both lists against `RunTree`'s
-    # own public surface, so neither can drift (round 2 item 12).
+    # own public surface, so neither can drift.
 
     def build_manifest(self, stage: str, *, verify_inputs: bool = True) -> dict[str, Any]:
         return self._tree.build_manifest(stage, verify_inputs=verify_inputs)

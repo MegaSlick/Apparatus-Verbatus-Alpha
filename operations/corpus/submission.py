@@ -1,12 +1,11 @@
 """The submission builder: cached page bytes, hard-linked, sealed, and admitted.
 
-`SPEC.md` §5.2 fixes the shape a Door admission needs and what must never appear in
-it. This module builds that shape from three already-validated U1 artifacts (a
-fetch plan, the row snapshot it was built from, and the hold-out ledger) plus one
-input this unit supplies its own contract for, because no fetcher (U2) exists yet
-in this worktree: `FetchedPage`, one already-cached page body per IIIF identifier,
-named by content and never re-copied — see its docstring below for why this is a
-locally-defined interface and not a defect worked around.
+`SPEC.md` §5.2 fixes the shape a Door admission needs and what must never appear
+in it. This module builds that shape from three already-validated artifacts (a
+fetch plan, the row snapshot it was built from, and the hold-out ledger) plus
+`FetchedPage`, this module's own locally-defined interface for one
+already-cached page body per IIIF identifier, named by content and never
+re-copied — see its docstring below for why the interface stays local.
 
 **Refusal order, in the sequence §5.2 and §5.4 name:** a page in the hold-out
 ledger is refused by name (`holdout-page` or the stronger `cross-split-page`,
@@ -18,8 +17,9 @@ path; a page naming a record absent from the row snapshot is refused
 supplied bytes is refused `page-not-fetched`; two identifiers whose fetched bytes
 are byte-identical are refused `duplicate-page-bytes` on the second occurrence,
 per §5.1's dedupe-before-submit rule — a merged page is unrecoverable at the
-Exemplar boundary (`CONTRACT.md:177-183`), so this is the last place it can be
-caught cheaply — and a page is only registered against later duplicates once it
+Exemplar boundary (see the Exemplar `CONTRACT.md`'s corpus-seal section), so
+this is the last place it can be caught cheaply — and a page is only
+registered against later duplicates once it
 is fully admitted, so a page refused for an unrelated reason can never be named as
 the "original" of someone else's `duplicate-page-bytes` refusal; and a page whose
 decoded pixels disagree with the IIIF response's declared dimensions is refused
@@ -98,23 +98,19 @@ _IMAGE_SUFFIX = ".jpg"
 
 
 class FetchedPage(NamedTuple):
-    """One already-cached page body, named by content — this unit's own contract.
+    """One already-cached page body, named by content — this module's own contract.
 
-    U2 (`operations/corpus/{fetch,cache}.py`) is the tracked producer of the
+    `operations/corpus/{fetch,cache}.py` is the tracked producer of the
     `private/corpora/recordgold/cache/<response-sha256>.jpg` files `SPEC.md`
-    §5.1 lays out. It did not exist when this module was first built, so this
-    stayed a locally-defined interface rather than a coupling to U2's cache
-    layout: the one fact this module actually needs from a fetch is a local,
-    already-cached JPEG file plus the response metadata `sidecar.build_sidecar`'s
-    `iiif` block requires — nothing here reads
-    `private/corpora/recordgold/cache/` directly.
+    §5.1 lays out, but nothing here reads that cache layout directly: the one
+    fact this module needs from a fetch is a local, already-cached JPEG file
+    plus the response metadata `sidecar.build_sidecar`'s `iiif` block requires.
 
-    U2 exists now, and `integrate.fetched_pages_from_log` is its cache read: it
-    turns a sealed `recordgold-fetch-log.v1` plus `cache_root` into exactly these
-    tuples, verifying each cache file against the digest its own log entry
-    declares. That coupling lives in `integrate.py`, not here, on purpose —
-    see that module's docstring for why the boundary stayed put instead of
-    collapsing into this file once U2 landed.
+    `integrate.fetched_pages_from_log` is the cache read that supplies these
+    tuples: it turns a sealed `recordgold-fetch-log.v1` plus `cache_root` into
+    exactly this shape, verifying each cache file against the digest its own
+    log entry declares. That coupling lives in `integrate.py`, not here — see
+    that module's docstring for why the boundary stays there.
     """
 
     cache_path: Path

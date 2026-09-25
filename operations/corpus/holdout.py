@@ -6,8 +6,8 @@ identifier ledger derivable before a single byte is fetched, so a page can never
 even be requested under the wrong split by a builder that forgot a flag.
 
 Every IIIF identifier carrying at least one `test`-split record is *held*.
-`refuse_held_out_page` is the predicate a later unit (the submission builder, U3)
-calls before writing a page into a submission folder — it never returns a reading,
+`refuse_held_out_page` is the predicate the submission builder calls before
+writing a page into a submission folder — it never returns a reading,
 never picks among candidates, it only says whether a page may proceed, so it
 refuses rather than answers. Two distinct refusals, both closed vocabulary from
 `SPEC.md` §5.1: `holdout-page` for a page that is nothing but held-out material,

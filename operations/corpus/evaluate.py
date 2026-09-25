@@ -1,57 +1,40 @@
 """Score what a sealed run actually exported against reference truth, denominator whole.
 
-`compare.py` owns the join and the scoring: it pairs sealed proposal regions
-with reference boxes by IoU and scores each pair with the sealed normaliser and
-scorer. It deliberately takes the hypotheses -- `{act_id: (status, text)}` --
-from its caller, and until this module there was no caller that built them from
-a real run: the bench runner emits `not-run`, and a mathematically correct scorer
-handed the wrong texts scores the wrong thing. This module is that caller, and it takes the texts from one
-place only: the Armarium export the run itself sealed, each delivered text
-re-digested against the Archetypus record that established it, so a score can
-never be computed over a text the pipeline did not publish.
+`compare.py` owns the join and the scoring: it pairs sealed proposal regions with
+reference boxes by IoU and scores each pair with the sealed normaliser and
+scorer, taking its hypotheses from its caller. This module is that caller, and
+it takes texts from one place only: the Armarium export the run itself sealed,
+each delivered text re-digested against the Archetypus record that established
+it, so a score is never computed over text the pipeline did not publish.
 
-**The denominator is kept whole.** Every reference record ends in exactly one
-row: matched and scored, missed on a page the run sealed, or not attempted
-because the run never sealed its page. Every proposed act ends counted by its
-export category -- delivered, held, refused, confirmed blank, excluded -- and a
-held or missing act is scored as an empty hypothesis against its reference,
-never omitted and never given a perfect score. An unmatched pipeline act is
-reported, not scored, because RecordGold annotates records only and may not
-have labelled what the pipeline found. Splits, merges and ambiguous overlaps
-are what the IoU matrix shows: the full matrix travels in each page's
-comparison record, so a reader can see which pairs were eligible and which the
-assignment chose.
+The denominator is kept whole: every reference record ends in exactly one row
+(matched and scored, missed on a sealed page, or not attempted because the run
+never sealed its page), and every proposed act is counted by its export
+category, with a held or missing act scored as an empty hypothesis rather than
+omitted or given a perfect score. An unmatched pipeline act is reported, not
+scored, since RecordGold annotates records only. The full IoU matrix travels in
+each page's comparison record so a reader can see which pairs were eligible.
 
-**Two aggregate rates, each labelled by what it counts.** The matched-pairs rate
-is the arithmetic of the pairs the assignment made: a record the pipeline never
-found contributes to neither side of that fraction, so failing to find an act
-cannot improve it and cannot worsen it either. GOALS 1 says a missed act is
-worse than a poorly read act, so the second rate counts every missed record's
-reference units as deletions -- the same treatment a held act already gets --
-and that is the number a capture failure actually moves. Neither rate counts a
-not-attempted record: the run never sealed that page, so it is a gap in the
-trial's coverage rather than a reading the pipeline got wrong, and
-`reference_records_not_attempted` is where a reader sees it.
+Two aggregate rates: the matched-pairs rate is the arithmetic of the pairs the
+assignment made, so a record the pipeline never found affects it not at all. The
+second rate additionally counts every missed record's reference units as
+deletions, since GOALS 1 says a missed act is worse than a poorly read one — this
+is the number a capture failure actually moves. Neither rate counts a
+not-attempted record; `reference_records_not_attempted` is where a reader sees
+that coverage gap.
 
-**What this report measures and what it only states.** The run's own facts come
-from the sealed tree: the export digest, the run and config digests, and whether
-this was a fixture run, which is read from the export payload's own identity
-field (`fixture_id` on a fixture run, `submission_id` on a real one, never both,
-never neither) rather than from a flag the operator could omit. `code_ref` is a
-caller's declaration; it is checked against the commit this checkout has out
-when there is one, and `code_ref_check` names what the check found rather than
-implying one happened. A reference ledger, when passed, is verified: every
-reference page's `self_hash` must appear in it.
+The run's own facts (export digest, run and config digests, fixture-vs-real)
+come from the sealed tree, read from the export payload's own identity field
+rather than an operator-set flag. `code_ref` is a caller's declaration, checked
+against the current checkout when there is one; `code_ref_check` names what the
+check found rather than implying one happened. A passed reference ledger is
+verified: every reference page's `self_hash` must appear in it.
 
-**Outside the establishment path, by construction.** `operations/corpus/` may
-not import `pipeline/` and nothing here writes a run tree; the reference text
-is read here and only here, after the run is sealed, and through the read-only
-wrapper that refuses every write outright. This module never trains, never
-tunes, never selects a reading.
-
-A report built over the synthetic fixture is labelled a fixture result, in the
-record and in the summary a person reads. It proves the driver; it says nothing
-about RecordGold reading quality.
+`operations/corpus/` may not import `pipeline/` and nothing here writes a run
+tree; reference text is read here and only here, after the run is sealed,
+through a read-only wrapper that refuses every write. This module never trains,
+tunes, or selects a reading. A report built over the synthetic fixture is
+labelled a fixture result: it proves the driver, not RecordGold reading quality.
 """
 
 from __future__ import annotations
@@ -136,8 +119,7 @@ _CATEGORY_STATUS: dict[str, OutputStatus] = {
 
 # One normalisation profile for both halves of the missed-inclusive fraction and
 # for `compare_page` itself, passed explicitly rather than left to two defaults
-# that could drift apart. The
-# report records which one ran.
+# that could drift apart. The report records which one ran.
 PROFILE = GRAPHEMIC_V1
 
 _MATCHED_SCOPE = (
@@ -429,10 +411,9 @@ def _code_ref_check(code_ref: str) -> dict[str, Any]:
     head = _checkout_commit()
     if head is None:
         return {"state": "no-checkout-found", "checkout_head": None}
-    # Any honest abbreviation of the head, not the three lengths this module
-    # happened to think of: git abbreviates to whatever is unambiguous, and this
-    # repository's own commit tables use ten. Seven is git's own floor, below which a prefix names too
-    # much.
+    # Seven is this evaluator's own floor, not git's: git accepts unique
+    # abbreviations from four characters, and this repository's own commit
+    # tables use ten.
     matches = len(code_ref) >= 7 and head.startswith(code_ref)
     state = "matches-checkout" if matches else "differs-from-checkout"
     return {"state": state, "checkout_head": head}
@@ -540,9 +521,8 @@ def evaluate_run(
     sha_by_act = {act["act_id"]: act["page_sha256"] for act in pipeline_acts}
 
     # One page's bytes sealed at two ordinals would compare that page twice and
-    # count its reference acts twice, which surfaces later as a denominator that
-    # does not reconcile -- a correct outcome under a message that names nothing
-    # Name the digest instead.
+    # count its reference acts twice, surfacing later as a denominator that does
+    # not reconcile under a message that names nothing. Name the digest instead.
     repeated = sorted(
         {sha for sha in page_shas.values() if list(page_shas.values()).count(sha) > 1}
         & set(references)
@@ -725,7 +705,7 @@ def evaluate_run(
             "reference_page_self_hashes": sorted(page["self_hash"] for page in references.values()),
             # Which split was scored, and every split those pages carry records
             # from. A score against `train` or against held-out `test` must never
-            # read like a score against `val` (finding 12).
+            # read like a score against `val`.
             "splits": {"scored": splits, "present_on_pages": splits_present},
         },
         "denominators": {
@@ -780,7 +760,7 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     record in this package that nothing held to a shape.
 
     **Closed exactly where a name is read**, and the docstring says so rather
-    than claiming more (round 2 item 5): the top level, `run`, `corpus`,
+    than claiming more: the top level, `run`, `corpus`,
     `corpus.splits`, `denominators`, `code_ref_check`, `aggregate` with both of
     its rate blocks and every rate inside them, and every record row. The three
     lists -- `pages`, `unmatched_pipeline_acts`, `pages_without_reference` --

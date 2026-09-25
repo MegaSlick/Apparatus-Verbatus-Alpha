@@ -424,11 +424,10 @@ def test_refuses_dimension_mismatch(scratch):
 
 def test_refused_page_does_not_taint_a_later_page_with_a_phantom_duplicate(scratch):
     # A page sorts before another (by identifier) and shares its response bytes,
-    # but is itself refused `unrecognized-page-extension` — a check that used to
-    # run *after* this module registered a page's digest for dedupe purposes.
-    # If registration ever runs for a page that is not actually admitted, the
-    # later, byte-identical, otherwise-good page is wrongly refused
-    # `duplicate-page-bytes` naming a page that was never in the submission.
+    # but is itself refused `unrecognized-page-extension`. If dedupe registration
+    # ran for a page that is not actually admitted, the later, byte-identical,
+    # otherwise-good page would be wrongly refused `duplicate-page-bytes` naming
+    # a page that was never in the submission.
     bad_extension_url = (
         "https://europe.iiif.teklia.com/iiif/2/geneanet%2FArdennes_BMS%2F100000%2F00001.png/"
         "1,1,50,50/full/0/default.jpg"

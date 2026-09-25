@@ -72,9 +72,8 @@ def sealed_bindings() -> dict:
     """The real configuration bindings the walking skeleton's runs carry.
 
     Not invented values: `open_context` refuses a direct stage running against an
-    unsealed configuration (spec 01's guard), and a test that dodged it by using a
-    fake digest would be proving the Exemplar against a run the pipeline would
-    never produce.
+    unsealed configuration, and a test that dodged it with a fake digest would be
+    proving the Exemplar against a run the pipeline would never produce.
     """
     from common.chairs.registry import ChairRegistry
     from common.stage import load_fixture, run_config_bindings
@@ -752,20 +751,18 @@ def test_the_exemplar_refuses_a_run_the_door_never_wrote(tmp_path):
 
 
 def test_a_real_ingress_run_whose_door_refused_seals_no_exemplar_page(tmp_path):
-    """The real-ingress boundary gap named in this stage's own contract, closed.
+    """A separately invoked Exemplar must ask for the predecessor seal too.
 
     `common.stage.open_context` cannot serve a real submission -- its
-    fixture/scenario comparison has nothing to compare on a real run -- so the
-    Exemplar used to build its real `StageContext` by hand, and that branch
-    never called `verify_predecessor_seal`: a Door that refused after publishing
-    real admissions (`require_no_duplicate_sources` / `require_some_admitted`,
-    see `test_door.py`) writes no `stage-seal`, but a separately invoked
-    Exemplar would still open and could seal pages from those admissions.
-    `open_stage_context` now decides the route from one read of the run
-    authority and asks for the predecessor seal on both, so this test holds the
-    constructor rather than a branch. Driving the orchestrator never exercises
-    it, because the orchestrator stops at the Door's non-zero exit -- this is
-    the boundary a directly invoked Exemplar must hold on its own.
+    fixture/scenario comparison has nothing to compare on a real run -- so a real
+    `StageContext` needs its own route, and that route must still call
+    `verify_predecessor_seal`: a Door that refused after publishing real
+    admissions (`require_no_duplicate_sources` / `require_some_admitted`, see
+    `test_door.py`) writes no `stage-seal`, but a separately invoked Exemplar
+    would otherwise still open and could seal pages from those admissions.
+    Driving the orchestrator never exercises this, because the orchestrator
+    stops at the Door's non-zero exit -- this is the boundary a directly invoked
+    Exemplar must hold on its own.
     """
     tree, _ = build_refused_real_door_run(tmp_path / "runs")
     admissions = [
@@ -880,13 +877,6 @@ def test_the_exemplar_refuses_a_sealed_door_boundary_that_admitted_nothing(
 
 
 def test_a_run_with_no_submitted_source_manifest_cannot_be_reconciled_at_all():
-    """This used to close with "no seal artifact exists" over a tree only the *door*
-    had written, and call that an ordering assertion. It was true before the test
-    body ran and stayed true against an Exemplar mutated to publish the seal first —
-    a guard nobody has seen fail. The ordering claim now lives in
-    `test_a_source_that_lost_its_door_outcome_refuses_before_anything_is_sealed`,
-    which actually runs the Exemplar; what is left here is the one thing this test
-    really exercised, said plainly."""
     with pytest.raises(ContractError, match="no submitted source manifest"):
         _EXEMPLAR_RUN._submitted_sources({"source_manifest": []})
 
@@ -1165,13 +1155,11 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
 def test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_complete(tmp_path):
     """The predecessor-seal check holds on the real route, not only the fixture one.
 
-    The real Exemplar used to build its context by hand and never asked for the
-    Door's completion seal, so a hand-driven Exemplar after a refusing Door still
-    sealed pages -- the gap the contract recorded. The operator case is the one
-    the Door's duplicate refusal exists for: one scan under two filenames. The
-    Door seals its duplicate report, refuses the run at `EXIT_FATAL`, and never
-    seals its boundary; the Exemplar must then refuse by name over that missing
-    boundary and leave the tree exactly as the Door left it.
+    The operator case is the one the Door's duplicate refusal exists for: one
+    scan under two filenames. The Door seals its duplicate report, refuses the
+    run at `EXIT_FATAL`, and never seals its boundary; the Exemplar must then
+    refuse by name over that missing boundary and leave the tree exactly as the
+    Door left it.
     """
     data = png(4, 3)
     run_root, door_argv = _real_submission(
