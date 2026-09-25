@@ -139,17 +139,12 @@ class ReceiptPublication:
     evidence_reference: Mapping[str, str]
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "receipt_reference", _immutable_reference(self.receipt_reference, "receipt")
-        )
-        object.__setattr__(
-            self, "audit_reference", _immutable_reference(self.audit_reference, "launch-audit")
-        )
-        object.__setattr__(
-            self,
-            "evidence_reference",
-            _immutable_reference(self.evidence_reference, "serving-evidence"),
-        )
+        for name, label in (
+            ("receipt_reference", "receipt"),
+            ("audit_reference", "launch-audit"),
+            ("evidence_reference", "serving-evidence"),
+        ):
+            object.__setattr__(self, name, _immutable_reference(getattr(self, name), label))
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,32 +430,31 @@ class StageContextReceiptPublisher:
     def publish(
         self, receipt: ServingReceipt, launch_audit: Mapping[str, object]
     ) -> ReceiptPublication:
-        receipt_reference = self.context.write_serving_receipt(receipt.identity, receipt.details)
-        if not isinstance(receipt_reference, Mapping):
-            raise ReceiptPublicationError("StageContext returned a non-object receipt reference")
-        write_audit = getattr(self.context, "write_serving_launch_audit", None)
-        if not callable(write_audit):
-            raise ReceiptPublicationError(
-                "StageContext has no serving launch-audit publication seam"
-            )
-        audit_reference = write_audit(dict(launch_audit))
-        if not isinstance(audit_reference, Mapping):
-            raise ReceiptPublicationError(
-                "StageContext returned a non-object launch-audit reference"
-            )
-        write_evidence = getattr(self.context, "write_serving_evidence_manifest", None)
-        if not callable(write_evidence):
-            raise ReceiptPublicationError(
-                "StageContext has no serving evidence-manifest publication seam"
-            )
-        evidence_reference = write_evidence(dict(receipt_reference), dict(audit_reference))
-        if not isinstance(evidence_reference, Mapping):
-            raise ReceiptPublicationError(
-                "StageContext returned a non-object serving evidence-manifest reference"
-            )
+        receipt_reference = _object_reference(
+            self.context.write_serving_receipt(receipt.identity, receipt.details), "receipt"
+        )
+        write_audit = self._seam("write_serving_launch_audit", "launch-audit")
+        audit_reference = _object_reference(write_audit(dict(launch_audit)), "launch-audit")
+        write_evidence = self._seam("write_serving_evidence_manifest", "evidence-manifest")
+        evidence_reference = _object_reference(
+            write_evidence(dict(receipt_reference), dict(audit_reference)),
+            "serving evidence-manifest",
+        )
         return ReceiptPublication(
             dict(receipt_reference), dict(audit_reference), dict(evidence_reference)
         )
+
+    def _seam(self, name: str, label: str) -> Callable[..., object]:
+        write = getattr(self.context, name, None)
+        if not callable(write):
+            raise ReceiptPublicationError(f"StageContext has no serving {label} publication seam")
+        return write
+
+
+def _object_reference(reference: object, label: str) -> Mapping[str, str]:
+    if not isinstance(reference, Mapping):
+        raise ReceiptPublicationError(f"StageContext returned a non-object {label} reference")
+    return reference
 
 
 class ServingManager:
