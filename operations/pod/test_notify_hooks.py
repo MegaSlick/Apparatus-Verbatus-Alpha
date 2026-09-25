@@ -163,14 +163,11 @@ def test_every_boundary_reads_a_credential_shape_the_same_way(value: str) -> Non
     from common.credentials import looks_like_credential_value
     from operations.serving.manager import _redacted
 
-    from .bootstrap_main import PlanRefusal, refuse_credential_looking_argv
     from .fixture import SCRUBBED, _scrub
 
     assert looks_like_credential_value(value)
     scrubbed: list[str] = []
     assert _scrub({"message": f"started {value}"}, "body", scrubbed) == {"message": SCRUBBED}
-    with pytest.raises(PlanRefusal, match="looks like a credential"):
-        refuse_credential_looking_argv(["--run-id", value])
     assert _redacted(f"INFO started {value} ok") != f"INFO started {value} ok"
 
 
@@ -194,6 +191,37 @@ def test_every_boundary_passes_an_identifier_or_a_path(value: str) -> None:
     assert _scrub({"message": value}, "body", []) == {"message": value}
     refuse_credential_looking_argv(["--run-id", value])
     assert _redacted(f"INFO {value}") == f"INFO {value}"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sk-not-a-real-key",
+        "aB3fG9kL2mN7pQ5rS8tU1v",
+        "abcdefghij.klmnopqrst.uvwxyz1234",
+        "/workspace/abcdefghij.klmnopqrst.uvwxyz1234/report.json",
+        "/workspace/sk-not-a-real-key/report.json",
+    ],
+)
+def test_the_argv_refusal_refuses_a_bare_secret_or_a_prefixed_or_dotted_segment(value: str) -> None:
+    from .bootstrap_main import PlanRefusal, refuse_credential_looking_argv
+
+    with pytest.raises(PlanRefusal, match="looks like a credential"):
+        refuse_credential_looking_argv(["--run-id", value])
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/tmp/pytest-of-runner/pytest-341/test_hold_survives_a_completed0/volume",
+        "/var/folders/wv/yt31hyzs7cgf7xs7mn8xnlpw0000gn/T/volume",
+        "/workspace/runs/recordgold-pilot-2026-09-25/",
+    ],
+)
+def test_the_argv_refusal_passes_run_folders_and_temp_directories(value: str) -> None:
+    from .bootstrap_main import refuse_credential_looking_argv
+
+    refuse_credential_looking_argv(["--volume-mount-path", value])
 
 
 @pytest.mark.parametrize(

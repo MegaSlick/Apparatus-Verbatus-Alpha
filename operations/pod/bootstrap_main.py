@@ -117,8 +117,9 @@ from common.chairs.registry import (
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
 from common.credentials import (
+    CREDENTIAL_PIECE,
     CREDENTIAL_VALUE_PREFIXES,
-    credential_piece,
+    is_credential_piece,
     looks_like_credential_field,
 )
 from common.witness_context import validate_witness_context_configuration
@@ -864,12 +865,31 @@ def _require_launch_token_named(
         )
 
 
+def _argv_credential_piece(value: str) -> str | None:
+    """A bare value gets the full shape test; a path segment only a key prefix or a dotted token.
+
+    Run folders and temp directories are long mixed-alphanumeric segments too.
+    """
+
+    if not any(character in "/\\.:@" for character in value) and is_credential_piece(value):
+        return value
+    return next(
+        (
+            piece
+            for piece in CREDENTIAL_PIECE.findall(value)
+            if piece.startswith(CREDENTIAL_VALUE_PREFIXES)
+            or (piece.count(".") >= 2 and is_credential_piece(piece))
+        ),
+        None,
+    )
+
+
 def _credential_shape(value: str) -> str | None:
     """Say what made the value look like a secret, without repeating any of it."""
 
     if looks_like_credential_field(value):
         return "it reads as a secret's own name"
-    piece = credential_piece(value)
+    piece = _argv_credential_piece(value)
     if piece is None:
         return None
     if piece.startswith(CREDENTIAL_VALUE_PREFIXES):
@@ -882,7 +902,7 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
 
     Two independent checks: ``looks_like_credential_field`` asks whether the
     *name* implied by the value looks like a secret's name (a marker word);
-    ``credential_piece`` asks whether any piece of the value is *shaped* like
+    ``_argv_credential_piece`` asks whether the value, or a path segment in it, is *shaped* like
     an opaque token, regardless of what it is named. Neither is a proof --
     a value can be a real secret without either marker, and this refusal cannot
     see into ``--transfer-target-factory``'s runtime capability at all.
