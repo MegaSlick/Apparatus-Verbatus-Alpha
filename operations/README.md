@@ -16,7 +16,6 @@ Anything with a human, a machine, or money on the other end.
 | `data/` | future movement of runs and exports between machines |
 | `notify/` | the implemented, fileless one-way notification client |
 | `review/` | immutable review-candidate manifests and local receipts |
-| `seats/` | the standing briefs a worktree seat is dispatched with |
 
 The table is not exhaustive; a directory that needs explaining carries its own README.
 
@@ -100,8 +99,8 @@ yet be recorded (`pipeline/7_armarium/CONTRACT.md:279-283`).
 
 **The operator's `export` verb is not that bundle.** It copies `run.json` and the
 `7_armarium` directory out of the run tree as a base Armarium evidence bundle
-(`operations/operator/surface.py:963-1042`), prints the reconciliation table, and says on
-screen that what it made is not the Spec 11 product bundle.
+(`OperatorSurface.export` in `operations/operator/surface.py`), prints the
+reconciliation table, and says on screen that what it made is not the Spec 11 product bundle.
 
 Every problem is shown in three short parts: what happened, what it means, and what to
 do next. Save the receipt path Verbatus prints. Indexed receipts appear in `status`
