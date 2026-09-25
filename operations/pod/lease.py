@@ -29,8 +29,9 @@ from pathlib import Path, PurePosixPath
 from typing import Iterator, Mapping
 
 from common.contracts.canonical import self_hash, verify_self_hash
+from common.durability import sync_directory
 
-from .durable import atomic_write, canonical_json, sync_directory
+from .durable import atomic_write, canonical_json
 from .models import (
     LeaseFormatError,
     LeaseOwnershipError,

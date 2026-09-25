@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final, Iterator
 
 from common.contracts.canonical import canonical_bytes as _pipeline_canonical_bytes
-from operations.pod.durable import sync_directory
+from common.durability import sync_directory
 
 UTC = timezone.utc
 SCHEMA = "operator-receipt.v1"
