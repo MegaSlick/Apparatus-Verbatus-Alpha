@@ -3172,6 +3172,19 @@ def _page_ledger_category(
     )
 
 
+def _page_ledger_unit(
+    unit_type: str, page: dict[str, Any], category: str, reason: str | None
+) -> dict[str, Any]:
+    return {
+        "unit_type": unit_type,
+        "unit_id": f"{unit_type}:{page['ordinal']}",
+        "category": category,
+        "reason": reason,
+        "declared_path": page.get("declared_path"),
+        "declared_sha256": page.get("declared_sha256"),
+    }
+
+
 def _terminal_ledger(
     act_outcomes: list[dict[str, Any]],
     pages: list[dict[str, Any]],
@@ -3221,29 +3234,11 @@ def _terminal_ledger(
             category, reason = _page_ledger_category(
                 ordinal, acts_on_page.get(ordinal, []), edge_hold=ordinal in edge_hold_pages
             )
-            page_units.append(
-                {
-                    "unit_type": "page",
-                    "unit_id": f"page:{ordinal}",
-                    "category": category,
-                    "reason": reason,
-                    "declared_path": page.get("declared_path"),
-                    "declared_sha256": page.get("declared_sha256"),
-                }
-            )
+            page_units.append(_page_ledger_unit("page", page, category, reason))
         else:
             category = ArmariumCategory.REFUSED_WITH_REASON.value
             reason = page.get("reason") or "no reason was recorded"
-        source_units.append(
-            {
-                "unit_type": "source",
-                "unit_id": f"source:{ordinal}",
-                "category": category,
-                "reason": reason,
-                "declared_path": page.get("declared_path"),
-                "declared_sha256": page.get("declared_sha256"),
-            }
-        )
+        source_units.append(_page_ledger_unit("source", page, category, reason))
 
     act_units = [
         {
