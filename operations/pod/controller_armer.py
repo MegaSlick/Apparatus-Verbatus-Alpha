@@ -52,13 +52,11 @@ lead raises the drill's lifetime -- rather than discovering the squeeze on a
 live pod.
 `operations/pod/README.md`'s boot plan carries the arithmetic.
 
-That used to be prose and nothing else, and prose holds nobody: clamped to the
-hard deadline itself, a slow launch waited right up to it, `_attempt` returned
-``BOUND_EXPIRED``, and only then did `launch._arm_or_close` begin the verified
-close -- so the pod billed past its own hard deadline while the close it exists
-to guarantee was attempted.  The reserve is subtracted in code now, and
+Enforced in code, not left as prose to trust: clamping to the bare hard
+deadline would let a slow launch wait right up to it, so `_attempt` returns
+``BOUND_EXPIRED`` only after the close budget has already been reserved, and
 `preflight` refuses a configuration whose two bounds plus that reserve cannot
-fit the policy's whole hard lifetime.  A refusal before the create costs
+fit the policy's whole hard lifetime. A refusal before the create costs
 nothing.
 
 **Arming order, and why the supervisor goes first.**  The supervisor is
@@ -186,8 +184,8 @@ to be replaced by one derived from it.
 CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS: Final = CONTAINER_START_TIMEOUT_SECONDS
 """How long a launch may wait for the pod's container to start, before the bound above begins.
 
-The two waits are different things and they were previously one number.
-``CONTROLLER_ARMING_TIMEOUT_SECONDS`` exists to bound *the channel* -- how long
+The two waits are different things. ``CONTROLLER_ARMING_TIMEOUT_SECONDS``
+exists to bound *the channel* -- how long
 an object written through the volume mount takes to appear in the volume's
 network view.  But the clock on it started when ``create`` returned, and
 between ``create`` returning and the pod's timer writing anything at all lie
@@ -664,8 +662,7 @@ class ChannelControllerArmer:
                 )
         # And the whole arming has to leave a verified close inside the lease.
         # Refusing here costs nothing; discovering the squeeze on a live pod
-        # costs the pod, which is what the module docstring used to ask a
-        # factory author to avoid by hand.
+        # costs the pod.
         #
         # Against the policy's own `hard_lifetime_seconds` rather than against
         # what is left of *this* request's deadline: this is a configuration
@@ -907,8 +904,7 @@ class ChannelControllerArmer:
         )
 
         # 2. Then the wait for the container to exist at all -- the image
-        #    pull, which used to be spent out of the channel's budget below.
-        #    It never refuses: an unobserved start is not a failed start.
+        #    pull. It never refuses: an unobserved start is not a failed start.
         base, refusal = self._await_container(
             base,
             store=store,
