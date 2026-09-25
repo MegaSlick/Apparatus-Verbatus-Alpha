@@ -32,7 +32,7 @@ from common.chairs.models import (
     VerifiedSnapshot,
     is_sha256,
 )
-from operations.pod.models import looks_like_credential_field, looks_like_credential_value
+from common.credentials import CREDENTIAL_PIECE, is_credential_piece, looks_like_credential_field
 
 from .config import (
     FixtureProfile,
@@ -1623,8 +1623,6 @@ _LOG_ASSIGNMENT: Final = re.compile(
 )
 #: Whatever follows `Bearer` is a secret, whatever its shape.
 _LOG_BEARER: Final = re.compile(r"""(?i)\bbearer\s+(?P<value>[^\s"',;]+)""")
-#: Splits a token so the shape test also reaches the parts of `key=value`.
-_TOKEN_PARTS: Final = re.compile(r"""[^\s"'{}\[\],;:=]+""")
 
 
 def _redact_value(match: re.Match[str]) -> str:
@@ -1639,10 +1637,9 @@ def _redact_value(match: re.Match[str]) -> str:
 def _redacted(text: str) -> str:
     """Blank out credential-shaped values before a launch log leaves the machine.
 
-    The tail travels to journals and notifications. Three passes, since the shared
-    shape test skips tokens with path or URL punctuation: values of secret-named
-    fields (a JWT looks like a dotted path), anything after `Bearer`, then the
-    shape test over each token and its parts. Only values are replaced.
+    The tail travels to journals and notifications. Values of secret-named fields and
+    whatever follows `Bearer` are replaced whatever their shape; elsewhere, any piece
+    the shared shape test flags. Only values are replaced.
     """
 
     def redact_named(match: re.Match[str]) -> str:
@@ -1650,25 +1647,14 @@ def _redacted(text: str) -> str:
             return match.group(0)
         return _redact_value(match)
 
-    def redact_by_shape(token: str) -> str:
-        if looks_like_credential_value(token):
-            return _REDACTED
-        return _TOKEN_PARTS.sub(
-            lambda part: _REDACTED if looks_like_credential_value(part.group(0)) else part.group(0),
-            token,
-        )
+    def redact_piece(match: re.Match[str]) -> str:
+        return _REDACTED if is_credential_piece(match.group(0)) else match.group(0)
 
     lines = []
     for raw in text.splitlines():
         line = _LOG_ASSIGNMENT.sub(redact_named, raw)
         line = _LOG_BEARER.sub(_redact_value, line)
-        # Split on all whitespace but keep it, so tabs separate fields too.
-        lines.append(
-            "".join(
-                part if index % 2 else redact_by_shape(part)
-                for index, part in enumerate(re.split(r"(\s+)", line))
-            )
-        )
+        lines.append(CREDENTIAL_PIECE.sub(redact_piece, line))
     return "\n".join(lines)
 
 

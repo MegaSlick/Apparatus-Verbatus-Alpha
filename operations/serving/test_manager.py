@@ -1530,20 +1530,13 @@ def test_the_watchdog_tail_is_bounded_in_bytes_not_in_characters() -> None:
 
 
 def test_a_credential_inside_a_structured_log_field_is_redacted() -> None:
-    """A log line is not an argv, and a secret in it is rarely a bare token.
-
-    `looks_like_credential_value` answers for a whole token and rejects
-    anything carrying `.`, `:`, `/` or `@` as ordinary path punctuation, so
-    `token=hf_...`, a JSON `"token":"eyJ..."`, a `Bearer` header and a
-    tab-separated field all reached a journal, a pod report and a phone
-    notification unchanged.
-    """
+    """A log line is not an argv, and a secret in it is rarely a bare token."""
 
     # Composed rather than written out: a credential-shaped literal in a source
     # file is refused by this repository's own ingress scan, which is the same
     # rule seen from the other side. The prefix comes from the shared list the
     # detector reads, so a prefix added there is exercised here too.
-    from operations.pod.models import CREDENTIAL_VALUE_PREFIXES, looks_like_credential_value
+    from common.credentials import CREDENTIAL_VALUE_PREFIXES, looks_like_credential_value
 
     shaped = CREDENTIAL_VALUE_PREFIXES[1] + string.ascii_lowercase + "012345"
     assert shaped.startswith(CREDENTIAL_VALUE_PREFIXES)

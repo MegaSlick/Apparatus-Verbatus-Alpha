@@ -121,7 +121,7 @@ def test_notify_balance_reads_as_account_scoped_with_no_lease() -> None:
     "card",
     [
         # Vendor-prefix cases below are deliberately shorter than a real key of
-        # that shape: `_looks_like_credential_word`'s prefix check does not
+        # that shape: the shared prefix check does not
         # care about length, but the repository's own ingress scanner
         # (`.githooks/check_ingress.py`) pattern-matches a *real-length* key
         # and would refuse to let this file be committed at all otherwise.
@@ -146,6 +146,54 @@ def test_a_credential_shaped_value_is_refused_before_sending(card: str) -> None:
     assert not outcome.delivered
     assert "credential" in outcome.detail
     assert runner.calls == [], "a refused message must never reach the shell"
+
+
+SHAPED_VALUES = (
+    "sk-not-a-real-key",
+    "aB3fG9kL2mN7pQ5rS8tU1v",
+    "abcdefghij.klmnopqrst.uvwxyz1234",
+    "QUJDREVGR0hJSktMTU5PUFFS+/=",
+    "https://user" + ":" + "aB3fG9kL2mN7pQ5rS8tU1v@example.invalid/x",
+    "/workspace/aB3fG9kL2mN7pQ5rS8tU1v/report.json",
+)
+
+
+@pytest.mark.parametrize("value", SHAPED_VALUES)
+def test_every_boundary_reads_a_credential_shape_the_same_way(value: str) -> None:
+    from common.credentials import looks_like_credential_value
+    from operations.serving.manager import _redacted
+
+    from .bootstrap_main import PlanRefusal, refuse_credential_looking_argv
+    from .fixture import SCRUBBED, _scrub
+
+    assert looks_like_credential_value(value)
+    scrubbed: list[str] = []
+    assert _scrub({"message": f"started {value}"}, "body", scrubbed) == {"message": SCRUBBED}
+    with pytest.raises(PlanRefusal, match="looks like a credential"):
+        refuse_credential_looking_argv(["--run-id", value])
+    assert _redacted(f"INFO started {value} ok") != f"INFO started {value} ok"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a" * 40,
+        "/workspace/runs/report-" + "0123456789abcdef" * 2 + ".json",
+        "/workspace/models/model-00001-of-00004.safetensors",
+        "operations.pod.bootstrap_main",
+    ],
+)
+def test_every_boundary_passes_an_identifier_or_a_path(value: str) -> None:
+    from common.credentials import looks_like_credential_value
+    from operations.serving.manager import _redacted
+
+    from .bootstrap_main import refuse_credential_looking_argv
+    from .fixture import _scrub
+
+    assert not looks_like_credential_value(value)
+    assert _scrub({"message": value}, "body", []) == {"message": value}
+    refuse_credential_looking_argv(["--run-id", value])
+    assert _redacted(f"INFO {value}") == f"INFO {value}"
 
 
 @pytest.mark.parametrize(

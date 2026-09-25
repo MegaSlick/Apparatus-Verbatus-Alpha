@@ -116,6 +116,11 @@ from common.chairs.registry import (
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
+from common.credentials import (
+    CREDENTIAL_VALUE_PREFIXES,
+    credential_piece,
+    looks_like_credential_field,
+)
 from common.witness_context import validate_witness_context_configuration
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
 from operations.serving.config import (
@@ -150,13 +155,7 @@ from .bootstrap import (
     verify_image_contract,
 )
 from .durable import atomic_write, canonical_json, exclusive_write
-from .models import (
-    CREDENTIAL_VALUE_PREFIXES,
-    looks_like_credential_field,
-    looks_like_credential_value,
-    require_utc,
-    utc_now,
-)
+from .models import require_utc, utc_now
 from .preflight import (
     PlacementRefusal,
     PreflightRunner,
@@ -865,14 +864,17 @@ def _require_launch_token_named(
         )
 
 
-def _credential_shape(value: str) -> str:
+def _credential_shape(value: str) -> str | None:
     """Say what made the value look like a secret, without repeating any of it."""
 
     if looks_like_credential_field(value):
         return "it reads as a secret's own name"
-    if value.startswith(CREDENTIAL_VALUE_PREFIXES):
+    piece = credential_piece(value)
+    if piece is None:
+        return None
+    if piece.startswith(CREDENTIAL_VALUE_PREFIXES):
         return "a known provider key prefix"
-    return f"an opaque run of {len(value)} mixed alphanumeric characters"
+    return f"an opaque run of {len(piece)} mixed alphanumeric characters"
 
 
 def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
@@ -880,8 +882,8 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
 
     Two independent checks: ``looks_like_credential_field`` asks whether the
     *name* implied by the value looks like a secret's name (a marker word);
-    ``models.looks_like_credential_value`` asks whether the value's own *shape* looks
-    like an opaque token, regardless of what it is named. Neither is a proof --
+    ``credential_piece`` asks whether any piece of the value is *shaped* like
+    an opaque token, regardless of what it is named. Neither is a proof --
     a value can be a real secret without either marker, and this refusal cannot
     see into ``--transfer-target-factory``'s runtime capability at all.
 
@@ -902,7 +904,8 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
         previous = ""
         if flag == "--keep-env":
             continue
-        if value and (looks_like_credential_field(value) or looks_like_credential_value(value)):
+        shape = _credential_shape(value) if value else None
+        if shape is not None:
             # The value itself is deliberately not repeated. This refusal is
             # printed to the pod's own transcript and `pod_run` prints it to
             # stderr as well, and `refuse` can write it into a report on the
@@ -912,7 +915,7 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
             where = f"the value after {flag}" if flag else "a bare argv value"
             raise PlanRefusal(
                 f"{where} looks like a credential and was refused "
-                f"({_credential_shape(value)}); the value is not repeated here, because this "
+                f"({shape}); the value is not repeated here, because this "
                 "refusal reaches the transcript and the volume"
             )
 
