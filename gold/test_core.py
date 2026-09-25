@@ -267,7 +267,7 @@ def test_manual_pick_predating_the_seed_is_still_ingested_with_an_honest_disagre
     stated set can honestly disagree with the page-derived partition once it is
     known. Ingestion must not refuse and force a re-pick (that would discard real
     annotation hours); it must record the disagreement, never silently resolve it
-    either way (principle 2)."""
+    either way."""
     path, frame, pages = run_file(tmp_path)
     page = catalog(pages)[0]
     true_set = set_for_page(frame, page["sha256"])
@@ -336,8 +336,7 @@ def test_cli_manual_ingest_refuses_one_page_in_two_strata(tmp_path):
 
 def test_a_plan_that_leaves_a_stratum_unnamed_is_refused(tmp_path):
     """A stratum the plan does not name contributes no gold and says nothing about
-    it — the silent shortfall principle 2 forbids. Naming it with quota 0
-    is the declared way to skip it."""
+    it. Naming it with quota 0 is the declared way to skip it."""
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)
     full = plan_for(frame, rows)
@@ -383,7 +382,7 @@ def test_a_tampered_sampling_seed_is_refused_as_an_edited_run_authority(tmp_path
 def test_sampling_draw_refuses_unhashable_catalog_identity_fields_by_name(tmp_path):
     """The retained catalog is untrusted record input. Its identity fields must be
     checked before they become tuple members in a set; JSON arrays and objects are
-    legal values but unhashable Python objects, and used to escape as TypeError."""
+    legal values but unhashable Python objects."""
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)
     draw, _selected = build_sampling_draw(path, rows, plan_for(frame, rows))
@@ -714,9 +713,9 @@ def test_two_agreeing_transcribers_need_no_adjudicator(tmp_path):
 
 
 def test_a_disagreement_records_the_adjudicators_own_reading_and_keeps_both(tmp_path):
-    """Reconciling two readings is not picking between them (principle 1): the
+    """Reconciling two readings is not picking between them: the
     adjudicator reads the ink and records what they read, which need not be either
-    transcription, and both transcriptions are retained unaltered (principle 4)."""
+    transcription, and both transcriptions are retained unaltered."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     first, second = _pair(sample, "Marie Anne Dubois", "Marie Anne Dubais", path)
@@ -784,9 +783,9 @@ def test_illegible_is_the_one_spelling_and_a_transcription_is_never_blank(tmp_pa
 
 def test_a_reserved_token_between_two_words_is_not_mistaken_for_a_bad_spelling(tmp_path):
     """The reserved token is carved out by position, not deleted before rescanning:
-    deleting it used to let unrelated fragments on either side splice back together
-    into "illegible" by accident, refusing a perfectly correct use of the token
-    (`peril` + `[ILLEGIBLE]` + `legible` used to read as `perillegible`)."""
+    deleting it would let unrelated fragments on either side splice back together
+    into "illegible" by accident (`peril` + `[ILLEGIBLE]` + `legible` reading as
+    `perillegible`), refusing a perfectly correct use of the token."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     spliced = "peril" + ILLEGIBLE + "legible"
@@ -900,7 +899,7 @@ def test_a_byte_order_mark_may_not_fake_a_disagreement(tmp_path):
 def test_gold_may_not_be_made_of_the_pipelines_own_output(tmp_path):
     """These records are what the pipeline is measured against, so a chair's
     identity in place of a person's name is refused: gold made of pipeline output
-    would make the measurement circular (principle 1, goal 1)."""
+    would make the measurement circular."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     with pytest.raises(SchemaRefusal, match="pipeline identity, not a person"):
@@ -914,7 +913,7 @@ def test_a_page_layout_or_padding_record_may_not_be_empty(tmp_path):
     """A record whose annotation list is empty says nothing while reading as a
     completed annotation. A page with nothing on it is annotated `true-blank`, and
     a padding record with no rectangles has measured nothing to be calibrated
-    against (principle 2)."""
+    against."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     layout = {"schema": LAYOUT_SCHEMA, "sample": sample, "regions": []}
@@ -1575,10 +1574,10 @@ def test_the_corpus_api_refuses_an_empty_collection():
 
 
 def test_corpus_refuses_a_started_reading_chain_without_its_adjudication(tmp_path):
-    """Deleting the established record used to leave one or both independent
-    transcriptions in a corpus that still validated. A partial chain is legitimate
-    while people work, but collection validation must name it as partial rather than
-    let absence wear the same success as completed custody (principle 2)."""
+    """Deleting the established record can leave one or both independent
+    transcriptions in a corpus. A partial chain is legitimate while people work,
+    but collection validation must name it as partial rather than let absence
+    wear the same success as completed custody."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     first, second = _pair(sample, "Marie Anne", "Marie Jeanne", path)
@@ -1654,7 +1653,7 @@ def test_corpus_refuses_a_manual_pick_that_contradicts_the_retained_catalog(tmp_
     normalized catalog, so the predeclared stratum and pixel size of every page a
     pick could name are sitting right beside it — and a pick that contradicted them
     passed every reader. A stratum nobody planned makes the stratification
-    unmeasurable (principle 8), and an invented width makes "the rectangles are
+    unmeasurable, and an invented width makes "the rectangles are
     proven on-page" vacuous, because every rectangle fits a page said to be huge."""
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)
@@ -1694,7 +1693,7 @@ def test_corpus_refuses_one_page_carried_by_two_manual_records(tmp_path):
     A manual record beside the *seeded* record for the same page stays admissible:
     the seed can land on a page already picked in week one, and refusing that
     would strand a real corpus with no remedy short of discarding that recorded
-    provenance (principle 2, 4)."""
+    provenance."""
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)
     draw, selected = build_sampling_draw(path, rows, plan_for(frame, rows))
@@ -1770,8 +1769,8 @@ def test_corpus_refuses_two_established_readings_for_one_act(tmp_path):
     by both a manual and a seeded sample record gave that one act two independent
     custody chains, each internally impeccable, with nothing but file order to choose
     between the two texts they established. That is a picker by omission
-    (principle 1) inside the corpus the pipeline is measured against, and two texts
-    where principle 5 allows one."""
+    inside the corpus the pipeline is measured against, and two texts where one
+    is allowed."""
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)
     draw, selected = build_sampling_draw(path, rows, plan_for(frame, rows))
@@ -1815,13 +1814,12 @@ def test_corpus_refuses_two_established_readings_for_one_act(tmp_path):
 
 
 def test_corpus_refuses_a_drawn_page_re_minted_under_another_method(tmp_path):
-    """The membership check used to run one way only: every `stratified-seed`
-    sample had to be a draw member, but nothing required every draw member to
-    still be present as one. A page the seed genuinely chose could be re-minted
-    as `manual` (with the matching page-derived `set` as its `claimed_set`, so it
-    is individually well-formed) and disappear from the seeded accounting while
-    `validate_corpus` kept reporting success -- a silent loss principle 2
-    forbids."""
+    """The membership check must run both ways: every `stratified-seed` sample
+    must be a draw member, and every draw member must still be present as one.
+    A page the seed genuinely chose could otherwise be re-minted as `manual`
+    (with the matching page-derived `set` as its `claimed_set`, so it is
+    individually well-formed) and disappear from the seeded accounting while
+    `validate_corpus` keeps reporting success -- a silent loss."""
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)
     plan = plan_for(frame, rows)
@@ -1919,9 +1917,8 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
 
     Each refusal below tells the operator that no gold record was written. That is a
     statement about this directory, and until it is compared against the directory it
-    is a statement the suite takes on trust -- exactly the shape principle 8
-    refuses, since a publication that landed a record and then refused on the way out
-    would still print it.
+    is a statement the suite takes on trust, since a publication that landed a
+    record and then refused on the way out would still print it.
     """
     return {
         str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
