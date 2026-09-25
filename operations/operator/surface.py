@@ -2888,6 +2888,8 @@ def _status_projection(
     """
 
     lines: list[str] = []
+    run_id = payload.get("run_id")
+    state = payload.get("state")
     if action == "boot":
         report = payload.get("report")
         if isinstance(report, dict) and isinstance(report.get("color"), str):
@@ -2902,7 +2904,7 @@ def _status_projection(
         recorded_sha256 = payload.get("submission_manifest_sha256")
         # Only receipts claiming bytes moved must bind a digest; one refused
         # before transfer has none, and `status` must keep working after failures.
-        if payload.get("state") in {"complete", "partial-transfer"}:
+        if state in {"complete", "partial-transfer"}:
             if not (
                 isinstance(recorded_sha256, str)
                 and len(recorded_sha256) == 64
@@ -2911,17 +2913,11 @@ def _status_projection(
                 raise RecordError("saved upload record does not bind its submission record digest")
             lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
         lines.extend(_volume_status_lines(payload.get("volume")))
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            lines.append(f"  Reason: {detail}")
+        lines.extend(_reason_line(payload.get("detail")))
     elif action == "run":
-        run_id = payload.get("run_id")
         run_root = _display_path(payload.get("run_root"), state_root)
-        state = payload.get("state")
-        if isinstance(run_id, str):
-            lines.append(f"  Run: {run_id}" + (f"; run root: {run_root}" if run_root else "") + ".")
-        if isinstance(state, str):
-            lines.append(f"  Saved run state: {state}.")
+        lines.extend(_run_line(run_id, ("run root", run_root)))
+        lines.extend(_state_line("run", state))
         if state == "started" and isinstance(run_id, str) and not ended_later:
             lines.append(
                 "  No later record of this run is saved here, so it never reported an end "
@@ -2945,80 +2941,47 @@ def _status_projection(
         if isinstance(run_id, str) and run_root:
             lines.append(f"  Review it read-only with: {review_command(Path(run_root), run_id)}")
     elif action == "export":
-        run_id = payload.get("run_id")
         bundle = _display_path(payload.get("bundle"), state_root)
-        state = payload.get("state")
-        if isinstance(run_id, str):
-            lines.append(f"  Run: {run_id}" + (f"; bundle: {bundle}" if bundle else "") + ".")
-        if isinstance(state, str):
-            lines.append(f"  Saved export state: {state}.")
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            lines.append(f"  Reason: {detail}")
+        lines.extend(_run_line(run_id, ("bundle", bundle)))
+        lines.extend(_state_line("export", state))
+        lines.extend(_reason_line(payload.get("detail")))
         table = payload.get("reconciliation")
         if isinstance(table, list):
             lines.extend(f"  {line}" for line in table if isinstance(line, str))
     elif action == "fetch-run":
-        run_id = payload.get("run_id")
         into = payload.get("into")
-        state = payload.get("state")
-        if isinstance(run_id, str):
-            lines.append(
-                f"  Run: {run_id}"
-                + (f"; fetched into: {into}" if isinstance(into, str) else "")
-                + "."
-            )
+        lines.extend(_run_line(run_id, ("fetched into", into)))
         lines.extend(_volume_status_lines(payload.get("volume")))
-        if isinstance(state, str):
-            lines.append(f"  Saved fetch state: {state}.")
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            lines.append(f"  Reason: {detail}")
+        lines.extend(_state_line("fetch", state))
+        lines.extend(_reason_line(payload.get("detail")))
         if isinstance(run_id, str) and isinstance(into, str):
             lines.append(f"  Review it read-only with: {review_command(Path(into), run_id)}")
     elif action == "backup":
-        run_id = payload.get("run_id")
-        run_root = payload.get("run_root")
-        destination = payload.get("mac_directory")
-        state = payload.get("state")
-        if isinstance(run_id, str):
-            lines.append(
-                f"  Run: {run_id}"
-                + (f"; run root: {run_root}" if isinstance(run_root, str) else "")
-                + (f"; destination: {destination}" if isinstance(destination, str) else "")
-                + "."
+        lines.extend(
+            _run_line(
+                run_id,
+                ("run root", payload.get("run_root")),
+                ("destination", payload.get("mac_directory")),
             )
-        if isinstance(state, str):
-            lines.append(f"  Saved backup state: {state}.")
+        )
+        lines.extend(_state_line("backup", state))
         report = payload.get("report")
         if isinstance(report, dict):
             lines.append(
                 f"  Snapshot {report.get('snapshot_sha256')}: {report.get('copied')} copied, "
                 f"{report.get('reused')} reused."
             )
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            lines.append(f"  Reason: {detail}")
+        lines.extend(_reason_line(payload.get("detail")))
     elif action == "advance":
-        run_id = payload.get("run_id")
         run_root = _display_path(payload.get("run_root"), state_root)
-        stage = payload.get("stage")
-        if isinstance(run_id, str):
-            lines.append(
-                f"  Run: {run_id}"
-                + (f"; run root: {run_root}" if run_root else "")
-                + (f"; stage: {stage}" if isinstance(stage, str) else "")
-                + "."
-            )
+        lines.extend(_run_line(run_id, ("run root", run_root), ("stage", payload.get("stage"))))
         seal_digest = payload.get("seal_digest")
         if isinstance(seal_digest, str):
             lines.append(f"  Passed boundary sealed at: {seal_digest}.")
         approval_record = payload.get("approval_record")
         if isinstance(approval_record, dict):
             lines.append(f"  Approval record: {approval_record.get('relative_path')}")
-        reason = payload.get("reason")
-        if isinstance(reason, str) and reason.strip():
-            lines.append(f"  Reason: {reason}")
+        lines.extend(_reason_line(payload.get("reason")))
     elif action == "unexpected":
         exception_type = payload.get("exception_type")
         message = payload.get("message")
@@ -3036,7 +2999,7 @@ def _status_projection(
         report = payload.get("close_report")
         if not isinstance(report, dict):
             return lines
-        state = report.get("state")
+        close_state = report.get("state")
         cost = report.get("cost_capture")
         volume = report.get("volume")
         if isinstance(cost, dict):
@@ -3047,13 +3010,30 @@ def _status_projection(
                     "  Saved charges captured through {}: ${} (fixture billing, not a "
                     "measurement).".format(cutoff, total)
                 )
-        if state != "verified" and isinstance(state, str):
-            lines.append(f"  Saved close state: {state.upper()}.")
+        if close_state != "verified" and isinstance(close_state, str):
+            lines.append(f"  Saved close state: {close_state.upper()}.")
         if isinstance(volume, dict) and isinstance(volume.get("ongoing_hourly_usd"), str):
             lines.append(
                 "  Saved retained-volume price: $" + volume["ongoing_hourly_usd"] + " per hour."
             )
     return lines
+
+
+def _run_line(run_id: object, *parts: tuple[str, object]) -> list[str]:
+    """`  Run: <id>; <label>: <value>.` naming each recorded part, or nothing without an id."""
+
+    if not isinstance(run_id, str):
+        return []
+    named = "".join(f"; {label}: {value}" for label, value in parts if isinstance(value, str))
+    return [f"  Run: {run_id}{named}."]
+
+
+def _state_line(verb: str, state: object) -> list[str]:
+    return [f"  Saved {verb} state: {state}."] if isinstance(state, str) else []
+
+
+def _reason_line(reason: object) -> list[str]:
+    return [f"  Reason: {reason}"] if isinstance(reason, str) and reason.strip() else []
 
 
 STATUS_OUTPUT_LINES: Final = 12
