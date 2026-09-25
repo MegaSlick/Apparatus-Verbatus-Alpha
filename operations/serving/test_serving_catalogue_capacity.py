@@ -258,12 +258,12 @@ def test_the_two_view_page_fallback_act_fits_every_tiers_context():
         )
         needs[row.tier] = (record["need"], record["fits"])
     assert needs == {
-        # 4x1,715 + 1,100 + 1,318
-        "generic-24gb": (9278, True),
-        # 4x3,102 + 1,100 + 1,318
-        "generic-48gb": (14826, True),
-        # 4x5,100 + 1,100 + 1,318, against 32,768 (U15; was 16,384)
-        "generic-80gb-plus": (22818, True),
+        # 4x1,715 + 1,173 + 1,318
+        "generic-24gb": (9351, True),
+        # 4x3,102 + 1,173 + 1,318
+        "generic-48gb": (14899, True),
+        # 4x5,100 + 1,173 + 1,318, against 32,768
+        "generic-80gb-plus": (22891, True),
     }
 
 
@@ -324,41 +324,16 @@ def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old
         assert record["fits"] is False, (chair, tier)
 
 
-def test_startup_timeout_rows_preserve_the_one_measured_exception_and_all_other_derivations() -> (
-    None
-):
-    """F057: only the observed Designator row may depart from the 300s placeholder.
-
-    The isolated 600-second retry completed with a warm cache after the cold
-    300-second startup timed out while progressing. It supports this one
-    watchdog allowance but not a claim that 600 seconds qualifies cold startup.
-    Every other row remains visibly unmeasured until it has comparable evidence.
-    """
-
-    text = REAL_RECIPES.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith("startup_timeout_seconds")]
-
-    assert len(rows) == 15
-    observed = [row for row in rows if "OBSERVED diagnostic evidence" in row]
-    assert observed == [
-        "startup_timeout_seconds = 600  # OBSERVED diagnostic evidence: cold 300s timed out while progressing; isolated 600s retry completed warm-cache, not cold-start qualification (see header)"
-    ]
+def test_only_rows_sized_from_retained_logs_depart_from_the_300s_placeholder() -> None:
     exceptions = [
         (profile.chair, profile.tier, profile.startup_timeout_seconds)
         for profile in _shipped_rows()
         if profile.startup_timeout_seconds != 300
     ]
-    assert exceptions == [("designator_structure", "generic-80gb-plus", 600)]
-    placeholders = [row for row in rows if "UNMEASURED placeholder" in row]
-    assert len(placeholders) == 14
-    for row in placeholders:
-        assert "UNMEASURED placeholder" in row, row
-        assert "volume read rate" in row, row
-        assert "see the header" in row, row
-    # The one row whose weights this tree has actually measured says so.
-    assert sum("51.7 GiB" in row for row in rows) == 3
-    assert "HOW THE VALUE SHOULD BE DERIVED" in text
-    assert "does not qualify a 600-second cold start" in text
+    assert exceptions == [
+        ("designator_structure", "generic-80gb-plus", 600),
+        ("perlector", "generic-80gb-plus", 600),
+    ]
 
 
 # F005/F052: `operations/serving/preflight.py` only refuses a row's

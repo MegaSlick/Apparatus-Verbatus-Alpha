@@ -1074,7 +1074,7 @@ def _delivered_act(uncertainty: dict, text: str = "alpha beta") -> dict:
 def test_a_published_span_is_shown_beside_the_state_that_says_who_did_not_report_it():
     """The exhausted-cap projection mints spans on acts whose reader has no channel.
 
-    With today's live reader that combination -- `not-assessed` beside real
+    For a reader with no doubt channel that combination -- `not-assessed` beside real
     published spans -- is the only way a span reaches this surface at all, and
     the renderer used to print the state line and return, hiding exactly those.
     """
