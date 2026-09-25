@@ -192,8 +192,7 @@ class SpendPolicy:
         # this bound honest if that schedule ever changes).  This bounds only
         # what it names: a single close on the controller that reads this
         # policy.  The pod-side timer builds its shutdown from code defaults,
-        # not this policy, and may re-attempt a bounded number of closes --
-        # both facts are recorded in the audit note rather than claimed here.
+        # not this policy, and may re-attempt a bounded number of closes.
         # Ceil, not int: a fractional retry interval must round the bound up,
         # never silently shave it.
         billing_tail = math.ceil(

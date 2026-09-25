@@ -52,9 +52,9 @@ lead raises the drill's lifetime -- rather than discovering the squeeze on a
 live pod.
 `operations/pod/README.md`'s boot plan carries the arithmetic.
 
-Enforced in code, not left as prose to trust: clamping to the bare hard
-deadline would let a slow launch wait right up to it, so `_attempt` returns
-``BOUND_EXPIRED`` only after the close budget has already been reserved, and
+Enforced in code, not left as prose to trust: the two bounds are clamped to
+the hard deadline minus `close_reserve_seconds` (see its docstring for why),
+so `_attempt` returns ``BOUND_EXPIRED`` before that reserve is touched, and
 `preflight` refuses a configuration whose two bounds plus that reserve cannot
 fit the policy's whole hard lifetime. A refusal before the create costs
 nothing.
@@ -185,14 +185,13 @@ CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS: Final = CONTAINER_START_TIMEOUT_SECO
 """How long a launch may wait for the pod's container to start, before the bound above begins.
 
 The two waits are different things. ``CONTROLLER_ARMING_TIMEOUT_SECONDS``
-exists to bound *the channel* -- how long
-an object written through the volume mount takes to appear in the volume's
-network view.  But the clock on it started when ``create`` returned, and
-between ``create`` returning and the pod's timer writing anything at all lie
-scheduling, an image pull that is commonly several gigabytes on a cold host,
-and container start.  A pod that spent six minutes pulling had its whole
-propagation budget spent before it ran, and was terminated for a report it was
-about to write.
+bounds *the channel* -- how long an object written through the volume mount
+takes to appear in the volume's network view.  Its clock starts only when
+this container wait ends, not when ``create`` returns: between ``create``
+returning and the container existing lie scheduling and an image pull that is
+commonly several gigabytes on a cold host, and that time is not the channel's
+to spend.  A pod that spends six minutes pulling still gets its whole
+propagation budget once the container starts.
 
 So this bounds only the wait for the container to exist, it is deliberately
 generous, and what it actually took is recorded rather than assumed: the

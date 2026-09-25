@@ -6,21 +6,37 @@ first live run under v2 is green, then deleted in its own commit).
 `operations/pod/V2_MIGRATION.md` maps one to the other field by field and
 records the documentation pages each field and refusal below rests on.
 
-**REST v2** (`https://api.runpod.io/v2`) has no `interruptible`, bid or
-rental-type field anywhere in its create body, pod object or OpenAPI schema,
-and no page says what a v2 create without one produces — while v1 still
-documents `interruptible` and spot pods still exist on the platform. **That
-is why `V2_ON_DEMAND_BASIS` is unset and a v2 create refuses**
-(`RunPodV2Provider`). Its pod list is paginated (`cursor`/`limit`,
-`nextCursor` null on the last page) and is followed to its last page.
-Terminate is `204`/`404`/`409` ("belongs to a cluster, use the console").
-Billing responses wrap records in `{"records": [...], "metadata": {...}}`.
+**REST v2** (`https://api.runpod.io/v2`), source pages read online:
+- `api-reference-v2/pods/create-a-pod` (2026-09-02) — `CreatePodRequest`: no
+  `interruptible`, bid or rental-type field.
+- `https://api.runpod.io/v2/openapi.json` (2026-09-02) — confirms no
+  rental-type field anywhere in the schema.
+- `api-reference-v2/pods/list-pods` (2026-09-24) — paginated
+  (`cursor`/`limit`, `nextCursor` null on the last page); pagination is new
+  since the 2026-09-02 reading, so the list is followed to its last page.
+- `api-reference-v2/pods/terminate-a-pod` (2026-09-02) — `204`/`404`/`409`
+  ("Pod belongs to a cluster and cannot be terminated via the pod
+  endpoints.").
+- `api-reference-v2/billing/get-pod-billing-history` (2026-09-02) — records
+  wrapped in `{"records": [...], "metadata": {...}}`.
+- `api-reference-v2/migrate-from-v1` (2026-09-02) — maps no field for
+  `interruptible`.
+- `docs.runpod.io/pods/pricing` (2026-09-02) — only "On-demand" and "Savings
+  plans"; no "spot" or "interruptible".
+- `api-reference/pods/POST/pods` (v1, 2026-09-02) — still documents
+  `interruptible`, so spot pods still exist and no v2 page says what a
+  create without the field produces. **That is why `V2_ON_DEMAND_BASIS` is
+  unset and a v2 create refuses** (`RunPodV2Provider`).
 
-**REST v1** (`https://rest.runpod.io/v1`) carries `interruptible` (default
-`false`) and no deprecation notice yet, but RunPod has set its retirement
-date; `GET /pods` and the billing endpoint each return a bare JSON array
-rather than v2's envelope. The `runpod` PyPI package is not used: it wraps
-the deprecating GraphQL API.
+`operations/pod/V2_MIGRATION.md` records the full page-by-page reading;
+this list is the terse form kept beside the code it settles.
+
+**REST v1** (`https://rest.runpod.io/v1`), read online 2026-08-09 and
+re-checked 2026-09-02: `api-reference/pods/POST/pods` carries `interruptible`
+(default `false`); RunPod retires the route on 2026-11-15
+(`V2_MIGRATION.md`). `GET /pods` and the billing endpoint each return a bare
+JSON array rather than v2's envelope. The `runpod` PyPI package is not used:
+it wraps the deprecating GraphQL API.
 
 **Not the vendor SDK, a plain injected HTTP transport.** Every call goes
 through `HttpTransport`, so the whole adapter is exercised offline against an
@@ -277,9 +293,9 @@ class UrllibRunPodTransport:
         request = urllib.request.Request(url, data=encoded, method=method, headers=headers)
         # `timeout_seconds` bounds the whole call -- connect, headers and body
         # against one monotonic deadline -- rather than one blocking receive:
-        # a loopback responder dribbling a byte at a time can answer a 0.15s
-        # budget many seconds late. Every caller here is a money-path verb
-        # whose controller checks its own deadline only between calls, so an
+        # a loopback responder dribbling a byte at a time answered a 0.15 s
+        # budget after 8.559 s. Every caller here is a money-path verb whose
+        # controller checks its own deadline only between calls, so an
         # unbounded call is an unbounded controller.
         deadline = time.monotonic() + self.timeout_seconds
         # Environment proxy discovery is left ON for this opener, deliberately, and this is
@@ -1071,7 +1087,8 @@ class RunPodProvider(_RunPodAdapter):
                 as_decimal(self.volume_price(volume_id), "RunPod volume price"),
                 # The two figures don't share one provenance: the pod rate is
                 # this response's costPerHr, but v1 has no live volume-price
-                # endpoint, so the volume rate is still the injected estimate.
+                # endpoint this adapter has found, so the volume rate is
+                # still the injected estimate.
                 "RunPod observed pod costPerHr; volume rate supplied at launch, not observed "
                 "from the provider",
                 self.now(),

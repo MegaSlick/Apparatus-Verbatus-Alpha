@@ -121,13 +121,9 @@ def _note_termination(
     try:
         path = terminating_path(report)
         # The first breadcrumb stands. `_write_report` is `atomic_write`, which
-        # replaces whatever is at the path -- so a bootstrap failure that wrote
-        # "mandatory bootstrap child failed" here, and then met a failed report
-        # write on its way out, had its own reason overwritten by "mandatory
-        # pod report write failed" with a lower attempt count. The only record
-        # left on the volume then sent an operator after a write fault instead
-        # of the bootstrap that actually caused the close. A later close reason is dropped rather than allowed to rename
-        # an earlier one; the report beside this breadcrumb carries the rest.
+        # replaces whatever is at the path, so a later close reason is dropped
+        # rather than allowed to rename an earlier one and mislead whoever
+        # reads the volume; the report beside this breadcrumb carries the rest.
         # `is_file`, not `exists`: anything else at that name is not a
         # breadcrumb this process wrote, and the write below is what reports it
         # as unwritable rather than silently treating it as a record.

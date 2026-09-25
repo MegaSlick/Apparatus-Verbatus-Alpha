@@ -644,7 +644,7 @@ def test_main_smoke_reports_no_lease_as_exit_code_two(tmp_path: Path, monkeypatc
         ]
     )
     assert exit_code == 2
-    # Named per run (finding 6), not once per lease -- glob for it.
+    # Named per run, not once per lease -- glob for it.
     finals = list((tmp_path / "leases" / "supervisors").glob(f"supervisor-{LEASE_ID}-final-*.json"))
     assert len(finals) == 1
     payload = json.loads(finals[0].read_text(encoding="utf-8"))
@@ -716,7 +716,7 @@ def test_no_lease_from_the_start_still_exits_two(tmp_path: Path) -> None:
     assert excinfo.value.exit_code == 2
 
 
-# -- finding 2: main() must not silently swallow a non-refusal crash
+# -- main() must not silently swallow a non-refusal crash
 
 
 def test_main_writes_a_crashed_final_record_and_exits_three_on_an_unexpected_error(
@@ -870,7 +870,7 @@ def test_a_final_record_write_failure_on_the_refusal_path_is_named_not_raised(
     assert "no space left on device" in payload["detail"]
 
 
-# -- finding 3: an UNVERIFIED close's phone-notification outcome is durable
+# -- an UNVERIFIED close's phone-notification outcome is durable
 
 
 def test_an_unverified_close_notification_outcome_is_recorded_in_the_final_detail(
@@ -909,7 +909,7 @@ def test_an_unverified_close_notification_outcome_is_recorded_in_the_final_detai
     assert "ntfy refused the topic" in result.detail
 
 
-# -- finding 4: the 04-4 provider-lifecycle check must also run while unarmed
+# -- the provider-lifecycle check must also run while unarmed
 
 
 def test_an_unarmed_lease_closes_when_its_pod_is_observed_exited(tmp_path: Path) -> None:
@@ -1131,7 +1131,7 @@ def test_an_errored_pod_closes_now_even_while_its_launch_is_arming(tmp_path: Pat
     assert provider.terminate_calls == [record.pod_id]
 
 
-# -- finding 5: the owner token must never reach telemetry
+# -- the owner token must never reach telemetry
 
 
 def test_identity_telemetry_never_carries_a_credential_shaped_field(tmp_path: Path) -> None:
@@ -1144,7 +1144,7 @@ def test_identity_telemetry_never_carries_a_credential_shaped_field(tmp_path: Pa
     assert not any(looks_like_credential_field(key) for key in telemetry)
 
 
-# -- finding 7: ownership survives a reused pid after a laptop reboot
+# -- ownership survives a reused pid after a laptop reboot
 
 
 def test_a_reused_pid_after_reboot_does_not_block_a_legitimate_restart(tmp_path: Path) -> None:

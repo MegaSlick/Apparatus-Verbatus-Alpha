@@ -3,10 +3,10 @@
 Steps run through :class:`~operations.pod.bootstrap.Bootstrapper`.  On green this
 process does **not** exit: it holds until the pod is destroyed, re-journaling a
 liveness line at the monitoring interval.  Exiting after a green bootstrap is
-exactly what ``pod_timer.run_with_bootstrap`` calls ``completed-early``
-(``pod_timer.py:150-158``) and punishes with an immediate close -- see that
-function before changing the hold loop here.  A red bootstrap step exits
-non-zero at once, which is the correct immediate close for pod_timer to act on.
+exactly what ``pod_timer.run_with_bootstrap`` calls ``completed-early`` and
+punishes with an immediate close -- see that function before changing the
+hold loop here.  A red bootstrap step exits non-zero at once, which is the
+correct immediate close for pod_timer to act on.
 
 Composition is deliberately **tracked**: every pinned input this process needs
 is an explicit flag, never an inferred default, so a request file that built

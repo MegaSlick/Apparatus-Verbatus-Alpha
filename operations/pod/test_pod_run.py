@@ -1177,7 +1177,7 @@ def test_the_operator_evidence_prefix_names_the_same_directory_as_preflight() ->
     assert FETCH_EVIDENCE_PREFIX == pod_run.bootstrap_main.PREFLIGHT_DIRECTORY
 
 
-# --- naming the launch's records so they can be fetched (F101, F110) ----------
+# --- naming the launch's records so they can be fetched ----------
 
 
 def test_the_sibling_suffixes_launch_derives_are_the_ones_pod_run_actually_writes() -> None:
@@ -1306,7 +1306,7 @@ def test_launch_run_id_is_none_with_no_bootstrap_command_at_all() -> None:
 
 
 def test_evidence_prefix_derives_bootstrap_mains_own_preflight_directory() -> None:
-    """F110/G11: every real request (boot_a_request.py, boot_b_request.py)
+    """Every real request (boot_a_request.py, boot_b_request.py)
     writes its report paths at the *volume root*, never under `preflight/` --
     only `bootstrap_main.Plan.preflight_root` computes a `preflight/` path,
     from `<mount>/preflight/<bootstrap_main's own --report-path stem>`. A

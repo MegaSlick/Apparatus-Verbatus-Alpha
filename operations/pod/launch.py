@@ -113,9 +113,9 @@ def _spend_refusal_state(assessment: SpendAssessment) -> LaunchState:
 
     An observed balance at or below the floor, a balance that could not be
     observed at all, and an ordinary price-ceiling breach are three different
-    operational situations -- the first two are money-safety refusals the
-    ruling names explicitly, and collapsing either into ``REFUSED_CEILING``
-    hides which one actually happened from whoever reads the result.
+    operational situations -- the first two are money-safety refusals, and
+    collapsing either into ``REFUSED_CEILING`` hides which one actually
+    happened from whoever reads the result.
     """
 
     if assessment.hard_floor_triggered:
@@ -168,6 +168,11 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     return command
 
 
+# Spelled here rather than imported from the two producing modules because
+# importing `pod_run` pulls the whole serving stack in for four strings.
+# `test_pod_run.py` reconciles these tuples against what those modules actually
+# write, so the copies cannot drift in silence.
+
 TIMER_REPORT_SIBLINGS: Final = ("-terminating.json",)
 """What ``pod_timer`` writes beside its own bound report: the pre-DELETE breadcrumb."""
 
@@ -198,12 +203,6 @@ def _runs_the_orchestrator(nested: list[str]) -> bool:
     """
 
     return any(part == _POD_RUN_MODULE or part.endswith("pod_run.py") for part in nested)
-
-
-# Spelled here rather than imported from the two producing modules because
-# importing `pod_run` pulls the whole serving stack in for four strings.
-# `test_pod_run.py` reconciles these tuples against what those modules actually
-# write, so the copies cannot drift in silence.
 
 
 def _nested_bootstrap_argv(command: list[str]) -> list[str] | None:
@@ -335,8 +334,7 @@ def launch_evidence_prefixes(
     own nested report. `bound_report_paths` deliberately does not
     distinguish those two nested reports (both get the same run-report
     siblings, by design, for `launch_evidence_keys`'s purpose), so reusing it
-    here would derive a prefix matching nothing on the volume -- exactly
-    the defect this function replaces one round of.
+    here would derive a prefix matching nothing on the volume.
 
     A full run launch's nested ``--bootstrap-command-json`` argv is
     ``pod_run``'s own argv with ``bootstrap_main``'s appended after the
@@ -1318,11 +1316,9 @@ class PodRuntime:
         """Hold a create to the reviewed card table, by name and by reviewed price.
 
         `PodCreateRequest.gpu_type` is free text that goes straight to the
-        provider, and until this existed nothing in the launch path ever read
-        `config/pod_placement.toml`: the only mechanical bound on *which card*
-        gets rented was `max_hourly_usd`, and a typo or a wrong tier that
-        happened to fit under the ceiling was a launch. `PlacementTable.price_for`
-        was written for this and had no production caller anywhere in the tree.
+        provider; the only other mechanical bound on *which card* gets
+        rented is `max_hourly_usd`, so a typo or a wrong tier that happens to
+        fit under the ceiling would otherwise launch.
 
         Two conditions, both refusing by name:
 
@@ -1570,9 +1566,8 @@ class PodRuntime:
             )
             # No explicit LOCK_UN: closing the last descriptor on this open file
             # description releases the flock, and the `with` above closes it on
-            # every path out. The unlock that stood here could only fail, and
-            # its handler discarded that failure unrecorded — a swallowed error
-            # in exchange for nothing.
+            # every path out, so an explicit unlock call would only add a way
+            # to fail for nothing gained.
             yield
 
     def _load_spend_alert_state(self, path: Path) -> dict[str, object] | None:
