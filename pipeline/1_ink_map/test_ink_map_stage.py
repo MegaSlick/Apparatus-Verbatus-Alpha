@@ -363,17 +363,13 @@ class _PublishingContext:
 
 
 def test_the_ink_map_opens_both_ingress_routes_through_the_shared_constructor(monkeypatch):
-    """The stage has no opener of its own any more, on either route.
+    """The stage has no opener of its own, on either route.
 
-    It used to hand-build its real-ingress context here and re-list the
-    direct-entry guards itself -- register drift, the sealed snapshot, the
-    Exemplar seal, the run-level cap -- so a guard added to the shared
-    constructor would have missed this stage silently, and the three stages
-    that copied that shape already disagreed with each other. What is pinned
-    now is narrower and stronger: `main` hands the parsed argv, its own stage
-    name and the registry factory it was given to `common.stage.open_stage_context`,
-    which decides the route from one read of the run authority and applies the
-    same guards on both.
+    `main` hands the parsed argv, its own stage name and the registry factory
+    it was given to `common.stage.open_stage_context`, which decides the
+    route from one read of the run authority and applies the same
+    direct-entry guards -- register drift, the sealed snapshot, the Exemplar
+    seal, the run-level cap -- on both.
     """
     blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
     page = _sealed_page(1)
@@ -499,15 +495,14 @@ def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkey
 
 
 def test_the_undecodable_page_refusal_does_not_claim_an_empty_run_tree(monkeypatch):
-    """The sibling above fails on page 1, so nothing was published and the old
-    wording happened to be true. Here page 1 decodes and page 2 does not.
+    """The sibling above fails on page 1; here page 1 decodes and page 2 does not.
 
-    Publication is inside the page loop, so a decode failure part-way through a
-    shard leaves the earlier pages' records on disk. The refusal used to say "no
-    ink-map record was written", which an operator reads as a clean tree and
-    acts on -- retrying or clearing up against a false picture of what is there.
-    The boundary is still unsealed, so nothing downstream proceeds; what was
-    wrong was the sentence, and this pins it against the records that exist.
+    Publication is inside the page loop, so a decode failure part-way through
+    a shard leaves the earlier pages' records on disk. The refusal must not
+    claim "no ink-map record was written" -- an operator would read that as a
+    clean tree and act on a false picture of what is there. The boundary is
+    still unsealed, so nothing downstream proceeds either way; this pins the
+    refusal's wording against the records that actually exist.
     """
     good, bad = _sealed_page(1), _sealed_page(2)
     blank = encode_grayscale_png(20, 20, [bytearray([230] * 20) for _ in range(20)])
@@ -549,12 +544,11 @@ def test_the_undecodable_page_refusal_does_not_claim_an_empty_run_tree(monkeypat
 
 
 def test_a_measure_that_omits_its_fraction_is_refused_by_name_not_by_key_error():
-    """A missing key and a wrong type are the same contract break, reported alike.
+    """A missing key and a wrong type are the same contract break, reported alike:
 
-    `artifact_finding` used to index `fraction_outside` directly, so a shared
-    measure that stopped emitting it produced a bare `KeyError` with no stage,
-    page, or contract named -- while the same measure emitting a string got a
-    clean refusal. The weaker input got the worse report.
+    a shared measure that stops emitting `fraction_outside` must not surface as
+    a bare `KeyError` with no stage, page, or contract named, while the same
+    measure emitting a string gets a clean refusal.
     """
     complete = {
         "background_level": 230,

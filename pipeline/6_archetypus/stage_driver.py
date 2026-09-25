@@ -1,11 +1,9 @@
-"""The one subprocess driver the stage's test files share.
+"""The one subprocess driver the stage's test files share, so a stage script's
+argv or added flag needs updating in one place, not every test that drives it.
 
-Two test modules used to build the same argv and run the same six-stage
-sequence independently; when a stage script moves or gains a required flag,
-one copy gets updated and the other keeps reporting green over a pipeline it
-no longer drives. Test support, not stage code, exactly as `reseal_chain.py`:
-`run.py` never imports this, and test modules import it by name (pytest puts
-the directory on `sys.path` for them).
+Test support, not stage code, exactly as `reseal_chain.py`: `run.py` never
+imports this, and test modules import it by name (pytest puts the directory
+on `sys.path` for them).
 """
 
 import subprocess
