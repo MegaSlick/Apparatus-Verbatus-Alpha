@@ -46,6 +46,8 @@ from common.contracts.canonical import (  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from operations.submit import gate, inventory  # noqa: E402
 
+DESCRIPTION = "The submit door: a local folder in, a checksummed and sealed manifest out."
+
 SCHEMA: Final = "submission-manifest.v1"
 REFUSAL_REPORT_SCHEMA: Final = "submission-refusal-report.v0"
 
@@ -428,7 +430,7 @@ def purge(manifest_out: Path, approved_roots: tuple[Path, ...]) -> NoReturn:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--source", required=True)
     parser.add_argument("--manifest-out", required=True)
     parser.add_argument("--policy", default=str(gate.DEFAULT_POLICY_PATH))

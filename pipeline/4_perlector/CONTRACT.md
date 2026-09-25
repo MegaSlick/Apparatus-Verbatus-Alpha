@@ -144,7 +144,7 @@ prompt           -- {serving_recipe, chair_identity_sha256, dossier_digest,
                     rendered_sha256, builder_sha256}: the declared prompt this
                     reading was actually produced through (invariant #49, see
                     below). `builder_sha256` digests the prompt builder's own
-                    source, so editing the builder changes the record even when
+                    code, so editing the builder changes the record even when
                     its name and every other field stay identical
 dissent          -- derived-comparison-view rows (see below)
 truncation       -- {classification, signals, measure}, present on every
@@ -377,12 +377,15 @@ model, a local checkpoint or an unmerged adapter in turn; two Perlectiones can
 therefore be compared for whether they were prompted the same way rather than
 assumed to have been. The rendered bytes are recorded by digest only: they
 contain every testimonium the reader was shown, which already travels once on
-`dossier`. `builder_sha256` digests the whole prompt module's source — not one
-function's, because builders render through helpers — so any edit to the
-prompt-building code renames every Perlectio it prompts rather than hiding
-behind an unchanged recipe name. Deliberately module-scoped: a byte changed
-anywhere in `prompts.py` moves the claim, including edits that do not change
-the rendered bytes.
+`dossier`. `builder_sha256` digests the whole prompt module's code — not one
+function's, because builders render through helpers — so any edit to prompt
+text or builder logic renames every Perlectio it prompts rather than hiding
+behind an unchanged recipe name. It is the module's syntax tree with comments
+and docstrings stripped (`common.contracts.canonical.code_digest`): a code
+change anywhere in `prompts.py` moves the claim, even one that does not change
+the rendered bytes; a comment or docstring edit does not. A Python upgrade that adds
+AST fields also moves it, and `common/request_capacity.py` refuses loudly until
+it is re-pinned: an interpreter upgrade is a digest event.
 
 ### `truncation` — the instrument, not an assumption
 

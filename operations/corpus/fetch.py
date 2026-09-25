@@ -1,4 +1,27 @@
-"""The fetcher: one polite `urllib.request` client over a `recordgold-fetch-plan.v1`.
+import argparse
+import email.utils
+import http.client
+import io
+import json
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
+
+from . import CorpusRefusal
+from . import cache as cache_module
+from . import plan as plan_module
+from .cache import CacheUnusable
+from .holdout import HELD_SPLIT, load_holdout, refuse_held_out_page, validate_holdout
+
+DESCRIPTION = """The fetcher: one polite `urllib.request` client over a `recordgold-fetch-plan.v1`.
 
 `SPEC.md` §5.1, per identifier: `info.json` once, then the full-resolution image
 (`full/full` first, `max` on 400/501, size used recorded per page), decoded
@@ -22,29 +45,6 @@ subclasses (`Http403Stop`, `RequestCeilingReached`) are run-level: they escape
 `fetch_page` and `run_fetch` on purpose, because "stop on first 403" and "bounded
 per-run request ceiling" mean the *run*, not the page.
 """
-
-import argparse
-import email.utils
-import http.client
-import io
-import json
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any
-
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
-
-from . import CorpusRefusal
-from . import cache as cache_module
-from . import plan as plan_module
-from .cache import CacheUnusable
-from .holdout import HELD_SPLIT, load_holdout, refuse_held_out_page, validate_holdout
 
 # `SPEC.md` §5.1's closed refusal vocabulary, verbatim. A caller that wants to
 # dispatch on the reason reads `str(error).split(":", 1)[0]`, same convention as
@@ -943,7 +943,7 @@ def main(argv: list[str] | None = None) -> RunResult:
     returns a `RunResult` with `halted` set — it is the library entry point,
     and this halt-to-`SystemExit` step is `main`'s alone.
     """
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--plan", required=True, help="Path to a recordgold-fetch-plan.v1 file.")
     parser.add_argument("--holdout", help="Path to a recordgold-holdout.v1 file.")
     parser.add_argument("--cache-root", required=True)

@@ -1060,7 +1060,7 @@ def test_the_sealed_bound_is_bound_to_the_prompt_builder_this_reader_renders_thr
 
     `prompts.py` is the Perlector's prompt template: the rendered bytes are the
     module's own f-strings, which is why `prompt_evidence` already records the
-    whole module's digest as `builder_sha256`. The sealed tokens-per-character
+    module's code digest as `builder_sha256`. The sealed tokens-per-character
     bound is measured over those bytes, so it is bound to that same digest --
     edit the builder and the measurement expires rather than describing text
     nobody renders any more.
@@ -1070,7 +1070,6 @@ def test_the_sealed_bound_is_bound_to_the_prompt_builder_this_reader_renders_thr
     dossier = _dossier(region_image=_image_bytes(b"r"), page_image=_image_bytes(b"p"))
     dossier["dossier_digest"] = "0" * 64
     evidence = prompts.prompt_evidence(chair, dossier)
-    assert live_reader._PROMPT_TEMPLATE_DIGEST == evidence["builder_sha256"]
     assert PERLECTOR_PROMPT_TEMPLATE_DIGEST == evidence["builder_sha256"]
 
 

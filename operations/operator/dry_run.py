@@ -24,6 +24,8 @@ from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .fakes import OperatorFakeProvider
 from .surface import OperatorSurface
 
+DESCRIPTION = "Produce the human-readable Spec 12 rehearsal transcript from the real fake flow."
+
 UTC = timezone.utc
 ROOT = Path(__file__).resolve().parents[2]
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
@@ -214,8 +216,7 @@ def _friendly_path(value: str, temporary: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    description = __doc__ or "Produce the offline Verbatus rehearsal transcript."
-    parser = argparse.ArgumentParser(description=description.splitlines()[0])
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--output", type=Path, required=True, help="where to save the transcript")
     try:
         args = parser.parse_args(argv)

@@ -14,7 +14,7 @@ cannot drift about what "forbidden" means.
 
 The Archetypus and Armarium stage files carry a great deal of unrelated,
 legitimate code -- `established[0]` behind a proven `len(...) == 1` guard,
-`Path(...).parents[2]`, `__doc__.splitlines()[0]` -- so this scans the exact
+`Path(...).parents[2]` -- so this scans the exact
 new function bodies 19D added, not the whole file, the same way the 19A guard
 scans its own single narrow module rather than every file that imports it.
 """

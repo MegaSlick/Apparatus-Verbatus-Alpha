@@ -22,7 +22,7 @@ import math
 from typing import Any, Final
 
 from common.contracts import uncertainty
-from common.contracts.canonical import digest_bytes, digest_of, is_sha256
+from common.contracts.canonical import code_digest, digest_bytes, digest_of, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.serving import (
@@ -251,7 +251,7 @@ def render_reproof_instruction(request: dict[str, Any]) -> str:
 # invalidate retained readings. A renderer change needs an explicit legacy path.
 AUDIT_PROMPT_RENDERER_SHA256: Final = digest_of(
     {
-        "source": inspect.getsource(render_reproof_instruction),
+        "source": code_digest(inspect.getsource(render_reproof_instruction)),
         "request_schema": REQUEST_SCHEMA,
         "response_schema": RESPONSE_SCHEMA,
     }

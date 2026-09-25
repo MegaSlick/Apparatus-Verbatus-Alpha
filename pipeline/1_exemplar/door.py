@@ -106,6 +106,8 @@ from common.witness_adapters import validate_witness_adapter_bindings  # noqa: E
 from operations.submit import gate, inventory  # noqa: E402
 from operations.submit import submit as submission_ledger  # noqa: E402
 
+DESCRIPTION = "The door: what may enter at all, decided by bytes alone."
+
 
 class SourceEntry(NamedTuple):
     """One submitted frame may own several rows in the post-fan-out census."""
@@ -1585,7 +1587,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     Tests inject a deterministic registry through this seam; no command-line
     option chooses among implementations, chairs, revisions, recipes or caches.
     """
-    parser = stage_parser(__doc__.splitlines()[0])
+    parser = stage_parser(DESCRIPTION)
     parser.add_argument(
         "--submission-folder",
         help="a real local submission; must live inside an approved storage root",

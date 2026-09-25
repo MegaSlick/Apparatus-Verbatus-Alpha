@@ -357,6 +357,22 @@ def test_a_large_enough_fraction_outside_coverage_is_flagged_even_with_other_ink
     assert result["flagged"] is True
 
 
+def test_writing_touching_a_faint_page_spanning_line_is_still_counted_outside_coverage():
+    """At this audit's looser contrast the faint frame joins the writing into one
+    page-spanning component, which would hide the writing and report the page clean."""
+    width, height = 200, 260
+    rows = canvas(width, height)
+    faint = BACKGROUND - MINIMUM_CONTRAST_BELOW_BACKGROUND - 10
+    for x, y, w, h in ((5, 5, 190, 1), (5, 254, 190, 1), (5, 5, 1, 250), (194, 5, 1, 250)):
+        paint(rows, x, y, w, h, faint)
+    paint(rows, 6, 100, 150, 14, value=20)
+    measured = _measure(width, height, rows, [])
+    assert measured["background"]["ink_margin"] > BACKGROUND - faint
+    assert measured["page_spanning_components"] == []
+    assert measured["outside_ink_pixels"] >= 150 * 14
+    assert measured["flagged"] is True
+
+
 def test_a_page_with_no_ink_at_all_is_never_flagged():
     rows = canvas(20, 20)
     result = _measure(20, 20, rows, [])

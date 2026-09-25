@@ -86,6 +86,8 @@ from .plan import SUPPORTED_ROTATIONS, parse_record_url, unsafe_segment, volume_
 from .reference import CORPUS_ID, SPLITS, build_reference_page, validate_reference_page
 from .rows import validate_snapshot
 
+DESCRIPTION = "Admit the RecordGold pages and records already on this machine as reference truth."
+
 SCHEMA = "recordgold-local-admission.v1"
 RECEIPT_SCHEMA = "recordgold_full_page_fetch_v1"
 _EXIF_ORIENTATION_TAG = 0x0112
@@ -1057,7 +1059,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     import sys
 
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("set_root", help="a local RecordGold set (pages/, gold.jsonl, ...)")
     parser.add_argument("--split", required=True, choices=sorted(SPLITS))
     parser.add_argument("--output-dir", required=True, help="new directory for the ledger")

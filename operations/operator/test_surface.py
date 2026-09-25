@@ -4438,18 +4438,6 @@ def test_dry_run_main_strips_control_bytes_from_an_os_error(
     assert "output path is writable" in captured
 
 
-def test_dry_run_parser_has_a_description_when_docstrings_are_removed(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(dry_run, "__doc__", None)
-
-    with pytest.raises(SystemExit) as exit_status:
-        dry_run.main(["--help"])
-
-    assert exit_status.value.code == 0
-    assert "offline verbatus rehearsal transcript" in capsys.readouterr().out.lower()
-
-
 def test_reconciliation_distinguishes_missing_lists_from_recorded_empty_lists() -> None:
     missing = reconciliation_table({"aggregate": {}, "expected_acts": "unknown"})
     empty = reconciliation_table(
