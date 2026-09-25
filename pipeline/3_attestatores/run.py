@@ -791,6 +791,19 @@ _ZERO_ALIGNMENT_LOSS: dict[str, int] = {
 }
 
 
+def _unrecordable_health(basis: str, *, native_type: str = "unrecordable") -> dict[str, Any]:
+    return {
+        "native_type": native_type,
+        "encoding": "invalid-or-unrecordable",
+        "recordable": False,
+        "empty": None,
+        "blank": None,
+        "truncated": None,
+        "characters": None,
+        "truncation_basis": basis,
+    }
+
+
 def content_health(native_payload: Any, *, completed: bool | None = None) -> dict[str, Any]:
     """Compute deterministic channel facts from native output alone.
 
@@ -798,16 +811,7 @@ def content_health(native_payload: Any, *, completed: bool | None = None) -> dic
     health. ``completed`` must come from a trusted response boundary, or be None.
     """
     if (problem := _native_problem(native_payload)) is not None:
-        return {
-            "native_type": _native_type(native_payload),
-            "encoding": "invalid-or-unrecordable",
-            "recordable": False,
-            "empty": None,
-            "blank": None,
-            "truncated": None,
-            "characters": None,
-            "truncation_basis": problem,
-        }
+        return _unrecordable_health(problem, native_type=_native_type(native_payload))
 
     if isinstance(native_payload, str):
         empty = native_payload == ""
@@ -1457,6 +1461,22 @@ def _attempt_history(context) -> AttemptIndex:
     return AttemptIndex(bool(manifest["artifacts"]), by_pair, attachments_by_act)
 
 
+def _current_testimonium(records: list[dict[str, Any]], act_id: str, chair: str) -> dict[str, Any]:
+    return latest_attempt(
+        records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}"
+    )
+
+
+def _records_at_ordinal(
+    history: AttemptHistory, pair: tuple[str, str], ordinal: int
+) -> list[dict[str, Any]]:
+    return [
+        record
+        for record in history.get(pair, [])
+        if record["payload"]["attempt_ordinal"] == ordinal
+    ]
+
+
 def require_appendable_ordinal(
     history: AttemptHistory, act_id: str, chair: str, ordinal: int
 ) -> None:
@@ -1474,10 +1494,7 @@ def require_appendable_ordinal(
                 f"{ordinal} across a missing history"
             )
         return
-    current = latest_attempt(
-        records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}"
-    )
-    current_ordinal = current["payload"]["attempt_ordinal"]
+    current_ordinal = _current_testimonium(records, act_id, chair)["payload"]["attempt_ordinal"]
     if ordinal > current_ordinal + 1:
         raise SchemaRefusal(
             f"Testimonium for {(act_id, chair)!r} is current at ordinal {current_ordinal}; "
@@ -1503,11 +1520,7 @@ def _refuse_write_collision(
     disagree on; provenance does not vary with `reread`. Raw response blobs
     retained before this refusal stay in custody.
     """
-    existing = [
-        record
-        for record in history.get((act["act_id"], chair), [])
-        if record["payload"]["attempt_ordinal"] == ordinal
-    ]
+    existing = _records_at_ordinal(history, (act["act_id"], chair), ordinal)
     if not existing:
         return
     (record,) = existing
@@ -1541,10 +1554,7 @@ def pass_would_append(history: AttemptHistory, act_id: str, chairs, ordinal: int
         records = history.get((act_id, chair), [])
         if not records:
             return True
-        current = latest_attempt(
-            records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}"
-        )
-        if ordinal > current["payload"]["attempt_ordinal"]:
+        if ordinal > _current_testimonium(records, act_id, chair)["payload"]["attempt_ordinal"]:
             return True
     return False
 
@@ -1569,9 +1579,9 @@ def require_shared_whole_pass_ordinal(
         records = index.by_pair.get((act["act_id"], chair), [])
         if not records:
             continue
-        current[chair] = latest_attempt(
-            records, f"Testimonium for {(act['act_id'], chair)!r}", operation=f"read:{chair}"
-        )["payload"]["attempt_ordinal"]
+        current[chair] = _current_testimonium(records, act["act_id"], chair)["payload"][
+            "attempt_ordinal"
+        ]
     if len(set(current.values())) <= 1:
         return
     raise SchemaRefusal(
@@ -1581,6 +1591,21 @@ def require_shared_whole_pass_ordinal(
         "its act-attachment over the one the reread already sealed. Nothing was written "
         "for this pass"
     )
+
+
+def _shown_regions(context, act: dict[str, Any]) -> tuple[list[dict], str | None]:
+    """The proposal regions every chair is shown for an act, or why none are."""
+    if act["outcome"] == "held":
+        return [], (
+            "the Designator held this act; its incomplete proposal was not shown "
+            "to any configured witness"
+        )
+    try:
+        return proposed_regions(context, act["act_id"]), None
+    except FatalAccounting:
+        raise
+    except ContractError as error:
+        return [], f"the proposed region was refused before this chair ran: {error}"
 
 
 def preflight_appendable_ordinals(
@@ -1632,30 +1657,13 @@ def preflight_appendable_ordinals(
         # An appending whole pass meets the same closed-layer rule as a reread.
         require_open_witness_layer(closed, act, f"a whole pass at ordinal {ordinal}")
     for act in acts:
-        regions: list[dict] = []
-        if act["outcome"] == "held":
-            not_read: str | None = (
-                "the Designator held this act; its incomplete proposal was not shown "
-                "to any configured witness"
-            )
-        else:
-            try:
-                regions = proposed_regions(context, act["act_id"])
-                not_read = None
-            except ContractError as error:
-                if isinstance(error, FatalAccounting):
-                    raise
-                not_read = f"the proposed region was refused before this chair ran: {error}"
+        regions, not_read = _shown_regions(context, act)
         regions_by_act[act["act_id"]] = (regions, not_read)
         for chair in context.witness_chairs:
             require_appendable_ordinal(index.by_pair, act["act_id"], chair, ordinal)
             resolved = context.registry.resolve(chair)
             pair = (act["act_id"], chair)
-            existing = [
-                record
-                for record in index.by_pair.get(pair, [])
-                if record["payload"]["attempt_ordinal"] == ordinal
-            ]
+            existing = _records_at_ordinal(index.by_pair, pair, ordinal)
             if existing and resume_incomplete_pass:
                 if len(existing) != 1:
                     raise FatalAccounting(
@@ -1674,13 +1682,7 @@ def preflight_appendable_ordinals(
                 attempt = (
                     not_read_attempt(resolved, not_read)
                     if not_read is not None
-                    else resolve(
-                        context,
-                        act,
-                        chair,
-                        resolved,
-                        declarations,
-                    )
+                    else resolve(context, act, chair, resolved, declarations)
                 )
             attempts_by_pair[pair] = attempt
             if attempt is PENDING_LIVE_ATTEMPT:
@@ -1818,6 +1820,10 @@ def require_accounted_unrecordable_channel(record: dict[str, Any], payload: dict
         )
 
 
+def _unknown_tally(reason: str) -> dict[str, Any]:
+    return {"state": "UNKNOWN", "count": None, "hold": True, "reason": reason}
+
+
 def attempt_tally(
     tree,
     *,
@@ -1844,14 +1850,11 @@ def attempt_tally(
     except (ContractError, OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
         # json recurses per nesting level, so a deeply nested manifest raises
         # RecursionError here; it must become UNKNOWN and hold, not a traceback.
-        return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
+        return _unknown_tally(str(error))
     if stored != rebuilt:
-        return {
-            "state": "UNKNOWN",
-            "count": None,
-            "hold": True,
-            "reason": "the stored Attestatores manifest does not equal its rebuilt inventory",
-        }
+        return _unknown_tally(
+            "the stored Attestatores manifest does not equal its rebuilt inventory"
+        )
 
     # Filtered by kind, never by the self-reported `scope`, so an act record cannot
     # claim page scope and skip these checks.
@@ -1870,7 +1873,7 @@ def attempt_tally(
             if not isinstance(chair, str) or not chair:
                 raise SchemaRefusal("a Testimonium carries no named chair")
             by_pair.setdefault((record["subject_id"], chair), []).append(record)
-            health = record.get("payload", {}).get("content_health")
+            health = payload.get("content_health")
             validate_content_health(payload["payload"], health)
             if health["recordable"] is False:
                 require_accounted_unrecordable_channel(record, payload)
@@ -1896,14 +1899,11 @@ def attempt_tally(
                 f"Testimonium tally for {(act_id, chair)!r}",
                 operation=f"read:{chair}",
             )
-    except ContractError as error:
-        # `FatalAccounting` is a `ContractError` but means the partition is broken,
-        # not that the count is unknown; it must never become a hold.
-        if isinstance(error, FatalAccounting):
-            raise
-        return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
-    except OSError as error:
-        return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
+    except FatalAccounting:
+        # A broken partition, not an unknown count; it must never become a hold.
+        raise
+    except (ContractError, OSError) as error:
+        return _unknown_tally(str(error))
     return {
         "state": "KNOWN",
         "count": sum(len(records) for records in by_pair.values()),
@@ -2246,16 +2246,7 @@ def captured_churro_page_attempt(
             None,
             None,
             capabilities,
-            {
-                "native_type": "unrecordable",
-                "encoding": "invalid-or-unrecordable",
-                "recordable": False,
-                "empty": None,
-                "blank": None,
-                "truncated": None,
-                "characters": None,
-                "truncation_basis": basis,
-            },
+            _unrecordable_health(basis),
             f"Churro response retained but not usable: {cut_note}{parse_refusal}",
         ),
         capture,
@@ -2438,16 +2429,7 @@ def resolve_attempt(
         reason = "the chair returned no usable response"
     elif key in declarations["malformed"]:
         outcome = "failed"
-        health = {
-            "native_type": "unrecordable",
-            "encoding": "invalid-or-unrecordable",
-            "recordable": False,
-            "empty": None,
-            "blank": None,
-            "truncated": None,
-            "characters": None,
-            "truncation_basis": declarations["malformed"][key],
-        }
+        health = _unrecordable_health(declarations["malformed"][key])
         reason = (
             f"the provider response was refused without repair: {declarations['malformed'][key]}"
         )
@@ -5518,10 +5500,8 @@ def prepared_act_attachment(
         if item["chair"] == chair:
             entries.append(None)
             continue
-        other = latest_attempt(
-            index.by_pair.get((act["act_id"], item["chair"]), []),
-            f"Testimonium for {(act['act_id'], item['chair'])!r}",
-            operation=f"read:{item['chair']}",
+        other = _current_testimonium(
+            index.by_pair.get((act["act_id"], item["chair"]), []), act["act_id"], item["chair"]
         )
         if item.get("content_health") != other["payload"].get("content_health"):
             raise SchemaRefusal(
