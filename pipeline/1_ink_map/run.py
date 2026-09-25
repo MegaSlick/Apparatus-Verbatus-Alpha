@@ -178,15 +178,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     for ordinal, page, page_path in sealed_pages(context):
         image_bytes = measured_page_bytes(context.tree, ordinal, page)
         try:
-            # One decode for all three measures; it used to be one per measure.
-            # `measured_page_bytes` proves these bytes match the digest the
-            # Exemplar sealed; it proves nothing about whether this module's own
-            # independent decoder can read them. An uncaught decoder ValueError
-            # here would escape `run_stage`'s refusal handling as a bare
-            # traceback, with `seal_boundary`/`finish` never reached and earlier
-            # pages already published -- principle 2's silent loss with extra
-            # steps. Named and stopped instead, like every other census failure
-            # this stage refuses.
+            # One decode feeds all three measures below. `measured_page_bytes`
+            # proves these bytes match the digest the Exemplar sealed, not that
+            # this module's own decoder can read them; an uncaught ValueError
+            # here would escape as a bare traceback with earlier pages already
+            # published and no boundary sealed. Named and stopped instead, like
+            # every other census failure this stage refuses.
             width, height, rows = grayscale_rows(image_bytes)
         except ValueError as error:
             raise FatalAccounting(

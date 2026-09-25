@@ -1,35 +1,28 @@
 """Archetypus: exactly one established reading per act, written once.
 
-The authoritative pipeline output — a machine reading, not truth. Five things a
-reader needs that the code below does not say for itself.
+The authoritative pipeline output — a machine reading, not truth. Every closed
+field set in this file exists so a producer cannot rebuild a second text field
+one name at a time (principle 5: one established text, projected identically);
+`_REGION_FIELDS` closes the same way because a region is embedded whole and
+travels into the export whole.
 
-**The dead shape.** The audit found the old pipeline decided its established text
-twice, and its export then reached through `consolidated_literal`, `reader_text`,
-`literal`, `text`, `markdown` for whichever was non-empty. Every closed field set
-in this file exists to stop that being rebuilt one field at a time — including
-`_REGION_FIELDS`, because a region is embedded whole and travels into the export
-whole (principle 5: one established text, projected identically).
+**The three silences must never collapse into each other.** `no_readable_text`
+is a positive finding carrying its own evidence: ink present and unread by a
+human, and ink the machine could not see, are indistinguishable from inside
+the pipeline and both are gaps inside `partial` -- fine on their own, but never
+reported as the first. A blank page is ordinary material either way, so the
+refusals here are about the confusion, never about blankness.
 
-**The three silences, which must never collapse.** Nothing
-there — `no_readable_text`, a positive finding carrying its own evidence. Ink
-present and unread by a human. Ink the machine could not see. The last two are
-indistinguishable from inside the pipeline and both are gaps, inside `partial`;
-that is fine. Reporting either of them as the first is not. A blank page is
-ordinary material either way — "It is not a fatal error there might be blank
-pages" — so the refusals here are about the confusion, never about blankness.
+**A witness variant is evidence beside a gap, never a substitute inside `text`.**
 
-**A witness variant is evidence beside a gap, never a substitute inside `text`**
-(ruling: "we don't want it making shit up").
+**Write-once is enforced a layer down**, by the run tree refusing different
+bytes under one identity; this stage adds only that it never tries -- a
+revised reading is a new run over the same Exemplar (4b), and human
+correction lives *above* this record (4a) as a different kind of thing.
 
-**Write-once is enforced a layer down**, by the run tree refusing different bytes
-under one identity. What this stage adds is that it never tries: a revised
-reading is a new run over the same Exemplar (4b). Human correction lives *above*
-this record (4a) — a corrected text is a different kind of thing.
-
-**A held act reaches no Archetypus at all**, and that absence is the evidence the
-Armarium reconciles against. It is the load-bearing half of "partial cannot look
-complete": an export showing a held act as delivered would have to invent a
-record that does not exist.
+**A held act reaches no Archetypus record at all**, and that absence is the
+evidence the Armarium reconciles against: an export showing a held act as
+delivered would have to invent a record that does not exist.
 
     python pipeline/6_archetypus/run.py --run-root <dir> --run-id <id>
 """
@@ -94,27 +87,20 @@ from common.stage import (  # noqa: E402
 )
 from common.witness_regime import witness_label  # noqa: E402
 
-# The three silences, kept apart, and the derivation over them, both imported
-# from `common/contracts/outcomes.py` rather than spelled here. The Armarium
-# recomputes the same status from the layers travelling beside the text at export
-# (`verify_established_record`), and stages talk only through `common/`
-# (`pipeline/test_stage_import_boundaries.py`), so a private copy here would be
-# the second spelling of one rule — the pair that drifts. `derive_text_status` is
-# re-exported deliberately: it is this stage's own derivation over the older
-# annotation layer, and this stage's tests are what exercise it directly.
+# The three silences and their derivation live in `common/contracts/outcomes.py`,
+# not here, because the Armarium recomputes the same status from the layers
+# beside the text at export and stages talk only through `common/`
+# (`pipeline/test_stage_import_boundaries.py`); a private copy here would be a
+# second spelling that drifts. `derive_text_status` is re-exported because this
+# stage's tests exercise it directly.
 
-# Spec 10 asks these shapes to map onto the mature convention rather than invent
-# markup: `<unclear cert="">` for characters that ARE in `text`, and `<gap>` —
-# whose content model never admits character data — for a zero-width anchor where
-# none were read (TEI P5 ch. 11, "Representation of Primary Sources"; EpiDoc
-# Guidelines, "Unclear characters"). Rendering either one is the Armarium's
-# business at export time and is deliberately not stored.
-# The layer's closed vocabularies and its validator live in
-# `common/contracts/annotations.py` and are re-exported below: the Armarium
-# reconciles a record's layer against its accepted reading's and re-validates
-# the carried copy in every packaged product, and stages talk only through
-# `common/` (`pipeline/test_stage_import_boundaries.py`). One spelling; the
-# producer and its consumers cannot drift about what this layer may hold.
+# Spec 10 maps onto the mature TEI P5/EpiDoc convention rather than inventing
+# markup: `<unclear cert="">` for characters that ARE in `text`, `<gap>` for a
+# zero-width anchor where none were read. Rendering either is the Armarium's
+# business at export time, deliberately not stored. The layer's closed
+# vocabularies and validator live in `common/contracts/annotations.py` and are
+# re-exported here for the same reason: one spelling, so producer and consumer
+# cannot drift about what the layer may hold.
 
 # The record's whole field set, closed, so "is there a second text-bearing field?"
 # is answered mechanically rather than by reading the constructor. Every field is
@@ -811,10 +797,9 @@ def accepted_primed_perlectio(
 def validate_record_fields(record: dict) -> None:
     """The closed record schema, checked mechanically rather than by reading.
 
-    The old pipeline's export reached through five spellings of "the text" for
-    whichever was non-empty. That shape cannot be reintroduced one field at a
-    time while this refuses any field the record is not defined to carry, and
-    any absence of one it is.
+    Refuses any field the record is not defined to carry, and any absence of
+    one it is, so a second text-bearing field cannot be reintroduced one name
+    at a time.
     """
     unexpected = sorted(set(record) - _RECORD_FIELDS)
     missing = sorted(_RECORD_FIELDS - set(record))
