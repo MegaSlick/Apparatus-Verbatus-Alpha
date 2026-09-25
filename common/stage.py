@@ -1301,7 +1301,13 @@ def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> lis
 
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
     """A string-shape check only; containment (including symlinks) is
-    ``RunTree.resolve()``'s job when the path is read."""
+    ``RunTree.resolve()``'s job when the path is read.
+
+    ``digest_ref`` requires an exact ``dict``; a non-dict ``Mapping`` such as
+    ``MappingProxyType`` is copied first so the signature's own promise holds.
+    """
+    if isinstance(value, Mapping) and not isinstance(value, dict):
+        value = dict(value)
     return digest_ref(value, f"serving evidence {label} reference")
 
 

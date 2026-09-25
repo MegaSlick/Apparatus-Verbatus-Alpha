@@ -3413,15 +3413,52 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
     )
 
 
-def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry():
-    """The named real-path seal is used before a manifest can shape source pages."""
-    tree = ast.parse(dedent(inspect.getsource(door.real_submission)))
+def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry(
+    tmp_path, monkeypatch
+):
+    """The named real-path seal is used before a manifest can shape source pages.
 
-    def first_call(name):
-        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
-        return min(node.lineno for node in calls if getattr(node.func, "id", None) == name)
+    Observed on the real submission path itself, not by source order: a call
+    moved into a nested function or an unreachable branch would still pass a
+    static ordering check while the running door skipped the recheck.
+    """
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": png(4, 3)}
+    )
+    manifest_path, recipe_path = _triage_documents(approved, ledger)
+    real_require_triage_modes = door.require_triage_modes
+    real_expand_sources = door.expand_sources
+    order: list[str] = []
 
-    assert first_call("require_triage_modes") < first_call("expand_sources")
+    def watched_require_triage_modes(*args, **kwargs):
+        order.append("require_triage_modes")
+        return real_require_triage_modes(*args, **kwargs)
+
+    def watched_expand_sources(*args, **kwargs):
+        order.append("expand_sources")
+        return real_expand_sources(*args, **kwargs)
+
+    monkeypatch.setattr(door, "require_triage_modes", watched_require_triage_modes)
+    monkeypatch.setattr(door, "expand_sources", watched_expand_sources)
+    run_root = approved / "runs"
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="triage-order",
+            extra=[
+                "--triage-decision-manifest",
+                str(manifest_path),
+                "--triage-producer-recipe",
+                str(recipe_path),
+            ],
+        )
+        == 0
+    )
+    assert order == ["require_triage_modes", "expand_sources"]
 
 
 def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
