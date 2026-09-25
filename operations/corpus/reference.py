@@ -122,12 +122,7 @@ _TOP_FIELDS = frozenset(
 )
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise ReferenceRefusal(
-            f"malformed-record: {what} must be the closed record {sorted(fields)}"
-        )
-    return value
+_closed = ReferenceRefusal.closed
 
 
 def _non_empty_str(value: Any, what: str) -> str:

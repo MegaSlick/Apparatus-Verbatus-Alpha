@@ -65,7 +65,7 @@ from common.contracts.canonical import canonical_bytes, is_sha256, self_hash, ve
 from common.contracts.errors import IdentityRefusal
 from common.contracts.identities import physical_act_id, physical_page_id
 
-from . import CorpusRefusal
+from . import CorpusRefusal, write_new
 from .rows import CORPUS_ID, SPLITS, validate_snapshot
 
 SCHEMA = "recordgold-fetch-plan.v1"
@@ -111,6 +111,7 @@ PLAN_REFUSAL_REASONS = frozenset(
         "wrong-schema",
         "wrong-corpus",
         "self-hash-mismatch",
+        "output-exists",
     }
 )
 
@@ -444,10 +445,7 @@ _TOP_FIELDS = frozenset(
 )
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise PlanRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
-    return value
+_closed = PlanRefusal.closed
 
 
 def _listed(value: Any, what: str) -> list[Any]:
@@ -522,7 +520,7 @@ def main(snapshot_path: str | Path, output_path: str | Path) -> dict[str, Any]:
     """
     snapshot = validate_snapshot(json.loads(Path(snapshot_path).read_bytes()))
     plan = build_fetch_plan(snapshot["rows"], snapshot["self_hash"])
-    Path(output_path).write_bytes(canonical_bytes(plan))
+    write_new(Path(output_path), canonical_bytes(plan), PlanRefusal)
     return plan
 
 

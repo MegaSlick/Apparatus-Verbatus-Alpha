@@ -115,10 +115,7 @@ _BOUNDS_FIELDS = frozenset({"x", "y", "w", "h"})
 _PIPELINE_ACT_FIELDS = frozenset({"act_id", "bounds", "page_sha256"})
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise CompareRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
-    return value
+_closed = CompareRefusal.closed
 
 
 def _bounds(value: Any, what: str) -> dict[str, int]:

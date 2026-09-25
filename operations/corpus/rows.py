@@ -71,10 +71,7 @@ class RowRefusal(CorpusRefusal):
     reasons = ROW_REFUSAL_REASONS
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise RowRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
-    return value
+_closed = RowRefusal.closed
 
 
 def _non_empty_str(value: Any, what: str) -> str:

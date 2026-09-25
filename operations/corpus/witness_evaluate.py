@@ -34,13 +34,14 @@ from operations.spike_perlector.models import OutputStatus
 from operations.spike_perlector.normalization import GRAPHEMIC_V1
 from operations.spike_perlector.scoring import score_response
 
-from . import CorpusRefusal
+from . import CorpusRefusal, write_new
 from .compare import (
     ReadOnlyRunTree,
     compare_page_geometry,
     load_exemplar_page_shas,
     load_pipeline_proposal_acts,
 )
+from .evaluate import load_reference_pages
 from .local_admission import validate_local_admission_ledger
 from .reference import validate_reference_page
 
@@ -241,20 +242,12 @@ def evaluate_page(
 
 
 def _reference_pages(path: Path) -> dict[str, dict[str, Any]]:
-    if not path.is_file():
-        raise WitnessRefusal(f"missing-input-file: {path} is not a file")
     pages: dict[str, dict[str, Any]] = {}
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except UnicodeDecodeError as error:
-        raise WitnessRefusal(f"reference-page-invalid: {path} is not UTF-8: {error}") from error
-    for number, line in enumerate(lines, 1):
-        if not line.strip():
-            continue
+    for number, page in enumerate(load_reference_pages(path), 1):
         try:
-            page = validate_reference_page(json.loads(line))
-        except (ValueError, CorpusRefusal) as error:
-            raise WitnessRefusal(f"reference-page-invalid: line {number}: {error}") from None
+            page = validate_reference_page(page)
+        except CorpusRefusal as error:
+            raise WitnessRefusal(f"reference-page-invalid: page {number}: {error}") from None
         digest = page["page"]["sha256"]
         if digest in pages:
             raise WitnessRefusal(f"reference-page-collision: duplicate page sha256 {digest}")
@@ -701,12 +694,7 @@ def write_report(report: Mapping[str, Any], output: Path, *, run_root: Path) -> 
     resolved_run = run_root.resolve()
     if resolved_output == resolved_run or resolved_output.is_relative_to(resolved_run):
         raise WitnessRefusal("output-in-run-tree: a witness report must be external to the RunTree")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with output.open("xb") as stream:
-            stream.write(data)
-    except FileExistsError:
-        raise WitnessRefusal(f"output-exists: {output}") from None
+    write_new(output, data, WitnessRefusal)
 
 
 def main(argv: list[str] | None = None) -> int:

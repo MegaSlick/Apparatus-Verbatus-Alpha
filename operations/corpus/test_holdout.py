@@ -247,6 +247,8 @@ def test_main_builds_and_writes_a_validated_holdout(tmp_path):
     assert holdout["schema"] == "recordgold-holdout.v1"
     assert output_path.exists()
     assert output_path.read_bytes() == canonical_bytes(holdout)
+    with pytest.raises(CorpusRefusal, match="^output-exists:"):
+        main(snapshot_path, output_path)
 
 
 def test_load_holdout_returns_a_byte_identical_validated_holdout(tmp_path):

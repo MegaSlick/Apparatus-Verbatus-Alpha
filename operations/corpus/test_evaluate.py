@@ -444,7 +444,7 @@ def sealed_run(tmp_path_factory):
 
 
 def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_counted(
-    sealed_run, tmp_path
+    sealed_run, tmp_path, monkeypatch
 ):
     """One integration case: the map is derived from a run the orchestrator sealed."""
     tree = sealed_run
@@ -537,6 +537,9 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
 
     written = write_report(report, tmp_path / "out" / "evaluation.json")
     assert json.loads(written.read_bytes())["self_hash"] == report["self_hash"]
+    with pytest.raises(CorpusRefusal, match="^output-exists:"):
+        write_report(report, written)
+    monkeypatch.setattr(Path, "exists", lambda *_, **__: False)
     with pytest.raises(CorpusRefusal, match="^output-exists:"):
         write_report(report, written)
 

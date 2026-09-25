@@ -47,6 +47,9 @@ pipeline read, and drops nothing from either side of a pairing. All of it
 refuses; none of it chooses.
 """
 
+from pathlib import Path
+from typing import Any
+
 from common.contracts.errors import ContractError
 
 
@@ -67,5 +70,22 @@ class CorpusRefusal(ContractError):
         if self.reason not in self.reasons:
             raise TypeError(f"{type(self).__name__} declares no reason {self.reason!r}: {message}")
 
+    @classmethod
+    def closed(cls, value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
+        """`value` if it is a dict carrying exactly `fields`, else `malformed-record`."""
+        if not isinstance(value, dict) or set(value) != fields:
+            raise cls(f"malformed-record: {what} must be the closed record {sorted(fields)}")
+        return value
 
-__all__ = ["CorpusRefusal"]
+
+def write_new(path: Path, data: bytes, refusal: type[CorpusRefusal]) -> None:
+    """Create `path` holding `data`; an existing file is refused `output-exists`, never replaced."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("xb") as stream:
+            stream.write(data)
+    except FileExistsError:
+        raise refusal(f"output-exists: {path} already exists") from None
+
+
+__all__ = ["CorpusRefusal", "write_new"]

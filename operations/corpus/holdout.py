@@ -35,7 +35,7 @@ from typing import Any
 
 from common.contracts.canonical import canonical_bytes, is_sha256, self_hash, verify_self_hash
 
-from . import CorpusRefusal
+from . import CorpusRefusal, write_new
 from .plan import parse_record_url
 from .rows import CORPUS_ID, validate_snapshot
 
@@ -50,6 +50,7 @@ HOLDOUT_REFUSAL_REASONS = frozenset(
         "wrong-schema",
         "wrong-corpus",
         "self-hash-mismatch",
+        "output-exists",
     }
 )
 
@@ -72,10 +73,7 @@ _TOP_FIELDS = frozenset(
 )
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise HoldoutRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
-    return value
+_closed = HoldoutRefusal.closed
 
 
 def build_holdout(rows: list[dict[str, Any]], source_row_snapshot_self_hash: str) -> dict[str, Any]:
@@ -214,7 +212,7 @@ def main(snapshot_path: str | Path, output_path: str | Path) -> dict[str, Any]:
     """
     snapshot = validate_snapshot(json.loads(Path(snapshot_path).read_bytes()))
     holdout = build_holdout(snapshot["rows"], snapshot["self_hash"])
-    Path(output_path).write_bytes(canonical_bytes(holdout))
+    write_new(Path(output_path), canonical_bytes(holdout), HoldoutRefusal)
     return holdout
 
 

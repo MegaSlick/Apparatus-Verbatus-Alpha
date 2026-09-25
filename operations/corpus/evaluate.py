@@ -64,7 +64,7 @@ from operations.spike_perlector.normalization import (
     word_units,
 )
 
-from . import CorpusRefusal
+from . import CorpusRefusal, write_new
 from .compare import (
     ReadOnlyRunTree,
     compare_page,
@@ -746,12 +746,7 @@ def evaluate_run(
     return validate_evaluation(report)
 
 
-def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise EvaluationRefusal(
-            f"malformed-record: {what} must be the closed record {sorted(fields)}"
-        )
-    return value
+_closed = EvaluationRefusal.closed
 
 
 def _validate_units(value: Any, what: str) -> None:
@@ -988,12 +983,7 @@ def write_report(report: Mapping[str, Any], path: str | Path) -> Path:
     """Write a validated report, refusing to overwrite and refusing an off-shape one."""
     validate_evaluation(dict(report))
     path = Path(path)
-    if path.exists():
-        raise EvaluationRefusal(
-            f"output-exists: {path} already exists; a report is never overwritten"
-        )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(canonical_bytes(dict(report)))
+    write_new(path, canonical_bytes(dict(report)), EvaluationRefusal)
     return path
 
 
