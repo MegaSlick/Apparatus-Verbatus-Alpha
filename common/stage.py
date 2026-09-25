@@ -49,6 +49,7 @@ from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import (
     BOUNDARY_OUTCOMES,
+    _is_int,
     classify,
 )
 from common.contracts.outcomes import (
@@ -100,7 +101,7 @@ from common.recovery import (
     reconcile_recovery_requests,
     recovery_kind_budget,
 )
-from common.runtree.store import PublishResult, RunTree
+from common.runtree.store import PublishResult, RunTree, _inode_identity
 from common.witness_adapters import validate_witness_adapter_bindings
 from common.witness_context import validate_witness_context_configuration
 
@@ -1017,9 +1018,9 @@ def _stage_blob_inventory(
     try:
         opened_directory = os.fstat(directory_fd)
         named_directory = os.stat(blobs_root, follow_symlinks=False)
-        if not stat.S_ISDIR(opened_directory.st_mode) or _inode(opened_directory) != _inode(
-            named_directory
-        ):
+        if not stat.S_ISDIR(opened_directory.st_mode) or _inode_identity(
+            opened_directory
+        ) != _inode_identity(named_directory):
             raise SchemaRefusal(f"{stage} blob inventory is not one contained directory")
         with os.scandir(directory_fd) as entries:
             names = sorted(entry.name for entry in entries)
@@ -1056,7 +1057,9 @@ def _stage_blob_inventory(
                     f"{stage} blob {name!r} contains digest {observed}, not the digest in its name"
                 )
             inventory.append({"name": name, "sha256_of_content": observed})
-        if _inode(opened_directory) != _inode(os.stat(blobs_root, follow_symlinks=False)):
+        if _inode_identity(opened_directory) != _inode_identity(
+            os.stat(blobs_root, follow_symlinks=False)
+        ):
             raise SchemaRefusal(f"{stage} blob inventory directory changed while it was read")
         return inventory
     except OSError as error:
@@ -1065,10 +1068,6 @@ def _stage_blob_inventory(
         ) from error
     finally:
         os.close(directory_fd)
-
-
-def _inode(status: os.stat_result) -> tuple[int, int]:
-    return (status.st_dev, status.st_ino)
 
 
 def _is_unpublished_blob_temporary(name: str) -> bool:
@@ -1117,7 +1116,7 @@ def _publisher_link_allowance(
             sibling = os.stat(other, dir_fd=directory_fd, follow_symlinks=False)
         except OSError:  # pragma: no cover - the temporary vanished mid-inventory
             continue
-        if _inode(sibling) == identity:
+        if _inode_identity(sibling) == identity:
             explained += 1
     return explained
 
@@ -1136,12 +1135,12 @@ def _digest_regular_file_at(
         with os.fdopen(descriptor, "rb") as handle:
             opened = os.fstat(handle.fileno())
             named_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            identity = _inode(opened)
+            identity = _inode_identity(opened)
             allowed_links = 1 + _publisher_link_allowance(directory_fd, siblings, name, identity)
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or opened.st_nlink > allowed_links
-                or identity != _inode(named_before)
+                or identity != _inode_identity(named_before)
             ):
                 raise SchemaRefusal(
                     f"{stage} blob {name!r} is not one contained regular file: it is reachable "
@@ -1156,8 +1155,8 @@ def _digest_regular_file_at(
         ) from error
 
     if (
-        identity != _inode(closed_over)
-        or identity != _inode(named_after)
+        identity != _inode_identity(closed_over)
+        or identity != _inode_identity(named_after)
         or not stat.S_ISREG(named_after.st_mode)
         or closed_over.st_nlink > allowed_links
         or (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
@@ -3852,11 +3851,6 @@ def _verify_page_residual_premise(
 def _payload_of(record: Mapping[str, Any]) -> Mapping[str, Any]:
     payload = record.get("payload")
     return payload if isinstance(payload, Mapping) else {}
-
-
-def _is_int(value: Any) -> bool:
-    """`bool` is an `int` in Python, and never a number here."""
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _is_count(value: Any) -> bool:
