@@ -527,6 +527,18 @@ def _configured_chair_record(context, resolved: ChairIdentity) -> dict:
     }
 
 
+def _absent_chair_record(context, resolved: AbsentChair) -> dict:
+    return {
+        "chair": resolved.role,
+        "chair_state": "absent",
+        "absence": resolved.to_record(),
+        "resolved_identity": None,
+        "resolved_revision": None,
+        "receipt_ref": None,
+        "adapter_revision": context.adapter_revision,
+    }
+
+
 def structure_provenance(context) -> dict:
     """Verify and record the exact chair that produced structural proposals.
 
@@ -544,6 +556,17 @@ def structure_provenance(context) -> dict:
     return _configured_chair_record(context, resolved)
 
 
+def _publish_secondary_provenance(context, secondary: dict) -> dict:
+    context.publish(
+        kind="secondary-provenance",
+        subject_id="secondary-provenance",
+        outcome="proposed",
+        inputs=[],
+        payload=secondary,
+    )
+    return secondary
+
+
 def secondary_provenance(context) -> dict:
     """Resolve and record the secondary proposer chair, absent or configured.
 
@@ -553,15 +576,7 @@ def secondary_provenance(context) -> dict:
     """
     resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
     if isinstance(resolved, AbsentChair):
-        return {
-            "chair": resolved.role,
-            "chair_state": "absent",
-            "absence": resolved.to_record(),
-            "resolved_identity": None,
-            "resolved_revision": None,
-            "receipt_ref": None,
-            "adapter_revision": context.adapter_revision,
-        }
+        return _absent_chair_record(context, resolved)
     if not isinstance(resolved, ChairIdentity):
         raise ContractError(
             "secondary proposer resolution returned neither an identity nor an absence"
@@ -1480,6 +1495,32 @@ def _publish_withheld_secondary_pass(
     return True
 
 
+def _seal_row(
+    act_id: str,
+    act_key: str,
+    page_id: str,
+    page_ordinal: int,
+    outcome: str,
+    evidence: list[dict],
+    *,
+    has_continuation: bool = False,
+) -> dict:
+    """One `expected_acts` entry; `has_continuation` comes from regions actually cut."""
+    return {
+        "act_id": act_id,
+        "act_key": act_key,
+        "page_id": page_id,
+        "page_ordinal": page_ordinal,
+        "has_continuation": has_continuation,
+        "outcome": outcome,
+        "evidence": evidence,
+    }
+
+
+def _by_path(references: list[dict]) -> list[dict]:
+    return sorted(references, key=lambda reference: reference["relative_path"])
+
+
 def residual_act_key(page_ordinal: int, index: int) -> str:
     """The human-readable label for a conservation-residual act.
 
@@ -1564,15 +1605,14 @@ def _publish_residual_holds(
             conservation_ref,
         )
         rows.append(
-            {
-                "act_id": minted_act_id,
-                "act_key": residual_act_key(page_ordinal, index),
-                "page_id": page_id,
-                "page_ordinal": page_ordinal,
-                "has_continuation": False,
-                "outcome": "held",
-                "evidence": [context.input_ref(hold.relative_path)],
-            }
+            _seal_row(
+                minted_act_id,
+                residual_act_key(page_ordinal, index),
+                page_id,
+                page_ordinal,
+                "held",
+                [context.input_ref(hold.relative_path)],
+            )
         )
     return rows
 
@@ -1644,15 +1684,14 @@ def _publish_page_residual_hold(
         inputs=[conservation_ref],
         payload=payload,
     )
-    return {
-        "act_id": minted_act_id,
-        "act_key": act_key,
-        "page_id": page_id,
-        "page_ordinal": page_ordinal,
-        "has_continuation": False,
-        "outcome": "held",
-        "evidence": [context.input_ref(hold.relative_path)],
-    }
+    return _seal_row(
+        minted_act_id,
+        act_key,
+        page_id,
+        page_ordinal,
+        "held",
+        [context.input_ref(hold.relative_path)],
+    )
 
 
 def _residual_ink_fraction_bp(residual_pixel_count: int, total_ink_pixel_count: int) -> int:
@@ -1803,15 +1842,7 @@ def _publish_page_fallback(
             provenance=provenance,
         )
         evidence.append(context.input_ref(region.relative_path))
-    return {
-        "act_id": act_id,
-        "act_key": act_key,
-        "page_id": page_id,
-        "page_ordinal": ordinal,
-        "has_continuation": False,
-        "outcome": "proposed",
-        "evidence": sorted(evidence, key=lambda reference: reference["relative_path"]),
-    }
+    return _seal_row(act_id, act_key, page_id, ordinal, "proposed", _by_path(evidence))
 
 
 def _publish_conservation_and_secondary(
@@ -2170,23 +2201,51 @@ def _account_for_declared_act(
                 continuation_analysis if continuation_cut else None,
             )
 
-    row = {
-        "act_id": act_id,
-        "act_key": act["key"],
-        # The sealed page's subject where one exists; the fixture derivation
-        # only for an unsealed page.
-        "page_id": (
-            pages[page_ordinal]["subject_id"]
-            if page_ordinal in pages
-            else page_identity(context.fixture, page_ordinal)
-        ),
-        "page_ordinal": page_ordinal,
-        # From regions actually cut, never the declaration.
-        "has_continuation": continuation_cut,
-        "outcome": outcome,
-        "evidence": sorted(evidence, key=lambda reference: reference["relative_path"]),
-    }
+    # The sealed page's subject where one exists; the fixture derivation only
+    # for an unsealed page.
+    page_id = (
+        pages[page_ordinal]["subject_id"]
+        if page_ordinal in pages
+        else page_identity(context.fixture, page_ordinal)
+    )
+    row = _seal_row(
+        act_id,
+        act["key"],
+        page_id,
+        page_ordinal,
+        outcome,
+        _by_path(evidence),
+        has_continuation=continuation_cut,
+    )
     return row, evidence
+
+
+def _sealed_designator_policies(context) -> tuple[dict, dict]:
+    """Padding and grouping policies, each checked against the run's seal on load.
+
+    Geometry is loaded only to check it: a rewrite after `open_context` would
+    otherwise go unnoticed.
+    """
+    padding = geometry.load_padding_config(context.args.designator_padding_config)
+    context.require_sealed_config("designator-padding", padding["config_sha256"])
+    geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
+    context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
+    grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
+    context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
+    return padding, grouping_policy
+
+
+def _publish_proposal_seal(context, expected: list[dict], inputs: list, provenance: dict) -> None:
+    """Emitted once, never rewritten: downstream stages reconcile against it."""
+    payload = {"expected_acts": expected, "count": len(expected), "provenance": provenance}
+    payload["self_hash"] = self_hash(payload)
+    context.publish(
+        kind="proposal-seal",
+        subject_id="proposal-seal",
+        outcome="proposed",
+        inputs=inputs,
+        payload=payload,
+    )
 
 
 def initial_pass(context) -> bool:
@@ -2196,24 +2255,9 @@ def initial_pass(context) -> bool:
     if not pages:
         raise ContractError("the Designator found no sealed page to mark out")
 
-    # Each policy is read from the run's own argument and its digest checked
-    # against the seal here, since a rewrite after `open_context` would
-    # otherwise go unnoticed.
-    padding = geometry.load_padding_config(context.args.designator_padding_config)
-    context.require_sealed_config("designator-padding", padding["config_sha256"])
-    geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
-    context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
-    grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
+    padding, grouping_policy = _sealed_designator_policies(context)
     provenance = structure_provenance(context)
-    secondary = secondary_provenance(context)
-    context.publish(
-        kind="secondary-provenance",
-        subject_id="secondary-provenance",
-        outcome="proposed",
-        inputs=[],
-        payload=secondary,
-    )
+    secondary = _publish_secondary_provenance(context, secondary_provenance(context))
     # Decided once, before any crop is cut.
     failures = structure_failures(context, pages)
     page_cache: dict[int, dict] = {}
@@ -2262,20 +2306,7 @@ def initial_pass(context) -> bool:
     expected.extend(residual_rows)
     seal_inputs.extend(reference for row in residual_rows for reference in row["evidence"])
 
-    # Emitted once, never rewritten: downstream stages reconcile against it.
-    payload = {
-        "expected_acts": expected,
-        "count": len(expected),
-        "provenance": provenance,
-    }
-    payload["self_hash"] = self_hash(payload)
-    context.publish(
-        kind="proposal-seal",
-        subject_id="proposal-seal",
-        outcome="proposed",
-        inputs=seal_inputs,
-        payload=payload,
-    )
+    _publish_proposal_seal(context, expected, seal_inputs, provenance)
     # Any hold, secondary hold or unmeasured page withholds "complete"
     # (principle 2). An unmeasured page has not reconciled, but its crops still
     # go downstream; only the run's completion claim is withheld.
@@ -2296,15 +2327,7 @@ def _live_secondary_provenance(context) -> dict:
     """
     resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
     if isinstance(resolved, AbsentChair):
-        return {
-            "chair": resolved.role,
-            "chair_state": "absent",
-            "absence": resolved.to_record(),
-            "resolved_identity": None,
-            "resolved_revision": None,
-            "receipt_ref": None,
-            "adapter_revision": context.adapter_revision,
-        }
+        return _absent_chair_record(context, resolved)
     raise ContractError(
         f"the secondary proposer chair {SECONDARY_PROPOSER_CHAIR!r} is configured, but the "
         "live structure pass serves no secondary chair and writes no fixture receipt for one, "
@@ -2553,12 +2576,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     if not pages:
         raise ContractError("the Designator found no sealed page to mark out")
 
-    padding = geometry.load_padding_config(context.args.designator_padding_config)
-    context.require_sealed_config("designator-padding", padding["config_sha256"])
-    geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
-    context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
-    grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
+    padding, grouping_policy = _sealed_designator_policies(context)
     # The sealed `[structure]` decoding posture, refused before any chair starts
     # if the live seam cannot execute it.
     decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
@@ -2566,14 +2584,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     temperature = structure_pass.executable_temperature(decoding_policy)
     attempt_policy = structure_recovery_policy(decoding_policy)
     identity = structure_pass.resolved_structure_chair(context)
-    secondary = _live_secondary_provenance(context)
-    context.publish(
-        kind="secondary-provenance",
-        subject_id="secondary-provenance",
-        outcome="proposed",
-        inputs=[],
-        payload=secondary,
-    )
+    secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
 
     page_cache: dict[int, dict] = {}
     for ordinal, page_record in pages.items():
@@ -2717,15 +2728,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
             )
             evidence = [context.input_ref(region.relative_path)]
             expected.append(
-                {
-                    "act_id": act_id,
-                    "act_key": act_key,
-                    "page_id": page_record["subject_id"],
-                    "page_ordinal": ordinal,
-                    "has_continuation": False,
-                    "outcome": "proposed",
-                    "evidence": evidence,
-                }
+                _seal_row(act_id, act_key, page_record["subject_id"], ordinal, "proposed", evidence)
             )
             seal_inputs.extend(evidence)
             minted.append((act_id, act_key, bounds))
@@ -2776,19 +2779,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
             "denominator to seal"
         )
 
-    payload = {
-        "expected_acts": expected,
-        "count": len(expected),
-        "provenance": seal_provenance,
-    }
-    payload["self_hash"] = self_hash(payload)
-    context.publish(
-        kind="proposal-seal",
-        subject_id="proposal-seal",
-        outcome="proposed",
-        inputs=seal_inputs,
-        payload=payload,
-    )
+    _publish_proposal_seal(context, expected, seal_inputs, seal_provenance)
     return _initial_pass_has_holds(
         expected,
         failures,
