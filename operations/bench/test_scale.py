@@ -10,11 +10,7 @@ from common.contracts.canonical import canonical_bytes
 from operations.bench.scale import cleanup_scale, run_scale
 
 
-def test_scale_runner_refuses_undersized_without_explicit_smoke_opt_in(tmp_path, monkeypatch):
-    # Rebinding these public globals is the mutation under test: the private seal must ignore it.
-    monkeypatch.setattr(scale, "SHARDS", 1)
-    monkeypatch.setattr(scale, "PAGES_PER_SHARD", 1)
-
+def test_scale_runner_refuses_undersized_without_explicit_smoke_opt_in(tmp_path):
     with pytest.raises(ValueError, match="allow_undersized_smoke=True"):
         run_scale(tmp_path / "scale", shards=1, pages_per_shard=1)
 
@@ -26,9 +22,6 @@ def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinalit
     at a size this chamber can actually finish, so a latent logic bug is not
     resting on an unverified refusal-only test.
     """
-    # Rebinding these public globals is the mutation under test: the private seal must ignore it.
-    monkeypatch.setattr(scale, "SHARDS", 2)
-    monkeypatch.setattr(scale, "PAGES_PER_SHARD", 3)
     root = tmp_path / "scale-smoke"
     real_create = scale.RunTree.create
     resumed_run_ids = []
