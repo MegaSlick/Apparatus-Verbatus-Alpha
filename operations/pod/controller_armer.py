@@ -190,8 +190,9 @@ takes to appear in the volume's network view.  Its clock starts only when
 this container wait ends, not when ``create`` returns: between ``create``
 returning and the container existing lie scheduling and an image pull that is
 commonly several gigabytes on a cold host, and that time is not the channel's
-to spend.  A pod that spends six minutes pulling still gets its whole
-propagation budget once the container starts.
+to spend.  A pod that spends six minutes pulling gets its whole propagation
+budget once the container starts only when the lease still has that budget
+available before the close reserve.
 
 So this bounds only the wait for the container to exist, it is deliberately
 generous, and what it actually took is recorded rather than assumed: the

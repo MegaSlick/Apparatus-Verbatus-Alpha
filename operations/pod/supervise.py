@@ -4,9 +4,11 @@ This is the tracked runtime for `controllers.LaptopSupervisor`: a process
 that restarts safely across a laptop crash, refuses to run twice over the
 same lease, and treats a provider lifecycle state other than ``RUNNING`` as
 a close condition even while its own heartbeat is perfectly fresh (a pod
-still provisioning or starting is waited for only while its launch is
-arming) -- guarding against an ``EXITED`` pod billing volume disk at double
-rate under a supervisor that only checked presence.
+still provisioning or starting is waited for while its launch is arming and,
+once armed, for up to ``CONTAINER_START_TIMEOUT_SECONDS`` after the arming
+receipt and one further consecutive past-grace tick) -- guarding against an
+``EXITED`` pod billing volume disk at double rate under a supervisor that only
+checked presence.
 
 Restart safety rests on two durable files alongside the lease, under their
 own ``supervisors/`` subdirectory so the flat lease-directory listing other

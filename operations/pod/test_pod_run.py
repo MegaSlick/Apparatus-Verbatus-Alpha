@@ -803,10 +803,9 @@ def test_refuses_a_bad_run_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]
 def test_a_refusal_report_write_failure_is_named_not_swallowed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run that refuses *and* fails to leave its durable reason must not
-    exit like a run that refused cleanly. Principle 2 binds the write failure
-    too: it must be named on stderr, and the refusal exit code stays exactly
-    what it was.
+    """A run that refuses *and* fails to leave its durable reason must keep
+    the refusal exit code while naming the write failure on stderr. Principle
+    2 binds the write failure too.
     """
 
     ws = _prepared(tmp_path)

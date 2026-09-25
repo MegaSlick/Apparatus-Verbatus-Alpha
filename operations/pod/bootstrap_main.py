@@ -732,7 +732,8 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
     # defaulting to it would make TRANSFER re-upload a submission the pod
     # already has. A consuming pod names no manifest and TRANSFER is a
     # vacuous success; a producing pod names both halves. Half a pair is a
-    # plan-time refusal, before anything is spent, whichever half is missing.
+    # plan-time refusal after pod creation, before the environment sync,
+    # whichever half is missing.
     submission_manifest = args.submission_manifest
     if submission_manifest is not None:
         submission_manifest = _require_contained(

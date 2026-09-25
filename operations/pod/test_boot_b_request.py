@@ -138,10 +138,10 @@ def test_the_rendered_request_carries_no_transfer_half() -> None:
     """Boot B consumes a submission already on the volume.
 
     A bootstrap ``--submission-manifest`` with no ``--transfer-target-factory``
-    would turn a real run red only after the ~10 GB environment sync had
-    already been paid for. The run half's own ``--submission-manifest`` -- a
-    different flag, read rather than sent -- is still there, because that is
-    the submission the run reads.
+    would be refused after pod creation, but before the ~10 GB environment
+    sync. The run half's own ``--submission-manifest`` -- a different flag,
+    read rather than sent -- is still there, because that is the submission
+    the run reads.
     """
 
     nested = _nested_argv(filled_request())
