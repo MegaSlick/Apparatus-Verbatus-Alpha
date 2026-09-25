@@ -94,6 +94,32 @@ SCENARIO_PAGES: tuple[Page, ...] = (
 
 ALL_PAGES: tuple[Page, ...] = PAGES + SCENARIO_PAGES
 
+# An act that runs across a page break with nothing declaring it: page 1's
+# second act reaches the bottom edge and page 2 opens, unanchored, at the top
+# edge in the same ink. Never part of the committed fixture, whose declaration
+# is sealed into every fixture run's config digest; tests submit these pages as
+# a real submission.
+PAGE_BREAK_PAGES: tuple[Page, ...] = (
+    {
+        "ordinal": 1,
+        "width": 200,
+        "height": 260,
+        "acts": (
+            {"ordinal": 0, "bounds": {"x": 20, "y": 20, "w": 160, "h": 80}, "ink": 40},
+            {"ordinal": 1, "bounds": {"x": 20, "y": 120, "w": 160, "h": 140}, "ink": 90},
+        ),
+    },
+    {
+        "ordinal": 2,
+        "width": 200,
+        "height": 260,
+        "acts": (
+            {"ordinal": 1, "bounds": {"x": 20, "y": 0, "w": 160, "h": 60}, "ink": 90},
+            {"ordinal": 2, "bounds": {"x": 20, "y": 100, "w": 160, "h": 80}, "ink": 40},
+        ),
+    },
+)
+
 
 def _render_rows(width: int, height: int, acts: tuple[Act, ...]) -> list[bytearray]:
     """Paint the background and each act's rectangle into a row buffer.

@@ -158,6 +158,20 @@ region ids. Reporting the second shape as empty was a defect that dropped a flag
 only evidence whenever the held act was the one act touching it; it is fixed
 now.
 
+**A continuation candidate holds every act it names.** The Designator publishes
+`continuation-candidate` (not authoritative) for each crossing its geometry shows
+between adjacent pages with no declared continuation. `continuation_candidate_refs`
+reads every such record and refuses by name one that is malformed, is not
+`authoritative: false`, or names an act the proposal seal does not propose (so a
+Designator-held act is never named). Each named act is read, then held by
+`review_route_from_findings(continuation_candidate=True)`: a head alone is a
+truncation and a tail alone has no heading. When another cause holds the act
+first, its reason still names the candidate. Every review of a named act,
+`recovery-requested` included, lists every naming candidate as inputs and as
+`payload["continuation_candidate_refs"]`, so an act that ends one break and
+opens the next cites both; the field is absent on a review no candidate names. The link stays unmade and no act is merged; the
+export is partial until a review decides.
+
 ## `kind="review"`
 
 Every readable-act review payload has `act_key`, `attempt_ordinal`, coverage,
