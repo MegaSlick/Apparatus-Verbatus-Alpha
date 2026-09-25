@@ -1,41 +1,25 @@
 """The submit door: a local folder in, a checksummed and sealed manifest out.
 
-**What this does, and what it deliberately does not.** It walks a folder through
-`inventory.py`, computes a sha256 per file, and writes one sealed, self-hashed
-manifest — nothing more. It does not decode, sniff, or judge a single byte of image
-content: that is admission, and admission belongs to the pipeline door
-(`pipeline/1_exemplar/door.py`) and its one format policy. And it does not transfer
-anything to a pod: spec 04 owns "checksummed and resumable", and until a pod exists
-there is nothing to transfer to.
+It walks a folder through `inventory.py`, computes a sha256 per file, and
+writes one sealed, self-hashed manifest -- nothing more. It never decodes or
+judges image content (that is the pipeline door's job,
+`pipeline/1_exemplar/door.py`) and never transfers anything to a pod.
 
-**This is the first real boundary in the chain.** The pipeline door's fixture CLI
-only ever sees declared synthetic pages; a folder handed to *this* tool is never a
-fixture, by construction, because it never goes near `load_fixture`. So the
-storage-root check is enforced here before a single byte is hashed — and again at
-the door, on the door's own admission loop, because "material lives only where the
-policy names" has to be true of the door and not only of whatever ran before it.
+A folder handed to this tool is never a fixture, so the storage-root check
+runs here before a byte is hashed, and again at the door, since "material
+lives only where the policy names" must hold regardless of what ran first.
+The manifest carries no data-gate authorization reference: none of this
+material reaches git regardless of any sign-off.
 
-A submission does not require a current data-gate approval-record artifact:
-none of this material ever reaches git regardless of any such sign-off, so
-the manifest carries no authorization reference.
+The manifest is built entirely in memory and written once, atomically, so a
+crash before that write leaves no manifest to mistake for a completed
+submission. Filenames stay in the sealed manifest and in a private,
+self-hashed refusal report; terminal output gives only counts, digests and
+report locations.
 
-**Upload completion is explicit and sealed.** The manifest is built entirely in
-memory, then written once, atomically. A crash at any point before that final
-rename leaves no manifest at all; there is no intermediate state that could be
-mistaken for a completed submission.
-
-**Filenames are citation links, not a leak to discard.** The self-hashed manifest
-always carries each submitted path and digest. A refusal that identifies a source
-writes the source path and reason to a private, self-hashed refusal report under an
-approved storage root. Terminal output gives the count and report location; it does
-not print image bytes. This separates the immutable record from a captured terminal
-without breaking traceability.
-
-**There is no ordinary deletion command here.** Whole-run disposal is permitted
-only when the run is dead/broken or complete/exported. This local tool has no sealed
-authority for either condition, so `purge()` refuses rather than pretending a
-manifest cleanup is a retention decision. `cleanup.py` remains the synthetic-drill
-verifier; it makes observable claims only.
+There is no ordinary deletion command: whole-run disposal is a lifecycle
+decision this local tool has no sealed authority for, so `purge()` refuses.
+`cleanup.py` remains the synthetic-drill verifier.
 
     python operations/submit/submit.py --source <folder> --manifest-out <path>
 """
@@ -65,16 +49,10 @@ from operations.submit import gate, inventory  # noqa: E402
 SCHEMA: Final = "submission-manifest.v1"
 REFUSAL_REPORT_SCHEMA: Final = "submission-refusal-report.v0"
 
-# The manifest names every submitted file, whatever its size — a source too large
-# for the door to admit is still a source that arrived, and it must stay in the
-# denominator. This tool needs no file's *content* to write that, so it retains
-# none: the digest is streamed and exact either way.
-#
-# This replaces a `MAX_RETAINED_BYTES = 64 MiB` that was a second, independent copy
-# of `image_formats.MAX_SOURCE_BYTES` — the same number kept by hand in two places,
-# which is the shape of drift this spec exists to kill.
-# `operations/submit/` may not import the pipeline (the dependency points one way),
-# so the copy could not simply be shared; retaining nothing removes the need for it.
+# The manifest names every submitted file regardless of size -- a source too
+# large for the door to admit still stays in the denominator -- and needs no
+# file's content to do that, so nothing is retained; the digest is still
+# streamed and exact.
 RETAIN_NO_BYTES: Final = 0
 
 # Every field `log()` may carry. The immutable records carry filename linkage;
@@ -263,41 +241,21 @@ def _content_addressed_report_path(path: Path, report_hash: str) -> Path:
 def atomic_create(target: Path, data: bytes) -> bool:
     """Create the manifest, or reuse an identical one. Never overwrite a different.
 
-    Principle 4: evidence is never overwritten. `os.replace` clobbered
-    unconditionally, so resubmitting a *changed* folder to the same path replaced a
-    valid, self-hashed record of what was previously sealed with a different one —
-    no comparison, no warning, no refusal, and nothing on disk retaining the record
-    it superseded. "Sealed" then meant only "self-consistent now".
-
-    `os.link` is the same atomic-create-or-fail pattern `common/runtree/store.py`
-    uses one layer down, where `RunTree.create` already refuses a changed manifest;
-    this record sits upstream of any run tree and had no such protection. Identical
-    bytes are a true no-op, so a byte-identical resubmission stays idempotent.
-    Returns True when the file was created, False when an identical one was reused.
-
-    Public because `operations/operator/ingest_worker.py` depends on exactly this
-    three-way behaviour — created, reused-identical, or `ExistingRecordRefusal` —
-    and reads the False as its own refusal, since an entry appearing inside a
-    folder it just checked was empty is a concurrent change rather than a retry.
-    It reached that through the private name, which left this function looking
-    free to change its return convention when it is not. Renaming it is the whole
-    of that change; the behaviour is untouched.
+    Principle 4: evidence is never overwritten. `os.link` is the same
+    atomic-create-or-fail pattern `common/runtree/store.py` uses one layer
+    down. Identical bytes are a true no-op, so a byte-identical resubmission
+    stays idempotent. Returns True when created, False when an identical file
+    was reused; public because `operations/operator/ingest_worker.py` depends
+    on exactly this three-way created/reused/`ExistingRecordRefusal` contract.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     completed = False
     try:
-        # `mkstemp`, not a pid-derived name. `open(temporary, "wb")` originally
-        # followed a symlink, and O_EXCL|O_NOFOLLOW closed that — but the name was
-        # still `.{manifest}.tmp-{pid}`, so it was both guessable *and* reusable: a
-        # process that died between the create and the unlink, or a pid the system
-        # later handed out again, left that exact name on disk. O_EXCL then refused
-        # it, and every later submission to the same manifest path failed with the
-        # generic "could not be written" — the one refusal that does not say a stale
-        # temporary is the cause. `mkstemp` picks an unpredictable name per attempt,
-        # creating it 0o600 with O_CREAT|O_EXCL, so it is at least as strict against
-        # a planted link and immune to the stale-name wedge. Same helper, and the
-        # same reasoning, as `common/runtree/store.py::_write_temporary`.
+        # `mkstemp`, not a pid-derived name: a pid can be reused, leaving a
+        # stale, guessable temp name on disk that then wedges every later
+        # write. `mkstemp` picks an unpredictable name per attempt with
+        # O_CREAT|O_EXCL, mode 0600 -- same as `common/runtree/store.py`.
         descriptor, raw_temporary = tempfile.mkstemp(
             prefix=f".{target.name}.tmp-", dir=target.parent
         )
@@ -330,18 +288,13 @@ def atomic_create(target: Path, data: bytes) -> bool:
         completed = True
         return True
     except OSError as error:
-        # A name too long for the filesystem, a full disk, a temp path already taken.
-        # Each escaped as a traceback and CPython's exit 1 past `main()`'s handler,
-        # printing the manifest path on the way out.
         raise SubmitRefusal(
             "the submission manifest could not be written; nothing was sealed"
         ) from error
     finally:
-        # Preserve a primary refusal, but do not call a completed create/reuse
-        # successful while its temporary record remains on disk. Calling unlink
-        # directly avoids a second, fallible stat call on an over-long temp path.
-        # `temporary` stays None when `mkstemp` itself failed, which is the one
-        # path where there is nothing on disk to remove.
+        # A completed create/reuse must not be reported successful while its
+        # temporary file remains on disk; `temporary` is None only when
+        # `mkstemp` itself failed, leaving nothing to remove.
         try:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
@@ -356,26 +309,14 @@ def atomic_create(target: Path, data: bytes) -> bool:
 def _existing_record_state(path: Path, expected: bytes) -> Literal["matches", "differs", "unknown"]:
     """Compare one held regular-file descriptor without following a redirect.
 
-    Three outcomes, not two. "Could not be compared" is a different fact from
-    "seals different content", and only one of them is about the submission. A
-    symlink caught by `O_NOFOLLOW`, a directory, an unreadable entry, or a
-    platform with no `O_NOFOLLOW` at all all landed in the same `False` as a
-    genuine content difference, and the caller then told the operator that the
-    existing record sealed something else — sending whoever read it to hunt for
-    a difference in content when what was actually sitting at that path was a
-    planted link. Both still refuse and neither ever writes; they are told
-    apart so the refusal names the problem the operator actually has.
-
-    **POSIX only, and deliberately so.** Without `O_NOFOLLOW` there is no way to
-    compare the entry at that path without risking following a redirect to
-    somewhere else, so this reports "unknown" and the caller refuses. On such a
-    platform a byte-identical resubmission stops being idempotent and is refused
-    instead of reused. That is the correct trade and not a gap to close: the
-    alternative is a comparison that can be pointed at another file, which is
-    the exact attack `atomic_create` exists to refuse. This repository is POSIX
-    only regardless — `operations/operator/custody.py` has an OS boundary for
-    Linux and macOS alone and refuses to open the console anywhere else — so no
-    supported platform reaches this branch.
+    Three outcomes, not two: "could not be compared" (a symlink, a directory,
+    an unreadable entry, or a platform with no `O_NOFOLLOW`) is a different
+    fact from "seals different content", so the refusal can name the problem
+    the operator actually has instead of sending them to hunt for a content
+    difference that is really a planted link. Without `O_NOFOLLOW`, comparing
+    risks following a redirect, so this reports "unknown" and the caller
+    refuses -- correctly trading away idempotence on such a platform rather
+    than risk the attack `atomic_create` exists to refuse.
     """
 
     no_follow = getattr(os, "O_NOFOLLOW", None)
