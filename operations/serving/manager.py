@@ -1648,7 +1648,9 @@ def _redacted(text: str) -> str:
         return _redact_value(match)
 
     def redact_word(match: re.Match[str]) -> str:
-        return _REDACTED if looks_like_credential_value(match.group(0)) else match.group(0)
+        if looks_like_credential_value(match.group(0), files_and_hosts_pass=True):
+            return _REDACTED
+        return match.group(0)
 
     lines = []
     for raw in text.splitlines():

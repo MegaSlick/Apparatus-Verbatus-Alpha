@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from common.test_credentials import OPAQUE, PASSING_VALUES, SHAPED_VALUES
+from common.test_credentials import FILES_AND_HOSTS, OPAQUE, PASSING_VALUES, SHAPED_VALUES
 
 from . import notify_hooks
 from .notify_hooks import (
@@ -173,13 +173,31 @@ def test_the_fixture_scrubs_a_secret_named_inside_a_string() -> None:
 
 
 @pytest.mark.parametrize("value", PASSING_VALUES)
-def test_every_boundary_passes_an_identifier_or_a_path(value: str) -> None:
+def test_every_boundary_passes_an_identifier(value: str) -> None:
     from operations.serving.manager import _redacted
 
     from .bootstrap_main import refuse_credential_looking_argv
     from .fixture import _scrub
 
+    assert notify_close(
+        lease_id=value, verified_state="ok", billed_seconds=1, runner=FakeRunner()
+    ).delivered
     assert _scrub({"message": value}, "body", []) == {"message": value}
+    refuse_credential_looking_argv(["--run-id", value])
+    assert _redacted(f"INFO {value}") == f"INFO {value}"
+
+
+@pytest.mark.parametrize("value", FILES_AND_HOSTS)
+def test_a_file_or_host_passes_argv_and_logs_but_not_notifications_or_fixtures(value: str) -> None:
+    from operations.serving.manager import _redacted
+
+    from .bootstrap_main import refuse_credential_looking_argv
+    from .fixture import SCRUBBED, _scrub
+
+    assert not notify_launch(
+        lease_id="l", card=value, max_hourly_usd="1", runner=FakeRunner()
+    ).attempted
+    assert _scrub({"message": value}, "body", []) == {"message": SCRUBBED}
     refuse_credential_looking_argv(["--run-id", value])
     assert _redacted(f"INFO {value}") == f"INFO {value}"
 

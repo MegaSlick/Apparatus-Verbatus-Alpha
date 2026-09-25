@@ -880,7 +880,9 @@ def _argv_credential_piece(value: str) -> str | None:
     if not any(character in "/\\.:@" for character in value) and is_credential_piece(value):
         return value
     for match in _URL_SECRET.finditer(value):
-        secret = credential_piece(match.group("password") or match.group("query") or "")
+        secret = credential_piece(
+            match.group("password") or match.group("query") or "", files_and_hosts_pass=True
+        )
         if secret is not None:
             return secret
     return next(
@@ -888,7 +890,7 @@ def _argv_credential_piece(value: str) -> str | None:
             piece
             for piece in CREDENTIAL_PIECE.findall(value)
             if piece.startswith(CREDENTIAL_VALUE_PREFIXES)
-            or (piece.count(".") >= 2 and is_credential_piece(piece))
+            or (piece.count(".") >= 2 and is_credential_piece(piece, files_and_hosts_pass=True))
         ),
         None,
     )

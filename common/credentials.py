@@ -25,12 +25,16 @@ def looks_like_credential_env(name: str) -> bool:
     return name.startswith(PROVIDER_ENV_PREFIXES) or looks_like_credential_field(name)
 
 
-def _opaque(run: str) -> bool:
-    """20+ characters mixing letters and digits, not lowercase hex, not a file name or host."""
+def _opaque(run: str, files_and_hosts_pass: bool) -> bool:
+    """20+ characters mixing letters and digits, not lowercase hex.
+
+    With ``files_and_hosts_pass``, a run ending in a known file extension or domain suffix
+    is not one: for the argv refusal and log redaction, where a false positive costs a run.
+    """
 
     if len(run) < 20 or "\\" in run:
         return False
-    if "." in run and run.rsplit(".", 1)[1].lower() in _FILE_OR_HOST_SUFFIXES:
+    if files_and_hosts_pass and run.rsplit(".", 1)[-1].lower() in _FILE_OR_HOST_SUFFIXES:
         return False
     if all(character in "0123456789abcdef." for character in run):
         return False
@@ -39,26 +43,33 @@ def _opaque(run: str) -> bool:
     )
 
 
-def is_credential_piece(piece: str) -> bool:
+def is_credential_piece(piece: str, *, files_and_hosts_pass: bool = False) -> bool:
     """A known provider prefix, or an opaque run; a one-dot piece is a file name (prefix only)."""
 
     if piece.startswith(CREDENTIAL_VALUE_PREFIXES):
         return True
-    return piece.count(".") != 1 and _opaque(piece)
+    return piece.count(".") != 1 and _opaque(piece, files_and_hosts_pass)
 
 
-def credential_piece(text: str) -> str | None:
+def credential_piece(text: str, *, files_and_hosts_pass: bool = False) -> str | None:
     """The first whole word, or piece of one, that reads as a secret."""
 
     for word in text.split():
         stripped = word.strip("\"'(),;:")
-        if _opaque(stripped):
+        if _opaque(stripped, files_and_hosts_pass):
             return stripped
-        piece = next((p for p in CREDENTIAL_PIECE.findall(word) if is_credential_piece(p)), None)
+        piece = next(
+            (
+                p
+                for p in CREDENTIAL_PIECE.findall(word)
+                if is_credential_piece(p, files_and_hosts_pass=files_and_hosts_pass)
+            ),
+            None,
+        )
         if piece is not None:
             return piece
     return None
 
 
-def looks_like_credential_value(text: str) -> bool:
-    return credential_piece(text) is not None
+def looks_like_credential_value(text: str, *, files_and_hosts_pass: bool = False) -> bool:
+    return credential_piece(text, files_and_hosts_pass=files_and_hosts_pass) is not None
