@@ -23,6 +23,7 @@ import os
 import stat
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -3153,23 +3154,35 @@ def _reseal_dossier(dossier: dict[str, Any]) -> dict[str, Any]:
     return {**body, "dossier_digest": digest_of(body)}
 
 
+@dataclass(frozen=True)
+class _Attempt:
+    """The facts every record of one act's reading attempt is published with."""
+
+    act_key: str
+    act_id: str
+    ordinal: int
+    chair: ChairIdentity
+    bases: list[dict]
+    page_renders: list[dict]
+    region_pixels: int
+    page_pixels: int
+    protocol_config: dict[str, Any]
+    protocol_sha256: str
+    receipt_ref: dict[str, str] | None
+
+
 def _publication_pass_data(
-    chair: ChairIdentity,
-    dossier: dict[str, Any],
-    result: dict[str, Any],
-    *,
-    region_pixels: int,
-    page_pixels: int,
-    protocol_config: dict[str, Any],
-    protocol_sha256: str,
+    attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], str]:
     sealed_dossier = _reseal_dossier(dossier)
-    prompt = prompts.prompt_evidence(chair, sealed_dossier, protocol_config, protocol_sha256)
+    prompt = prompts.prompt_evidence(
+        attempt.chair, sealed_dossier, attempt.protocol_config, attempt.protocol_sha256
+    )
     truncation_record = truncation.classify(
         result["text"],
-        region_pixels=region_pixels,
-        page_pixels=page_pixels,
-        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+        region_pixels=attempt.region_pixels,
+        page_pixels=attempt.page_pixels,
+        truncation_policy=attempt.protocol_config[protocol.TRUNCATION_TABLE],
         stop_reason=result["stop_reason"],
     )
     outcome = _resolve_outcome(
@@ -3179,33 +3192,56 @@ def _publication_pass_data(
     return sealed_dossier, prompt, outcome, truncation_record, text
 
 
+def _arm_image_inputs(
+    context, attempt: _Attempt, sealed_dossier: dict[str, Any]
+) -> list[dict[str, str]]:
+    return _reading_image_inputs(
+        context,
+        attempt.bases,
+        attempt.page_renders,
+        autopsia=sealed_dossier["cross_capture_autopsia"],
+    )
+
+
+def _protocol_record(context, protocol_config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "selection_rule": protocol_config["selection_rule"],
+        "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
+        "draft_fed": context.draft_fed,
+    }
+
+
+def _testimonium_references(context, testimonia: list[dict]) -> dict[str, dict[str, str]]:
+    return {
+        record["artifact_id"]: context.artifact_ref(
+            ATTESTATORES, "testimonium", record["artifact_id"]
+        )
+        for record in testimonia
+    }
+
+
+def _testimonia_basis(testimonia: list[dict], references: dict[str, dict]) -> list[dict]:
+    return [
+        {
+            "chair": record["payload"]["chair"],
+            "artifact_id": record["artifact_id"],
+            "outcome": record["outcome"],
+            "reference": references[record["artifact_id"]],
+        }
+        for record in testimonia
+    ]
+
+
 def _publish_lectio_nuda(
     context,
-    *,
-    act_key: str,
-    act_id: str,
-    ordinal: int,
-    chair: ChairIdentity,
+    attempt: _Attempt,
     dossier: dict[str, Any],
     result: dict[str, Any],
-    bases: list[dict],
-    page_renders: list[dict],
-    region_pixels: int,
-    page_pixels: int,
-    protocol_config: dict[str, Any],
-    protocol_sha256: str,
     approval_ref: ApprovalRecordBinding,
-    receipt_ref: dict[str, str] | None = None,
 ) -> None:
     """Publish outside Perlectio kind and attempt identity with no witness facts."""
     nuda_dossier, prompt, outcome, truncation_record, nuda_text = _publication_pass_data(
-        chair,
-        dossier,
-        result,
-        region_pixels=region_pixels,
-        page_pixels=page_pixels,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        attempt, dossier, result
     )
     nuda_assessment, nuda_spans, nuda_gaps = _published_doubt(
         result,
@@ -3214,8 +3250,8 @@ def _publish_lectio_nuda(
         whole_act_gaps=_whole_act_gap([], {}),
     )
     payload = {
-        "act_key": act_key,
-        "attempt_ordinal": ordinal,
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
         "text": nuda_text,
         "dossier": nuda_dossier,
         "prompt": prompt,
@@ -3228,59 +3264,38 @@ def _publish_lectio_nuda(
         "uncertain_spans": nuda_spans,
         "uncertainty_assessment": nuda_assessment,
         "gaps": nuda_gaps,
-        "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
+        "provenance": provenance_for(
+            context, attempt.chair, attempted=True, receipt_ref=attempt.receipt_ref
+        ),
     }
     fields = with_engine_call(payload, result, _LECTIO_NUDA_FIELDS)
-    reading_inputs = _reading_image_inputs(
-        context,
-        bases,
-        page_renders,
-        autopsia=nuda_dossier["cross_capture_autopsia"],
-    ) + engine_call_inputs(context, result.get("engine_call"))
+    reading_inputs = _arm_image_inputs(context, attempt, nuda_dossier) + engine_call_inputs(
+        context, result.get("engine_call")
+    )
     validate_reading_payload(
         payload,
         outcome=outcome,
         fields=fields,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        protocol_config=attempt.protocol_config,
+        protocol_sha256=attempt.protocol_sha256,
         inputs=reading_inputs,
     )
     context.publish(
         kind=nuda.LECTIO_NUDA_KIND,
-        subject_id=act_id,
+        subject_id=attempt.act_id,
         outcome=outcome,
-        attempt=perlector_attempt_id(act_id, "lectio-nuda", ordinal),
+        attempt=perlector_attempt_id(attempt.act_id, "lectio-nuda", attempt.ordinal),
         inputs=reading_inputs + [approval_ref.reference.to_record()],
         payload=payload,
     )
 
 
 def _publish_lectio_prior(
-    context,
-    dossier: dict[str, Any],
-    result: dict[str, Any],
-    *,
-    act_key,
-    act_id,
-    ordinal,
-    chair,
-    bases,
-    page_renders,
-    region_pixels,
-    page_pixels,
-    protocol_config,
-    protocol_sha256,
-    receipt_ref: dict[str, str] | None = None,
+    context, attempt: _Attempt, dossier: dict[str, Any], result: dict[str, Any]
 ) -> dict:
     """Publish Pass A as a retained draft, never as a Perlectio."""
     prior_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
-        chair,
-        dossier,
-        result,
-        region_pixels=region_pixels,
-        page_pixels=page_pixels,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        attempt, dossier, result
     )
     prior_assessment, prior_spans, prior_gaps = _published_doubt(
         result,
@@ -3289,8 +3304,8 @@ def _publish_lectio_prior(
         whole_act_gaps=_whole_act_gap([], {}),
     )
     payload = {
-        "act_key": act_key,
-        "attempt_ordinal": ordinal,
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
         "text": text,
         "dossier": prior_dossier,
         "prompt": prompt,
@@ -3299,37 +3314,34 @@ def _publish_lectio_prior(
         "uncertain_spans": prior_spans,
         "uncertainty_assessment": prior_assessment,
         "gaps": prior_gaps,
-        "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
-        "protocol": {
-            "selection_rule": protocol_config["selection_rule"],
-            "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
-            "draft_fed": context.draft_fed,
-        },
+        "provenance": provenance_for(
+            context, attempt.chair, attempted=True, receipt_ref=attempt.receipt_ref
+        ),
+        "protocol": _protocol_record(context, attempt.protocol_config),
     }
     fields = with_engine_call(payload, result, _LECTIO_PRIOR_FIELDS)
-    reading_inputs = _reading_image_inputs(
-        context,
-        bases,
-        page_renders,
-        autopsia=prior_dossier["cross_capture_autopsia"],
-    ) + engine_call_inputs(context, result.get("engine_call"))
+    reading_inputs = _arm_image_inputs(context, attempt, prior_dossier) + engine_call_inputs(
+        context, result.get("engine_call")
+    )
     validate_reading_payload(
         payload,
         outcome=outcome,
         fields=fields,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        protocol_config=attempt.protocol_config,
+        protocol_sha256=attempt.protocol_sha256,
         inputs=reading_inputs,
     )
     context.publish(
         kind="lectio-prior",
-        subject_id=act_id,
+        subject_id=attempt.act_id,
         outcome=outcome,
-        attempt=perlector_attempt_id(act_id, "lectio-prior", ordinal),
+        attempt=perlector_attempt_id(attempt.act_id, "lectio-prior", attempt.ordinal),
         inputs=reading_inputs,
         payload=payload,
     )
-    prior_artifact_id = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
+    prior_artifact_id = _attempt_artifact_id(
+        attempt.act_id, "lectio-prior", "lectio-prior", attempt.ordinal
+    )
     return {
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
         "text": text,
@@ -3338,40 +3350,19 @@ def _publish_lectio_prior(
 
 def _publish_primed_without_prior(
     context,
-    *,
-    act_key,
-    act_id,
-    ordinal,
-    chair,
+    attempt: _Attempt,
     dossier: dict[str, Any],
     result: dict[str, Any],
-    bases,
-    page_renders,
-    region_pixels,
-    page_pixels,
-    testimonia,
-    attachment_view,
-    protocol_config,
-    protocol_sha256,
+    *,
+    testimonia: list[dict],
+    attachment_view: dict[str, Any],
     approval_ref: ApprovalRecordBinding,
-    receipt_ref: dict[str, str] | None = None,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
     control_dossier, prompt, outcome, truncation_record, text = _publication_pass_data(
-        chair,
-        dossier,
-        result,
-        region_pixels=region_pixels,
-        page_pixels=page_pixels,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        attempt, dossier, result
     )
-    testimonium_references = {
-        record["artifact_id"]: context.artifact_ref(
-            ATTESTATORES, "testimonium", record["artifact_id"]
-        )
-        for record in testimonia
-    }
+    testimonium_references = _testimonium_references(context, testimonia)
     # `context.run` was verified when opened and nothing rewrites `run.json`, so it is
     # not re-read per act.
     membership = context.run["corpus_frame_membership"]
@@ -3382,26 +3373,18 @@ def _publish_primed_without_prior(
         whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
     )
     payload = {
-        "act_key": act_key,
-        "attempt_ordinal": ordinal,
+        "act_key": attempt.act_key,
+        "attempt_ordinal": attempt.ordinal,
         "text": text,
         "basis": {
-            "regions": bases,
-            "testimonia": [
-                {
-                    "chair": record["payload"]["chair"],
-                    "artifact_id": record["artifact_id"],
-                    "outcome": record["outcome"],
-                    "reference": testimonium_references[record["artifact_id"]],
-                }
-                for record in testimonia
-            ],
+            "regions": attempt.bases,
+            "testimonia": _testimonia_basis(testimonia, testimonium_references),
         },
         "dossier": control_dossier,
         "prompt": prompt,
         "sampling": protocol.control_sampling_design(
             per_mille=context.perlector_instrument_per_mille,
-            selection_rule=protocol_config["selection_rule"],
+            selection_rule=attempt.protocol_config["selection_rule"],
             approval_ref=approval_ref,
         ),
         # The digest draw above is keyed by the logical act. Record that same
@@ -3410,29 +3393,22 @@ def _publish_primed_without_prior(
         "membership": {
             **membership,
             "act_id": control_dossier["logical_act_id"],
-            "protocol_sha256": protocol_sha256,
+            "protocol_sha256": attempt.protocol_sha256,
         },
         "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
         "truncation": truncation_record,
         "uncertain_spans": control_spans,
         "uncertainty_assessment": control_assessment,
         "gaps": control_gaps,
-        "provenance": provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref),
+        "provenance": provenance_for(
+            context, attempt.chair, attempted=True, receipt_ref=attempt.receipt_ref
+        ),
         "lectio_kind": "primed-without-prior",
-        "protocol": {
-            "selection_rule": protocol_config["selection_rule"],
-            "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
-            "draft_fed": context.draft_fed,
-        },
+        "protocol": _protocol_record(context, attempt.protocol_config),
     }
     fields = with_engine_call(payload, result, _PRIMED_WITHOUT_PRIOR_FIELDS)
     reading_inputs = (
-        _reading_image_inputs(
-            context,
-            bases,
-            page_renders,
-            autopsia=control_dossier["cross_capture_autopsia"],
-        )
+        _arm_image_inputs(context, attempt, control_dossier)
         + list(testimonium_references.values())
         + [attachment_view["reference"]]
         + engine_call_inputs(context, result.get("engine_call"))
@@ -3443,15 +3419,15 @@ def _publish_primed_without_prior(
         fields=fields,
         run_id=context.tree.run_id,
         config_digest=context.config_digest,
-        protocol_config=protocol_config,
-        protocol_sha256=protocol_sha256,
+        protocol_config=attempt.protocol_config,
+        protocol_sha256=attempt.protocol_sha256,
         inputs=reading_inputs,
     )
     context.publish(
         kind="primed-without-prior",
-        subject_id=act_id,
+        subject_id=attempt.act_id,
         outcome=outcome,
-        attempt=perlector_attempt_id(act_id, "primed-without-prior", ordinal),
+        attempt=perlector_attempt_id(attempt.act_id, "primed-without-prior", attempt.ordinal),
         inputs=reading_inputs + [approval_ref.reference.to_record()],
         payload=payload,
     )
@@ -3777,9 +3753,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
 
         # Bind loop-local publication facts now; the callback runs before the
         # establishing arm and returns the immutable prior reference it embeds.
-        publish_prior = partial(
-            _publish_lectio_prior,
-            context,
+        attempt = _Attempt(
             act_key=act["act_key"],
             act_id=act_id,
             ordinal=ordinal,
@@ -3792,6 +3766,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             protocol_sha256=protocol_sha256,
             receipt_ref=receipt_ref,
         )
+        publish_prior = partial(_publish_lectio_prior, context, attempt)
 
         # Every arm receives the complete presentation in one reader call.
         try:
@@ -3831,41 +3806,21 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         if nuda_sampled:
             _publish_lectio_nuda(
                 context,
-                act_key=act["act_key"],
-                act_id=act_id,
-                ordinal=ordinal,
-                chair=chair,
-                dossier=passes["lectio-nuda"]["dossier"],
-                result=passes["lectio-nuda"]["result"],
-                bases=bases,
-                page_renders=page_renders,
-                region_pixels=region_pixels,
-                page_pixels=page_pixels,
-                protocol_config=protocol_config,
-                protocol_sha256=protocol_sha256,
-                approval_ref=nuda_approval,
-                receipt_ref=receipt_ref,
+                attempt,
+                passes["lectio-nuda"]["dossier"],
+                passes["lectio-nuda"]["result"],
+                nuda_approval,
             )
 
         if control_sampled:
             _publish_primed_without_prior(
                 context,
-                act_key=act["act_key"],
-                act_id=act_id,
-                ordinal=ordinal,
-                chair=chair,
-                dossier=passes["primed-without-prior"]["dossier"],
-                result=passes["primed-without-prior"]["result"],
-                bases=bases,
-                page_renders=page_renders,
-                region_pixels=region_pixels,
-                page_pixels=page_pixels,
+                attempt,
+                passes["primed-without-prior"]["dossier"],
+                passes["primed-without-prior"]["result"],
                 testimonia=testimonia,
                 attachment_view=attachment_view,
-                protocol_config=protocol_config,
-                protocol_sha256=protocol_sha256,
                 approval_ref=instrument_approval,
-                receipt_ref=receipt_ref,
             )
 
         # Publication consumes the one establishing result; it never chooses or
@@ -3898,12 +3853,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             # See the nuda publish path: whitespace resolved as unreadable is
             # published as the empty text its schema requires.
             reading = ""
-        testimonium_references = {
-            record["artifact_id"]: context.artifact_ref(
-                ATTESTATORES, "testimonium", record["artifact_id"]
-            )
-            for record in testimonia
-        }
+        testimonium_references = _testimonium_references(context, testimonia)
         # The reader's own doubts over the text it read, by the one rubric every
         # record kind uses (`_published_doubt`).
         sealed_doubt, reader_spans, gaps = _published_doubt(
@@ -3920,15 +3870,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "text": reading,
             "basis": {
                 "regions": bases,
-                "testimonia": [
-                    {
-                        "chair": record["payload"]["chair"],
-                        "artifact_id": record["artifact_id"],
-                        "outcome": record["outcome"],
-                        "reference": testimonium_references[record["artifact_id"]],
-                    }
-                    for record in testimonia
-                ],
+                "testimonia": _testimonia_basis(testimonia, testimonium_references),
             },
             "dossier": primed_dossier,
             "prompt": prompt,
@@ -3940,11 +3882,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             "provenance": provenance,
             "lectio_kind": "primed-with-prior",
             "self_revision": departures(reading, prior["text"]),
-            "protocol": {
-                "selection_rule": protocol_config["selection_rule"],
-                "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
-                "draft_fed": context.draft_fed,
-            },
+            "protocol": _protocol_record(context, protocol_config),
         }
         # The call the published text came from; the audit loop re-points it at the
         # re-proof's call when that text is published.
@@ -4231,13 +4169,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                         text="",
                         outcome="no-readable-text",
                         whole_act_gaps=_whole_act_gap(
-                            row["testimonia"],
-                            {
-                                record["artifact_id"]: context.artifact_ref(
-                                    ATTESTATORES, "testimonium", record["artifact_id"]
-                                )
-                                for record in row["testimonia"]
-                            },
+                            row["testimonia"], _testimonium_references(context, row["testimonia"])
                         ),
                     )
                     if reproof_assessment["state"] == "malformed":
