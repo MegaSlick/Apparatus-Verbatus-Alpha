@@ -2334,6 +2334,76 @@ def real_declarations(ordinal: int) -> dict[str, Any]:
     }
 
 
+def _fixture_raw_response_attempt(
+    context, response: dict[str, Any], witness_adapter: str
+) -> Attempt:
+    """A fixture row's declared response bytes, retained and parsed as Chandra's own.
+
+    Geometry derives only from declared response bytes, never from JSON
+    synthesized from `payload`.
+    """
+    if witness_adapter not in FIXTURE_NATIVE_RESPONSE_ADAPTERS:
+        raise SchemaRefusal(
+            f"fixture raw_response has no native byte route for adapter {witness_adapter!r}"
+        )
+    if not isinstance(response["raw_response"], str):
+        raise SchemaRefusal("fixture raw_response is not text encoding retained response bytes")
+    raw_response = response["raw_response"].encode("utf-8")
+    # This is Chandra's recipe; any other adapter's bytes would be filed under
+    # Chandra's model boundary (principle 6).
+    if witness_adapter != "chandra.v1":
+        raise SchemaRefusal(
+            f"fixture raw_response for adapter {witness_adapter!r} would be "
+            "retained through Chandra's recipe -- its own retained view, prompt and "
+            "parser -- and filed under Chandra's model boundary; write that "
+            "adapter's own fixture retain branch before adding it to "
+            "FIXTURE_NATIVE_RESPONSE_ADAPTERS"
+        )
+    adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
+    retained = adapter.retain(
+        context.tree,
+        # The fixture's frozen prompt, not `adapter.prompt()`: this view is sealed
+        # into pinned fixture bytes, and the served prompt must be free to change
+        # without moving them.
+        view={"prompt": dict(chandra.FIXTURE_PROMPT)},
+        raw_response=raw_response,
+        transport_stop_reason="fixture-complete",
+        parser="json",
+    )
+    parsed = retained["parse"]
+    native_payload = (
+        parsed["text"] if parsed["state"] == "parsed" else {"parse_outcome": parsed["outcome"]}
+    )
+    if parsed["state"] == "parsed" and response.get("payload") != native_payload:
+        raise SchemaRefusal("fixture Chandra raw response text differs from its declared payload")
+    # Health is kept as `prepared_response` computed it; recomputing it from a
+    # `None` payload would erase an unrecordable channel (principle 2).
+    native_payload, witness_reported, capabilities, health, recording_problem = prepared_response(
+        {**response, "payload": native_payload}
+    )
+    if parsed["state"] != "parsed":
+        outcome = "failed"
+        reason = f"the Chandra response shape was not recognized: {parsed['outcome']}"
+        if recording_problem is not None:
+            reason = f"{reason}; {recording_problem}"
+    elif recording_problem is not None:
+        outcome = "failed"
+        reason = f"the provider response was refused without repair: {recording_problem}"
+    else:
+        outcome = "genuinely-empty" if native_payload == "" else "read"
+        reason = None
+    return Attempt(
+        outcome,
+        native_payload,
+        witness_reported,
+        capabilities,
+        health,
+        reason,
+        retained["raw_response_ref"],
+        raw_response,
+    )
+
+
 def resolve_attempt(
     context,
     act: dict[str, Any],
@@ -2391,88 +2461,8 @@ def resolve_attempt(
             outcome = "not-run"
             reason = "no attempt was made for this configured chair"
         else:
-            if (
-                "raw_response" in response
-                and resolved.witness_adapter not in FIXTURE_NATIVE_RESPONSE_ADAPTERS
-            ):
-                raise SchemaRefusal(
-                    f"fixture raw_response has no native byte route for adapter "
-                    f"{resolved.witness_adapter!r}"
-                )
-            if "raw_response" in response and not isinstance(response["raw_response"], str):
-                raise SchemaRefusal(
-                    "fixture raw_response is not text encoding retained response bytes"
-                )
-            if resolved.witness_adapter in FIXTURE_NATIVE_RESPONSE_ADAPTERS and isinstance(
-                response.get("raw_response"), str
-            ):
-                # Geometry derives only from declared response bytes, never from
-                # JSON synthesized from `payload`.
-                raw_response = response["raw_response"].encode("utf-8")
-                # This branch is Chandra's recipe; any other adapter's bytes would
-                # be filed under Chandra's model boundary (principle 6).
-                if resolved.witness_adapter != "chandra.v1":
-                    raise SchemaRefusal(
-                        f"fixture raw_response for adapter {resolved.witness_adapter!r} would be "
-                        "retained through Chandra's recipe -- its own retained view, prompt and "
-                        "parser -- and filed under Chandra's model boundary; write that "
-                        "adapter's own fixture retain branch before adding it to "
-                        "FIXTURE_NATIVE_RESPONSE_ADAPTERS"
-                    )
-                adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
-                retained = adapter.retain(
-                    context.tree,
-                    # The fixture's frozen prompt, not `adapter.prompt()`: this view
-                    # is sealed into pinned fixture bytes, and the served prompt must
-                    # be free to change without moving them.
-                    view={"prompt": dict(chandra.FIXTURE_PROMPT)},
-                    raw_response=raw_response,
-                    transport_stop_reason="fixture-complete",
-                    parser="json",
-                )
-                parsed = retained["parse"]
-                native_payload = (
-                    parsed["text"]
-                    if parsed["state"] == "parsed"
-                    else {"parse_outcome": parsed["outcome"]}
-                )
-                if parsed["state"] == "parsed" and response.get("payload") != native_payload:
-                    raise SchemaRefusal(
-                        "fixture Chandra raw response text differs from its declared payload"
-                    )
-                (
-                    native_payload,
-                    witness_reported,
-                    capabilities,
-                    health,
-                    recording_problem,
-                ) = prepared_response({**response, "payload": native_payload})
-                # Health is kept as `prepared_response` computed it; recomputing it
-                # from a `None` payload would erase an unrecordable channel
-                # (principle 2).
-                if parsed["state"] != "parsed":
-                    outcome = "failed"
-                    reason = f"the Chandra response shape was not recognized: {parsed['outcome']}"
-                    if recording_problem is not None:
-                        reason = f"{reason}; {recording_problem}"
-                elif recording_problem is not None:
-                    outcome = "failed"
-                    reason = (
-                        f"the provider response was refused without repair: {recording_problem}"
-                    )
-                else:
-                    outcome = "genuinely-empty" if native_payload == "" else "read"
-                    reason = None
-                return Attempt(
-                    outcome,
-                    native_payload,
-                    witness_reported,
-                    capabilities,
-                    health,
-                    reason,
-                    retained["raw_response_ref"],
-                    raw_response,
-                )
+            if "raw_response" in response:
+                return _fixture_raw_response_attempt(context, response, resolved.witness_adapter)
             (
                 native_payload,
                 witness_reported,
@@ -4058,18 +4048,13 @@ def resumed_page_captures(
                 if attempt.outcome not in ATTEMPTED_WITNESS_OUTCOMES:
                     # Never shown pixels, so no evidence about the page response.
                     continue
-                if (
-                    attempt.serving_call_ref is None
-                    and attempt.health.get("recordable") is None
+                # Every live attempt names its call record, except a live request
+                # refused before sending, which the receipt tells from a fixture
+                # no-payload row; it is reused, since re-asking would refuse the same way.
+                if attempt.serving_call_ref is None and not (
+                    attempt.health.get("recordable") is None
                     and served_live(context, {"receipt_ref": attempt.receipt_ref})
                 ):
-                    # A live request refused before sending: no call, no response.
-                    # The receipt tells it from a fixture no-payload row. Reused,
-                    # since re-asking would refuse the same way.
-                    candidates.append((act["act_id"], attempt))
-                    continue
-                if attempt.serving_call_ref is None:
-                    # Every live attempt names its call record; this one is fixture.
                     raise SchemaRefusal(
                         f"the Testimonium sealed for act {act['act_id']} and chair {chair!r} at "
                         f"ordinal {ordinal} names no serving call, so it was not written by a "
@@ -5332,52 +5317,43 @@ def _serve_page_unit(
             what=f"the {resolved.witness_adapter} request for page {page_ordinal}",
             adapter=adapter,
         )
-        page_captures[(page_ordinal, chair)] = (attempt, None)
-        return publish_page_act_views(
-            context,
-            chair=chair,
-            resolved=resolved,
-            attempt=attempt,
-            page_ordinal=page_ordinal,
-            page_acts=page_acts,
-            ordinal=ordinal,
-            regions_by_act=regions_by_act,
-            attempts_by_pair=attempts_by_pair,
-        )
-    if (
-        client.carries_chandra_native_recipe
-        and resolved.role == "attestator_1"
-        and resolved.witness_adapter == "chandra.v1"
-        and resolved.witness_scope == "page"
-    ):
-        attempt = _serve_chandra_native_page(
-            context,
-            client=client,
-            chair=chair,
-            resolved=resolved,
-            adapter=adapter,
-            page_ordinal=page_ordinal,
-            witness_attempt_ordinal=ordinal,
-            request=request,
-            framing=framing,
-            page_subject_id=page_subject(context, page_ordinal, page_ids=page_ids),
-        )
+        capture = None
     else:
-        response = client.read(request)
-        live = live_witness.captured_page_attempt(
-            context,
-            page_ordinal,
-            chair,
-            resolved.witness_adapter,
-            adapter,
-            response,
-            framing=framing,
-        )
-        _refuse_unpublishable_response(
-            response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
-        )
-        attempt = attempt_from_live(live)
-    page_captures[(page_ordinal, chair)] = (attempt, attempt.native_capture)
+        if (
+            client.carries_chandra_native_recipe
+            and resolved.role == "attestator_1"
+            and resolved.witness_adapter == "chandra.v1"
+            and resolved.witness_scope == "page"
+        ):
+            attempt = _serve_chandra_native_page(
+                context,
+                client=client,
+                chair=chair,
+                resolved=resolved,
+                adapter=adapter,
+                page_ordinal=page_ordinal,
+                witness_attempt_ordinal=ordinal,
+                request=request,
+                framing=framing,
+                page_subject_id=page_subject(context, page_ordinal, page_ids=page_ids),
+            )
+        else:
+            response = client.read(request)
+            live = live_witness.captured_page_attempt(
+                context,
+                page_ordinal,
+                chair,
+                resolved.witness_adapter,
+                adapter,
+                response,
+                framing=framing,
+            )
+            _refuse_unpublishable_response(
+                response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
+            )
+            attempt = attempt_from_live(live)
+        capture = attempt.native_capture
+    page_captures[(page_ordinal, chair)] = (attempt, capture)
     return publish_page_act_views(
         context,
         chair=chair,
