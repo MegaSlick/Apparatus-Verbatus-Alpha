@@ -866,6 +866,10 @@ def _require_exact_fields(value: object, expected: frozenset[str], *, subject: s
     return value
 
 
+def _is_nonempty_str(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
 def _is_integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -1629,8 +1633,8 @@ def _not_measured_claim(projection: ArmariumProjection) -> dict[str, Any]:
 
 
 def _validate_projection(projection: ArmariumProjection) -> None:
-    has_fixture = isinstance(projection.fixture_id, str) and bool(projection.fixture_id)
-    has_submission = isinstance(projection.submission_id, str) and bool(projection.submission_id)
+    has_fixture = _is_nonempty_str(projection.fixture_id)
+    has_submission = _is_nonempty_str(projection.submission_id)
     if not has_fixture and not has_submission:
         raise SchemaRefusal(
             "an Armarium projection has neither a fixture identifier nor a submission "
@@ -1645,7 +1649,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         # `common.stage.submission_identity` only produces a sha256; be as strict,
         # so a hand-typed corpus label cannot leave under this field.
         _require_sha256(projection.submission_id, "an Armarium projection submission identity")
-    if not isinstance(projection.scenario, str) or not projection.scenario:
+    if not _is_nonempty_str(projection.scenario):
         raise SchemaRefusal("an Armarium projection has no scenario")
     _require_sha256(projection.config_digest, "an Armarium projection sealed configuration digest")
     if not _is_integer(projection.expected_acts):
@@ -1863,7 +1867,7 @@ def _validate_witness_accounting(
     """Keep the exported roster, coverage counts, and per-act witnesses one fact."""
     if (
         not isinstance(witness_chairs, (list, tuple))
-        or any(not isinstance(chair, str) or not chair for chair in witness_chairs)
+        or any(not _is_nonempty_str(chair) for chair in witness_chairs)
         or len(set(witness_chairs)) != len(witness_chairs)
     ):
         raise SchemaRefusal("Armarium witness chairs are not a unique named roster")
@@ -1924,14 +1928,14 @@ def _aggregate_from_basis(
     if (
         not isinstance(coverage, dict)
         or not isinstance(chairs, list)
-        or not all(isinstance(chair, str) and chair for chair in chairs)
+        or not all(_is_nonempty_str(chair) for chair in chairs)
         or not isinstance(act_pages, dict)
         or not isinstance(act_text_status, dict)
     ):
         raise SchemaRefusal("an Armarium aggregate basis is malformed")
     normalized_categories: dict[str, ArmariumCategory] = {}
     for act_key, category in categories.items():
-        if not isinstance(act_key, str) or not act_key:
+        if not _is_nonempty_str(act_key):
             raise SchemaRefusal("an Armarium aggregate basis has no act key")
         try:
             normalized_categories[act_key] = ArmariumCategory(category)
@@ -2073,7 +2077,7 @@ def _manifest_run_binding(projection: ArmariumProjection) -> dict[str, str]:
     `_validate_projection` has already required exactly one identity, so the
     fallback needs no second check.
     """
-    if isinstance(projection.submission_id, str) and projection.submission_id:
+    if _is_nonempty_str(projection.submission_id):
         return {
             "submission_id": projection.submission_id,
             "scenario": projection.scenario,
@@ -2333,14 +2337,14 @@ def _is_line_safe_identity(value: object) -> bool:
     Act ids and keys are written raw into the text bundle's headers, which the
     verifier parses line by line.
     """
-    if not isinstance(value, str) or not value:
+    if not _is_nonempty_str(value):
         return False
     return not any(ord(character) < 0x20 or character == "\x7f" for character in value)
 
 
 def _is_safe_path_segment(value: object) -> bool:
     """Whether an identity may be spliced into a member path as one whole component."""
-    if not isinstance(value, str) or not value or "/" in value or value in (".", ".."):
+    if not _is_nonempty_str(value) or "/" in value or value in (".", ".."):
         return False
     return not any(character in value for character in _UNSAFE_PATH_CHARACTERS)
 
@@ -2352,7 +2356,7 @@ def _reject_unsafe_relative_path(value: object, *, subject: str) -> PurePosixPat
     ``a/..\\..\\evil`` passes the ``..`` check, yet Windows tools treat a backslash
     in a ZIP entry name as a separator.
     """
-    if not isinstance(value, str) or not value:
+    if not _is_nonempty_str(value):
         raise SchemaRefusal(f"{subject} is unsafe")
     if any(character in value for character in _UNSAFE_PATH_CHARACTERS):
         raise SchemaRefusal(f"{subject} is unsafe")
@@ -3609,7 +3613,7 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
             raise SchemaRefusal("an act partition category row is malformed")
         seen_categories.add(category)
         for act_id in act_ids:
-            if not isinstance(act_id, str) or not act_id or act_id in result:
+            if not _is_nonempty_str(act_id) or act_id in result:
                 raise SchemaRefusal("an act partition repeats or omits an act identity")
             result[act_id] = category
     if (
@@ -3634,7 +3638,7 @@ def _manifest_act_keys(manifest: dict[str, Any], categories: dict[str, str]) -> 
     keys = partition.get("act_keys") if isinstance(partition, dict) else None
     if not isinstance(keys, dict) or set(keys) != set(categories):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no complete act-key partition")
-    if any(not isinstance(act_key, str) or not act_key for act_key in keys.values()):
+    if any(not _is_nonempty_str(act_key) for act_key in keys.values()):
         raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid act key")
     if len(set(keys.values())) != len(keys):
         raise SchemaRefusal("EXPORT_MANIFEST.json repeats an act key")
@@ -3692,11 +3696,11 @@ def _verify_logical_partition_claim(
         if (
             not isinstance(ids, list)
             or not ids
-            or not all(isinstance(member, str) and member for member in ids)
+            or not all(_is_nonempty_str(member) for member in ids)
             or ids != sorted(set(ids))
             or not isinstance(keys, list)
             or len(keys) != len(ids)
-            or not all(isinstance(member, str) and member for member in keys)
+            or not all(_is_nonempty_str(member) for member in keys)
             or keys != sorted(set(keys))
             or not isinstance(ordinals, list)
             or not ordinals
@@ -3781,7 +3785,7 @@ def _verify_honest_status_claims(
     if (
         status not in {"complete", "partial"}
         or not isinstance(reasons, list)
-        or not all(isinstance(reason, str) and reason for reason in reasons)
+        or not all(_is_nonempty_str(reason) for reason in reasons)
     ):
         raise SchemaRefusal("the exported aggregate has no valid measured status and reasons")
     must_be_partial = any(category not in _COMPLETED_CATEGORIES for category in categories.values())
@@ -3931,10 +3935,8 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             record.get("text_status"),
         )
         if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
+            not _is_nonempty_str(act_id)
+            or not _is_nonempty_str(act_key)
             or category not in _KNOWN_CATEGORIES
             or not isinstance(reason, str | None)
             or act_id in records
@@ -3967,13 +3969,7 @@ def _act_citation_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str,
         }:
             raise SchemaRefusal("a source act-citation record has an unrecognized field set")
         act_id, act_key = record.get("act_id"), record.get("act_key")
-        if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
-            or act_id in records
-        ):
+        if not _is_nonempty_str(act_id) or not _is_nonempty_str(act_key) or act_id in records:
             raise SchemaRefusal("a source act-citation record has no unique act identity")
         _verify_delivered_product_provenance(
             record.get("provenance"),
@@ -4010,10 +4006,8 @@ def _jsonl_act_records(
             record.get("category"),
         )
         if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
+            not _is_nonempty_str(act_id)
+            or not _is_nonempty_str(act_key)
             or category not in _KNOWN_CATEGORIES
             or act_id in records
         ):
@@ -4169,10 +4163,8 @@ def _database_act_records(
         semantic_annotation_status,
     ) in rows:
         if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
+            not _is_nonempty_str(act_id)
+            or not _is_nonempty_str(act_key)
             or category not in _KNOWN_CATEGORIES
             or act_id in records
         ):
@@ -4245,10 +4237,8 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
         if record.get("schema") != "armarium-review-item.v1" or set(record) != _REVIEW_ITEM_FIELDS:
             raise SchemaRefusal("a review-items JSONL row has an unrecognized field set")
         if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
+            not _is_nonempty_str(act_id)
+            or not _is_nonempty_str(act_key)
             or category not in _REVIEW_CATEGORIES
             or not isinstance(reason, str)
             or not reason
