@@ -590,11 +590,7 @@ class ServingManager:
         try:
             # Both the chair's and an adapter base's profiles pass the recipe
             # check before any snapshot is verified.
-            profile = _launchable(
-                self.recipes.for_identity(identity, tier),
-                identity,
-                qualification=self._qualification_launch,
-            )
+            profile = self._launchable_profile(identity, tier)
             self._assert_runtime(profile)
             base_identity, base_profile = self._base_profile(identity, tier, profile)
             primary_snapshot = self.registry.ensure(identity)
@@ -823,13 +819,13 @@ class ServingManager:
             raise ServingConfigurationError(
                 f"adapter chair {identity.role!r} has no resolved base identity"
             )
-        return (
-            configured_base,
-            _launchable(
-                self.recipes.for_identity(configured_base, tier),
-                configured_base,
-                qualification=self._qualification_launch,
-            ),
+        return configured_base, self._launchable_profile(configured_base, tier)
+
+    def _launchable_profile(self, identity: ChairIdentity, tier: str) -> ServingProfile:
+        return _launchable(
+            self.recipes.for_identity(identity, tier),
+            identity,
+            qualification=self._qualification_launch,
         )
 
     def _assert_runtime(self, profile: ServingProfile) -> dict[str, str]:
