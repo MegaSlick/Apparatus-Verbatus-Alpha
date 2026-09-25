@@ -149,8 +149,7 @@ def _enclosing_ifs(tree: ast.Module, target: ast.Call) -> list[ast.If]:
     assert enclosing, "the recovery request is not inside any conditional at all"
     # `ast.walk` is breadth-first, so a shallower (more outer) enclosing `if`
     # is found before a deeper one; reversed so callers that want "just the
-    # gate" via `enclosing[0]` still get the innermost, as `_enclosing_if`
-    # used to return unconditionally.
+    # gate" via `enclosing[0]` still get the innermost.
     return list(reversed(enclosing))
 
 

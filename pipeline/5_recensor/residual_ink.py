@@ -18,9 +18,8 @@ from common.residual_ink import (  # noqa: F401
 
 # The two noise-floor values under the names this directory's tests build their
 # stimuli from, read from the sealed `[coverage_audit.noise_floor]` rather than
-# from a module constant: since 2026-09-14 the file is the authority and the
-# stage reads it under the run's seal, so a test anchored on these names moves
-# with the sealed value instead of pinning a number the stage no longer reads.
+# a module constant, so a test anchored on these names moves with the sealed
+# value instead of pinning a number the stage does not read directly.
 _NOISE_FLOOR = load_coverage_audit_config()["coverage_audit"]
 MINIMUM_INK_PIXELS: int = _NOISE_FLOOR[MINIMUM_INK_PIXELS_FIELD]
 MINIMUM_FRACTION_OUTSIDE_COVERAGE: float = (

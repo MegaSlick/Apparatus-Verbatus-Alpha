@@ -303,9 +303,9 @@ def test_a_small_fraction_of_heavily_covered_ink_is_not_flagged():
     # Wide enough that ink -- covered and uncovered together -- stays a
     # minority of the page, so the background inference (a histogram mode)
     # is not itself confused by the covered block. **And large enough for the
-    # two gates to be different numbers**, which since 2026-09-06 they are only
-    # above about 60,000 pixels of page area: `substantial_ink_area_bp` resolves
-    # to `MINIMUM_INK_PIXELS` there and is floored at it below, so on a smaller
+    # two gates to be different numbers**, which they are only above about
+    # 60,000 pixels of page area: `substantial_ink_area_bp` resolves to
+    # `MINIMUM_INK_PIXELS` there and is floored at it below, so on a smaller
     # page the substantial gate fires wherever the noise floor is cleared and
     # the fraction gate has nothing left to decide. 1200x800 resolves the
     # substantial gate to 384.
@@ -351,10 +351,9 @@ def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_wou
 
 def test_a_large_enough_fraction_outside_coverage_is_flagged_even_with_other_ink_covered():
     # A page large enough that neither block's bounding box covers half of it:
-    # since 2026-09-06 the audit withholds a page-spanning component the way the
-    # Designator's grouping does, and on a 20x20 canvas a 10x10 block IS a
-    # page-spanning component. The shapes and their ratio are the ones this test
-    # has always used, scaled by 20.
+    # the audit withholds a page-spanning component the way the Designator's
+    # grouping does, and on a 20x20 canvas a 10x10 block IS a page-spanning
+    # component.
     rows = canvas(600, 600)
     paint(rows, 0, 0, 200, 200)  # 40,000 covered ink pixels
     # Clear of the covered block by more than `gap_tolerance_px`, so the two do

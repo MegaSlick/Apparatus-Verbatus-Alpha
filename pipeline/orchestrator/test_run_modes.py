@@ -204,15 +204,10 @@ def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path)
 def test_a_damaged_armarium_decode_environment_stops_the_run_at_its_producer(tmp_path):
     """A deleted terminal ``decode-environment`` refuses, and nothing is exported.
 
-    This test was written when the seal only *named* its decode-environment, so
-    the producer could reuse the seal after this damage and only the orchestrator
-    could diagnose it. work/staged-stage-seal then made the seal bind that
-    record's bytes as ``decode_environment_sha256``, which means the producer now
-    reads it while sealing and refuses first. That is the stronger of the two
-    behaviours and the merge keeps it, so the refusal this asserts moved one stage
-    upstream. The orchestrator's own half of the pair did not go unproven with it:
-    ``common/test_stage_seal.py`` drives ``verify_final_seal`` against exactly this
-    damage, on the layer that still owns the check.
+    The seal binds that record's bytes as ``decode_environment_sha256`` and reads
+    it while sealing, so the producer refuses first rather than the orchestrator.
+    ``common/test_stage_seal.py`` separately drives ``verify_final_seal`` against
+    exactly this damage, on the layer that still owns the check.
     """
     root = tmp_path / "runs"
     assert drive(root, "r", "happy", "--all").returncode == 0

@@ -131,16 +131,14 @@ STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v1"
 # Duplicated from `operations.operator.custody.PROVIDER_ENV_PREFIXES` and
 # `operations.pod.models.looks_like_credential_field`'s marker scan, for the
 # identical reason and closed the identical way (reconciled by the same test
-# named above, widened to cover this). `stage_environment` used to pop only
-# the two names above -- the transfer verb's own upload-only S3 keys -- and
-# pass every *other* provider credential (RUNPOD_API_KEY: pod creation, i.e.
-# money; HF_TOKEN; AWS_*; ...) straight into a subprocess that decodes
-# attacker-supplied PDFs, TIFFs, HEICs and PNGs and talks to the serving
-# endpoint. That subprocess is at least as hostile a boundary as the operator's
-# confined console/backup/advance/ScanTailor children, which already run under
-# `operations.operator.custody.credential_free_environment` -- this is that
-# same predicate, held to it by the widened test rather than imported, because
-# this module imports only `common/`.
+# named above, widened to cover this). These names withhold every other
+# provider credential (RUNPOD_API_KEY: pod creation, i.e. money; HF_TOKEN;
+# AWS_*; ...) from a subprocess that decodes attacker-supplied PDFs, TIFFs,
+# HEICs and PNGs and talks to the serving endpoint -- at least as hostile a
+# boundary as `operations.operator.custody.credential_free_environment`
+# already confines the operator's console/backup/advance/ScanTailor children
+# to. This is that same predicate, held to it by the widened test rather than
+# imported, because this module imports only `common/`.
 _PROVIDER_ENV_PREFIXES = ("RUNPOD_", "AWS_", "HF_", "HUGGINGFACE_")
 _CREDENTIAL_NAME_MARKERS = ("key", "secret", "password", "credential", "bearer", "token")
 
@@ -355,12 +353,10 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # environment, so only the upload-only verb can ever see them.
     started = _clock()
     started_at = _stamp()
-    # Bound before the call, not inside it: the `finally` below reads this, and
-    # an interruption that is not an `OSError` -- a `KeyboardInterrupt` while a
-    # stage runs is the ordinary one -- used to leave the name unbound and
-    # replace the interruption with an `UnboundLocalError` from the stopwatch
-    # A stage that could not start is timed with no
-    # exit code, which is the same record the OSError path produced.
+    # Bound before the call, not inside it, so `finally` can read it even when
+    # an interruption that is not an `OSError` (a `KeyboardInterrupt` mid-stage)
+    # leaves it unset. A stage that could not start is then timed with no exit
+    # code, the same record the OSError path produces.
     exit_code: int | None = None
     try:
         completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
@@ -484,13 +480,12 @@ def _record_stage_timing(
         existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
         entries: list = []
         if isinstance(existing, dict):
-            # Whose journal this is, before its entries are carried forward. Two
-            # runs pointed at one path used to keep the first run's entries and
-            # replace the identity above them, so the file then attributed one
-            # run's stage timings to another. A journal
-            # that names a different run, root or schema is left exactly as it
-            # is and the conflict is reported; the stopwatch never edits a
-            # record it cannot account for.
+            # Whose journal this is, checked before its entries are carried
+            # forward: a journal naming a different run, root or schema is left
+            # exactly as it is and the conflict is reported, so two runs
+            # pointed at one path can never attribute one run's stage timings
+            # to the other. The stopwatch never edits a record it cannot
+            # account for.
             identity = (
                 existing.get("schema"),
                 existing.get("run_id"),
@@ -786,14 +781,11 @@ def main() -> int:
 
     require_coherent_ingress_options(args)
     resolve_caller_paths(args)
-    # Both argv facts the journal rests on, proved here rather than at the
-    # first entry that happens to need them.
-    #
-    # `repository_commit` refuses a short or decorated revision, and it used to
-    # be reached only from `_record_stage_timing` -- so a manual or semi run
-    # that started past the Door, or any run with no journal configured, could
-    # carry a malformed value through every stage it selected and record it
-    # nowhere.
+    # Both argv facts the journal rests on, proved here rather than lazily from
+    # `_record_stage_timing`: otherwise a manual or semi run that started past
+    # the Door, or any run with no journal configured, could carry a malformed
+    # revision through every stage it selected and record it nowhere.
+    # `repository_commit` refuses a short or decorated revision.
     repository_commit(args)
     # And the journal is outside the run tree, as its own help text says. A
     # journal at `<run-root>/<run-id>/timings.json` would add mutable,

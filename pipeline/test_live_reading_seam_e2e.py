@@ -153,21 +153,18 @@ CHANDRA_PAGE_ONE = (
     "SYNTHETIC ACT TWO delta epsilon zeta eta</div>"
 )
 # Page 2 carries only a2's continuation, and it is answered as a block the
-# model transcribed but placed no box on -- a `<div>` with no `data-bbox`. The
-# retired JSON contract had two forms and this seam covered both; the vendor
-# grammar has one, and the fact the second form used to stand for -- a page a
-# chair read but reported no geometry for -- is exactly what a block with no
-# box is, so the coverage is kept rather than dropped. The grammar names it
-# (`malformed-bbox`, reason "no data-bbox attribute") instead of substituting
-# the [0,0,1,1] rectangle the vendor's own parser would have.
+# model transcribed but placed no box on -- a `<div>` with no `data-bbox`. That
+# is exactly a page a chair read but reported no geometry for, so the coverage
+# is kept rather than dropped. The grammar names it (`malformed-bbox`, reason
+# "no data-bbox attribute") instead of substituting the [0,0,1,1] rectangle the
+# vendor's own parser would have.
 #
-# The geometry form on a continuation page is accepted now:
-# `pipeline/4_perlector/run.py::act_attachment_view` still requires a page
-# witness's `attached` to equal its geometric overlap with the act's sealed
-# regions on that page, but no longer separately refuses an attached
-# continuation entry (run.py ~1239-1259), because between the two rules such an
-# entry had no legal spelling at all. What a continuation page genuinely lacks
-# is an ANCHOR, and that is what the surviving rule says.
+# The geometry form on a continuation page is accepted:
+# `pipeline/4_perlector/run.py::act_attachment_view` requires a page witness's
+# `attached` to equal its geometric overlap with the act's sealed regions on
+# that page, and does not separately refuse an attached continuation entry
+# (run.py ~1239-1259). What a continuation page genuinely lacks is an ANCHOR,
+# and that is what this rule says.
 # `pipeline/4_perlector/test_live_perlector.py::test_a_page_witness_attached_by_geometry_on_a_continuation_page_is_readable`
 # pins the geometry form, and
 # `pipeline/3_attestatores/test_attestatores_live_pass.py` pins it at the
