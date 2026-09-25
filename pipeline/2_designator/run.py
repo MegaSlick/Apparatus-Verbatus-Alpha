@@ -134,6 +134,8 @@ HOLD_REASON_CODES = frozenset(
         "exemplar-continuation-not-sealed",
         "structure-pass-held",
         "structure-pass-held-on-continuation",
+        # Small residuals stay listed one by one on the conservation record but
+        # appear as one page hold.
         PAGE_RESIDUAL_AGGREGATE_REASON_CODE,
     }
 )
@@ -1171,6 +1173,7 @@ def _analyze_page(
             "background_source": evidence["source"],
             # None where the interior-mode branch did not run.
             "dark_distribution": evidence["dark_distribution"],
+            # None when the background could not be inferred.
             "ink_margin": ink_margin,
             "dark_mode": evidence["dark_mode"],
             "groups": groups,
@@ -2346,6 +2349,7 @@ def _sealed_structure_answer(
     it is about to be copied onto new artifacts and its receipt must still exist.
     """
     page_id = page_record["subject_id"]
+    # Must match the identity `context.publish` writes the answer under.
     identifier = artifact_id(DESIGNATOR, STRUCTURE_ANSWER_KIND, page_id, None)
     if not context.tree.has_artifact(DESIGNATOR, STRUCTURE_ANSWER_KIND, identifier):
         return None
