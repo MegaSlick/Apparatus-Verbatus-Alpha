@@ -1,15 +1,14 @@
 """Checks the immutable pixels handed from Exemplar to later stages.
 
-The Exemplar page is more than an ordinal in a census.  A sealed page binds the
-Door admission artifact and the exact content-addressed image blob that every
-later crop must use.  Consumers call this helper before acting on those pixels so
-a changed, missing, or substituted blob cannot be quietly re-hashed into new
-downstream evidence.
+A sealed Exemplar page binds the Door admission artifact and the exact
+content-addressed image blob every later crop must use. Consumers call this
+before acting on those pixels so a changed, missing or substituted blob cannot
+be quietly re-hashed into new downstream evidence.
 
-This deliberately knows contracts and the run tree, but not a numbered pipeline
-module. Ink Map, Designator, Attestatores, Perlector, Recensor, and Armarium use
-the same check: the first five prevent work over altered pixels; the latter
-prevents an export after pixels changed between stages.
+Knows contracts and the run tree, not a numbered pipeline module: Ink Map,
+Designator, Attestatores, Perlector, Recensor, and Armarium all use this same
+check, the first five to prevent work over altered pixels, Armarium to prevent
+an export after pixels changed between stages.
 """
 
 import json
@@ -241,13 +240,10 @@ def verify_exemplar_corpus_seal(
     expected_ordinals = set(sources)
     _refuse_a_merged_page_no_consumer_reads_yet(records)
     if set(records) != expected_ordinals or set(entries_by_ordinal) != expected_ordinals:
-        # By ordinal, never by submitted filename. `run_stage` prints every
-        # ContractError to stderr, and the data-handling policy's logging rule
-        # excludes a declared path from exactly that channel — the same reason
-        # `operations/submit/inventory.py` and `pipeline/1_exemplar/door.py` name
-        # their refusals by ordinal. Ruling 1 puts the filename in the hashed
-        # ledger and in the sealed record, which is where an operator reads it
-        # back; a captured terminal stream is not one of those places.
+        # By ordinal, never by submitted filename: the data-handling policy
+        # excludes a declared path from the stderr channel `run_stage` prints
+        # refusals to. The filename lives in the hashed ledger and sealed
+        # record instead, where an operator reads it back.
         missing = sorted(expected_ordinals - set(records))
         unexpected = sorted(set(records) - expected_ordinals)
         raise ContractError(
@@ -531,24 +527,14 @@ def _verify_crop_is_the_same_image(stored: bytes, derived: bytes) -> None:
     """Decide what a byte difference between a sealed crop and the re-derived one
     actually is, and refuse only the difference that matters.
 
-    ARCHITECTURE's third invariant is about the *image*: "the exact image shown to
-    a model is reproducible from the Exemplar plus the recorded transforms". A
-    byte comparison also asserts that the encoder which wrote the crop and the
-    encoder running now emit the same stream — true while one build writes both
-    sides, and false the moment a pod, a CI matrix, a Python upgrade or a resumed
-    run puts a different zlib or a different Pillow on the second side. That is a
-    benign environment change, and reporting it as tampered evidence is both a
-    false alarm and a lost one: an operator who has been told the pixels do not
-    trace stops looking at the pixels.
-
-    So the comparison that decides is on the image, and a crop that shows exactly
-    the derived crop passes however it was framed — which is also what lets a run
-    tree sealed by an earlier encoder still verify under this one. Two things the
-    byte comparison used to say are said explicitly instead: the stored crop must
-    decode at all, and it must be the picture and nothing else, because "the
-    pixels match" is silent about a text chunk or a block of bytes travelling
-    beside them. `image_sha256` is checked before this and still binds the crop's
-    bytes to its record; nothing here loosens immutability.
+    ARCHITECTURE's third invariant is about the *image*, not the bytes: a byte
+    comparison also asserts the encoder that wrote the crop and the one
+    running now emit the same stream, which a pod, a CI matrix or a resumed
+    run can break benignly. So the comparison that decides is on the image; a
+    crop showing exactly the derived crop passes however it was framed. The
+    stored crop must still decode, and must be the picture and nothing else,
+    since "the pixels match" says nothing about a stray chunk beside them.
+    `image_sha256` is checked before this and still binds the crop's bytes.
     """
     try:
         stored_image = image_shown(stored)
@@ -583,23 +569,16 @@ def _verify_act_identity_binding(
 ) -> None:
     """Refuse a region whose claimed act does not match the Designator's own seal.
 
-    Everything above proves the region's TRANSFORM traces to a genuine sealed
-    Exemplar page, and that `region_id` is self-consistent with whatever act_id
-    the region already claims as `subject_id` — but nothing before this line ever
-    recomputed that act_id or checked it against the one place act identity is
-    recorded once and never rewritten. A region genuinely cut from a real sealed
-    page, self-consistent under a *relabelled* subject_id, would pass every check
-    above it: pixels that really are act B's crop, filed under act A's identity,
-    with every cryptographic reference still green. That is exactly the class of
-    fault a recent round closed at the page level (a crop carrying the wrong
-    page's identity); this closes its act-level analogue.
+    Everything above proves the region's transform traces to a genuine sealed
+    Exemplar page and that `region_id` is self-consistent with its own claimed
+    `subject_id` -- but a region genuinely cut from a real page, self-consistent
+    under a *relabelled* subject_id, would pass every check above it: pixels
+    that really are act B's crop, filed under act A's identity.
 
-    The proposal seal is the downstream expected-act authority (`common/stage.py`'s
-    `expected_acts`) and is emitted once, never rewritten, so a region's `act_key`
-    must name exactly one seal entry, and that entry's own `act_id` — not the
-    region's self-reported one — is what `subject_id` must equal. Proposal
-    evidence is checked here too, so this function does not depend on a caller
-    first running the broader proposal-seal reconciliation.
+    The proposal seal (`common/stage.py`'s `expected_acts`) is emitted once,
+    never rewritten, so a region's `act_key` must name exactly one seal entry,
+    and that entry's own `act_id`, not the region's self-reported one, is what
+    `subject_id` must equal.
     """
     subject_id = region.get("subject_id")
     act_key = payload.get("act_key")
@@ -639,27 +618,19 @@ def _verify_act_identity_binding(
 def _refuse_a_merged_page_no_consumer_reads_yet(records: dict[int, dict[str, Any]]) -> None:
     """Name the one shape the Exemplar can seal and nothing behind it can read.
 
-    Byte-identical sources submitted twice seal as one page citing both rows —
-    the right answer, and the Exemplar's. Every stage behind it, though, keys
-    its work by submitted ordinal and would process that page once per row,
-    minting each act twice against one `page_id`. Until consumers process merged
-    pages once per identity, this is refused by name here rather than surfacing
-    downstream as "lost submitted page ordinal(s)" — which would be a lie about
-    a page that was sealed, cited, and never lost at all.
+    Byte-identical sources submitted twice seal as one page citing both rows,
+    the right answer for the Exemplar, but every stage behind it keys its work
+    by submitted ordinal and would mint each act twice against one `page_id`.
+    Refused here rather than surfacing downstream as a lie about a "lost"
+    ordinal that was actually sealed and cited.
 
-    **The byte-identical route is now closed at the Door**, which refuses such a
-    submission whole before its Exemplar ever runs
-    (`pipeline/1_exemplar/door.py::require_no_duplicate_sources`), so an
-    operator learns from the stage that read the filenames rather than from a
-    green Exemplar followed by a fatal consumer. That guard groups on the
-    submitted bytes, which is one route to a merged page and not all of them: a
-    triage-declared frame binds its identity to the admitted derivative, so two
-    sources with different bytes and identical derivatives still arrive here.
-    This is therefore the second line of defence for one route and the only one
-    for the other — it guards the sealed shape itself rather than any route into
-    it, and a merged page record handed to a consumer directly, by a future
-    producer, a repaired tree, or a caller that never passed a door, is refused
-    here on its own merits.
+    The byte-identical route is now closed at the Door
+    (`pipeline/1_exemplar/door.py::require_no_duplicate_sources`), but that
+    guard groups on submitted bytes, which is one route to a merged page and
+    not the other: a triage-declared frame binds identity to its admitted
+    derivative, so two sources with different bytes and identical derivatives
+    still arrive here. This guards the sealed shape itself, on its own merits,
+    regardless of which route produced it.
     """
     for ordinal, record in records.items():
         if record.get("outcome") != "sealed":
@@ -845,15 +816,12 @@ def _verify_rendered_source_link(
 def is_triage_derivative_contract(render_contract: Any) -> bool:
     """Whether a render contract describes a sealed triage derivative.
 
-    One function rather than two. This decides which validation a page gets — a
-    derivative is checked against its parent frame and re-derived, an ordinary
-    render against the render contract — and the Exemplar stage asked the same
-    question with its own copy. Two copies is one kind vocabulary too many: teach
-    one of them a `sealed-derivative-page-v2` and the other keeps saying no, and
-    the disagreement is not a crash. It is a page sealed as an ordinary render
-    whose pixels nobody re-derived, or a re-derivation demanded of a page that has
-    no parent. Both callers pass the render contract, which is the smaller of the
-    two shapes they had between them.
+    One function, not two, since this decides which validation a page gets (a
+    derivative is re-derived against its parent frame, an ordinary render
+    against the contract), and the Exemplar stage asks the same question. Two
+    copies could drift apart without crashing: a page sealed as an ordinary
+    render whose pixels nobody re-derived, or a re-derivation demanded of a
+    page with no parent.
     """
     return (
         isinstance(render_contract, dict)
