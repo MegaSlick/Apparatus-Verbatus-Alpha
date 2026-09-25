@@ -18,7 +18,6 @@ from common.physical_act_partition import source_ledger_from_run
 
 SCHEMA: Final = "cross-capture-autopsia.v1"
 OVER_CAPACITY: Final = "cluster-presentation-over-capacity"
-DISSENT_SCHEMA: Final = "cross-capture-dissent.v1"
 _FORBIDDEN: Final = (
     "primary",
     "canonical",
@@ -349,44 +348,3 @@ def invoke_one_logical_read(
         max_images=max_images,
     )
     return delivered, pixels, reader.read(delivered, pass_kind=pass_kind, delivered_pixels=pixels)
-
-
-def dissent_shell(
-    *,
-    perlectio_ref: dict[str, str],
-    autopsia: dict[str, Any],
-    reader_invocation_ref: dict[str, str],
-    response_observation_digest: str,
-) -> dict[str, Any]:
-    """Accept only post-reading references, so dissent cannot become reader input."""
-    record = validate_autopsia(autopsia)
-    shell: dict[str, Any] = {
-        "schema": DISSENT_SCHEMA,
-        "perlectio_ref": _ref(perlectio_ref, "perlectio_ref"),
-        "logical_act_id": record["logical_act_id"],
-        "partition_ref": record["partition_ref"],
-        "views": [
-            {
-                "view_id": view["view_id"],
-                "source_sha256": view["source_sha256"],
-                "region_refs": view["region_refs"],
-            }
-            for view in record["views"]
-        ],
-        "capture_pairs": [
-            [left, right]
-            for offset, left in enumerate(record["required_capture_sha256s"])
-            for right in record["required_capture_sha256s"][offset + 1 :]
-        ],
-    }
-    shell["reader_invocation_ref"] = _ref(reader_invocation_ref, "reader_invocation_ref")
-    shell["response_observation_digest"] = _sha(
-        response_observation_digest, "response_observation_digest"
-    )
-    return shell
-
-
-def cross_capture_audit_scope(autopsia: dict[str, Any]) -> dict[str, list[str]]:
-    """The full cross-capture audit denominator, with no representative page."""
-    record = validate_autopsia(autopsia)
-    return {"page_ids": sorted({page for view in record["views"] for page in view["page_ids"]})}
