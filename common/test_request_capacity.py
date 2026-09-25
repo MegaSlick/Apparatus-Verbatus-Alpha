@@ -38,16 +38,16 @@ from common.request_capacity import (
     PROMPT_TOKENS_MEASURED_RATE,
     SCHEMA,
     RequestCapacityRefusal,
+    RowImageGeometry,
+    _image_record,
     act_answer_budget,
     dense_page_answer_budget,
-    image_prompt_tokens,
     image_sizes,
     perlector_prompt_bound,
     perlector_prompt_tokens,
     prompt_digest,
     refuse_unless_it_fits,
     request_fits,
-    resized_dimensions,
     row_image_geometry,
     sealed_prompt_tokens,
 )
@@ -68,6 +68,15 @@ A4_300DPI = (2480, 3508)
 FIXTURE_PAGE = (200, 260)
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def image_prompt_tokens(width, height, **geometry):
+    return _image_record(width, height, RowImageGeometry(**geometry))["image_prompt_tokens"]
+
+
+def resized_dimensions(width, height, **geometry):
+    record = _image_record(width, height, RowImageGeometry(**geometry))
+    return record["resized_width"], record["resized_height"]
 
 
 def _row(**overrides):

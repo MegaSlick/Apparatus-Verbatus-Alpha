@@ -97,44 +97,6 @@ def smart_resize(
     return h_bar, w_bar
 
 
-def image_prompt_tokens(
-    width: int,
-    height: int,
-    *,
-    min_pixels: int,
-    max_pixels: int,
-    patch_size: int,
-    merge_size: int,
-) -> int:
-    """Exactly how many prompt tokens one image of this size costs this chair.
-
-    ``width``/``height`` are the pixels actually embedded, after any crop or
-    resize the adapter does.
-    """
-
-    factor, resized_height, resized_width = _resize(
-        width, height, min_pixels, max_pixels, patch_size, merge_size
-    )
-    return (resized_height // factor) * (resized_width // factor)
-
-
-def resized_dimensions(
-    width: int,
-    height: int,
-    *,
-    min_pixels: int,
-    max_pixels: int,
-    patch_size: int,
-    merge_size: int,
-) -> tuple[int, int]:
-    """The ``(width, height)`` the chair actually sees, for the record."""
-
-    _factor, resized_height, resized_width = _resize(
-        width, height, min_pixels, max_pixels, patch_size, merge_size
-    )
-    return resized_width, resized_height
-
-
 def _resize(
     width: int, height: int, min_pixels: int, max_pixels: int, patch_size: int, merge_size: int
 ) -> tuple[int, int, int]:
@@ -396,10 +358,6 @@ def request_fits(
             f"max_model_len of {max_model_len}, over by {-headroom}"
         ),
     }
-    if set(record) != CAPACITY_RECORD_FIELDS:
-        raise AssertionError(  # pragma: no cover - closed by construction above
-            f"{SCHEMA} built the wrong field set: {sorted(record)}"
-        )
     return record
 
 
