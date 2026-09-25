@@ -259,7 +259,10 @@ def _scrub(value: object, where: str, scrubbed: list[str]) -> object:
         return result
     if isinstance(value, (list, tuple)):
         return [_scrub(item, f"{where}[{index}]", scrubbed) for index, item in enumerate(value)]
-    if isinstance(value, str) and looks_like_credential_value(value):
+    if isinstance(value, str) and (
+        looks_like_credential_value(value)
+        or any(looks_like_credential_field(m.group(1)) for m in _KEY_VALUE_PATTERN.finditer(value))
+    ):
         scrubbed.append(where)
         return SCRUBBED
     return value

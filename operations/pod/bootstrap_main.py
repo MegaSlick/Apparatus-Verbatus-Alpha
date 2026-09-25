@@ -91,6 +91,7 @@ import argparse
 import json
 import math
 import os
+import re
 import secrets
 import stat
 import sys
@@ -119,6 +120,7 @@ from common.contracts.errors import ContractError
 from common.credentials import (
     CREDENTIAL_PIECE,
     CREDENTIAL_VALUE_PREFIXES,
+    credential_piece,
     is_credential_piece,
     looks_like_credential_field,
 )
@@ -865,6 +867,10 @@ def _require_launch_token_named(
         )
 
 
+# A URL's user-info password and its query values; run folders carry neither `@` nor `?`.
+_URL_SECRET = re.compile(r"://[^/:@\s]*:(?P<password>[^/@\s]+)@|[?&][^=&#\s]*=(?P<query>[^&#\s]*)")
+
+
 def _argv_credential_piece(value: str) -> str | None:
     """A bare value gets the full shape test; a path segment only a key prefix or a dotted token.
 
@@ -873,6 +879,10 @@ def _argv_credential_piece(value: str) -> str | None:
 
     if not any(character in "/\\.:@" for character in value) and is_credential_piece(value):
         return value
+    for match in _URL_SECRET.finditer(value):
+        secret = credential_piece(match.group("password") or match.group("query") or "")
+        if secret is not None:
+            return secret
     return next(
         (
             piece

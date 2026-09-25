@@ -32,7 +32,7 @@ from common.chairs.models import (
     VerifiedSnapshot,
     is_sha256,
 )
-from common.credentials import CREDENTIAL_PIECE, is_credential_piece, looks_like_credential_field
+from common.credentials import looks_like_credential_field, looks_like_credential_value
 
 from .config import (
     FixtureProfile,
@@ -1638,8 +1638,8 @@ def _redacted(text: str) -> str:
     """Blank out credential-shaped values before a launch log leaves the machine.
 
     The tail travels to journals and notifications. Values of secret-named fields and
-    whatever follows `Bearer` are replaced whatever their shape; elsewhere, any piece
-    the shared shape test flags. Only values are replaced.
+    whatever follows `Bearer` are replaced whatever their shape; elsewhere, any word
+    the shared shape test flags, whole, so no part of a key survives.
     """
 
     def redact_named(match: re.Match[str]) -> str:
@@ -1647,14 +1647,14 @@ def _redacted(text: str) -> str:
             return match.group(0)
         return _redact_value(match)
 
-    def redact_piece(match: re.Match[str]) -> str:
-        return _REDACTED if is_credential_piece(match.group(0)) else match.group(0)
+    def redact_word(match: re.Match[str]) -> str:
+        return _REDACTED if looks_like_credential_value(match.group(0)) else match.group(0)
 
     lines = []
     for raw in text.splitlines():
         line = _LOG_ASSIGNMENT.sub(redact_named, raw)
         line = _LOG_BEARER.sub(_redact_value, line)
-        lines.append(CREDENTIAL_PIECE.sub(redact_piece, line))
+        lines.append(re.sub(r"\S+", redact_word, line))
     return "\n".join(lines)
 
 

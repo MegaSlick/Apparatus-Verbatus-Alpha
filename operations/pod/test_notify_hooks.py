@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from common.test_credentials import OPAQUE, PASSING_VALUES, SHAPED_VALUES
+
 from . import notify_hooks
 from .notify_hooks import (
     NOTIFY_SCRIPT,
@@ -148,46 +150,35 @@ def test_a_credential_shaped_value_is_refused_before_sending(card: str) -> None:
     assert runner.calls == [], "a refused message must never reach the shell"
 
 
-SHAPED_VALUES = (
-    "sk-not-a-real-key",
-    "aB3fG9kL2mN7pQ5rS8tU1v",
-    "abcdefghij.klmnopqrst.uvwxyz1234",
-    "QUJDREVGR0hJSktMTU5PUFFS+/=",
-    "https://user" + ":" + "aB3fG9kL2mN7pQ5rS8tU1v@example.invalid/x",
-    "/workspace/aB3fG9kL2mN7pQ5rS8tU1v/report.json",
-)
-
-
 @pytest.mark.parametrize("value", SHAPED_VALUES)
-def test_every_boundary_reads_a_credential_shape_the_same_way(value: str) -> None:
-    from common.credentials import looks_like_credential_value
+def test_every_boundary_refuses_or_removes_a_credential_shape(value: str) -> None:
     from operations.serving.manager import _redacted
 
     from .fixture import SCRUBBED, _scrub
 
-    assert looks_like_credential_value(value)
+    runner = FakeRunner()
+    assert not notify_launch(lease_id="l", card=value, max_hourly_usd="1", runner=runner).attempted
+    assert _scrub({"message": f"started {value}"}, "body", []) == {"message": SCRUBBED}
+    redacted = _redacted(f"INFO started {value} ok")
+    assert value not in redacted
+    assert "K7MDENG" not in redacted and "3xK9pLm2Qz" not in redacted
+
+
+def test_the_fixture_scrubs_a_secret_named_inside_a_string() -> None:
+    from .fixture import SCRUBBED, _scrub
+
     scrubbed: list[str] = []
-    assert _scrub({"message": f"started {value}"}, "body", scrubbed) == {"message": SCRUBBED}
-    assert _redacted(f"INFO started {value} ok") != f"INFO started {value} ok"
+    assert _scrub({"args": "run password=Abc123xyz98"}, "body", scrubbed) == {"args": SCRUBBED}
+    assert scrubbed == ["body.args"]
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        "a" * 40,
-        "/workspace/runs/report-" + "0123456789abcdef" * 2 + ".json",
-        "/workspace/models/model-00001-of-00004.safetensors",
-        "operations.pod.bootstrap_main",
-    ],
-)
+@pytest.mark.parametrize("value", PASSING_VALUES)
 def test_every_boundary_passes_an_identifier_or_a_path(value: str) -> None:
-    from common.credentials import looks_like_credential_value
     from operations.serving.manager import _redacted
 
     from .bootstrap_main import refuse_credential_looking_argv
     from .fixture import _scrub
 
-    assert not looks_like_credential_value(value)
     assert _scrub({"message": value}, "body", []) == {"message": value}
     refuse_credential_looking_argv(["--run-id", value])
     assert _redacted(f"INFO {value}") == f"INFO {value}"
@@ -201,6 +192,8 @@ def test_every_boundary_passes_an_identifier_or_a_path(value: str) -> None:
         "abcdefghij.klmnopqrst.uvwxyz1234",
         "/workspace/abcdefghij.klmnopqrst.uvwxyz1234/report.json",
         "/workspace/sk-not-a-real-key/report.json",
+        "https://user" + ":" + OPAQUE + "@example.invalid/x",
+        f"https://example.invalid/x?key={OPAQUE}",
     ],
 )
 def test_the_argv_refusal_refuses_a_bare_secret_or_a_prefixed_or_dotted_segment(value: str) -> None:
