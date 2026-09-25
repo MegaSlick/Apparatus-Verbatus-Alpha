@@ -828,6 +828,20 @@ def _crop_transform(page_ordinal: int, page_id: str, bounds: dict) -> dict:
     }
 
 
+def _stored_crop(
+    context, page_bytes: bytes, page_ordinal: int, page_record: dict, final_bounds: dict
+) -> dict:
+    """Cut and store one crop, returned as the payload fields that describe it."""
+    transform = _crop_transform(page_ordinal, page_record["subject_id"], final_bounds)
+    digest, stored = context.tree.put_blob(DESIGNATOR, crop_png(page_bytes, final_bounds))
+    return {
+        "transform": transform,
+        "transform_digest": geometry.transform_digest(transform),
+        "image_path": stored.relative_path,
+        "image_sha256": digest,
+    }
+
+
 def cut_region(
     context,
     act,
@@ -891,8 +905,8 @@ def cut_minted_region(
     image_path = page_record["payload"]["image_path"]
     page_bytes = _read_checked_page_bytes(context, page_record)
 
+    page_w, page_h = dimensions(page_bytes)
     if padding is not None:
-        page_w, page_h = dimensions(page_bytes)
         padded = geometry.apply_padding(bounds, page_w, page_h, padding)
         final_bounds = padded["bounds"]
         padding_record = {
@@ -906,15 +920,11 @@ def cut_minted_region(
     else:
         # A recovery rectangle skips `apply_padding`, which is what validates
         # bounds; validate here so a bad one is a refusal, not a bare ValueError.
-        page_w, page_h = dimensions(page_bytes)
         geometry.validate_bounds(bounds, page_w, page_h, "recovery bounds")
         final_bounds = bounds
         padding_record = None
 
-    transform = _crop_transform(page_ordinal, page_record["subject_id"], final_bounds)
-    crop_bytes = crop_png(page_bytes, final_bounds)
-    digest, stored = context.tree.put_blob(DESIGNATOR, crop_bytes)
-
+    crop = _stored_crop(context, page_bytes, page_ordinal, page_record, final_bounds)
     return context.publish(
         kind="region",
         subject_id=act_id,
@@ -922,16 +932,13 @@ def cut_minted_region(
         attempt=attempt_id(act_id, "crop", ordinal),
         inputs=[context.input_ref(image_path)] + ([recovery_request] if recovery_request else []),
         payload={
-            "region_id": region_id(act_id, transform),
+            "region_id": region_id(act_id, crop["transform"]),
             "act_key": act_key,
             "attempt_ordinal": ordinal,
             "origin": origin,
-            "transform": transform,
-            "transform_digest": geometry.transform_digest(transform),
+            **crop,
             "raw_bounds": bounds,
             "padding": padding_record,
-            "image_path": stored.relative_path,
-            "image_sha256": digest,
             "provenance": provenance,
         },
     )
@@ -1405,9 +1412,7 @@ def _publish_secondary_proposals(
         )
         overlap_count = rescue_row["overlapping_claimed_act_count"]
         subject = f"{page_record['subject_id']}-secondary-{index}"
-        transform = _crop_transform(ordinal, page_record["subject_id"], candidate["bounds"])
-        crop_bytes = crop_png(page_bytes, candidate["bounds"])
-        digest, stored = context.tree.put_blob(DESIGNATOR, crop_bytes)
+        crop = _stored_crop(context, page_bytes, ordinal, page_record, candidate["bounds"])
         rescue_payload = {
             "page_ordinal": ordinal,
             "pixel_count": candidate["pixel_count"],
@@ -1416,10 +1421,7 @@ def _publish_secondary_proposals(
             "authoritative": False,
             "authority_effect": "review-only",
             "overlapping_claimed_act_count": overlap_count,
-            "transform": transform,
-            "transform_digest": geometry.transform_digest(transform),
-            "image_path": stored.relative_path,
-            "image_sha256": digest,
+            **crop,
             "provenance": secondary,
         }
         _refuse_text_fields(rescue_payload)
