@@ -656,12 +656,12 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
 def test_orchestrator_and_surface_strip_every_provider_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F016: a stage subprocess decodes attacker-supplied material and used to
-    keep every provider credential except the transfer's own two S3 keys --
-    RUNPOD_API_KEY (pod creation, i.e. money), HF_TOKEN, AWS_*, and anything
-    else shaped like a secret all survived. Both `stage_environment` builders
-    must now refuse the same broad shape `credential_free_environment` already
-    holds the operator's confined children to; the orchestrator duplicates that
+    """F016: a stage subprocess decodes attacker-supplied material, so both
+    `stage_environment` builders must refuse every provider credential except
+    the transfer's own two S3 keys -- RUNPOD_API_KEY (pod creation, i.e.
+    money), HF_TOKEN, AWS_*, and anything else shaped like a secret -- the
+    same broad shape `credential_free_environment` already holds the
+    operator's confined children to; the orchestrator duplicates that
     predicate rather than importing it (module docstring: "imports only
     common/"), so this is also where the copy is checked against the original,
     the way the transfer-credential duplicate above already is.
@@ -3913,7 +3913,7 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
     passes: the reading whose silence is in question stands in as proof of it,
     defeating CONTRACT.md's whole argument for the field ("An accepted review is
     evidence that the Recensor accepted a reading; it is not evidence that the
-    page was blank"). Reproduces audit-d finding F4's measurement.
+    page was blank").
     """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
@@ -5582,24 +5582,20 @@ def test_the_page_loss_is_named_and_the_run_is_partial(refused_page_run):
 
 
 def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_path):
-    """The positive edge case this scenario used to carry, and where it went.
+    """No fixture page holds for edge ink now that the band is a fraction.
 
-    `structure-failure` cuts no Designator region at all, so before 2026-09-06
-    the fixture's edge ink was unclaimed and both pages reached the terminal
-    ledger held for `unclaimed-edge-ink`. That was the only end-to-end proof in
-    this repository of a page hold surviving from the Ink Map to the export.
-
-    It is gone, and the reason is measured rather than incidental: the retired
-    64-pixel band was 32 per cent of a 200-pixel page, so what it called "edge
-    ink" was the fixture's own body text. `edge_band_bp` resolves to 2 pixels
-    here and these pages carry zero ink in every band up to 20, so the Ink Map
-    now maps both and holds neither.
+    `structure-failure` cuts no Designator region at all. `edge_band_bp`
+    resolves to 2 pixels on this scenario's 200-pixel pages, which carry zero
+    ink in every band up to 20, so the Ink Map maps both pages and holds
+    neither. This was the repository's only end-to-end proof of an Ink Map
+    page hold reaching the export, and it went away because the retired
+    64-pixel band was body text.
 
     **What this test protects is that the loss stays visible.** The scenario
     still exits held and still exports partial -- for its own cause, which is
     that no region was cut -- and no page reason mentions edge ink any more.
     If a future fixture page gains ink near its edge, this test fails and the
-    edge path's end-to-end proof comes back with it. The gap is written into
+    edge path's end-to-end proof comes back with it, a known gap recorded in
     `pipeline/1_ink_map/CONTRACT.md`.
     """
     root = tmp_path / "runs"
@@ -5686,14 +5682,13 @@ def test_the_refused_page_scenario_is_deterministic_on_rerun(tmp_path):
 
 
 def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_first_page_run):
-    """Half one of the defect, driven end to end: an act whose own page was never
-    sealed used to disappear from the seal entirely. Now it appears, held, with a
+    """An act whose own page was never sealed appears in the seal, held, with a
     hold artifact each, and the run is partial with the page loss named.
 
     Page 2 (a2's continuation page) is sealed but, in this scenario, never has a
     region cut on it at all -- a2 is held entirely on page 1's loss before its
     continuation is ever attempted. Page 2's own real ink therefore reconciles
-    as 100% residual, and conservation now mints that residual its own held act
+    as 100% residual, and conservation mints that residual its own held act
     (`residual:2:0`) rather than leaving it inert inside the conservation
     artifact alone -- a third, independent account of the same underlying loss,
     which is why three holds and three review items are expected rather than two.
