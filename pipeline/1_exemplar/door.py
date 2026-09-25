@@ -1026,13 +1026,11 @@ def process_sources(
                 and not streamed_pdf
             ):
                 # This cap guards an in-memory read; a streamed PDF makes none.
-                _publish(
+                _publish_refusal(
                     context,
                     source,
-                    outcome="refused",
-                    reason=admission.reason(
-                        RefusalReason.TOO_LARGE, admission.too_large_detail(source.declared_size)
-                    ),
+                    RefusalReason.TOO_LARGE,
+                    admission.too_large_detail(source.declared_size),
                 )
                 continue
 
@@ -1062,12 +1060,7 @@ def process_sources(
                     assert active_pdf_digest is not None  # set with active_pdf_key
                     actual_digest, actual_size = active_pdf_digest
                 except (OSError, inventory.SubmissionInputError) as error:
-                    _publish(
-                        context,
-                        source,
-                        outcome="refused",
-                        reason=admission.reason(RefusalReason.UNREADABLE, str(error)),
-                    )
+                    _publish_refusal(context, source, RefusalReason.UNREADABLE, str(error))
                     continue
             else:
                 try:
@@ -1077,51 +1070,13 @@ def process_sources(
                         data = read_bytes(source.declared_path)
                         cached_path, cached_data = source.declared_path, data
                 except (OSError, inventory.SubmissionInputError) as error:
-                    _publish(
-                        context,
-                        source,
-                        outcome="refused",
-                        reason=admission.reason(RefusalReason.UNREADABLE, str(error)),
-                    )
+                    _publish_refusal(context, source, RefusalReason.UNREADABLE, str(error))
                     continue
                 actual_digest, actual_size = digest_bytes(data), len(data)
 
-            if source.declared_size is not None and actual_size != source.declared_size:
-                _publish(
-                    context,
-                    source,
-                    outcome="refused",
-                    reason=admission.reason(
-                        RefusalReason.DIGEST_MISMATCH,
-                        f"the source now has {actual_size} bytes, but {source.declared_size} bytes "
-                        "were recorded in its filename ledger",
-                    ),
-                )
-                continue
-
-            if source.computed_sha256 is not None and actual_digest != source.computed_sha256:
-                _publish(
-                    context,
-                    source,
-                    outcome="refused",
-                    reason=admission.reason(
-                        RefusalReason.DIGEST_MISMATCH,
-                        f"computed {actual_digest} at admission, but shard membership was "
-                        f"sealed from {source.computed_sha256} during source expansion",
-                    ),
-                )
-                continue
-
-            if source.declared_sha256 is not None and actual_digest != source.declared_sha256:
-                _publish(
-                    context,
-                    source,
-                    outcome="refused",
-                    reason=admission.reason(
-                        RefusalReason.DIGEST_MISMATCH,
-                        f"computed {actual_digest}, but {source.declared_sha256} was declared",
-                    ),
-                )
+            mismatch = _source_mismatch(source, actual_digest, actual_size)
+            if mismatch is not None:
+                _publish_refusal(context, source, RefusalReason.DIGEST_MISMATCH, mismatch)
                 continue
 
             opened_pdf = None
@@ -1151,12 +1106,7 @@ def process_sources(
                 decision = decide(data, source, policy, pdf_settings, source_digest=actual_digest)
 
             if decision.outcome == "refused":
-                _publish(
-                    context,
-                    source,
-                    outcome="refused",
-                    reason=decision.reason,
-                )
+                _publish(context, source, outcome="refused", reason=decision.reason)
                 continue
 
             if streamed_pdf:
@@ -1164,12 +1114,7 @@ def process_sources(
                     assert active_opened_source is not None
                     active_opened_source.assert_unchanged(expected_sha256=source.declared_sha256)
                 except inventory.SubmissionInputError as error:
-                    _publish(
-                        context,
-                        source,
-                        outcome="refused",
-                        reason=admission.reason(RefusalReason.DIGEST_MISMATCH, str(error)),
-                    )
+                    _publish_refusal(context, source, RefusalReason.DIGEST_MISMATCH, str(error))
                     continue
 
             # Only admitted sources register: a corrupt twin gets its own
@@ -1232,6 +1177,29 @@ def process_sources(
         close_active_pdf()
 
     return admitted
+
+
+def _source_mismatch(source: SourceEntry, actual_digest: str, actual_size: int) -> str | None:
+    """Why the bytes read now are not the bytes this source was declared and sealed with."""
+    if source.declared_size is not None and actual_size != source.declared_size:
+        return (
+            f"the source now has {actual_size} bytes, but {source.declared_size} bytes "
+            "were recorded in its filename ledger"
+        )
+    if source.computed_sha256 is not None and actual_digest != source.computed_sha256:
+        return (
+            f"computed {actual_digest} at admission, but shard membership was "
+            f"sealed from {source.computed_sha256} during source expansion"
+        )
+    if source.declared_sha256 is not None and actual_digest != source.declared_sha256:
+        return f"computed {actual_digest}, but {source.declared_sha256} was declared"
+    return None
+
+
+def _publish_refusal(
+    context: StageContext, source: SourceEntry, code: RefusalReason, detail: str
+) -> None:
+    _publish(context, source, outcome="refused", reason=admission.reason(code, detail))
 
 
 def _publish(
