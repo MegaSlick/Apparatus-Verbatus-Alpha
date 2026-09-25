@@ -3028,6 +3028,15 @@ def _open_acts_database(path) -> sqlite3.Connection:
     except sqlite3.DatabaseError as error:
         raise SchemaRefusal("the acts database cannot be opened") from error
     try:
+        _verify_acts_database_identity(connection)
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
+def _verify_acts_database_identity(connection: sqlite3.Connection) -> None:
+    try:
         placeholders = ", ".join("?" for _name in _SQLITE_PRODUCT_TABLES)
         kinds = dict(
             connection.execute(
@@ -3040,44 +3049,42 @@ def _open_acts_database(path) -> sqlite3.Connection:
             "SELECT value FROM export_metadata WHERE key = 'schema'"
         ).fetchone()
     except sqlite3.DatabaseError as error:
-        connection.close()
         raise SchemaRefusal("the acts database has no readable schema") from error
     if any(kinds.get(name) != "table" for name in _STORED_ACTS_TABLES):
-        connection.close()
         raise SchemaRefusal("the acts database does not carry acts and act_search as stored tables")
     if (
         kinds.get("acts_fts") != "table"
         or user_version != (_SQLITE_USER_VERSION,)
         or schema != (_SQLITE_SCHEMA,)
     ):
-        connection.close()
         raise SchemaRefusal("the acts database has no recognized SQLite product identity")
-    try:
-        _verify_acts_schema(connection)
-    except BaseException:
-        connection.close()
-        raise
-    return connection
+    _verify_acts_schema(connection)
 
 
-def _database_literals(path) -> dict[str, tuple]:
+def _read_acts_database(path, query: str, refusal: str) -> list[tuple]:
     connection: sqlite3.Connection | None = None
     try:
         connection = _open_acts_database(path)
-        rows = connection.execute(
-            """
-            SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_json,
-                   text_status, transcription_annotations_json
-            FROM acts
-            WHERE canonical_clean_text IS NOT NULL
-            ORDER BY act_id
-            """
-        ).fetchall()
+        return connection.execute(query).fetchall()
     except sqlite3.DatabaseError as error:
-        raise SchemaRefusal("the acts database cannot be read for projection identity") from error
+        raise SchemaRefusal(refusal) from error
     finally:
         if connection is not None:
             connection.close()
+
+
+def _database_literals(path) -> dict[str, tuple]:
+    rows = _read_acts_database(
+        path,
+        """
+        SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_json,
+               text_status, transcription_annotations_json
+        FROM acts
+        WHERE canonical_clean_text IS NOT NULL
+        ORDER BY act_id
+        """,
+        "the acts database cannot be read for projection identity",
+    )
     records: dict[str, tuple] = {}
     for act_id, literal, digest, uncertainty_json, text_status, annotations_json in rows:
         if (
@@ -4120,21 +4127,15 @@ def _database_act_records(
     path: Path, source_graph_regions: list[dict[str, Any]]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, tuple[str, str]]]:
     """Validate the SQLite one-record-per-act projection and return categories."""
-    connection: sqlite3.Connection | None = None
-    try:
-        connection = _open_acts_database(path)
-        rows = connection.execute(
-            "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
-            "provenance_json, source_regions_json, evidence_json, reason, "
-            "uncertainty_json, uncertainty_status, text_status, "
-            "transcription_annotations_json, semantic_annotations_json, "
-            "semantic_annotation_status FROM acts"
-        ).fetchall()
-    except sqlite3.DatabaseError as error:
-        raise SchemaRefusal("the acts database cannot be read for product accounting") from error
-    finally:
-        if connection is not None:
-            connection.close()
+    rows = _read_acts_database(
+        path,
+        "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
+        "provenance_json, source_regions_json, evidence_json, reason, "
+        "uncertainty_json, uncertainty_status, text_status, "
+        "transcription_annotations_json, semantic_annotations_json, "
+        "semantic_annotation_status FROM acts",
+        "the acts database cannot be read for product accounting",
+    )
     records: dict[str, dict[str, Any]] = {}
     literals: dict[str, tuple[str, str]] = {}
     for (
