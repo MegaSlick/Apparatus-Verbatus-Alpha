@@ -165,6 +165,13 @@ def _refuse_text_fields(value, path: str = "$") -> None:
             _refuse_text_fields(item, f"{path}[{index}]")
 
 
+def _publish_text_free(context, kind: str, subject_id: str, outcome: str, inputs, payload: dict):
+    _refuse_text_fields(payload)
+    return context.publish(
+        kind=kind, subject_id=subject_id, outcome=outcome, inputs=inputs, payload=payload
+    )
+
+
 # What an act-group's `detected_bounds` rests on, as a field so consumers can
 # tell a measurement from a fallback without reading prose. `detected`: a scanned
 # region covers the act. `fallback-tiles`: no eligible group, so the page is cut
@@ -1424,13 +1431,8 @@ def _publish_secondary_proposals(
             **crop,
             "provenance": secondary,
         }
-        _refuse_text_fields(rescue_payload)
-        rescue = context.publish(
-            kind="rescue-crop",
-            subject_id=subject,
-            outcome="held",
-            inputs=[context.input_ref(image_path)],
-            payload=rescue_payload,
+        rescue = _publish_text_free(
+            context, "rescue-crop", subject, "held", [context.input_ref(image_path)], rescue_payload
         )
         proposal_payload = {
             "page_ordinal": ordinal,
@@ -1443,13 +1445,13 @@ def _publish_secondary_proposals(
             "rescue_ref": context.input_ref(rescue.relative_path),
             "provenance": secondary,
         }
-        _refuse_text_fields(proposal_payload)
-        context.publish(
-            kind="secondary-proposal",
-            subject_id=subject,
-            outcome="held",
-            inputs=[context.input_ref(image_path), context.input_ref(rescue.relative_path)],
-            payload=proposal_payload,
+        _publish_text_free(
+            context,
+            "secondary-proposal",
+            subject,
+            "held",
+            [context.input_ref(image_path), context.input_ref(rescue.relative_path)],
+            proposal_payload,
         )
     return bool(rescues)
 
@@ -1488,13 +1490,13 @@ def _publish_withheld_secondary_pass(
         ),
         "provenance": secondary,
     }
-    _refuse_text_fields(payload)
-    context.publish(
-        kind="secondary-proposal",
-        subject_id=f"{page_record['subject_id']}-secondary-withheld",
-        outcome="held",
-        inputs=[context.input_ref(page_record["payload"]["image_path"])],
-        payload=payload,
+    _publish_text_free(
+        context,
+        "secondary-proposal",
+        f"{page_record['subject_id']}-secondary-withheld",
+        "held",
+        [context.input_ref(page_record["payload"]["image_path"])],
+        payload,
     )
     return True
 
@@ -1680,14 +1682,7 @@ def _publish_page_residual_hold(
             "conservation record"
         ),
     }
-    _refuse_text_fields(payload)
-    hold = context.publish(
-        kind="hold",
-        subject_id=minted_act_id,
-        outcome="held",
-        inputs=[conservation_ref],
-        payload=payload,
-    )
+    hold = _publish_text_free(context, "hold", minted_act_id, "held", [conservation_ref], payload)
     return _seal_row(
         minted_act_id,
         act_key,
@@ -1825,14 +1820,7 @@ def _publish_page_fallback(
         "reason": reason,
         "provenance": provenance,
     }
-    _refuse_text_fields(fallback_payload)
-    context.publish(
-        kind="page-fallback",
-        subject_id=act_id,
-        outcome="proposed",
-        inputs=[status_ref],
-        payload=fallback_payload,
-    )
+    _publish_text_free(context, "page-fallback", act_id, "proposed", [status_ref], fallback_payload)
 
     evidence = []
     for index, tile in enumerate(tiles):
@@ -1950,13 +1938,13 @@ def _publish_conservation_and_secondary(
     conservation_payload["residual_components"] = promoted
     if aggregated:
         conservation_payload["aggregated_residual_components"] = aggregated
-    _refuse_text_fields(conservation_payload)
-    published = context.publish(
-        kind="conservation",
-        subject_id=page_id,
-        outcome="held" if (aggregated or not measurable) else "proposed",
-        inputs=[context.input_ref(page_record["payload"]["image_path"])],
-        payload=conservation_payload,
+    published = _publish_text_free(
+        context,
+        "conservation",
+        page_id,
+        "held" if (aggregated or not measurable) else "proposed",
+        [context.input_ref(page_record["payload"]["image_path"])],
+        conservation_payload,
     )
     secondary_held = _publish_secondary_proposals(
         context, ordinal, page_record, analysis, claimed, secondary, grouping_policy
