@@ -1,8 +1,8 @@
-"""The secondary proposer adds recall, never a verdict (spec 06 test 5).
+"""The secondary proposer adds recall, never a verdict.
 
 Three levels, cheapest first: the pure candidate rule with no I/O at all, a
-real rescue crop published through a real (but hand-fed) page analysis, and a
-full end-to-end orchestrator run proving that configuring the role changes no
+real rescue crop published through a hand-fed page analysis, and a full
+end-to-end orchestrator run proving configuring the role changes no
 authoritative outcome relative to leaving it absent.
 """
 
@@ -53,12 +53,10 @@ def test_a_candidate_that_only_overlaps_one_claim_keeps_its_additional_coverage(
 
 
 def test_a_candidate_spanning_two_claims_is_held_with_the_ambiguity_counted():
-    """The P0-incident-shaped rule, without the proposer gaining a verdict.
-
-    A box reaching two established acts may not decide between them — and it
-    may not end the run either. It is carried as a held, review-only rescue
-    whose payload states how many claims it touched, so a reviewer sees the
-    ambiguity instead of an aborted stage.
+    """A box reaching two established acts may not decide between them, and it
+    may not end the run either: it is a held, review-only rescue whose payload
+    states how many claims it touched, so a reviewer sees the ambiguity
+    instead of an aborted stage.
     """
     designator = _load_designator()
     claimed = [
@@ -177,9 +175,8 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     background = evidence["background"]
 
     claimed = designator._claimed_regions_by_page(context)[1]
-    # Bottom-right corner of the page: both fixture acts on page 1 (a1, a2,
-    # even generously padded) stop well short of the page's own bottom edge,
-    # so this pixel is not inside any claimed rectangle.
+    # Bottom-right corner: both fixture acts, even padded, stop well short of
+    # the page's bottom edge, so this pixel is inside no claimed rectangle.
     stray_x, stray_y = width - 2, height - 2
     assert not any(
         entry["bounds"]["x"] <= stray_x < entry["bounds"]["x"] + entry["bounds"]["w"]
@@ -194,9 +191,6 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
         "height": height,
         "rows": rows,
         "background": background,
-        # The secondary scan runs at this page's own resolved gap tolerance, the
-        # way `_analyze_page` resolves it for the primary scan, so a page
-        # analysis handed in by a test carries the same field the real one does.
         "thresholds": designator.grouping_config.resolve_thresholds(
             designator.grouping_config.load_grouping_config(), width, height
         ),
@@ -244,8 +238,7 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     assert payload["bounds"]["x"] <= stray_x < payload["bounds"]["x"] + payload["bounds"]["w"]
     assert payload["bounds"]["y"] <= stray_y < payload["bounds"]["y"] + payload["bounds"]["h"]
 
-    # Nothing that decides authority appeared: no new region, act-group, or
-    # proposal-seal -- only the flagged rescue.
+    # Nothing that decides authority appeared -- only the flagged rescue.
     after_kinds = {entry["kind"] for entry in manifest}
     assert after_kinds - before_kinds == {"secondary-proposal", "rescue-crop"}
 
@@ -290,16 +283,12 @@ def test_a_configured_secondary_proposer_refuses_incomplete_provenance(tmp_path,
 def test_a_page_with_more_rescue_candidates_than_the_bound_is_held_as_one_item(tmp_path):
     """The other per-page enumeration, bounded the same way the residual one is.
 
-    A page speckled enough to trip `max_residual_components` would mint a
-    rescue crop, a PNG blob and a proposal per candidate here, on the very page
-    the residual bound holds as one item -- the unopenable run rebuilt by the
-    route that bound does not cover. Past `max_secondary_proposals` the pass is
-    one held record instead: the count and the bound on the record, the sealed
-    policy digest it was judged against, and no crop cut at all.
+    Past `max_secondary_proposals` the pass is one held record instead of a
+    rescue crop, PNG blob and proposal per candidate -- naming the count, the
+    bound, and the sealed policy digest it was judged against.
 
-    The bound is exercised at zero rather than by drawing two thousand specks:
-    what is under test is the boundary and the shape it publishes, and a
-    threshold is crossed identically whichever side of it the page is on.
+    Exercised at zero rather than by drawing two thousand specks: a threshold
+    is crossed identically whichever side of it the page is on.
     """
     import dataclasses
 
@@ -383,9 +372,9 @@ license_note = \"fixture identity only; no model weights or model license apply\
 
 def _configured_models_config(tmp_path: Path) -> Path:
     """A `models.toml` identical to the shipped one except a configured
-    `secondary_proposer` -- reusing `designator_structure`'s own already-
-    verified fixture snapshot as the stand-in identity, exactly the way the
-    fixture roster already stands in for a real model elsewhere."""
+    `secondary_proposer`, reusing `designator_structure`'s own fixture
+    snapshot as the stand-in identity.
+    """
     config_root = tmp_path / "chair-config"
     shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
     shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
@@ -407,10 +396,8 @@ def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_aut
     models_config = _configured_models_config(tmp_path)
     context = _prepared_context(designator, root, models_config, "secondary held-exit test")
 
-    # `gap_tolerance_px` is now resolved per page from the sealed grouping
-    # policy and passed in, so a stand-in for the real scan takes it too --
-    # a stub with the old signature would pass by not being called the way the
-    # stage calls it.
+    # The stub must accept gap_tolerance_px too, or it silently wouldn't be
+    # called the way the stage actually calls secondary_scan.
     def one_stray_candidate(width, height, rows, *, background, gap_tolerance_px):
         return [{"bounds": {"x": width - 2, "y": height - 2, "w": 1, "h": 1}, "pixel_count": 1}]
 
@@ -433,20 +420,17 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
 ):
     """The optional chair may not cost the run its denominator.
 
-    Act a1's and act a2's *padded* capture rectangles abut exactly at one row of
-    the fixture page, so an ordinary pen mark in the blank band between the two
-    entries produces a secondary component touching both claims at once. This
-    used to raise out of `initial_pass` before the proposal seal was written:
-    every act's authoritative work was discarded and every downstream stage lost
-    its expected-act denominator, because a review-only box was ambiguous.
+    Act a1's and a2's padded capture rectangles abut exactly at one row of the
+    fixture page, so a mark in the blank band between them touches both claims
+    at once. This used to raise out of `initial_pass` before the proposal seal
+    was written, discarding every act's authoritative work over one ambiguous
+    review-only box.
     """
     designator = _load_designator()
     root = tmp_path / "runs"
     models_config = _configured_models_config(tmp_path)
     context = _prepared_context(designator, root, models_config, "straddling rescue test")
 
-    # The two claims `initial_pass` is about to cut, computed from the same
-    # fixture rectangles and the same padding policy it will use.
     padding = designator.geometry.load_padding_config(context.args.designator_padding_config)
     page = next(row for row in context.fixture["page"] if row["ordinal"] == 1)
     will_claim = [
@@ -474,8 +458,8 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
         designator.DESIGNATOR, "proposal-seal", designator._seal_artifact_id()
     )
     assert {row["outcome"] for row in seal["payload"]["expected_acts"]} == {"proposed"}
-    # The stand-in scan returns this one candidate for every sealed page; only
-    # page 1 carries the two abutting claims that make it ambiguous.
+    # The stand-in scan returns this candidate for every page; only page 1's
+    # abutting claims make it ambiguous.
     proposals = [
         record
         for record in (
@@ -495,11 +479,9 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
 
 def test_an_out_of_page_secondary_candidate_is_refused_as_a_contract_error(tmp_path, monkeypatch):
     """A secondary-scan candidate landing outside the page must be refused with
-    this pipeline's own `ContractError` shape, never `crop_png`'s bare
-    `ValueError` -- the same defect class `bf6a716` closed for the recovery
-    path. Unreachable today (candidates derive from the page's own pixel scan,
-    always in-page by construction) but the day a real detector proposes boxes,
-    they arrive from outside that guarantee.
+    this pipeline's own `ContractError`, never `crop_png`'s bare `ValueError`.
+    Unreachable today (candidates come from the page's own pixel scan, always
+    in-page by construction), but a real detector would not carry that guarantee.
     """
     designator = _load_designator()
     root = tmp_path / "runs"
@@ -578,10 +560,7 @@ def test_configuring_the_real_roster_changes_no_authoritative_outcome(tmp_path):
 
     assert seal_outcomes(absent_tree) == seal_outcomes(configured_tree)
 
-    # Nothing visible differs. The secondary chair's provenance record is
-    # written on every run, configured or absent, and this fixture has no stray
-    # ink, so no rescue crop is cut either -- and never a region, an act-group,
-    # or a changed proposal-seal.
+    # This fixture has no stray ink, so no rescue crop is cut either way.
     absent_kinds = {entry["kind"] for entry in absent_tree.build_manifest(DESIGNATOR)["artifacts"]}
     configured_kinds = {
         entry["kind"] for entry in configured_tree.build_manifest(DESIGNATOR)["artifacts"]

@@ -1,19 +1,16 @@
 """Every page's `structure-status` says what geometry that page actually ran at.
 
-The sealed grouping policy is expressed in basis points of a page dimension, so
-the pixel thresholds a page runs under are a function of the policy *and* of
-that page's own size. A calibration session reading a finished run back could
-recover the policy from the seal and the dimensions from the sealed pixels and
-re-derive them -- and a re-derivation is exactly what stops matching the run the
-day the resolution rule changes. The record publishes what executed instead
-(SPEC_C 4.2): every resolved integer of `GroupingThresholds` and the page's own
-width and height, on a per-page record that already exists. The field set is
-spelled out below rather than taken from `dataclasses.asdict` a second time, so
-a field added to the dataclass and dropped from the record fails here.
+Because the sealed grouping policy is basis points of a page dimension, the
+pixel thresholds a page runs under depend on that page's own size too, and a
+later re-derivation from the policy alone would stop matching the run the day
+the resolution rule changes. The record publishes what actually executed
+instead. The field set here is spelled out rather than taken from
+`dataclasses.asdict`, so a field added to the dataclass and dropped from the
+record fails this test.
 
-Nothing reads these back to decide anything. They are a recording, and the two
-tests below are about the two ways a recording goes wrong: publishing numbers
-that are not what the page ran under, and publishing numbers for a page that ran
+Nothing reads these back to decide anything; they are a recording. The two
+tests below cover the two ways a recording goes wrong: publishing numbers that
+are not what the page ran under, and publishing numbers for a page that ran
 nothing at all.
 """
 
@@ -72,10 +69,10 @@ def _designator_context(root: Path, designator):
 def test_each_status_publishes_the_thresholds_and_dimensions_its_page_ran_at(tmp_path):
     """Resolved from the shipped policy against each page's own decoded size.
 
-    The expectation is re-resolved here from the sealed policy bytes and from
-    the page's *own* pixels, never copied from the record under test, so a stage
-    that published one page's numbers on another page's record -- the failure a
-    per-page resolution invites -- fails this rather than agreeing with itself.
+    The expectation is re-resolved here from the sealed policy and the page's
+    own pixels, never copied from the record under test, so a stage that
+    published one page's numbers on another page's record fails this rather
+    than agreeing with itself.
     """
     import grouping_config
     import structure
@@ -120,15 +117,12 @@ def test_each_status_publishes_the_thresholds_and_dimensions_its_page_ran_at(tmp
             "residual_aggregate_max_area_px": expected.residual_aggregate_max_area_px,
             "page_spanning_area_bp": expected.page_spanning_area_bp,
         }
-        # Integers only. A float in a canonical payload is a determinism defect,
-        # and basis points exist so that this resolution never produces one.
+        # Integers only: a float in a canonical payload is a determinism defect.
         for value in status["resolved_thresholds"].values():
             assert isinstance(value, int) and not isinstance(value, bool)
 
-        # The ink margin is not a resolved *threshold* -- it is not a function
-        # of the page's size at all -- so it sits beside them rather than inside
-        # `resolved_thresholds`, and it is re-derived here from this page's own
-        # pixels rather than copied off the record under test.
+        # ink_margin isn't a function of page size, so it sits beside
+        # resolved_thresholds rather than inside it.
         background_policy = grouping_config.resolve_background_policy(policy, width, height)
         evidence = structure.infer_background_evidence(
             width, height, _rows, background_policy=background_policy
@@ -137,12 +131,8 @@ def test_each_status_publishes_the_thresholds_and_dimensions_its_page_ran_at(tmp
         assert status["ink_threshold"] == evidence["background"] - evidence["ink_margin"]
         assert isinstance(status["ink_margin"], int) and not isinstance(status["ink_margin"], bool)
 
-        # `dark_mode` is the other end of the distance the margin is a fraction
-        # of, and it is on the record for that reason: with it and the sealed
-        # `ink_margin_bp` the margin is recomputable, and without it the margin
-        # is a number whose derivation was dropped. Every fixture page takes the
-        # plain modal branch and publishes no `surround` block, so this record is
-        # the only place it appears at all.
+        # dark_mode is on the record so the margin is recomputable from it and
+        # the sealed ink_margin_bp, rather than being a dropped derivation.
         assert status["dark_mode"] == evidence["dark_mode"]
         assert status["ink_margin"] == max(
             structure.PRIMARY_MARGIN,
@@ -183,16 +173,13 @@ def test_a_page_held_before_analysis_publishes_no_thresholds_and_no_dimensions()
     """Null, not the numbers the structure pass would have run under.
 
     This record answers for the structure pass, and on a held page that pass
-    never ran: naming the thresholds it *would* have resolved to would be a
-    resolution reported as an execution -- the same defect `background_source`
-    and `structure_evidence` are null for on exactly this page. The fields
-    either say what happened or say nothing.
+    never ran, so naming the thresholds it would have resolved to would report
+    a resolution as an execution (the same reason `background_source` and
+    `structure_evidence` are null here too).
 
-    The null is about this pass, not about the page. Conservation scans a
-    structure-held page for real, and `test_structural_reconciliation.py` pins
-    the thresholds it executed under on that page's own conservation record --
-    which is where a null beside a real computation would be the lie this null
-    is not.
+    The null is about this pass, not about the page: conservation scans a
+    held page for real, and its own conservation record (pinned in
+    `test_structural_reconciliation.py`) carries a real threshold beside it.
     """
     import grouping_config
 
@@ -219,8 +206,6 @@ def test_a_page_held_before_analysis_publishes_no_thresholds_and_no_dimensions()
     assert held["page_height"] is None
     assert held["resolved_thresholds"] is None
     assert held["background_source"] is None and held["structure_evidence"] is None
-    # Same reason, same page: no pass ran here, so there is no margin it ran at
-    # and no mode it was derived from.
     assert held["ink_margin"] is None and held["ink_threshold"] is None
     assert held["dark_mode"] is None
 
@@ -237,13 +222,9 @@ def test_a_page_held_before_analysis_publishes_no_thresholds_and_no_dimensions()
 def test_two_pages_of_different_size_each_publish_their_own_numbers():
     """A per-page record, proven by two pages that cannot agree by accident.
 
-    Every fixture page in the happy scenario is 200x260, and `resolve_thresholds`
-    is a pure function of (policy, width, height): a stage that published one
-    page's resolved numbers on every page's record would still pass a test built
-    entirely from same-sized pages. This test resolves against two distinct
-    sizes -- a fixture-sized page and a full scan-sized page -- so a mix-up
-    between the two records fails on both the dimensions and the resolved
-    integers, not just one or the other.
+    Every fixture page in the happy scenario is 200x260, so a stage that
+    published one page's numbers on every record would still pass a
+    same-sized test; this test resolves two distinct sizes instead.
     """
     import grouping_config
 
@@ -306,18 +287,15 @@ def test_two_pages_of_different_size_each_publish_their_own_numbers():
     assert small_page["resolved_thresholds"] != large_page["resolved_thresholds"]
 
 
-# The three facts `publish_structure_status` takes off an analysed page, beside
-# its geometry. `ink_margin` is a per-page derivation rather than a constant, so
-# a record that dropped it would leave the page's ink counts with no divider
-# anyone could recover from the sealed policy alone.
+# The three facts publish_structure_status takes off an analysed page, beside
+# its geometry.
 _ANALYSIS_FIELDS = {
     "background_source": "inferred-modal",
     "structure_evidence": "detected",
     "background": 230,
+    # paper 230, ink 90: ink_margin = (230 - 90) * 3333 // 10000 = 46, checkable
+    # against dark_mode rather than an unrelated pair of numbers.
     "ink_margin": 46,
-    # The walking-skeleton page's own two modes: paper 230, ink 90. 46 is
-    # `(230 - 90) * 3333 // 10000`, which is what makes the pair on the record
-    # checkable rather than two numbers that happen to sit beside each other.
     "dark_mode": 90,
 }
 
@@ -325,18 +303,17 @@ _ANALYSIS_FIELDS = {
 def test_analyze_page_uses_its_derived_margin_for_real_decoded_pixels(monkeypatch):
     """A shade between the derived and fixed margins is excluded only live.
 
-    The only stub is the already-checked page-byte boundary. `_analyze_page`
-    still decodes an actual PNG, infers the background, derives the margin, and
-    calls its production `primary_scan`; changing that call back to
-    `PRIMARY_MARGIN` makes the isolated shade become a second component.
+    The only stub is the already-checked page-byte boundary; `_analyze_page`
+    still decodes, infers and scans for real, so reverting the margin back to
+    `PRIMARY_MARGIN` would make the isolated shade a second component.
     """
     import grouping_config
 
     designator = _load_designator()
     width = height = 100
     rows = [bytearray([230]) * width for _ in range(height)]
-    # The 5x5 dark mark establishes dark_mode=90. The separate 3x3 shade at
-    # 200 is above the derived threshold 184 but at or below fixed-20's 210.
+    # The 5x5 dark mark sets dark_mode=90; the 3x3 shade at 200 sits above the
+    # derived threshold (184) but at or below the fixed PRIMARY_MARGIN's (210).
     for y in range(10, 15):
         for x in range(10, 15):
             rows[y][x] = 90

@@ -60,12 +60,8 @@ MEASURED_FIXTURE_SIZES = _measured_fixture_page_sizes()
 
 
 def test_fixture_pages_measure_200x260():
-    """Pin what unit A's first act found: every fixture page is 200x260.
-
-    If this ever fails, every bit-identity assertion below (and the config's
-    own header comment and provenance) is computed against the wrong size and
-    must be redone -- see SPEC_C.md's own instruction to report a mismatch
-    before writing the config, not after.
+    """Every fixture page is 200x260; if this ever fails, every bit-identity
+    assertion below is computed against the wrong size and must be redone.
     """
     assert MEASURED_FIXTURE_SIZES == [(200, 260), (200, 260), (200, 260)]
 
@@ -89,31 +85,22 @@ def test_default_config_loads_and_carries_a_digest_of_its_own_bytes():
     assert config["background"]["max_interior_dark_bp"] == 5000
     assert config["background"]["max_ink_bp"] == 7000
     assert config["background"]["ink_margin_bp"] == 3333
-    # The one measured block in this file, and the only place in it where the
-    # flag is true. Pinned so a later edit cannot quietly widen the claim: 127
-    # real pages from five sources, not zero synthetic ones.
+    # Pinned so a later edit cannot quietly widen the calibration claim.
     assert config["background"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["background"]["provenance"]["sample_count"] == 127
-    # The second measured block, and the second place the flag is true. Pinned
-    # for the same reason: 17 real pages, not 127 and not zero. A later edit
-    # that widened either claim would have to move this line.
     assert config["page_area_bp"]["page_spanning_area_bp"] == 5000
     assert config["page_area_bp"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["page_area_bp"]["provenance"]["sample_count"] == 17
-    # The third and fourth measured blocks, both on the
-    # same 44 real pages. `[coverage_audit]` is not this stage's policy at all --
-    # it is the outside-coverage audit's, validated here and applied nowhere in
-    # this stage -- and it is pinned here because this loader is what refuses a
-    # malformed one before any stage runs.
     assert config["continuation"]["page_edge_reach_bp"] == 280
     assert config["continuation"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["continuation"]["provenance"]["sample_count"] == 44
+    # [coverage_audit] isn't this stage's policy -- it's the outside-coverage
+    # audit's, validated here so a malformed one is refused before any stage runs.
     assert config["coverage_audit"]["substantial_ink_area_bp"] == 4
     assert config["coverage_audit"]["edge_band_bp"] == 100
     assert config["coverage_audit"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["coverage_audit"]["provenance"]["sample_count"] == 44
-    # The noise floor and fraction gate, sealed beside the gates
-    # under their own, truthfully unmeasured, provenance.
+    # The noise floor's own, truthfully unmeasured, provenance.
     assert config["coverage_audit"]["minimum_ink_pixels"] == 24
     assert config["coverage_audit"]["minimum_fraction_outside_bp"] == 200
     assert config["coverage_audit"]["noise_floor_provenance"]["calibrated_for_this_corpus"] is False
@@ -141,8 +128,6 @@ def test_default_config_is_valid_toml_matching_the_loaded_shape():
         "provenance",
         "noise_floor",
     }
-    # The unmeasured pair sits in a sub-table with a provenance block of its
-    # own, so the calibration claim above is not read as covering it.
     assert set(raw["coverage_audit"]["noise_floor"]) == {
         "minimum_ink_pixels",
         "minimum_fraction_outside_bp",
@@ -155,15 +140,9 @@ def test_default_config_is_valid_toml_matching_the_loaded_shape():
 
 @pytest.mark.parametrize("width,height", MEASURED_FIXTURE_SIZES)
 def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(width, height):
-    """The load-bearing claim: at each measured fixture page size, every
-    resolved threshold equals what the retired hardcoded constant was.
-
-    **`page_edge_reach_px` is asserted below instead of here.**
-    It was 4 pixels on this page because `154` was a
-    conversion of `DEFAULT_PAGE_EDGE_REACH_PX` against it; measured on 44 real
-    pages that reach passed on none of them, so the value is now 280 and
-    resolves to 7 here. Every OTHER field in this table is still the retired
-    constant, which is what this test exists to keep true.
+    """At each measured fixture page size, every resolved threshold equals
+    what the retired hardcoded constant was -- except `page_edge_reach_px`,
+    re-measured on 44 real pages and asserted separately below.
     """
     config = load_grouping_config()
     resolved = resolve_thresholds(config, width, height)
@@ -181,23 +160,20 @@ def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(wi
     assert resolved.max_residual_components == 2000
     assert resolved.max_secondary_proposals == 2000
     assert resolved.fallback_bands == 4  # DEFAULT_FALLBACK_BANDS, unconverted
-    # A fraction of the page's AREA, so it passes through unresolved: the same
-    # 5000 at every fixture size, where every `page_fraction_bp` field above
-    # resolves to a different pixel count per page dimension.
+    # A fraction of the page's AREA, so it passes through unresolved: the
+    # same 5000 at every fixture size.
     assert resolved.page_spanning_area_bp == 5000
 
 
 def test_resolve_thresholds_at_260_height_matches_the_spec_worked_arithmetic():
-    """Pin the exact spec-worked numbers, independent of the fixture measurement above."""
+    """Pin the exact worked numbers, independent of the fixture measurement above."""
     config = load_grouping_config()
     resolved = resolve_thresholds(config, width=200, height=260)
     assert resolved.margin_px == 30  # 200 * 1500 / 10000
     assert resolved.chain_gap_px == 6  # 260 * 231 / 10000 = 6.006 -> 6
     assert resolved.anchor_reach_px == 2  # 260 * 77 / 10000 = 2.002 -> 2
     assert resolved.brace_min_height_px == 30  # 260 * 1154 / 10000 = 30.004 -> 30
-    # Re-derived on 44 real pages, so no longer the retired constant's 4:
-    # 260 * 280 / 10000 = 7.28 -> 7.
-    assert resolved.page_edge_reach_px == 7
+    assert resolved.page_edge_reach_px == 7  # 260 * 280 / 10000 = 7.28 -> 7
     assert resolved.review_priority_min_dimension_px == 6  # 260 * 231 / 10000 = 6.006 -> 6
     assert resolved.fallback_overlap_px == 8  # 260 * 308 / 10000 = 8.008 -> 8
 
@@ -227,14 +203,9 @@ def test_resolve_thresholds_returns_a_frozen_dataclass_of_plain_ints():
 def test_resolve_thresholds_breaks_an_exact_half_up_not_by_truncation(tmp_path):
     """A tie case: 2 * 2500 / 10000 = 0.5, half-up 1, truncation 0.
 
-    Every case in the two tests above lands just above its integer, so floor
-    division and round-half-up agree on all of them -- a `resolve_thresholds`
-    rewritten to use plain integer truncation (`dimension * bp //
-    BP_DENOMINATOR`) instead of calling `geometry._pad_amount` would still
-    pass every assertion above it in this file. This tie is the one case that
-    tells the two rules apart, which is the whole point of routing every
-    resolution through `_pad_amount` instead of writing a second rounding
-    rule (see this module's own docstring).
+    Every case above lands just above its integer, so floor division and
+    round-half-up would agree on all of them; only this tie tells the two
+    rules apart.
     """
     body = _valid_toml().replace("chain_gap_bp = 231", "chain_gap_bp = 2500")
     path = _write(tmp_path, body)
@@ -269,8 +240,8 @@ review_priority_min_dimension_bp = 231
 fallback_overlap_bp = 308
 """
 
-# `[grouping.continuation]`'s own provenance block. A fourth distinct spelling,
-# for the reason `_VALID_BACKGROUND`'s comment gives.
+# `[grouping.continuation]`'s own provenance block, a distinct spelling for
+# the reason `_VALID_BACKGROUND`'s comment gives.
 _VALID_CONTINUATION = """\
 page_edge_reach_bp = 280
 
@@ -284,12 +255,11 @@ calibrated_for_this_corpus = true
 caveat = 'kcv'
 """
 
-# `[coverage_audit]` is a TOP-LEVEL table, not one of `[grouping]`'s: it is the
-# sealed policy of `common/residual_ink.py`'s outside-coverage audit, which this
-# loader validates and applies nothing from. A fifth distinct spelling, same
-# reason. It is written between `[grouping]`'s bare keys and its sub-tables
-# because several tests below append a line to the END of the document to put a
-# field inside `[grouping.provenance]`, which must therefore stay last.
+# [coverage_audit] is a TOP-LEVEL table, not one of [grouping]'s: it's the
+# outside-coverage audit's sealed policy, validated here and applied nowhere
+# in this stage. Written between [grouping]'s bare keys and its sub-tables
+# because several tests below append a line to the END of the document to
+# put a field inside [grouping.provenance], which must therefore stay last.
 _VALID_COVERAGE_AUDIT = """\
 substantial_ink_area_bp = 4
 edge_band_bp = 100
@@ -328,13 +298,10 @@ caveat = "cv"
 """
 
 
-# `[grouping.background]`'s own provenance block, written with TOML *literal*
-# (single-quoted) strings and values that differ from `_VALID_PROVENANCE`'s in
-# every field. That is deliberate: the tests below mutate the file-level
-# provenance by string replacement (`caveat = "cv"`, `sample_count = 0`,
-# `source = "`), and with two provenance blocks in one file a shared spelling
-# would make those replacements hit whichever came first. Distinct spellings
-# keep each test aimed at the block it names.
+# [grouping.background]'s own provenance block, deliberately spelled with
+# different literal values than _VALID_PROVENANCE's in every field: the tests
+# below mutate one block by string replacement, and a shared spelling would
+# make that replacement hit whichever block came first.
 _VALID_BACKGROUND = """\
 band_bp = 500
 max_interior_dark_bp = 5000
@@ -352,10 +319,8 @@ caveat = 'scv'
 """
 
 
-# `[grouping.page_area_bp]`'s own provenance block. A third distinct spelling,
-# for the reason `_VALID_BACKGROUND`'s comment gives: the tests below mutate one
-# block by string replacement, and three blocks sharing a spelling would make
-# those replacements hit whichever came first.
+# [grouping.page_area_bp]'s own provenance block, a distinct spelling for the
+# reason _VALID_BACKGROUND's comment gives.
 _VALID_PAGE_AREA = """\
 page_spanning_area_bp = 5000
 
@@ -603,13 +568,9 @@ def test_background_provenance_refuses_calibrated_claim_with_zero_samples(tmp_pa
 
 
 def test_string_provenance_fields_are_derived_from_the_whole_schema():
-    """The two field sets partition `_PROVENANCE_FIELDS` exactly.
-
-    A field added to `_PROVENANCE_FIELDS` without being added to
-    `_TYPED_PROVENANCE_FIELDS` lands here automatically instead of being
-    silently unchecked -- this is the module-import assertion, exercised
-    again here so a failure shows as a named test rather than a collection
-    error.
+    """The two field sets partition `_PROVENANCE_FIELDS` exactly. The
+    module-import assertion, exercised again here so a failure shows as a
+    named test rather than a collection error.
     """
     assert set(_STRING_PROVENANCE_FIELDS) | _TYPED_PROVENANCE_FIELDS == set(_PROVENANCE_FIELDS)
     assert set(_STRING_PROVENANCE_FIELDS).isdisjoint(_TYPED_PROVENANCE_FIELDS)
@@ -617,12 +578,9 @@ def test_string_provenance_fields_are_derived_from_the_whole_schema():
 
 @pytest.mark.parametrize("field", ["source", "corpus", "sample_unit", "statistic", "caveat"])
 def test_every_string_provenance_field_is_actually_type_checked(tmp_path, field):
-    """Each field the schema calls a string is refused when it is not one.
-
-    Regression for a loader that validates a hand-copied subset of
-    `_PROVENANCE_FIELDS`: a field present in the schema but missing from
-    that subset would pass through this loop unchecked while still being
-    accepted as present.
+    """Each field the schema calls a string is refused when it is not one:
+    a regression check for a loader that validated a hand-copied subset of
+    `_PROVENANCE_FIELDS` instead of the whole schema.
     """
     body = _valid_toml().replace(f'{field} = "', f"{field} = 7 #", 1)
     path = _write(tmp_path, body)
@@ -664,12 +622,9 @@ def test_bool_max_residual_components_refused(tmp_path):
 
 @pytest.mark.parametrize("value", ["0", "-1", "true", "4.0"])
 def test_a_fallback_band_count_that_cuts_nothing_is_refused(tmp_path, value):
-    """The one count with a floor of one, and the reason it has one.
-
-    Zero bands is a page the structure pass found nothing on reaching the
-    witnesses as no crop at all -- the loss the predetermined-crop ruling
-    exists to prevent -- so this field refuses at the loader rather than
-    resolving to a grid that cuts nothing.
+    """The one count with a floor of one: zero bands would let a page reach
+    the witnesses as no crop at all, so this field refuses at the loader
+    rather than resolving to a grid that cuts nothing.
     """
     body = _valid_toml().replace("fallback_bands = 4", f"fallback_bands = {value}")
     path = _write(tmp_path, body)
@@ -713,11 +668,9 @@ def test_non_table_top_level_refused(tmp_path):
 
 
 def test_background_resolves_both_bands_from_the_page_it_is_given():
-    """`band_bp` is the one field in this file that resolves against *both*
-    dimensions -- the band is a frame, so it is `band_bp` of the width on the
-    left and right and `band_bp` of the height on top and bottom. That is why it
-    cannot live in `page_fraction_bp`, whose contract is one declared basis per
-    field, and why it is resolved by its own function.
+    """`band_bp` is the one field here that resolves against *both* dimensions
+    (the band is a frame: `band_bp` of width on left/right, of height on
+    top/bottom), so it can't live in `page_fraction_bp`.
     """
     config = load_grouping_config()
     assert resolve_background_policy(config, 200, 260) == {
@@ -725,25 +678,19 @@ def test_background_resolves_both_bands_from_the_page_it_is_given():
         "band_px_y": 13,  # round-half-up 5% of 260
         "max_interior_dark_bp": 5000,
         "max_ink_bp": 7000,
-        # A fraction of the distance between the page's own two population
-        # modes, so it resolves to itself: unlike `band_bp` it has no page
-        # dimension to be a fraction of.
+        # A fraction of a population distance, not a page dimension, so it
+        # resolves to itself unlike band_bp.
         "ink_margin_bp": 3333,
     }
-    # A real photographed proxy's size, resolved the way a run would resolve it.
     assert resolve_background_policy(config, 1484, 1103)["band_px_x"] == 74
     assert resolve_background_policy(config, 1484, 1103)["band_px_y"] == 55
 
 
 def test_background_is_not_a_field_of_the_published_resolved_thresholds():
-    """Deliberate, and load-bearing for the fixture pins.
-
-    `run.py` publishes the whole `GroupingThresholds` as a page's
-    `resolved_thresholds`. The background policy answers a question asked strictly
-    before that record exists -- the background inference runs before any
-    threshold touches any geometry -- so folding it in would put a
-    background-inference input into the structure pass's published geometry and
-    move every existing page record's bytes for a value that pass never used.
+    """Deliberate, and load-bearing for the fixture pins: the background
+    policy answers a question asked strictly before `GroupingThresholds`
+    exists, so folding it in would move every existing page record's bytes
+    for a value the structure pass never used.
     """
     resolved = resolve_thresholds(load_grouping_config(), 200, 260)
     assert not hasattr(resolved, "background_policy")
@@ -786,9 +733,9 @@ def test_background_missing_field_refused(tmp_path):
 
 
 def test_background_missing_its_own_provenance_refused(tmp_path):
-    """Two provenance blocks, both required. The file-level one describes
-    unmeasured defaults with `sample_count = 0`; this one describes three values
-    measured on 127 real pages. One block could not say both truthfully."""
+    """Two provenance blocks, both required: the file-level one describes
+    unmeasured defaults, this one describes measured real-page values, and
+    one block could not say both truthfully."""
     body = _valid_toml().replace(
         "[grouping.background.provenance]\nsource = 's'\n", "[grouping.background.provenance]\n"
     )
@@ -806,12 +753,9 @@ def test_background_provenance_is_held_to_the_same_closed_schema(tmp_path):
 
 @pytest.mark.parametrize("bad", ["0", "5000", "9000", "-1", "500.0", "true"])
 def test_a_band_that_leaves_no_border_or_no_interior_is_refused(tmp_path, bad):
-    """Both ends refused by the loader rather than silently disarming the test.
-
-    `structure._dark_distribution` returns `None` for a band with no border to
-    measure or no interior to compare it against, and a page would then refuse
-    for a reason no config line stated. The refusal belongs here, where the
-    number is written.
+    """Both ends refused by the loader: `structure._dark_distribution` returns
+    `None` for a band with no border or no interior to measure, and a page
+    would then refuse for a reason no config line stated.
     """
     body = _valid_toml().replace("band_bp = 500", f"band_bp = {bad}")
     path = _write(tmp_path, body)
@@ -839,14 +783,11 @@ def test_an_ink_margin_fraction_outside_zero_to_one_is_refused(tmp_path, bad):
 
 @pytest.mark.parametrize("bad", ["0", "5000", "5001", "9999"])
 def test_an_ink_margin_fraction_at_or_past_half_its_range_is_refused(tmp_path, bad):
-    """The bound on `ink_margin_bp` is structural, not a matter of taste.
-
-    Zero derives no margin at all and leaves every page on
-    `structure.PRIMARY_MARGIN`, which is the derivation switched off by a value.
-    At 5000 the derived ink threshold coincides with the level
-    `structure._dark_distribution` measures at, and past it the threshold falls
-    below that level -- at which point the dark-distribution counts stop being
-    subsets of the ink they are published beside.
+    """The bound on `ink_margin_bp` is structural, not a matter of taste: zero
+    leaves every page on `structure.PRIMARY_MARGIN` (the derivation switched
+    off), and past 5000 the derived threshold falls below the level
+    `structure._dark_distribution` measures at, so its counts stop being
+    subsets of the ink they're published beside.
     """
     body = _valid_toml().replace("ink_margin_bp = 3333", f"ink_margin_bp = {bad}")
     path = _write(tmp_path, body)
@@ -855,11 +796,9 @@ def test_an_ink_margin_fraction_at_or_past_half_its_range_is_refused(tmp_path, b
 
 
 def test_the_sealed_ink_margin_fraction_is_under_half_its_range():
-    """The shipped value satisfies the bound above, checked on the shipped file.
-
-    The parametrized refusals prove the loader stops a bad value; this proves
-    the value in `config/designator_grouping.toml` is not one, which is a
-    different claim and the one a run depends on.
+    """The shipped value satisfies the bound above, checked on the shipped
+    file -- a different claim than the loader refusing a bad value, and the
+    one a run actually depends on.
     """
     config = load_grouping_config()
     assert 0 < config["background"]["ink_margin_bp"] < 5000
@@ -871,12 +810,9 @@ def test_the_sealed_ink_margin_fraction_is_under_half_its_range():
 def test_a_bound_at_the_top_of_its_range_is_refused_as_the_test_switched_off(
     tmp_path, field, current
 ):
-    """Both bounds refuse, and a bound of 10000 basis points refuses nothing.
-
-    `max_interior_dark_bp = 10000` admits an inverted scan and a page of solid
-    dark alike; `max_ink_bp = 10000` admits a background that leaves the whole
-    page as ink. Either is the test turned off by a value rather than by a
-    decision, and this policy is sealed into a run as something that decides.
+    """A bound of 10000 basis points refuses nothing: `max_interior_dark_bp`
+    would admit an inverted scan, `max_ink_bp` a background that leaves the
+    whole page as ink -- the test turned off by a value, not a decision.
     """
     body = _valid_toml().replace(f"{field} = {current}", f"{field} = 10000")
     path = _write(tmp_path, body)
@@ -886,11 +822,8 @@ def test_a_bound_at_the_top_of_its_range_is_refused_as_the_test_switched_off(
 
 # --- [grouping.page_area_bp]: the closed sub-table and its bound -------------
 #
-# The loader's refusals are policy, not plumbing: a value this file admits is a
-# value that decides, on every page of every run, which components the grouping
-# pass may use as connective tissue. Each of these paths is the file refusing a
-# policy nobody could have reviewed, and an untested refusal is a refusal that
-# has never actually been shown to happen.
+# The loader's refusals are policy, not plumbing: a value this file admits
+# decides which components the grouping pass may use as connective tissue.
 
 
 def test_the_page_area_table_is_required(tmp_path):
@@ -918,10 +851,8 @@ def test_a_missing_page_spanning_bound_is_refused(tmp_path):
 
 def test_the_page_area_table_needs_its_own_provenance(tmp_path):
     body = _valid_toml().replace("[grouping.page_area_bp.provenance]\n", "", 1)
-    # Removing the header leaves this block's provenance fields loose inside
-    # `[grouping.page_area_bp]`, which the closed field set refuses by name --
-    # the same shape as the missing-table refusal and a stronger one, because it
-    # says which fields were not expected.
+    # Removing the header leaves this block's fields loose inside
+    # [grouping.page_area_bp], which the closed field set refuses by name.
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match=r"\[grouping.page_area_bp\] carries unknown field"):
         load_grouping_config(path)
@@ -929,12 +860,9 @@ def test_the_page_area_table_needs_its_own_provenance(tmp_path):
 
 @pytest.mark.parametrize("bad_value", ["0", "-1", "10001", "0.5", "true", "'5000'"])
 def test_a_page_spanning_bound_outside_one_to_ten_thousand_is_refused(tmp_path, bad_value):
-    """Closed at both ends, and neither end is arbitrary.
-
-    At or below zero every component on every page spans the bound, so the pass
-    would withhold the whole page and propose no act while producing a
-    well-formed empty result that reconciles. Past a whole page nothing can ever
-    reach it, so the policy would read as in force while being inert.
+    """Closed at both ends: at or below zero every component on every page
+    spans the bound and the pass withholds the whole page; past a whole page
+    nothing can ever reach it.
     """
     body = _valid_toml().replace(
         "page_spanning_area_bp = 5000", f"page_spanning_area_bp = {bad_value}", 1
@@ -945,14 +873,9 @@ def test_a_page_spanning_bound_outside_one_to_ten_thousand_is_refused(tmp_path, 
 
 
 def test_a_bound_of_a_whole_page_is_legal_and_is_the_top_of_the_range(tmp_path):
-    """10000 means "only a component whose bounding box IS the page".
-
-    Legal rather than refused, because `grouping.partition_page_spanning`
-    compares with `>=`: at 10000 a whole-page component is still withheld, so
-    the top of the range is the tightest the policy goes and not a switch that
-    turns it off. `test_grouping.py::
-    test_the_bound_cannot_be_switched_off_by_setting_it_to_a_whole_page` is the
-    other half of that claim.
+    """10000 means "only a component whose bounding box IS the page": legal
+    rather than refused, since `>=` still withholds a whole-page component at
+    10000, so the top of the range is the tightest the policy goes.
     """
     body = _valid_toml().replace("page_spanning_area_bp = 5000", "page_spanning_area_bp = 10000", 1)
     config = load_grouping_config(_write(tmp_path, body))
@@ -970,10 +893,8 @@ def test_the_page_area_provenance_is_held_to_the_same_closed_schema(tmp_path):
 
 
 def test_a_forbidden_margin_name_is_refused_inside_the_page_area_table_too(tmp_path):
-    """`primary_margin`/`secondary_margin` may not appear in ANY sub-table.
-
-    The module docstring says "anywhere in this policy", and a new sub-table is
-    exactly where that claim would quietly stop being true.
+    """`primary_margin`/`secondary_margin` may not appear in ANY sub-table,
+    including a new one where that claim could quietly stop being true.
     """
     body = _valid_toml().replace(
         "page_spanning_area_bp = 5000", "page_spanning_area_bp = 5000\nprimary_margin = 20", 1
@@ -984,8 +905,9 @@ def test_a_forbidden_margin_name_is_refused_inside_the_page_area_table_too(tmp_p
 
 
 def test_the_noise_floor_sub_table_must_carry_its_own_provenance(tmp_path):
-    """A number with no declared source may not ship as a default, and the
-    two noise-floor values do not inherit the gates' block above them."""
+    """The two noise-floor values do not inherit the gates' provenance block
+    above them; a number with no declared source may not ship as a default.
+    """
     block = "[coverage_audit.noise_floor.provenance]\n"
     body = _valid_toml()
     head, tail = body.split(block)
