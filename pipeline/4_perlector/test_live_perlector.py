@@ -2048,7 +2048,7 @@ def test_a_non_boolean_capability_claim_buys_no_comparison_view():
     """Read from a retained record, so a truthy non-boolean decides nothing.
 
     The producer's own seam refuses anything but a two-key boolean mapping
-    (`live_witness._format_capabilities_for`), so a value that is not exactly
+    (`witness_adapters.declared_format_capabilities`), so a value that is not exactly
     `True` here is a record no producer wrote -- and a comparison view granted
     on `"yes"` would strip characters out of a report on the strength of a field
     nothing validated.

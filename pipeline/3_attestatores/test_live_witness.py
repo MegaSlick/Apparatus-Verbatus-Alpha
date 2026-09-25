@@ -1268,7 +1268,7 @@ def test_format_capabilities_falls_back_to_the_blanket_default_when_undeclared(t
         **_dai_view_kwargs(),
     )
 
-    assert attempt.format_capabilities == live_witness.DEFAULT_FORMAT_CAPABILITIES
+    assert attempt.format_capabilities == witness_adapters.FALLBACK_FORMAT_CAPABILITIES
 
 
 def test_format_capabilities_is_read_from_the_adapter_when_it_declares_one(tmp_path: Path):
@@ -1293,7 +1293,7 @@ def test_format_capabilities_is_read_from_the_adapter_when_it_declares_one(tmp_p
     )
 
     assert attempt.format_capabilities == declared
-    assert attempt.format_capabilities != live_witness.DEFAULT_FORMAT_CAPABILITIES
+    assert attempt.format_capabilities != witness_adapters.FALLBACK_FORMAT_CAPABILITIES
 
 
 def test_format_capabilities_on_a_malformed_response_still_names_the_adapters_own_grammar(
@@ -1341,7 +1341,7 @@ def test_format_capabilities_for_refuses_a_malformed_adapter_declaration(bad_dec
 
     adapter = SimpleNamespace(format_capabilities=bad_declaration)
     with pytest.raises(SchemaRefusal, match="format_capabilities"):
-        live_witness._format_capabilities_for(adapter)
+        witness_adapters.declared_format_capabilities(adapter)
 
 
 def test_format_capabilities_for_propagates_a_malformed_declaration_through_a_live_attempt(
