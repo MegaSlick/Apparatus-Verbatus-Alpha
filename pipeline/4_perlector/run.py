@@ -267,6 +267,78 @@ def _read_receipt_bytes(directory_descriptor: int, name: str, relative_path: str
             os.close(descriptor)
 
 
+def _receipt_names(directory: int, *, subject: str) -> list[str]:
+    """Every entry in the receipt directory, refusing an unbounded or case-colliding listing."""
+    names: list[str] = []
+    casefolded: dict[str, str] = {}
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                name = entry.name
+                names.append(name)
+                if len(names) > MAX_SAMPLING_APPROVAL_RECEIPTS:
+                    raise ContractError(
+                        f"receipt directory {RECEIPTS_DIR!r} holds more than "
+                        f"{MAX_SAMPLING_APPROVAL_RECEIPTS} entries; the sampling approval "
+                        "scan is bounded"
+                    )
+                folded = name.casefold()
+                other = casefolded.get(folded)
+                if other is not None and other != name:
+                    raise ContractError(
+                        f"receipt directory {RECEIPTS_DIR!r} contains case-variant names "
+                        f"{other!a} and {name!a}; they collide on default APFS"
+                    )
+                casefolded[folded] = name
+    except OSError as error:
+        raise ContractError(
+            f"receipt directory {RECEIPTS_DIR!r} could not be listed while resolving "
+            f"approval for experiment {subject!r}"
+        ) from error
+    return names
+
+
+def _decoded_receipt(data: bytes, relative_path: str, *, subject: str) -> dict:
+    """One receipt's canonical JSON object, or a refusal naming why it is not one."""
+    try:
+        decoded = json.loads(data.decode("utf-8"))
+    except UnicodeDecodeError as error:
+        raise ContractError(
+            f"receipt {relative_path!r} is not UTF-8 while resolving approval for "
+            f"experiment {subject!r}. The sampling gate cannot prove exactly one "
+            "approval while any receipt is undecodable. Restore the exact immutable "
+            "receipt bytes or hold this run for review, then rerun the Perlector"
+        ) from error
+    except (ValueError, RecursionError) as error:
+        raise ContractError(
+            f"receipt {relative_path!r} is malformed JSON while resolving approval for "
+            f"experiment {subject!r}: {error}. The sampling gate cannot prove exactly "
+            "one approval while any receipt is malformed. Restore the exact immutable "
+            "receipt bytes or hold this run for review, then rerun the Perlector"
+        ) from error
+    if not isinstance(decoded, dict):
+        raise ContractError(
+            f"receipt {relative_path!r} is a JSON {type(decoded).__name__}, not an object, "
+            f"while resolving approval for experiment {subject!r}. The sampling gate "
+            "cannot prove exactly one approval without inspecting every receipt object. "
+            "Restore the exact immutable receipt bytes or hold this run for review, then "
+            "rerun the Perlector"
+        )
+    try:
+        canonical = canonical_bytes(decoded)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ContractError(
+            f"receipt {relative_path!r} cannot be represented as canonical receipt "
+            "bytes while resolving sampling approval"
+        ) from error
+    if canonical != data:
+        raise ContractError(
+            f"receipt {relative_path!r} is not canonical JSON; duplicate or ambiguous "
+            "evidence cannot authorize a sampling arm"
+        )
+    return decoded
+
+
 def _sampling_receipts(context, *, subject: str) -> list[tuple[ApprovalRecordReference, dict]]:
     """Read every receipt once and return validated records for ``subject``."""
     directory = _open_receipts_directory(context.tree)
@@ -274,36 +346,9 @@ def _sampling_receipts(context, *, subject: str) -> list[tuple[ApprovalRecordRef
         return []
     try:
         directory_before = _stable_file_metadata(os.fstat(directory))
-        names: list[str] = []
-        casefolded: dict[str, str] = {}
-        try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    name = entry.name
-                    names.append(name)
-                    if len(names) > MAX_SAMPLING_APPROVAL_RECEIPTS:
-                        raise ContractError(
-                            f"receipt directory {RECEIPTS_DIR!r} holds more than "
-                            f"{MAX_SAMPLING_APPROVAL_RECEIPTS} entries; the sampling approval "
-                            "scan is bounded"
-                        )
-                    folded = name.casefold()
-                    other = casefolded.get(folded)
-                    if other is not None and other != name:
-                        raise ContractError(
-                            f"receipt directory {RECEIPTS_DIR!r} contains case-variant names "
-                            f"{other!a} and {name!a}; they collide on default APFS"
-                        )
-                    casefolded[folded] = name
-        except OSError as error:
-            raise ContractError(
-                f"receipt directory {RECEIPTS_DIR!r} could not be listed while resolving "
-                f"approval for experiment {subject!r}"
-            ) from error
-
         records: list[tuple[ApprovalRecordReference, dict]] = []
         scanned_bytes = 0
-        for name in sorted(names):
+        for name in sorted(_receipt_names(directory, subject=subject)):
             digest = _receipt_name_digest(name)
             if digest is None:
                 raise ContractError(
@@ -325,42 +370,7 @@ def _sampling_receipts(context, *, subject: str) -> list[tuple[ApprovalRecordRef
                     f"receipt {relative_path!r} has digest {actual}, not its content-addressed "
                     f"name {digest}; the sampling gate cannot skip corrupted evidence"
                 )
-            try:
-                decoded = json.loads(data.decode("utf-8"))
-            except UnicodeDecodeError as error:
-                raise ContractError(
-                    f"receipt {relative_path!r} is not UTF-8 while resolving approval for "
-                    f"experiment {subject!r}. The sampling gate cannot prove exactly one "
-                    "approval while any receipt is undecodable. Restore the exact immutable "
-                    "receipt bytes or hold this run for review, then rerun the Perlector"
-                ) from error
-            except (ValueError, RecursionError) as error:
-                raise ContractError(
-                    f"receipt {relative_path!r} is malformed JSON while resolving approval for "
-                    f"experiment {subject!r}: {error}. The sampling gate cannot prove exactly "
-                    "one approval while any receipt is malformed. Restore the exact immutable "
-                    "receipt bytes or hold this run for review, then rerun the Perlector"
-                ) from error
-            if not isinstance(decoded, dict):
-                raise ContractError(
-                    f"receipt {relative_path!r} is a JSON {type(decoded).__name__}, not an object, "
-                    f"while resolving approval for experiment {subject!r}. The sampling gate "
-                    "cannot prove exactly one approval without inspecting every receipt object. "
-                    "Restore the exact immutable receipt bytes or hold this run for review, then "
-                    "rerun the Perlector"
-                )
-            try:
-                canonical = canonical_bytes(decoded)
-            except (TypeError, ValueError, RecursionError) as error:
-                raise ContractError(
-                    f"receipt {relative_path!r} cannot be represented as canonical receipt "
-                    "bytes while resolving sampling approval"
-                ) from error
-            if canonical != data:
-                raise ContractError(
-                    f"receipt {relative_path!r} is not canonical JSON; duplicate or ambiguous "
-                    "evidence cannot authorize a sampling arm"
-                )
+            decoded = _decoded_receipt(data, relative_path, subject=subject)
             if decoded.get("subject_ids") != [subject]:
                 continue
             reference = ApprovalRecordReference(relative_path, digest)
@@ -3177,6 +3187,60 @@ def _page_flags(
     return audit.flags_once_per_page(frozen)
 
 
+def _publish_audit_draft(
+    context,
+    row: dict[str, Any],
+    flags: list[dict[str, Any]],
+    *,
+    round_cap: int,
+    policy_record: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Freeze the Pass-B semi-final and its page flags before any re-proof."""
+    payload = row["payload"]
+    draft_payload = {
+        "act_key": row["act"]["act_key"],
+        "attempt_ordinal": payload["attempt_ordinal"],
+        "semi_final_text": payload["text"],
+        "page_ids": audit_page_ids(row["bases"]),
+        "round_cap": round_cap,
+        "policy": policy_record,
+        "flags": flags,
+        "flag_location_basis": flag_location_basis(
+            payload["dossier"], flags, semi_final_text=payload["text"]
+        ),
+    }
+    audit.validate_draft(draft_payload)
+    draft = context.publish(
+        kind="audit-draft",
+        subject_id=row["act_id"],
+        outcome="read",
+        attempt=perlector_attempt_id(row["act_id"], "perlegere", payload["attempt_ordinal"]),
+        inputs=row["inputs"],
+        payload=draft_payload,
+    )
+    return draft_payload, context.input_ref(draft.relative_path)
+
+
+def _cap_exhausted_spans(flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"start": start, "end": end, "reason": "audit-round-cap-exhausted"}
+        for start, end in ((flag["location"]["start"], flag["location"]["end"]) for flag in flags)
+        if start < end
+    ]
+
+
+def _row_truncation(
+    row: dict[str, Any], text: str, *, stop_reason: str | None, protocol_config: dict[str, Any]
+) -> dict[str, Any]:
+    return truncation.classify(
+        text,
+        region_pixels=row["region_pixels"],
+        page_pixels=row["page_pixels"],
+        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
+        stop_reason=stop_reason,
+    )
+
+
 def _reseal_dossier(dossier: dict[str, Any]) -> dict[str, Any]:
     """Sweep and seal the final fields retained for publication."""
     body = {key: value for key, value in dossier.items() if key != "dossier_digest"}
@@ -3465,6 +3529,110 @@ def _publish_primed_without_prior(
     )
 
 
+def _established_row(
+    context,
+    attempt: _Attempt,
+    act: dict[str, Any],
+    establishing: dict[str, Any],
+    *,
+    order: int,
+    declared_failure: str | None,
+    testimonia: list[dict],
+    attachment_view: dict[str, Any],
+    autopsia: dict[str, Any],
+) -> dict[str, Any]:
+    """The Pass-B Perlectio payload and everything the audit pass needs to finish it.
+
+    Publication consumes the one establishing result; it never chooses or merges
+    capture-local readings.
+    """
+    primed_dossier = _reseal_dossier(establishing["dossier"])
+    result = establishing["result"]
+    prior = primed_dossier["prior_draft"]
+    # The prompt is reproduced from the retained dossier. In the withheld arm
+    # `combined.py` removed the prior text before the call; the prompt builder
+    # ignores a withheld prior, so both copies render the same bytes.
+    prompt = prompts.prompt_evidence(
+        attempt.chair, primed_dossier, attempt.protocol_config, attempt.protocol_sha256
+    )
+    # A declared failure is refused in live mode before any call.
+    reading = "" if declared_failure == "no-readable-text" else result["text"]
+    truncation_record = _reconciled_truncation(
+        declared_failure=declared_failure,
+        truncation_record=truncation.classify(
+            reading,
+            region_pixels=attempt.region_pixels,
+            page_pixels=attempt.page_pixels,
+            truncation_policy=attempt.protocol_config[protocol.TRUNCATION_TABLE],
+            stop_reason=result["stop_reason"],
+        ),
+    )
+    outcome = _resolve_outcome(
+        declared_failure=declared_failure, truncation_record=truncation_record, text=reading
+    )
+    if outcome == "no-readable-text":
+        # Whitespace resolved as unreadable is published as the empty text its schema
+        # requires.
+        reading = ""
+    testimonium_references = _testimonium_references(context, testimonia)
+    sealed_doubt, reader_spans, gaps = _published_doubt(
+        result,
+        text=reading,
+        outcome=outcome,
+        whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
+    )
+    provenance = provenance_for(
+        context, attempt.chair, attempted=True, receipt_ref=attempt.receipt_ref
+    )
+    payload = {
+        "act_key": act["act_key"],
+        "attempt_ordinal": attempt.ordinal,
+        "text": reading,
+        "basis": {
+            "regions": attempt.bases,
+            "testimonia": _testimonia_basis(testimonia, testimonium_references),
+        },
+        "dossier": primed_dossier,
+        "prompt": prompt,
+        "dissent": dissent_against(reading, dissent_testimonia(testimonia, attachment_view)),
+        "truncation": truncation_record,
+        "uncertain_spans": reader_spans,
+        "gaps": gaps,
+        "uncertainty_assessment": sealed_doubt,
+        "provenance": provenance,
+        "lectio_kind": "primed-with-prior",
+        "self_revision": departures(reading, prior["text"]),
+        "protocol": _protocol_record(context, attempt.protocol_config),
+    }
+    return {
+        "act": act,
+        "act_id": attempt.act_id,
+        "order": order,
+        "bases": attempt.bases,
+        "payload": payload,
+        # The call the published text came from; the audit loop re-points it at the
+        # re-proof's call when that text is published.
+        "fields": with_engine_call(payload, result, _PERLECTIO_FIELDS),
+        "outcome": outcome,
+        # Areas, not decoded pixels: holding every act's images until the audit loop
+        # would grow memory with the act count. A re-proof rebuilds its pixels from the
+        # sealed artifacts.
+        "region_pixels": attempt.region_pixels,
+        "page_pixels": attempt.page_pixels,
+        "declared_failure": declared_failure,
+        "testimonia": testimonia,
+        "attachment_view": attachment_view,
+        "prior": prior,
+        "autopsia": autopsia,
+        "inputs": _reading_image_inputs(
+            context, attempt.bases, attempt.page_renders, autopsia=autopsia
+        )
+        + list(testimonium_references.values())
+        + [attachment_view["reference"], prior["reference"]]
+        + engine_call_inputs(context, result.get("engine_call")),
+    }
+
+
 def _logical_sampling_decisions(context, logical_act_id: str) -> tuple[bool, bool]:
     """Choose instrument membership once for a logical act, never per capture."""
     nuda_sampled = nuda.is_nuda_sampled(
@@ -3515,8 +3683,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         "to read another act, when the planned calls would run past it",
     )
     args = parser.parse_args()
-    # Either ingress route, decided from one read of the run authority; the
-    # real route carries the registry and sealed digests the lines below need.
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
     decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
@@ -3524,7 +3690,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     # refuses on an untouched tree.
     chair = perlector_chair(context)
     serving_mode = perlector_serving_mode(context, args, chair)
-    # Likewise, a real submission with a non-live row refuses here.
     reader = fixture_reader_for(context, chair, serving_mode)
     witness_context_table = dossier_module.load_witness_context(
         Path(context.witness_context_config_path)
@@ -3552,8 +3717,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
 
-    # A recovery re-reads only the recovered acts; an attempt nobody requested would
-    # make the attempt tally meaningless.
     expected = expected_acts(context)
     declared_order = {act["act_id"]: order for order, act in enumerate(expected)}
     wanted = [act for act in expected if args.act in (None, act["act_id"])]
@@ -3779,12 +3942,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             act_attachment=attachment_view,
         )
 
-        # The unprimed instrument, sampled by the run's predeclared design once per
-        # logical act, as the control is.
         nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
 
-        # Bind loop-local publication facts now; the callback runs before the
-        # establishing arm and returns the immutable prior reference it embeds.
         attempt = _Attempt(
             act_key=act["act_key"],
             act_id=act_id,
@@ -3855,114 +4014,35 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 approval_ref=instrument_approval,
             )
 
-        # Publication consumes the one establishing result; it never chooses or
-        # merges capture-local readings.
-        primed_dossier = _reseal_dossier(passes["perlectio"]["dossier"])
-        result = passes["perlectio"]["result"]
-        prior = primed_dossier["prior_draft"]
-        # The prompt is reproduced from the retained dossier. In the withheld arm
-        # `combined.py` removed the prior text before the call; the prompt builder
-        # ignores a withheld prior, so both copies render the same bytes.
-        prompt = prompts.prompt_evidence(chair, primed_dossier, protocol_config, protocol_sha256)
-
-        # Already refused for live mode above; here it decides `reading` and `outcome`
-        # together.
-        reading = "" if declared_failure == "no-readable-text" else result["text"]
-        truncation_record = _reconciled_truncation(
-            declared_failure=declared_failure,
-            truncation_record=truncation.classify(
-                reading,
-                region_pixels=region_pixels,
-                page_pixels=page_pixels,
-                truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
-                stop_reason=result["stop_reason"],
-            ),
-        )
-        outcome = _resolve_outcome(
-            declared_failure=declared_failure, truncation_record=truncation_record, text=reading
-        )
-        if outcome == "no-readable-text":
-            # See the nuda publish path: whitespace resolved as unreadable is
-            # published as the empty text its schema requires.
-            reading = ""
-        testimonium_references = _testimonium_references(context, testimonia)
-        # The reader's own doubts over the text it read, by the one rubric every
-        # record kind uses (`_published_doubt`).
-        sealed_doubt, reader_spans, gaps = _published_doubt(
-            result,
-            text=reading,
-            outcome=outcome,
-            whole_act_gaps=_whole_act_gap(testimonia, testimonium_references),
-        )
-
-        provenance = provenance_for(context, chair, attempted=True, receipt_ref=receipt_ref)
-        payload = {
-            "act_key": act["act_key"],
-            "attempt_ordinal": ordinal,
-            "text": reading,
-            "basis": {
-                "regions": bases,
-                "testimonia": _testimonia_basis(testimonia, testimonium_references),
-            },
-            "dossier": primed_dossier,
-            "prompt": prompt,
-            "dissent": dissent_against(reading, dissent_testimonia(testimonia, attachment_view)),
-            "truncation": truncation_record,
-            "uncertain_spans": reader_spans,
-            "gaps": gaps,
-            "uncertainty_assessment": sealed_doubt,
-            "provenance": provenance,
-            "lectio_kind": "primed-with-prior",
-            "self_revision": departures(reading, prior["text"]),
-            "protocol": _protocol_record(context, protocol_config),
-        }
-        # The call the published text came from; the audit loop re-points it at the
-        # re-proof's call when that text is published.
-        payload_fields = with_engine_call(payload, result, _PERLECTIO_FIELDS)
         pending.append(
-            {
-                "act": act,
-                "act_id": act_id,
-                "order": declared_order[act_id],
-                "bases": bases,
-                "payload": payload,
-                "fields": payload_fields,
-                "outcome": outcome,
-                # Not the decoded pixels: holding every act's images until the audit
-                # loop would grow memory with the act count and risk an OOM kill before
-                # any Perlectio publishes. A re-proof rebuilds its pixels from the
-                # sealed artifacts.
-                "region_pixels": region_pixels,
-                "page_pixels": page_pixels,
-                "declared_failure": declared_failure,
-                "testimonia": testimonia,
-                "attachment_view": attachment_view,
-                "prior": prior,
-                "autopsia": autopsia,
-                "inputs": _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
-                + list(testimonium_references.values())
-                + [attachment_view["reference"], prior["reference"]]
-                + engine_call_inputs(context, result.get("engine_call")),
-            }
+            _established_row(
+                context,
+                attempt,
+                act,
+                passes["perlectio"],
+                order=declared_order[act_id],
+                declared_failure=declared_failure,
+                testimonia=testimonia,
+                attachment_view=attachment_view,
+                autopsia=autopsia,
+            )
         )
         read += 1
 
     # The page flag pass receives these immutable Pass-B semi-finals together,
     # before any re-proof result exists.  Its output is therefore one
     # deterministic cross-act computation per page, with no cascade.
-    semi_finals = []
-    for row in pending:
-        payload = row["payload"]
-        bases = row["bases"]
-        semi_finals.extend(
-            audit_semi_finals_for_pages(
-                act_id=row["act_id"],
-                order=row["order"],
-                text=payload["text"],
-                bases=bases,
-                dossier=payload["dossier"],
-            )
+    semi_finals = [
+        semi_final
+        for row in pending
+        for semi_final in audit_semi_finals_for_pages(
+            act_id=row["act_id"],
+            order=row["order"],
+            text=row["payload"]["text"],
+            bases=row["bases"],
+            dossier=row["payload"]["dossier"],
         )
+    ]
     page_flags = _page_flags(
         context,
         semi_finals,
@@ -3976,33 +4056,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         payload = row["payload"]
         act_id = row["act_id"]
         flags = page_flags[act_id]
-        page_ids = audit_page_ids(row["bases"])
-        draft_payload = {
-            "act_key": row["act"]["act_key"],
-            "attempt_ordinal": payload["attempt_ordinal"],
-            "semi_final_text": payload["text"],
-            "page_ids": page_ids,
-            "round_cap": audit_policy["round_cap"],
-            "policy": policy_record,
-            "flags": flags,
-            "flag_location_basis": flag_location_basis(
-                payload["dossier"], flags, semi_final_text=payload["text"]
-            ),
-        }
-        audit.validate_draft(draft_payload)
-        draft = context.publish(
-            kind="audit-draft",
-            subject_id=act_id,
-            outcome="read",
-            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
-            inputs=row["inputs"],
-            payload=draft_payload,
+        draft_payload, draft_ref = _publish_audit_draft(
+            context, row, flags, round_cap=audit_policy["round_cap"], policy_record=policy_record
         )
-        draft_ref = context.input_ref(draft.relative_path)
+        page_ids = draft_payload["page_ids"]
         final_text = payload["text"]
-        # The frozen semi-final, captured before an accepted rewrite changes
-        # `payload["text"]`.
-        pre_audit_text = payload["text"]
         # The truncation verdict on the re-proof call itself, measured before its text
         # is compared with the semi-final: a cut-off re-proof that returned the
         # established text verbatim must not pass as complete.
@@ -4015,7 +4073,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         )
         request_digest: str | None = None
         changes: list[dict[str, Any]] = []
-        uncertainty: list[dict[str, Any]] = []
         reproof_edits: list[dict[str, Any]] | None = None
         payload_fields = row["fields"]
         # A re-proof is evidence whether or not it changed the text, so it is always
@@ -4088,7 +4145,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 # Publishing whitespace as the canonical empty reading would
                 # remove characters outside a narrow edit.  That projection is
                 # not one of the exact edits the response accounted for.
-                if _publishes_empty(final_text) and final_text not in {"", pre_audit_text}:
+                if _publishes_empty(final_text) and final_text not in {"", payload["text"]}:
                     raise audit.ReproofResponseRefusal(
                         "an audit re-proof response becomes a whole-act empty projection outside "
                         "its exact requested edits"
@@ -4117,14 +4174,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     provenance=payload["provenance"],
                 )
                 continue
-            pre_audit_text = payload["text"]
             reproof_inputs = engine_call_inputs(context, reproof.get("engine_call"))
-            reproof_truncation = truncation.classify(
-                final_text,
-                region_pixels=row["region_pixels"],
-                page_pixels=row["page_pixels"],
-                truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
-                stop_reason=reproof["stop_reason"],
+            reproof_truncation = _row_truncation(
+                row, final_text, stop_reason=reproof["stop_reason"], protocol_config=protocol_config
             )
             # The edits are already checked; this binds the accepted text to its
             # producing call. Unchanged text keeps Pass B's provenance.
@@ -4156,7 +4208,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 payload["dissent"] = dissent_against(
                     final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
                 )
-                # Self-revision describes the published text's departure from Pass A.
                 payload["self_revision"] = departures(final_text, row["prior"]["text"])
                 # Re-measured over the published text with the re-proof's own stop
                 # reason; `_audited_truncation` never lets Pass C improve the verdict.
@@ -4183,12 +4234,11 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                     # Re-measured over the emptied text: `validate_finding` binds the
                     # sealed termination to the published text. An empty reading is
                     # never length-suspicious or abrupt.
-                    reproof_truncation = truncation.classify(
+                    reproof_truncation = _row_truncation(
+                        row,
                         final_text,
-                        region_pixels=row["region_pixels"],
-                        page_pixels=row["page_pixels"],
-                        truncation_policy=protocol_config[protocol.TRUNCATION_TABLE],
                         stop_reason=reproof["stop_reason"],
+                        protocol_config=protocol_config,
                     )
                     # Re-asked against the empty text, so the record never says
                     # `assessed` over a report that was thrown away.
@@ -4223,13 +4273,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             reproof_truncation,
         )
         unresolved = audit.unresolved_state(examination)
-        if examination == audit.EXAMINATION_CAP_EXHAUSTED:
-            for flag in flags:
-                start, end = flag["location"]["start"], flag["location"]["end"]
-                if start < end:
-                    uncertainty.append(
-                        {"start": start, "end": end, "reason": "audit-round-cap-exhausted"}
-                    )
+        uncertainty = (
+            _cap_exhausted_spans(flags) if examination == audit.EXAMINATION_CAP_EXHAUSTED else []
+        )
         finding_payload = {
             "act_key": row["act"]["act_key"],
             "attempt_ordinal": payload["attempt_ordinal"],
