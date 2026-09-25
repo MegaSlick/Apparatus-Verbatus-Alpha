@@ -58,21 +58,16 @@ def load_decoding_policy(
 def _validate_decoding_policy(policy: Any) -> None:
     """Close every section before its values can mint provenance identities.
 
-    The legacy schemas carry three sections. ``decoding.v3`` adds the exact,
-    closed Chandra native inference recipe admitted for Attestator 1; there is
-    no enabled flag, and a v1/v2 run cannot acquire the capability on resume.
-    `reading_of_record` is pinned to temperature
-    0: it is the posture every Attestator and the Perlector read under, and a
-    reading of record that varied would not be one. `structure` is the
-    Designator's structure pass's own posture and is
-    admitted at any finite, non-negative temperature: this
-    pass may vary, sealed and recorded, so the loader does not pin the number
-    -- whether a given value can actually be executed is the pass's own refusal
-    to make at its point of use, not this loader's to hide by rejecting the
-    bytes. The section is required, not optional: `common/stage.py` binds the
-    name `structure` to the sealed digest of these bytes on every structural
-    seal, and a sealed file with no such section would be a posture named
-    over bytes that do not contain it.
+    The legacy schemas carry three sections; `decoding.v3` adds the exact,
+    closed Chandra native inference recipe admitted for Attestator 1, with no
+    enabled flag, so a v1/v2 run cannot acquire it on resume.
+    `reading_of_record` is pinned to temperature 0, the posture every
+    Attestator and the Perlector read under. `structure` is the Designator's
+    own posture and is admitted at any finite, non-negative temperature since
+    that pass may vary, sealed and recorded -- whether a value can actually be
+    executed is the pass's own refusal to make, not this loader's. The section
+    is required: `common/stage.py` binds the name `structure` to the sealed
+    digest of these bytes on every structural seal.
     """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")

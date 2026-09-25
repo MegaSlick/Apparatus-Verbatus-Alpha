@@ -82,31 +82,13 @@ def _ref_list(value: Any, what: str) -> list[dict[str, str]]:
 def _reject_preference(value: Any) -> None:
     """Refuse a nested capture-preference claim anywhere in an untrusted payload.
 
-    Iterative for the same reason `corpus_register.refuse_capture_preference`
-    is, and this was the one preference screen still recursing. Both guards run
-    ahead of any shape check -- `build_autopsia` screens `views` before `_view`
-    closes it, and `assemble_reader_input` screens a reader dossier whose only
-    prior check is that it is a dict -- so the value each walks is arbitrary
-    caller input. A recursive walk over it exhausted the interpreter stack at a
-    few thousand levels and raised `RecursionError`, which is a crash and not a
-    named refusal; the payload that reached the guard then left no record of
-    what was wrong with it. Depth is the walk's own list here, so a deep payload
-    is screened to the bottom exactly like a shallow one.
-
-    Depth was only half of it. The screen runs *before* `_view` proves any
-    shape, so the `views` it walks is arbitrary caller input, and
-    `build_autopsia` is called with in-memory lists rather than a document this
-    module parsed -- so a view that is its own ancestor reaches this walk. The
-    recursion this replaced ended such a payload by exhausting itself; a
-    worklist has none to exhaust, so it appended forever and hung the caller
-    instead of returning a named refusal. The enter/exit bookkeeping below is
-    the dossier sweep's, and it refuses through this screen's own
-    `SchemaRefusal`.
-
-    Only the containers open on the current path are tracked. A view object
-    genuinely shared between two entries is not a cycle and stays permitted --
-    it is refused later, by name, as a duplicate capture rather than here as a
-    loop.
+    Iterative and cycle-aware, like `corpus_register.refuse_capture_preference`:
+    this runs ahead of any shape check on arbitrary caller input (in-memory
+    lists, not a parsed document), so depth is this walk's own list rather than
+    the interpreter stack, and a self-referential value is refused rather than
+    hung on forever. Only containers open on the current path are tracked, so a
+    view object genuinely shared between two entries stays permitted -- it is
+    refused later, by name, as a duplicate capture rather than here as a loop.
     """
     pending: list[tuple[str, Any]] = [("value", value)]
     open_path: set[int] = set()
@@ -134,8 +116,8 @@ def _reject_preference(value: Any) -> None:
                     )
                 pending.append(("value", item))
         elif isinstance(current, (list, tuple)):
-            # F085: a tuple serializes exactly like a list through
-            # `canonical_bytes`, so it must be walked the same way here too.
+            # A tuple serializes exactly like a list through `canonical_bytes`,
+            # so it must be walked the same way here too.
             pending.extend(("value", item) for item in current)
 
 
@@ -211,10 +193,6 @@ def build_autopsia(
             "cross-capture autopsia: logical_act_id is not printable NFC; the presentation "
             "is refused because normalization variants cannot name different logical acts"
         )
-    # `views` is walked here before `_view` ever proves its shape, and the
-    # screen is iterative (its depth is the walk's own list), so a deep
-    # unvalidated nest is walked to the bottom and then refused by the shape
-    # checks below rather than crashing the interpreter stack.
     _reject_preference({"logical_act_id": logical_act_id, "views": views})
     required = sorted({_sha(item, "required capture sha256") for item in required_capture_sha256s})
     if not required:
