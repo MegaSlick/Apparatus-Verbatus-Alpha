@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Final, Iterator, NoReturn, Protocol, Sequence
+from typing import Any, Callable, Final, Iterator, Protocol, Sequence
 
 from common.chairs.config import load_models_toml
 from common.contracts.canonical import canonical_bytes, digest_bytes
@@ -139,6 +139,7 @@ MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_NOTIFY_MESSAGE_CHARACTERS = 500
 """Bounds a notification message: an unsealed run with hundreds of pages would
 otherwise build one entry per page with no ceiling at all."""
+# Named once, so the fault drill and its real-ingress guard cannot drift apart.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
 _TRANSFER_CREDENTIAL_ENV = TRANSFER_CREDENTIAL_ENV
 _COPY_CHUNK_BYTES = 1024 * 1024
@@ -1241,7 +1242,7 @@ class OperatorSurface:
         )
         if self.faults.laptop_crash:
             self.faults.laptop_crash = False
-            self._crash_after_door(
+            raise self._crash_after_door(
                 run_root, run_id, scenario, stage_argv, facts, real=submission_folder is not None
             )
         try:
@@ -1313,7 +1314,7 @@ class OperatorSurface:
             if state == "complete":
                 self._require_reconciled_act_partition(export_payload)
         except Exception as error:
-            self._refuse_unread_export(error, completed, ended, run_root, run_id)
+            raise self._refuse_unread_export(error, completed, ended, run_root, run_id) from error
         # `reasons` is external data: only a list may feed decision output, or a
         # string would become one hold reason per character and a mapping its keys.
         reasons = aggregate.get("reasons")
@@ -1400,8 +1401,8 @@ class OperatorSurface:
         ended: dict[str, Any],
         run_root: Path,
         run_id: str,
-    ) -> NoReturn:
-        """Record why a finished run has no usable Armarium record, then refuse it."""
+    ) -> OperatorError:
+        """Record why a finished run has no usable Armarium record; the refusal to raise."""
 
         if completed.returncode == 3:
             # Held before the Armarium, so no export record exists; the
@@ -1434,9 +1435,9 @@ class OperatorSurface:
             self._notify(
                 "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
             )
-            raise OperatorError(
+            return OperatorError(
                 ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
-            ) from error
+            )
         if isinstance(error, UnreconciledActPartitionError):
             reason = f"the Armarium export record does not reconcile: {error}"
             state = "armarium-record-unreconciled"
@@ -1461,9 +1462,7 @@ class OperatorSurface:
             descriptor_action="run",
         )
         self._present_review_command(run_root, run_id)
-        raise OperatorError(
-            ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}"
-        ) from error
+        return OperatorError(ErrorCode.RUN_FAILED, detail=f"{reason} Saved run receipt: {receipt}")
 
     def _run_orchestrator(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         """Run the orchestrator child, treating SIGTERM like SIGINT.
@@ -2500,7 +2499,7 @@ class OperatorSurface:
         facts: dict[str, Any],
         *,
         real: bool,
-    ) -> NoReturn:
+    ) -> OperatorError:
         """The laptop-crash drill: run only the Door, then record a resumable interruption."""
 
         ingress_label = "real submission" if real else "fixture"
@@ -2527,7 +2526,7 @@ class OperatorSurface:
             f"The laptop-crash drill interrupted after the {ingress_label} reached the Door."
         )
         self._present_review_command(run_root, run_id)
-        raise OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
+        return OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
 
     def _run_door_stage(
         self, run_root: Path, run_id: str, scenario: str, stage_argv: Sequence[str]
@@ -3054,7 +3053,8 @@ def _remote_state(store: TransferTarget, key: str, data: bytes, sha256: str) -> 
 def _publish_if_absent(
     store: TransferTarget, key: str, data: bytes, sha256: str, state: str
 ) -> str:
-    """Write `data` at `key` if nothing is there yet; the state read back afterwards."""
+    """Write `data` at `key` when `state` is "absent" and return the state read back;
+    any other `state` is returned as given."""
 
     if state != "absent":
         return state
@@ -3315,7 +3315,8 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
 def _stage_environment() -> dict[str, str]:
     """The ordinary environment with every provider credential stripped.
 
-    Stages decode untrusted images, so no credential may reach them.
+    Stages decode untrusted images, so no credential may reach them. The shared
+    predicate means a credential shape added there is stripped here too.
     """
 
     return credential_free_environment()
@@ -3836,7 +3837,6 @@ def _fetch_run_tree(
                 except (UnicodeDecodeError, ValueError, RecursionError) as error:
                     # Deep nesting raises RecursionError within any size bound.
                     raise FetchRunRefusal(f"{relative} is not readable JSON: {error}") from error
-        manifest_recorded = set(expected)
         unmanifested_stages = _resolve_unmanifested(tree, unresolved, expected, manifests)
         stages: list[str] = []
         for relative, manifest in manifests.items():
@@ -3861,7 +3861,7 @@ def _fetch_run_tree(
         tuple(sorted(stages)),
         tuple(excluded),
         tuple(sorted(unmanifested_stages)),
-        tuple(sorted(name for name in unresolved if name not in manifest_recorded)),
+        tuple(sorted(name for name in unresolved if name not in expected)),
         tuple(sorted(serving_logs)),
         tuple(sorted(refused_logs)),
     )
@@ -3876,11 +3876,13 @@ def _resolve_unmanifested(
     """Check artifacts no stored manifest records against their stage's own envelopes.
 
     A stage killed before `finish()` leaves artifacts but no manifest. Each such
-    stage's manifest is derived from its envelopes and added to `expected`; the
-    stages that needed one are returned. An artifact still unrecorded, or whose
-    digest disagrees, is refused.
+    stage's manifest is derived from its envelopes, and the stages that needed
+    one are returned. A stored manifest entry wins over a derived one; `expected`
+    is only read. An artifact still unrecorded, or whose digest disagrees, is
+    refused.
     """
 
+    derived_digests: dict[str, str] = {}
     manifested_stage_names = {manifest["stage"] for manifest in manifests.values()}
     unmanifested_stages: set[str] = set()
     if not unresolved:
@@ -3897,9 +3899,9 @@ def _resolve_unmanifested(
                 continue
             unmanifested_stages.add(stage)
             for entry in derived["artifacts"]:
-                expected.setdefault(entry["relative_path"], entry["sha256"])
+                derived_digests.setdefault(entry["relative_path"], entry["sha256"])
     for relative, digest in unresolved.items():
-        recorded = expected.get(relative)
+        recorded = expected.get(relative, derived_digests.get(relative))
         if recorded is None:
             raise FetchRunRefusal(
                 f"{relative} arrived from the volume but no stage manifest -- stored "
