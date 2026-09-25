@@ -480,8 +480,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["churro-native"]["hold_acts"] == []
     # Churro-truncation's whole point is that a visibly cut but parseable
     # response is retained as it came. A recovery route or a hold here would
-    # re-ask or withhold it, which is the thing the scenario exists to refuse
-    # (principle 7: recovery recovers coverage, never content quality).
+    # re-ask or withhold it, which is the thing the scenario exists to refuse.
     assert by_name["churro-truncation"]["recover_acts"] == []
     assert by_name["churro-truncation"]["hold_acts"] == []
     assert [
@@ -679,8 +678,7 @@ def test_the_declared_stop_reason_is_the_length_signal_for_a_known_scenario(skel
     rows = skeleton["stop_reason"]
     assert rows == [
         {"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},
-        # Pass-scoped: Pass B completes and only the re-proof is cut off, the
-        # composition the independent audit of 2026-09-10 found undeclarable.
+        # Pass-scoped: Pass B completes and only the re-proof is cut off.
         {
             "scenario": "audit-reproof-cutoff",
             "act_key": "a1",

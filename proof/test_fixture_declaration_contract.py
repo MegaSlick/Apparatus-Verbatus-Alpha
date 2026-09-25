@@ -504,7 +504,7 @@ def test_no_attempt_is_declared_twice(skeleton):
 
 
 def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton, chairs, adapters):
-    """One reading per attempt (principle 5), stated where both halves exist.
+    """One reading per attempt, stated where both halves exist.
 
     A row carries the payload the stage records and, for a native adapter, the
     raw bytes that payload was parsed out of. When a scenario rewrote one and not
