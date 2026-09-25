@@ -1,9 +1,10 @@
 """The reader protocol: what actually looks at a dossier and reports a Lectio.
 
-A real serving manager (spec 04, behind vLLM, live-pod only) is a future
-implementation of this protocol. This chamber has no pod and no GPU, so the
-only implementation here is `FixtureReader`, and the protocol is the seam that
-lets a real reader replace it without `run.py`'s orchestration changing at all.
+A real serving manager (spec 04, behind vLLM, live-pod only) implements this
+protocol as `live_reader.VLLMReader`. `FixtureReader` below is this chamber's
+own implementation, for when there is no pod and no GPU; the protocol is the
+seam that lets either reader stand in without `run.py`'s orchestration
+changing at all.
 
 `pass_kind` names every pass explicitly. A boolean could not distinguish the
 production prior, the sampled control, nuda, and the production Perlectio.
@@ -55,7 +56,7 @@ from common.perlector_audit import (
 # The page-fallback reader must be at least as sensitive as the Designator's
 # conservation denominator. This literal mirrors `structure.SECONDARY_MARGIN`;
 # the unit test exercises the faint band between the primary and secondary
-# thresholds, where the circular fixture path used to invent a blank reading.
+# thresholds, where a page reading is most easily misclassified as blank.
 PAGE_FALLBACK_INK_MARGIN: Final = 2
 
 # The closed vocabulary of reading passes. Named here rather than left to the
@@ -65,10 +66,11 @@ PAGE_FALLBACK_INK_MARGIN: Final = 2
 # own text as the Pass-A draft and publish a `self_revision` of nothing at all.
 # A refusal is the only reading of that a record can carry.
 # `audit-reproof` joins at R5b, which adds the Pass-C span re-proof pass. It is
-# the one member the reader does *not* dispatch on: since that repair, the
-# re-proof is chosen by the delivered `audit_request`, and this membership only
-# decides that the pass is nameable and that its instrument had to travel with
-# it. The producer-literal pin in `test_reader.py` holds the set to exactly what
+# the one member the reader does *not* dispatch on: since the re-proof began
+# travelling as `audit_request`, it is chosen by the delivered request, and
+# this membership only decides that the pass is nameable and that its
+# instrument had to travel with it. The producer-literal pin in `test_reader.py`
+# holds the set to exactly what
 # `run.py` calls.
 PASS_KINDS: Final = frozenset(
     {"perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior", REPROOF_PASS_KIND}
@@ -347,9 +349,9 @@ class FixtureReader:
             # to the reserved whole-page fallback act. A key can drift or be
             # forged; the derived identity binds the page and rectangle.
             #
-            # Ahead of the re-proof branch, as it always was: a fallback act's
-            # emptiness is proved from delivered pixels, and a re-proof of one
-            # re-observes them rather than reciting a declared reading.
+            # Ahead of the re-proof branch: a fallback act's emptiness is
+            # proved from delivered pixels, and a re-proof of one re-observes
+            # them rather than reciting a declared reading.
             return self._observed_page_fallback_text(dossier, delivered_pixels)
         for act in self._fixture["act"]:
             if act["key"] == act_key:
@@ -422,10 +424,10 @@ class FixtureReader:
         otherwise silently exercise the no-change path instead.
 
         Reads the delivered request, not the dossier: the frozen semi-final is
-        the request's own field now, because it is part of the instrument
-        rather than part of what the act looked like to Pass B. The dossier
-        used to carry it spliced in beside a `dossier_digest` that did not
-        cover it -- a sealed digest describing bytes the object no longer had.
+        the request's own field, because it is part of the instrument rather
+        than part of what the act looked like to Pass B, and splicing it into
+        the dossier would leave a sealed `dossier_digest` describing bytes the
+        object did not have.
         """
         row = self._matching_row("audit_reproof", act_key)
         if row is not None:
@@ -584,10 +586,10 @@ class FixtureReader:
         A row may name one `pass_kind`, and then declares the unusual answer for
         that pass alone: `audit-reproof-cutoff` declares `length` for the
         re-proof only, so Pass B establishes a complete reading and the
-        re-examination of it is the call that fails. Without that, one row set
-        every pass's stop word at once, so a completed establishment followed by a
-        cut-off re-proof could not be declared. A row without `pass_kind` covers every pass,
-        exactly as before.
+        re-examination of it is the call that fails -- a completed
+        establishment followed by a cut-off re-proof, which one row covering
+        every pass at once could not declare. A row without `pass_kind` covers
+        every pass.
         """
 
         def _known_signal(row):

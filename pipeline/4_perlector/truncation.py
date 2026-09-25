@@ -22,15 +22,13 @@ sentence boundary produces clean-looking text. So `complete` requires a
 positive engine observation as well as three clean computed signals; with no
 engine observation at all the classification is `unknown`, which holds.
 
-That case is real rather than theoretical, and the old pipeline is where it
-was learned: its Chandra serving adapter discarded the OpenAI `finish_reason`
-entirely and preserved only `usage.completion_tokens`, so the old code had to
-derive truncation from `completion_tokens >= attempt_cap` instead
-(`remote/run_batch.py`, read through the window; no line carried). A serving
-path here whose adapter drops the stop-reason therefore holds every reading
-until it declares a second engine signal of its own -- which is the correct
-outcome, and the reason the rule is written as "an engine observation" rather
-than "a stop-reason".
+That case is real rather than theoretical: a serving adapter can drop the
+engine's stop-reason and expose only a token count, with no way to derive a
+positive engine observation from that alone. A serving path here whose adapter
+drops the stop-reason therefore holds every reading at `unknown` until it
+declares a second engine signal of its own -- which is the correct outcome,
+and the reason the rule is written as "an engine observation" rather than "a
+stop-reason".
 """
 
 from __future__ import annotations
@@ -108,14 +106,13 @@ class TruncationRecord(TypedDict):
 
 
 def _stop_reason_signal(stop_reason: str | None) -> str | None:
-    """The one declared, fixture-only signal. `None` means nothing was declared.
+    """The one declared signal. `None` means nothing was declared.
 
-    This fixture chamber only ever declares `"stop"` or `"length"`, but the
-    reader protocol this stands in for (`pipeline/4_perlector/reader.py`) is the
-    seam a real serving engine occupies later, and a real engine's own
-    finish-reason string is untrusted input this module has not seen before --
-    refused by name rather than let through as an unhandled crash, exactly as
-    every other boundary in this stage refuses rather than guesses.
+    This module only ever sees `"stop"` or `"length"`: the fixture reader
+    declares them directly, and `live_reader.py::_mapped_stop_reason` maps a
+    real engine's own finish-reason word into the same two before it reaches
+    here, refusing anything it does not recognize rather than letting an
+    unmapped word through.
     """
     if stop_reason is None:
         return None

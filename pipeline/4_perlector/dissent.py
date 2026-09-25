@@ -48,9 +48,12 @@ from common.stage import WITNESS_READING_OUTCOMES
 # the square. Measured in this chamber: a 6,800-character reading against an
 # equally long, scattered-difference report is 46.2M pairs, comfortably under
 # the bound below, and took 127 seconds. This constant is kept as a cheap
-# prefilter for a witness stuck in a repetition loop until its token cap, but
-# it no longer bounds wall-clock time on its own -- `MAX_COMPARISON_SECONDS`
-# below does that.
+# prefilter for a witness stuck in a repetition loop until its token cap --
+# the witness stage puts no ceiling on report length, and Churro's own
+# 24,000-token cap can run well over a hundred thousand characters -- but it
+# no longer bounds wall-clock time on its own -- `MAX_COMPARISON_SECONDS`
+# below does that. Both numbers are untuned; alpha testing over real reports
+# would tune them.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
 
 # The real backstop. `SequenceMatcher.get_opcodes()` is pure Python, so a
@@ -174,10 +177,12 @@ def is_comparable(record: dict[str, Any]) -> bool:
     never the raw `reported`): an anchored, markup-stripped page slice for a
     page witness, or `common/alignment.py::bracket_marker_view` for an
     act-scoped one. A chair with one rejoins the instrument through that safe
-    view; one without -- a page witness whose alignment failed, or a future
-    chair whose notation this view-building step does not yet handle -- stays
+    view; one without -- a page witness whose alignment failed -- stays
     honestly unknown with its reason recorded rather than folded into a
-    coverage count.
+    coverage count. An act-scoped chair always gets the bracket view
+    (`run.py::comparison_views`), so a future chair whose notation is not
+    brackets would rejoin as comparable anyway, its own markers surviving as
+    false disagreement; nothing here reads a notation field to catch that.
     """
     payload = record.get("payload", {})
     capabilities = payload.get("format_capabilities", {})
