@@ -381,6 +381,17 @@ the cluster report includes every such outcome. A corrupt member therefore remai
 visibly in its cluster rather than disappearing from the cluster record while
 surviving only in the separate refusal report.
 
+**An unconfirmed re-shoot is refused.** Only a corpus-register membership tells later
+stages that captures show one physical page; without one, each capture becomes its own
+act and one physical act is exported once per capture, unlinked. So the Door refuses
+the whole submission (`unconfirmed-re-shoot`, `require_confirmed_re_shoots`) when any
+member of the cluster report is absent from every membership in the run's register
+snapshot, including a run created without `--corpus-register`. The refusal fires after
+the cluster report is sealed and before the Door's seal, so no page is dropped: the
+operator confirms the cluster into the register (or removes the triage link) and
+resubmits. A confirmed re-shoot is admitted; the Perlector then holds its acts, because
+no cross-capture read is built yet (`pipeline/4_perlector/CONTRACT.md`).
+
 **Not yet wired, and whose job it is.** `door.content_aware_shards` plans seams
 that fall at opening boundaries and never inside a split pair or a cluster, and
 refuses by name when the page cap leaves no legal seam. Nothing calls it: nothing

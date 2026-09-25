@@ -71,7 +71,11 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
-from common.corpus_register import read_register_file  # noqa: E402
+from common.corpus_register import (  # noqa: E402
+    membership_heads,
+    read_register_file,
+    read_snapshot,
+)
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
@@ -1509,6 +1513,40 @@ def require_no_duplicate_sources(tree: RunTree, duplicate_report: str | None) ->
     )
 
 
+def require_confirmed_re_shoots(context: StageContext, cluster_report: str | None) -> None:
+    """Refuse a submission holding a triage re-shoot the corpus register does not confirm.
+
+    Only a register membership tells later stages that two captures show one page;
+    without it each capture becomes its own act, and one physical act is read and
+    exported once per capture with nothing linking them. The submission is refused
+    whole before the seal, so no page is lost: confirm the cluster into the register
+    (or remove the triage link) and resubmit.
+    """
+    if cluster_report is None:
+        return
+    clusters = json.loads(context.tree.read_bytes(cluster_report))["payload"]["clusters"]
+    confirmed = {
+        capture
+        for _digest, members in membership_heads(read_snapshot(context.tree, context.run)).values()
+        for capture in members
+    }
+    unconfirmed = sorted(
+        cluster["cluster_id"]
+        for cluster in clusters
+        if any(member["source_frame_sha256"] not in confirmed for member in cluster["members"])
+    )
+    if unconfirmed:
+        raise ContractError(
+            f"unconfirmed-re-shoot: triage links re-shoot cluster(s) {', '.join(unconfirmed)}, "
+            "but the corpus register this run was created with records no membership for "
+            "every capture in them, so each capture would be read and exported as a separate "
+            "act. Nothing is sealed and no page is dropped: the submission is refused whole, "
+            f"and the sealed cluster report at {cluster_report} names each member. Confirm the "
+            "cluster into the corpus register and pass --corpus-register, or remove the "
+            "triage link if the captures are not one page, then resubmit"
+        )
+
+
 def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | None) -> None:
     """An empty or wholly refused input set is a loud failure.
 
@@ -1672,10 +1710,11 @@ def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int
     """
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
-    publish_cluster_report(context)
+    cluster_report = publish_cluster_report(context)
     _announce_refusal_report(tree, refusal_report)
     _announce_duplicate_report(tree, duplicate_report)
     require_no_duplicate_sources(tree, duplicate_report)
+    require_confirmed_re_shoots(context, cluster_report)
     require_some_admitted(admitted, tree, refusal_report)
     context.seal_boundary()
     context.finish(DOOR)
