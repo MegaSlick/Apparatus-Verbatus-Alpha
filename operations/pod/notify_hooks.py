@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Final, Sequence
 
-from common.credentials import looks_like_credential_field, looks_like_credential_value
+from common.credentials import notification_carries_credential
 
 ROOT: Final = Path(__file__).resolve().parents[2]
 NOTIFY_SCRIPT: Final = ROOT / "operations" / "notify" / "notify.sh"
@@ -133,9 +133,7 @@ def _unsafe_reason(message: str) -> str | None:
         return "the message names a URL, which this seam never sends"
     if _HOST_PATH_PATTERN.search(message):
         return "the message names a URL, which this seam never sends"
-    if looks_like_credential_value(message) or any(
-        looks_like_credential_field(word) for word in message.split()
-    ):
+    if notification_carries_credential(message):
         return "the message looks like it carries a credential and was refused"
     return None
 

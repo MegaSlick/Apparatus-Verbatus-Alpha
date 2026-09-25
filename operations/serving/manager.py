@@ -32,7 +32,7 @@ from common.chairs.models import (
     VerifiedSnapshot,
     is_sha256,
 )
-from common.credentials import looks_like_credential_field, looks_like_credential_value
+from common.credentials import log_word_carries_credential, looks_like_credential_field
 
 from .config import (
     FixtureProfile,
@@ -1648,7 +1648,7 @@ def _redacted(text: str) -> str:
         return _redact_value(match)
 
     def redact_word(match: re.Match[str]) -> str:
-        if looks_like_credential_value(match.group(0), files_and_hosts_pass=True):
+        if log_word_carries_credential(match.group(0)):
             return _REDACTED
         return match.group(0)
 

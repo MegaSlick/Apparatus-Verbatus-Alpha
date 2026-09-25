@@ -1,4 +1,9 @@
-"""One reading of "this looks like a secret", shared by every boundary that screens for one."""
+"""One reading of "this looks like a secret", shared by every boundary that screens for one.
+
+Each caller's check is its pre-change rule OR the new piece rule, so it catches everything
+it caught before. Accepted risk: the argv refusal and log redaction let a run ending in a
+known file extension or domain pass, so "<opaque>.json" passes there.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,10 @@ PROVIDER_ENV_PREFIXES: Final = ("RUNPOD_", "AWS_", "HF_", "HUGGINGFACE_")
 CREDENTIAL_VALUE_PREFIXES: Final = ("sk-", "hf_", "ghp_", "gho_", "github_pat_", "AKIA", "xox")
 # Path, URL, query and quoting punctuation separate pieces; a secret can sit in any one of them.
 CREDENTIAL_PIECE: Final = re.compile(r"""[^\s/\\:@=?&,;"'()\[\]{}<>]+""")
+# A URL's user-info password and its query values: never exempted as a file or host.
+_URL_SECRET: Final = re.compile(
+    r"://[^/:@\s]*:(?P<password>[^/@\s]+)@|[?&][^=&#\s]*=(?P<query>[^&#\s]*)"
+)
 _FILE_OR_HOST_SUFFIXES: Final = frozenset(
     "bin bz2 com csv dev gguf gz io internal invalid jpg json jsonl local log md net org pdf "
     "png py safetensors sh tar tif tiff toml txt xz yaml yml zip zst".split()
@@ -25,13 +34,10 @@ def looks_like_credential_env(name: str) -> bool:
     return name.startswith(PROVIDER_ENV_PREFIXES) or looks_like_credential_field(name)
 
 
+# --- the new rule -----------------------------------------------------------------------
+
+
 def _opaque(run: str, files_and_hosts_pass: bool) -> bool:
-    """20+ characters mixing letters and digits, not lowercase hex.
-
-    With ``files_and_hosts_pass``, a run ending in a known file extension or domain suffix
-    is not one: for the argv refusal and log redaction, where a false positive costs a run.
-    """
-
     if len(run) < 20 or "\\" in run:
         return False
     if files_and_hosts_pass and run.rsplit(".", 1)[-1].lower() in _FILE_OR_HOST_SUFFIXES:
@@ -51,25 +57,129 @@ def is_credential_piece(piece: str, *, files_and_hosts_pass: bool = False) -> bo
     return piece.count(".") != 1 and _opaque(piece, files_and_hosts_pass)
 
 
-def credential_piece(text: str, *, files_and_hosts_pass: bool = False) -> str | None:
-    """The first whole word, or piece of one, that reads as a secret."""
+def _url_secret(text: str) -> str | None:
+    for match in _URL_SECRET.finditer(text):
+        secret = credential_piece(match.group("password") or match.group("query") or "")
+        if secret is not None:
+            return secret
+    return None
 
+
+def credential_piece(text: str, *, files_and_hosts_pass: bool = False) -> str | None:
+    """The first URL secret, whole word, or piece of a word that reads as a secret."""
+
+    if files_and_hosts_pass and (secret := _url_secret(text)) is not None:
+        return secret
     for word in text.split():
         stripped = word.strip("\"'(),;:")
         if _opaque(stripped, files_and_hosts_pass):
             return stripped
-        piece = next(
-            (
-                p
-                for p in CREDENTIAL_PIECE.findall(word)
-                if is_credential_piece(p, files_and_hosts_pass=files_and_hosts_pass)
-            ),
-            None,
-        )
-        if piece is not None:
-            return piece
+        for piece in CREDENTIAL_PIECE.findall(word):
+            if is_credential_piece(piece, files_and_hosts_pass=files_and_hosts_pass):
+                return piece
     return None
 
 
 def looks_like_credential_value(text: str, *, files_and_hosts_pass: bool = False) -> bool:
     return credential_piece(text, files_and_hosts_pass=files_and_hosts_pass) is not None
+
+
+def _new_argv_piece(value: str) -> str | None:
+    """A bare value gets the full shape test; a path segment only a key prefix or a dotted token."""
+
+    if not any(character in "/\\.:@" for character in value) and is_credential_piece(value):
+        return value
+    if (secret := _url_secret(value)) is not None:
+        return secret
+    return next(
+        (
+            piece
+            for piece in CREDENTIAL_PIECE.findall(value)
+            if piece.startswith(CREDENTIAL_VALUE_PREFIXES)
+            or (piece.count(".") >= 2 and is_credential_piece(piece, files_and_hosts_pass=True))
+        ),
+        None,
+    )
+
+
+# --- each caller's pre-change rule, kept verbatim ---------------------------------------
+
+_LEGACY_SAFE_CHARACTERS: Final = frozenset(" /\\.:@")
+
+
+def _legacy_models_value(value: str) -> bool:
+    if value.startswith(CREDENTIAL_VALUE_PREFIXES):
+        return True
+    if len(value) < 20 or any(character in _LEGACY_SAFE_CHARACTERS for character in value):
+        return False
+    if all(character in "0123456789abcdef" for character in value):
+        return False
+    return any(character.isalpha() for character in value) and any(
+        character.isdigit() for character in value
+    )
+
+
+_LEGACY_NOTIFY_MARKERS: Final = (*CREDENTIAL_MARKERS, "apikey")
+_LEGACY_NOTIFY_SAFE_CHARACTERS: Final = frozenset(" \t\\,;()[]{}'\"")
+
+
+def _legacy_notify_word(word: str) -> bool:
+    normalized = word.lower().replace("-", "_")
+    if any(marker in normalized for marker in _LEGACY_NOTIFY_MARKERS):
+        return True
+    if word.startswith(CREDENTIAL_VALUE_PREFIXES):
+        return True
+    if len(word) < 20 or any(character in _LEGACY_NOTIFY_SAFE_CHARACTERS for character in word):
+        return False
+    if all(character in "0123456789abcdef" for character in word):
+        return False
+    return any(character.isalpha() for character in word) and any(
+        character.isdigit() for character in word
+    )
+
+
+def _legacy_notify_rule(message: str) -> bool:
+    for word in message.split():
+        stripped = word.strip("\"'(),;:")
+        if stripped and _legacy_notify_word(stripped):
+            return True
+    return False
+
+
+def _legacy_fixture_rule(value: str) -> bool:
+    if _legacy_models_value(value):
+        return True
+    return any(
+        stripped and _legacy_models_value(stripped)
+        for stripped in (word.strip("\"'(),;:") for word in value.split())
+    )
+
+
+_LEGACY_TOKEN_PARTS: Final = re.compile(r"""[^\s"'{}\[\],;:=]+""")
+
+
+def _legacy_redaction_rule(token: str) -> bool:
+    return _legacy_models_value(token) or any(
+        _legacy_models_value(part) for part in _LEGACY_TOKEN_PARTS.findall(token)
+    )
+
+
+# --- what each caller asks --------------------------------------------------------------
+
+
+def notification_carries_credential(message: str) -> bool:
+    return _legacy_notify_rule(message) or looks_like_credential_value(message)
+
+
+def fixture_value_carries_credential(value: str) -> bool:
+    return _legacy_fixture_rule(value) or looks_like_credential_value(value)
+
+
+def argv_credential_piece(value: str) -> str | None:
+    return value if _legacy_models_value(value) else _new_argv_piece(value)
+
+
+def log_word_carries_credential(word: str) -> bool:
+    return _legacy_redaction_rule(word) or looks_like_credential_value(
+        word, files_and_hosts_pass=True
+    )

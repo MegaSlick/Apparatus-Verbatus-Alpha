@@ -91,7 +91,6 @@ import argparse
 import json
 import math
 import os
-import re
 import secrets
 import stat
 import sys
@@ -118,10 +117,8 @@ from common.chairs.registry import (
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
 from common.credentials import (
-    CREDENTIAL_PIECE,
     CREDENTIAL_VALUE_PREFIXES,
-    credential_piece,
-    is_credential_piece,
+    argv_credential_piece,
     looks_like_credential_field,
 )
 from common.witness_context import validate_witness_context_configuration
@@ -867,41 +864,12 @@ def _require_launch_token_named(
         )
 
 
-# A URL's user-info password and its query values; run folders carry neither `@` nor `?`.
-_URL_SECRET = re.compile(r"://[^/:@\s]*:(?P<password>[^/@\s]+)@|[?&][^=&#\s]*=(?P<query>[^&#\s]*)")
-
-
-def _argv_credential_piece(value: str) -> str | None:
-    """A bare value gets the full shape test; a path segment only a key prefix or a dotted token.
-
-    Run folders and temp directories are long mixed-alphanumeric segments too.
-    """
-
-    if not any(character in "/\\.:@" for character in value) and is_credential_piece(value):
-        return value
-    for match in _URL_SECRET.finditer(value):
-        secret = credential_piece(
-            match.group("password") or match.group("query") or "", files_and_hosts_pass=True
-        )
-        if secret is not None:
-            return secret
-    return next(
-        (
-            piece
-            for piece in CREDENTIAL_PIECE.findall(value)
-            if piece.startswith(CREDENTIAL_VALUE_PREFIXES)
-            or (piece.count(".") >= 2 and is_credential_piece(piece, files_and_hosts_pass=True))
-        ),
-        None,
-    )
-
-
 def _credential_shape(value: str) -> str | None:
     """Say what made the value look like a secret, without repeating any of it."""
 
     if looks_like_credential_field(value):
         return "it reads as a secret's own name"
-    piece = _argv_credential_piece(value)
+    piece = argv_credential_piece(value)
     if piece is None:
         return None
     if piece.startswith(CREDENTIAL_VALUE_PREFIXES):
@@ -914,7 +882,7 @@ def refuse_credential_looking_argv(argv: Sequence[str]) -> None:
 
     Two independent checks: ``looks_like_credential_field`` asks whether the
     *name* implied by the value looks like a secret's name (a marker word);
-    ``_argv_credential_piece`` asks whether the value, or a path segment in it, is *shaped* like
+    ``argv_credential_piece`` asks whether the value, or a path segment in it, is *shaped* like
     an opaque token, regardless of what it is named. Neither is a proof --
     a value can be a real secret without either marker, and this refusal cannot
     see into ``--transfer-target-factory``'s runtime capability at all.
