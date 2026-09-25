@@ -21,6 +21,7 @@ from pathlib import Path
 
 from common.background import (
     PRIMARY_MARGIN,
+    SECONDARY_MARGIN,
     infer_background_evidence,
     load_background_config,
     resolve_background_policy,
@@ -79,16 +80,9 @@ def _parameter_default_name(path: Path, function: str, parameter: str) -> str:
 
 def test_the_recensor_audit_never_calls_ink_what_the_designator_dismissed():
     """A one-sided retune must fail at the shared boundary, not inside a stage."""
-    designator_margin = _literal_constant(
-        ROOT / "pipeline" / "2_designator" / "structure.py", "SECONDARY_MARGIN"
-    )
     recensor_contrast = _literal_constant(
         ROOT / "common" / "residual_ink.py",
         "MINIMUM_CONTRAST_BELOW_BACKGROUND",
-    )
-    fallback_reader_margin = _literal_constant(
-        ROOT / "pipeline" / "4_perlector" / "reader.py",
-        "PAGE_FALLBACK_INK_MARGIN",
     )
     reconcile_margin_name = _parameter_default_name(
         ROOT / "pipeline" / "2_designator" / "conservation.py",
@@ -96,8 +90,7 @@ def test_the_recensor_audit_never_calls_ink_what_the_designator_dismissed():
         "margin",
     )
     assert reconcile_margin_name == "SECONDARY_MARGIN"
-    assert fallback_reader_margin == designator_margin
-    assert recensor_contrast >= designator_margin
+    assert recensor_contrast >= SECONDARY_MARGIN
 
 
 def test_the_sealed_ink_bound_still_sits_at_the_level_it_was_measured_at():
@@ -192,7 +185,7 @@ def _ink_at(rows: list[bytearray], threshold: int) -> set[tuple[int, int]]:
 def test_the_containment_is_not_vacuous_on_a_photographed_page():
     """One background, three margins, and three ink sets that actually nest.
 
-    The first test in this file pins `recensor_contrast >= designator_margin` as
+    The first test in this file pins `recensor_contrast >= SECONDARY_MARGIN` as
     two source literals. That inequality orders two *thresholds* only if both are
     subtracted from the same background, and on a photographed page they were
     not: the Designator inferred 210 here and the audit inferred 5, whose 40-level
@@ -224,13 +217,10 @@ def test_the_containment_is_not_vacuous_on_a_photographed_page():
     assert evidence["source"] == "inferred-interior-mode"
     assert evidence["ink_margin"] == 68
 
-    secondary_margin = _literal_constant(
-        ROOT / "pipeline" / "2_designator" / "structure.py", "SECONDARY_MARGIN"
-    )
     background = evidence["background"]
     primary = _ink_at(rows, background - evidence["ink_margin"])
     audited = _ink_at(rows, background - MINIMUM_CONTRAST_BELOW_BACKGROUND)
-    reconciled = _ink_at(rows, background - secondary_margin)
+    reconciled = _ink_at(rows, background - SECONDARY_MARGIN)
 
     # Non-vacuous: the audit's set is not empty, which is the whole difference.
     assert len(audited) == 20_850

@@ -44,6 +44,7 @@ from typing import Any, Final, Protocol, TypedDict
 
 import annotations
 
+from common.background import SECONDARY_MARGIN
 from common.contracts.errors import ContractError
 from common.contracts.identities import act_id as derive_act_id
 from common.imaging import grayscale_rows
@@ -52,12 +53,6 @@ from common.perlector_audit import (
     reproof_response_from_text,
     validate_audit_request,
 )
-
-# The page-fallback reader must be at least as sensitive as the Designator's
-# conservation denominator. This literal mirrors `structure.SECONDARY_MARGIN`;
-# the unit test exercises the faint band between the primary and secondary
-# thresholds, where a page reading is most easily misclassified as blank.
-PAGE_FALLBACK_INK_MARGIN: Final = 2
 
 # The closed vocabulary of reading passes. Named here rather than left to the
 # caller's string, because every value outside it fails *silently and in the
@@ -490,11 +485,11 @@ class FixtureReader:
             )
 
         background = self._inferred_background(page_render_images[0])
-        threshold = background - PAGE_FALLBACK_INK_MARGIN
+        threshold = background - SECONDARY_MARGIN
         if threshold < 0:
             raise ContractError(
                 f"the fixture Perlector cannot prove page-fallback blankness from background "
-                f"{background} at its {PAGE_FALLBACK_INK_MARGIN}-point ink margin"
+                f"{background} at its {SECONDARY_MARGIN}-point ink margin"
             )
         for ordinal, image in enumerate(region_images):
             _, _, rows = self._decoded_rows(image, description=f"crop {ordinal}")
@@ -503,7 +498,7 @@ class FixtureReader:
                 raise ContractError(
                     "the fixture Perlector cannot invent a reading for ink: "
                     f"page-fallback crop {ordinal} contains {ink_pixels} pixel(s) at least "
-                    f"{PAGE_FALLBACK_INK_MARGIN} levels below the inferred page background "
+                    f"{SECONDARY_MARGIN} levels below the inferred page background "
                     f"{background}"
                 )
         return ""

@@ -39,6 +39,12 @@ from common.contracts.errors import ContractError
 # literal against the sealed `max_ink_bp` measured at this level.
 PRIMARY_MARGIN: Final = 20
 
+# Deliberately not derived or configured: a fixed 2 below background is
+# smaller than any derived margin, so the Designator's secondary scan and
+# conservation, and the Perlector's page-fallback reader, are strictly more
+# sensitive than the primary scan on every page, never the reverse.
+SECONDARY_MARGIN: Final = 2
+
 # The denominator of every basis-point fraction this module is handed. The
 # sealed policy states its fractions in the same basis points
 # `config/designator_grouping.toml` uses everywhere else; spelling the
@@ -231,7 +237,6 @@ def _dark_distribution(
         # `translate`. The histogram loop above iterates any sequence of ints,
         # so a caller handing this module a list-of-lists page gets that far and
         # then dies with a message naming neither the scanline nor the reason.
-        # `conservation._unit_ink_runs` guards the same assumption the same way.
         if not isinstance(row, (bytes, bytearray)):
             raise ContractError(f"scanline {y} is not grayscale bytes")
         interior_dark += row[band_x : width - band_x].translate(table).count(1)
@@ -463,7 +468,7 @@ def infer_background(
 
 
 #: Names this policy refuses wherever they appear: `PRIMARY_MARGIN` and
-#: `structure.SECONDARY_MARGIN`, absolute 8-bit offsets an AST pin in
+#: `SECONDARY_MARGIN`, absolute 8-bit offsets an AST pin in
 #: `common/test_designator_recensor_ink_calibration.py` reads as source
 #: literals, which a per-run config value would make unenforceable statically.
 FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
