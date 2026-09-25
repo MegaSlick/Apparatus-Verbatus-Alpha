@@ -92,6 +92,11 @@ SUBMISSION_REFUSAL_REASONS = frozenset(
     }
 )
 
+
+class SubmissionRefusal(CorpusRefusal):
+    reasons = SUBMISSION_REFUSAL_REASONS
+
+
 DEFAULT_MAX_PAGES_PER_SHARD = 1000
 
 _IMAGE_SUFFIX = ".jpg"
@@ -143,19 +148,19 @@ def refuse_non_image_files(folder: Path) -> None:
         for dirname in dirnames:
             candidate = root_path / dirname
             if candidate.is_symlink():
-                raise CorpusRefusal(
+                raise SubmissionRefusal(
                     f"unexpected-file-in-submission-folder: {candidate} is a symlinked "
                     "directory, which a submission folder may never carry"
                 )
         for filename in filenames:
             candidate = root_path / filename
             if candidate.is_symlink():
-                raise CorpusRefusal(
+                raise SubmissionRefusal(
                     f"unexpected-file-in-submission-folder: {candidate} is a symlink, "
                     "which a submission folder may never carry"
                 )
             if candidate.suffix.lower() != _IMAGE_SUFFIX:
-                raise CorpusRefusal(
+                raise SubmissionRefusal(
                     f"unexpected-file-in-submission-folder: {candidate} is not a "
                     f"{_IMAGE_SUFFIX!r} image; the submission folder carries images only"
                 )
@@ -192,7 +197,7 @@ def partition_into_shards(
     list, not a bin-packing search — exact for page counts far below the cap.
     """
     if max_pages_per_shard <= 0:
-        raise CorpusRefusal("malformed-record: max_pages_per_shard must be a positive integer")
+        raise SubmissionRefusal("malformed-record: max_pages_per_shard must be a positive integer")
     ordered = sorted(admitted, key=lambda pair: _sort_key(pair[0]))
     shards: list[list[tuple[dict[str, Any], FetchedPage]]] = []
     group_start = 0
@@ -246,8 +251,9 @@ def _admit_pages(
         try:
             refuse_held_out_page(holdout, identifier, page["splits_present"])
         except CorpusRefusal as error:
-            reason = str(error).split(":", 1)[0]
-            refusals.append({"identifier": identifier, "reason": reason, "detail": str(error)})
+            refusals.append(
+                {"identifier": identifier, "reason": error.reason, "detail": str(error)}
+            )
             continue
 
         unsafe = _unsafe_page_segment(page)
@@ -293,7 +299,7 @@ def _admit_pages(
             continue
 
         if not is_sha256(fetched.response_sha256):
-            raise CorpusRefusal(
+            raise SubmissionRefusal(
                 f"malformed-record: fetched page {identifier!r} carries a response_sha256 "
                 "that is not a lowercase sha256 hex digest"
             )
@@ -361,7 +367,7 @@ def _sidecar_for_page(
         record_id = record["record_id"]
         row = rows_by_id.get(record_id)
         if row is None:
-            raise CorpusRefusal(
+            raise SubmissionRefusal(
                 f"record-not-in-row-snapshot: page {page['identifier']!r} record "
                 f"{record_id!r} is not present in the row snapshot the plan was built from"
             )
@@ -423,7 +429,7 @@ def _link_page_bytes(cache_path: Path, target: Path) -> None:
         existing = digest_bytes(target.read_bytes())
         expected = digest_bytes(Path(cache_path).read_bytes())
         if existing != expected:
-            raise CorpusRefusal(
+            raise SubmissionRefusal(
                 f"malformed-record: {target} already exists with different content than "
                 f"{cache_path}; a submission tree is never overwritten"
             ) from None
@@ -481,14 +487,14 @@ def build_submission(
     snapshot = validate_snapshot(snapshot)
     holdout = validate_holdout(holdout)
     if plan["source_row_snapshot_self_hash"] != snapshot["self_hash"]:
-        raise CorpusRefusal(
+        raise SubmissionRefusal(
             "mismatched-row-snapshot: the fetch plan was built from row snapshot "
             f"{plan['source_row_snapshot_self_hash']!r}, not the supplied snapshot "
             f"{snapshot['self_hash']!r} — a plan and a snapshot must be bound to the "
             "same row snapshot"
         )
     if holdout["source_row_snapshot_self_hash"] != snapshot["self_hash"]:
-        raise CorpusRefusal(
+        raise SubmissionRefusal(
             "mismatched-row-snapshot: the hold-out ledger was built from row snapshot "
             f"{holdout['source_row_snapshot_self_hash']!r}, not the supplied snapshot "
             f"{snapshot['self_hash']!r} — a ledger derived from a different snapshot cannot "
@@ -520,7 +526,7 @@ def build_submission(
         or abs_submissions_root in abs_sidecars_root.parents
     )
     if nested_by_identity or nested_by_spelling:
-        raise CorpusRefusal(
+        raise SubmissionRefusal(
             "malformed-record: the sidecars root must not be the submissions root or nest "
             "inside it — SPEC.md 5.1 requires sidecars outside the submission folder"
         )

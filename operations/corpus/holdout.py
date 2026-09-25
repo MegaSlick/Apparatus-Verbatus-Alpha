@@ -53,6 +53,11 @@ HOLDOUT_REFUSAL_REASONS = frozenset(
     }
 )
 
+
+class HoldoutRefusal(CorpusRefusal):
+    reasons = HOLDOUT_REFUSAL_REASONS
+
+
 _ENTRY_FIELDS = frozenset({"identifier", "record_ids"})
 _TOP_FIELDS = frozenset(
     {
@@ -69,7 +74,7 @@ _TOP_FIELDS = frozenset(
 
 def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != fields:
-        raise CorpusRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
+        raise HoldoutRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
     return value
 
 
@@ -107,11 +112,11 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
     """Refuse a ledger that is not exactly `recordgold-holdout.v1`, closed and self-consistent."""
     holdout = _closed(holdout, _TOP_FIELDS, "hold-out ledger")
     if holdout["schema"] != SCHEMA:
-        raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {holdout['schema']!r}")
+        raise HoldoutRefusal(f"wrong-schema: expected {SCHEMA!r}, got {holdout['schema']!r}")
     if holdout["corpus_id"] != CORPUS_ID:
-        raise CorpusRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {holdout['corpus_id']!r}")
+        raise HoldoutRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {holdout['corpus_id']!r}")
     if not is_sha256(holdout["source_row_snapshot_self_hash"]):
-        raise CorpusRefusal(
+        raise HoldoutRefusal(
             "malformed-record: source_row_snapshot_self_hash must be a lowercase sha256 hex digest"
         )
 
@@ -119,9 +124,9 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
     if not isinstance(identifiers, list) or not all(
         isinstance(identifier, str) for identifier in identifiers
     ):
-        raise CorpusRefusal("malformed-record: held_identifiers must be a list of strings")
+        raise HoldoutRefusal("malformed-record: held_identifiers must be a list of strings")
     if identifiers != sorted(set(identifiers)):
-        raise CorpusRefusal(
+        raise HoldoutRefusal(
             "malformed-record: held_identifiers must be a sorted, deduplicated list"
         )
 
@@ -130,7 +135,7 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
         not isinstance(entries, list)
         or [entry.get("identifier") for entry in entries if isinstance(entry, dict)] != identifiers
     ):
-        raise CorpusRefusal(
+        raise HoldoutRefusal(
             "malformed-record: entries must list held_identifiers, in the same order"
         )
 
@@ -143,24 +148,24 @@ def validate_holdout(holdout: Any) -> dict[str, Any]:
             or not record_ids
             or not all(isinstance(record_id, str) for record_id in record_ids)
         ):
-            raise CorpusRefusal(
+            raise HoldoutRefusal(
                 f"malformed-record: entry {entry['identifier']!r} record_ids must be a "
                 "non-empty list of strings"
             )
         if record_ids != sorted(set(record_ids)):
-            raise CorpusRefusal(
+            raise HoldoutRefusal(
                 f"malformed-record: entry {entry['identifier']!r} record_ids must be a "
                 "sorted, deduplicated, non-empty list"
             )
         seen_record_ids.update(record_ids)
 
     if holdout["held_record_ids"] != sorted(seen_record_ids):
-        raise CorpusRefusal(
+        raise HoldoutRefusal(
             "malformed-record: held_record_ids does not match the union of every entry's record_ids"
         )
 
     if not verify_self_hash(holdout):
-        raise CorpusRefusal(
+        raise HoldoutRefusal(
             "self-hash-mismatch: hold-out ledger self_hash does not verify against its own content"
         )
     return holdout
@@ -179,12 +184,12 @@ def refuse_held_out_page(
         return
     other_splits = sorted(set(splits_present) - {HELD_SPLIT})
     if other_splits:
-        raise CorpusRefusal(
+        raise HoldoutRefusal(
             f"cross-split-page: identifier {identifier!r} is held for the {HELD_SPLIT!r} "
             f"split but also carries {other_splits} — it cannot be used for calibration "
             "without exposing held-out material"
         )
-    raise CorpusRefusal(
+    raise HoldoutRefusal(
         f"holdout-page: identifier {identifier!r} is held for the {HELD_SPLIT!r} split"
     )
 

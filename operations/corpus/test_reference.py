@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
 
 from common.contracts.canonical import digest_bytes
@@ -264,18 +261,8 @@ def test_validate_refuses_a_resealed_source_carrying_a_slash():
         validate_reference_page(tampered)
 
 
-def test_every_declared_reference_refusal_reason_is_exercised_here():
-    """`exercised` is read from this file's own `pytest.raises` calls, not hand-typed.
-
-    A hand-typed set can drift from the tests it claims to describe: adding a
-    phantom reason, or deleting the test that exercises a real one, both leave a
-    hardcoded set green. Deriving it from the anchored `match="^reason:"`
-    patterns this file actually asserts makes the coverage check track the
-    tests themselves.
-    """
-    source = Path(__file__).read_text(encoding="utf-8")
-    exercised = set(re.findall(r'pytest\.raises\(CorpusRefusal, match="\^([a-z0-9-]+):"\)', source))
-    assert exercised == REFERENCE_REFUSAL_REASONS
+def test_every_declared_reference_refusal_reason_is_exercised_here(exercised_reasons):
+    assert exercised_reasons == REFERENCE_REFUSAL_REASONS
 
 
 # --- The pac_ identity binds this page and this record_id, not the box ---------

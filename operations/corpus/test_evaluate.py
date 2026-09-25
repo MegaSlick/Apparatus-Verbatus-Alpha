@@ -14,7 +14,6 @@ matched -- each have their own case here, and every reason in
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 import tomllib
@@ -887,9 +886,6 @@ def test_the_command_line_scores_a_sealed_run_and_prints_its_summary(sealed_run,
     assert "fixture result" in capsys.readouterr().out
 
 
-def test_every_declared_evaluation_reason_is_exercised_here():
-    """Derived from this file's own anchored assertions, never hand-typed."""
-    source = Path(__file__).read_text(encoding="utf-8")
-    exercised = set(re.findall(r'pytest\.raises\(CorpusRefusal, match="\^([a-z0-9-]+):"\)', source))
-    missing = EVALUATION_REFUSAL_REASONS - exercised
+def test_every_declared_evaluation_reason_is_exercised_here(exercised_reasons):
+    missing = EVALUATION_REFUSAL_REASONS - exercised_reasons
     assert missing == set(), f"declared but never shown to fire: {sorted(missing)}"

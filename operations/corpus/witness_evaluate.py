@@ -49,6 +49,25 @@ DESCRIPTION = "Read-only per-witness RecordGold scoring over sealed act attachme
 SCHEMA = "recordgold-witness-evaluation.v1"
 CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 
+WITNESS_EVALUATION_REFUSAL_REASONS = frozenset(
+    {
+        "malformed-record",
+        "missing-input-file",
+        "output-exists",
+        "output-in-run-tree",
+        "reference-ledger-invalid",
+        "reference-page-collision",
+        "reference-page-invalid",
+        "reference-page-not-in-ledger",
+        "reference-page-not-in-run",
+        "self-hash-mismatch",
+    }
+)
+
+
+class WitnessRefusal(CorpusRefusal):
+    reasons = WITNESS_EVALUATION_REFUSAL_REASONS
+
 
 @dataclass(frozen=True, slots=True)
 class _SealedPageBinding:
@@ -69,7 +88,9 @@ def witness_reading(
 
     payload = testimonium.get("payload")
     if not isinstance(payload, Mapping) or not isinstance(payload.get("payload"), str):
-        raise CorpusRefusal("malformed-record: referenced Testimonium has no retained text payload")
+        raise WitnessRefusal(
+            "malformed-record: referenced Testimonium has no retained text payload"
+        )
     outcome = testimonium.get("outcome")
     if outcome not in {"read", "genuinely-empty"}:
         return OutputStatus.UNAVAILABLE, None, f"non-reading-{outcome!r}"
@@ -82,7 +103,7 @@ def witness_reading(
     if health.get("truncated") is None:
         return OutputStatus.UNAVAILABLE, None, "unknown-truncation"
     if not isinstance(health.get("truncated"), bool):
-        raise CorpusRefusal(
+        raise WitnessRefusal(
             "malformed-record: referenced Testimonium has invalid truncation health"
         )
 
@@ -95,9 +116,9 @@ def witness_reading(
         or set(span) != {"start", "end"}
         or not all(isinstance(span[key], int) and not isinstance(span[key], bool) for key in span)
     ):
-        raise CorpusRefusal("malformed-record: attachment span is not a closed integer range")
+        raise WitnessRefusal("malformed-record: attachment span is not a closed integer range")
     if not 0 <= span["start"] <= span["end"] <= len(text):
-        raise CorpusRefusal("malformed-record: attachment span exceeds its retained Testimonium")
+        raise WitnessRefusal("malformed-record: attachment span exceeds its retained Testimonium")
     status = OutputStatus.TRUNCATED if health["truncated"] else OutputStatus.COMPLETE
     return status, text[span["start"] : span["end"]], None
 
@@ -171,7 +192,7 @@ def evaluate_page(
                 or item["attachment"]["page_ordinal"] == source_page_ordinal
             ]
             if len(matches) > 1:
-                raise CorpusRefusal(
+                raise WitnessRefusal(
                     "malformed-record: duplicate attachments for one matched act page"
                 )
             if not matches:
@@ -221,22 +242,22 @@ def evaluate_page(
 
 def _reference_pages(path: Path) -> dict[str, dict[str, Any]]:
     if not path.is_file():
-        raise CorpusRefusal(f"missing-input-file: {path} is not a file")
+        raise WitnessRefusal(f"missing-input-file: {path} is not a file")
     pages: dict[str, dict[str, Any]] = {}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except UnicodeDecodeError as error:
-        raise CorpusRefusal(f"reference-page-invalid: {path} is not UTF-8: {error}") from error
+        raise WitnessRefusal(f"reference-page-invalid: {path} is not UTF-8: {error}") from error
     for number, line in enumerate(lines, 1):
         if not line.strip():
             continue
         try:
             page = validate_reference_page(json.loads(line))
         except (ValueError, CorpusRefusal) as error:
-            raise CorpusRefusal(f"reference-page-invalid: line {number}: {error}") from None
+            raise WitnessRefusal(f"reference-page-invalid: line {number}: {error}") from None
         digest = page["page"]["sha256"]
         if digest in pages:
-            raise CorpusRefusal(f"reference-page-collision: duplicate page sha256 {digest}")
+            raise WitnessRefusal(f"reference-page-collision: duplicate page sha256 {digest}")
         pages[digest] = page
     return pages
 
@@ -248,9 +269,9 @@ def _sealed_page_bindings(tree: ReadOnlyRunTree) -> dict[str, _SealedPageBinding
     for source in run.get("source_manifest", []):
         ordinal = source.get("ordinal") if isinstance(source, dict) else None
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise CorpusRefusal("malformed-record: run source has no integer ordinal")
+            raise WitnessRefusal("malformed-record: run source has no integer ordinal")
         if ordinal in sources:
-            raise CorpusRefusal("malformed-record: run source ordinal is duplicated")
+            raise WitnessRefusal("malformed-record: run source ordinal is duplicated")
         sources[ordinal] = source
 
     pages: dict[str, _SealedPageBinding] = {}
@@ -270,21 +291,21 @@ def _sealed_page_bindings(tree: ReadOnlyRunTree) -> dict[str, _SealedPageBinding
             or not isinstance(page_id, str)
             or not page_id
         ):
-            raise CorpusRefusal("malformed-record: sealed Exemplar page has no identity/ordinal")
+            raise WitnessRefusal("malformed-record: sealed Exemplar page has no identity/ordinal")
         source = sources.get(ordinal)
         if source is None:
-            raise CorpusRefusal("malformed-record: sealed Exemplar page has no submitted source")
+            raise WitnessRefusal("malformed-record: sealed Exemplar page has no submitted source")
         try:
             pixels = verify_sealed_page_pixels(tree, run, source, record)
             size = dimensions(pixels)
         except (ContractError, ValueError) as error:
-            raise CorpusRefusal(
+            raise WitnessRefusal(
                 f"malformed-record: sealed Exemplar page is invalid: {error}"
             ) from error
         if page_id in pages:
-            raise CorpusRefusal("malformed-record: sealed Exemplar page identity is duplicated")
+            raise WitnessRefusal("malformed-record: sealed Exemplar page identity is duplicated")
         if ordinal in page_ids_by_ordinal:
-            raise CorpusRefusal("malformed-record: sealed Exemplar page ordinal is duplicated")
+            raise WitnessRefusal("malformed-record: sealed Exemplar page ordinal is duplicated")
         page_ids_by_ordinal[ordinal] = page_id
         pages[page_id] = _SealedPageBinding(
             ordinal=ordinal,
@@ -305,13 +326,13 @@ def _validate_page_binding(
     page_id = presented.get("source_page_id") if isinstance(presented, Mapping) else None
     page = sealed_pages.get(page_id) if isinstance(page_id, str) else None
     if page is None:
-        raise CorpusRefusal(
+        raise WitnessRefusal(
             "malformed-record: page Testimonium presentation names no sealed Exemplar page"
         )
     try:
         pixels = read_bytes(page.image_path)
         if digest_bytes(pixels) != page.sha256 or dimensions(pixels) != page.size:
-            raise CorpusRefusal(
+            raise WitnessRefusal(
                 "malformed-record: sealed Exemplar page pixels changed before binding"
             )
         validate_presented_page_binding(
@@ -323,7 +344,7 @@ def _validate_page_binding(
             page_bytes=pixels,
         )
     except (ContractError, OSError, ValueError) as error:
-        raise CorpusRefusal(
+        raise WitnessRefusal(
             f"malformed-record: page Testimonium presentation is not bound to its sealed "
             f"Exemplar page: {error}"
         ) from error
@@ -348,7 +369,7 @@ def _attachment_index(
             record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
             chair = record.get("payload", {}).get("chair")
             if not isinstance(chair, str):
-                raise CorpusRefusal("malformed-record: Testimonium has no chair")
+                raise WitnessRefusal("malformed-record: Testimonium has no chair")
             act_testimonia.setdefault((entry["subject_id"], chair), []).append(record)
         elif entry["kind"] == "page-testimonium":
             record = tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
@@ -360,7 +381,7 @@ def _attachment_index(
                 or not isinstance(ordinal, int)
                 or isinstance(ordinal, bool)
             ):
-                raise CorpusRefusal(
+                raise WitnessRefusal(
                     "malformed-record: page Testimonium has no chair/source-page identity"
                 )
             page_testimonia.setdefault((ordinal, chair), []).append(record)
@@ -387,38 +408,40 @@ def _attachment_index(
         record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
         rows = record.get("payload", {}).get("attachments")
         if not isinstance(rows, list):
-            raise CorpusRefusal("malformed-record: act attachment has no attachment list")
+            raise WitnessRefusal("malformed-record: act attachment has no attachment list")
         seen_pairs: set[tuple[str, int | None]] = set()
         for attachment in rows:
             if not isinstance(attachment, dict) or not isinstance(attachment.get("chair"), str):
-                raise CorpusRefusal("malformed-record: act attachment has malformed chair entry")
+                raise WitnessRefusal("malformed-record: act attachment has malformed chair entry")
             if attachment["chair"] not in CHAIRS:
-                raise CorpusRefusal("malformed-record: act attachment names an unknown chair")
+                raise WitnessRefusal("malformed-record: act attachment names an unknown chair")
             if not isinstance(attachment.get("page_witness"), bool):
-                raise CorpusRefusal("malformed-record: attachment has no page-witness scope")
+                raise WitnessRefusal("malformed-record: attachment has no page-witness scope")
             if not isinstance(attachment.get("attached"), bool) or not isinstance(
                 attachment.get("comparable"), bool
             ):
-                raise CorpusRefusal(
+                raise WitnessRefusal(
                     "malformed-record: attachment has no boolean attached/comparable facts"
                 )
             if attachment["comparable"] and not attachment["attached"]:
-                raise CorpusRefusal(
+                raise WitnessRefusal(
                     "malformed-record: attachment is comparable without being attached"
                 )
             page_ordinal = attachment.get("page_ordinal")
             if attachment["page_witness"]:
                 if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
-                    raise CorpusRefusal("malformed-record: page attachment has no page ordinal")
+                    raise WitnessRefusal("malformed-record: page attachment has no page ordinal")
             elif page_ordinal is not None:
-                raise CorpusRefusal("malformed-record: act attachment carries a page ordinal")
+                raise WitnessRefusal("malformed-record: act attachment carries a page ordinal")
             pair = (attachment["chair"], page_ordinal)
             if pair in seen_pairs:
-                raise CorpusRefusal("malformed-record: duplicate attachment chair/source-page pair")
+                raise WitnessRefusal(
+                    "malformed-record: duplicate attachment chair/source-page pair"
+                )
             seen_pairs.add(pair)
             reference = attachment.get("testimonium_ref")
             if not isinstance(reference, dict):
-                raise CorpusRefusal("malformed-record: attachment has no Testimonium reference")
+                raise WitnessRefusal("malformed-record: attachment has no Testimonium reference")
             kind = "page-testimonium" if attachment["page_witness"] else "testimonium"
             testimony = tree.read_artifact_reference(
                 reference,
@@ -428,14 +451,14 @@ def _attachment_index(
             )
             payload = testimony.get("payload")
             if not isinstance(payload, dict) or payload.get("chair") != attachment["chair"]:
-                raise CorpusRefusal("malformed-record: attachment points to another chair")
+                raise WitnessRefusal("malformed-record: attachment points to another chair")
             current_act = current_acts.get((act_id, attachment["chair"]))
             if current_act is None:
-                raise CorpusRefusal("malformed-record: attachment has no current act Testimonium")
+                raise WitnessRefusal("malformed-record: attachment has no current act Testimonium")
             if attachment.get("content_health") != current_act.get("payload", {}).get(
                 "content_health"
             ):
-                raise CorpusRefusal(
+                raise WitnessRefusal(
                     "malformed-record: attachment health differs from current act Testimonium"
                 )
             if attachment["page_witness"]:
@@ -446,7 +469,7 @@ def _attachment_index(
                         read_bytes=tree.read_bytes,
                     )
                 except ContractError as error:
-                    raise CorpusRefusal(
+                    raise WitnessRefusal(
                         f"malformed-record: referenced page Testimonium is invalid: {error}"
                     ) from error
                 _validate_page_binding(
@@ -455,12 +478,12 @@ def _attachment_index(
                     read_bytes=tree.read_bytes,
                 )
                 if payload["page_ordinal"] != page_ordinal:
-                    raise CorpusRefusal("malformed-record: attachment points to another page")
+                    raise WitnessRefusal("malformed-record: attachment points to another page")
                 current = current_pages.get((page_ordinal, attachment["chair"]))
             else:
                 current = current_act
             if current is None or testimony.get("artifact_id") != current.get("artifact_id"):
-                raise CorpusRefusal("malformed-record: attachment points to a stale Testimonium")
+                raise WitnessRefusal("malformed-record: attachment points to a stale Testimonium")
             indexed.setdefault(act_id, {}).setdefault(attachment["chair"], []).append(
                 {"attachment": attachment, "testimonium": testimony}
             )
@@ -490,10 +513,10 @@ def page_health_counts(
     for record in records:
         payload = record.get("payload")
         if not isinstance(payload, Mapping):
-            raise CorpusRefusal("malformed-record: page Testimonium has no payload")
+            raise WitnessRefusal("malformed-record: page Testimonium has no payload")
         chair, ordinal = payload.get("chair"), payload.get("page_ordinal")
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise CorpusRefusal("malformed-record: page Testimonium has no source page ordinal")
+            raise WitnessRefusal("malformed-record: page Testimonium has no source page ordinal")
         if chair not in result or ordinal not in page_sha256_by_ordinal:
             continue
         histories.setdefault((ordinal, chair), []).append(record)
@@ -512,7 +535,7 @@ def page_health_counts(
                 read_bytes=read_bytes,
             )
         except ContractError as error:
-            raise CorpusRefusal(
+            raise WitnessRefusal(
                 f"malformed-record: page Testimonium is invalid: {error}"
             ) from error
         _validate_page_binding(
@@ -521,13 +544,13 @@ def page_health_counts(
             read_bytes=read_bytes,
         )
         if payload["presented"]["source_page_ordinal"] != ordinal:
-            raise CorpusRefusal(
+            raise WitnessRefusal(
                 "malformed-record: page Testimonium presentation names another page"
             )
         result[chair]["missing"] -= 1
         health = payload.get("content_health")
         if not isinstance(health, Mapping) or health.get("truncated") not in {True, False, None}:
-            raise CorpusRefusal("malformed-record: page Testimonium has invalid content health")
+            raise WitnessRefusal("malformed-record: page Testimonium has invalid content health")
         truncation = health["truncated"]
         key = (
             "truncated_true"
@@ -559,20 +582,20 @@ def evaluate_run(
     """Build one read-only, self-hashed report for explicit admitted page ids."""
     requested = list(page_ids)
     if not requested or any(not isinstance(page_id, str) or not page_id for page_id in requested):
-        raise CorpusRefusal("missing-input-file: at least one non-empty page id is required")
+        raise WitnessRefusal("missing-input-file: at least one non-empty page id is required")
     if len(set(requested)) != len(requested):
-        raise CorpusRefusal("malformed-record: duplicate selected page id")
+        raise WitnessRefusal("malformed-record: duplicate selected page id")
     if len(set(chairs)) != len(chairs):
-        raise CorpusRefusal("malformed-record: duplicate chair")
+        raise WitnessRefusal("malformed-record: duplicate chair")
 
     if tuple(chairs) != CHAIRS:
-        raise CorpusRefusal("malformed-record: witness evaluation requires all three chairs")
+        raise WitnessRefusal("malformed-record: witness evaluation requires all three chairs")
 
     try:
         ledger_bytes = ledger_path.read_bytes()
         ledger = validate_local_admission_ledger(json.loads(ledger_bytes))
     except (OSError, UnicodeDecodeError, ValueError, CorpusRefusal) as error:
-        raise CorpusRefusal(f"reference-ledger-invalid: {error}") from error
+        raise WitnessRefusal(f"reference-ledger-invalid: {error}") from error
     pages = _reference_pages(reference_pages_path)
 
     admitted_by_page: dict[str, set[tuple[str, str]]] = {}
@@ -585,7 +608,7 @@ def evaluate_run(
     for page_id in requested:
         identities = admitted_by_page.get(page_id, set())
         if len(identities) != 1:
-            raise CorpusRefusal(
+            raise WitnessRefusal(
                 "missing-input-file: selected page id is absent or ambiguous in admitted reference ledger"
             )
         selected[page_id] = next(iter(identities))
@@ -596,7 +619,7 @@ def evaluate_run(
     ordinal_by_sha: dict[str, int] = {}
     for ordinal, digest in source_shas.items():
         if digest in ordinal_by_sha:
-            raise CorpusRefusal("malformed-record: two sealed source pages carry the same sha256")
+            raise WitnessRefusal("malformed-record: two sealed source pages carry the same sha256")
         ordinal_by_sha[digest] = ordinal
     proposals = load_pipeline_proposal_acts(read_only)
     attached = _attachment_index(read_only, sealed_pages=sealed_pages)
@@ -617,7 +640,7 @@ def evaluate_run(
     for page_id in sorted(selected):
         digest = selected[page_id][0]
         if digest in digests_seen:
-            raise CorpusRefusal(
+            raise WitnessRefusal(
                 f"reference-page-collision: selected pages {digests_seen[digest]!r} and "
                 f"{page_id!r} name the same page sha256 {digest}; one page is scored once"
             )
@@ -628,12 +651,12 @@ def evaluate_run(
         digest, expected_reference_hash = selected[page_id]
         page = pages.get(digest)
         if page is None or page["self_hash"] != expected_reference_hash:
-            raise CorpusRefusal(
+            raise WitnessRefusal(
                 f"reference-page-not-in-ledger: selected page {page_id!r} has no exact admitted reference page"
             )
         ordinal = ordinal_by_sha.get(digest)
         if ordinal is None:
-            raise CorpusRefusal(
+            raise WitnessRefusal(
                 f"reference-page-not-in-run: selected page {page_id!r} was not sealed by the Exemplar"
             )
         selected_ordinals[ordinal] = digest
@@ -671,19 +694,19 @@ def write_report(report: Mapping[str, Any], output: Path, *, run_root: Path) -> 
     """Create an immutable report outside the run tree."""
     body = dict(report)
     if not verify_self_hash(body):
-        raise CorpusRefusal("self-hash-mismatch: witness report does not hash to itself")
+        raise WitnessRefusal("self-hash-mismatch: witness report does not hash to itself")
     data = canonical_bytes(body)
     output = Path(output)
     resolved_output = output.resolve()
     resolved_run = run_root.resolve()
     if resolved_output == resolved_run or resolved_output.is_relative_to(resolved_run):
-        raise CorpusRefusal("output-in-run-tree: a witness report must be external to the RunTree")
+        raise WitnessRefusal("output-in-run-tree: a witness report must be external to the RunTree")
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         with output.open("xb") as stream:
             stream.write(data)
     except FileExistsError:
-        raise CorpusRefusal(f"output-exists: {output}") from None
+        raise WitnessRefusal(f"output-exists: {output}") from None
 
 
 def main(argv: list[str] | None = None) -> int:

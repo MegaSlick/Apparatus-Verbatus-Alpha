@@ -129,6 +129,11 @@ LOCAL_ADMISSION_REFUSAL_REASONS = frozenset(
     }
 )
 
+
+class AdmissionRefusal(CorpusRefusal):
+    reasons = LOCAL_ADMISSION_REFUSAL_REASONS
+
+
 _GOLD_ROW_FIELDS = frozenset(
     {
         "end_date",
@@ -235,21 +240,19 @@ def transform_region(
             "w": region["w"],
             "h": region["h"],
         }
-    raise CorpusRefusal(
+    raise AdmissionRefusal(
         f"unsupported-rotation-parameter: {rotation!r} has no frame conversion here; only "
         f"{sorted(SUPPORTED_ROTATIONS)!r} do"
     )
-
-
-def _reason(error: Exception) -> str:
-    return str(error).split(":", 1)[0]
 
 
 def _read_text(path: Path, what: str) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
-        raise CorpusRefusal(f"malformed-record: {what} ({path}) is not UTF-8: {error}") from error
+        raise AdmissionRefusal(
+            f"malformed-record: {what} ({path}) is not UTF-8: {error}"
+        ) from error
 
 
 def _load_jsonl(path: Path, what: str) -> list[dict[str, Any]]:
@@ -260,11 +263,11 @@ def _load_jsonl(path: Path, what: str) -> list[dict[str, Any]]:
         try:
             row = json.loads(line)
         except ValueError as error:
-            raise CorpusRefusal(
+            raise AdmissionRefusal(
                 f"malformed-record: {what} line {number} is not JSON: {error}"
             ) from error
         if not isinstance(row, dict):
-            raise CorpusRefusal(f"malformed-record: {what} line {number} is not an object")
+            raise AdmissionRefusal(f"malformed-record: {what} line {number} is not an object")
         rows.append(row)
     return rows
 
@@ -273,17 +276,19 @@ def _receipt(set_root: Path) -> dict[str, Any]:
     """The set's own receipt, and proof its two files are the bytes it names."""
     receipt_path = set_root / "fetch_receipt.json"
     if not receipt_path.is_file():
-        raise CorpusRefusal(f"missing-set-file: {receipt_path} is not a file")
+        raise AdmissionRefusal(f"missing-set-file: {receipt_path} is not a file")
     receipt_body = receipt_path.read_bytes()
     try:
         receipt = json.loads(receipt_body)
     except ValueError as error:
-        raise CorpusRefusal(f"malformed-record: {receipt_path} is not JSON: {error}") from error
+        raise AdmissionRefusal(f"malformed-record: {receipt_path} is not JSON: {error}") from error
     if not isinstance(receipt, dict) or receipt.get("schema") != RECEIPT_SCHEMA:
-        raise CorpusRefusal(f"malformed-record: {receipt_path} does not declare {RECEIPT_SCHEMA!r}")
+        raise AdmissionRefusal(
+            f"malformed-record: {receipt_path} does not declare {RECEIPT_SCHEMA!r}"
+        )
     artifacts = receipt.get("artifacts")
     if not isinstance(artifacts, dict):
-        raise CorpusRefusal(f"malformed-record: {receipt_path} names no artifacts")
+        raise AdmissionRefusal(f"malformed-record: {receipt_path} names no artifacts")
     digests = {}
     for name, filename in (
         ("gold_jsonl", "gold.jsonl"),
@@ -291,13 +296,13 @@ def _receipt(set_root: Path) -> dict[str, Any]:
     ):
         declared = artifacts.get(f"{name}_sha256")
         if not (set_root / filename).is_file():
-            raise CorpusRefusal(
+            raise AdmissionRefusal(
                 f"missing-set-file: {set_root / filename} is not a file; the set cannot be "
                 "admitted without it"
             )
         actual = digest_bytes((set_root / filename).read_bytes())
         if not is_sha256(declared) or declared != actual:
-            raise CorpusRefusal(
+            raise AdmissionRefusal(
                 f"receipt-hash-mismatch: {filename} digests to {actual}, the receipt declares "
                 f"{declared!r}"
             )
@@ -308,11 +313,11 @@ def _receipt(set_root: Path) -> dict[str, Any]:
     status = receipt.get("status")
     requested = receipt.get("requested_splits")
     if not isinstance(status, str) or not status:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"malformed-record: {receipt_path} declares status {status!r}, not a non-empty string"
         )
     if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"malformed-record: {receipt_path} declares requested_splits {requested!r}, "
             "not a list of strings"
         )
@@ -343,15 +348,15 @@ def _decode_page(body: bytes, *, width: int, height: int) -> None:
         image = Image.open(io.BytesIO(body))
         image.load()
     except Exception as error:
-        raise CorpusRefusal(f"non-image-body: failed to decode as an image: {error}") from error
+        raise AdmissionRefusal(f"non-image-body: failed to decode as an image: {error}") from error
     if image.size != (width, height):
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"dimension-mismatch: decoded image is {image.size[0]}x{image.size[1]}, the page "
             f"manifest declares {width}x{height}"
         )
     orientation = image.getexif().get(_EXIF_ORIENTATION_TAG)
     if orientation is not None and orientation != 1:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"exif-orientation: decoded image declares EXIF orientation {orientation}, only "
             "absent or 1 is accepted"
         )
@@ -367,23 +372,23 @@ def _page_image_path(set_root: Path, image_rel: Any, page_id: str) -> Path:
     size in the ledger.
     """
     if not isinstance(image_rel, str) or not image_rel:
-        raise CorpusRefusal(f"malformed-record: page {page_id!r} names no image")
+        raise AdmissionRefusal(f"malformed-record: page {page_id!r} names no image")
     candidate = Path(image_rel)
     if candidate.is_absolute() or candidate.drive or candidate.root:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"unsafe-page-image-path: page {page_id!r} names the absolute image path "
             f"{image_rel!r}; a set's image is always relative to the set root"
         )
     for segment in candidate.parts:
         if unsafe_segment(segment):
-            raise CorpusRefusal(
+            raise AdmissionRefusal(
                 f"unsafe-page-image-path: page {page_id!r} names image {image_rel!r}, whose "
                 f"segment {segment!r} this module refuses rather than normalises"
             )
     resolved = (set_root / candidate).resolve()
     root = set_root.resolve()
     if root not in resolved.parents:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"unsafe-page-image-path: page {page_id!r} resolves image {image_rel!r} to "
             f"{resolved}, which is outside the set root {root}"
         )
@@ -417,7 +422,9 @@ def _canonical_safe(value: Any) -> Any:
 
 def _positive_int(value: Any, what: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise CorpusRefusal(f"malformed-record: {what} must be a positive integer, got {value!r}")
+        raise AdmissionRefusal(
+            f"malformed-record: {what} must be a positive integer, got {value!r}"
+        )
     return value
 
 
@@ -427,7 +434,7 @@ def _box(value: Any, what: str) -> dict[str, int]:
         or len(value) != 4
         or any(not isinstance(item, int) or isinstance(item, bool) for item in value)
     ):
-        raise CorpusRefusal(f"malformed-record: {what} must be four integers, got {value!r}")
+        raise AdmissionRefusal(f"malformed-record: {what} must be four integers, got {value!r}")
     x, y, w, h = value
     return {"x": x, "y": y, "w": w, "h": h}
 
@@ -442,7 +449,7 @@ def _snapshot_index(row_snapshot: Any) -> tuple[dict[str, dict[str, Any]], str] 
         # `rows.py` refuses in its own vocabulary (`text-sha256-mismatch`,
         # `empty-rows`, ...). This module's set is closed, so its name leads and
         # the snapshot's own reason travels in the detail.
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"snapshot-mismatch: the row snapshot does not validate: {error}"
         ) from error
     return ({row["record_id"]: row for row in snapshot["rows"]}, snapshot["self_hash"])
@@ -461,12 +468,12 @@ def _cross_check_snapshot(row: dict[str, Any], sealed: dict[str, dict[str, Any]]
     record_id = row["record_id"]
     sealed_row = sealed.get(record_id)
     if sealed_row is None:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"snapshot-mismatch: record {record_id!r} is not in the sealed row snapshot"
         )
     for field in ("text", "split", "record_url"):
         if row[field] != sealed_row[field]:
-            raise CorpusRefusal(
+            raise AdmissionRefusal(
                 f"snapshot-mismatch: record {record_id!r} carries {field} {row[field]!r}, the "
                 f"sealed row snapshot carries {sealed_row[field]!r}"
             )
@@ -491,9 +498,9 @@ def admit_local_set(
     """
     set_root = Path(set_root)
     if split not in SPLITS:
-        raise CorpusRefusal(f"unknown-split: {split!r} is not one of {sorted(SPLITS)}")
+        raise AdmissionRefusal(f"unknown-split: {split!r} is not one of {sorted(SPLITS)}")
     if (split == HELD_SPLIT) != bool(release_test_split):
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"holdout-ledger-required: release_test_split and split {HELD_SPLIT!r} go together "
             "-- admitting the held-out split as reference truth must be a deliberate, separate "
             "act, and the flag releases no other split"
@@ -502,7 +509,7 @@ def admit_local_set(
         resolved_output = Path(output_dir).resolve()
         resolved_root = set_root.resolve()
         if resolved_output == resolved_root or resolved_root in resolved_output.parents:
-            raise CorpusRefusal(
+            raise AdmissionRefusal(
                 f"output-inside-set: {resolved_output} is inside the set root {resolved_root}; "
                 "nothing here writes into a set"
             )
@@ -510,7 +517,7 @@ def admit_local_set(
     sealed_rows = sealed[0] if sealed is not None else None
     receipt = _receipt(set_root)
     if split not in receipt["requested_splits"]:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"split-not-requested: the receipt at {receipt['path']} requested "
             f"{receipt['requested_splits']!r}; admitting {split!r} from it would give the ledger "
             "a provenance the set's own record contradicts"
@@ -522,9 +529,9 @@ def admit_local_set(
     for row in manifest_rows:
         page_id = row.get("page_id")
         if not isinstance(page_id, str) or not page_id:
-            raise CorpusRefusal("malformed-record: a page manifest row has no page_id")
+            raise AdmissionRefusal("malformed-record: a page manifest row has no page_id")
         if page_id in pages:
-            raise CorpusRefusal(f"inconsistent-page-manifest: page {page_id!r} is listed twice")
+            raise AdmissionRefusal(f"inconsistent-page-manifest: page {page_id!r} is listed twice")
         pages[page_id] = row
 
     ledger_rows: list[dict[str, Any]] = []
@@ -533,13 +540,11 @@ def admit_local_set(
     seen_record_ids: set[str] = set()
     by_page: dict[str, list[dict[str, Any]]] = {}
     page_facts: dict[str, dict[str, Any]] = {}
-    page_refusals: dict[str, tuple[str, str]] = {}
+    page_refusals: dict[str, CorpusRefusal] = {}
     cross_checked = 0
 
-    def refuse(
-        row: dict[str, Any], error: Exception | str, *, facts: dict[str, Any] | None
-    ) -> None:
-        reason = _reason(error) if isinstance(error, Exception) else error.split(":", 1)[0]
+    def refuse(row: dict[str, Any], error: CorpusRefusal, *, facts: dict[str, Any] | None) -> None:
+        reason = error.reason
         detail = str(error)
         refused_by_reason[reason] = refused_by_reason.get(reason, 0) + 1
         # The two identity fields are held to `str | None` by the ledger's own
@@ -573,22 +578,34 @@ def admit_local_set(
         if set(row) != _GOLD_ROW_FIELDS:
             refuse(
                 row,
-                f"malformed-record: record {record_id!r} is not the closed gold row",
+                AdmissionRefusal(
+                    f"malformed-record: record {record_id!r} is not the closed gold row"
+                ),
                 facts=None,
             )
             continue
         if not isinstance(record_id, str) or not record_id:
-            refuse(row, "malformed-record: a gold row has no record_id", facts=None)
+            refuse(
+                row,
+                AdmissionRefusal("malformed-record: a gold row has no record_id"),
+                facts=None,
+            )
             continue
         if record_id in seen_record_ids:
-            refuse(row, f"duplicate-record-id: {record_id!r} appears twice", facts=None)
+            refuse(
+                row,
+                AdmissionRefusal(f"duplicate-record-id: {record_id!r} appears twice"),
+                facts=None,
+            )
             continue
         seen_record_ids.add(record_id)
         if row["split"] != split:
             refuse(
                 row,
-                f"unknown-split: record {record_id!r} carries split {row['split']!r}, this set "
-                f"is admitted as {split!r}",
+                AdmissionRefusal(
+                    f"unknown-split: record {record_id!r} carries split {row['split']!r}, this set "
+                    f"is admitted as {split!r}"
+                ),
                 facts=None,
             )
             continue
@@ -596,8 +613,10 @@ def admit_local_set(
         if manifest is None:
             refuse(
                 row,
-                f"inconsistent-page-manifest: record {record_id!r} names page {page_id!r}, which "
-                "the page manifest does not list",
+                AdmissionRefusal(
+                    f"inconsistent-page-manifest: record {record_id!r} names page {page_id!r}, which "
+                    "the page manifest does not list"
+                ),
                 facts=None,
             )
             continue
@@ -609,7 +628,9 @@ def admit_local_set(
         if record_id not in listed:
             refuse(
                 row,
-                f"inconsistent-page-manifest: page {page_id!r} does not list record {record_id!r}",
+                AdmissionRefusal(
+                    f"inconsistent-page-manifest: page {page_id!r} does not list record {record_id!r}"
+                ),
                 facts=None,
             )
             continue
@@ -620,7 +641,7 @@ def admit_local_set(
                 image_rel = manifest.get("image")
                 image_path = _page_image_path(set_root, image_rel, page_id)
                 if not image_path.is_file():
-                    raise CorpusRefusal(f"missing-page-file: {image_path} is not a file")
+                    raise AdmissionRefusal(f"missing-page-file: {image_path} is not a file")
                 body = image_path.read_bytes()
                 _decode_page(body, width=width, height=height)
                 page_facts[page_id] = {
@@ -630,22 +651,22 @@ def admit_local_set(
                     "image": image_rel,
                 }
             except CorpusRefusal as error:
-                page_refusals[page_id] = (_reason(error), str(error))
+                page_refusals[page_id] = error
         if page_id in page_refusals:
-            refuse(row, page_refusals[page_id][1], facts=None)
+            refuse(row, page_refusals[page_id], facts=None)
             continue
         facts = page_facts[page_id]
         try:
             parsed = parse_record_url(row["record_url"], rotations=SUPPORTED_ROTATIONS)
             rotation = row["iiif_rotation"]
             if rotation != parsed.rotation:
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"inconsistent-transform: record {record_id!r} states iiif_rotation "
                     f"{rotation!r} but its record_url carries {parsed.rotation!r}"
                 )
             source_box = _box(row["source_bbox"], f"record {record_id!r} source_bbox")
             if source_box != parsed.region:
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"inconsistent-transform: record {record_id!r} source_bbox {row['source_bbox']} "
                     f"is not the record_url's region {parsed.region}"
                 )
@@ -654,7 +675,7 @@ def admit_local_set(
             )
             declared_box = _box(row["bbox"], f"record {record_id!r} bbox")
             if declared_box != transformed:
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"inconsistent-transform: record {record_id!r} bbox {row['bbox']} is not the "
                     f"{rotation}-degree carry of {row['source_bbox']} on a "
                     f"{facts['width']}x{facts['height']} page, which is "
@@ -666,19 +687,19 @@ def admit_local_set(
                 or transformed["x"] + transformed["w"] > facts["width"]
                 or transformed["y"] + transformed["h"] > facts["height"]
             ):
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"region-outside-page: record {record_id!r} carried box {transformed} exceeds "
                     f"the page's {facts['width']}x{facts['height']} bounds"
                 )
             source = row["source"]
             if not isinstance(source, str) or unsafe_segment(source) or "/" in source:
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"unsafe-source-value: source {source!r} on record {record_id!r} is not a "
                     "safe single path segment"
                 )
             text = row["text"]
             if not isinstance(text, str) or not text:
-                raise CorpusRefusal(f"malformed-record: record {record_id!r} carries no text")
+                raise AdmissionRefusal(f"malformed-record: record {record_id!r} carries no text")
             # A text that survives admission but normalises to nothing takes the
             # whole scoring run down later: `scoring._score_units` raises
             # `MeasurementRefusal` on a blank checked reference, which is outside
@@ -686,7 +707,7 @@ def admit_local_set(
             # page. Refuse it here, by record, against the same profile
             # `compare.py` scores with.
             if not character_units(text, GRAPHEMIC_V1):
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"empty-normalized-text: record {record_id!r} carries text {text!r}, which "
                     f"normalises to nothing under {GRAPHEMIC_V1.profile_id} and could never be "
                     "scored against"
@@ -726,8 +747,10 @@ def admit_local_set(
             for entry in entries:
                 refuse(
                     entry["row"],
-                    f"inconsistent-page-manifest: page {page_id!r} joins records whose URLs name "
-                    "different pages",
+                    AdmissionRefusal(
+                        f"inconsistent-page-manifest: page {page_id!r} joins records whose URLs name "
+                        "different pages"
+                    ),
                     facts=facts,
                 )
             continue
@@ -762,11 +785,19 @@ def admit_local_set(
             )
         except IdentityRefusal as error:
             for entry in entries:
-                refuse(entry["row"], f"unmintable-page-identity: {error}", facts=facts)
+                refuse(
+                    entry["row"],
+                    AdmissionRefusal(f"unmintable-page-identity: {error}"),
+                    facts=facts,
+                )
             continue
         except CorpusRefusal as error:
             for entry in entries:
-                refuse(entry["row"], f"reference-build-refused: {error}", facts=facts)
+                refuse(
+                    entry["row"],
+                    AdmissionRefusal(f"reference-build-refused: {error}"),
+                    facts=facts,
+                )
             continue
         pages_admitted.add(page_id)
         reference_pages.append(reference)
@@ -845,7 +876,7 @@ def admit_local_set(
         pages_path = output_dir / "reference-pages.jsonl"
         for path in (ledger_path, pages_path):
             if path.exists():
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"malformed-record: {path} already exists; a ledger is never overwritten"
                 )
         pages_path.write_bytes(b"".join(canonical_bytes(page) + b"\n" for page in reference_pages))
@@ -855,14 +886,16 @@ def admit_local_set(
 
 def _closed(value: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != fields:
-        raise CorpusRefusal(f"malformed-record: {what} must be the closed record {sorted(fields)}")
+        raise AdmissionRefusal(
+            f"malformed-record: {what} must be the closed record {sorted(fields)}"
+        )
     return value
 
 
 def _counts(value: Any, label: str) -> dict[str, int]:
     """A histogram: a mapping from names to non-negative integers, or a refusal by name."""
     if not isinstance(value, dict):
-        raise CorpusRefusal(f"malformed-record: {label} is not a mapping of counts")
+        raise AdmissionRefusal(f"malformed-record: {label} is not a mapping of counts")
     for name, count in value.items():
         if (
             not isinstance(name, str)
@@ -870,7 +903,7 @@ def _counts(value: Any, label: str) -> dict[str, int]:
             or isinstance(count, bool)
             or count < 0
         ):
-            raise CorpusRefusal(f"malformed-record: {label}[{name!r}] is not a count")
+            raise AdmissionRefusal(f"malformed-record: {label}[{name!r}] is not a count")
     return value
 
 
@@ -885,49 +918,51 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
     """
     ledger = _closed(ledger, _TOP_FIELDS, "admission ledger")
     if ledger["schema"] != SCHEMA:
-        raise CorpusRefusal(f"wrong-schema: expected {SCHEMA!r}, got {ledger['schema']!r}")
+        raise AdmissionRefusal(f"wrong-schema: expected {SCHEMA!r}, got {ledger['schema']!r}")
     if ledger["corpus_id"] != CORPUS_ID:
-        raise CorpusRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {ledger['corpus_id']!r}")
+        raise AdmissionRefusal(f"wrong-corpus: expected {CORPUS_ID!r}, got {ledger['corpus_id']!r}")
     if not verify_self_hash(ledger):
-        raise CorpusRefusal("self-hash-mismatch: the ledger does not hash to its own self_hash")
+        raise AdmissionRefusal("self-hash-mismatch: the ledger does not hash to its own self_hash")
     if ledger["split"] not in SPLITS:
-        raise CorpusRefusal(f"unknown-split: {ledger['split']!r} is not one of {sorted(SPLITS)}")
+        raise AdmissionRefusal(f"unknown-split: {ledger['split']!r} is not one of {sorted(SPLITS)}")
     if not isinstance(ledger["set_root"], str) or not ledger["set_root"]:
-        raise CorpusRefusal("malformed-record: set_root must be a non-empty string")
+        raise AdmissionRefusal("malformed-record: set_root must be a non-empty string")
 
     receipt = _closed(ledger["receipt"], _RECEIPT_FIELDS, "receipt")
     if not is_sha256(receipt["receipt_sha256"]):
-        raise CorpusRefusal("malformed-record: receipt.receipt_sha256 must be a sha256 digest")
+        raise AdmissionRefusal("malformed-record: receipt.receipt_sha256 must be a sha256 digest")
     digests = receipt["digests"]
     if not isinstance(digests, dict) or set(digests) != {"gold.jsonl", "page_manifest.jsonl"}:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             "malformed-record: receipt.digests must name gold.jsonl and page_manifest.jsonl"
         )
     for name, digest in sorted(digests.items()):
         if not is_sha256(digest):
-            raise CorpusRefusal(f"malformed-record: receipt.digests[{name!r}] is not a sha256")
+            raise AdmissionRefusal(f"malformed-record: receipt.digests[{name!r}] is not a sha256")
 
     snapshot = _closed(ledger["row_snapshot"], _ROW_SNAPSHOT_FIELDS, "row_snapshot")
     if not isinstance(snapshot["consulted"], bool):
-        raise CorpusRefusal("malformed-record: row_snapshot.consulted must be a boolean")
+        raise AdmissionRefusal("malformed-record: row_snapshot.consulted must be a boolean")
     if snapshot["consulted"] != is_sha256(snapshot["self_hash"]):
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             "malformed-record: row_snapshot.self_hash is a digest exactly when a snapshot was "
             "consulted"
         )
     if not isinstance(snapshot["records_cross_checked"], int) or isinstance(
         snapshot["records_cross_checked"], bool
     ):
-        raise CorpusRefusal("malformed-record: row_snapshot.records_cross_checked must be an int")
+        raise AdmissionRefusal(
+            "malformed-record: row_snapshot.records_cross_checked must be an int"
+        )
     if not snapshot["consulted"] and snapshot["records_cross_checked"] != 0:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             "malformed-record: no snapshot was consulted, so no record was cross-checked"
         )
 
     summary = _closed(ledger["summary"], _SUMMARY_FIELDS, "summary")
     rows = ledger["rows"]
     if not isinstance(rows, list):
-        raise CorpusRefusal("malformed-record: rows must be a list")
+        raise AdmissionRefusal("malformed-record: rows must be a list")
     admitted = 0
     refused = 0
     for row in rows:
@@ -935,18 +970,18 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
         if row["decision"] == "admitted":
             admitted += 1
             if row["reason"] is not None or row["detail"] is not None:
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"malformed-record: admitted row {row['record_id']!r} carries a refusal reason"
                 )
             for field in ("page_sha256", "physical_page_id", "physical_act_id"):
                 if not isinstance(row[field], str) or not row[field]:
-                    raise CorpusRefusal(
+                    raise AdmissionRefusal(
                         f"malformed-record: admitted row {row['record_id']!r} has no {field}"
                     )
         elif row["decision"] == "refused":
             refused += 1
             if row["reason"] not in LOCAL_ADMISSION_REFUSAL_REASONS:
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"malformed-record: refused row {row['record_id']!r} names reason "
                     f"{row['reason']!r}, which is outside this module's closed vocabulary"
                 )
@@ -954,28 +989,28 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
                 row[field] is not None
                 for field in ("physical_act_id", "physical_page_id", "reference_page_self_hash")
             ):
-                raise CorpusRefusal(
+                raise AdmissionRefusal(
                     f"malformed-record: refused row {row['record_id']!r} carries an identity it "
                     "was never admitted to earn"
                 )
             for field in ("record_id", "page_id"):
                 if row[field] is not None and not isinstance(row[field], str):
-                    raise CorpusRefusal(
+                    raise AdmissionRefusal(
                         f"malformed-record: refused row carries a non-string {field} {row[field]!r}"
                     )
         else:
-            raise CorpusRefusal(
+            raise AdmissionRefusal(
                 f"malformed-record: row {row['record_id']!r} decides {row['decision']!r}, not "
                 "'admitted' or 'refused'"
             )
 
     if len(rows) != summary["records"]:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"malformed-record: the ledger carries {len(rows)} row(s) for {summary['records']} "
             "record(s); every record ends in exactly one row"
         )
     if (admitted, refused) != (summary["admitted"], summary["refused"]):
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"malformed-record: the rows decide {admitted} admitted / {refused} refused, the "
             f"summary claims {summary['admitted']} / {summary['refused']}"
         )
@@ -983,28 +1018,28 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
     # them is summed: a list or a bool there is refused by name, never added up.
     histogram = _counts(summary["refused_by_reason"], "refused_by_reason")
     if sum(histogram.values()) != refused:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             "malformed-record: refused_by_reason does not sum to the number of refused rows"
         )
     outcomes = _counts(summary["pages_by_outcome"], "pages_by_outcome")
     if set(outcomes) != set(_PAGE_OUTCOMES):
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"malformed-record: pages_by_outcome must name exactly {sorted(_PAGE_OUTCOMES)}"
         )
     if sum(outcomes.values()) != summary["pages_listed"]:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             f"malformed-record: pages_by_outcome accounts for {sum(outcomes.values())} page(s) "
             f"of the {summary['pages_listed']} the manifest lists"
         )
     rotations = _counts(summary["admitted_by_rotation"], "admitted_by_rotation")
     if sum(rotations.values()) != admitted:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             "malformed-record: admitted_by_rotation does not account for every admitted record"
         )
 
     reference_pages = ledger["reference_pages"]
     if not isinstance(reference_pages, list) or len(reference_pages) != outcomes["admitted"]:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             "malformed-record: the ledger's reference pages do not match its admitted page count"
         )
     # The pages themselves, and the link the rows claim to them. `evaluate.py`
@@ -1016,13 +1051,13 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
         try:
             embedded.add(validate_reference_page(page)["self_hash"])
         except CorpusRefusal as error:
-            raise CorpusRefusal(
+            raise AdmissionRefusal(
                 f"malformed-record: the ledger carries a reference page that does not "
                 f"validate: {error}"
             ) from error
     claimed = {row["reference_page_self_hash"] for row in rows if row["decision"] == "admitted"}
     if claimed != embedded:
-        raise CorpusRefusal(
+        raise AdmissionRefusal(
             "malformed-record: the admitted rows name reference pages the ledger does not "
             f"carry, or carry pages no row names ({len(claimed - embedded)} named but absent, "
             f"{len(embedded - claimed)} carried but unnamed)"
@@ -1048,11 +1083,11 @@ def read_row_snapshot(path: str | Path) -> dict[str, Any]:
     """
     path = Path(path)
     if not path.is_file():
-        raise CorpusRefusal(f"missing-set-file: {path} is not a file")
+        raise AdmissionRefusal(f"missing-set-file: {path} is not a file")
     try:
         return json.loads(_read_text(path, "the row snapshot"))
     except ValueError as error:
-        raise CorpusRefusal(f"malformed-record: {path} is not JSON: {error}") from error
+        raise AdmissionRefusal(f"malformed-record: {path} is not JSON: {error}") from error
 
 
 def main(argv: list[str] | None = None) -> int:

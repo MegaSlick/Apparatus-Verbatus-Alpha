@@ -46,6 +46,11 @@ CACHE_REFUSAL_REASONS = frozenset(
     }
 )
 
+
+class CacheRefusal(CorpusRefusal):
+    reasons = CACHE_REFUSAL_REASONS
+
+
 # `os.link` on a cache root that cannot hold hard links (EPERM, EOPNOTSUPP,
 # ENOSYS — a filesystem with them disabled, or one that never supports them)
 # is a constraint on the cache root itself, not on the one file being written.
@@ -56,7 +61,7 @@ CACHE_REFUSAL_REASONS = frozenset(
 _NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 
 
-class CacheUnusable(CorpusRefusal):
+class CacheUnusable(CacheRefusal):
     """The cache root itself cannot hold the store — not one page's problem."""
 
 
@@ -93,7 +98,7 @@ def compute_request_key(
 
 def _require_sha256(value: str, what: str) -> str:
     if not is_sha256(value):
-        raise CorpusRefusal(
+        raise CacheRefusal(
             f"malformed-digest: {what} {value!r} is not a lowercase sha256 hex digest"
         )
     return value
@@ -142,12 +147,12 @@ def load_request_record(cache_root: Path, request_key: str) -> dict[str, Any] | 
     try:
         record = json.loads(path.read_bytes())
     except ValueError as error:
-        raise CorpusRefusal(
+        raise CacheRefusal(
             f"unreadable-request-record: {path} is not readable JSON ({error}); delete it "
             "to force a re-fetch"
         ) from error
     if not isinstance(record, dict):
-        raise CorpusRefusal(
+        raise CacheRefusal(
             f"unreadable-request-record: {path} does not contain a JSON object; delete it "
             "to force a re-fetch"
         )
@@ -229,7 +234,7 @@ def write_request_record(cache_root: Path, request_key: str, record: dict[str, A
     path = request_record_path(cache_root, request_key)
     data = canonical_bytes(record)
     if not write_new_file(path, data):
-        raise CorpusRefusal(
+        raise CacheRefusal(
             f"duplicate-request-record: {request_key!r} already has a recorded answer — "
             "never re-fetch means never re-record either; the caller should have checked "
             "load_request_record first"

@@ -1045,7 +1045,7 @@ def test_run_fetch_requires_a_holdout_ledger_for_split_val_by_default(tmp_path, 
     # This refusal fires before a `FetchSession` exists, so it never reaches a
     # fetch-log entry — it belongs to its own closed run-level set, not the
     # per-page `FETCH_REFUSAL_REASONS`.
-    reason = str(excinfo.value).split(":", 1)[0]
+    reason = excinfo.value.reason
     assert reason in fetch_module.FETCH_RUN_REFUSAL_REASONS
     assert reason not in FETCH_REFUSAL_REASONS
 
@@ -1060,7 +1060,7 @@ def test_run_fetch_requires_a_holdout_ledger_for_split_train_too(tmp_path, serve
     with pytest.raises(fetch_module.CorpusRefusal, match="holdout-ledger-required") as excinfo:
         run_fetch(plan, _config(tmp_path), split="train")
 
-    reason = str(excinfo.value).split(":", 1)[0]
+    reason = excinfo.value.reason
     assert reason in fetch_module.FETCH_RUN_REFUSAL_REASONS
 
 
@@ -1118,7 +1118,7 @@ def test_main_refuses_release_test_split_flag_on_a_val_run(tmp_path, server):
             ]
         )
 
-    reason = str(excinfo.value).split(":", 1)[0]
+    reason = excinfo.value.reason
     assert reason in fetch_module.FETCH_RUN_REFUSAL_REASONS
 
 
@@ -1381,7 +1381,7 @@ def test_main_refuses_split_test_without_release_test_split(tmp_path, server):
             ]
         )
 
-    reason = str(excinfo.value).split(":", 1)[0]
+    reason = excinfo.value.reason
     assert reason in fetch_module.FETCH_RUN_REFUSAL_REASONS
 
 
