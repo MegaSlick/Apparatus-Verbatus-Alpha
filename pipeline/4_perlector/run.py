@@ -23,6 +23,7 @@ import os
 import stat
 import sys
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any, Final
@@ -87,6 +88,7 @@ from common.perlector_failure import (  # noqa: E402
     PRE_PERLECTIO_ARTIFACTS,
     validate_failed_perlectio,
 )
+from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -132,6 +134,7 @@ _ACT_LOCAL_READING_FAILURES: Final = (
     EngineSignalRefusal,
     ChairResponseRefusal,
     EndpointUnavailable,
+    RequestCapacityRefusal,
 ) + _CHAIR_TRANSPORT_FAILURE_TYPES
 
 # The sealed selector cannot hold the digest of an approval that targets its own config
@@ -1787,14 +1790,6 @@ def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return list(distinct.values())
 
 
-# `PRE_PERLECTIO_ARTIFACTS` lists, in publication order, every artifact an attempt
-# publishes before its Perlectio; it is named for the Perlectio because its last two
-# entries follow the establishing reading. Those two are written by the audit loop after
-# the establishing text is frozen into their bytes. A live chair cannot reproduce that
-# text, so an attempt interrupted after one of them can be neither reused nor read again.
-_AUDIT_ROUND_KINDS: Final = frozenset({"audit-draft", "audit-finding"})
-
-
 def _attempt_artifact_id(act_id: str, kind: str, operation: str, ordinal: int) -> str:
     return artifact_id(PERLECTOR, kind, act_id, perlector_attempt_id(act_id, operation, ordinal))
 
@@ -1833,23 +1828,56 @@ def _sealed_pass_kinds(context, act_id: str, ordinal: int) -> frozenset[str]:
     )
 
 
-def _sealed_prior_draft(context, act_id: str, ordinal: int) -> dict[str, Any] | None:
-    """This attempt's already-published Pass A, in the shape `_publish_lectio_prior` returns.
+# The slowest live call observed (441 answer tokens beside ~6,500 prompt tokens, 80 GB
+# card, 2026-09-22) took about 33 s; the mean of fifteen was 12 s.
+PLANNED_SECONDS_PER_CALL: Final = 40
 
-    The retained draft is the interrupted attempt's evidence and is never overwritten
-    (principle 4); a second live Pass A would answer differently. A resumed act's
-    `self_revision` therefore pairs two serving sessions, traceable through each record's
-    `receipt_ref`. The run tree refuses artifacts from another `config_digest`, so the
-    pair never spans models or configurations.
+
+def _acts_left_to_read(context, wanted: list[dict[str, Any]]) -> int:
+    """Count the acts a live pass still has to read, refusing any it left half-read.
+
+    Live resume is all-or-nothing per act: an act is either sealed or untouched. An
+    interrupted attempt's artifacts cannot be finished by a second serving session
+    without pairing two engines' answers in one reading, so it refuses before any
+    chair starts, and those artifacts stay as that attempt's evidence.
     """
-    identifier = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
-    if not context.tree.has_artifact(PERLECTOR, "lectio-prior", identifier):
-        return None
-    record = context.tree.read_artifact(PERLECTOR, "lectio-prior", identifier)
-    return {
-        "reference": context.artifact_ref(PERLECTOR, "lectio-prior", identifier),
-        "text": record["payload"]["text"],
-    }
+    left, half_read = 0, []
+    for act in wanted:
+        if act["outcome"] == "held":
+            continue
+        act_id = act["act_id"]
+        ordinal = _next_attempt(context, act_id, act_regions(context, act_id)[0])
+        if _reading_already_sealed(context, act_id, ordinal, act_key=act["act_key"]):
+            continue
+        if _sealed_pass_kinds(context, act_id, ordinal):
+            half_read.append(act["act_key"])
+        left += 1
+    if half_read:
+        raise ContractError(
+            f"acts {half_read} hold artifacts from an interrupted live attempt and no "
+            "Perlectio; a live pass resumes only from sealed or untouched acts. Read these "
+            "pages in a new run; the interrupted attempt's artifacts remain its evidence"
+        )
+    return left
+
+
+def _utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError(f"{value!r} names no time zone")
+    return parsed
+
+
+def _refuse_past_deadline(deadline: datetime | None, seconds_needed: int, what: str) -> None:
+    if deadline is None:
+        return
+    remaining = int((deadline - datetime.now(timezone.utc)).total_seconds())
+    if remaining < seconds_needed:
+        raise ContractError(
+            f"{what} needs {seconds_needed}s at {PLANNED_SECONDS_PER_CALL}s a call, but the "
+            f"reading deadline {deadline.isoformat()} leaves {remaining}s; nothing more was "
+            "started. Give a later --reading-deadline, or fewer acts with --act"
+        )
 
 
 def with_engine_call(payload: dict, result: dict, fields: frozenset) -> frozenset:
@@ -2101,6 +2129,21 @@ def _failure_record(error: Exception, *, phase: str) -> dict[str, Any] | None:
     Contract and schema errors return `None`: recorded as an engine incident, one would
     let the stage seal over an integrity defect.
     """
+    if isinstance(error, RequestCapacityRefusal):
+        if error.capacity is None:
+            raise error
+        return {
+            "phase": phase,
+            "kind": "request-capacity",
+            "code": "REQUEST_OVER_CAPACITY",
+            "detail": str(error),
+            "raw_response_ref": None,
+            "call_record_ref": None,
+            "request_sha256": None,
+            "receipt_ref": None,
+            "served_model_id": None,
+            "response_completion": None,
+        }
     if isinstance(error, EngineSignalRefusal):
         return {
             "phase": phase,
@@ -3234,8 +3277,6 @@ def _publish_lectio_prior(
         inputs=reading_inputs,
         payload=payload,
     )
-    # The derivation `_sealed_prior_draft` reads back by, so a resume reuses exactly
-    # this artifact.
     prior_artifact_id = _attempt_artifact_id(act_id, "lectio-prior", "lectio-prior", ordinal)
     return {
         "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
@@ -3405,7 +3446,15 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
 
 def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) -> int:
     """One Perlector pass: every requested act read once and published once."""
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
+    parser = stage_parser(__doc__.splitlines()[0])
+    parser.add_argument(
+        "--reading-deadline",
+        type=_utc,
+        default=None,
+        help="UTC time by which a live pass must finish reading; it refuses to start, or "
+        "to read another act, when the planned calls would run past it",
+    )
+    args = parser.parse_args()
     # Either ingress route, decided from one read of the run authority; the
     # real route carries the registry and sealed digests the lines below need.
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)
@@ -3472,6 +3521,25 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     # A live chair starts on first use, so a resumed pass with every act sealed or over
     # capacity never loads a model on a card billed by the hour.
     receipt_ref: dict[str, str] | None = None
+
+    calls_per_act = (
+        2
+        + audit_policy["round_cap"]
+        + bool(context.nuda_per_mille)
+        + bool(context.perlector_instrument_per_mille)
+    )
+    unread = _acts_left_to_read(context, wanted) if serving_mode == "live" else 0
+    if unread:
+        startup = (
+            bound_serving_recipes(context, args.serving_recipes_config)
+            .for_identity(chair, args.placement_tier)
+            .startup_timeout_seconds
+        )
+        _refuse_past_deadline(
+            args.reading_deadline,
+            startup + unread * calls_per_act * PLANNED_SECONDS_PER_CALL,
+            f"starting the Perlector ({startup}s) and reading {unread} acts",
+        )
 
     for act in wanted:
         act_id = act["act_id"]
@@ -3548,49 +3616,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 "declared stand-in cannot override an engine that reported"
             )
 
-        # Only a live pass must answer for a partial earlier attempt; fixture readers
-        # republish identical bytes.
-        sealed_arms = (
-            _sealed_pass_kinds(context, act_id, ordinal) if serving_mode == "live" else frozenset()
-        )
-        audit_round_sealed = sorted(sealed_arms & _AUDIT_ROUND_KINDS)
-        if audit_round_sealed:
-            # The establishing text is frozen in an audit record but its Perlectio never
-            # sealed, and a new reading would refuse against that record forever. Hold
-            # the act with the attempt's artifacts named, and read the rest (principle
-            # 2).
-            held_inputs = [
-                context.artifact_ref(
-                    PERLECTOR, kind, _attempt_artifact_id(act_id, kind, operation, ordinal)
-                )
-                for kind, operation in PRE_PERLECTIO_ARTIFACTS
-                if kind in sealed_arms
-            ]
-            payload = {
-                "act_key": act["act_key"],
-                "attempt_ordinal": ordinal,
-                "reason": (
-                    "a previous live attempt at this ordinal was interrupted after it "
-                    f"published {', '.join(audit_round_sealed)} and before its Perlectio; "
-                    "the reading that record froze cannot be produced again and the record "
-                    "is immutable, so this act is held with that evidence retained rather "
-                    "than read a second time. Every artifact that attempt published for "
-                    "this act is named in this record's inputs"
-                ),
-                "provenance": provenance_for(context, chair, attempted=False),
-            }
-            validate_not_run_payload(payload, fields=_NOT_RUN_HELD_FIELDS)
-            context.publish(
-                kind="perlectio",
-                subject_id=act_id,
-                outcome="not-run",
-                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
-                inputs=held_inputs,
-                payload=payload,
-            )
-            acknowledged += 1
-            continue
-
         # Every region of the act is verified and read, including a continuation
         # on the next page: an act that ran over the page break and was read only
         # up to the fold would be truncated, which is a failure and not an output.
@@ -3665,9 +3690,16 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 inputs=capacity_inputs,
                 payload=payload,
             )
+            unread -= 1
             acknowledged += 1
             continue
 
+        _refuse_past_deadline(
+            args.reading_deadline,
+            unread * calls_per_act * PLANNED_SECONDS_PER_CALL,
+            f"reading the {unread} acts left",
+        )
+        unread -= 1
         if reader is None:
             # One chair for the whole run, started by the first act that needs a
             # reading.
@@ -3698,12 +3730,6 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
         # logical act, as the control is.
         nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
 
-        # Sampling is derived, not stored, so an arm already on disk stays sampled; only
-        # the reader call that would produce refused bytes is skipped.
-        nuda_due = nuda_sampled and nuda.LECTIO_NUDA_KIND not in sealed_arms
-        control_due = control_sampled and "primed-without-prior" not in sealed_arms
-        sealed_prior = _sealed_prior_draft(context, act_id, ordinal) if sealed_arms else None
-
         # Bind loop-local publication facts now; the callback runs before the
         # establishing arm and returns the immutable prior reference it embeds.
         publish_prior = partial(
@@ -3730,11 +3756,10 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 dossier=base_dossier,
                 read_bytes=context.tree.read_bytes,
                 protocol_config=protocol_config,
-                nuda_sampled=nuda_due,
-                control_sampled=control_due,
+                nuda_sampled=nuda_sampled,
+                control_sampled=control_sampled,
                 draft_fed=context.draft_fed,
                 publish_prior=publish_prior,
-                sealed_prior=sealed_prior,
             )
         except _ACT_LOCAL_READING_FAILURES as error:
             failure = _failure_record(error, phase="establishing")
@@ -3774,7 +3799,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             acknowledged += 1
             continue
 
-        if nuda_due:
+        if nuda_sampled:
             _publish_lectio_nuda(
                 context,
                 act_key=act["act_key"],
@@ -3793,7 +3818,7 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 receipt_ref=receipt_ref,
             )
 
-        if control_due:
+        if control_sampled:
             _publish_primed_without_prior(
                 context,
                 act_key=act["act_key"],
@@ -4028,6 +4053,9 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
             validate_audit_delivery(
                 payload["dossier"], pass_kind="audit-reproof", audit_request=audit_request
             )
+            _refuse_past_deadline(
+                args.reading_deadline, PLANNED_SECONDS_PER_CALL, "the next re-proof call"
+            )
             try:
                 reproof = reader.read(
                     payload["dossier"],
@@ -4130,6 +4158,17 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                 # nothing is re-anchored by guesswork. Replacing both layers also drops
                 # a Pass-B whole-act gap, which a re-proof's own report can never carry.
                 reproof_assessment = _assessed(reproof, text=final_text)
+                if "[[" in final_text or "]]" in final_text:
+                    reproof_assessment = annotations.malformed_assessment(
+                        "a re-proof replacement carries a doubt mark its JSON answer cannot anchor"
+                    )
+                elif reproof_assessment["state"] != "assessed" and (
+                    payload["gaps"] or payload["uncertain_spans"]
+                ):
+                    reproof_assessment = annotations.malformed_assessment(
+                        "a re-proof replaced text over which Pass B marked doubts; those marks "
+                        "stay in Pass B's retained response and cannot be re-anchored here"
+                    )
                 payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
                 payload["uncertain_spans"] = list(reproof_assessment["uncertain_spans"])
                 payload["gaps"] = list(reproof_assessment["gaps"])
@@ -4195,6 +4234,8 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
                             },
                         ),
                     )
+                    if reproof_assessment["state"] == "malformed":
+                        payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
                     payload["dissent"] = dissent_against(
                         "", dissent_testimonia(row["testimonia"], row["attachment_view"])
                     )

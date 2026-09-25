@@ -556,9 +556,9 @@ def test_the_sealed_bound_is_above_the_maximum_ratio_that_was_measured():
 def test_the_representative_dossiers_sealed_bound_is_the_arithmetic_over_its_own_length():
     """The pair the shipped-row check spends, re-derived rather than retyped.
 
-    `TOKEN_COST_REPORT.md` section 5's representative dossier renders 2,269
-    characters, which the measurement reproduced at exactly its recorded 790
-    text tokens. The bound over it is 1,100, and that is what
+    `TOKEN_COST_REPORT.md` section 5's representative dossier renders 2,438
+    characters (2,269 before the doubt marks, where the measurement reproduced
+    its recorded 790 text tokens). The bound over it is 1,173, and that is what
     `operations/serving/test_serving_catalogue_capacity.py` weighs the shipped
     Perlector rows against.
     """
@@ -567,7 +567,7 @@ def test_the_representative_dossiers_sealed_bound_is_the_arithmetic_over_its_own
         "x" * PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS,
         template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST,
     )
-    assert tokens == PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS == 1100
+    assert tokens == PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS == 1173
     # And it is above the floor measured over the same dossier, which is the
     # whole point of measuring it.
     assert tokens > PERLECTOR_PROMPT_FLOOR_TOKENS
