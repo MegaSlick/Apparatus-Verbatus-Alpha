@@ -1,48 +1,36 @@
 """Churro's own request framing and answer grammar, re-expressed over stdlib.
 
 Churro (`attestator_3`, adapter `churro.v1`) is asked in the vendor's own
-framing and answers in the vendor's own grammar.  This module holds both ends
-of that: the exact system string the vendor resolves for
-`stanford-oval/churro-3B`, per prompt variant and with its digest, and a parser
-for the `HistoricalDocument` XML that string asks for.  It is deliberately
-`common/`-level and imports nothing from `pipeline/` or `operations/`: the
-adapter that sends the prompt and the contract that closes the retained capture
-are different stages, and neither may own the other's bytes.
+framing and answers in the vendor's own grammar. This module holds both ends:
+the exact system string the vendor resolves for `stanford-oval/churro-3B`, per
+prompt variant and with its digest, and a parser for the `HistoricalDocument`
+XML that string asks for. Deliberately `common/`-level, importing nothing from
+`pipeline/` or `operations/`, since the adapter that sends the prompt and the
+contract that closes the capture are different stages.
 
 ## The carried strings
 
-Two vendor-attested framings exist for this one model id, and both are
-system-only -- no user text at all, the image being the whole user turn:
+Two vendor-attested framings exist for this model id, both system-only (no
+user text; the image is the whole user turn):
 
 * `registry-v0.3.0` -- `CHURRO_3B_XML_TEMPLATE.system_message` from
-  `src/churro_ocr/templates/presets.py` in `github.com/stanford-oval/Churro` at
-  tag `v0.3.0` (`4abb17386d9656199c2776195926545fc527a691`), which
-  `providers/specs.py::resolve_ocr_profile` returns for this model id, with
-  `user_prompt=None`.
-* `paper-harness-ed09bc7` -- the module constant `SYSTEM_MESSAGE` at
-  `ocr/systems/finetuned_ocr.py:17` in the paper-era release
-  `ed09bc7fd6475c333a25427f3d0b9227af46ce27` (short `ed09bc7fd6`, which is what
-  the variant is named after), read at line 33 by `FineTunedOCR`, the class the
-  benchmark harness ran churro-3B through, with `user_message_text=None`.
-  Its two spelling errors ("entiretly", "documents") are part of the bytes that
-  harness actually sent and are carried unaltered.  The same release's CLI
-  default at `run_churro_ocr.py:230` spells both correctly, which is why these
-  are two named variants rather than one string with a typo nobody can
-  attribute: which of them the fine-tuning itself saw is not stated anywhere in
-  the paper, the model card, or the code, and this module does not guess.
+  `github.com/stanford-oval/Churro` at tag `v0.3.0`
+  (`4abb17386d9656199c2776195926545fc527a691`).
+* `paper-harness-ed09bc7` -- `SYSTEM_MESSAGE` in
+  `ocr/systems/finetuned_ocr.py` at the paper-era release `ed09bc7fd6...`,
+  the class the benchmark harness ran churro-3B through. Its two spelling
+  errors ("entiretly", "documents") are part of the bytes that harness
+  actually sent and are carried unaltered; the same release's CLI default
+  spells both correctly, so these are two named variants rather than one
+  string with an unattributable typo.
 
-The Churro *code* is Apache-2.0, so carrying these strings with this
-attribution is permitted; the weights are under the Qwen research licence at
-the pinned revision and are never vendored.  Nothing here reads the network.
-The digests recorded beside each string are what an on-demand, network-gated
-parity test diffs against the pinned raw files; the assertion inside this
-repository is the offline one in `common/test_churro_document.py`, which
-re-digests the constants so an edit here cannot pass silently.
+Churro's code is Apache-2.0, so carrying these strings is permitted; the
+weights are under the Qwen research licence and are never vendored. The
+digests recorded beside each string are what an on-demand, network-gated
+parity test diffs against the pinned raw files.
 
-**No default variant is named here.**  Which variant a chair sends is a
-configuration fact written onto the Testimonium as `prompt_variant`; a default
-in this module would be a second place claiming to answer that, and the two
-would drift.
+No default variant is named here: which variant a chair sends is a
+configuration fact written onto the Testimonium as `prompt_variant`.
 
 ## The grammar
 
@@ -70,78 +58,39 @@ asked for is visible rather than silent (principle 2).
 ## Departures from the vendor's own flattener, and why each
 
 `evaluation/xml_utils.py::extract_actual_text_from_xml` is the vendor's
-reading-order flattener.  Five of its behaviours are deliberately not
-reproduced.  Each departure is toward keeping evidence, never toward changing a
-reading.
+reading-order flattener. Five behaviours are deliberately not reproduced, each
+toward keeping evidence, never toward changing a reading.
 
-1. **Marked-up text is kept, not deleted.**  The vendor removes `Description`,
-   `Deletion`, `Illegible` and `Gap` elements *with their contents* by regex
-   before parsing.  Deleting a struck-out or damaged word from the reading
-   loses ink this project exists to capture (goal 2).  Every one of the six
-   markup kinds in `MARKED_SPAN_KINDS` is instead kept as ordinary text, and
-   the code-point range it occupies in the returned text is recorded in
-   `marked_spans`, so a consumer that wants the vendor's flattening can
-   reproduce it exactly by deleting those ranges, and one that wants the ink
-   has it.  `Illegible` and `Gap` are empty elements in the XSD, so their spans
-   are zero-length markers at the point they occurred.
-2. **A `Line` element is one line; the vendor makes every text node one.**  The
-   vendor calls `itertext()` and strips each text node into its own line, which
-   breaks a line wherever inline markup appears -- `Le <Addition>dit</Addition>
-   jour` becomes three lines in the vendor's output and one here.  Reading
-   order is what the model was fine-tuned to produce (paper §3, "a single text
-   string per page in correct reading order"), and splitting a line at its
-   markup is not that order.  Text that is *not* inside a `Line` (a
-   `PageNumber`, a `CatchWord`, a `Formula`'s mixed content) still becomes its
-   own line, so nothing in a walked section is dropped.
-3. **Structural repair is refused; a lossless escape is not repair.**  The
-   vendor does two separable things before it reads, and only one of them is
-   refused here.  It escapes stray `&`, `<` and `>` outside its known tag list,
-   which loses nothing -- those characters come back out of the parser as the
-   characters the model wrote; and it parses with `recover=True`, so a broken
-   response yields a partial reading that no record distinguishes from a whole
-   one, returning `""` on an outright parse error, which is a silent empty
-   reading.  The `recover=True` half is refused.  The escape is kept, narrowed,
-   and counted: a response that offers the grammar and does not parse is
-   escaped once and re-parsed, only `<` and `&` that cannot open markup are
-   touched (an `&amp;` the model wrote correctly is left alone, where the
-   vendor would escape it a second time), and a response that parses on the
-   first attempt is never escaped at all.  Where the escape is what made a
-   response readable, the finding `stray-markup-escaped` counts the characters,
-   because `&c.` is a routine abbreviation in these registers and refusing a
-   whole page over one ampersand loses ink this project exists to capture
-   (goal 2).  Everything structural is still refused: nothing here reorders,
-   trims, closes, or defaults a malformed answer, and a response that still
-   will not parse is `failed` with the parser's own reason for what survived
-   the escape and the count of what it escaped, its bytes retained under their
-   digest for a later re-parse.
-4. **No `<lb/>`/`<br>` scrubbing pass.**  The vendor regexes those out of the
-   extracted text.  This parser rewrites no characters of the response beyond
-   the whitespace collapsing named below and the counted escape in departure 3,
-   so a stray tag survives as the text it is rather than being silently
-   removed.
-5. **Each section is walked once, by its nearest owner.**  The scope itself is
-   the vendor's: `Header`, `Body` and `Footer` are matched among a `Page`'s
-   *descendants* (`page.xpath(".//Header")` and its two siblings,
-   `xml_utils.py:104`), never among its direct children, so a page that wraps
-   its sections in an element the grammar does not name still reads instead of
-   coming back empty under state `parsed`.  Two bounds the vendor does not
-   draw: a section inside a nested `Page` belongs to that page's own walk, and
-   a section inside another section is walked by the section enclosing it.  The
-   vendor's `.//` queries emit each of those twice, and a doubled reading is
-   ink the response never wrote (goal 1).  Text a `Page` carries outside every
-   section of its own is outside the vendor's transcription and stays outside
-   it -- but the page says so, through the finding
-   `page-text-outside-sections` and its page ordinal, so ink the response put
-   out of the walk's reach is visible rather than simply absent (principle 2).
+1. **Marked-up text is kept, not deleted.** The vendor regex-deletes
+   `Description`, `Deletion`, `Illegible` and `Gap` elements *with their
+   contents*, losing struck-out or damaged ink. Every kind in
+   `MARKED_SPAN_KINDS` is kept as ordinary text with its code-point range
+   recorded in `marked_spans`, so a consumer wanting the vendor's flattening
+   can reproduce it by deleting those ranges.
+2. **A `Line` element is one line; the vendor makes every text node one.** The
+   vendor's `itertext()` breaks a line at any inline markup (`Le
+   <Addition>dit</Addition> jour` becomes three lines there, one here), which
+   is not the reading order the model was fine-tuned to produce.
+3. **Structural repair is refused; a lossless escape is not repair.** The
+   vendor's stray-character escaping loses nothing and is kept, narrowed to
+   only `<`/`&` that cannot open markup and counted as `stray-markup-escaped`
+   (a routine `&c.` should not refuse a whole page); the vendor's
+   `recover=True`, which yields an unmarked partial reading or a silent empty
+   one, is refused -- a response that still will not parse after the escape is
+   `failed`, with its bytes retained for a later re-parse.
+4. **No `<lb/>`/`<br>` scrubbing pass.** The vendor regexes those out; this
+   parser rewrites no characters beyond the whitespace collapsing below and
+   the counted escape in departure 3.
+5. **Each section is walked once, by its nearest owner.** The vendor's
+   `.//Header` etc. would double-count a section under a nested `Page` or
+   another section; here each is walked exactly once. Text a `Page` carries
+   outside every section stays outside the transcription but is named via the
+   finding `page-text-outside-sections`, rather than silently absent.
 
-Kept from the vendor unchanged: the walk scope (`Page` descendants, then their
-`Header`, `Body` and `Footer` descendants in that fixed order regardless of the
-order they appear in, bounded as departure 5 says), the `"\\n"` join between a
-page's sections and the `"\\n\\n"` join between pages, `Metadata` being outside
-the transcription (its `Language` and `Script` are not ink, and they remain in
-the retained bytes), and
-`trim_leading_prompt` (`run_churro_ocr.py`), reproduced exactly including its
-`lstrip("\\n ")`, which strips newlines and spaces and nothing else.
+Kept from the vendor unchanged: the walk scope and order, the `"\\n"` join
+between a page's sections and `"\\n\\n"` between pages, `Metadata` staying
+outside the transcription, and `trim_leading_prompt` (`run_churro_ocr.py`),
+reproduced exactly including its `lstrip("\\n ")`.
 
 **Whitespace inside a line is collapsed.**  A `HistoricalDocument` answer is
 indented XML, so the raw concatenation of a `Line`'s descendant text carries
