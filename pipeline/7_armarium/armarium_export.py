@@ -3433,6 +3433,26 @@ def _zip_bytes(members: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
+_SOURCES_LIST_FIELDS: Final = (
+    "pages",
+    "regions",
+    "act_citations",
+    "act_outcomes",
+    "salvage_regions",
+)
+_SOURCES_FIELDS: Final = (
+    "pages",
+    "regions",
+    "act_citations",
+    "act_outcomes",
+    "aggregate_basis",
+    "ink_map_pages",
+    "witness_chairs",
+    "witness_floor",
+    "salvage_regions",
+)
+
+
 def _load_sources(root) -> dict[str, Any]:
     try:
         record = json.loads((root / "sources.json").read_text(encoding="utf-8"))
@@ -3444,63 +3464,18 @@ def _load_sources(root) -> dict[str, Any]:
         raise SchemaRefusal("the package sources citation is unreadable") from error
     if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
         raise SchemaRefusal("the package sources citation has no recognized schema")
-    fields = set(record) - {"logical_accounting"}
-    if fields != {
-        "schema",
-        "pages",
-        "regions",
-        "act_citations",
-        "act_outcomes",
-        "aggregate_basis",
-        "ink_map_pages",
-        "witness_chairs",
-        "witness_floor",
-        "salvage_regions",
-    }:
+    if set(record) - {"logical_accounting"} != {"schema", *_SOURCES_FIELDS}:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
-    (
-        pages,
-        regions,
-        act_citations,
-        act_outcomes,
-        aggregate_basis,
-        witness_chairs,
-        witness_floor,
-        salvage_regions,
-    ) = (
-        record.get("pages"),
-        record.get("regions"),
-        record.get("act_citations"),
-        record.get("act_outcomes"),
-        record.get("aggregate_basis"),
-        record.get("witness_chairs"),
-        record.get("witness_floor"),
-        record.get("salvage_regions"),
+    sources = {field: record[field] for field in _SOURCES_FIELDS}
+    sources["ink_map_pages"] = _validate_ink_map_pages(
+        sources["ink_map_pages"], "the package sources citation"
     )
-    ink_map_pages = _validate_ink_map_pages(
-        record.get("ink_map_pages"), "the package sources citation"
-    )
-    if (
-        not isinstance(pages, list)
-        or not isinstance(regions, list)
-        or not isinstance(act_citations, list)
-        or not isinstance(act_outcomes, list)
-        or not isinstance(aggregate_basis, dict)
-        or not isinstance(salvage_regions, list)
+    if not isinstance(sources["aggregate_basis"], dict) or any(
+        not isinstance(sources[field], list) for field in _SOURCES_LIST_FIELDS
     ):
         raise SchemaRefusal("the package sources citation has no page and region lists")
-    return {
-        "pages": pages,
-        "regions": regions,
-        "act_citations": act_citations,
-        "act_outcomes": act_outcomes,
-        "aggregate_basis": aggregate_basis,
-        "ink_map_pages": ink_map_pages,
-        "witness_chairs": witness_chairs,
-        "witness_floor": witness_floor,
-        "salvage_regions": salvage_regions,
-        "logical_accounting": record.get("logical_accounting"),
-    }
+    sources["logical_accounting"] = record.get("logical_accounting")
+    return sources
 
 
 def _manifest_formats(manifest: dict[str, Any]) -> ArmariumFormats:
