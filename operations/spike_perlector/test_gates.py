@@ -615,12 +615,9 @@ def test_a_record_whose_action_is_not_the_recorded_one_refuses():
 def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate(sibling):
     """A sibling scope's digest cannot satisfy this gate.
 
-    The docstring used to say the schema tag is what separates the four scopes
-    and that this proves it. It does not: each scope record carries different
-    field names, so the digests differ whether or not the tag is there, and the
-    assertion below passes with every `"schema"` key deleted. The tag is pinned
-    separately by the test underneath. The refusal exercised here is real; only
-    the stated reason was wrong.
+    Each scope record carries different field names, so the digests differ
+    whether or not the `"schema"` tag is there; the tag alone is pinned
+    separately by the test underneath.
     """
 
     assert sibling != DataGateAuthority.scope_digest(policy_content=POLICY)
@@ -633,7 +630,7 @@ def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate(sibling):
 
 
 def test_the_schema_tag_alone_separates_two_otherwise_identical_scopes():
-    """Pins the claim the test above used to make and could not support.
+    """Pins the claim the test above depends on.
 
     Two scope records identical but for their `"schema"` value must digest
     differently, or the tag is decoration and two scopes with the same fields
@@ -676,11 +673,9 @@ def test_non_canonical_policy_content_refuses_as_a_disclosure_not_a_type_error(m
     """The gate's refusal must be the governed one, not a bare `TypeError`.
 
     Strict canonicalization refuses a float or a non-string key by raising
-    `TypeError`, and the construction that triggers it sat outside the `try` that
-    converts failures into `DisclosureRefusal` — so a caller catching
-    `DisclosureRefusal` in order to hold would not have caught this at all. The
-    refusal was restored when the digest was made strict; the *governed* refusal
-    was not. Found by the Opus read of this branch.
+    `TypeError`; that construction must sit inside the `try` that converts
+    failures into `DisclosureRefusal`, or a caller catching `DisclosureRefusal`
+    in order to hold would not catch this at all.
     """
 
     reference, payload = approval_reference_for(
@@ -716,11 +711,10 @@ def test_non_canonical_policy_content_refuses_as_a_disclosure_not_a_type_error(m
 
 
 def test_every_approval_loader_names_a_missing_approval_rather_than_an_attribute():
-    """The fix reached one loader first; the remaining loaders said `'NoneType' object
-    has no attribute 'relative_path'` — verbatim the diagnostic the commit that
-    made it identified as wrong, in the same file. Lower stakes than the data
-    gate, since these do not gate private-register disclosure, but the reasoning
-    is unchanged. Found by the Opus read of this branch."""
+    """Every approval loader must name the missing approval, not raise
+    `'NoneType' object has no attribute 'relative_path'` from an unchecked lookup.
+    Lower stakes than the data gate, since these do not gate private-register
+    disclosure, but the reasoning is unchanged."""
 
     with pytest.raises(DisclosureRefusal, match="third-party transmission approval is missing"):
         ThirdPartyTransmissionApproval.load(

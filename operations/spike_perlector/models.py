@@ -126,7 +126,7 @@ class RunLimitations:
 # UAX #15's Stream-Safe Text Format caps a run of non-starters at 30, and this
 # instrument adopts that cap for a measured reason: uniseg's grapheme
 # segmentation is quadratic in the length of a *single* cluster. Measured
-# 2026-08-09 against uniseg 0.10.1 -- one base character carrying 4,000
+# against uniseg 0.10.1 -- one base character carrying 4,000
 # combining marks segments in 5.9s and 8,000 in 23.5s, so MAX_TEXT_LENGTH alone
 # would let 20 KB of vendor output cost minutes of CPU per scored cell. Real
 # diplomatic transcription never stacks more than a handful of marks on one
@@ -656,11 +656,10 @@ class WitnessConfiguration:
 
         **Compared on the normalized repository name.** This is the same structural
         rule `roster.validate_perlector_candidate` enforces against one hardcoded
-        Attestator, applied here against the *actually configured* witnesses — which
-        makes it the one that matters more, and it was still an exact string match
-        after the other was fixed. A trailing space, a capital letter or a
-        `@revision` pin let a configured witness sit in the candidate roster, and
-        self-witness agreement is not evidence (principle 1).
+        Attestator, applied here against the *actually configured* witnesses, which
+        makes it the one that matters more: a trailing space, a capital letter, or a
+        `@revision` pin must not let a configured witness sit in the candidate
+        roster — self-witness agreement is not evidence.
         """
 
         witness_artifacts = {source.artifact_digest for source in self.sources}
@@ -946,8 +945,7 @@ class Perlectio:
         # it for truthiness alone, so `-1` and `True` both pass as "saw
         # Testimonia" and are then retained as evidence — and this number travels
         # into the dissent and parroting measures, where a count that is not a
-        # count is a measurement claim about something that never happened
-        # (principle 8).
+        # count is a measurement claim about something that never happened.
         if not isinstance(self.testimonia_count, int) or isinstance(self.testimonia_count, bool):
             raise MeasurementRefusal("Perlectio testimonia_count must be an integer count")
         if self.testimonia_count < 0:

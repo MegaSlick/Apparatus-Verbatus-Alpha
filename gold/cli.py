@@ -105,10 +105,9 @@ def _records_in(directory: str | Path | _CorpusDirectory) -> list[dict[str, obje
                 directory_descriptor=corpus.descriptor,
                 display_path=corpus.path / name,
             )
-            # `read_json` returns any JSON value. Every caller then reads
-            # `schema` off these, so a file holding a list, a string or null
-            # reached `.get` and raised AttributeError -- a traceback where the
-            # contract is a named refusal. One guard here covers every reader.
+            # `read_json` returns any JSON value, but every caller reads
+            # `schema` off a dict. This guard turns a non-dict record into
+            # a named refusal instead of an AttributeError deep in a reader.
             if not isinstance(record, dict):
                 raise SchemaRefusal(
                     f"the gold record {corpus.path / name} is not a JSON object, so it "
@@ -193,6 +192,19 @@ def _locked_corpus(directory: str | Path) -> Iterator[_CorpusDirectory]:
         os.close(descriptor)
 
 
+def _reconcile_and_publish(
+    corpus: _CorpusDirectory, output_path: Path, record: dict[str, object], run_path: str | None
+) -> None:
+    """Validate the record against its corpus, closure waived, then publish it.
+
+    Closure is waived because an open custody chain is normal here;
+    `validate-corpus` enforces it.
+    """
+    existing = _records_in(corpus)
+    validate_corpus([*existing, record], run_path, require_closure=False)
+    write_append_only(output_path, record, directory_descriptor=corpus.descriptor)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -243,14 +255,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         with _locked_corpus(args.output_dir) as output:
             existing = _records_in(output)
-            # Validate the state the whole command would create before publishing
-            # its first immutable byte. Closure is waived here for the same
-            # reason as every other publication path: an act is legitimately
-            # open while two readings are being collected, and adding a sample
-            # neither closes nor threatens one. Closure is the collection
-            # gate's rule -- `validate-corpus` still enforces it. This also makes an interrupted identical
-            # run resumable: repeated identical records are reuse, and the union
-            # includes every member the retained draw says is still missing.
+            # Validate the state this command would create before publishing its
+            # first immutable byte, closure waived as in `_reconcile_and_publish`.
+            # This also makes an interrupted identical run resumable: repeated
+            # identical records are reuse, and the union includes every member
+            # the retained draw says is still missing.
             validate_corpus([*existing, draw, *selected], args.run, require_closure=False)
             # The draw is the membership authority, so it is published FIRST: an
             # interrupted run then leaves a draw whose members are partly missing --
@@ -271,27 +280,18 @@ def main(argv: list[str] | None = None) -> int:
         record = ingest_manual_pick(args.run, read_json(args.pick))
         output = Path(args.output)
         with _locked_corpus(output.parent) as corpus:
-            existing = _records_in(corpus)
             # A stratum is a collection fact, not a property R0 can derive from one
-            # pick. Reconcile the destination corpus before publishing so a second
-            # spelling of the same page is refused rather than counted twice -- any
-            # second spelling, not only one that also restratifies the page, since
-            # `sample_digest` binds `selection_basis` and a restated wording alone
-            # mints a second individually valid sample of one hand-picked page.
-            validate_corpus([*existing, record], args.run, require_closure=False)
-            write_append_only(output, record, directory_descriptor=corpus.descriptor)
+            # pick, so a second spelling of the same hand-picked page -- even one
+            # that only restates `selection_basis`, since that field is bound into
+            # `sample_digest` -- is refused here rather than counted twice.
+            _reconcile_and_publish(corpus, output, record, args.run)
     elif args.command == "bind-instrument":
         output = Path(args.output)
         record = bind_instrument(
             read_json(args.sample), args.act_identity, args.protocol_digest, args.run
         )
         with _locked_corpus(output.parent) as corpus:
-            # Reconcile against the corpus this record joins before publishing an
-            # immutable byte. Closure is waived because an open custody chain is
-            # the normal state here; every other collection rule still refuses.
-            existing = _records_in(corpus)
-            validate_corpus([*existing, record], args.run, require_closure=False)
-            write_append_only(output, record, directory_descriptor=corpus.descriptor)
+            _reconcile_and_publish(corpus, output, record, args.run)
     elif args.command == "transcribe":
         output = Path(args.output)
         record = transcribe(
@@ -302,12 +302,7 @@ def main(argv: list[str] | None = None) -> int:
             args.run,
         )
         with _locked_corpus(output.parent) as corpus:
-            # Reconcile against the corpus this record joins before publishing an
-            # immutable byte. Closure is waived because an open custody chain is
-            # the normal state here; every other collection rule still refuses.
-            existing = _records_in(corpus)
-            validate_corpus([*existing, record], args.run, require_closure=False)
-            write_append_only(output, record, directory_descriptor=corpus.descriptor)
+            _reconcile_and_publish(corpus, output, record, args.run)
     elif args.command == "adjudicate":
         output = Path(args.output)
         record = adjudicate(
@@ -317,12 +312,7 @@ def main(argv: list[str] | None = None) -> int:
             text=(read_transcription_text(args.text_file) if args.text_file is not None else None),
         )
         with _locked_corpus(output.parent) as corpus:
-            # Reconcile against the corpus this record joins before publishing an
-            # immutable byte. Closure is waived because an open custody chain is
-            # the normal state here; every other collection rule still refuses.
-            existing = _records_in(corpus)
-            validate_corpus([*existing, record], args.run, require_closure=False)
-            write_append_only(output, record, directory_descriptor=corpus.descriptor)
+            _reconcile_and_publish(corpus, output, record, args.run)
     elif args.command == "verify-sampling":
         if (args.catalog is None) != (args.plan is None):
             raise SchemaRefusal("--catalog and --plan must be supplied together")
