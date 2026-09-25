@@ -1,6 +1,5 @@
 #!/bin/sh
-# Refuses a commit whose message, author or committer header matches a known
-# credential pattern.
+# Refuses a commit whose message, author or committer header carries a credential.
 
 message=$1
 if [ -z "$message" ] || [ ! -f "$message" ]; then
@@ -14,8 +13,7 @@ if [ ! -f "$ingress" ]; then
   echo "  BLOCKED: $ingress is missing, so the commit message cannot be checked." >&2
   exit 1
 fi
-# check_ingress.py exits 1 for a recognised credential, 2 when it could not read its
-# input. `$?` is captured on its own line: after an `if` it is the compound's status.
+# Exit 1 is a credential, 2 an unrun check; `$?` after an `if` would be the if's.
 python3 "$ingress" --message-file "$message" >/dev/null
 status=$?
 if [ "$status" -ne 0 ]; then
@@ -30,11 +28,7 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-# The author and committer headers carry operator text (--author, user.name, the
-# GIT_AUTHOR_*/GIT_COMMITTER_* environment); `git var` gives what git will record.
-# --ref-fields fingerprints each field, so a failing identity is never reprinted.
-# No configured identity is not an unrun check: there is nothing to leak and git
-# refuses the commit itself, while blocking would break every CI runner.
+# No identity configured means nothing to leak, and git refuses that commit itself.
 author_ident=$(git var GIT_AUTHOR_IDENT 2>/dev/null) || author_ident=""
 committer_ident=$(git var GIT_COMMITTER_IDENT 2>/dev/null) || committer_ident=""
 

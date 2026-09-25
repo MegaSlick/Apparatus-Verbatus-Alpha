@@ -47,7 +47,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Final, Iterator, Sequence
 
-from operations.pod.models import looks_like_credential_field
+from common.credentials import looks_like_credential_env
 
 from .errors import ErrorCode, OperatorError
 
@@ -55,12 +55,6 @@ _WRITE_RIGHTS: Final = (
     "write-file,remove-dir,remove-file,make-char,make-dir,make-reg,make-sock,"
     "make-fifo,make-block,refer,truncate"
 )
-# Not the only test applied below: a future chair's credential need not start
-# with one of these four words, so `looks_like_credential_field` (the same
-# name-shape scan `operations/pod/models.py` uses) also runs, sharing one
-# definition of "looks like a secret" rather than drifting apart.
-PROVIDER_ENV_PREFIXES: Final = ("RUNPOD_", "AWS_", "HF_", "HUGGINGFACE_")
-
 # Not a credential concern but an import concern: the advance worker is the
 # one process that may write into the run tree, so an inherited `PYTHONPATH`,
 # user site-packages, or preloaded shared object could shadow `advance.py`
@@ -81,17 +75,11 @@ _CUSTODY_ENVIRONMENT_NAMES: Final = frozenset(
 CHILD_INTERPRETER_FLAGS: Final = ("-I", "-S")
 
 
-def _is_credential_env_name(key: str) -> bool:
-    return any(key.startswith(prefix) for prefix in PROVIDER_ENV_PREFIXES) or (
-        looks_like_credential_field(key)
-    )
-
-
 def credential_free_environment(source: dict[str, str] | None = None) -> dict[str, str]:
     """Copy a process environment with all known provider credentials removed."""
 
     values = dict(os.environ if source is None else source)
-    return {key: value for key, value in values.items() if not _is_credential_env_name(key)}
+    return {key: value for key, value in values.items() if not looks_like_credential_env(key)}
 
 
 def custody_environment(source: dict[str, str] | None = None) -> dict[str, str]:
@@ -175,7 +163,7 @@ def require_no_provider_credentials(environment: dict[str, str] | None = None) -
     leaked = sorted(
         key
         for key in (os.environ if environment is None else environment)
-        if _is_credential_env_name(key)
+        if looks_like_credential_env(key)
     )
     if leaked:
         raise OperatorError(

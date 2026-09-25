@@ -13,10 +13,9 @@ and the response body, and appends each as one JSON line to the evidence file
 nothing credential-shaped is stored as the bytes the provider sent, decoded as
 UTF-8 with replacement. Two shared predicates decide "credential-shaped", not
 one, because a secret announces itself in two different ways:
-`models.looks_like_credential_field` asks of every key whether the *name*
-names a secret, and `models.looks_like_credential_value` asks of every string
-leaf, under any key at all, whether it or a word inside it is *shaped* like
-one. A body either predicate hits is parsed, the offending values replaced
+`common.credentials.looks_like_credential_field` asks of every key whether the
+*name* names a secret, and `looks_like_credential_value` asks of every string
+leaf, under any key at all, whether any piece of it is *shaped* like one. A body either predicate hits is parsed, the offending values replaced
 with `SCRUBBED`, and re-serialized; the record then names every scrubbed path
 and says `verbatim: false`, so a reader never mistakes a scrubbed body for the
 provider's own bytes. Money survives the round trip as numbers: JSON floats
@@ -55,7 +54,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Literal, Mapping, Protocol
 
-from .models import looks_like_credential_field, looks_like_credential_value, utc_now
+from common.credentials import fixture_value_carries_credential, looks_like_credential_field
+
+from .models import utc_now
 
 FIXTURE_SCHEMA = "provider-exchange.v1"
 SCRUBBED = "SCRUBBED"
@@ -258,39 +259,13 @@ def _scrub(value: object, where: str, scrubbed: list[str]) -> object:
         return result
     if isinstance(value, (list, tuple)):
         return [_scrub(item, f"{where}[{index}]", scrubbed) for index, item in enumerate(value)]
-    if isinstance(value, str) and _carries_a_credential_shaped_word(value):
-        # The name check above asks whether a *key* names itself a secret. A
-        # real leaked value carries no such name: a provider answer echoing a
-        # key inside a `dockerArgs`, `message` or env-value string would land
-        # in the drill fixture verbatim with an empty `scrubbed` list. This is
-        # the same shape test `bootstrap_main` applies to argv, so a
-        # credential-shaped value is replaced and named whatever innocuous key
-        # it sat under. It is deliberately narrow -- 20+ opaque mixed
-        # alphanumeric characters, no path or URL punctuation, never a plain
-        # hex digest -- so ordinary provider ids, digests and paths still
-        # record verbatim and the fixture stays replayable.
+    if isinstance(value, str) and (
+        fixture_value_carries_credential(value)
+        or any(looks_like_credential_field(m.group(1)) for m in _KEY_VALUE_PATTERN.finditer(value))
+    ):
         scrubbed.append(where)
         return SCRUBBED
     return value
-
-
-def _carries_a_credential_shaped_word(value: str) -> bool:
-    """The shared shape test, applied to the leaf and to each word inside it.
-
-    A provider answer rarely hands back a bare key: it hands back
-    ``"started with sk-..."`` or a `dockerArgs` line with one in it. Testing
-    only the whole leaf would miss exactly the case this exists for, so the
-    leaf is split on whitespace and each word stripped of the quoting and
-    grouping marks a value picks up at its edges -- the same reading
-    `notify_hooks` applies to a notification line.
-    """
-
-    if looks_like_credential_value(value):
-        return True
-    return any(
-        stripped and looks_like_credential_value(stripped)
-        for stripped in (word.strip("\"'(),;:") for word in value.split())
-    )
 
 
 _BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+\S+")

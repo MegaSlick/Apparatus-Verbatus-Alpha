@@ -50,6 +50,7 @@ from common.contracts.stages import (
 )
 from common.contracts.uncertainty import from_perlectio
 from common.corpus_register import append_records, empty_register, register_digest
+from common.credentials import looks_like_credential_env
 from common.fixture_identity import page_identity
 from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
@@ -69,8 +70,7 @@ from common.stage import (
 )
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 from operations.operator import surface, volume_s3
-from operations.operator.custody import PROVIDER_ENV_PREFIXES, credential_free_environment
-from operations.pod.models import looks_like_credential_field
+from operations.operator.custody import credential_free_environment
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -665,10 +665,7 @@ def test_orchestrator_and_surface_strip_every_provider_credential(
     the transfer's own two S3 keys -- RUNPOD_API_KEY (pod creation, i.e.
     money), HF_TOKEN, AWS_*, and anything else shaped like a secret -- the
     same broad shape `credential_free_environment` already holds the
-    operator's confined children to; the orchestrator duplicates that
-    predicate rather than importing it (module docstring: "imports only
-    common/"), so this is also where the copy is checked against the original,
-    the way the transfer-credential duplicate above already is.
+    operator's confined children to.
     """
 
     orchestrator = _orchestrator_module("orchestrator_provider_credentials")
@@ -684,12 +681,7 @@ def test_orchestrator_and_surface_strip_every_provider_credential(
         *volume_s3.TRANSFER_CREDENTIAL_ENV,
     )
     for name in representative_names:
-        assert looks_like_credential_field(name) or name.startswith(PROVIDER_ENV_PREFIXES), (
-            f"{name} is not actually credential-shaped by the real predicate; fix the fixture"
-        )
-        assert orchestrator._looks_like_provider_credential(name), (
-            f"the orchestrator's duplicated predicate does not refuse {name}"
-        )
+        assert looks_like_credential_env(name), f"{name} is not credential-shaped; fix the fixture"
         monkeypatch.setenv(name, f"secret-for-{name}")
     monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
 
