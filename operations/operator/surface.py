@@ -1867,10 +1867,7 @@ class OperatorSurface:
     def status(self) -> list[str]:
         """Read descriptors, receipts, and leases without writes or provider calls."""
 
-        try:
-            descriptor = self.descriptor.load()
-        except RecordError as error:
-            raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
+        descriptor = self._load_descriptor()
         # A lease is operator evidence even when no receipt was written; unreadable
         # lease evidence likewise prevents an honest claim that the state is empty.
         open_leases, lease_unreadable = self._open_leases()
@@ -1897,57 +1894,8 @@ class OperatorSurface:
             lines.append(f"- safety lease: UNREADABLE; it was not treated as closed. {reason}")
         if descriptor is not None and descriptor["actions"]:
             for action, path_texts in sorted(descriptor["history"].items()):
-                if action == "active-launch":
-                    continue
-                # Load all first: a `started` run receipt renders differently
-                # once a later receipt records its end.
-                loaded: list[tuple[int, Path | None, dict[str, Any] | None, str | None]] = []
-                for number, path_text in enumerate(path_texts, start=1):
-                    try:
-                        receipt_path = self.descriptor.receipt_path(path_text)
-                        loaded.append(
-                            (
-                                number,
-                                receipt_path,
-                                self.receipts.read(receipt_path)["payload"],
-                                None,
-                            )
-                        )
-                    except RecordError as error:
-                        loaded.append((number, None, None, str(error)))
-                for number, receipt_path, payload, failure in loaded:
-                    if payload is None or receipt_path is None:
-                        label = f"{action} record {number}"
-                        unreadable.append(f"{label}: {failure}")
-                        lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
-                        continue
-                    summary = payload.get("summary")
-                    lines.append(
-                        f"- {action} record {number}: "
-                        + (summary if isinstance(summary, str) else "saved record")
-                    )
-                    ended_later = action == "run" and any(
-                        later_payload is not None
-                        and later_payload.get("run_id") == payload.get("run_id")
-                        and later_payload.get("state") != "started"
-                        for later_number, _, later_payload, _ in loaded
-                        if later_number > number
-                    )
-                    try:
-                        lines.extend(
-                            _status_projection(
-                                action,
-                                payload,
-                                state_root=self.state_root,
-                                ended_later=ended_later,
-                            )
-                        )
-                    except RecordError as error:
-                        label = f"{action} record {number}"
-                        unreadable.append(f"{label}: {error}")
-                        lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
-                        continue
-                    lines.append(f"  Saved receipt: {receipt_path}")
+                if action != "active-launch":
+                    lines.extend(self._action_history_lines(action, path_texts, unreadable))
         for line in lines:
             self.present(line)
         if unreadable:
@@ -1955,6 +1903,51 @@ class OperatorSurface:
                 ErrorCode.STATUS_UNREADABLE,
                 detail="; ".join(unreadable),
             )
+        return lines
+
+    def _action_history_lines(
+        self, action: str, path_texts: list[str], unreadable: list[str]
+    ) -> list[str]:
+        """One action's saved receipts for `status`; each unreadable one is added to `unreadable`."""
+
+        # Load all first: a `started` run receipt renders differently once a
+        # later receipt records its end.
+        loaded: list[tuple[int, Path | None, dict[str, Any] | None, str | None]] = []
+        for number, path_text in enumerate(path_texts, start=1):
+            try:
+                receipt_path = self.descriptor.receipt_path(path_text)
+                loaded.append(
+                    (number, receipt_path, self.receipts.read(receipt_path)["payload"], None)
+                )
+            except RecordError as error:
+                loaded.append((number, None, None, str(error)))
+        lines: list[str] = []
+        for number, receipt_path, payload, failure in loaded:
+            label = f"{action} record {number}"
+            if payload is not None and receipt_path is not None:
+                summary = payload.get("summary")
+                lines.append(
+                    f"- {label}: " + (summary if isinstance(summary, str) else "saved record")
+                )
+                ended_later = action == "run" and any(
+                    later_payload is not None
+                    and later_payload.get("run_id") == payload.get("run_id")
+                    and later_payload.get("state") != "started"
+                    for later_number, _, later_payload, _ in loaded
+                    if later_number > number
+                )
+                try:
+                    lines.extend(
+                        _status_projection(
+                            action, payload, state_root=self.state_root, ended_later=ended_later
+                        )
+                    )
+                    lines.append(f"  Saved receipt: {receipt_path}")
+                    continue
+                except RecordError as error:
+                    failure = str(error)
+            unreadable.append(f"{label}: {failure}")
+            lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
         return lines
 
     # -- internal -------------------------------------------------------------
@@ -2164,11 +2157,14 @@ class OperatorSurface:
         for action in actions:
             value = descriptor["actions"].get(action)
             if isinstance(value, str):
-                try:
-                    return self.descriptor.receipt_path(value)
-                except RecordError as error:
-                    raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
+                return self._receipt_path(value)
         return None
+
+    def _receipt_path(self, entry: str) -> Path:
+        try:
+            return self.descriptor.receipt_path(entry)
+        except RecordError as error:
+            raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
 
     def _load_descriptor(self) -> dict[str, Any] | None:
         """The descriptor, or the same named refusal `status` gives for an unreadable one."""
@@ -2194,10 +2190,7 @@ class OperatorSurface:
             return []
         loaded: list[tuple[Path, dict[str, Any]]] = []
         for entry in descriptor["history"].get("run", []):
-            try:
-                path = self.descriptor.receipt_path(entry)
-            except RecordError as error:
-                raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
+            path = self._receipt_path(entry)
             loaded.append((path, self._read_receipt(path)["payload"]))
         return loaded
 
