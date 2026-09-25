@@ -94,8 +94,8 @@ def register_digest(data: bytes) -> str:
     return digest_bytes(data)
 
 
-def read_register_file(register_path: str | Path) -> bytes:
-    """Read one bounded regular register without following its final name.
+def read_register_path(register_path: str | Path) -> bytes:
+    """Read one bounded, unaliased regular register without following its final name.
 
     A corpus register is mutable evidence outside the run tree.  Opening it by
     pathname through ``Path.read_bytes`` lets a symlink substitution redirect a
@@ -103,7 +103,7 @@ def read_register_file(register_path: str | Path) -> bytes:
     the object checked and read, and a platform without ``O_NOFOLLOW`` refuses
     rather than silently weakening that boundary.
     """
-    return _read_register_path(Path(register_path), missing_ok=False)
+    return _read_register_path_with_identity(Path(register_path))[0]
 
 
 def _resolved_register_path(register_path: str | Path, expected_digest: str) -> Path:
@@ -190,7 +190,7 @@ def confirm_unchanged_head(register_path: str | Path, *, expected_digest: str) -
     path.parent.mkdir(parents=True, exist_ok=True)
     with _register_lock(path):
         try:
-            current = _read_register_path(path, missing_ok=False)
+            current = read_register_path(path)
         except FileNotFoundError:
             current = empty_register()
         return _require_observed_head(current, expected_digest)
@@ -237,21 +237,6 @@ def _register_lock(path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def _read_register_path(path: Path, *, missing_ok: bool) -> bytes:
-    """Read the register's bytes: bounded, with an absent register optional."""
-    try:
-        return _read_register_path_with_identity(path)[0]
-    except FileNotFoundError:
-        if missing_ok:
-            return empty_register()
-        raise
-
-
-def read_register_path(register_path: str | Path) -> bytes:
-    """Read one direct, unaliased register file without following its final name."""
-    return _read_register_path_with_identity(Path(register_path))[0]
 
 
 def _read_register_path_with_identity(path: Path) -> tuple[bytes, tuple[int, int]]:
