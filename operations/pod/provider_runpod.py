@@ -496,6 +496,29 @@ def _first_error(errors: object) -> str:
     return "unreadable error payload"
 
 
+def _body_summary(body: bytes) -> str:
+    text = body.decode("utf-8", "replace").strip()
+    return text[:300] if text else "empty response body"
+
+
+def _problem_summary(body: bytes) -> str:
+    """v2's RFC 9457 problem body as one line, or the raw summary when it is not one."""
+
+    try:
+        problem = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return _body_summary(body)
+    if not isinstance(problem, dict) or not isinstance(problem.get("title"), str):
+        return _body_summary(body)
+    text = str(problem["title"])
+    if isinstance(problem.get("detail"), str) and problem["detail"].strip():
+        text = f"{text}: {problem['detail'].strip()}"
+    errors = problem.get("errors")
+    if isinstance(errors, list) and errors:
+        text = f"{text}; errors: {json.dumps(errors, separators=(',', ':'), default=str)}"
+    return text[:300]
+
+
 def _pod_environment(request: PodCreateRequest, route: str) -> dict[str, str]:
     """The request's metadata plus the sealed route, refusing a conflicting one."""
 
@@ -530,6 +553,11 @@ class _RunPodAdapter:
 
     ROOT: str = ""
     ROUTE: str = ""
+    _INCLUDE_QUERY = ""
+    _STATE_FIELD = ""
+    _STARTED_FIELD = ""
+    _POD_LIST_LABEL = "RunPod pod list"
+    _summary = staticmethod(_body_summary)
 
     def __init__(
         self,
@@ -736,6 +764,114 @@ class _RunPodAdapter:
             with self._balance_lock:
                 self._balance_in_flight = False
 
+    def adopt(self, pod_id: str) -> PodRecord:
+        response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}{self._INCLUDE_QUERY}")
+        if response.status == 404:
+            raise ProviderFailure(
+                f"RunPod cannot adopt pod {pod_id!r}: the provider reports it absent"
+            )
+        if response.status != 200:
+            raise ProviderFailure(
+                f"RunPod adopt returned HTTP {response.status}: {self._summary(response.body)}"
+            )
+        record = self._record(_object(response.body, "RunPod adopt"))
+        if record.pod_id != pod_id:
+            raise ProviderFailure("RunPod adopt response names a different pod id")
+        if record.state != "RUNNING":
+            raise ProviderFailure(
+                f"RunPod cannot adopt pod {pod_id!r}: {self._STATE_FIELD} is {record.state!r}, "
+                "not RUNNING"
+            )
+        return record
+
+    def status(self, pod_id: str) -> ProviderStatus:
+        """The exact-pod GET, reported verbatim: an observation, never a gate.
+
+        An unfamiliar lifecycle word or an unparseable start instant is named in
+        the detail rather than raised, because the shutdown path depends on this
+        read; `_record` refuses unknown words only because it builds a record
+        other code trusts. Only surrounding whitespace is stripped, since the
+        word is compared downstream (`supervise.py`), never displayed.
+
+        The start instant is surfaced apart from the state because v1's
+        ``desiredStatus`` reads RUNNING from the moment create returns: only the
+        start instant (null until the pod first runs) separates "still pulling
+        the image" from "started and silent" for the armer's container wait
+        (`controller_armer.ChannelControllerArmer`). A malformed one reads as
+        absent, which every consumer already treats as "no start observed".
+        """
+
+        response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}")
+        observed = self.now()
+        if response.status == 404:
+            return ProviderStatus(
+                pod_id, Presence.ABSENT, observed, "RunPod exact-pod GET returned 404", 404
+            )
+        if response.status != 200:
+            raise ProviderFailure(
+                f"RunPod status GET returned HTTP {response.status}: {self._summary(response.body)}"
+            )
+        row = _object(response.body, "RunPod status")
+        if _text(row.get("id"), "RunPod status id") != pod_id:
+            raise ProviderFailure("RunPod status response id does not equal the requested pod id")
+        raw_state = row.get(self._STATE_FIELD)
+        usable_state = isinstance(raw_state, str) and bool(raw_state.strip())
+        provider_state = raw_state.strip() if isinstance(raw_state, str) and usable_state else None
+        detail = "RunPod exact-pod GET returned 200"
+        if raw_state is not None and not usable_state:
+            detail = f"{detail}; unusable {self._STATE_FIELD} {raw_state!r}"
+        raw_started = row.get(self._STARTED_FIELD)
+        started_at: datetime | None = None
+        if isinstance(raw_started, str) and raw_started.strip():
+            try:
+                started_at = _timestamp(raw_started, f"RunPod pod {pod_id} {self._STARTED_FIELD}")
+            except ProviderFailure as error:
+                detail = f"{detail}; unusable {self._STARTED_FIELD} ({error})"
+        return ProviderStatus(
+            pod_id,
+            Presence.PRESENT,
+            observed,
+            detail,
+            200,
+            provider_state=provider_state,
+            started_at=started_at,
+        )
+
+    def verify_absent(self, pod_id: str) -> AbsenceObservation:
+        listed = any(row.get("id") == pod_id for row in self._pod_rows())
+        return AbsenceObservation(
+            pod_id,
+            Presence.PRESENT if listed else Presence.ABSENT,
+            self.now(),
+            f"{self._POD_LIST_LABEL} still contains the exact pod id"
+            if listed
+            else f"{self._POD_LIST_LABEL} omits the exact pod id",
+        )
+
+    def _existing_launch(self, request: PodCreateRequest) -> PodRecord | None:
+        """The pod this launch token already created, or ``None`` when a POST may follow.
+
+        A POST whose response the client never saw may still have created a
+        billing pod, so every create looks first; `recovery_only` stops there.
+        """
+
+        # Read through a local rather than assigning the call directly: the
+        # repository's credential scanner reads `token = <20+ word characters>`
+        # as a literal secret.
+        metadata = request.metadata
+        token = metadata.get(LAUNCH_TOKEN_ENV)
+        if not isinstance(token, str) or not token:
+            raise ProviderFailure(
+                f"RunPod create requires a {LAUNCH_TOKEN_ENV} metadata value to stay recoverable"
+            )
+        existing = self._find_by_launch_token(request.name, token)
+        if existing is None and request.recovery_only:
+            raise ProviderFailure(
+                "RunPod recovery lookup found no pod carrying this exact launch token; "
+                "no create request was issued"
+            )
+        return existing
+
     def _find_by_launch_token(self, name: str, token: str) -> PodRecord | None:
         """Exactly one pod carrying this exact launch token, or nothing.
 
@@ -788,127 +924,22 @@ class RunPodProvider(_RunPodAdapter):
 
     ROOT = RUNPOD_REST_ROOT
     ROUTE = "v1"
+    _INCLUDE_QUERY = "?includeMachine=true&includeNetworkVolume=true"
+    _STATE_FIELD = "desiredStatus"
+    _STARTED_FIELD = "lastStartedAt"
 
     def create(self, request: PodCreateRequest) -> PodRecord:
-        """Correlate an existing launch token first, then POST — never both.
+        """Correlate an existing launch token first, then POST — never both."""
 
-        A POST whose response the client never saw may still have created a
-        billing pod. The launch token rides in `env`, so the exact pod is
-        findable afterwards; `recovery_only` makes this verb a pure lookup so a
-        restarted controller can never pay twice for one authorised launch.
-        """
-
-        # Read through a local rather than assigning the call directly: the
-        # repository's credential scanner reads `token = <20+ word characters>`
-        # as a literal secret, and its caution is worth more than the line.
-        metadata = request.metadata
-        token = metadata.get(LAUNCH_TOKEN_ENV)
-        if not isinstance(token, str) or not token:
-            raise ProviderFailure(
-                f"RunPod create requires a {LAUNCH_TOKEN_ENV} metadata value to stay recoverable"
-            )
-        existing = self._find_by_launch_token(request.name, token)
+        existing = self._existing_launch(request)
         if existing is not None:
             return existing
-        if request.recovery_only:
-            raise ProviderFailure(
-                "RunPod recovery lookup found no pod carrying this exact launch token; "
-                "no create request was issued"
-            )
         response = self.transport.request("POST", "/pods", _create_payload(request, self.ROUTE))
         if response.status not in {200, 201}:
             raise ProviderFailure(
                 f"RunPod create returned HTTP {response.status}: {_body_summary(response.body)}"
             )
         return self._record(_object(response.body, "RunPod create"))
-
-    def adopt(self, pod_id: str) -> PodRecord:
-        response = self.transport.request(
-            "GET",
-            f"/pods/{_path_id(pod_id)}?includeMachine=true&includeNetworkVolume=true",
-        )
-        if response.status == 404:
-            raise ProviderFailure(
-                f"RunPod cannot adopt pod {pod_id!r}: the provider reports it absent"
-            )
-        if response.status != 200:
-            raise ProviderFailure(
-                f"RunPod adopt returned HTTP {response.status}: {_body_summary(response.body)}"
-            )
-        record = self._record(_object(response.body, "RunPod adopt"))
-        if record.pod_id != pod_id:
-            raise ProviderFailure("RunPod adopt response names a different pod id")
-        if record.state != "RUNNING":
-            raise ProviderFailure(
-                f"RunPod cannot adopt pod {pod_id!r}: desiredStatus is {record.state!r}, not RUNNING"
-            )
-        return record
-
-    def status(self, pod_id: str) -> ProviderStatus:
-        response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}")
-        observed = self.now()
-        if response.status == 404:
-            return ProviderStatus(
-                pod_id, Presence.ABSENT, observed, "RunPod exact-pod GET returned 404", 404
-            )
-        if response.status != 200:
-            raise ProviderFailure(
-                f"RunPod status GET returned HTTP {response.status}: {_body_summary(response.body)}"
-            )
-        row = _object(response.body, "RunPod status")
-        if _text(row.get("id"), "RunPod status id") != pod_id:
-            raise ProviderFailure("RunPod status response id does not equal the requested pod id")
-        # Verbatim, never normalized against _POD_STATES: this is an
-        # observation, not a gate. `_record` (used by create/adopt) refuses an
-        # unrecognised desiredStatus because it manufactures a PodRecord that
-        # other code trusts as RUNNING; `status` only reports what the
-        # provider said, so an unfamiliar future lifecycle word still reaches
-        # its caller instead of becoming a raised ProviderFailure on a
-        # read-only observation. "Verbatim" covers casing and unknown future
-        # words, which survive untouched -- it does not cover surrounding
-        # whitespace, because this value is compared against `"RUNNING"`
-        # downstream (`supervise.py`), never displayed, and the usability
-        # decision below is already made on the stripped word.
-        raw_state = row.get("desiredStatus")
-        usable_state = isinstance(raw_state, str) and bool(raw_state.strip())
-        provider_state = raw_state.strip() if isinstance(raw_state, str) and usable_state else None
-        detail = "RunPod exact-pod GET returned 200"
-        if raw_state is not None and not usable_state:
-            detail = f"{detail}; unusable desiredStatus {raw_state!r}"
-        # `desiredStatus` reads RUNNING from the instant create returns: it is
-        # what the pod was asked to be, not what it has become, so it cannot
-        # separate "still pulling a fifteen-gigabyte image" from "started and
-        # silent". `lastStartedAt` is the only field in this body that can --
-        # it is null until the pod first runs (the same documented behaviour
-        # `_record` relies on when it falls back to the observation instant).
-        # Surfacing it here, not only where it becomes `PodRecord.created_at`,
-        # lets a waiter bound and record the container-start wait separately
-        # from whatever it is really waiting for
-        # (`controller_armer.ChannelControllerArmer`).
-        #
-        # A malformed value is reported as absent rather than raised: this is a
-        # read-only observation, not a gate, and the same reasoning that keeps
-        # an unfamiliar `desiredStatus` from becoming a `ProviderFailure`
-        # applies here. Every consumer must already treat `None` as "no start
-        # observed" rather than "the container failed", so a value this adapter
-        # cannot parse degrades to the honest answer instead of failing a
-        # status read the shutdown path also depends on.
-        raw_started = row.get("lastStartedAt")
-        started_at: datetime | None = None
-        if isinstance(raw_started, str) and raw_started.strip():
-            try:
-                started_at = _timestamp(raw_started, f"RunPod pod {pod_id} lastStartedAt")
-            except ProviderFailure as error:
-                detail = f"{detail}; unusable lastStartedAt ({error})"
-        return ProviderStatus(
-            pod_id,
-            Presence.PRESENT,
-            observed,
-            detail,
-            200,
-            provider_state=provider_state,
-            started_at=started_at,
-        )
 
     def terminate(self, pod_id: str) -> None:
         """Terminate, never stop: a stopped pod bills volume disk at double rate.
@@ -925,18 +956,6 @@ class RunPodProvider(_RunPodAdapter):
             raise ProviderFailure(
                 f"RunPod terminate returned HTTP {response.status}: {_body_summary(response.body)}"
             )
-
-    def verify_absent(self, pod_id: str) -> AbsenceObservation:
-        rows = self._pod_rows()
-        listed = any(row.get("id") == pod_id for row in rows)
-        return AbsenceObservation(
-            pod_id,
-            Presence.PRESENT if listed else Presence.ABSENT,
-            self.now(),
-            "RunPod pod list still contains the exact pod id"
-            if listed
-            else "RunPod pod list omits the exact pod id",
-        )
 
     def capture_cost(self, pod_id: str, started_at: datetime, cutoff_at: datetime) -> CostCapture:
         """The provider's own billed amounts — never an estimate from elapsed time.
@@ -1044,9 +1063,7 @@ class RunPodProvider(_RunPodAdapter):
         # response.  RunPod omits machine and network-volume objects from list
         # results unless they are requested explicitly; without these flags an
         # exact launch-token match cannot be bound back into a PodRecord.
-        response = self.transport.request(
-            "GET", "/pods?includeMachine=true&includeNetworkVolume=true"
-        )
+        response = self.transport.request("GET", f"/pods{self._INCLUDE_QUERY}")
         if response.status != 200:
             raise ProviderFailure(
                 f"RunPod pod-list GET returned HTTP {response.status}: {_body_summary(response.body)}"
@@ -1217,30 +1234,22 @@ class RunPodV2Provider(_RunPodAdapter):
 
     ROOT = RUNPOD_V2_ROOT
     ROUTE = "v2"
+    _STATE_FIELD = "status"
+    _STARTED_FIELD = "startedAt"
+    _POD_LIST_LABEL = "RunPod pod list (every page)"
+    _summary = staticmethod(_problem_summary)
 
     def create(self, request: PodCreateRequest) -> PodRecord:
         """Correlate an existing launch token first, then POST — never both.
 
-        The same recovery contract as the v1 class. The on-demand refusal comes
-        after the lookup on purpose: a pod this launch already paid for is
-        returned (without a runtime contract) so it can be bound and closed,
-        and only a *new* POST is refused.
+        The on-demand refusal comes after the lookup on purpose: a pod this
+        launch already paid for is returned (without a runtime contract) so it
+        can be bound and closed, and only a *new* POST is refused.
         """
 
-        metadata = request.metadata
-        token = metadata.get(LAUNCH_TOKEN_ENV)
-        if not isinstance(token, str) or not token:
-            raise ProviderFailure(
-                f"RunPod create requires a {LAUNCH_TOKEN_ENV} metadata value to stay recoverable"
-            )
-        existing = self._find_by_launch_token(request.name, token)
+        existing = self._existing_launch(request)
         if existing is not None:
             return existing
-        if request.recovery_only:
-            raise ProviderFailure(
-                "RunPod recovery lookup found no pod carrying this exact launch token; "
-                "no create request was issued"
-            )
         if V2_ON_DEMAND_BASIS is None:
             raise ProviderFailure(V2_ON_DEMAND_REFUSAL + "; no create request was issued")
         response = self.transport.request("POST", "/pods", _v2_create_payload(request, self.ROUTE))
@@ -1268,73 +1277,6 @@ class RunPodV2Provider(_RunPodAdapter):
             )
         raise ProviderFailure(f"RunPod create returned HTTP {response.status}: {problem}")
 
-    def adopt(self, pod_id: str) -> PodRecord:
-        response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}")
-        if response.status == 404:
-            raise ProviderFailure(
-                f"RunPod cannot adopt pod {pod_id!r}: the provider reports it absent"
-            )
-        if response.status != 200:
-            raise ProviderFailure(
-                f"RunPod adopt returned HTTP {response.status}: {_problem_summary(response.body)}"
-            )
-        record = self._record(_object(response.body, "RunPod adopt"))
-        if record.pod_id != pod_id:
-            raise ProviderFailure("RunPod adopt response names a different pod id")
-        if record.state != "RUNNING":
-            raise ProviderFailure(
-                f"RunPod cannot adopt pod {pod_id!r}: status is {record.state!r}, not RUNNING"
-            )
-        return record
-
-    def status(self, pod_id: str) -> ProviderStatus:
-        """The exact-pod GET, reported verbatim: an observation, never a gate.
-
-        v2's ``status`` is what the pod *is* (``PROVISIONING`` while it is
-        allocated, ``STARTING`` while the container starts), unlike v1's
-        ``desiredStatus``; ``startedAt`` is still surfaced separately because it
-        is the provider's own container-start instant, which the armer's
-        liveness probe records. Unfamiliar words and malformed values are
-        reported rather than raised, for the reasons the v1 method gives.
-        """
-
-        response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}")
-        observed = self.now()
-        if response.status == 404:
-            return ProviderStatus(
-                pod_id, Presence.ABSENT, observed, "RunPod exact-pod GET returned 404", 404
-            )
-        if response.status != 200:
-            raise ProviderFailure(
-                f"RunPod status GET returned HTTP {response.status}: "
-                f"{_problem_summary(response.body)}"
-            )
-        row = _object(response.body, "RunPod status")
-        if _text(row.get("id"), "RunPod status id") != pod_id:
-            raise ProviderFailure("RunPod status response id does not equal the requested pod id")
-        raw_state = row.get("status")
-        usable_state = isinstance(raw_state, str) and bool(raw_state.strip())
-        provider_state = raw_state.strip() if isinstance(raw_state, str) and usable_state else None
-        detail = "RunPod exact-pod GET returned 200"
-        if raw_state is not None and not usable_state:
-            detail = f"{detail}; unusable status {raw_state!r}"
-        raw_started = row.get("startedAt")
-        started_at: datetime | None = None
-        if isinstance(raw_started, str) and raw_started.strip():
-            try:
-                started_at = _timestamp(raw_started, f"RunPod pod {pod_id} startedAt")
-            except ProviderFailure as error:
-                detail = f"{detail}; unusable startedAt ({error})"
-        return ProviderStatus(
-            pod_id,
-            Presence.PRESENT,
-            observed,
-            detail,
-            200,
-            provider_state=provider_state,
-            started_at=started_at,
-        )
-
     def terminate(self, pod_id: str) -> None:
         """Terminate, never stop: a stopped pod bills volume disk at double rate.
 
@@ -1359,18 +1301,6 @@ class RunPodV2Provider(_RunPodAdapter):
         # parsed, so no answer to it can raise before the refusal is built.
         raise ProviderFailure(
             f"RunPod terminate returned HTTP {response.status}: {_body_summary(response.body)}"
-        )
-
-    def verify_absent(self, pod_id: str) -> AbsenceObservation:
-        rows = self._pod_rows()
-        listed = any(row.get("id") == pod_id for row in rows)
-        return AbsenceObservation(
-            pod_id,
-            Presence.PRESENT if listed else Presence.ABSENT,
-            self.now(),
-            "RunPod pod list (every page) still contains the exact pod id"
-            if listed
-            else "RunPod pod list (every page) omits the exact pod id",
         )
 
     def capture_cost(self, pod_id: str, started_at: datetime, cutoff_at: datetime) -> CostCapture:
@@ -1905,24 +1835,6 @@ def _cost_breakdown(row: Mapping[str, object]) -> str:
     return f" ({', '.join(parts)})" if parts else ""
 
 
-def _problem_summary(body: bytes) -> str:
-    """v2's RFC 9457 problem body as one line, or the raw summary when it is not one."""
-
-    try:
-        problem = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
-        return _body_summary(body)
-    if not isinstance(problem, dict) or not isinstance(problem.get("title"), str):
-        return _body_summary(body)
-    text = str(problem["title"])
-    if isinstance(problem.get("detail"), str) and problem["detail"].strip():
-        text = f"{text}: {problem['detail'].strip()}"
-    errors = problem.get("errors")
-    if isinstance(errors, list) and errors:
-        text = f"{text}; errors: {json.dumps(errors, separators=(',', ':'), default=str)}"
-    return text[:300]
-
-
 def live_runpod_provider(
     capability: str,
     *,
@@ -2157,11 +2069,6 @@ def _array(body: bytes, label: str) -> list[object]:
     if not isinstance(payload, list):
         raise ProviderFailure(f"{label} response is not the documented bare array")
     return payload
-
-
-def _body_summary(body: bytes) -> str:
-    text = body.decode("utf-8", "replace").strip()
-    return text[:300] if text else "empty response body"
 
 
 def _required_environment(environment: Mapping[str, str], name: str) -> str:
