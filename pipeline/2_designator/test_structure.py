@@ -186,10 +186,9 @@ def test_a_gap_beyond_tolerance_stays_two_components():
 
 def test_zero_gap_tolerance_still_requires_pixels_to_touch():
     """A tolerance of 0 bridges no gap at all: a 1px blank column keeps two
-    blocks split. This does not test connectivity shape (4- vs 8-neighbour) --
-    the blocks are row-aligned rectangles with no diagonal-only adjacency to
-    tell the two apart. See `test_zero_gap_tolerance_still_connects_diagonal_neighbours`
-    for that."""
+    blocks split. This does not test connectivity shape (4- vs 8-neighbour);
+    `test_zero_gap_tolerance_still_connects_diagonal_neighbours` does.
+    """
     width, height = 40, 20
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 5, 5, 5, INK)
@@ -203,8 +202,8 @@ def test_zero_gap_tolerance_still_requires_pixels_to_touch():
 def test_zero_gap_tolerance_still_connects_diagonal_neighbours():
     """Connectivity here is 8-connected (Chebyshev radius), not 4-connected:
     two ink pixels touching only at a corner still union into one component
-    even at zero gap tolerance. A pen stroke's own diagonal jitter must not
-    scan as two separate marks."""
+    even at zero gap tolerance.
+    """
     width, height = 10, 10
     rows = blank_rows(width, height)
     paint_pixel(rows, 2, 2, INK)
@@ -216,17 +215,12 @@ def test_zero_gap_tolerance_still_connects_diagonal_neighbours():
 
 
 def test_two_components_sharing_a_top_left_origin_still_sort_deterministically():
-    """`label_components` sorts by (top, left) only -- a component's own origin,
-    not its full bounding box. Two disjoint components can share that origin
-    while differing in every other respect: a lone pixel at (0, 0), and a
-    four-pixel diagonal staircase from (3, 0) to (0, 3) whose own bounds also
-    start at (0, 0). Neither touches the other (every cross-pixel Chebyshev
-    distance is at least 2, above the zero-tolerance radius of 1), so both
-    survive as separate components with a tied sort key. Without a tiebreak
-    beyond (y, x), their relative order would fall back to `members.values()`'s
-    dict-iteration order -- itself a function of Python's pixel-tuple hashing,
-    not of the ink -- which is deterministic within one process but not a
-    documented property a caller may rely on."""
+    """`label_components` sorts by (top, left) only, a component's own origin,
+    not its full bounding box. Two disjoint components (a lone pixel and a
+    diagonal staircase) can tie on that origin; without a tiebreak beyond
+    (y, x), their order would fall back to dict-iteration order -- a function
+    of Python's pixel-tuple hashing, not a documented property.
+    """
     pixels = {(0, 0), (0, 3), (1, 2), (2, 1), (3, 0)}
     components = label_components(pixels, gap_tolerance_px=0)
     assert len(components) == 2
@@ -238,9 +232,8 @@ def test_two_components_sharing_a_top_left_origin_still_sort_deterministically()
     ]
     assert [c["pixel_count"] for c in components] == [1, 4]
 
-    # A set literal normalises insertion order away. Drive every order through
-    # an ordered keys view so removal of the deterministic tiebreaker would make
-    # at least one permutation disagree.
+    # A set literal normalises insertion order away; drive every order through
+    # an ordered keys view instead.
     for order in itertools.permutations(sorted(pixels)):
         reordered = dict.fromkeys(order).keys()
         assert label_components(reordered, gap_tolerance_px=0) == components
@@ -257,10 +250,8 @@ def test_secondary_scan_finds_a_faint_mark_primary_scan_misses():
         "the fixture must actually miss the primary threshold"
     )
     paint_rect(rows, 5, 5, 3, 3, faint)
-    # `PRIMARY_MARGIN` is the floor under every margin a page can derive for
-    # itself, so a mark this scan misses at the floor is missed at every margin
-    # a run could hand it. That is what makes "the secondary adds recall" a
-    # statement about the pair rather than about one calibration.
+    # PRIMARY_MARGIN is the floor under every margin a page can derive, so a
+    # mark missed at the floor is missed at every margin a run could hand it.
     assert (
         primary_scan(
             width,
@@ -331,19 +322,10 @@ def test_infer_background_refuses_a_mismatched_scanline_shape():
 
 
 def test_a_majority_ink_page_is_refused_rather_than_reconciling_to_zero_ink():
-    """The one deferral that could lose a whole page in silence (06-3).
-
-    `infer_background` takes the modal pixel as paper. On a page where ink is the
-    numeric majority the mode *is* the ink, the threshold below it admits almost
-    nothing, and the page reconciles to zero ink and exits `complete` having
-    marked out no acts at all.
-
-    An implementation that infers the background from the modal pixel reads
-    background as 30 here and finds **0 ink pixels out of the 60 that are there.**
-    Goal 2 -- a missed act is worse than a poorly read one -- requires that a
-    blank be proved and never inferred.
+    """On a page where ink is the numeric majority, the modal pixel *is* the
+    ink: a naive inference would read background as 30 here and find zero ink
+    pixels out of the 60 that are there. A blank must be proved, never inferred.
     """
-
     width, height = 10, 10
     rows = [bytearray([INK] * width) for _ in range(6)]
     rows += [bytearray([200] * width) for _ in range(4)]
@@ -356,7 +338,6 @@ def test_a_majority_ink_page_is_refused_rather_than_reconciling_to_zero_ink():
 
 def test_an_inverted_scan_is_refused_rather_than_read_as_a_blank_page():
     """Light ink on dark paper is the same defect wearing a different cause."""
-
     width, height = 10, 10
     rows = [bytearray([30] * width) for _ in range(8)]
     rows += [bytearray([220] * width) for _ in range(2)]
@@ -368,13 +349,10 @@ def test_an_inverted_scan_is_refused_rather_than_read_as_a_blank_page():
 
 
 def test_a_genuinely_blank_page_still_infers_its_paper_rather_than_being_refused():
-    """The premise check must not fire on the case it exists to protect.
-
-    A blank page's mode is its paper and its mean is that same value, so the
-    comparison is an equality and passes. Zero ink here is honest: it is what the
-    page has, proved from a background the page itself supplied.
+    """The premise check must not fire on the case it exists to protect: a
+    blank page's mode equals its mean, so the comparison passes, and zero ink
+    here is honest.
     """
-
     width, height = 12, 12
     paper = 210
     rows = [bytearray([paper] * width) for _ in range(height)]
@@ -466,8 +444,8 @@ def test_refuses_a_negative_gap_tolerance():
 
 
 def test_scan_ink_components_refuses_a_missing_gap_tolerance_keyword():
-    """`gap_tolerance_px` lost its module default -- a caller that forgets it
-    now fails loudly with `TypeError`, never runs under an unreviewed value."""
+    """No module default: a caller that forgets it fails loudly with
+    `TypeError` rather than running under an unreviewed value."""
     with pytest.raises(TypeError):
         scan_ink_components(5, 5, blank_rows(5, 5), background=BACKGROUND, margin=PRIMARY_MARGIN)
 
@@ -483,12 +461,9 @@ def test_primary_scan_refuses_a_missing_gap_tolerance_keyword():
 
 
 def test_primary_scan_refuses_a_missing_margin_keyword():
-    """A caller that forgets the page's own margin fails loudly.
-
-    The same rule `gap_tolerance_px` above is here under, and the reason is the
-    same: `PRIMARY_MARGIN` used to be a default here, and a default would mean a
-    page silently scanned at the floor while its record published the margin it
-    derived. Two different thresholds, one of them written down.
+    """A caller that forgets the page's own margin fails loudly: a default
+    here would mean a page silently scanned at the floor while its record
+    published the margin it actually derived.
     """
     with pytest.raises(TypeError):
         primary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND, gap_tolerance_px=3)
@@ -501,12 +476,9 @@ def test_secondary_scan_refuses_a_missing_gap_tolerance_keyword():
 
 # --- the row-run substitution: equality against the retired implementation ----
 #
-# `label_components` was replaced by a row-run union-find on measurement (383 s
-# and 2.17 GB for one 8.7-megapixel photographed page at the sealed
-# `gap_tolerance_px = 3`).
-# The claim the substitution rests on is that the two implementations return the
-# *same list*: same components, same bounds, same pixel counts, same order. That
-# claim is proved here on every page these tests can build, not asserted once.
+# The claim the substitution rests on is that the two implementations return
+# the same list: same components, bounds, pixel counts, order -- proved here
+# on every page these tests can build, not asserted once.
 
 
 def _both_labellers_agree(pixels, gap_tolerance_px: int) -> list:
@@ -519,11 +491,9 @@ def _both_labellers_agree(pixels, gap_tolerance_px: int) -> list:
 @pytest.mark.parametrize("gap_tolerance_px", [0, 1, 2, 3, 5, 8])
 @pytest.mark.parametrize("margin", [PRIMARY_MARGIN, SECONDARY_MARGIN])
 def test_the_row_run_labeller_matches_the_reference_on_every_fixture_page(margin, gap_tolerance_px):
-    """Every walking-skeleton fixture page, at both declared sensitivities.
-
-    These are the pages whose Designator evidence is pinned byte-for-byte
-    downstream, so if the substitution moved a single component on any of them
-    the acceptance pins would move with it.
+    """Every walking-skeleton fixture page, at both declared sensitivities:
+    their Designator evidence is pinned byte-for-byte downstream, so a moved
+    component here would move the acceptance pins too.
     """
     from common.imaging import grayscale_rows
     from proof.synthetic_pages import ALL_PAGES, render_page
@@ -538,16 +508,11 @@ def test_the_row_run_labeller_matches_the_reference_on_every_fixture_page(margin
 
 
 def _a_large_page_of_ink(width: int, height: int) -> set:
-    """A page-sized ink set: word-like strokes, solid blots, thousands of marks.
-
-    Deliberately not a picture of a register -- `proof/synthetic_pages.py` is
-    what this project builds pages with, and none of its pages is anywhere near
-    this size. This is an abstract ink *set*, built to the one property the
-    fixture pages cannot supply: enough runs, enough scanlines and enough
-    separate components that the run-merge sweep, its forward pointer and the
-    shared-origin tie-break are all exercised at scale rather than on twenty
-    pixels. Strokes are 3-9 px wide with 5-9 px gaps, so the sealed
-    `gap_tolerance_px = 3` leaves them apart and a wider tolerance welds them.
+    """A page-sized ink set: word-like strokes, solid blots, thousands of
+    marks, built to exercise the run-merge sweep and its shared-origin
+    tie-break at scale rather than on twenty pixels. Strokes are 3-9px wide
+    with 5-9px gaps, so the sealed `gap_tolerance_px = 3` leaves them apart
+    and a wider tolerance welds them.
     """
     pixels = set()
     for row_top in range(20, height - 24, 24):
@@ -572,18 +537,9 @@ def _a_large_page_of_ink(width: int, height: int) -> set:
 
 @pytest.mark.parametrize("gap_tolerance_px", [3, 8])
 def test_the_row_run_labeller_matches_the_reference_on_one_page_sized_ink_set(gap_tolerance_px):
-    """The scale leg, in the tree.
-
-    The branch report's second equality leg ran on a real 1484x1103 review proxy
-    -- 1,079,519 ink pixels, 241 components -- out of tree, because no page in
-    this repository is anything like that size and no real page may enter it.
-    That leg proved the claim once, in a session, on material this suite cannot
-    re-read; nothing in the tree re-proved it. This does: 1200x950, about
-    126,000 ink pixels and 3,340 components at the sealed tolerance, which is
-    more components than the proxy carried and enough runs per scanline to make
-    the sweep's dropped-prefix and stop conditions load-bearing. Two tolerances,
-    the sealed one and the widest comparison point, at about 2.5 s of reference
-    labelling each.
+    """The scale leg, in the tree: 1200x950, about 126,000 ink pixels and
+    3,340 components at the sealed tolerance, enough runs per scanline to
+    make the sweep's dropped-prefix and stop conditions load-bearing.
     """
     pixels = _a_large_page_of_ink(1200, 950)
     assert len(pixels) > 100_000, "the point of this test is the scale"
@@ -595,11 +551,10 @@ def test_the_row_run_labeller_matches_the_reference_on_one_page_sized_ink_set(ga
 
 
 def test_a_repeated_pixel_is_tolerated_rather_than_split_into_two_runs():
-    """`_ink_runs_by_row`'s docstring says duplicates are tolerated, and this is
-    what says so. `label_components` declares a set, but the run builder sorts a
-    per-row list and splits on `x > previous + 1`, so a repeated x is absorbed
-    rather than ending a run -- and a caller handing the same pixel twice gets
-    the same answer, not a crash and not a split component."""
+    """The run builder sorts a per-row list and splits on `x > previous + 1`,
+    so a repeated x is absorbed rather than ending a run: a caller handing the
+    same pixel twice gets the same answer, not a crash or a split component.
+    """
     pixels = [(0, 0), (1, 0), (1, 0), (2, 0), (2, 0), (2, 0), (5, 0)]
     assert label_components(pixels, gap_tolerance_px=0) == label_components(
         set(pixels), gap_tolerance_px=0
@@ -664,11 +619,8 @@ def test_the_row_run_labeller_matches_the_reference_on_known_components():
 @pytest.mark.parametrize("gap_tolerance_px", [0, 1, 3, 5])
 @pytest.mark.parametrize("density", [1, 5, 20, 60])
 def test_the_row_run_labeller_matches_the_reference_on_randomised_pages(density, gap_tolerance_px):
-    """Scattered ink at four densities, which is where an ordering tie is likely.
-
-    A sparse page produces many single-pixel components that share origins and
-    exercise the tie-break; a dense one produces few large ones and exercises
-    the run-merge sweep. The seed is fixed so a failure is reproducible.
+    """Scattered ink at four densities: sparse exercises the shared-origin
+    tie-break, dense exercises the run-merge sweep. Seed fixed for reproducibility.
     """
     import random
 
@@ -692,12 +644,10 @@ def test_the_row_run_labeller_matches_the_reference_on_the_shared_origin_page():
 
 
 def test_the_row_run_labeller_matches_the_reference_on_negative_coordinates():
-    """`label_components` is documented over an *arbitrary* pixel set.
-
-    Nothing on the live path passes a negative coordinate -- `ink_pixels` only
-    ever emits pixels inside the page -- but the contract does not exclude one,
-    and the row sweep's earlier-scanline window is the place a `max(0, ...)`
-    would have quietly changed the answer for a caller that did.
+    """`label_components` is documented over an *arbitrary* pixel set. Nothing
+    on the live path passes a negative coordinate, but the contract doesn't
+    exclude one, and the row sweep's earlier-scanline window is where a
+    `max(0, ...)` would quietly change the answer for a caller that did.
     """
     pixels = {(-4, -3), (-3, -3), (-3, -2), (2, -3), (0, 1), (1, 1)}
     for gap_tolerance_px in (0, 1, 2, 4):
@@ -715,12 +665,9 @@ def test_the_reference_labeller_is_reachable_and_refuses_the_same_way():
 
 # --- the dark surround: a photographed page is not a dark page ------------------
 #
-# `infer_background` refused 7 of 7 real photographed
-# register pages on the majority-ink branch, because 18-26% of each frame is
-# black bezel and pure black is therefore the modal pixel. The live path cut all
-# seven into blind fallback slabs with `ink_measurable: false` and reconciled
-# none of their ink. These
-# tests build that shape and the shapes it must still refuse.
+# A photographed register page's dark bezel can be the modal pixel even though
+# the page itself is mostly paper. These tests build that shape and the
+# shapes it must still refuse.
 
 
 def photographed_page(
@@ -735,18 +682,11 @@ def photographed_page(
 ) -> list[bytearray]:
     """A dark frame around a lighter interior carrying some writing.
 
-    Deliberately not a picture of a register: an abstract frame, abstract paper
-    tones and an abstract scatter of ink, which is all a shape test needs and all
-    `proof/synthetic_pages.py` allows this project to build.
-
-    **The paper is many tones, not one, and that is the point.** On a real
-    photographed page the surround is the modal pixel only because the paper is
-    spread across dozens of tones in the 180-240 band while the bezel is a single
-    flat value; a synthetic page with one flat paper tone has that tone as its
-    mode and never reaches the branch these tests exist for. So the interior here
-    carries a dominant tone at `paper` and seven neighbours a little darker, and
-    the assertions below check that the mode really is the surround before
-    testing what the surround does.
+    The paper is many tones, not one, which is the point: on a real
+    photographed page the surround is the modal pixel only because the paper
+    spreads across dozens of tones while the bezel is one flat value. A
+    single flat paper tone would make that tone the mode instead and never
+    reach the branch these tests exist for.
     """
     rows = [bytearray([surround] * width) for _ in range(height)]
     for y in range(frame_y, height - frame_y):
@@ -763,11 +703,9 @@ def photographed_page(
 
 
 def assert_the_surround_is_the_modal_pixel(width, height, rows) -> None:
-    """The premise every test below rests on, asserted rather than assumed.
-
-    Without this a change to `photographed_page` could make its paper the mode
-    again, and every test here would pass through the ordinary modal branch
-    while claiming to exercise the dark-surround one.
+    """The premise every test below rests on, asserted rather than assumed:
+    without this, a change to `photographed_page` could make its paper the
+    mode again and every test would silently exercise the wrong branch.
     """
     histogram = [0] * 256
     for row in rows:
@@ -787,23 +725,14 @@ def test_a_photographed_page_infers_its_paper_instead_of_refusing():
     assert evidence["background"] == 205
     assert evidence["source"] == "inferred-interior-mode"
     dark_distribution = evidence["dark_distribution"]
-    # The level is the page's own, and it is a valley rather than a spike: the
-    # midpoint between the dark population's mode (0, the frame) and the light
-    # population's mode (205, the paper). Asserted as the arithmetic rather than
-    # as 102, so a change to `photographed_page`'s tones cannot leave this test
-    # passing against a level it no longer describes.
+    # A valley, not a spike: the midpoint between the dark mode (0, the frame)
+    # and the light mode (205, the paper). Asserted as arithmetic, not 102, so
+    # a tone change in photographed_page can't leave this passing vacuously.
     assert dark_distribution["dark_mode"] == 0
     assert dark_distribution["dark_at_or_below"] == (dark_distribution["dark_mode"] + 205) // 2
     assert dark_distribution["interior_dark_bp"] <= 5000
-    # The border figure is published and decides nothing. On this page every
-    # border pixel is frame, so it is the whole band.
+    # Published, decides nothing: on this page every border pixel is frame.
     assert dark_distribution["border_dark_bp"] == 10000
-    # The sampled dark population is retained, never removed: every one of
-    # those pixels remains on the page and below the ink threshold, so the scan
-    # counts it. That is the safe direction (goal 2). The two counts state the
-    # border-band and page-wide populations at one level; this framed fixture
-    # has a real frame, but the values do not prove that interpretation for an
-    # arbitrary admitted page.
     band_x, band_y = policy["band_px_x"], policy["band_px_y"]
     assert dark_distribution["border_dark_pixel_count"] == sum(
         1
@@ -824,18 +753,12 @@ def test_a_photographed_page_infers_its_paper_instead_of_refusing():
     ink = ink_pixels(width, height, rows, background=205, margin=PRIMARY_MARGIN)
     assert (0, 0) in ink, "a corner of the surround must still be counted as ink"
     assert (width - 1, height - 1) in ink
-    # `>=`, not `>`: this page carries no tone between the surround level (102)
-    # and the ink threshold (185), so its dark set and its ink set coincide
-    # exactly. On a real page they do not, and the subset assertion below is
-    # what actually holds in both cases.
+    # On a real page the dark set and ink set need not coincide exactly; the
+    # subset assertion below is what actually holds in both cases.
     assert len(ink) >= dark_distribution["dark_pixel_count"]
-    # Every surround pixel, not merely most of them: the count above and the
-    # threshold together are what make that true, and an inequality alone would
-    # not have caught a test that dropped a strip.
     assert all((x, y) in ink for y in range(height) for x in range(width) if rows[y][x] == 0)
-    # Every sampled dark pixel is a pixel the scan calls ink. `_dark_distribution`
-    # caps its level at the ink threshold, so the retained counts stay comparable
-    # with the scan without classifying those pixels as a frame or writing.
+    # _dark_distribution caps its level at the ink threshold, so its counts
+    # stay comparable with the scan without classifying a pixel as frame or writing.
     assert dark_distribution["dark_at_or_below"] <= 205 - PRIMARY_MARGIN
     assert all(
         (x, y) in ink
@@ -846,11 +769,8 @@ def test_a_photographed_page_infers_its_paper_instead_of_refusing():
 
 
 def test_uniform_dark_population_is_published_without_a_frame_claim():
-    """A 40%-dark page passes the existing interior/ink bounds unchanged.
-
-    Its dark pixels are uniform across border and interior, so this proves only
-    the corrected evidence contract: selection and counted pixels stay the same,
-    while the record is a neutral distribution rather than a bezel claim.
+    """A 40%-dark page, uniform across border and interior: the record must
+    read as a neutral distribution, never a bezel claim.
     """
     width = height = 100
     rows = []
@@ -884,16 +804,11 @@ def test_the_thin_wrapper_returns_the_same_value_as_the_evidence_function():
 
 
 def test_an_ordinary_page_still_reports_the_modal_source_and_no_surround():
-    """The fixture path, unchanged. Every walking-skeleton page takes it, which
-    is why no acceptance pin moves for the branch above.
+    """The fixture path, unchanged: every walking-skeleton page takes it.
 
-    The two derivation fields are asserted as arithmetic rather than as
-    literals: this page's dark population peaks at `INK` and its light one at
-    `BACKGROUND`, and the sealed fraction of that distance is the margin. What
-    matters for the fixtures is the line below it -- this page's ink and paper
+    Asserted as arithmetic rather than literals: this page's ink and paper
     are 190 grey levels apart and the walking-skeleton pages' are 140, and on
-    both distances the floor and the derived margin select the identical pixels,
-    so nothing downstream can tell them apart.
+    both distances the floor and the derived margin select identical pixels.
     """
     width, height = 200, 260
     rows = blank_rows(width, height)
@@ -916,13 +831,10 @@ def test_an_ordinary_page_still_reports_the_modal_source_and_no_surround():
 
 # --- the ink margin the page derives for itself --------------------------------
 #
-# `PRIMARY_MARGIN` was the threshold the primary scan used to run at.
-# On 127 real pages a fixed 20 grey levels below the paper *mode* landed inside
-# the paper *population* -- a photographed leaf's tones spread over dozens of
-# levels -- so between 28% and 66% of every real page counted as ink and the
-# number could not be read. The
-# margin is now a sealed fraction of the distance between the page's own two
-# population modes, and `PRIMARY_MARGIN` is its floor.
+# A fixed margin below the paper mode lands inside the paper population on a
+# photographed page (tones spread over dozens of levels), so the margin is a
+# sealed fraction of the distance between the page's own two modes, and
+# PRIMARY_MARGIN is its floor.
 
 
 def test_the_ink_margin_is_a_sealed_fraction_of_the_pages_own_two_modes():
@@ -938,12 +850,9 @@ def test_the_ink_margin_is_a_sealed_fraction_of_the_pages_own_two_modes():
 
 
 def test_the_ink_margin_is_floored_at_primary_margin_where_the_two_modes_are_close():
-    """A page whose populations are barely apart has no separation to scale by.
-
-    Ten of the 127 calibration pages are here. The floor holds them at exactly
-    the threshold they had before this unit, and it makes the whole change
-    one-directional: a derived margin is never smaller than 20, so no page can
-    start counting as ink anything it did not count as ink before.
+    """A page whose populations are barely apart has no separation to scale
+    by: the floor keeps the change one-directional, since a derived margin is
+    never smaller than the fixed one.
     """
     width, height = 200, 260
     rows = blank_rows(width, height, background=200)
@@ -958,12 +867,8 @@ def test_the_ink_margin_is_floored_at_primary_margin_where_the_two_modes_are_clo
 
 def test_the_paper_mode_and_the_modal_background_are_one_value_on_that_branch():
     """The derivation reads `paper`; the modal branch publishes `background`.
-
-    They are the same integer there and the code relies on it: a background that
-    survives `mode * counted >= total` is at or above the page's own mean, so
-    the global mode is also the mode of the population at or above the mean.
-    Asserted on a page rather than argued, so a change to either selection
-    cannot leave the two silently different.
+    They are the same integer there and the code relies on it, asserted on a
+    page rather than argued.
     """
     width, height = 200, 260
     rows = blank_rows(width, height)
@@ -979,12 +884,10 @@ def test_the_paper_mode_and_the_modal_background_are_one_value_on_that_branch():
 
 
 def test_a_paper_mode_below_the_dark_mode_is_refused_by_name():
-    """The derivation's own precondition, guarded rather than assumed.
-
-    `infer_background_evidence` can never produce this pair, but a caller could:
-    the two modes are ordinary integers and transposing them would produce a
-    negative margin, which *raises* the threshold above the paper value instead
-    of lowering it -- a scan that counts almost the whole page as ink, quietly.
+    """`infer_background_evidence` can never produce this pair, but a caller
+    could: transposing the two modes would raise the threshold above the
+    paper value instead of lowering it, silently counting almost the whole
+    page as ink.
     """
     with pytest.raises(ContractError, match="not a page's own two populations"):
         _derived_ink_margin(40, 205, 3333)
@@ -1046,11 +949,10 @@ def test_a_page_whose_paper_spreads_over_many_tones_counts_far_less_of_itself_as
             width, height, rows, background=evidence["background"], margin=evidence["ink_margin"]
         )
     )
-    # The floor counts the paper: over half the page, on a page whose frame and
-    # writing together are barely a third of it.
+    # The floor counts the paper too, over half the page.
     assert at_floor == sum(1 for row in rows for value in row if value <= 205 - PRIMARY_MARGIN)
     assert at_floor > counted * 0.6
-    # The derived margin counts the frame and the writing and nothing else.
+    # The derived margin counts only the frame and the writing.
     assert at_derived == sum(1 for row in rows for value in row if value <= 40)
     assert at_derived < counted * 0.4
 
@@ -1058,15 +960,12 @@ def test_a_page_whose_paper_spreads_over_many_tones_counts_far_less_of_itself_as
 def test_the_background_probe_is_measured_at_the_floor_not_at_the_derived_threshold():
     """The bound that catches a wrong paper value must not read that value twice.
 
-    This is the shape 6 of the 127 calibration pages have: a saturated highlight
-    is the single most common value on a page whose real paper is spread across
-    dozens of tones, so the modal branch takes the highlight for paper. At the
-    *floor* threshold that value leaves 80% of the page below the ink threshold
-    and `max_ink_bp` refuses it by name. At the page's own *derived* threshold it
-    leaves 68%, inside the bound -- because the derivation reads the same wrong
-    paper value as its upper end and slides the threshold down with it. That is
-    the failure the bound exists for, made invisible, and it is why the probe
-    stays at the floor.
+    A saturated highlight becomes the modal (wrong) paper value here. At the
+    floor threshold it leaves 80% of the page below the ink threshold and
+    `max_ink_bp` refuses it; at the derived threshold it leaves only 68%,
+    inside the bound, because the derivation reads the same wrong value as
+    its own upper end and slides the threshold down with it. So the probe
+    must run at the floor, not the derived threshold.
     """
     width, height = 200, 260
     rows = []
@@ -1102,14 +1001,8 @@ def test_the_background_probe_is_measured_at_the_floor_not_at_the_derived_thresh
 
 def test_an_inverted_scan_is_still_refused_although_it_is_majority_dark():
     """The dark is everywhere, not in the frame, and the INTERIOR bound is what
-    says so: 8333 bp of the interior is at or below the level, against the 5000
-    this policy admits.
-
-    Its border band measures 6578 bp -- *darker* than the border band of 9 of the
-    72 real pages in the 127-page calibration -- which is exactly why the border
-    bound this branch removed could never have separated them, and why this test
-    now asserts the bound that actually decides. This is the shape a
-    histogram-only repair would wrongly admit.
+    says so: 8333bp of the interior is at or below the level, against the
+    5000 this policy admits.
     """
     width, height = 200, 260
     rows = [bytearray([30] * width) for _ in range(height)]
@@ -1118,12 +1011,8 @@ def test_an_inverted_scan_is_still_refused_although_it_is_majority_dark():
     policy = shipped_background_policy(width, height)
     with pytest.raises(BackgroundInferenceRefusal, match=r"the page is majority ink"):
         infer_background(width, height, rows, background_policy=policy)
-    # Which bound fires, shown rather than asserted from the message: widen the
-    # interior bound alone and this page is *still* refused, now by `max_ink_bp`
-    # -- 220 as paper would leave 8000 bp of the page below the threshold. Two
-    # independent bounds refuse an inverted scan, and neither is load-bearing
-    # alone. (The dark-core page below has only the first, which is why the two
-    # tests together settle what each bound is for.)
+    # Widen the interior bound alone and this page is still refused, now by
+    # max_ink_bp: two independent bounds refuse an inverted scan.
     with pytest.raises(BackgroundInferenceRefusal, match=r"is not a measurement of paper"):
         infer_background(
             width, height, rows, background_policy={**policy, "max_interior_dark_bp": 10000}
@@ -1131,11 +1020,9 @@ def test_an_inverted_scan_is_still_refused_although_it_is_majority_dark():
 
 
 def test_a_dark_core_inside_a_light_border_is_still_refused():
-    """The inverse arrangement: the dark is in the middle, 6647 bp of the
-    interior at or below the level against the 5000 this policy admits. Its
-    border measures 0, so on this page the removed border bound and the interior
-    bound agreed; on the inverted scan above they did not, which is the pair that
-    settles which of the two was doing the work."""
+    """The inverse arrangement: the dark is in the middle, 6647bp of the
+    interior at or below the level against the 5000 this policy admits.
+    """
     width, height = 200, 260
     rows = [bytearray([25] * width) for _ in range(height)]
     for y in range(height):
@@ -1154,10 +1041,9 @@ def test_a_dark_core_inside_a_light_border_is_still_refused():
 
 
 def test_a_uniformly_dark_page_never_reaches_the_surround_test_at_all():
-    """Its mode equals its mean, so the majority-ink branch does not fire and it
-    is refused one branch later by the `PRIMARY_MARGIN` guard -- exactly as
-    before this change. Named because the surround test would otherwise be
-    credited with a refusal it does not make."""
+    """Its mode equals its mean, so the majority-ink branch does not fire; it
+    is refused one branch later by the `PRIMARY_MARGIN` guard instead.
+    """
     width, height = 200, 260
     rows = [bytearray([0] * width) for _ in range(height)]
     with pytest.raises(BackgroundInferenceRefusal, match=r"darker than the 20-point ink margin"):
@@ -1168,9 +1054,9 @@ def test_a_uniformly_dark_page_never_reaches_the_surround_test_at_all():
 
 def test_a_dark_distribution_whose_interior_is_too_dark_to_threshold_still_refuses():
     """A framed page whose paper is darker than the ink margin. The shape test
-    passes and the paper value still cannot express a threshold, so the refusal
-    stands -- and it names the surround it found rather than pretending it saw
-    none."""
+    passes but the paper value still cannot express a threshold, so the
+    refusal names the surround it found rather than pretending it saw none.
+    """
     width, height = 400, 300
     rows = photographed_page(width, height, paper=15, ink=2)
     assert_the_surround_is_the_modal_pixel(width, height, rows)
@@ -1181,9 +1067,10 @@ def test_a_dark_distribution_whose_interior_is_too_dark_to_threshold_still_refus
 
 
 def test_a_band_with_no_interior_to_compare_against_refuses_rather_than_guesses():
-    """`_dark_distribution` returns `None` when the band leaves no interior. The
-    sealed loader refuses such a band outright, so this can only be reached by a
-    caller passing its own policy -- and it must not silently infer."""
+    """`_dark_distribution` returns `None` when the band leaves no interior;
+    the sealed loader refuses such a band outright, so this is only reached
+    by a caller passing its own policy, and it must not silently infer.
+    """
     width, height = 400, 300
     rows = photographed_page(width, height)
     degenerate = {
@@ -1198,11 +1085,6 @@ def test_a_band_with_no_interior_to_compare_against_refuses_rather_than_guesses(
 def test_the_interior_dark_bound_actually_decides_the_outcome():
     """The interior bound is load-bearing: moving it past this page's own
     measurement flips the answer, so it is not a decoration.
-
-    There is one bound here now, not two. `min_border_dark_bp` sat beside it
-    and is gone on measurement: over 127 real pages it refused
-    52 of them, and it refused no control the interior bound does not
-    (`pipeline/2_designator/CONTRACT.md`, the calibration tables).
     """
     width, height = 400, 300
     rows = photographed_page(width, height)
@@ -1222,18 +1104,10 @@ def test_the_interior_dark_bound_actually_decides_the_outcome():
 
 
 def test_a_paper_value_that_leaves_the_page_mostly_ink_is_refused_by_name():
-    """The quiet failure the seven-page calibration could not see.
-
-    Measured on 6 of 127 real pages: the modal pixel is 255 -- a blown highlight
-    or a saturated margin -- which is *lighter* than the mean, so the
-    majority-ink question is never asked, 255 is taken as paper, and 71 to 85%
-    of the page is counted as ink. `group_page` finds structure,
-    `conservation.reconcile` balances exactly, residual is zero, and nothing in
-    the record marks it.
-
-    This page is that shape in miniature: a saturated frame at 255 around paper
-    at 205, so the mode is 255, the modal branch takes it, and the threshold it
-    implies puts the paper itself below the line.
+    """A blown highlight or saturated margin at 255 is *lighter* than the
+    mean, so the majority-ink question is never asked, 255 is taken as paper,
+    and most of the page would count as ink. This page is that shape in
+    miniature: a saturated frame at 255 around paper at 205.
     """
     width, height = 400, 300
     rows = photographed_page(width, height, surround=255)
@@ -1258,14 +1132,10 @@ def test_a_paper_value_that_leaves_the_page_mostly_ink_is_refused_by_name():
 def framed_page_with_a_faint_interior(
     width: int, height: int, *, frame_x: int = 30, frame_y: int = 23, paper: int = 205
 ) -> list[bytearray]:
-    """A black frame around an interior whose paper mode is still 205 but most
-    of whose tones fall below the threshold 205 implies.
-
-    38% of the interior at `paper` -- fewer pixels than the frame, so the frame
-    is still the page's mode and the surround branch is still the one under
-    test -- and 62% spread across 120-184, thinly enough that no single tone
-    beats the frame either. The surround test passes and the value it returns
-    still leaves the page mostly ink.
+    """A black frame around an interior whose paper mode is still 205 but
+    most of whose tones fall below the threshold 205 implies: 38% of the
+    interior at `paper` (fewer pixels than the frame) and 62% spread across
+    120-184, thinly enough that no single tone beats the frame.
     """
     rows = [bytearray([0] * width) for _ in range(height)]
     for y in range(frame_y, height - frame_y):
@@ -1277,9 +1147,9 @@ def framed_page_with_a_faint_interior(
 
 
 def test_the_ink_bound_is_asked_of_the_surround_branch_too():
-    """Not only of the modal branch. A framed page whose paper value still leaves
-    most of the page below the threshold is refused for the same reason, and the
-    refusal names the branch it came from."""
+    """Not only of the modal branch: a framed page whose paper value still
+    leaves most of the page below the threshold is refused too.
+    """
     width, height = 400, 300
     rows = framed_page_with_a_faint_interior(width, height)
     assert_the_surround_is_the_modal_pixel(width, height, rows)
@@ -1293,13 +1163,9 @@ def test_the_ink_bound_is_asked_of_the_surround_branch_too():
 
 
 def test_a_page_photographed_against_a_light_surface_is_refused_by_name():
-    """The shape the sealed caveat names and the sample contains no example of.
-
-    Measured here rather than asserted there. A white bezel at 230 or above wins
-    the mode, the paper below it falls under the threshold that value implies,
-    and `max_ink_bp` refuses the page by name instead of publishing an ink
-    fraction of 0.72 that reconciles exactly. Named as a SYNTHETIC measurement,
-    because that is what it is.
+    """A white bezel at 230 or above wins the mode, the paper below it falls
+    under the threshold that implies, and `max_ink_bp` refuses the page by
+    name instead of publishing an ink fraction that reconciles exactly.
     """
     width, height = 400, 300
     for frame in (255, 245, 230):
@@ -1311,17 +1177,11 @@ def test_a_page_photographed_against_a_light_surface_is_refused_by_name():
 
 
 def test_a_light_surround_close_to_the_paper_tone_is_not_caught_and_that_is_recorded():
-    """The limit of the rule above, pinned so it cannot be discovered later.
-
-    A surround only fifteen grey levels lighter than the paper is inferred *as*
-    the paper: the mode is the frame, the frame clears the majority-ink test,
-    and the ink fraction it implies is 0.46 -- inside `max_ink_bp`. Nothing in
-    this design catches it. The consequence is a paper value 15 too high and an
-    ink fraction correspondingly inflated, and the record is where the wrong
-    value is *preserved* rather than where it is *visible*: the page publishes
-    220 as its paper and nothing beside it says the number is wrong. A reader
-    who already suspects the page can check it; nothing brings the page to that
-    reader. It is not refused, and the caveat says so.
+    """A known limit, pinned so it cannot be rediscovered: a surround only 15
+    grey levels lighter than the paper is inferred *as* the paper (the frame
+    clears the majority-ink test and its implied ink fraction is inside
+    `max_ink_bp`). Nothing in this design catches it; the page publishes 220
+    as its paper with nothing beside it to say the value is wrong.
     """
     width, height = 400, 300
     rows = photographed_page(width, height, surround=220)
