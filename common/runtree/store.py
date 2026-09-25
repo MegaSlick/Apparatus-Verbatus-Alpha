@@ -295,7 +295,8 @@ class RunTree:
         # blob write cannot leave an authority sealing evidence that never arrived.
         with _run_creation_lock(tree.root.parent):
             tree.root.mkdir(parents=True, exist_ok=True)
-            # Bound before any write, when __init__ found no root to bind.
+            # Bound before any write when __init__ found no root, and re-verified
+            # against the identity __init__ bound when it did.
             tree._bind_root_identity()
             if run_file.exists():
                 _verify_compatible_reuse(tree, run_id, authority)
@@ -492,7 +493,11 @@ class RunTree:
                 # A file longer than `data` cannot be the same receipt.
                 if _read_bytes_bounded(target, max_bytes=len(data)) == data:
                     return PublishResult(relative, reused=True)
-            except (SchemaRefusal, FileNotFoundError):
+            except SchemaRefusal:
+                pass
+            except FileNotFoundError:
+                # Gone between `exists()` above and here: nothing to reuse or
+                # refuse, so publish it, as `_publish_bytes` does at the same seam.
                 pass
         target.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(target, data)

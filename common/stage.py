@@ -125,8 +125,10 @@ DEFAULT_PDF_RENDER_CONFIG_PATH = _CONFIG_DIR / "pdf_render.toml"
 DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = _CONFIG_DIR / "witness_context.toml"
 DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH = _CONFIG_DIR / "perlector_protocol.toml"
 DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = _CONFIG_DIR / "perlector_audit.toml"
+# Padding changes the crop bytes a witness sees, so it is sealed into the run.
 DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = _CONFIG_DIR / "designator_padding.toml"
 DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = _CONFIG_DIR / "designator_geometry.toml"
+# Grouping thresholds decide which acts exist, so they are sealed too.
 DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH = _CONFIG_DIR / "designator_grouping.toml"
 DEFAULT_CORPUS_FRAME_CONFIG_PATH = _CONFIG_DIR / "corpus_frame.toml"
 DEFAULT_SERVING_RECIPES_CONFIG_PATH = _CONFIG_DIR / "serving_recipes.toml"

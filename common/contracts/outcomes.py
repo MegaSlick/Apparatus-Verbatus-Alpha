@@ -166,7 +166,7 @@ def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: 
     whether this chair's text was placed in this act, never whose reading is
     right.  It does cost independence, and the live seam says so.  It also costs
     forgery resistance: the readers take the recorded alignment as evidence, so a
-    forged attachment now needs a forged alignment alone, still behind the
+    forged attachment needs only a forged alignment, still behind the
     Attestatores seal (`pipeline/4_perlector/test_comparability_seam.py`).  The
     fix is a reader that re-derives the alignment, which needs text neither
     reader holds today.
