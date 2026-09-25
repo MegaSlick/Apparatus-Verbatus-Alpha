@@ -1075,6 +1075,11 @@ OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
 PAGE_TESTIMONIUM_FIELDS = PAGE_TESTIMONIUM_REQUIRED_FIELDS
 
 
+def _set_present(record: dict[str, Any], **optional: Any) -> None:
+    """Write each optional field that has a value; an absent field is omitted, not null."""
+    record.update({field: value for field, value in optional.items() if value is not None})
+
+
 def testimonium_payload(
     *,
     chair: str,
@@ -1114,26 +1119,20 @@ def testimonium_payload(
         "observed": [] if observed is None else observed,
         "unpresented_regions": [] if unpresented_regions is None else unpresented_regions,
     }
-    if reason is not None:
-        record["reason"] = reason
     if page_witness:
         # Set before validation: the geometry contract must know this act view
         # restates a page witness's page-space geometry (see validate_observed).
         record["page_witness"] = True
-    if raw_response_ref is not None:
-        record["raw_response_ref"] = raw_response_ref
-    if raw_response_kind is not None:
-        record["raw_response_kind"] = raw_response_kind
-    if adapter_metadata is not None:
-        record["adapter_metadata"] = adapter_metadata
-    if native_capture is not None:
-        # The response bytes stay in the blob the capture names.
-        record["native_capture"] = native_capture
-    if serving_call_ref is not None:
-        record["serving_call_ref"] = serving_call_ref
-    if native_inference is not None:
-        record["native_inference"] = native_inference
-
+    _set_present(
+        record,
+        reason=reason,
+        raw_response_ref=raw_response_ref,
+        raw_response_kind=raw_response_kind,
+        adapter_metadata=adapter_metadata,
+        native_capture=native_capture,
+        serving_call_ref=serving_call_ref,
+        native_inference=native_inference,
+    )
     return validate_testimonium_payload(record)
 
 
@@ -1168,6 +1167,12 @@ def validate_raw_response_ref(reference: Any) -> dict[str, str]:
     return validate_stage_blob_ref(reference, "raw_response_ref")
 
 
+def _provenance_adapter_name(payload: dict[str, Any]) -> Any:
+    provenance = payload.get("provenance")
+    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
+    return identity.get("witness_adapter") if isinstance(identity, dict) else None
+
+
 def validate_adapter_metadata(payload: Any) -> None:
     """Require a bound rule and reconcile it with the record's own adapter."""
     if not isinstance(payload, dict) or "adapter_metadata" not in payload:
@@ -1181,9 +1186,7 @@ def validate_adapter_metadata(payload: Any) -> None:
         raise SchemaRefusal(
             "a Testimonium adapter metadata is not a quantization rule any bound adapter declares"
         )
-    provenance = payload.get("provenance")
-    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
-    adapter_name = identity.get("witness_adapter") if isinstance(identity, dict) else None
+    adapter_name = _provenance_adapter_name(payload)
     if isinstance(adapter_name, str):
         expected = witness_adapters.resolve_runnable_adapter(adapter_name).quantization
         if metadata["geometry_quantization"] != expected:
@@ -1221,9 +1224,7 @@ def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
     )
     if "adapter_metadata" in payload and not has_references:
         raise SchemaRefusal("a Testimonium declares adapter metadata without a retained response")
-    provenance = payload.get("provenance")
-    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
-    adapter_name = identity.get("witness_adapter") if isinstance(identity, dict) else None
+    adapter_name = _provenance_adapter_name(payload)
     if isinstance(adapter_name, str):
         quantization = witness_adapters.resolve_runnable_adapter(adapter_name).quantization
         if has_references and quantization is not None and "adapter_metadata" not in payload:
@@ -1377,17 +1378,15 @@ def page_testimonium_payload(
         "page_role": page_role,
         "unjoined_act_attempts": unjoined_act_attempts,
     }
-    if partition_disagreement is not None:
-        record["partition_disagreement"] = partition_disagreement
     if raw_response_refs:
         record["raw_response_refs"] = raw_response_refs
-    if adapter_metadata is not None:
-        record["adapter_metadata"] = adapter_metadata
-    if native_capture is not None:
-        # Raw bytes remain in the named blob.
-        record["native_capture"] = native_capture
-    if native_inference is not None:
-        record["native_inference"] = native_inference
+    _set_present(
+        record,
+        partition_disagreement=partition_disagreement,
+        adapter_metadata=adapter_metadata,
+        native_capture=native_capture,
+        native_inference=native_inference,
+    )
     validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
     # The tally read-back excludes page Testimonia, so their health closes here.
     validate_content_health(record["payload"], record["content_health"])
@@ -4425,39 +4424,27 @@ def _chandra_native_artifact_ref(
     )
 
 
-def _attempt_evidence_record(attempt: Attempt) -> dict[str, Any]:
-    """Canonical subset needed to recover the vendor-returned result."""
+_CHANDRA_RESULT_FIELDS: Final = (
+    "outcome",
+    "native_payload",
+    "witness_reported",
+    "format_capabilities",
+    "health",
+    "reason",
+    "raw_response_ref",
+    "native_capture",
+    "serving_call_ref",
+    "receipt_ref",
+    "raw_response_kind",
+)
 
-    return {
-        "outcome": attempt.outcome,
-        "native_payload": attempt.native_payload,
-        "witness_reported": attempt.witness_reported,
-        "format_capabilities": attempt.format_capabilities,
-        "health": attempt.health,
-        "reason": attempt.reason,
-        "raw_response_ref": attempt.raw_response_ref,
-        "native_capture": attempt.native_capture,
-        "serving_call_ref": attempt.serving_call_ref,
-        "receipt_ref": attempt.receipt_ref,
-        "raw_response_kind": attempt.raw_response_kind,
-    }
+
+def _attempt_evidence_record(attempt: Attempt) -> dict[str, Any]:
+    return {field: getattr(attempt, field) for field in _CHANDRA_RESULT_FIELDS}
 
 
 def _attempt_from_evidence_record(context, value: Any) -> Attempt:
-    required = {
-        "outcome",
-        "native_payload",
-        "witness_reported",
-        "format_capabilities",
-        "health",
-        "reason",
-        "raw_response_ref",
-        "native_capture",
-        "serving_call_ref",
-        "receipt_ref",
-        "raw_response_kind",
-    }
-    if not isinstance(value, dict) or set(value) != required:
+    if not isinstance(value, dict) or set(value) != set(_CHANDRA_RESULT_FIELDS):
         raise SchemaRefusal("a Chandra native terminal artifact has no closed result record")
     observation_payload = None
     capture = value["native_capture"]
@@ -4469,20 +4456,7 @@ def _attempt_from_evidence_record(context, value: Any) -> Attempt:
             raise SchemaRefusal(
                 "a Chandra native terminal artifact's model output differs from its digest"
             )
-    return Attempt(
-        outcome=value["outcome"],
-        native_payload=value["native_payload"],
-        witness_reported=value["witness_reported"],
-        format_capabilities=value["format_capabilities"],
-        health=value["health"],
-        reason=value["reason"],
-        raw_response_ref=value["raw_response_ref"],
-        observation_payload=observation_payload,
-        native_capture=capture,
-        serving_call_ref=value["serving_call_ref"],
-        receipt_ref=value["receipt_ref"],
-        raw_response_kind=value["raw_response_kind"],
-    )
+    return Attempt(**value, observation_payload=observation_payload)
 
 
 def _chandra_error_attempt(error: ServingError, adapter: Any) -> Attempt:
