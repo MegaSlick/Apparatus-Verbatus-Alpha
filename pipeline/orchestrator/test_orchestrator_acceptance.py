@@ -5582,24 +5582,18 @@ def test_the_page_loss_is_named_and_the_run_is_partial(refused_page_run):
 
 
 def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_path):
-    """The positive edge case this scenario used to carry, and where it went.
+    """No fixture page holds for edge ink now that the band is a fraction.
 
-    `structure-failure` cuts no Designator region at all, so before 2026-09-06
-    the fixture's edge ink was unclaimed and both pages reached the terminal
-    ledger held for `unclaimed-edge-ink`. That was the only end-to-end proof in
-    this repository of a page hold surviving from the Ink Map to the export.
-
-    It is gone, and the reason is measured rather than incidental: the retired
-    64-pixel band was 32 per cent of a 200-pixel page, so what it called "edge
-    ink" was the fixture's own body text. `edge_band_bp` resolves to 2 pixels
-    here and these pages carry zero ink in every band up to 20, so the Ink Map
-    now maps both and holds neither.
+    `structure-failure` cuts no Designator region at all. `edge_band_bp`
+    resolves to 2 pixels on this scenario's 200-pixel pages, which carry zero
+    ink in every band up to 20, so the Ink Map maps both pages and holds
+    neither.
 
     **What this test protects is that the loss stays visible.** The scenario
     still exits held and still exports partial -- for its own cause, which is
     that no region was cut -- and no page reason mentions edge ink any more.
-    If a future fixture page gains ink near its edge, this test fails and the
-    edge path's end-to-end proof comes back with it. The gap is written into
+    If a future fixture page gains ink near its edge, this test fails and
+    recovers the edge path's end-to-end proof, a known gap recorded in
     `pipeline/1_ink_map/CONTRACT.md`.
     """
     root = tmp_path / "runs"
@@ -5686,8 +5680,7 @@ def test_the_refused_page_scenario_is_deterministic_on_rerun(tmp_path):
 
 
 def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_first_page_run):
-    """Half one of the defect, driven end to end: an act whose own page was never
-    sealed used to disappear from the seal entirely. Now it appears, held, with a
+    """An act whose own page was never sealed appears in the seal, held, with a
     hold artifact each, and the run is partial with the page loss named.
 
     Page 2 (a2's continuation page) is sealed but, in this scenario, never has a

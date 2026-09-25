@@ -1269,7 +1269,7 @@ def test_a_resumed_live_pass_keeps_the_page_it_fell_back_to_tiles_on(designated,
 def test_a_pass_interrupted_after_its_fallback_tiles_seals_them_on_the_resume(
     designated, tmp_path, monkeypatch
 ):
-    """The crash between the tiles and the seal, which used to seal a short run.
+    """The crash between the tiles and the seal must not seal a short run.
 
     Page 2's tiles and their crops reach disk, then the pass dies before the
     `proposal-seal` exists. The resume has to recompute the same grid and reach

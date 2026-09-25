@@ -114,28 +114,21 @@ def _straightforward_counts(
 ) -> tuple[int, int]:
     """`(total_ink, outside_ink)` the obvious, per-pixel way.
 
-    The reference the module's C-level implementation is checked against. This
-    is deliberately the slow, plainly-correct version -- one interpreted
-    comparison per pixel -- exactly what `residual_ink` did before
-    `bytes.translate` and `int.bit_count` replaced those loops for real-page
-    speed.
+    The reference the module's C-level implementation is checked against:
+    deliberately the slow, plainly-correct version -- one interpreted
+    comparison per pixel -- of what `residual_ink` computes with
+    `bytes.translate` and `int.bit_count` for real-page speed.
 
-    **The page-spanning mask is given too, and for the same reason the
-    background is.** Since 2026-09-06 the audited counts are this page's ink
-    with its page-spanning component taken out of both, and finding that
-    component is `common.components`' labelling -- proved against its own
-    per-pixel oracle in `pipeline/2_designator/test_structure.py`, not here.
-    What this reference exists to check is the *counting*, so it is handed the
-    same mask and does the arithmetic the slow way.
-
-    **The background is given, not inferred here.** It used to be this
-    function's own `histogram.index(max(histogram))`, which was a second copy of
-    the module's retired inference, so the two agreed by being the same mistake:
-    on a page whose mode is not paper both returned the bezel and both counted
-    almost nothing. Since 2026-09-06 the inference is
-    `common.background.infer_background_evidence`'s and is proved elsewhere;
-    what this reference exists to check is the *counting*, which is what the
-    optimisation actually changed.
+    **The page-spanning mask and the background are both given, not derived
+    here.** The audited counts are this page's ink with its page-spanning
+    component taken out of both; finding that component is
+    `common.components`' labelling, proved against its own per-pixel oracle in
+    `pipeline/2_designator/test_structure.py`. The background is
+    `common.background.infer_background_evidence`'s, proved elsewhere -- a
+    duplicate inference here would let the two agree by making the same
+    mistake instead of catching it. What this reference exists to check is
+    the *counting*, so it is handed both facts and does only the arithmetic
+    the slow way.
     """
     spanning = spanning_mask if spanning_mask is not None else bytearray(width * height)
     mask = bytearray(width * height)
@@ -449,13 +442,12 @@ def test_page_residual_ink_refuses_undecodable_bytes():
 def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink():
     """The map's early edge observation is not a hold after the crop re-measure.
 
-    **The fixture pages no longer carry the observation at all**, and that is
-    asserted here rather than worked around: their 64-pixel band used to reach a
-    third of the way into a 200x260 page and see the acts themselves, and
-    `edge_band_bp` resolves to 2 pixels there, where these pages have no ink.
-    So the release is exercised on a page built to carry edge ink -- one act
-    crop that reaches the page's own margin -- which is the shape a real page
-    presents and the fixture does not.
+    **The fixture pages carry no such observation at all**, and that is asserted
+    here rather than worked around: `edge_band_bp` resolves to 2 pixels on
+    their 200x260 canvas, where these pages have no ink. So the release is
+    exercised on a page built to carry edge ink -- one act crop that reaches
+    the page's own margin -- which is the shape a real page presents and the
+    fixture does not.
     """
     for page in PAGES:
         image = page_bytes(page["ordinal"])

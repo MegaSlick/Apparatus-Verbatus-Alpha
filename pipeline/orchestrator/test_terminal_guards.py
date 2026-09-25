@@ -1,4 +1,4 @@
-"""Regression tests for terminal accounting guards that previously had no witness.
+"""Regression tests for terminal accounting guards.
 
 Each test supplies the smallest synthetic contradiction that reaches one real
 stage entry point.  The contradiction is deliberately impossible through normal
@@ -581,13 +581,11 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
 
 
 def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch):
-    """The state the control test above used to stand in, now refused rather than run.
+    """A delivered act with no established record is a fatal imbalance, not a run.
 
-    Before the product bundle existed this fake could report `delivered` with no
-    Archetypus record and complete, because nothing downstream needed the text. The
-    projection does, and there is no reading to substitute for it -- so the category
-    and the evidence disagreeing is a fatal imbalance and not a row with an empty
-    text field.
+    This fake reports `delivered` with no Archetypus record. The projection has
+    no reading to substitute for it, so the category and the evidence
+    disagreeing is a fatal imbalance rather than a row with an empty text field.
     """
     armarium = _stage_module(
         "armarium_delivered_without_record_test", ROOT / "pipeline" / "7_armarium" / "run.py"
