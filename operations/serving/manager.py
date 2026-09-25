@@ -90,11 +90,9 @@ MECHANICS_QUALIFICATION_PURPOSE: Final = object()
 _NORMAL_LAUNCH = "normal"
 _PREFLIGHT_QUALIFICATION_LAUNCH = "preflight-qualification"
 _MECHANICS_QUALIFICATION_LAUNCH = "mechanics-qualification"
+_LOG_UNREADABLE: Final = "VLLM_LOG_UNREADABLE:"
 _READINESS_PROBE_TIMEOUT_SECONDS = 2.0
-"""Per-request budget for one /health or /v1/models poll.
-
-Named, not repeated: the readiness loop takes the smaller of this and what is
-left of the watchdog deadline, so a drifted literal would widen the overrun."""
+"""Per-request budget for one /health or /v1/models poll."""
 
 _INFERENCE_TIMEOUT_SECONDS = 10.0
 """Per-request budget for one chat/completions call: a real answer, not a poll."""
@@ -881,20 +879,24 @@ class ServingManager:
         # that is what justifies advising a longer, billed timeout.
         progress_line: str | None = None
         progress_advanced = False
-        while True:
-            # Each probe is capped by the watchdog time left, recomputed per
-            # call, so no probe overruns the deadline.
-            def probe_timeout() -> float:
-                return min(_READINESS_PROBE_TIMEOUT_SECONDS, max(0.0, deadline - self.monotonic()))
 
+        def watchdog_timeout() -> ReadinessError:
+            return _watchdog_timeout(
+                process,
+                last=last,
+                endpoint_state=endpoint_state,
+                progress_advanced=progress_advanced,
+                budget_seconds=float(profile.startup_timeout_seconds),
+            )
+
+        while True:
             # A dead process or a fatal log line is a better reason than a timeout,
             # so check them before the watchdog.
             self._assert_process_live(process)
             launch_tail = process.read_tail()
-            if launch_tail.startswith("VLLM_LOG_UNREADABLE:"):
+            if launch_tail.startswith(_LOG_UNREADABLE):
                 raise ReadinessError(
-                    "VLLM_LOG_UNREADABLE",
-                    launch_tail.removeprefix("VLLM_LOG_UNREADABLE:").strip(),
+                    "VLLM_LOG_UNREADABLE", launch_tail.removeprefix(_LOG_UNREADABLE).strip()
                 )
             signature = _fatal_log_signature(launch_tail)
             if signature is not None:
@@ -906,19 +908,13 @@ class ServingManager:
                 progress_line = current_progress
             # No time left: a request could not succeed.
             if deadline - self.monotonic() <= 0:
-                raise _watchdog_timeout(
-                    process,
-                    last=last,
-                    endpoint_state=endpoint_state,
-                    progress_advanced=progress_advanced,
-                    budget_seconds=float(profile.startup_timeout_seconds),
-                )
+                raise watchdog_timeout()
             try:
                 health = self.http.request(
                     "GET",
                     health_url(profile.endpoint),
                     body=None,
-                    timeout_seconds=probe_timeout(),
+                    timeout_seconds=self._time_left(deadline, _READINESS_PROBE_TIMEOUT_SECONDS),
                 )
                 if health.status != 200:
                     raise ReadinessError(
@@ -928,7 +924,7 @@ class ServingManager:
                     "GET",
                     models_url(profile.endpoint),
                     body=None,
-                    timeout_seconds=probe_timeout(),
+                    timeout_seconds=self._time_left(deadline, _READINESS_PROBE_TIMEOUT_SECONDS),
                 )
                 model_ids = require_exact_model_id(models, profile.served_model_id)
                 probe = self._post_probe(
@@ -938,9 +934,7 @@ class ServingManager:
                     model_id=profile.served_model_id,
                     seed=profile.seed,
                     deterministic=True,
-                    timeout_seconds=min(
-                        _INFERENCE_TIMEOUT_SECONDS, max(0.0, deadline - self.monotonic())
-                    ),
+                    timeout_seconds=self._time_left(deadline, _INFERENCE_TIMEOUT_SECONDS),
                 )
                 return ReadinessEvidence(
                     health_status=health.status,
@@ -961,16 +955,13 @@ class ServingManager:
                 last = str(error)
                 endpoint_state = _ENDPOINT_ANSWERED_UNREADY
             if self.monotonic() >= deadline:
-                raise _watchdog_timeout(
-                    process,
-                    last=last,
-                    endpoint_state=endpoint_state,
-                    progress_advanced=progress_advanced,
-                    budget_seconds=float(profile.startup_timeout_seconds),
-                )
-            self.sleep(
-                min(float(profile.poll_interval_seconds), max(0.0, deadline - self.monotonic()))
-            )
+                raise watchdog_timeout()
+            self.sleep(self._time_left(deadline, float(profile.poll_interval_seconds)))
+
+    def _time_left(self, deadline: float, cap: float) -> float:
+        """Cap one wait by the time left before ``deadline``, so no wait overruns it."""
+
+        return min(cap, max(0.0, deadline - self.monotonic()))
 
     @staticmethod
     def _assert_process_live(process: ServerProcess) -> None:
@@ -1269,7 +1260,7 @@ class ServingManager:
                 last = f"endpoint {endpoint!r} still answered HTTP {response.status} after owned process exit"
             if self.monotonic() >= deadline:
                 raise ServiceStopError(last)
-            self.sleep(min(0.25, max(0.0, deadline - self.monotonic())))
+            self.sleep(self._time_left(deadline, 0.25))
 
     def _require_active(self, handle: ServiceHandle) -> None:
         if self._active is not handle:
@@ -1758,11 +1749,11 @@ def _watchdog_timeout(
     """
 
     tail = _redacted(process.read_tail())
-    if tail.startswith("VLLM_LOG_UNREADABLE:"):
+    if tail.startswith(_LOG_UNREADABLE):
         return ReadinessError(
             "VLLM_WATCHDOG_TIMEOUT",
             f"{last} -- and after {budget_seconds:.0f}s this launch log could not be read "
-            f"({tail.removeprefix('VLLM_LOG_UNREADABLE:').strip()}), so nothing here can say "
+            f"({tail.removeprefix(_LOG_UNREADABLE).strip()}), so nothing here can say "
             "whether the engine was still loading or never started",
         )
     progress = _progress_log_line(tail)
