@@ -653,13 +653,10 @@ def test_response_model_mismatch_refuses_with_the_body_retained_and_named(
 def test_a_non_200_body_is_retained_before_the_refusal_and_quoted_in_it(
     tmp_path: Path,
 ) -> None:
-    """The one artefact a rented card exists to produce, no longer discarded.
+    """The one artefact a rented card exists to produce must not be discarded.
 
-    When vLLM refuses a request it says *why* in the body of a non-200, and
-    that sentence is the whole diagnostic. It used to be thrown away here --
-    `_refuse_bytes_from_the_wrong_source` ran before `self._retain` -- so the
-    predicted first real boot returned a stack trace and no engine account of
-    what went wrong. Principle 2: nothing is lost silently.
+    When vLLM refuses a request it says why in the body of a non-200, and that
+    sentence is the whole diagnostic (principle 2: nothing is lost silently).
     """
 
     body = (
@@ -1088,7 +1085,6 @@ def test_a_vendors_float_generation_values_are_recorded_as_the_wire_carried_them
 
     record_bytes = next(data for data in blob_store.written if data != response.raw_response)
     record = json.loads(record_bytes)
-    # Canonical bytes at all — the refusal that used to stop this request.
     assert canonical_bytes(record) == record_bytes
 
     # The body the fake endpoint received, re-serialized exactly as

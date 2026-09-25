@@ -72,11 +72,10 @@ from .http import (
 from .process import ProcessLauncher, ServerProcess
 from .residency import ResidencyHandle, ResidencyLease
 
-# Hybrid Mamba/attention checkpoints, for which a row with prefix caching on is
-# refused: on them it costs extra recurrent-state memory, and nothing has measured a reason to
-# spend it (vLLM itself leaves it opt-in for hybrids). Keyed by repository, not
-# role, because tests reuse role names for unrelated fixture chairs. Checked at
-# launch so a wrong recipe row fails before it reaches a rented GPU.
+# Hybrid Mamba/attention checkpoints: prefix caching over recurrent state
+# costs extra memory for no measured benefit (vLLM leaves it opt-in for
+# hybrids), so a row for one of these with it on is refused at launch. Keyed
+# by repository, not role, since tests reuse role names for fixture chairs.
 _HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qwen3.8-27B"})
 
 # Parses the status out of `parse_openai_answer`'s probe error message. If that
@@ -94,10 +93,8 @@ _MECHANICS_QUALIFICATION_LAUNCH = "mechanics-qualification"
 _READINESS_PROBE_TIMEOUT_SECONDS = 2.0
 """Per-request budget for one /health or /v1/models poll.
 
-Named rather than repeated at three call sites, because the readiness loop now
-takes the *smaller* of this and what is left of the watchdog deadline, and a
-literal that drifted between the two would silently widen the overrun this
-exists to close."""
+Named, not repeated: the readiness loop takes the smaller of this and what is
+left of the watchdog deadline, so a drifted literal would widen the overrun."""
 
 _INFERENCE_TIMEOUT_SECONDS = 10.0
 """Per-request budget for one chat/completions call: a real answer, not a poll."""
@@ -495,10 +492,10 @@ class ServingManager:
     ) -> None:
         supplied_command_prefix = command_prefix is not None
         if command_prefix is None:
-            # This interpreter, so the launched vLLM is the one whose version was
-            # inspected; a PATH console script could belong to another venv. The
-            # wheel has no `vllm/__main__.py`; this module is the console
-            # script's target.
+            # This interpreter, so the launched vLLM is the one whose version
+            # was inspected; a PATH console script could belong to another venv.
+            # `vllm.entrypoints.cli.main`, not `vllm`: the vLLM wheel ships no
+            # `vllm/__main__.py`, so `-m vllm` has no launch target and fails.
             command_prefix = (sys.executable, "-m", "vllm.entrypoints.cli.main")
         if (
             not isinstance(command_prefix, tuple)
@@ -512,9 +509,9 @@ class ServingManager:
             and package_inspector is None
             and command_prefix[0] != sys.executable
         ):
-            # The default inspector reads this interpreter's packages, so the
-            # runtime pin check only means something if the child is this
-            # interpreter. Exact strings, not realpaths: two venvs can symlink one
+            # The default inspector reads this interpreter's packages, so the pin
+            # check only means something if the child is this interpreter --
+            # compared as exact strings, since two venvs can symlink one
             # interpreter with different site-packages.
             raise ValueError(
                 "the default package inspector reads this interpreter's installed "
@@ -1335,10 +1332,11 @@ def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfil
     """Check the row's declared ``patch_size``/``merge_size`` against the model's file.
 
     They set every image's prompt-token cost, so a wrong declaration mis-counts
-    every request. The check needs the weights, so it runs at every start on the
-    pod. Rows that declare neither value (fixtures) are skipped. A snapshot with
-    neither file passes: every pinned repository ships one, so only a test store
-    lacks both, and store completeness is checked against the manifest elsewhere.
+    every request; the check needs the weights, so it runs at every start.
+    A row that does not declare both values (fixtures) is skipped. If neither
+    config file is present, this check also returns without cross-checking the
+    declared values. Snapshot completeness is checked separately against the
+    manifest.
     """
 
     declared = {field: getattr(profile, field, None) for field in ("patch_size", "merge_size")}
@@ -1656,14 +1654,10 @@ _LOADING_LOG_MARKERS: Final = (
 )
 """Launch-log strings that mean the engine is doing startup work, not hanging.
 
-The mirror image of `_fatal_log_signature`, and its tolerances are reversed
-because its consequences are.  A missed *fatal* signature costs a bounded wait,
-so that list stays narrow; a missed *loading* marker costs only a vaguer
-refusal message, and a false one costs a message that says "still loading"
-when the engine was idle -- neither aborts a start, neither relaunches
-anything, and no code branches on either.  So this list is generous where that
-one is strict.  The refusal quotes the line it matched rather than asserting a
-verdict, so a reader sees the evidence and can disagree with it.
+The mirror of `_fatal_log_signature`, generous where that one is strict: a
+missed fatal signature costs a bounded wait, but a missed or false loading
+marker only costs a vaguer message, since neither aborts a start or relaunches
+anything. The refusal quotes the matched line rather than asserting a verdict.
 """
 
 _WATCHDOG_TAIL_BYTES: Final = 1_200

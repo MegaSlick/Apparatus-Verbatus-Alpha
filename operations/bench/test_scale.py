@@ -22,12 +22,9 @@ def test_scale_runner_refuses_undersized_without_explicit_smoke_opt_in(tmp_path,
 def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinality(
     tmp_path, monkeypatch
 ):
-    """The 10x1,000 host invocation timed out mid-run with no prior smoke test
-
-    under it (TERRA_BUILD_REPORT.md). This exercises the same create/resume/
-    export/cleanup path the host command drives, at a size this chamber can
-    actually finish, so a latent bug in the logic itself — as opposed to its
-    wall-clock cost — is not resting on an unverified refusal-only test.
+    """Exercise the same create/resume/export/cleanup path as the full-size run,
+    at a size this chamber can actually finish, so a latent logic bug is not
+    resting on an unverified refusal-only test.
     """
     # Rebinding these public globals is the mutation under test: the private seal must ignore it.
     monkeypatch.setattr(scale, "SHARDS", 2)
