@@ -20,15 +20,16 @@ computed signals can only ever say a reading does not *look* cut off, and
 "does not look cut off" is not "ran to its own end" -- an engine cut off at a
 sentence boundary produces clean-looking text. So `complete` requires a
 positive engine observation as well as three clean computed signals; with no
-engine observation at all the classification is `unknown`, which holds.
+engine observation, `truncated` can still fire on three suspicious computed
+signals, and anything less than that is `unknown`, which holds.
 
 That case is real rather than theoretical: a serving adapter can drop the
 engine's stop-reason and expose only a token count, with no way to derive a
-positive engine observation from that alone. A serving path here whose adapter
-drops the stop-reason therefore holds every reading at `unknown` until it
-declares a second engine signal of its own -- which is the correct outcome,
-and the reason the rule is written as "an engine observation" rather than "a
-stop-reason".
+positive engine observation from that alone. A serving path here whose
+adapter drops the stop-reason therefore cannot produce `complete`, but it can
+still produce `truncated` when all three computed signals are suspicious;
+otherwise the result is `unknown` -- the reason the rule is written as "an
+engine observation" rather than "a stop-reason".
 """
 
 from __future__ import annotations

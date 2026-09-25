@@ -84,9 +84,9 @@ def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> li
     # would replace a caller's own real-time timer and then cancel it in
     # `finally`, destroying a deadline this module never owned. From a
     # non-main thread `signal.signal` raises outright. Arm only where nothing
-    # else owns the timer; otherwise run unbounded under the caller's
-    # deadline, the same honest degradation the missing-SIGALRM branch below
-    # already takes.
+    # else owns the timer; otherwise run without installing a timeout -- a
+    # caller deadline applies only when the caller provides one, as in the
+    # missing-SIGALRM branch below.
     if (
         not hasattr(signal, "SIGALRM")
         or not hasattr(signal, "ITIMER_REAL")
@@ -307,11 +307,12 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 # collapsing them would lose the one the instrument needs.
                 "departures": spans,
                 "comparison_loss": {
+                    # `reading_dropped_characters` charges collapsed whitespace
+                    # only; `witness_dropped_characters` below additionally
+                    # charges markup and entity spelling removed from the
+                    # report. Removal only, never re-encoding: NFC
+                    # composition is not a loss (see `comparison_view`).
                     "reading_dropped_characters": reading_view["dropped_characters"],
-                    # Removal only, never re-encoding: NFC composition is not a
-                    # loss (see `comparison_view`), so only markup and
-                    # collapsed whitespace are charged here, on both sides
-                    # alike.
                     "witness_dropped_characters": witness_view["dropped_characters"]
                     + markup_view["loss"]["markup_characters"]
                     + markup_view["loss"]["whitespace_characters"],
