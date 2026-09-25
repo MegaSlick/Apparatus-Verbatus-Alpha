@@ -184,6 +184,10 @@ _COMPLETED_CATEGORIES: Final = frozenset(
         ArmariumCategory.CONFIRMED_BLANK.value,
     }
 )
+_KNOWN_CATEGORIES: Final = frozenset(category.value for category in ArmariumCategory)
+_REVIEW_CATEGORIES: Final = frozenset(
+    {ArmariumCategory.HELD_FOR_REVIEW.value, ArmariumCategory.REFUSED_WITH_REASON.value}
+)
 # Any one of these marks a record as salvage-tier, so a salvage item cannot pass
 # as an act.
 _SALVAGE_DISCRIMINANT_FIELDS: Final = frozenset(
@@ -1669,7 +1673,6 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         _require_sha256(digest, "an Armarium projection source-manifest digest")
         if "ledger_sha256" in source:
             _require_sha256(source["ledger_sha256"], "an Armarium projection ledger digest")
-    known_categories = {category.value for category in ArmariumCategory}
     act_ids: set[str] = set()
     act_keys: set[str] = set()
     for act in projection.acts:
@@ -1682,7 +1685,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             raise SchemaRefusal("an Armarium projection repeats an act identity")
         act_ids.add(act_id)
         act_keys.add(act_key)
-        if category not in known_categories:
+        if category not in _KNOWN_CATEGORIES:
             raise SchemaRefusal(f"an Armarium projection uses unknown category {category!r}")
         if CANONICAL_TEXT_FIELD not in act:
             raise SchemaRefusal("an Armarium projection act has no canonical-text field")
@@ -2617,19 +2620,12 @@ def _export_reason(act: dict[str, Any]) -> str | None:
 
     The fallback names the gap ("upstream recorded no reason"), not the outcome.
     """
-    if act["category"] in {
-        ArmariumCategory.HELD_FOR_REVIEW.value,
-        ArmariumCategory.REFUSED_WITH_REASON.value,
-    }:
+    if act["category"] in _REVIEW_CATEGORIES:
         return act.get("reason") or "upstream recorded no reason"
     return act.get("reason")
 
 
 def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
-    review_categories = {
-        ArmariumCategory.HELD_FOR_REVIEW.value,
-        ArmariumCategory.REFUSED_WITH_REASON.value,
-    }
     return [
         {
             "schema": "armarium-review-item.v1",
@@ -2640,7 +2636,7 @@ def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
             "evidence_refs": act.get("evidence_refs", []),
         }
         for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"]))
-        if act["category"] in review_categories
+        if act["category"] in _REVIEW_CATEGORIES
     ]
 
 
@@ -3256,12 +3252,11 @@ def _terminal_ledger(
     ]
 
     units = source_units + page_units + act_units
-    known = {category.value for category in ArmariumCategory}
-    by_category = {category: 0 for category in sorted(known)}
+    by_category = {category: 0 for category in sorted(_KNOWN_CATEGORIES)}
     by_unit_type = {"source": 0, "page": 0, "act": 0}
     seen: set[str] = set()
     for unit in units:
-        if unit["category"] not in known:
+        if unit["category"] not in _KNOWN_CATEGORIES:
             raise SchemaRefusal(
                 f"terminal ledger unit {unit['unit_id']} carries category "
                 f"{unit['category']!r}, which is not one of the five closed categories"
@@ -3625,7 +3620,6 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
     if not isinstance(rows, list):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no category rows")
 
-    expected_categories = {category.value for category in ArmariumCategory}
     seen_categories: set[str] = set()
     result: dict[str, str] = {}
     for row in rows:
@@ -3634,7 +3628,7 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
         category, count, act_ids = row.get("category"), row.get("count"), row.get("act_ids")
         if (
             not isinstance(category, str)
-            or category not in expected_categories
+            or category not in _KNOWN_CATEGORIES
             or category in seen_categories
             or not isinstance(count, int)
             or isinstance(count, bool)
@@ -3649,7 +3643,7 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
                 raise SchemaRefusal("an act partition repeats or omits an act identity")
             result[act_id] = category
     if (
-        seen_categories != expected_categories
+        seen_categories != _KNOWN_CATEGORIES
         or len(result) != expected_count
         or counted != expected_count
     ):
@@ -3965,7 +3959,6 @@ def _verify_delivered_product_provenance(
 def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
     """Read all terminal categories and their explicit review reasons from the source graph."""
     records: dict[str, dict[str, Any]] = {}
-    known = {category.value for category in ArmariumCategory}
     for record in sources["act_outcomes"]:
         if not isinstance(record, dict) or set(record) != {
             "act_id",
@@ -3987,7 +3980,7 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             or not act_id
             or not isinstance(act_key, str)
             or not act_key
-            or category not in known
+            or category not in _KNOWN_CATEGORIES
             or not isinstance(reason, str | None)
             or act_id in records
         ):
@@ -4000,14 +3993,7 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
                 "a source act-outcome record's established-text status does not match whether "
                 "the act was delivered"
             )
-        if (
-            category
-            in {
-                ArmariumCategory.HELD_FOR_REVIEW.value,
-                ArmariumCategory.REFUSED_WITH_REASON.value,
-            }
-            and not reason
-        ):
+        if category in _REVIEW_CATEGORIES and not reason:
             raise SchemaRefusal("a source review outcome has no explicit reason")
         records[act_id] = record
     return records
@@ -4057,7 +4043,6 @@ def _jsonl_act_records(
     """Validate JSONL's one-record-per-act projection and return its categories."""
     lines = _package_lines(path, "acts JSONL")
     records: dict[str, dict[str, Any]] = {}
-    known = {category.value for category in ArmariumCategory}
     for line in lines:
         if not line:
             continue
@@ -4081,7 +4066,7 @@ def _jsonl_act_records(
             or not act_id
             or not isinstance(act_key, str)
             or not act_key
-            or category not in known
+            or category not in _KNOWN_CATEGORIES
             or act_id in records
         ):
             raise SchemaRefusal("an acts JSONL row has an invalid act identity or category")
@@ -4233,7 +4218,6 @@ def _database_act_records(
             connection.close()
     records: dict[str, dict[str, Any]] = {}
     literals: dict[str, tuple[str, str]] = {}
-    known = {category.value for category in ArmariumCategory}
     for (
         act_id,
         act_key,
@@ -4256,7 +4240,7 @@ def _database_act_records(
             or not act_id
             or not isinstance(act_key, str)
             or not act_key
-            or category not in known
+            or category not in _KNOWN_CATEGORIES
             or act_id in records
         ):
             raise SchemaRefusal("the acts database has an invalid act identity or category")
@@ -4321,10 +4305,6 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
     """Validate the selected review projection's exact terminal population."""
     lines = _package_lines(path, "review-items JSONL")
     records: dict[str, dict[str, str]] = {}
-    allowed = {
-        ArmariumCategory.HELD_FOR_REVIEW.value,
-        ArmariumCategory.REFUSED_WITH_REASON.value,
-    }
     for line in lines:
         if not line:
             continue
@@ -4348,7 +4328,7 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
             or not act_id
             or not isinstance(act_key, str)
             or not act_key
-            or category not in allowed
+            or category not in _REVIEW_CATEGORIES
             or not isinstance(reason, str)
             or not reason
             or act_id in records
@@ -4671,10 +4651,7 @@ def _verify_product_accounting(
         _verify_exact_delivered_citations(jsonl_records, citations, act_keys, subject="acts JSONL")
     if "review-items" in formats.formats:
         expected_review = {
-            act_id
-            for act_id, category in expected.items()
-            if category
-            in {ArmariumCategory.HELD_FOR_REVIEW.value, ArmariumCategory.REFUSED_WITH_REASON.value}
+            act_id for act_id, category in expected.items() if category in _REVIEW_CATEGORIES
         }
         review_records = _review_item_records(root / "review-items.jsonl")
         if set(review_records) != expected_review:
