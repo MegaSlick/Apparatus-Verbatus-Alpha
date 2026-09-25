@@ -3042,6 +3042,380 @@ def page_denominator(
     return contributing_pages_by_act, by_page
 
 
+def _renumbered_onto(observed: list[dict[str, Any]], items) -> None:
+    for item in items:
+        observed.append({**item, "ordinal": len(observed)})
+
+
+def _response_partition(
+    context,
+    *,
+    resolved: ChairIdentity,
+    presented: dict[str, Any],
+    page_ordinal: int,
+    page_acts: list[dict[str, Any]],
+    chair: str,
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+    page_attempt_result: Any,
+    live: bool,
+    fixture_observed: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[dict[str, Any]]]:
+    """The page geometry a chair's own responses report, the responses it names, and
+    its page-edge findings.
+
+    Live, the source is the single page response; in a fixture, one declared
+    response per act whose primary page this is — a continuation's primary-page
+    response must not become geometry on its far page.
+    """
+    adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+    page_size = _sealed_source_page(context, presented)[2]
+    needs_default_observation = False
+    sources: list[tuple[bytes, dict[str, str] | None, bool]] = []
+    if live:
+        raw = page_attempt_result.observation_payload
+        if raw is not None:
+            # `False`: the capture already names these bytes, and
+            # listing them again would state one reading twice.
+            sources.append((raw, page_attempt_result.raw_response_ref, False))
+    else:
+        for act in page_acts:
+            if act["page_ordinal"] != page_ordinal:
+                continue
+            source_attempt = attempts_by_pair[(act["act_id"], chair)]
+            raw = source_attempt.observation_payload
+            if raw is None and source_attempt.outcome == "genuinely-empty":
+                needs_default_observation = True
+            if raw is not None:
+                sources.append((raw, source_attempt.raw_response_ref, True))
+    observed: list[dict[str, Any]] = []
+    response_refs: list[dict[str, str]] = []
+    edge_overshoots: list[dict[str, Any]] = []
+    # Acts on one page can share a raw response; a repeated finding would
+    # be refused as one block counted twice.
+    seen_overshoots: set[tuple[str, int]] = set()
+    for raw, reference, name_in_partition in sources:
+        source_observed, overshoots = page_partition_entries(
+            _partition_geometry(adapter.observe(presented, raw, page_size=page_size)),
+            page_size=page_size,
+            raw_response_ref=reference,
+        )
+        # A page-edge finding's response must be reachable from the partition list.
+        if (
+            (name_in_partition or overshoots)
+            and reference is not None
+            and reference not in response_refs
+        ):
+            response_refs.append(reference)
+        for overshoot in overshoots:
+            overshoot_key = (overshoot["response_sha256"], overshoot["ordinal"])
+            if overshoot_key not in seen_overshoots:
+                seen_overshoots.add(overshoot_key)
+                edge_overshoots.append(overshoot)
+        _renumbered_onto(observed, source_observed)
+    if live and sources and not observed:
+        # No reported geometry: the presentation echo stands in,
+        # excluded from routing and coverage.
+        needs_default_observation = True
+    if needs_default_observation or not sources:
+        _renumbered_onto(observed, observed_from_presentation(presented))
+    if fixture_observed is not None:
+        # Kept alongside native blocks for the unclaimed route.
+        _renumbered_onto(observed, fixture_observed)
+    return observed, response_refs, edge_overshoots
+
+
+def _measured_line_bbox(line: dict[str, Any], page_ordinal: int) -> dict[str, int]:
+    bbox = {key: line.get(key) for key in ("x", "y", "w", "h")}
+    if (
+        any(not isinstance(value, int) or isinstance(value, bool) for value in bbox.values())
+        or bbox["x"] < 0
+        or bbox["y"] < 0
+        or bbox["w"] <= 0
+        or bbox["h"] <= 0
+    ):
+        raise SchemaRefusal(
+            f"the Chandra anchor line for act {line['act_key']} on page "
+            f"{page_ordinal} declares an unusable rectangle; only measured "
+            "non-negative integer geometry can be published as this act's "
+            "line geometry"
+        )
+    return bbox
+
+
+def _declared_anchor(
+    context, page_ordinal: int, page_acts: list[dict[str, Any]]
+) -> tuple[str | None, dict[str, dict[str, Any]]]:
+    """A fixture page's declared Chandra anchor markup and each proposed act's located line.
+
+    A malformed declaration is refused, never treated as absent: skipping it would
+    detach page witnesses under a reason naming an absent anchor (principles 2, 8).
+    """
+    anchors = [
+        row
+        for row in context.fixture.get("chandra_anchor", [])
+        if row.get("page_ordinal") == page_ordinal
+    ]
+    if len(anchors) > 1:
+        raise SchemaRefusal(
+            f"page {page_ordinal} declares {len(anchors)} Chandra anchors; a page has "
+            "one anchor, and skipping a duplicated declaration would detach every "
+            "page witness on it under a reason naming an absent anchor"
+        )
+    if not anchors:
+        return None, {}
+    anchor = anchors[0]
+    if not isinstance(anchor.get("html"), str):
+        raise SchemaRefusal(
+            f"the Chandra anchor for page {page_ordinal} carries no anchor markup "
+            "text; a malformed anchor is not an absent one"
+        )
+    normalized_anchor = markup_text_view(anchor["html"])["text"]
+    ranges: dict[str, dict[str, Any]] = {}
+    # `lines` are in reading order; searching from the previous match lets
+    # a repeated formulaic opening resolve to its own occurrence.
+    search_from = 0
+    for line in anchor.get("lines", []):
+        if not isinstance(line, dict) or not isinstance(line.get("act_key"), str):
+            raise SchemaRefusal(
+                f"a Chandra anchor line for page {page_ordinal} names no act key; "
+                "skipping it would detach an act under a reason naming an absent line"
+            )
+        source = line.get("text")
+        if not isinstance(source, str):
+            raise SchemaRefusal(
+                f"the Chandra anchor line for act {line['act_key']} on page "
+                f"{page_ordinal} carries no text; a malformed line is not an absent one"
+            )
+        needle = markup_text_view(source)["text"]
+        start = normalized_anchor.find(needle, search_from) if needle else -1
+        if start < 0:
+            raise SchemaRefusal(
+                f"the Chandra anchor line for act {line['act_key']} on page "
+                f"{page_ordinal} does not occur in the page's own anchor text at or "
+                "after the previous line; an unlocatable declared line is malformed "
+                "evidence, not an absent act line"
+            )
+        act = next((item for item in page_acts if item["act_key"] == line["act_key"]), None)
+        if act is not None:
+            if act["act_id"] in ranges:
+                raise SchemaRefusal(
+                    f"page {page_ordinal} declares more than one Chandra anchor "
+                    f"line for act {line['act_key']}; keeping the last one would "
+                    "drop the first line's span and geometry without a record"
+                )
+            ranges[act["act_id"]] = {
+                "start": start,
+                "end": start + len(needle),
+                "line_geometry": [{"bbox": _measured_line_bbox(line, page_ordinal)}],
+            }
+        # Advance even for an unproposed act: its line still occupies the page.
+        search_from = start + len(needle)
+    return anchor["html"], ranges
+
+
+def _blank_reading_alignment(
+    act_anchor: dict[str, Any] | None, *, page_anchored: bool, anchor_chair: str | None
+) -> dict[str, Any]:
+    """A genuinely empty reading attaches trivially at a zero-length span.
+
+    Alignment can never match an empty string, so the blank would otherwise stay
+    permanently unaligned (principles 2, 8).
+    """
+    located = act_anchor is not None
+    start = act_anchor["start"] if located else 0
+    return {
+        "status": "aligned",
+        # Which absence: no page anchor at all (blank confirmation stays open) or
+        # an anchor that locates no line for this act (a terminal blank is refused).
+        "anchor_basis": (
+            "act-anchor"
+            if located
+            else ("act-line-not-located" if page_anchored else "no-page-anchor")
+        ),
+        "anchor_chair": anchor_chair if located else None,
+        "anchor_span": {"start": start, "end": start},
+        "witness_span": {"start": 0, "end": 0},
+        # Recorded anyway, so "no match" never looks like "not measured" (principle 2).
+        "anchor_line_match": {
+            "anchor_characters": act_anchor["end"] - start if located else 0,
+            "matched_characters": 0,
+            "longest_matched_run": 0,
+        },
+        "line_geometry": _line_geometry(act_anchor) if located else [],
+        "loss": {"witness": _ZERO_ALIGNMENT_LOSS, "anchor": _ZERO_ALIGNMENT_LOSS},
+        "offset_maps": {"witness": [], "anchor": []},
+        # Alignment never ran, so no deadline applied.
+        "deadline_in_force": False,
+    }
+
+
+def _act_span_alignment(
+    result: dict[str, Any], act_anchor: dict[str, Any], anchor_chair: str | None
+) -> dict[str, Any]:
+    """Clip a page alignment to one act's anchor range and store it in raw indices.
+
+    Clipping happens in normalized space, since whole blocks would hand every act
+    the whole page; the span is translated once, at storage, because every
+    consumer indexes the raw text.
+    """
+    clipped = []
+    # Measured here, where the fragments exist; the record keeps only a hull. The
+    # longest run stops scattered coincidental characters counting as located.
+    # Blocks are disjoint, so the sum does not double-count.
+    matched_characters = 0
+    longest_matched_run = 0
+    for span in result["spans"]:
+        start = max(span["anchor"]["start"], act_anchor["start"])
+        end = min(span["anchor"]["end"], act_anchor["end"])
+        if start < end:
+            shift = span["witness"]["start"] - span["anchor"]["start"]
+            clipped.append((start + shift, end + shift))
+            matched_characters += end - start
+            longest_matched_run = max(longest_matched_run, end - start)
+    if not clipped:
+        return {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
+    # A hull across fragments may include a neighbour's characters. Deliberate: it
+    # overstates disagreement and never hides it. Do not "fix" towards agreement.
+    raw_span = _raw_span_from_normalized(
+        result["witness"]["offset_map"],
+        min(start for start, _ in clipped),
+        max(end for _, end in clipped),
+    )
+    if raw_span is None:
+        return {"status": "unaligned", "reason": "no-raw-counterpart-for-aligned-span"}
+    witness_start, witness_end = raw_span
+    return {
+        "status": "aligned",
+        "anchor_basis": "act-anchor",
+        "anchor_chair": anchor_chair,
+        "anchor_span": {key: act_anchor[key] for key in ("start", "end")},
+        "witness_span": {"start": witness_start, "end": witness_end},
+        "anchor_line_match": {
+            "anchor_characters": act_anchor["end"] - act_anchor["start"],
+            "matched_characters": matched_characters,
+            "longest_matched_run": longest_matched_run,
+        },
+        "line_geometry": _line_geometry(act_anchor),
+        "loss": {"witness": result["witness"]["loss"], "anchor": result["anchor"]["loss"]},
+        "offset_maps": {
+            "witness": result["witness"]["offset_map"],
+            "anchor": result["anchor"]["offset_map"],
+        },
+        "deadline_in_force": result["deadline_in_force"],
+    }
+
+
+def _page_witness_alignment(
+    *,
+    page_outcome: str,
+    native_page_capture: bool,
+    act_anchor: dict[str, Any] | None,
+    page_text: str | None,
+    anchor_text: str | None,
+    anchor_chair: str | None,
+    page_alignments: dict[tuple[int, str], dict[str, Any]],
+    page_key: tuple[int, str],
+    limits: Any,
+) -> dict[str, Any]:
+    """Where a page witness's reading places one act, measured against the page anchor."""
+    if page_outcome not in WITNESS_READING_OUTCOMES:
+        # No reading to place; aligning anyway would claim text the chair never delivered.
+        return {
+            "status": "unaligned",
+            "reason": non_reading_alignment_reason(
+                page_outcome, native_page_capture=native_page_capture
+            ),
+        }
+    if page_outcome == "genuinely-empty":
+        return _blank_reading_alignment(
+            act_anchor, page_anchored=anchor_text is not None, anchor_chair=anchor_chair
+        )
+    if page_text is None or anchor_text is None:
+        return {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
+    if act_anchor is None:
+        return {"status": "unaligned", "reason": "act-anchor-line-not-located"}
+    # Cached per (page, chair): the inputs do not depend on the act, and
+    # `SequenceMatcher` can be near cubic.
+    result = page_alignments.get(page_key)
+    if result is None:
+        result = align_to_anchor(page_text, anchor_text, limits)
+        page_alignments[page_key] = result
+    if result["status"] == "aligned":
+        return _act_span_alignment(result, act_anchor, anchor_chair)
+    # No `deadline_in_force`: `reason` already names a fired deadline.
+    return {"status": "unaligned", "reason": result["reason"]}
+
+
+def _page_witness_entries(
+    *,
+    act: dict[str, Any],
+    chair: str,
+    act_attempt: Attempt,
+    alignment: dict[str, Any],
+    contributing_pages: Any,
+    act_regions: list[dict[str, Any]],
+    page_outcomes: dict[tuple[int, str], str],
+    page_observations: dict[tuple[int, str], list[dict[str, Any]]],
+    page_records: dict[tuple[int, str], dict[str, str]],
+    page_texts: dict[tuple[int, str], str],
+) -> list[dict[str, Any]]:
+    """One attachment entry per page the act spans; only its primary page carries the alignment.
+
+    An entry is attached by reported ink over the proposal or, where there is none
+    (Churro reports no geometry), by a located anchor line. The anchor places
+    text; it never judges a reading (principle 1).
+    """
+    entries = []
+    for contributing_page in contributing_pages:
+        page_alignment = (
+            alignment
+            if contributing_page == act["page_ordinal"]
+            else {"status": "unaligned", "reason": "continuation-page-no-act-anchor"}
+        )
+        page_bounds = [
+            region["payload"]["transform"]["bounds"]
+            for region in act_regions
+            if region["payload"]["transform"]["source_page_ordinal"] == contributing_page
+        ]
+        contributing_outcome = page_outcomes.get((contributing_page, chair), act_attempt.outcome)
+        attachment_basis = page_attachment_basis(
+            reading=contributing_outcome in WITNESS_READING_OUTCOMES,
+            geometry_overlaps=any(
+                reported_geometry_overlaps(page_observations[(contributing_page, chair)], bounds)
+                for bounds in page_bounds
+            ),
+            alignment=page_alignment,
+        )
+        page_attached = attachment_basis != "unattached"
+        spans_text = page_attached and page_alignment["status"] == "aligned"
+        entries.append(
+            {
+                "chair": chair,
+                "page_witness": True,
+                "page_ordinal": contributing_page,
+                "testimonium_ref": page_records[(contributing_page, chair)],
+                "attached": page_attached,
+                "comparable": spans_text
+                and isinstance(page_texts.get((contributing_page, chair)), str),
+                "attachment_basis": attachment_basis,
+                # The act attempt's health, even under a page capture: the Perlector
+                # and Recensor compare it with the current act Testimonium to detect
+                # a later reread.
+                "content_health": act_attempt.health,
+                "alignment": page_alignment,
+                "span": (
+                    {
+                        "start": page_alignment["witness_span"]["start"],
+                        "end": page_alignment["witness_span"]["end"],
+                    }
+                    if spans_text
+                    else None
+                ),
+            }
+        )
+    return entries
+
+
 def publish_page_testimonia_and_attachments(
     context,
     *,
@@ -3097,7 +3471,6 @@ def publish_page_testimonia_and_attachments(
                 native_payload, outcome = join.native_payload, join.outcome
                 unjoined_act_attempts = join.unjoined_act_attempts
             else:
-                # Not `page_attempt`, which names the attempt id below.
                 page_attempt_result, native_capture = captured
                 native_payload, outcome = (
                     page_attempt_result.native_payload,
@@ -3139,7 +3512,7 @@ def publish_page_testimonia_and_attachments(
             )
             adapter = (
                 witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
-                if attempted_page and isinstance(resolved, ChairIdentity)
+                if attempted_page
                 else None
             )
             if adapter is not None:
@@ -3157,9 +3530,6 @@ def publish_page_testimonia_and_attachments(
             page_role = roles.pop() if len(roles) == 1 else "mixed"
             page_response_refs: list[dict[str, str]] = []
             page_edge_overshoots: list[dict[str, Any]] = []
-            # Acts on one page can share a raw response; a repeated finding would
-            # be refused as one block counted twice.
-            seen_page_edge_overshoots: set[tuple[str, int]] = set()
             # For a Chandra chair, declared observations add to derived geometry.
             fixture_observed = (
                 _fixture_native_observations(context, chair=chair, page_ordinal=page_ordinal)
@@ -3169,76 +3539,18 @@ def publish_page_testimonia_and_attachments(
             if not presented:
                 observed: list[dict[str, Any]] = []
             elif _derives_partition_from_response(resolved, page_captures):
-                # Only responses whose primary page is this page: a continuation's
-                # primary-page response must not become geometry on its far page.
-                adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
-                observed = []
-                captured_geometry = False
-                needs_default_observation = False
-                page_size = _sealed_source_page(context, presented)[2]
-                # Live: the single page response, not once per act view.
-                # Fixture: one declared response per act.
-                sources: list[tuple[bytes, dict[str, str] | None, bool]] = []
-                if page_captures is not None:
-                    raw = page_attempt_result.observation_payload
-                    if raw is not None:
-                        # `False`: the capture already names these bytes, and
-                        # listing them again would state one reading twice.
-                        sources.append((raw, page_attempt_result.raw_response_ref, False))
-                else:
-                    for act in page_acts:
-                        if act["page_ordinal"] != page_ordinal:
-                            continue
-                        source_attempt = attempts_by_pair[(act["act_id"], chair)]
-                        raw = source_attempt.observation_payload
-                        if raw is None and source_attempt.outcome == "genuinely-empty":
-                            needs_default_observation = True
-                        if raw is None:
-                            continue
-                        sources.append((raw, source_attempt.raw_response_ref, True))
-                for raw, reference, name_in_partition in sources:
-                    captured_geometry = True
-                    # Name each source blob once, in partition order.
-                    if (
-                        name_in_partition
-                        and reference is not None
-                        and reference not in page_response_refs
-                    ):
-                        page_response_refs.append(reference)
-                    source_observed, overshoots = page_partition_entries(
-                        _partition_geometry(adapter.observe(presented, raw, page_size=page_size)),
-                        page_size=page_size,
-                        raw_response_ref=reference,
-                    )
-                    if (
-                        overshoots
-                        and not name_in_partition
-                        and reference is not None
-                        and reference not in page_response_refs
-                    ):
-                        # A page-edge finding's response must be reachable from
-                        # the partition list, so it is named there too.
-                        page_response_refs.append(reference)
-                    for overshoot in overshoots:
-                        overshoot_key = (overshoot["response_sha256"], overshoot["ordinal"])
-                        if overshoot_key not in seen_page_edge_overshoots:
-                            seen_page_edge_overshoots.add(overshoot_key)
-                            page_edge_overshoots.append(overshoot)
-                    for item in source_observed:
-                        observed.append({**item, "ordinal": len(observed)})
-                if page_captures is not None and captured_geometry and not observed:
-                    # No reported geometry: the presentation echo stands in,
-                    # excluded from routing and coverage.
-                    needs_default_observation = True
-                if needs_default_observation or not captured_geometry:
-                    observed.extend(
-                        {**item, "ordinal": len(observed)}
-                        for item in observed_from_presentation(presented)
-                    )
-                if fixture_observed is not None:
-                    # Kept alongside native blocks for the unclaimed route.
-                    for item in fixture_observed:
-                        observed.append({**item, "ordinal": len(observed)})
+                observed, page_response_refs, page_edge_overshoots = _response_partition(
+                    context,
+                    resolved=resolved,
+                    presented=presented,
+                    page_ordinal=page_ordinal,
+                    page_acts=page_acts,
+                    chair=chair,
+                    attempts_by_pair=attempts_by_pair,
+                    page_attempt_result=page_attempt_result,
+                    live=page_captures is not None,
+                    fixture_observed=fixture_observed,
+                )
             elif fixture_observed is not None:
                 observed = fixture_observed
             elif adapter is not None:
@@ -3246,21 +3558,20 @@ def publish_page_testimonia_and_attachments(
             else:
                 # Unreachable while absent chairs are never attempted.
                 observed = observed_from_presentation(presented)
-            # Every proposal/observation pairing is kept; this stage does not
-            # assign a marginal observation to an act.
-            page_proposals = page_proposal_regions
             page_artifact_id = artifact_id(
                 ATTESTATORES, "page-testimonium", page_subject_id, page_attempt
             )
-            # Absent, not empty, for a never-presented page: zero proposals would
-            # be false and the Recensor refuses it.
+            # Every proposal/observation pairing is kept; this stage does not assign
+            # a marginal observation to an act. Absent, not empty, for a
+            # never-presented page: zero proposals would be false and the Recensor
+            # refuses it.
             disagreement = (
                 partition_disagreement(
                     {
                         "artifact_id": page_artifact_id,
                         "payload": {"presented": presented, "observed": observed},
                     },
-                    page_proposals,
+                    page_proposal_regions,
                     page_edge_overshoots=page_edge_overshoots,
                 )
                 if presented
@@ -3355,313 +3666,54 @@ def publish_page_testimonia_and_attachments(
                     regions_by_act=regions_by_act,
                 ).items():
                     anchor_ranges[(page_ordinal, act_id)] = act_anchor
-            anchors = []
         else:
-            anchors = [
-                row
-                for row in context.fixture.get("chandra_anchor", [])
-                if row.get("page_ordinal") == page_ordinal
-            ]
-        if len(anchors) > 1:
-            # A malformed anchor is refused, not treated as absent (principles 2, 8).
-            raise SchemaRefusal(
-                f"page {page_ordinal} declares {len(anchors)} Chandra anchors; a page has "
-                "one anchor, and skipping a duplicated declaration would detach every "
-                "page witness on it under a reason naming an absent anchor"
-            )
-        if anchors and not isinstance(anchors[0].get("html"), str):
-            raise SchemaRefusal(
-                f"the Chandra anchor for page {page_ordinal} carries no anchor markup "
-                "text; a malformed anchor is not an absent one"
-            )
-        if anchors:
-            anchor = anchors[0]
-            anchor_texts[page_ordinal] = anchor["html"]
-            normalized_anchor = markup_text_view(anchor["html"])["text"]
-            # `lines` are in reading order; searching from the previous match lets
-            # a repeated formulaic opening resolve to its own occurrence.
-            search_from = 0
-            for line in anchor.get("lines", []):
-                # Malformed lines are refused, not skipped.
-                if not isinstance(line, dict) or not isinstance(line.get("act_key"), str):
-                    raise SchemaRefusal(
-                        f"a Chandra anchor line for page {page_ordinal} names no act key; "
-                        "skipping it would detach an act under a reason naming an absent line"
-                    )
-                source = line.get("text")
-                if not isinstance(source, str):
-                    raise SchemaRefusal(
-                        f"the Chandra anchor line for act {line['act_key']} on page "
-                        f"{page_ordinal} carries no text; a malformed line is not an absent one"
-                    )
-                # Needle and haystack must be the same normalized view.
-                needle = markup_text_view(source)["text"]
-                start = normalized_anchor.find(needle, search_from) if needle else -1
-                act = next((item for item in page_acts if item["act_key"] == line["act_key"]), None)
-                if start < 0:
-                    raise SchemaRefusal(
-                        f"the Chandra anchor line for act {line['act_key']} on page "
-                        f"{page_ordinal} does not occur in the page's own anchor text at or "
-                        "after the previous line; an unlocatable declared line is malformed "
-                        "evidence, not an absent act line"
-                    )
-                if start >= 0:
-                    if act is not None:
-                        if (page_ordinal, act["act_id"]) in anchor_ranges:
-                            raise SchemaRefusal(
-                                f"page {page_ordinal} declares more than one Chandra anchor "
-                                f"line for act {line['act_key']}; keeping the last one would "
-                                "drop the first line's span and geometry without a record"
-                            )
-                        bbox = {key: line.get(key) for key in ("x", "y", "w", "h")}
-                        if (
-                            any(
-                                not isinstance(value, int) or isinstance(value, bool)
-                                for value in bbox.values()
-                            )
-                            or bbox["x"] < 0
-                            or bbox["y"] < 0
-                            or bbox["w"] <= 0
-                            or bbox["h"] <= 0
-                        ):
-                            # An unmeasured rectangle must not pass as a real one
-                            # (principles 2, 8).
-                            raise SchemaRefusal(
-                                f"the Chandra anchor line for act {line['act_key']} on page "
-                                f"{page_ordinal} declares an unusable rectangle; only measured "
-                                "non-negative integer geometry can be published as this act's "
-                                "line geometry"
-                            )
-                        anchor_ranges[(page_ordinal, act["act_id"])] = {
-                            "start": start,
-                            "end": start + len(needle),
-                            "line_geometry": [{"bbox": bbox}],
-                        }
-                    # Advance even for an unproposed act: its line still occupies
-                    # the page.
-                    search_from = start + len(needle)
+            anchor_html, declared_ranges = _declared_anchor(context, page_ordinal, page_acts)
+            if anchor_html is not None:
+                anchor_texts[page_ordinal] = anchor_html
+            for act_id, act_anchor in declared_ranges.items():
+                anchor_ranges[(page_ordinal, act_id)] = act_anchor
 
     attachment_rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
     for act in acts:
         entries: list[dict[str, Any]] = []
         for chair in context.witness_chairs:
             act_attempt = attempts_by_pair[(act["act_id"], chair)]
-            page_witness = chair in page_chairs and act["outcome"] == "proposed"
-            alignment: dict[str, Any] | None = None
-            if page_witness:
-                act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
-                # The outcome of the page record this entry names: the native
-                # capture's where there is one, else the act attempt the legacy
-                # join was derived from.
-                captured_outcome = page_outcomes.get((act["page_ordinal"], chair))
-                page_outcome = (
-                    captured_outcome if captured_outcome is not None else act_attempt.outcome
-                )
-                if page_outcome not in WITNESS_READING_OUTCOMES:
-                    # No reading to place; aligning anyway would claim text the
-                    # chair never delivered.
-                    alignment = {
-                        "status": "unaligned",
-                        "reason": non_reading_alignment_reason(
-                            page_outcome,
-                            native_page_capture=captured_outcome is not None,
-                        ),
-                    }
-                elif page_outcome == "genuinely-empty":
-                    # Alignment can never match an empty string, so a blank reading
-                    # attaches trivially at a zero-length span instead of becoming
-                    # permanently unaligned (principles 2, 8).
-                    alignment = {
-                        "status": "aligned",
-                        # Names which absence: no page anchor at all (blank
-                        # confirmation stays open) or an anchor that locates no
-                        # line for this act (a terminal blank is refused).
-                        "anchor_basis": (
-                            "act-anchor"
-                            if act_anchor is not None
-                            else (
-                                "no-page-anchor"
-                                if anchor_texts.get(act["page_ordinal"]) is None
-                                else "act-line-not-located"
-                            )
-                        ),
-                        "anchor_chair": anchor_chair if act_anchor is not None else None,
-                        "anchor_span": (
-                            {"start": act_anchor["start"], "end": act_anchor["start"]}
-                            if act_anchor is not None
-                            else {"start": 0, "end": 0}
-                        ),
-                        "witness_span": {"start": 0, "end": 0},
-                        # Recorded anyway, so "no match" never looks like "not
-                        # measured" (principle 2).
-                        "anchor_line_match": {
-                            "anchor_characters": (
-                                act_anchor["end"] - act_anchor["start"]
-                                if act_anchor is not None
-                                else 0
-                            ),
-                            "matched_characters": 0,
-                            "longest_matched_run": 0,
-                        },
-                        "line_geometry": (
-                            _line_geometry(act_anchor) if act_anchor is not None else []
-                        ),
-                        "loss": {"witness": _ZERO_ALIGNMENT_LOSS, "anchor": _ZERO_ALIGNMENT_LOSS},
-                        "offset_maps": {"witness": [], "anchor": []},
-                        # Alignment never ran, so no deadline applied.
-                        "deadline_in_force": False,
-                    }
-                else:
-                    page_text = page_texts.get((act["page_ordinal"], chair))
-                    anchor_text = anchor_texts.get(act["page_ordinal"])
-                    if page_text is None or anchor_text is None:
-                        result = {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
-                    elif act_anchor is None:
-                        # The page anchor exists; this act's line is not in it.
-                        result = {"status": "unaligned", "reason": "act-anchor-line-not-located"}
-                    else:
-                        # Cached per (page, chair): the inputs do not depend on
-                        # the act, and `SequenceMatcher` can be near cubic.
-                        result = page_alignments.get((act["page_ordinal"], chair))
-                        if result is None:
-                            result = align_to_anchor(page_text, anchor_text, limits)
-                            page_alignments[(act["page_ordinal"], chair)] = result
-                    if result["status"] == "aligned":
-                        # Clip each matched block to this act's anchor range in
-                        # normalized space; whole blocks would hand every act the
-                        # whole page. Translate to raw indices once, at storage,
-                        # because every consumer indexes the raw text.
-                        clipped = []
-                        # Measured here, where the fragments exist; the record
-                        # keeps only a hull. The longest run stops scattered
-                        # coincidental characters counting as located. Blocks are
-                        # disjoint, so the sum does not double-count.
-                        matched_characters = 0
-                        longest_matched_run = 0
-                        for span in result["spans"]:
-                            start = max(span["anchor"]["start"], act_anchor["start"])
-                            end = min(span["anchor"]["end"], act_anchor["end"])
-                            if start < end:
-                                shift = span["witness"]["start"] - span["anchor"]["start"]
-                                clipped.append((start + shift, end + shift))
-                                matched_characters += end - start
-                                longest_matched_run = max(longest_matched_run, end - start)
-                        if clipped:
-                            # A hull across fragments may include a neighbour's
-                            # characters. Deliberate: it overstates disagreement
-                            # and never hides it. Do not "fix" towards agreement.
-                            normalized_start = min(start for start, _ in clipped)
-                            normalized_end = max(end for _, end in clipped)
-                            raw_span = _raw_span_from_normalized(
-                                result["witness"]["offset_map"], normalized_start, normalized_end
-                            )
-                            if raw_span is None:
-                                result = {
-                                    "status": "unaligned",
-                                    "reason": "no-raw-counterpart-for-aligned-span",
-                                }
-                            else:
-                                witness_start, witness_end = raw_span
-                                alignment = {
-                                    "status": "aligned",
-                                    "anchor_basis": "act-anchor",
-                                    "anchor_chair": anchor_chair,
-                                    "anchor_span": {
-                                        key: act_anchor[key] for key in ("start", "end")
-                                    },
-                                    "witness_span": {"start": witness_start, "end": witness_end},
-                                    "anchor_line_match": {
-                                        "anchor_characters": (
-                                            act_anchor["end"] - act_anchor["start"]
-                                        ),
-                                        "matched_characters": matched_characters,
-                                        "longest_matched_run": longest_matched_run,
-                                    },
-                                    "line_geometry": _line_geometry(act_anchor),
-                                    "loss": {
-                                        "witness": result["witness"]["loss"],
-                                        "anchor": result["anchor"]["loss"],
-                                    },
-                                    "offset_maps": {
-                                        "witness": result["witness"]["offset_map"],
-                                        "anchor": result["anchor"]["offset_map"],
-                                    },
-                                    "deadline_in_force": result["deadline_in_force"],
-                                }
-                        else:
-                            result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
-                    if result["status"] == "unaligned":
-                        # No `deadline_in_force`: `reason` already names a fired
-                        # deadline.
-                        alignment = {"status": "unaligned", "reason": result["reason"]}
-            if page_witness:
-                # Do not mutate the primary alignment: a continuation page can
-                # sort before the primary one.
-                for contributing_page in contributing_pages_by_act[act["act_id"]]:
-                    is_primary_page = contributing_page == act["page_ordinal"]
-                    page_alignment = (
-                        alignment
-                        if is_primary_page
-                        else {
-                            "status": "unaligned",
-                            "reason": "continuation-page-no-act-anchor",
-                        }
-                    )
-                    page_bounds = [
-                        region["payload"]["transform"]["bounds"]
-                        for region in regions_by_act[act["act_id"]][0]
-                        if region["payload"]["transform"]["source_page_ordinal"]
-                        == contributing_page
-                    ]
-                    # Attached by reported ink over the proposal, or, where there
-                    # is none (Churro reports no geometry), by a located anchor
-                    # line. The anchor places text; it never judges a reading
-                    # (principle 1).
-                    contributing_outcome = page_outcomes.get(
-                        (contributing_page, chair), act_attempt.outcome
-                    )
-                    attachment_basis = page_attachment_basis(
-                        reading=contributing_outcome in WITNESS_READING_OUTCOMES,
-                        geometry_overlaps=any(
-                            reported_geometry_overlaps(
-                                page_observations[(contributing_page, chair)], bounds
-                            )
-                            for bounds in page_bounds
-                        ),
-                        alignment=page_alignment,
-                    )
-                    page_attached = attachment_basis != "unattached"
-                    reference = page_records[(contributing_page, chair)]
-                    entries.append(
-                        {
-                            "chair": chair,
-                            "page_witness": True,
-                            "page_ordinal": contributing_page,
-                            "testimonium_ref": reference,
-                            "attached": page_attached,
-                            "comparable": page_attached
-                            and page_alignment["status"] == "aligned"
-                            and isinstance(page_texts.get((contributing_page, chair)), str),
-                            "attachment_basis": attachment_basis,
-                            # The act attempt's health, even under a page capture:
-                            # the Perlector and Recensor compare it with the current
-                            # act Testimonium to detect a later reread.
-                            "content_health": act_attempt.health,
-                            "alignment": page_alignment,
-                            "span": (
-                                {
-                                    "start": page_alignment["witness_span"]["start"],
-                                    "end": page_alignment["witness_span"]["end"],
-                                }
-                                if page_attached and page_alignment["status"] == "aligned"
-                                else None
-                            ),
-                        }
-                    )
-            else:
+            if chair not in page_chairs or act["outcome"] != "proposed":
                 entries.append(
                     act_scoped_attachment_entry(context, act, chair, act_attempt, ordinal)
                 )
+                continue
+            page_key = (act["page_ordinal"], chair)
+            # The outcome of the page record this entry names: the native capture's
+            # where there is one, else the act attempt the legacy join came from.
+            captured_outcome = page_outcomes.get(page_key)
+            alignment = _page_witness_alignment(
+                page_outcome=(
+                    captured_outcome if captured_outcome is not None else act_attempt.outcome
+                ),
+                native_page_capture=captured_outcome is not None,
+                act_anchor=anchor_ranges.get((act["page_ordinal"], act["act_id"])),
+                page_text=page_texts.get(page_key),
+                anchor_text=anchor_texts.get(act["page_ordinal"]),
+                anchor_chair=anchor_chair,
+                page_alignments=page_alignments,
+                page_key=page_key,
+                limits=limits,
+            )
+            entries.extend(
+                _page_witness_entries(
+                    act=act,
+                    chair=chair,
+                    act_attempt=act_attempt,
+                    alignment=alignment,
+                    contributing_pages=contributing_pages_by_act[act["act_id"]],
+                    act_regions=regions_by_act[act["act_id"]][0],
+                    page_outcomes=page_outcomes,
+                    page_observations=page_observations,
+                    page_records=page_records,
+                    page_texts=page_texts,
+                )
+            )
         attachment_rows.append((act, entries))
 
     refuse_ambiguous_act_alignments([entries for _act, entries in attachment_rows])
