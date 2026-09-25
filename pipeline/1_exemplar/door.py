@@ -685,7 +685,6 @@ def expand_sources(
             ledger_sha256: str | None = ledger_sha256,
             bound_triage_row: dict[str, Any] | None = triage_row,
             triage_part_index: int | None = None,
-            source_frame_index: int | None = None,
             computed_sha256: str | None = None,
         ) -> None:
             """Bind row fields before the next loop iteration can reassign them."""
@@ -702,19 +701,17 @@ def expand_sources(
                     detected_format,
                     bound_triage_row,
                     triage_part_index,
-                    source_frame_index
-                    if source_frame_index is not None
-                    else (0 if bound_triage_row is not None else None),
+                    0 if bound_triage_row is not None else None,
                     computed_sha256,
                 )
             )
 
-        def append_refused_source(
+        def append_declared_pages(
             detected_format: str | None,
             bound_triage_row: dict[str, Any] | None = triage_row,
             computed_sha256: str | None = None,
         ) -> None:
-            """Keep the manifest's declared post-split denominator on early failure."""
+            """One ordinal, or one per declared triage part, whether or not it can be read."""
             if bound_triage_row is None:
                 append(None, detected_format, computed_sha256=computed_sha256)
                 return
@@ -723,7 +720,6 @@ def expand_sources(
                     part_index,
                     detected_format,
                     triage_part_index=part_index,
-                    source_frame_index=0,
                     computed_sha256=computed_sha256,
                 )
 
@@ -751,16 +747,16 @@ def expand_sources(
                 # Rasters are read into memory under the size bound; only PDFs
                 # are streamed.
                 if declared_size is not None and declared_size > MAX_SOURCE_BYTES:
-                    append_refused_source(detected)
+                    append_declared_pages(detected)
                     continue
                 data = read_bytes(path)
                 detected = sniff(data)
         except (OSError, inventory.SubmissionInputError):
-            append_refused_source(None)
+            append_declared_pages(None)
             continue
         route = admission.classify_detected_format(detected, policy)
         if data is not None and len(data) > MAX_SOURCE_BYTES:
-            append_refused_source(detected)
+            append_declared_pages(detected)
             continue
         if data is not None:
             # `read_bytes` returns only a prefix above the ceiling; never bind it
@@ -781,7 +777,7 @@ def expand_sources(
                 # The frame does not decode, but the manifest says how many pages
                 # it yields; one refused ordinal per part keeps the denominator
                 # and shard cap honest.
-                append_refused_source(detected, computed_sha256=computed)
+                append_declared_pages(detected, computed_sha256=computed)
                 continue
             if frame_count != 1:
                 raise ContractError(
@@ -790,14 +786,7 @@ def expand_sources(
                     "page; omit that container from the triage manifest and let the Door fan out "
                     "its pages"
                 )
-            for part_index in range(len(triage_row["split"]["parts"])):
-                append(
-                    part_index,
-                    detected,
-                    triage_part_index=part_index,
-                    source_frame_index=0,
-                    computed_sha256=computed,
-                )
+            append_declared_pages(detected, computed_sha256=computed)
             continue
         try:
             if detected == "pdf" and open_source is not None:
@@ -809,10 +798,9 @@ def expand_sources(
                     pdf_render.count_pages(data) if detected == "pdf" else count_raster_pages(data)
                 )
         except (pdf_render.PdfRefusal, FormatRefusal, inventory.SubmissionInputError, OSError):
-            if route != admission.RENDER_PAGES:
-                append(None, detected, computed_sha256=computed)
-                continue
-            append(0, detected, computed_sha256=computed)
+            append(
+                0 if route == admission.RENDER_PAGES else None, detected, computed_sha256=computed
+            )
             continue
         # PDF and TIFF always fan out. Any other multi-frame image fans out too,
         # or every frame after the first would be dropped downstream.
