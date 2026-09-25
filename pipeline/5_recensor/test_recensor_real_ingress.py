@@ -150,6 +150,10 @@ def test_each_stage_opens_through_the_shared_constructor_and_owns_no_opener(
 
     class _Parser:
         @staticmethod
+        def add_argument(*_args, **_kwargs):
+            pass
+
+        @staticmethod
         def parse_args():
             return args
 
