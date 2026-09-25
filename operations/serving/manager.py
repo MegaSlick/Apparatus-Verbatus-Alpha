@@ -648,18 +648,7 @@ class ServingManager:
                 generation_config_digest=generation_config_digest,
             )
             sealed_audit = _immutable_json_value(audit)
-            publication_audit, _ = seal_json_object(audit, label="serving launch audit")
-            try:
-                publication = self.receipt_publisher.publish(receipt, publication_audit)
-            except Exception as error:
-                raise ReceiptPublicationError(
-                    f"receipt publisher refused ready service: {error}"
-                ) from error
-            if not isinstance(publication, ReceiptPublication):
-                raise ReceiptPublicationError(
-                    "receipt publisher must return receipt, durable launch-audit, "
-                    "and combined evidence references"
-                )
+            publication = self._publish(receipt, audit)
             handle = ServiceHandle(
                 self,
                 identity,
@@ -703,6 +692,21 @@ class ServingManager:
                     f"start={type(error).__name__}: {error}; stop={cleanup_error}"
                 ) from error
             raise
+
+    def _publish(self, receipt: ServingReceipt, audit: Mapping[str, object]) -> ReceiptPublication:
+        publication_audit, _ = seal_json_object(audit, label="serving launch audit")
+        try:
+            publication = self.receipt_publisher.publish(receipt, publication_audit)
+        except Exception as error:
+            raise ReceiptPublicationError(
+                f"receipt publisher refused ready service: {error}"
+            ) from error
+        if not isinstance(publication, ReceiptPublication):
+            raise ReceiptPublicationError(
+                "receipt publisher must return receipt, durable launch-audit, "
+                "and combined evidence references"
+            )
+        return publication
 
     def request(
         self,
