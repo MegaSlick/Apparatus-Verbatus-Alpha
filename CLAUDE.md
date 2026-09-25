@@ -10,6 +10,10 @@
 
 ## Lean mode (Ponytail)
 
+- In every change, not only cleanups: build the smallest thing that works, and leave
+  each file you touch with no more comment lines than it had. A comment says why, in a
+  line or two; history, rule citations and restated code belong in the commit or pull
+  request.
 - For a cleanup task, run `/ponytail ultra` first; the next session starts in the
   configured default mode (`full`).
 - A cleanup change must be net-negative in lines, uncommitted work included:
