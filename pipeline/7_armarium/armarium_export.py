@@ -3777,45 +3777,7 @@ def _verify_honest_status_claims(
     must_be_partial = must_be_partial or any(
         page.get("outcome") != "sealed" for page in sources["pages"] if isinstance(page, dict)
     )
-    # Derive the page-level incomplete cause from source rows, never from the
-    # manifest claim being verified; otherwise a false claim verifies itself.
-    ink_map_rows = _validate_ink_map_pages(
-        sources.get("ink_map_pages"), "the package sources citation"
-    )
-    derived_edge_holds = _edge_hold_pages_from_validated_rows(ink_map_rows)
-    derived_unmeasurable_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
-    sealed_ordinals = {
-        page["ordinal"]
-        for page in sources["pages"]
-        if isinstance(page, dict) and page.get("outcome") == "sealed"
-    }
-    if {row["ordinal"] for row in ink_map_rows} != sealed_ordinals:
-        raise SchemaRefusal(
-            "the package's ink-map denominator is not exactly its own sealed page census. At "
-            "least one page finding is missing or extra, so its terminal ledger cannot balance. "
-            "Discard this extraction and rebuild the package from the intact run tree."
-        )
-    ink_map_claim = claims.get("ink_map")
-    declared_unmeasurable_pages = (
-        ink_map_claim.get("unmeasurable_pages") if isinstance(ink_map_claim, dict) else None
-    )
-    if (
-        not isinstance(ink_map_claim, dict)
-        or set(ink_map_claim) != {"denominator", "held_pages", "unmeasurable_pages"}
-        or ink_map_claim["denominator"] != INK_MAP_DENOMINATOR
-        or ink_map_claim["held_pages"] != list(derived_edge_holds)
-        or not isinstance(declared_unmeasurable_pages, list)
-        or any(not _is_integer(ordinal) or ordinal <= 0 for ordinal in declared_unmeasurable_pages)
-        or declared_unmeasurable_pages != sorted(set(declared_unmeasurable_pages))
-        or canonical_text(declared_unmeasurable_pages)
-        != canonical_text(list(derived_unmeasurable_pages))
-    ):
-        raise SchemaRefusal(
-            "the exported ink-map claim does not match the held and unmeasurable pages in its "
-            "own source evidence. The manifest and source graph disagree about which pages need "
-            "review or had no audit measurement. Discard this extraction and rebuild the package "
-            "from the intact run tree."
-        )
+    derived_edge_holds = _verify_ink_map_claim(claims, sources)
     must_be_partial = must_be_partial or bool(derived_edge_holds)
     # A delivered act with a recorded gap also makes the run partial. The full
     # recomputation below covers it too; checking it here gives a specific refusal.
@@ -3879,6 +3841,52 @@ def _verify_honest_status_claims(
         or page_census.get("status") != "accounted-in-the-terminal-ledger"
     ):
         raise SchemaRefusal("the export page census makes no terminal-ledger claim")
+
+
+def _verify_ink_map_claim(claims: dict[str, Any], sources: dict[str, Any]) -> tuple[int, ...]:
+    """Require the ink-map claim to state the held and unmeasurable pages its rows give.
+
+    Both sets are derived from source rows, never from the manifest claim being
+    verified; otherwise a false claim verifies itself. Returns the held pages.
+    """
+    ink_map_rows = _validate_ink_map_pages(
+        sources.get("ink_map_pages"), "the package sources citation"
+    )
+    derived_edge_holds = _edge_hold_pages_from_validated_rows(ink_map_rows)
+    derived_unmeasurable_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
+    sealed_ordinals = {
+        page["ordinal"]
+        for page in sources["pages"]
+        if isinstance(page, dict) and page.get("outcome") == "sealed"
+    }
+    if {row["ordinal"] for row in ink_map_rows} != sealed_ordinals:
+        raise SchemaRefusal(
+            "the package's ink-map denominator is not exactly its own sealed page census. At "
+            "least one page finding is missing or extra, so its terminal ledger cannot balance. "
+            "Discard this extraction and rebuild the package from the intact run tree."
+        )
+    ink_map_claim = claims.get("ink_map")
+    declared_unmeasurable_pages = (
+        ink_map_claim.get("unmeasurable_pages") if isinstance(ink_map_claim, dict) else None
+    )
+    if (
+        not isinstance(ink_map_claim, dict)
+        or set(ink_map_claim) != {"denominator", "held_pages", "unmeasurable_pages"}
+        or ink_map_claim["denominator"] != INK_MAP_DENOMINATOR
+        or ink_map_claim["held_pages"] != list(derived_edge_holds)
+        or not isinstance(declared_unmeasurable_pages, list)
+        or any(not _is_integer(ordinal) or ordinal <= 0 for ordinal in declared_unmeasurable_pages)
+        or declared_unmeasurable_pages != sorted(set(declared_unmeasurable_pages))
+        or canonical_text(declared_unmeasurable_pages)
+        != canonical_text(list(derived_unmeasurable_pages))
+    ):
+        raise SchemaRefusal(
+            "the exported ink-map claim does not match the held and unmeasurable pages in its "
+            "own source evidence. The manifest and source graph disagree about which pages need "
+            "review or had no audit measurement. Discard this extraction and rebuild the package "
+            "from the intact run tree."
+        )
+    return derived_edge_holds
 
 
 def _verify_delivered_product_provenance(
