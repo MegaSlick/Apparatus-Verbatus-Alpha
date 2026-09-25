@@ -2135,26 +2135,46 @@ def _source_rows(
             if not isinstance(image_path, str) or not isinstance(image_sha256, str):
                 raise SchemaRefusal("a sealed export page lacks its verified image reference")
             _require_sha256(image_sha256, "a sealed export page image digest")
-            if embed_pixels:
-                pixels = read_bytes(image_path)
-                if digest_bytes(pixels) != image_sha256:
-                    raise SchemaRefusal("a sealed page changed while its export was being built")
-                member = f"pixels/pages/{ordinal}.img"
-                embedded[member] = pixels
-                row["page_image"] = {
-                    "availability": _EMBEDDED,
-                    "member_path": member,
-                    "sha256": image_sha256,
-                }
-            else:
+            if not embed_pixels:
                 _validate_run_relative_path(image_path)
-                row["page_image"] = {
-                    "availability": _SOURCE_ACCESS_REQUIRED,
-                    "run_relative_path": image_path,
-                    "sha256": image_sha256,
-                }
+            row["page_image"] = _image_reference(
+                image_path,
+                image_sha256,
+                f"pixels/pages/{ordinal}.img",
+                embed_pixels,
+                read_bytes,
+                embedded,
+                changed="a sealed page changed while its export was being built",
+            )
         rows.append(row)
     return rows, embedded
+
+
+def _image_reference(
+    path: str,
+    sha256: str,
+    member: str,
+    embed_pixels: bool,
+    read_bytes: Callable[[str], bytes],
+    embedded: dict[str, bytes],
+    *,
+    changed: str,
+    collision: str | None = None,
+) -> dict[str, str]:
+    """Cite one image by its run path, or embed its re-verified bytes as ``member``."""
+    if not embed_pixels:
+        return {
+            "availability": _SOURCE_ACCESS_REQUIRED,
+            "run_relative_path": path,
+            "sha256": sha256,
+        }
+    pixels = read_bytes(path)
+    if digest_bytes(pixels) != sha256:
+        raise SchemaRefusal(changed)
+    if collision is not None and embedded.get(member, pixels) != pixels:
+        raise SchemaRefusal(collision)
+    embedded[member] = pixels
+    return {"availability": _EMBEDDED, "member_path": member, "sha256": sha256}
 
 
 def _text_bundle_members(
@@ -2238,31 +2258,16 @@ def _acts_with_source_references(
         for region in act.get("source_regions", []):
             _validate_cited_region(region, subject="exported act")
             copied = dict(region)
-            image_path, image_sha256, region_id = (
+            copied["crop_image"] = _image_reference(
                 copied["image_path"],
                 copied["image_sha256"],
-                copied["region_id"],
+                f"pixels/crops/{copied['region_id']}.img",
+                embed_pixels,
+                read_bytes,
+                embedded,
+                changed="a source crop changed while its export was being built",
+                collision="two source crops claimed one package member",
             )
-            if embed_pixels:
-                pixels = read_bytes(image_path)
-                if digest_bytes(pixels) != image_sha256:
-                    raise SchemaRefusal("a source crop changed while its export was being built")
-                member = f"pixels/crops/{region_id}.img"
-                previous = embedded.get(member)
-                if previous is not None and previous != pixels:
-                    raise SchemaRefusal("two source crops claimed one package member")
-                embedded[member] = pixels
-                copied["crop_image"] = {
-                    "availability": _EMBEDDED,
-                    "member_path": member,
-                    "sha256": image_sha256,
-                }
-            else:
-                copied["crop_image"] = {
-                    "availability": _SOURCE_ACCESS_REQUIRED,
-                    "run_relative_path": image_path,
-                    "sha256": image_sha256,
-                }
             regions.append(copied)
         record["source_regions"] = regions
         projected.append(record)
@@ -2291,27 +2296,16 @@ def _salvage_with_source_references(
             if region_id in seen_regions:
                 raise SchemaRefusal("a salvage-tier item repeats a source-region identity")
             seen_regions.add(region_id)
-            image_path, image_sha256 = copied["image_path"], copied["image_sha256"]
-            if embed_pixels:
-                pixels = read_bytes(image_path)
-                if digest_bytes(pixels) != image_sha256:
-                    raise SchemaRefusal("a salvage-tier source crop changed while export was built")
-                member = f"pixels/salvage/{salvage_id}/{region_id}.img"
-                previous = embedded.get(member)
-                if previous is not None and previous != pixels:
-                    raise SchemaRefusal("two salvage source crops claim one package member")
-                embedded[member] = pixels
-                copied["crop_image"] = {
-                    "availability": _EMBEDDED,
-                    "member_path": member,
-                    "sha256": image_sha256,
-                }
-            else:
-                copied["crop_image"] = {
-                    "availability": _SOURCE_ACCESS_REQUIRED,
-                    "run_relative_path": image_path,
-                    "sha256": image_sha256,
-                }
+            copied["crop_image"] = _image_reference(
+                copied["image_path"],
+                copied["image_sha256"],
+                f"pixels/salvage/{salvage_id}/{region_id}.img",
+                embed_pixels,
+                read_bytes,
+                embedded,
+                changed="a salvage-tier source crop changed while export was built",
+                collision="two salvage source crops claim one package member",
+            )
             regions.append(copied)
         copied_item["source_regions"] = regions
         projected.append(copied_item)
