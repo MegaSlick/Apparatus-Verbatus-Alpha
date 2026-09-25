@@ -1735,9 +1735,8 @@ def fixture_submission(args, registry) -> int:
         synthetic_fixture_ingress_record(),
         pdf_settings,
     )
-    context = _door_context(
-        tree, fixture, args.scenario, args, registry, bindings, pdf_render_binding
-    )
+    context = _door_context(tree, fixture, args.scenario, args, registry, bindings)
+    context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
     sources = [
         SourceEntry(page["ordinal"], page["path"], declared[page["ordinal"]]) for page in pages
     ]
@@ -1912,7 +1911,8 @@ def real_submission(args, registry) -> int:
         real_ingress_record(),
         pdf_settings,
     )
-    context = _door_context(tree, None, REAL_SCENARIO, args, registry, bindings, pdf_render_binding)
+    context = _door_context(tree, None, REAL_SCENARIO, args, registry, bindings)
+    context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
     # Bind the data-handling policy that decided where this material may live,
     # so a reader can tell which policy admitted the corpus.
     context.require_sealed_config("data-handling", data_policy_binding.config_sha256)
@@ -2205,11 +2205,10 @@ def _door_context(
     args,
     registry,
     bindings: dict[str, Any],
-    pdf_render_binding: render_config.PdfRenderBinding,
 ) -> StageContext:
-    """The door's context, proven to render with the PDF settings the run sealed."""
+    """The door's context carries the sealed digests to prove the policies it uses."""
     run = tree.read_run()
-    context = StageContext(
+    return StageContext(
         tree=tree,
         run=run,
         fixture=fixture,
@@ -2220,8 +2219,6 @@ def _door_context(
         registry=registry,
         sealed_config_digests=bindings["sealed_config_digests"],
     )
-    context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
-    return context
 
 
 if __name__ == "__main__":
