@@ -584,6 +584,14 @@ def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
             )
 
 
+def _is_positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _sorted_refs(references: list[dict[str, str]]) -> list[dict[str, str]]:
+    return sorted(references, key=lambda ref: (ref.get("relative_path", ""), ref.get("sha256", "")))
+
+
 def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
     """Whether a fixture declaration belongs to this immutable attempt.
 
@@ -591,7 +599,7 @@ def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
     repeat on every re-read.
     """
     declared = row.get("attempt_ordinal", 1)
-    if not isinstance(declared, int) or isinstance(declared, bool) or declared < 1:
+    if not _is_positive_int(declared):
         raise SchemaRefusal("a fixture witness declaration has no positive attempt ordinal")
     return declared == ordinal
 
@@ -1721,7 +1729,7 @@ def validate_tallied_testimonium(
     if payload["act_key"] != act["act_key"]:
         raise SchemaRefusal("a Testimonium tally record disagrees with its act key")
     ordinal = payload["attempt_ordinal"]
-    if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 1:
+    if not _is_positive_int(ordinal):
         raise SchemaRefusal("a Testimonium tally record has no positive attempt ordinal")
     if payload["format_capabilities"] is None:
         if record["outcome"] != "failed":
@@ -1762,9 +1770,8 @@ def validate_tallied_testimonium(
             testimonium_inputs(context, regions, payload["presented"])
             + _chandra_trace_inputs(payload.get("native_inference"))
         )
-        if payload["regions"] != region_references(regions) or record["inputs"] != sorted(
-            expected_inputs,
-            key=lambda ref: (ref.get("relative_path", ""), ref.get("sha256", "")),
+        if payload["regions"] != region_references(regions) or record["inputs"] != _sorted_refs(
+            expected_inputs
         ):
             raise SchemaRefusal(
                 "a Testimonium tally record does not bind exactly the proposal regions and inputs"
@@ -4289,6 +4296,11 @@ def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> Non
         )
 
 
+def _refuse_unpublishable_response(response: Any, what: str) -> None:
+    stop_word = response.finish_reason
+    refuse_unpublishable_stop_word(STOP_REASON_UNREPORTED if stop_word is None else stop_word, what)
+
+
 def capacity_refusal_attempt(
     error: RequestCapacityRefusal,
     *,
@@ -4377,12 +4389,8 @@ def _serve_act_unit(
         parser="text",
         generation_accounting=built.generation_accounting,
     )
-    transport_stop_reason = (
-        response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED
-    )
-    refuse_unpublishable_stop_word(
-        transport_stop_reason,
-        f"the {resolved.witness_adapter} response for act {act['act_id']}",
+    _refuse_unpublishable_response(
+        response, f"the {resolved.witness_adapter} response for act {act['act_id']}"
     )
     attempt = attempt_from_live(live)
     attempts_by_pair[(act["act_id"], chair)] = attempt
@@ -4621,12 +4629,8 @@ def _validate_chandra_intent(
         or payload["native_attempt_ordinal"] != native_attempt_ordinal
         or payload["parameters"] != chandra_attempt_parameters(native_attempt_ordinal)
         or not is_sha256(payload["request_sha256"])
-        or not isinstance(payload["page_ordinal"], int)
-        or isinstance(payload["page_ordinal"], bool)
-        or payload["page_ordinal"] < 1
-        or not isinstance(payload["witness_attempt_ordinal"], int)
-        or isinstance(payload["witness_attempt_ordinal"], bool)
-        or payload["witness_attempt_ordinal"] < 1
+        or not _is_positive_int(payload["page_ordinal"])
+        or not _is_positive_int(payload["witness_attempt_ordinal"])
     ):
         raise SchemaRefusal("a Chandra native attempt intent moved from its pinned request")
     if payload["compatibility"] != {
@@ -4654,12 +4658,28 @@ def _validate_chandra_intent(
         ]
         + [body_ref, payload["receipt_ref"]]
     )
-    if record.get("inputs") != sorted(
-        expected_inputs,
-        key=lambda ref: (ref.get("relative_path", ""), ref.get("sha256", "")),
-    ):
+    if record.get("inputs") != _sorted_refs(expected_inputs):
         raise SchemaRefusal("a Chandra native attempt intent does not bind its exact request")
     return payload
+
+
+def _chandra_conditions(
+    raw: str, inference_error: bool, native_attempt_ordinal: int
+) -> tuple[str | None, str | None]:
+    """The retry trigger a response sets and the condition the loop returns with."""
+    trigger = chandra_retry_trigger(
+        raw, inference_error=inference_error, attempt_ordinal=native_attempt_ordinal
+    )
+    if native_attempt_ordinal == CHANDRA_MAX_ATTEMPTS:
+        return trigger, chandra_exhausted_condition(raw, inference_error=inference_error)
+    return trigger, trigger
+
+
+def _chandra_backoff(completed_attempt_ordinal: int) -> None:
+    delay = chandra_error_backoff_seconds(completed_attempt_ordinal)
+    if delay is None:
+        raise FatalAccounting("the final Chandra attempt requested an impossible retry")
+    time.sleep(delay)
 
 
 def _validate_chandra_terminal(
@@ -4868,17 +4888,7 @@ def _validate_chandra_terminal(
             raw = model_output.decode("utf-8")
         except UnicodeDecodeError as error:
             raise SchemaRefusal("a Chandra native terminal's model output is not UTF-8") from error
-    expected_trigger = chandra_retry_trigger(
-        raw,
-        inference_error=inference_error,
-        attempt_ordinal=native_attempt_ordinal,
-    )
-    expected_returned = (
-        chandra_exhausted_condition(raw, inference_error=inference_error)
-        if native_attempt_ordinal == CHANDRA_MAX_ATTEMPTS
-        else expected_trigger
-    )
-    if trigger != expected_trigger or returned != expected_returned:
+    if (trigger, returned) != _chandra_conditions(raw, inference_error, native_attempt_ordinal):
         raise SchemaRefusal(
             "a Chandra native terminal's trigger disagrees with its retained response/error"
         )
@@ -4890,10 +4900,7 @@ def _validate_chandra_terminal(
     ):
         if reference is not None:
             expected_inputs.append(reference)
-    if "inputs" in record and record["inputs"] != sorted(
-        _named_once(expected_inputs),
-        key=lambda ref: (ref.get("relative_path", ""), ref.get("sha256", "")),
-    ):
+    if "inputs" in record and record["inputs"] != _sorted_refs(_named_once(expected_inputs)):
         raise SchemaRefusal("a Chandra native terminal artifact does not bind all call evidence")
     return payload
 
@@ -5022,69 +5029,53 @@ def _publish_chandra_terminal(
     )
 
 
-def _sealed_chandra_intents(context, subject_id: str) -> list[dict[str, Any]]:
-    """Return the validated intent chain, including a possible unmatched tail."""
-
-    rows: list[dict[str, Any]] = []
+def _sealed_chandra_records(context, subject_id: str, kind: str, what: str):
+    """Yield each retained `kind` record for the subject with its checked native ordinal."""
     for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "chandra-native-attempt-intent" or entry["subject_id"] != subject_id:
+        if entry["kind"] != kind or entry["subject_id"] != subject_id:
             continue
-        record = context.tree.read_artifact(
-            ATTESTATORES, "chandra-native-attempt-intent", entry["artifact_id"]
-        )
+        record = context.tree.read_artifact(ATTESTATORES, kind, entry["artifact_id"])
         payload = record.get("payload")
         ordinal = payload.get("native_attempt_ordinal") if isinstance(payload, dict) else None
-        if (
-            not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or not 1 <= ordinal <= CHANDRA_MAX_ATTEMPTS
-        ):
-            raise SchemaRefusal("a retained Chandra native intent has no valid ordinal")
+        if not _is_positive_int(ordinal) or ordinal > CHANDRA_MAX_ATTEMPTS:
+            raise SchemaRefusal(f"a retained Chandra native {what} has no valid ordinal")
+        yield entry, record, ordinal
+
+
+def _by_native_ordinal(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(rows, key=lambda record: record["payload"]["native_attempt_ordinal"])
+
+
+def _sealed_chandra_intents(context, subject_id: str) -> list[dict[str, Any]]:
+    """Return the validated intent chain, including a possible unmatched tail."""
+    rows: list[dict[str, Any]] = []
+    kind = "chandra-native-attempt-intent"
+    for entry, record, ordinal in _sealed_chandra_records(context, subject_id, kind, "intent"):
         expected_artifact_id = artifact_id(
-            ATTESTATORES,
-            "chandra-native-attempt-intent",
-            subject_id,
-            attempt_id(subject_id, "chandra-native-intent", ordinal),
+            ATTESTATORES, kind, subject_id, attempt_id(subject_id, "chandra-native-intent", ordinal)
         )
         if entry["artifact_id"] != expected_artifact_id:
             raise SchemaRefusal("a retained Chandra native intent has a moved identity")
-        intent_ref = context.artifact_ref(
-            ATTESTATORES, "chandra-native-attempt-intent", entry["artifact_id"]
-        )
         _validate_chandra_intent(
             context,
             subject_id=subject_id,
             native_attempt_ordinal=ordinal,
-            intent_ref=intent_ref,
+            intent_ref=context.artifact_ref(ATTESTATORES, kind, entry["artifact_id"]),
         )
         rows.append(record)
-    return sorted(rows, key=lambda record: record["payload"]["native_attempt_ordinal"])
+    return _by_native_ordinal(rows)
 
 
 def _sealed_chandra_attempts(context, subject_id: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "chandra-native-attempt" or entry["subject_id"] != subject_id:
-            continue
-        record = context.tree.read_artifact(
-            ATTESTATORES, "chandra-native-attempt", entry["artifact_id"]
-        )
-        payload = record.get("payload")
-        ordinal = payload.get("native_attempt_ordinal") if isinstance(payload, dict) else None
-        if (
-            not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or not 1 <= ordinal <= CHANDRA_MAX_ATTEMPTS
-        ):
-            raise SchemaRefusal("a retained Chandra native terminal has no valid ordinal")
+    for _entry, record, ordinal in _sealed_chandra_records(
+        context, subject_id, "chandra-native-attempt", "terminal"
+    ):
         _validate_chandra_terminal(
-            context,
-            subject_id=subject_id,
-            native_attempt_ordinal=ordinal,
-            record=record,
+            context, subject_id=subject_id, native_attempt_ordinal=ordinal, record=record
         )
         rows.append(record)
-    return sorted(rows, key=lambda record: record["payload"]["native_attempt_ordinal"])
+    return _by_native_ordinal(rows)
 
 
 def _chandra_retry_trace(
@@ -5124,7 +5115,10 @@ def _chandra_retry_trace(
     return validate_chandra_trace(trace)
 
 
-def _with_chandra_trace(attempt: Attempt, trace: dict[str, Any]) -> Attempt:
+def _with_chandra_trace(
+    context, subject_id: str, terminal_records: list[dict[str, Any]], attempt: Attempt
+) -> Attempt:
+    trace = _chandra_retry_trace(context, subject_id, terminal_records)
     exhausted = trace["exhausted_condition"]
     if exhausted == "repeat-token":
         # There is no partial outcome, so an exhausted repeat is `failed` with its
@@ -5193,17 +5187,13 @@ def _serve_chandra_native_page(
                 context, last_payload["resolved_attempt"]
             )
             _raise_chandra_application_refusal(returned_attempt)
-            trace = _chandra_retry_trace(context, subject_id, terminal_records)
-            return _with_chandra_trace(returned_attempt, trace)
+            return _with_chandra_trace(context, subject_id, terminal_records, returned_attempt)
 
     next_ordinal = len(terminal_records) + 1
     if terminal_records and terminal_records[-1]["payload"].get("trigger") == "inference-error":
         # A crash during the backoff cannot show how much elapsed, so the full
         # delay is repeated.
-        resumed_delay = chandra_error_backoff_seconds(next_ordinal - 1)
-        if resumed_delay is None:
-            raise FatalAccounting("the final Chandra attempt requested an impossible retry")
-        time.sleep(resumed_delay)
+        _chandra_backoff(next_ordinal - 1)
     while next_ordinal <= CHANDRA_MAX_ATTEMPTS:
         dispatch = client.prepare_chandra_native(request, attempt_ordinal=next_ordinal)
         intent_ref, reused_intent = _publish_chandra_intent(
@@ -5249,14 +5239,8 @@ def _serve_chandra_native_page(
                     response,
                     framing=framing,
                 )
-                transport_stop_reason = (
-                    response.finish_reason
-                    if response.finish_reason is not None
-                    else STOP_REASON_UNREPORTED
-                )
-                refuse_unpublishable_stop_word(
-                    transport_stop_reason,
-                    f"the {resolved.witness_adapter} response for page {page_ordinal}",
+                _refuse_unpublishable_response(
+                    response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
                 )
             except FatalAccounting:
                 raise
@@ -5283,14 +5267,7 @@ def _serve_chandra_native_page(
                 else None
             )
 
-        trigger = chandra_retry_trigger(
-            raw, inference_error=inference_error, attempt_ordinal=next_ordinal
-        )
-        returned_condition = (
-            chandra_exhausted_condition(raw, inference_error=inference_error)
-            if next_ordinal == CHANDRA_MAX_ATTEMPTS
-            else trigger
-        )
+        trigger, returned_condition = _chandra_conditions(raw, inference_error, next_ordinal)
         payload, _terminal_ref = _publish_chandra_terminal(
             context,
             subject_id=subject_id,
@@ -5311,13 +5288,9 @@ def _serve_chandra_native_page(
         if trigger is None:
             if application_refusal is not None:
                 raise application_refusal
-            trace = _chandra_retry_trace(context, subject_id, terminal_records)
-            return _with_chandra_trace(attempt, trace)
+            return _with_chandra_trace(context, subject_id, terminal_records, attempt)
         if trigger == "inference-error":
-            delay = chandra_error_backoff_seconds(next_ordinal)
-            if delay is None:
-                raise FatalAccounting("the final Chandra attempt requested an impossible retry")
-            time.sleep(delay)
+            _chandra_backoff(next_ordinal)
         next_ordinal += 1
 
     raise FatalAccounting("the Chandra native retry loop ended without a returned attempt")
@@ -5400,12 +5373,8 @@ def _serve_page_unit(
             response,
             framing=framing,
         )
-        transport_stop_reason = (
-            response.finish_reason if response.finish_reason is not None else STOP_REASON_UNREPORTED
-        )
-        refuse_unpublishable_stop_word(
-            transport_stop_reason,
-            f"the {resolved.witness_adapter} response for page {page_ordinal}",
+        _refuse_unpublishable_response(
+            response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
         )
         attempt = attempt_from_live(live)
     page_captures[(page_ordinal, chair)] = (attempt, attempt.native_capture)
