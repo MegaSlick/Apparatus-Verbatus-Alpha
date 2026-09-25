@@ -564,6 +564,8 @@ class ServingManager:
         process: ServerProcess | None = None
         endpoint = ""
         try:
+            # Both the chair's and an adapter base's profiles pass the recipe
+            # check before any snapshot is verified.
             profile = self._launchable_profile(identity, tier)
             self._assert_runtime(profile)
             base_identity, base_profile = self._base_profile(identity, tier, profile)
@@ -989,19 +991,24 @@ class ServingManager:
             raise AdapterActivityError(
                 f"adapter endpoint does not advertise configured base id {base_profile.served_model_id!r}"
             )
-        base_digest, adapted_digest = (
-            outputs_sha256(
-                self._post_probe(
-                    endpoint=profile.endpoint,
-                    kind=calibration.kind,
-                    payload=calibration_payload,
-                    model_id=model_id,
-                    seed=profile.seed,
-                    deterministic=True,
-                )
-            )
-            for model_id in (base_profile.served_model_id, profile.served_model_id)
+        base = self._post_probe(
+            endpoint=profile.endpoint,
+            kind=calibration.kind,
+            payload=calibration_payload,
+            model_id=base_profile.served_model_id,
+            seed=profile.seed,
+            deterministic=True,
         )
+        adapted = self._post_probe(
+            endpoint=profile.endpoint,
+            kind=calibration.kind,
+            payload=calibration_payload,
+            model_id=profile.served_model_id,
+            seed=profile.seed,
+            deterministic=True,
+        )
+        base_digest = outputs_sha256(base)
+        adapted_digest = outputs_sha256(adapted)
         if base_digest == adapted_digest:
             raise AdapterActivityError(
                 "base and adapter produced identical deterministic calibration output; adapter is unproven"
@@ -1848,7 +1855,11 @@ def _active_chat_image_bytes(payload: Mapping[str, object], *, label: str) -> by
 
 
 def _immutable_json_value(value: object) -> object:
-    """Deep-freeze one already-validated JSON value exposed on a live handle."""
+    """Deep-freeze one already-validated JSON value.
+
+    Used for a live handle's launch audit and for the chair client's capacity and
+    dispatch records.
+    """
 
     if isinstance(value, Mapping):
         return MappingProxyType({key: _immutable_json_value(item) for key, item in value.items()})
