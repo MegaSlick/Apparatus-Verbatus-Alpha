@@ -1,13 +1,11 @@
 """One paper value across three stages, proved on the shape that broke the old one.
 
 `common/test_designator_recensor_ink_calibration.py` pins the two margins as
-source literals and proves the three ink sets nest under one background. This
-proves the same claim through the *shipped functions on both sides*: the
-Designator's own `structure.ink_pixels` and `conservation`-margin scan against
-`common.residual_ink.residual_ink`, on a page with a photographed register
-opening's shape. A stage may import `common/`; the reverse is what
-`pipeline/test_stage_import_boundaries.py` forbids, and it is why this half of
-the proof lives here rather than beside the pin.
+literals; this proves the same claim through the shipped functions on both
+sides -- `structure.ink_pixels`/`conservation` against
+`common.residual_ink.residual_ink` -- on a page shaped like a photographed
+register opening. Lives here, not beside the pin, because a stage may import
+`common/` but not the reverse.
 """
 
 import grouping_config
@@ -23,13 +21,9 @@ from common.residual_ink import (
     resolve_coverage_audit_policy,
 )
 
-# The shape, not a photograph: a 200x200 frame of near-black at 5 around a lit
-# interior at 210, with three marks on it. What it takes from real material is
-# the one property that broke the retired inference -- 20,400 pixels of frame
-# against the interior's 19,000 of paper (19,600 less the 600 the three marks
-# take), so the page's single most common value is the frame's
-# 5, which `common/residual_ink.py` used to call paper. Nothing here
-# is a calibration sample; the Designator's 127 real pages are in its own survey.
+# A 200x200 frame of near-black around a lit interior with three marks: the
+# frame's 20,400 pixels outnumber the interior's paper, so the page's single
+# most common value is the frame's, which residual_ink.py used to call paper.
 FRAME = 5
 PAPER = 210
 DARK_STROKE = 40
@@ -54,11 +48,8 @@ def photographed_shaped_page() -> tuple[int, int, list[bytearray]]:
 def test_all_three_readers_infer_one_paper_value_on_a_photographed_shaped_page():
     """The Designator, the Ink Map and the Recensor's audit, one call, one answer.
 
-    The Ink Map and the Recensor reach the inference through
-    `common.residual_ink`; this stage reaches it through `structure`, which
-    re-exports it. Asserting the two objects are the same function is what makes
-    "they cannot come to disagree" a fact about the code rather than about two
-    call sites that currently match.
+    Asserting the two objects are the same function makes "they cannot
+    disagree" a fact about the code, not just two call sites that happen to match.
     """
     import common.background
     import common.residual_ink
@@ -94,19 +85,10 @@ def test_all_three_readers_infer_one_paper_value_on_a_photographed_shaped_page()
 
 
 def test_the_audit_sees_every_stroke_the_scan_saw_and_the_stage_still_sees_more():
-    """The containment, over the shipped ink sets rather than over thresholds.
-
-    Three nested sets, strictly, and the strictness is what says the claim is
-    not an equality that happens to hold today:
-
-    * `structure.ink_pixels` at the page's own derived margin -- what the
-      proposing scan counts.
-    * The audit's, at its own fixed contrast of 40. It must contain the scan's,
-      or a mark the Designator dismissed could be called ink by the audit and
-      the disagreement would be in the direction that loses ink.
-    * `structure.ink_pixels` at `SECONDARY_MARGIN`, the conservation
-      denominator, which must contain the audit's for the same reason one level
-      up.
+    """Three strictly nested ink sets, over the shipped functions, not thresholds:
+    the proposing scan's own margin, the audit's fixed contrast of 40 (must
+    contain the scan's, or the audit could lose ink the scan found), and the
+    conservation denominator at SECONDARY_MARGIN (must contain the audit's).
     """
     width, height, rows = photographed_shaped_page()
     policy = resolve_background_policy(load_grouping_config(), width, height)
@@ -123,9 +105,8 @@ def test_the_audit_sees_every_stroke_the_scan_saw_and_the_stage_still_sees_more(
         width, height, rows, background=background, margin=MINIMUM_CONTRAST_BELOW_BACKGROUND
     )
 
-    # The retired inference on this page: the frame wins the histogram, and 40
-    # levels below 5 is below every 8-bit sample, so the audit's set was empty
-    # and every containment below was true of nothing.
+    # The retired inference: 40 levels below the frame's 5 is below every 8-bit
+    # sample, so its audit set was empty and every containment below was vacuous.
     histogram = [0] * 256
     for row in rows:
         for value in row:
@@ -142,8 +123,6 @@ def test_the_audit_sees_every_stroke_the_scan_saw_and_the_stage_still_sees_more(
     assert strokes <= scanned
     assert strokes <= audited
 
-    # And the audit's own counts come from the same set, through the shipped
-    # measure rather than through a threshold restated here.
     measured = residual_ink(
         width,
         height,
@@ -152,24 +131,17 @@ def test_the_audit_sees_every_stroke_the_scan_saw_and_the_stage_still_sees_more(
         background_policy=policy,
         coverage_policy=resolve_coverage_audit_policy(load_coverage_audit_config(), width, height),
     )
-    # The audit's WHOLE set, which is what the containment above is about. Its
-    # `total_ink_pixels` is the audited pair's denominator -- the same set less
-    # this page's page-spanning component, which here is the frame -- and both
-    # are on the record so the subtraction is visible rather than silent.
+    # total_ink_pixels is the audited set less the page-spanning frame; both
+    # numbers are on the record, so the subtraction is visible, not silent.
     assert measured["page_ink_pixels"] == len(audited)
     assert measured["page_spanning_ink_pixels"] == 20_400
     assert measured["total_ink_pixels"] == len(audited) - 20_400
 
 
 def test_a_page_the_inference_refuses_is_refused_by_the_audit_too():
-    """One refusal, one name, whichever stage asks.
-
-    The inverted scan `test_structure.py` uses: 80% of the page at 30 and 20% at
-    220, whose mode is darker than its own mean and whose interior is dark, so
-    no branch can call anything on it paper. The Designator refuses it and
-    records `ink_measurable: false`; the audit must refuse it by the same
-    exception rather than measure zero residual ink on it, which is what a
-    coverage proof taken under a divider that is not paper would be.
+    """One refusal, one name, whichever stage asks: an inverted page whose mode
+    is darker than its own mean must refuse rather than measure zero residual
+    ink under a divider that isn't paper.
     """
     width = height = 100
     rows = [bytearray([30] * width) for _ in range(height)]
@@ -193,28 +165,13 @@ def test_a_page_the_inference_refuses_is_refused_by_the_audit_too():
 
 
 def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation():
-    """The whole of the grouping unit, on one page, through shipped functions.
+    """The whole grouping unit, through shipped functions, in run.py's order.
 
-    The same photographed-shaped page above, driven through
-    `structure.primary_scan`, `grouping.partition_page_spanning`,
-    `grouping.group_page` and `conservation.reconcile` in the order `run.py`
-    drives them. Both halves of the claim are asserted here because either one
-    alone would be a different and wrong change:
-
-      * the frame does not group -- it labels as exactly ONE component whose
-        bounding box is the page, it is the one component withheld, and the only
-        group that comes back is the mark, so nothing on this page is claimed by
-        a rectangle the size of the leaf;
-      * the frame is still ink -- every one of its pixels is inside
-        `total_ink_pixel_count`, and because no group claims it, it is inside
-        `residual_pixel_count`, which `run.py` mints as held acts a reviewer
-        opens. Nothing was removed from the page, from the scan, or from the
-        accounting.
-
-    The residual is what makes the coverage audit non-vacuous again: before this
-    rule the single group's bounds were the page, so claimed was the whole ink
-    set and the residual was zero on every real page measured -- an audit whose
-    denominator, "ink outside declared coverage", was empty by construction.
+    Both halves matter: the frame doesn't group (it's the one component
+    withheld, so only the mark's group comes back) and the frame is still ink
+    (every pixel stays in total_ink_pixel_count, and since no group claims it,
+    in residual_pixel_count too). Before this rule the residual was zero on
+    every real page, making the coverage audit's denominator vacuous.
     """
     import conservation
     import grouping
@@ -234,10 +191,8 @@ def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation()
         margin=evidence["ink_margin"],
         gap_tolerance_px=thresholds.gap_tolerance_px,
     )
-    # The frame is one component and its bounding box is the leaf. This is the
-    # property the whole rule rests on and it is measured here rather than
-    # assumed: on all fourteen real pages the survey measured, the same thing
-    # was true and the component held 69.5 to 95.2 percent of the counted ink.
+    # The frame is one component and its bounding box is the leaf -- the
+    # property the whole rule rests on, measured rather than assumed.
     assert [component["bounds"] for component in components] == [
         {"x": 0, "y": 0, "w": width, "h": height},
         {"x": 50, "y": 60, "w": 30, "h": 10},
@@ -273,8 +228,8 @@ def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation()
         gap_tolerance_px=thresholds.gap_tolerance_px,
         review_priority_min_dimension_px=thresholds.review_priority_min_dimension_px,
     )
-    # Conservation rescans at `SECONDARY_MARGIN`, so its total is the 20,700 the
-    # primary scan counted plus the 300 of fainter stroke only it sees.
+    # Conservation rescans at SECONDARY_MARGIN: 20,700 primary-scan pixels plus
+    # 300 of fainter stroke only it sees.
     assert result["total_ink_pixel_count"] == 21_000
     assert result["claimed_pixel_count"] == 300
     assert result["residual_pixel_count"] == 20_700
@@ -282,29 +237,15 @@ def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation()
         result["claimed_pixel_count"] + result["residual_pixel_count"]
         == (result["total_ink_pixel_count"])
     )
-    # On this deliberately under-covered page the withheld frame remains in
-    # residual evidence; other pages may have it claimed by fallback coverage.
     assert result["residual_pixel_count"] >= frame["pixel_count"]
     assert len(result["residual_components"]) == 3
     assert len(result["residual_components"]) <= config["max_residual_components"]
 
 
 def test_the_audit_withholds_exactly_the_component_the_grouping_pass_withholds():
-    """The load-bearing claim of the outside-coverage exclusion, on both sides.
-
-    The audit takes this page's page-spanning component out of both its counts,
-    and it must be the *same* component `grouping.partition_page_spanning`
-    withheld from column assignment and body chaining -- otherwise the audit is
-    setting aside a different pixel population from the one grouping records.
-    The withheld pixels remain in conservation, where declared or fallback
-    coverage may claim them and any unclaimed remainder stays residual evidence.
-
-    It is the same by construction rather than by agreement: both sides label the
-    same bytes at the margin this page derives for itself, under one sealed
-    `gap_tolerance_px` and one sealed `page_spanning_area_bp`, through the one
-    labeller in `common/components.py`. This asserts it over the components
-    themselves, so a later change that gave either side its own threshold fails
-    here rather than in a run.
+    """The audit's page-spanning exclusion must be the *same* component
+    `grouping.partition_page_spanning` withholds, by construction (one margin,
+    one sealed threshold, one labeller) rather than by coincidence.
     """
     import grouping
 
@@ -343,12 +284,10 @@ def test_the_audit_withholds_exactly_the_component_the_grouping_pass_withholds()
     assert [component["pixel_count"] for component in found] == [
         component["pixel_count"] for component in withheld
     ]
-    # Non-vacuous: this page really does have one, and it is the frame.
     assert len(found) == 1
     assert found[0]["bounds"] == {"x": 0, "y": 0, "w": width, "h": height}
     assert sum(mask) == found[0]["pixel_count"] == 20_400
 
-    # And what the audit publishes is that component and nothing else.
     finding = residual_ink(
         width,
         height,
