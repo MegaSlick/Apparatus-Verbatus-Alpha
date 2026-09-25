@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Final, Mapping, Protocol
+from typing import Any, Callable, Final, Mapping, NoReturn, Protocol
 
 from common.chairs.errors import ChairRefusal, UnresolvedChairRefusal
 from common.chairs.models import (
@@ -90,11 +90,9 @@ MECHANICS_QUALIFICATION_PURPOSE: Final = object()
 _NORMAL_LAUNCH = "normal"
 _PREFLIGHT_QUALIFICATION_LAUNCH = "preflight-qualification"
 _MECHANICS_QUALIFICATION_LAUNCH = "mechanics-qualification"
+_LOG_UNREADABLE: Final = "VLLM_LOG_UNREADABLE:"
 _READINESS_PROBE_TIMEOUT_SECONDS = 2.0
-"""Per-request budget for one /health or /v1/models poll.
-
-Named, not repeated: the readiness loop takes the smaller of this and what is
-left of the watchdog deadline, so a drifted literal would widen the overrun."""
+"""Per-request budget for one /health or /v1/models poll."""
 
 _INFERENCE_TIMEOUT_SECONDS = 10.0
 """Per-request budget for one chat/completions call: a real answer, not a poll."""
@@ -139,17 +137,12 @@ class ReceiptPublication:
     evidence_reference: Mapping[str, str]
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "receipt_reference", _immutable_reference(self.receipt_reference, "receipt")
-        )
-        object.__setattr__(
-            self, "audit_reference", _immutable_reference(self.audit_reference, "launch-audit")
-        )
-        object.__setattr__(
-            self,
-            "evidence_reference",
-            _immutable_reference(self.evidence_reference, "serving-evidence"),
-        )
+        for name, label in (
+            ("receipt_reference", "receipt"),
+            ("audit_reference", "launch-audit"),
+            ("evidence_reference", "serving-evidence"),
+        ):
+            object.__setattr__(self, name, _immutable_reference(getattr(self, name), label))
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,10 +201,7 @@ class AdapterCalibration:
                 raise ServingConfigurationError(
                     "image adapter calibration must use the chat-completions endpoint"
                 )
-            image_bytes = _active_chat_image_bytes(
-                normalized_payload, label="image adapter calibration"
-            )
-            if hashlib.sha256(image_bytes).hexdigest() != self.fixture_sha256:
+            if _calibration_image_sha256(normalized_payload) != self.fixture_sha256:
                 raise ServingConfigurationError(
                     "adapter calibration image bytes do not match fixture_sha256"
                 )
@@ -220,12 +210,10 @@ class AdapterCalibration:
         """Return a fresh, revalidated request from the sealed calibration bytes."""
 
         payload = json.loads(self._canonical_payload)
-        if self.requires_image:
-            image_bytes = _active_chat_image_bytes(payload, label="image adapter calibration")
-            if hashlib.sha256(image_bytes).hexdigest() != self.fixture_sha256:
-                raise ServingConfigurationError(
-                    "sealed adapter calibration image bytes no longer match fixture_sha256"
-                )
+        if self.requires_image and _calibration_image_sha256(payload) != self.fixture_sha256:
+            raise ServingConfigurationError(
+                "sealed adapter calibration image bytes no longer match fixture_sha256"
+            )
         return payload
 
     @classmethod
@@ -246,15 +234,7 @@ class AdapterCalibration:
             raise ServingConfigurationError("image calibration prompt must be non-blank")
         if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
             raise ServingConfigurationError("image calibration mime_type must begin with 'image/'")
-        source = Path(fixture)
-        try:
-            data = source.read_bytes()
-        except OSError as error:
-            raise ServingConfigurationError(
-                f"cannot read local adapter calibration fixture {source}: {error}"
-            ) from error
-        if not data:
-            raise ServingConfigurationError("adapter calibration fixture must not be empty")
+        data = _local_fixture_bytes(fixture, "adapter calibration fixture")
         encoded = base64.b64encode(data).decode("ascii")
         return cls(
             kind="chat-completions",
@@ -399,7 +379,9 @@ class ServiceHandle:
         # Validate and send one snapshot, so a mutable Mapping cannot show an
         # image here and serialize without it.
         sealed_payload, _ = seal_json_object(payload, label="golden-page request")
-        fixture_digest = _fixture_sha256(fixture)
+        fixture_digest = hashlib.sha256(
+            _local_fixture_bytes(fixture, "golden-page fixture")
+        ).hexdigest()
         image_digest = hashlib.sha256(
             _active_chat_image_bytes(sealed_payload, label="golden-page request")
         ).hexdigest()
@@ -435,32 +417,31 @@ class StageContextReceiptPublisher:
     def publish(
         self, receipt: ServingReceipt, launch_audit: Mapping[str, object]
     ) -> ReceiptPublication:
-        receipt_reference = self.context.write_serving_receipt(receipt.identity, receipt.details)
-        if not isinstance(receipt_reference, Mapping):
-            raise ReceiptPublicationError("StageContext returned a non-object receipt reference")
-        write_audit = getattr(self.context, "write_serving_launch_audit", None)
-        if not callable(write_audit):
-            raise ReceiptPublicationError(
-                "StageContext has no serving launch-audit publication seam"
-            )
-        audit_reference = write_audit(dict(launch_audit))
-        if not isinstance(audit_reference, Mapping):
-            raise ReceiptPublicationError(
-                "StageContext returned a non-object launch-audit reference"
-            )
-        write_evidence = getattr(self.context, "write_serving_evidence_manifest", None)
-        if not callable(write_evidence):
-            raise ReceiptPublicationError(
-                "StageContext has no serving evidence-manifest publication seam"
-            )
-        evidence_reference = write_evidence(dict(receipt_reference), dict(audit_reference))
-        if not isinstance(evidence_reference, Mapping):
-            raise ReceiptPublicationError(
-                "StageContext returned a non-object serving evidence-manifest reference"
-            )
+        receipt_reference = _object_reference(
+            self.context.write_serving_receipt(receipt.identity, receipt.details), "receipt"
+        )
+        write_audit = self._seam("write_serving_launch_audit", "launch-audit")
+        audit_reference = _object_reference(write_audit(dict(launch_audit)), "launch-audit")
+        write_evidence = self._seam("write_serving_evidence_manifest", "evidence-manifest")
+        evidence_reference = _object_reference(
+            write_evidence(dict(receipt_reference), dict(audit_reference)),
+            "serving evidence-manifest",
+        )
         return ReceiptPublication(
             dict(receipt_reference), dict(audit_reference), dict(evidence_reference)
         )
+
+    def _seam(self, name: str, label: str) -> Callable[..., object]:
+        write = getattr(self.context, name, None)
+        if not callable(write):
+            raise ReceiptPublicationError(f"StageContext has no serving {label} publication seam")
+        return write
+
+
+def _object_reference(reference: object, label: str) -> Mapping[str, str]:
+    if not isinstance(reference, Mapping):
+        raise ReceiptPublicationError(f"StageContext returned a non-object {label} reference")
+    return reference
 
 
 class ServingManager:
@@ -490,7 +471,6 @@ class ServingManager:
         shutdown_timeout_seconds: float = 10.0,
         _launch_purpose: object | None = None,
     ) -> None:
-        supplied_command_prefix = command_prefix is not None
         if command_prefix is None:
             # This interpreter, so the launched vLLM is the one whose version
             # was inspected; a PATH console script could belong to another venv.
@@ -504,15 +484,9 @@ class ServingManager:
             or not Path(command_prefix[0]).is_absolute()
         ):
             raise ValueError("vLLM command_prefix must start with an absolute interpreter path")
-        if (
-            supplied_command_prefix
-            and package_inspector is None
-            and command_prefix[0] != sys.executable
-        ):
-            # The default inspector reads this interpreter's packages, so the pin
-            # check only means something if the child is this interpreter --
-            # compared as exact strings, since two venvs can symlink one
-            # interpreter with different site-packages.
+        if package_inspector is None and command_prefix[0] != sys.executable:
+            # Exact strings: two venvs can symlink one interpreter with
+            # different site-packages.
             raise ValueError(
                 "the default package inspector reads this interpreter's installed "
                 "distributions, so a supplied vLLM command_prefix must launch "
@@ -548,14 +522,11 @@ class ServingManager:
         self.monotonic = monotonic or time.monotonic
         self.sleep = sleep or time.sleep
         self.shutdown_timeout_seconds = shutdown_timeout_seconds
-        self._qualification_launch = _launch_purpose in (
-            _PREFLIGHT_QUALIFICATION_PURPOSE,
-            MECHANICS_QUALIFICATION_PURPOSE,
-        )
         self.launch_purpose = {
             _PREFLIGHT_QUALIFICATION_PURPOSE: _PREFLIGHT_QUALIFICATION_LAUNCH,
             MECHANICS_QUALIFICATION_PURPOSE: _MECHANICS_QUALIFICATION_LAUNCH,
         }.get(_launch_purpose, _NORMAL_LAUNCH)
+        self._qualification_launch = self.launch_purpose != _NORMAL_LAUNCH
         self._active: ServiceHandle | None = None
         self._residency_handle: ResidencyHandle | None = None
         self._unready_process: ServerProcess | None = None
@@ -579,29 +550,23 @@ class ServingManager:
             raise ServingConfigurationError("serving start requires one resolved ChairIdentity")
         if not isinstance(tier, str) or not tier:
             raise ServingConfigurationError("serving start requires one non-blank placement tier")
-        # Checked here because every launch passes through ``start``.
         assert_no_discoverable_local_env()
         if self._active is not None or self._residency_handle is not None:
             # Not failed-launch cleanup: the held lease records an unverified shutdown.
-            self._refuse(
+            self._refuse_start(
                 identity,
                 ServingConfigurationError(
                     "a serving process is still resident or its shutdown is not verified; "
                     "stop and verify it before starting another chair"
                 ),
             )
-            raise AssertionError("registry refusal returned unexpectedly")  # pragma: no cover
 
         process: ServerProcess | None = None
         endpoint = ""
         try:
             # Both the chair's and an adapter base's profiles pass the recipe
             # check before any snapshot is verified.
-            profile = _launchable(
-                self.recipes.for_identity(identity, tier),
-                identity,
-                qualification=self._qualification_launch,
-            )
+            profile = self._launchable_profile(identity, tier)
             self._assert_runtime(profile)
             base_identity, base_profile = self._base_profile(identity, tier, profile)
             primary_snapshot = self.registry.ensure(identity)
@@ -672,18 +637,7 @@ class ServingManager:
                 generation_config_digest=generation_config_digest,
             )
             sealed_audit = _immutable_json_value(audit)
-            publication_audit, _ = seal_json_object(audit, label="serving launch audit")
-            try:
-                publication = self.receipt_publisher.publish(receipt, publication_audit)
-            except Exception as error:
-                raise ReceiptPublicationError(
-                    f"receipt publisher refused ready service: {error}"
-                ) from error
-            if not isinstance(publication, ReceiptPublication):
-                raise ReceiptPublicationError(
-                    "receipt publisher must return receipt, durable launch-audit, "
-                    "and combined evidence references"
-                )
+            publication = self._publish(receipt, audit)
             handle = ServiceHandle(
                 self,
                 identity,
@@ -705,21 +659,15 @@ class ServingManager:
                 self._refuse(identity, error, also=cleanup_error)
             raise
         except ServingError as error:
-            self._refuse(identity, error, also=self._attempt_cleanup(process, endpoint))
-            raise AssertionError(
-                "registry refusal returned unexpectedly"
-            ) from error  # pragma: no cover
+            self._refuse_start(identity, error, also=self._attempt_cleanup(process, endpoint))
         except Exception as error:
-            self._refuse(
+            self._refuse_start(
                 identity,
                 ProcessLaunchError(
                     f"unexpected serving start failure: {type(error).__name__}: {error}"
                 ),
                 also=self._attempt_cleanup(process, endpoint),
             )
-            raise AssertionError(
-                "registry refusal returned unexpectedly"
-            ) from error  # pragma: no cover
         except BaseException as error:
             # An interrupt must not strand a child. If cleanup is verified, the
             # interrupt is re-raised unchanged. If not, a possibly resident child
@@ -733,6 +681,21 @@ class ServingManager:
                     f"start={type(error).__name__}: {error}; stop={cleanup_error}"
                 ) from error
             raise
+
+    def _publish(self, receipt: ServingReceipt, audit: Mapping[str, object]) -> ReceiptPublication:
+        publication_audit, _ = seal_json_object(audit, label="serving launch audit")
+        try:
+            publication = self.receipt_publisher.publish(receipt, publication_audit)
+        except Exception as error:
+            raise ReceiptPublicationError(
+                f"receipt publisher refused ready service: {error}"
+            ) from error
+        if not isinstance(publication, ReceiptPublication):
+            raise ReceiptPublicationError(
+                "receipt publisher must return receipt, durable launch-audit, "
+                "and combined evidence references"
+            )
+        return publication
 
     def request(
         self,
@@ -752,12 +715,7 @@ class ServingManager:
             seed=handle.profile.seed,
             deterministic=False,
         )
-        response = self.http.request(
-            "POST",
-            endpoint_for_probe(handle.endpoint, kind),
-            body=body,
-            timeout_seconds=_INFERENCE_TIMEOUT_SECONDS,
-        )
+        response = self._post(handle.endpoint, kind, body, _INFERENCE_TIMEOUT_SECONDS)
         if exchange_observer is not None:
             exchange_observer(body, response)
         result = parse_openai_answer(
@@ -777,12 +735,7 @@ class ServingManager:
 
         self._require_active(handle)
         self._assert_process_live(handle.process)
-        return self.http.request(
-            "POST",
-            endpoint_for_probe(handle.endpoint, kind),
-            body=body_bytes,
-            timeout_seconds=timeout_seconds,
-        )
+        return self._post(handle.endpoint, kind, body_bytes, timeout_seconds)
 
     def stop(self, handle: ServiceHandle) -> None:
         """Stop one exact owned process and verify its endpoint no longer responds."""
@@ -836,13 +789,13 @@ class ServingManager:
             raise ServingConfigurationError(
                 f"adapter chair {identity.role!r} has no resolved base identity"
             )
-        return (
-            configured_base,
-            _launchable(
-                self.recipes.for_identity(configured_base, tier),
-                configured_base,
-                qualification=self._qualification_launch,
-            ),
+        return configured_base, self._launchable_profile(configured_base, tier)
+
+    def _launchable_profile(self, identity: ChairIdentity, tier: str) -> ServingProfile:
+        return _launchable(
+            self.recipes.for_identity(identity, tier),
+            identity,
+            qualification=self._qualification_launch,
         )
 
     def _assert_runtime(self, profile: ServingProfile) -> dict[str, str]:
@@ -869,12 +822,7 @@ class ServingManager:
 
     def _assert_endpoint_unoccupied(self, endpoint: str) -> None:
         try:
-            response = self.http.request(
-                "GET",
-                health_url(endpoint),
-                body=None,
-                timeout_seconds=_READINESS_PROBE_TIMEOUT_SECONDS,
-            )
+            response = self._get(health_url(endpoint), _READINESS_PROBE_TIMEOUT_SECONDS)
         except EndpointUnavailable as error:
             if error.definitively_absent:
                 return
@@ -898,20 +846,24 @@ class ServingManager:
         # that is what justifies advising a longer, billed timeout.
         progress_line: str | None = None
         progress_advanced = False
-        while True:
-            # Each probe is capped by the watchdog time left, recomputed per
-            # call, so no probe overruns the deadline.
-            def probe_timeout() -> float:
-                return min(_READINESS_PROBE_TIMEOUT_SECONDS, max(0.0, deadline - self.monotonic()))
 
+        def watchdog_timeout() -> ReadinessError:
+            return _watchdog_timeout(
+                process,
+                last=last,
+                endpoint_state=endpoint_state,
+                progress_advanced=progress_advanced,
+                budget_seconds=float(profile.startup_timeout_seconds),
+            )
+
+        while True:
             # A dead process or a fatal log line is a better reason than a timeout,
             # so check them before the watchdog.
             self._assert_process_live(process)
             launch_tail = process.read_tail()
-            if launch_tail.startswith("VLLM_LOG_UNREADABLE:"):
+            if launch_tail.startswith(_LOG_UNREADABLE):
                 raise ReadinessError(
-                    "VLLM_LOG_UNREADABLE",
-                    launch_tail.removeprefix("VLLM_LOG_UNREADABLE:").strip(),
+                    "VLLM_LOG_UNREADABLE", launch_tail.removeprefix(_LOG_UNREADABLE).strip()
                 )
             signature = _fatal_log_signature(launch_tail)
             if signature is not None:
@@ -921,31 +873,20 @@ class ServingManager:
                 if progress_line is not None and current_progress != progress_line:
                     progress_advanced = True
                 progress_line = current_progress
-            # No time left: a request could not succeed.
             if deadline - self.monotonic() <= 0:
-                raise _watchdog_timeout(
-                    process,
-                    last=last,
-                    endpoint_state=endpoint_state,
-                    progress_advanced=progress_advanced,
-                    budget_seconds=float(profile.startup_timeout_seconds),
-                )
+                raise watchdog_timeout()
             try:
-                health = self.http.request(
-                    "GET",
+                health = self._get(
                     health_url(profile.endpoint),
-                    body=None,
-                    timeout_seconds=probe_timeout(),
+                    self._time_left(deadline, _READINESS_PROBE_TIMEOUT_SECONDS),
                 )
                 if health.status != 200:
                     raise ReadinessError(
                         "VLLM_HEALTH_UNAVAILABLE", f"/health returned HTTP {health.status}"
                     )
-                models = self.http.request(
-                    "GET",
+                models = self._get(
                     models_url(profile.endpoint),
-                    body=None,
-                    timeout_seconds=probe_timeout(),
+                    self._time_left(deadline, _READINESS_PROBE_TIMEOUT_SECONDS),
                 )
                 model_ids = require_exact_model_id(models, profile.served_model_id)
                 probe = self._post_probe(
@@ -955,9 +896,7 @@ class ServingManager:
                     model_id=profile.served_model_id,
                     seed=profile.seed,
                     deterministic=True,
-                    timeout_seconds=min(
-                        _INFERENCE_TIMEOUT_SECONDS, max(0.0, deadline - self.monotonic())
-                    ),
+                    timeout_seconds=self._time_left(deadline, _INFERENCE_TIMEOUT_SECONDS),
                 )
                 return ReadinessEvidence(
                     health_status=health.status,
@@ -978,16 +917,13 @@ class ServingManager:
                 last = str(error)
                 endpoint_state = _ENDPOINT_ANSWERED_UNREADY
             if self.monotonic() >= deadline:
-                raise _watchdog_timeout(
-                    process,
-                    last=last,
-                    endpoint_state=endpoint_state,
-                    progress_advanced=progress_advanced,
-                    budget_seconds=float(profile.startup_timeout_seconds),
-                )
-            self.sleep(
-                min(float(profile.poll_interval_seconds), max(0.0, deadline - self.monotonic()))
-            )
+                raise watchdog_timeout()
+            self.sleep(self._time_left(deadline, float(profile.poll_interval_seconds)))
+
+    def _time_left(self, deadline: float, cap: float) -> float:
+        """Cap one wait by the time left before ``deadline``, so no wait overruns it."""
+
+        return min(cap, max(0.0, deadline - self.monotonic()))
 
     @staticmethod
     def _assert_process_live(process: ServerProcess) -> None:
@@ -1000,6 +936,14 @@ class ServingManager:
                 f"owned process pid={process.pid} exited with {exit_code}",
             )
 
+    def _get(self, url: str, timeout_seconds: float) -> HttpResponse:
+        return self.http.request("GET", url, body=None, timeout_seconds=timeout_seconds)
+
+    def _post(self, endpoint: str, kind: str, body: bytes, timeout_seconds: float) -> HttpResponse:
+        return self.http.request(
+            "POST", endpoint_for_probe(endpoint, kind), body=body, timeout_seconds=timeout_seconds
+        )
+
     def _post_probe(
         self,
         *,
@@ -1011,11 +955,11 @@ class ServingManager:
         deterministic: bool,
         timeout_seconds: float = _INFERENCE_TIMEOUT_SECONDS,
     ) -> OpenAIResult:
-        response = self.http.request(
-            "POST",
-            endpoint_for_probe(endpoint, kind),
-            body=request_body(payload, model_id=model_id, seed=seed, deterministic=deterministic),
-            timeout_seconds=timeout_seconds,
+        response = self._post(
+            endpoint,
+            kind,
+            request_body(payload, model_id=model_id, seed=seed, deterministic=deterministic),
+            timeout_seconds,
         )
         return parse_openai_answer(response, kind=kind, expected_model_id=model_id)
 
@@ -1041,12 +985,7 @@ class ServingManager:
                 "tower/connector LoRA requires an image-bearing adapter calibration"
             )
         calibration_payload = calibration.request_payload()
-        response = self.http.request(
-            "GET",
-            models_url(profile.endpoint),
-            body=None,
-            timeout_seconds=_READINESS_PROBE_TIMEOUT_SECONDS,
-        )
+        response = self._get(models_url(profile.endpoint), _READINESS_PROBE_TIMEOUT_SECONDS)
         ids = require_exact_model_id(response, profile.served_model_id)
         if base_profile.served_model_id not in ids:
             raise AdapterActivityError(
@@ -1267,16 +1206,12 @@ class ServingManager:
         deadline = self.monotonic() + self.shutdown_timeout_seconds
         last = "endpoint absence has not been observed"
         while True:
-            # Cap each probe by the time left, as in `_wait_until_ready`.
             remaining = deadline - self.monotonic()
             if remaining <= 0:
                 raise ServiceStopError(last)
             try:
-                response = self.http.request(
-                    "GET",
-                    health_url(endpoint),
-                    body=None,
-                    timeout_seconds=min(_READINESS_PROBE_TIMEOUT_SECONDS, remaining),
+                response = self._get(
+                    health_url(endpoint), min(_READINESS_PROBE_TIMEOUT_SECONDS, remaining)
                 )
             except EndpointUnavailable as error:
                 if error.definitively_absent:
@@ -1286,11 +1221,21 @@ class ServingManager:
                 last = f"endpoint {endpoint!r} still answered HTTP {response.status} after owned process exit"
             if self.monotonic() >= deadline:
                 raise ServiceStopError(last)
-            self.sleep(min(0.25, max(0.0, deadline - self.monotonic())))
+            self.sleep(self._time_left(deadline, 0.25))
 
     def _require_active(self, handle: ServiceHandle) -> None:
         if self._active is not handle:
             raise ServiceStopError("service handle is not this manager's active owned service")
+
+    def _refuse_start(
+        self,
+        identity: ChairIdentity,
+        error: BaseException,
+        *,
+        also: BaseException | None = None,
+    ) -> NoReturn:
+        self._refuse(identity, error, also=also)
+        raise AssertionError("registry refusal returned unexpectedly")  # pragma: no cover
 
     def _refuse(
         self,
@@ -1765,11 +1710,11 @@ def _watchdog_timeout(
     """
 
     tail = _redacted(process.read_tail())
-    if tail.startswith("VLLM_LOG_UNREADABLE:"):
+    if tail.startswith(_LOG_UNREADABLE):
         return ReadinessError(
             "VLLM_WATCHDOG_TIMEOUT",
             f"{last} -- and after {budget_seconds:.0f}s this launch log could not be read "
-            f"({tail.removeprefix('VLLM_LOG_UNREADABLE:').strip()}), so nothing here can say "
+            f"({tail.removeprefix(_LOG_UNREADABLE).strip()}), so nothing here can say "
             "whether the engine was still loading or never started",
         )
     progress = _progress_log_line(tail)
@@ -1864,19 +1809,20 @@ def _canonical_object_sha256(value: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _fixture_sha256(fixture: str | Path) -> str:
-    """Hash one non-empty local golden-page fixture without transmitting a path."""
-
+def _local_fixture_bytes(fixture: str | Path, label: str) -> bytes:
     source = Path(fixture)
     try:
         data = source.read_bytes()
     except OSError as error:
-        raise ServingConfigurationError(
-            f"cannot read local golden-page fixture {source}: {error}"
-        ) from error
+        raise ServingConfigurationError(f"cannot read local {label} {source}: {error}") from error
     if not data:
-        raise ServingConfigurationError("golden-page fixture must not be empty")
-    return hashlib.sha256(data).hexdigest()
+        raise ServingConfigurationError(f"{label} must not be empty")
+    return data
+
+
+def _calibration_image_sha256(payload: Mapping[str, object]) -> str:
+    image = _active_chat_image_bytes(payload, label="image adapter calibration")
+    return hashlib.sha256(image).hexdigest()
 
 
 def _utc_stamp(value: datetime) -> str:
@@ -1909,7 +1855,11 @@ def _active_chat_image_bytes(payload: Mapping[str, object], *, label: str) -> by
 
 
 def _immutable_json_value(value: object) -> object:
-    """Deep-freeze one already-validated JSON value exposed on a live handle."""
+    """Deep-freeze one already-validated JSON value.
+
+    Used for a live handle's launch audit and for the chair client's capacity and
+    dispatch records.
+    """
 
     if isinstance(value, Mapping):
         return MappingProxyType({key: _immutable_json_value(item) for key, item in value.items()})

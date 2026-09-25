@@ -90,6 +90,7 @@ from common.stage import (  # noqa: E402
 DESCRIPTION = "The orchestrator: sequencing, resume, and recovery dispatch. It is not a stage."
 
 ROOT = Path(__file__).resolve().parents[2]
+_TRIAGE_PATHS = ("triage_decision_manifest", "triage_clusters", "triage_producer_recipe")
 
 # The pipeline in flow order. The door is a program of the Exemplar's directory
 # because it owns no directory of its own.
@@ -187,11 +188,7 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
     for attribute in (
         "submission_folder",
         "submission_manifest",
-        "triage_decision_manifest",
-        "triage_clusters",
-        "triage_producer_recipe",
-        # Resolved here too, or an ordinary CLI run with a relative
-        # `--cache-root` would be refused by the boundary guard above.
+        *_TRIAGE_PATHS,
         "cache_root",
     ):
         value = getattr(args, attribute, None)
@@ -215,33 +212,38 @@ def stage_environment() -> dict[str, str]:
     }
 
 
-def invoke(program: str, args: argparse.Namespace, **extra) -> int:
-    """Run one stage as a program and return its exit code."""
-    require_coherent_ingress_options(args)
-    # Direct invocation entry points must not reinterpret caller paths under the
-    # child's repository-root cwd.
-    for attribute, flag in (
-        ("run_root", "--run-root"),
-        ("submission_folder", "--submission-folder"),
-        ("submission_manifest", "--submission-manifest"),
-        ("data_gate_policy", "--data-gate-policy"),
-        # The three triage paths and the model cache were forwarded to children
-        # unchecked, so a direct caller could make the Door read triage data, or
-        # a stage read a model cache, relative to the repository rather than to
-        # the caller. They belong behind the same boundary as every
-        # other caller path.
-        ("triage_decision_manifest", "--triage-decision-manifest"),
-        ("triage_clusters", "--triage-clusters"),
-        ("triage_producer_recipe", "--triage-producer-recipe"),
-        ("cache_root", "--cache-root"),
+def _argv(pairs, *, omit_unset: bool = False) -> list[str]:
+    return [
+        part
+        for flag, value in pairs
+        if not (omit_unset and value is None)
+        for part in (flag, str(value))
+    ]
+
+
+def _require_absolute_caller_paths(args: argparse.Namespace) -> None:
+    for attribute in (
+        "run_root",
+        "submission_folder",
+        "submission_manifest",
+        "data_gate_policy",
+        *_TRIAGE_PATHS,
+        "cache_root",
     ):
         value = getattr(args, attribute, None)
         if value is not None and not Path(value).is_absolute():
+            flag = "--" + attribute.replace("_", "-")
             raise ContractError(
                 f"{flag} is still the caller-relative path {str(value)!r}. Stages run from "
                 f"{ROOT} while the caller may be anywhere, so this must be resolved at the "
                 "orchestration boundary (`resolve_caller_paths`) before any child sees it"
             )
+
+
+def invoke(program: str, args: argparse.Namespace, **extra) -> int:
+    """Run one stage as a program and return its exit code."""
+    require_coherent_ingress_options(args)
+    _require_absolute_caller_paths(args)
     command = [
         sys.executable,
         # Ignore PYTHON* startup controls and the user site for child stages.
@@ -250,123 +252,88 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         # before the stage reached its first refusal boundary.
         "-I",
         str(ROOT / program),
-        "--run-root",
-        str(args.run_root),
-        "--run-id",
-        args.run_id,
-        "--scenario",
-        args.scenario,
-        "--fixture-root",
-        str(args.fixture_root),
-        "--models-config",
-        str(args.models_config),
-        "--decoding-config",
-        str(args.decoding_config),
-        "--serving-recipes-config",
-        str(args.serving_recipes_config),
-        "--pdf-render-config",
-        str(args.pdf_render_config),
-        "--designator-padding-config",
-        str(args.designator_padding_config),
-        "--designator-geometry-config",
-        str(args.designator_geometry_config),
-        "--designator-grouping-config",
-        str(args.designator_grouping_config),
-        "--alignment-config",
-        str(args.alignment_config),
-        "--formats-config",
-        str(args.formats_config),
-        "--recovery-config",
-        str(args.recovery_config),
-        "--hard-failure-config",
-        str(args.hard_failure_config),
+        *_argv(
+            (
+                ("--run-root", args.run_root),
+                ("--run-id", args.run_id),
+                ("--scenario", args.scenario),
+                ("--fixture-root", args.fixture_root),
+                ("--models-config", args.models_config),
+                ("--decoding-config", args.decoding_config),
+                ("--serving-recipes-config", args.serving_recipes_config),
+                ("--pdf-render-config", args.pdf_render_config),
+                ("--designator-padding-config", args.designator_padding_config),
+                ("--designator-geometry-config", args.designator_geometry_config),
+                ("--designator-grouping-config", args.designator_grouping_config),
+                ("--alignment-config", args.alignment_config),
+                ("--formats-config", args.formats_config),
+                ("--recovery-config", args.recovery_config),
+                ("--hard-failure-config", args.hard_failure_config),
+            )
+        ),
     ]
-    cache_root = getattr(args, "cache_root", None)
-    if cache_root is not None:
-        command += ["--cache-root", str(cache_root)]
+    command += _argv((("--cache-root", getattr(args, "cache_root", None)),), omit_unset=True)
     # Later stages may read only the run tree the Door sealed, never source paths.
     if program == STAGE_PROGRAMS["door"]:
-        # The Door is the one stage that creates the run authority, so it is the
-        # only one that can seal the commit into it. Forwarded only when it was
-        # actually read: a tree with no version control records no commit rather
-        # than a placeholder that looks like one (principle 8).
+        # Only the Door creates the run authority, so only it can seal the commit.
+        # An unread commit is omitted, never a placeholder (principle 8).
         commit, _detail = repository_commit(args)
-        if commit is not None:
-            command += ["--repository-commit", commit]
-        if args.submission_folder is not None:
-            command += ["--submission-folder", str(args.submission_folder)]
-        if args.submission_manifest is not None:
-            command += ["--submission-manifest", str(args.submission_manifest)]
-        if args.data_gate_policy is not None:
-            command += ["--data-gate-policy", str(args.data_gate_policy)]
-        for attribute, flag in (
-            ("triage_decision_manifest", "--triage-decision-manifest"),
-            ("triage_clusters", "--triage-clusters"),
-            ("triage_producer_recipe", "--triage-producer-recipe"),
-        ):
-            value = getattr(args, attribute, None)
-            if value is not None:
-                command += [flag, str(value)]
-    if args.pdf_target_dpi is not None:
-        command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
-    # A measured runtime fact of the card, not run configuration (principle 6);
-    # forwarded only when set, so a fixture run's argv carries no
-    # "--placement-tier None" and stage_parser's own default (None) governs.
-    if args.placement_tier is not None:
-        command += ["--placement-tier", str(args.placement_tier)]
+        command += _argv(
+            (
+                ("--repository-commit", commit),
+                ("--submission-folder", args.submission_folder),
+                ("--submission-manifest", args.submission_manifest),
+                ("--data-gate-policy", args.data_gate_policy),
+                ("--triage-decision-manifest", getattr(args, "triage_decision_manifest", None)),
+                ("--triage-clusters", getattr(args, "triage_clusters", None)),
+                ("--triage-producer-recipe", getattr(args, "triage_producer_recipe", None)),
+            ),
+            omit_unset=True,
+        )
+    # The placement tier is a measured runtime fact of the card, not run
+    # configuration (principle 6), so an unset one is omitted and stage_parser's
+    # own default (None) governs.
+    command += _argv(
+        (("--pdf-target-dpi", args.pdf_target_dpi), ("--placement-tier", args.placement_tier)),
+        omit_unset=True,
+    )
     if getattr(args, "mechanics_qualification", False):
         command.append("--mechanics-qualification")
     # Forwarded to every stage, not only to the door that snapshots it: the
     # drift refusal exists to catch a register appended *between* two stages of
     # one run, which is precisely the case an unforwarded flag cannot see.
-    if args.corpus_register is not None:
-        command += ["--corpus-register", str(args.corpus_register)]
-    command += [
-        "--witness-context",
-        args.witness_context,
-        "--witness-context-config",
-        str(args.witness_context_config),
-        "--nuda-per-mille",
-        str(args.nuda_per_mille),
-        "--nuda-approval-ref",
-        str(args.nuda_approval_ref),
-        "--perlector-instrument-per-mille",
-        str(args.perlector_instrument_per_mille),
-        "--perlector-instrument-approval-ref",
-        str(args.perlector_instrument_approval_ref),
-        "--perlector-protocol-config",
-        str(args.perlector_protocol_config),
-        "--perlector-audit-config",
-        str(args.perlector_audit_config),
-    ]
+    command += _argv((("--corpus-register", args.corpus_register),), omit_unset=True)
+    command += _argv(
+        (
+            ("--witness-context", args.witness_context),
+            ("--witness-context-config", args.witness_context_config),
+            ("--nuda-per-mille", args.nuda_per_mille),
+            ("--nuda-approval-ref", args.nuda_approval_ref),
+            ("--perlector-instrument-per-mille", args.perlector_instrument_per_mille),
+            ("--perlector-instrument-approval-ref", args.perlector_instrument_approval_ref),
+            ("--perlector-protocol-config", args.perlector_protocol_config),
+            ("--perlector-audit-config", args.perlector_audit_config),
+        )
+    )
     command.append("--draft-fed" if args.draft_fed else "--no-draft-fed")
-    for key, value in extra.items():
-        command += [f"--{key.replace('_', '-')}", str(value)]
+    command += _argv((f"--{key.replace('_', '-')}", value) for key, value in extra.items())
 
-    # Inherit the operator's streams instead of buffering a stage's unbounded
-    # stdout/stderr in the orchestrator. Each stage owns its diagnostic text,
-    # and an unexpected exit is named after that text has already been relayed.
-    # This is also how a completed-but-partial Door's private refusal report
-    # reaches the human who ran the pipeline: it is already on the terminal by
-    # the time any exit is judged, rather than being captured and re-printed.
+    # Streams are inherited, not buffered: stage output is unbounded, and a
+    # partial Door's private refusal report must reach the operator's terminal.
     #
     # `stage_environment()` is not optional and is the reason this call is not a
     # bare subprocess.run: it drops the transfer credentials from every stage's
     # environment, so only the upload-only verb can ever see them.
     started = _clock()
     started_at = _stamp()
-    # Bound before the call, not inside it, so `finally` can read it even when
-    # an interruption that is not an `OSError` (a `KeyboardInterrupt` mid-stage)
-    # leaves it unset. A stage that could not start is then timed with no exit
-    # code, the same record the OSError path produces.
+    # Bound before the try: set inside it, an interrupted stage would leave it
+    # unbound and `finally` would raise a NameError that hides the real error.
     exit_code: int | None = None
     try:
         completed = subprocess.run(command, cwd=ROOT, env=stage_environment())
         exit_code = completed.returncode
     finally:
-        # In `finally` so a stage that could not start, and one about to be
-        # turned into a ContractError below, are both timed: the invocations a
-        # later reader most wants a clock on are the ones that went wrong.
+        # The invocations a reader most wants timed are the ones that went wrong.
         _record_stage_timing(
             args,
             program=program,
@@ -388,21 +355,11 @@ def _stamp() -> str:
 def repository_commit(args: argparse.Namespace) -> tuple[str | None, str | None]:
     """The commit this run's code is at, as its caller named it -- or why it has none.
 
-    Read from argv rather than measured here, deliberately. On a pod the
-    bootstrap has already checked out the pinned commit and *verified* the
-    checkout against it (`operations/pod/bootstrap.py`, REPOSITORY), so the
-    plan's value is a proven fact about the running code; re-deriving it here
-    would be a second, weaker measurement of something already established, and
-    it would make the orchestrator spend a subprocess per process on an answer
-    its caller was already holding.
-
-    Returned as a pair, never raising for absence: a run must not be refused
-    because the tree it runs from is a source export with no version control,
-    and it must equally not record a commit nobody measured (principle 8). An
-    absent commit is `None` *with* a reason, so a reader can tell "not
-    measured" from "not looked for". A malformed one is a refusal, because a
-    short or decorated revision names a commit only against the repository that
-    resolved it -- which a fetched run tree no longer has.
+    Read from argv, not measured: on a pod the bootstrap already checked out and
+    verified the pinned commit (`operations/pod/bootstrap.py`). Absence is
+    `None` with a reason, never a refusal, since a source export has no version
+    control (principle 8). A short or decorated revision is refused: it names a
+    commit only against the repository that resolved it.
     """
 
     commit = getattr(args, "repository_commit", None)
@@ -429,24 +386,11 @@ def _record_stage_timing(
 ) -> None:
     """Append one stage's clock to the timing journal, best effort.
 
-    **Outside the run tree, deliberately.** A run tree is pinned byte-identical
-    across a rerun, a resume, a restored backup and every driver mode by a dozen
-    acceptance tests, and a clock is by definition not that: putting timings
-    under `receipts/` would have made "the same run" mean something weaker for
-    every one of those checks. So the journal is a sibling of the pod-run report
-    on the volume, where the transcript and the liveness tick already live, and
-    `pod_run` is what names it (`--stage-timing-journal`). A local run that names
-    no journal writes none, and the run tree is bit-for-bit what it was before.
-
-    Best effort because a stopwatch is a diagnostic, not evidence the run
-    depends on: refusing a completed stage because its timing could not be
-    written would destroy work to protect a record of it. A failure says so on
-    stderr -- which on a pod reaches the durable transcript -- rather than
-    passing in silence (principle 2).
-
-    Rewritten whole on each append rather than appended to: the file is bounded
-    by the number of stage invocations in a run, and a torn append is a journal
-    a later reader cannot parse at all. `_atomic_json` replaces it in one step.
+    Outside the run tree, because the tree is pinned byte-identical across
+    reruns and resumes and a clock is not. Best effort, because refusing a
+    completed stage over its stopwatch would destroy work to protect a record
+    of it; a failure is said on stderr (principle 2). Rewritten whole, because
+    a torn append is a journal no reader can parse.
     """
 
     journal = getattr(args, "stage_timing_journal", None)
@@ -455,10 +399,7 @@ def _record_stage_timing(
     path = Path(journal)
     subject = extra.get("act")
     entry: dict[str, object] = {
-        # The sequence member's own name, not the program's directory: the Door
-        # and the Exemplar are two members that share `1_exemplar/`, and an
-        # entry calling both of them "1_exemplar" would make a resumed Door
-        # unreadable as one.
+        # The Door and the Exemplar share `1_exemplar/`, so name the member.
         "stage": _PROGRAM_NAMES.get(program, program),
         "program": program,
         "operation": str(extra.get("operation", "run")),
@@ -469,39 +410,13 @@ def _record_stage_timing(
         "exit_code": exit_code,
     }
     try:
-        # Inside the try with the write, not above it: this runs from a
-        # `finally`, and a refusal raised here would replace the stage failure
-        # the caller is already propagating.
+        # Inside the try: this runs from a `finally`, and a refusal here would
+        # replace the stage failure already propagating. Recorded per entry so
+        # a resume at another commit is visible; run.json is never rewritten.
         commit, commit_detail = repository_commit(args)
-        # Recorded per entry, not once at the top: a run resumed at another
-        # commit is exactly the case the run authority cannot record (run.json
-        # is created once and never rewritten), and two entries naming two
-        # commits is what makes that resume visible instead of silent.
         entry["repository_commit"] = commit
         entry["repository_commit_detail"] = commit_detail
-        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-        entries: list = []
-        if isinstance(existing, dict):
-            # Whose journal this is, checked before its entries are carried
-            # forward: a journal naming a different run, root or schema is left
-            # exactly as it is and the conflict is reported, so two runs
-            # pointed at one path can never attribute one run's stage timings
-            # to the other. This guard only covers a dict journal with a list
-            # `entries`; a non-dict journal is overwritten above and a
-            # non-list `entries` is dropped below.
-            identity = (
-                existing.get("schema"),
-                existing.get("run_id"),
-                existing.get("run_root"),
-            )
-            expected = (STAGE_TIMING_JOURNAL_SCHEMA, args.run_id, str(args.run_root))
-            if identity != expected:
-                raise ContractError(
-                    f"the timing journal at {path} already belongs to {identity!r}, and this "
-                    f"run is {expected!r}; it was left unchanged rather than merged"
-                )
-            if isinstance(existing.get("entries"), list):
-                entries = list(existing["entries"])
+        entries = _prior_journal_entries(path, args)
         entries.append(entry)
         _atomic_json(
             path,
@@ -520,12 +435,32 @@ def _record_stage_timing(
         )
 
 
+def _prior_journal_entries(path: Path, args: argparse.Namespace) -> list:
+    """The entries to carry forward, refusing a journal that names another run.
+
+    Known limitation: only a dict journal is guarded. A non-dict one is
+    overwritten, and a non-list `entries` is dropped.
+    """
+    existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    if not isinstance(existing, dict):
+        return []
+    identity = (existing.get("schema"), existing.get("run_id"), existing.get("run_root"))
+    expected = (STAGE_TIMING_JOURNAL_SCHEMA, args.run_id, str(args.run_root))
+    if identity != expected:
+        raise ContractError(
+            f"the timing journal at {path} already belongs to {identity!r}, and this "
+            f"run is {expected!r}; it was left unchanged rather than merged"
+        )
+    if isinstance(existing.get("entries"), list):
+        return list(existing["entries"])
+    return []
+
+
 def _atomic_json(path: Path, record: dict) -> None:
     """Replace `path` with `record` or leave what was there, then sync the name.
 
-    The same shape `operations/pod/durable.py` uses, spelled here because this
-    module imports only `common/` (see the module docstring) and a half-written
-    journal on a volume is exactly the record a later session cannot use.
+    The shape of `operations/pod/durable.py`, repeated because this module
+    imports only `common/`.
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -580,12 +515,9 @@ def main() -> int:
     parser.add_argument("--triage-decision-manifest", default=None)
     parser.add_argument("--triage-clusters", default=None)
     parser.add_argument("--triage-producer-recipe", default=None)
-    # A relative default would bind beside the caller, not inside the repository.
-    # `resolve_caller_paths` fills the repository default only for real ingress.
+    # No default: a relative one would bind beside the caller (see resolve_caller_paths).
     parser.add_argument("--data-gate-policy", default=None)
-    # The fixture declares which scenarios exist; `scenario_for` refuses an
-    # undeclared name once the fixture is loaded, so there is no second list here
-    # to drift from the declaration.
+    # No choices: the fixture declares its scenarios and `scenario_for` refuses others.
     parser.add_argument("--scenario", default="happy")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-root", required=True)
@@ -628,12 +560,9 @@ def main() -> int:
         default=str(DEFAULT_DECODING_CONFIG_PATH),
         help="the sealed decoding posture for record readings and variance experiments",
     )
-    # The roster's other half. `--models-config` selects which chairs exist and
-    # this selects the vLLM profile each one is served under; both are sealed
-    # into `config_digest`, so a run that forwarded one and not the other would
-    # let the real roster resolve against the fixture-only catalogue -- the flag
-    # must live here, on the only program that invokes the stages, not on
-    # `stage_parser` alone.
+    # The roster's other half, forwarded with `--models-config`: without it the
+    # real roster would resolve against the fixture-only catalogue. Declared here
+    # because this is the only program that invokes the stages.
     parser.add_argument(
         "--serving-recipes-config",
         default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
@@ -784,60 +713,55 @@ def main() -> int:
 
     require_coherent_ingress_options(args)
     resolve_caller_paths(args)
-    # Both argv facts the journal rests on, proved here rather than lazily from
-    # `_record_stage_timing`: otherwise a manual or semi run that started past
-    # the Door, or any run with no journal configured, could carry a malformed
-    # revision through every stage it selected and record it nowhere.
-    # `repository_commit` refuses a short or decorated revision.
+    # Proved up front, not lazily from `_record_stage_timing`: a manual or semi
+    # run that starts past the Door, or one with no journal, would otherwise
+    # carry a malformed revision through every stage and record it nowhere.
     repository_commit(args)
-    # And the journal is outside the run tree, as its own help text says. A
-    # journal at `<run-root>/<run-id>/timings.json` would add mutable,
-    # untracked bytes to an immutable tree once per stage invocation and change
-    # its byte identity.
-    journal = getattr(args, "stage_timing_journal", None)
-    if journal is not None:
-        journal_path = Path(journal).resolve()
-        run_directory = (Path(args.run_root) / args.run_id).resolve()
-        if journal_path == run_directory or journal_path.is_relative_to(run_directory):
-            raise ContractError(
-                f"--stage-timing-journal {journal_path} is inside this run's own tree at "
-                f"{run_directory}; the journal is mutable and the tree is not, so it is "
-                "written outside the tree or not at all"
-            )
-
-    # Prove the algebra total before anything runs. A stage added later without a
-    # class or a terminal decision should fail at the first run, not at the first
-    # unusual page.
+    _require_journal_outside_run_tree(args)
+    # A stage added later without a class or a terminal decision should fail at
+    # the first run, not at the first unusual page.
     check_algebra_is_total()
-
     # Real run authority seals neither fixture identity nor fixture scenario.
     if args.submission_folder is None:
-        fixture = load_fixture(args.fixture_root)
-        if fixture["fixture_id"] != args.fixture:
-            raise ContractError(
-                f"asked for fixture {args.fixture!r} but {args.fixture_root} declares "
-                f"{fixture['fixture_id']!r}"
-            )
-        scenario_for(fixture, args.scenario)
-
+        _require_declared_fixture(args)
     names, mode = selected_sequence(args)
 
-    tree = RunTree(Path(args.run_root), args.run_id)
+    tree = _run_tree(args)
     # Every checkpoint shares this object so the cap cannot move mid-run. A
     # resume proves it before entry; a new run cannot prove it until Door creates
     # the run authority, so run_sequence proves that first boundary instead.
     hard_failure_policy = load_hard_failure_policy(args.hard_failure_config)
     if tree.resolve("run.json").exists():
-        require_sealed_config(
-            run_sealed_config_digests(tree.read_run()),
-            "hard-failure",
-            hard_failure_policy["config_sha256"],
-        )
+        _require_sealed_hard_failure_policy(tree.read_run(), hard_failure_policy)
         halted = checkpoint(args, "resume-preflight", hard_failure_policy)
         if halted is not None:
-            report_halt(args, halted)
-            return EXIT_RUN_HALTED
+            return _halt(args, halted)
     return run_sequence(args, names, mode, hard_failure_policy)
+
+
+def _require_journal_outside_run_tree(args: argparse.Namespace) -> None:
+    """The journal is mutable; inside the immutable run tree it would change the tree's bytes."""
+    journal = getattr(args, "stage_timing_journal", None)
+    if journal is None:
+        return
+    journal_path = Path(journal).resolve()
+    run_directory = (Path(args.run_root) / args.run_id).resolve()
+    if journal_path == run_directory or journal_path.is_relative_to(run_directory):
+        raise ContractError(
+            f"--stage-timing-journal {journal_path} is inside this run's own tree at "
+            f"{run_directory}; the journal is mutable and the tree is not, so it is "
+            "written outside the tree or not at all"
+        )
+
+
+def _require_declared_fixture(args: argparse.Namespace) -> None:
+    fixture = load_fixture(args.fixture_root)
+    if fixture["fixture_id"] != args.fixture:
+        raise ContractError(
+            f"asked for fixture {args.fixture!r} but {args.fixture_root} declares "
+            f"{fixture['fixture_id']!r}"
+        )
+    scenario_for(fixture, args.scenario)
 
 
 def selected_sequence(args: argparse.Namespace) -> tuple[tuple[str, ...], str]:
@@ -882,38 +806,27 @@ def run_sequence(
         if name == "recovery":
             # Recovery has no program whose open_context can verify Recensor;
             # Archetypus's predecessor mapping names that required boundary.
-            recovery_tree = RunTree(Path(args.run_root), args.run_id)
-            # Isolated sequencing tests mock every stage and intentionally have
-            # no run tree; real recovery invocations always have run.json.
+            # Isolated sequencing tests mock every stage and have no run tree.
+            recovery_tree = _run_tree(args)
             if recovery_tree.resolve("run.json").exists():
                 verify_predecessor_seal(recovery_tree, "archetypus")
-            halted = drive_recovery(args, hard_failure_policy)
+            halted = drive_recovery(args, hard_failure_policy) or checkpoint(
+                args, name, hard_failure_policy
+            )
             if halted is not None:
-                report_halt(args, halted)
-                return EXIT_RUN_HALTED
-            halted = checkpoint(args, name, hard_failure_policy)
-            if halted is not None:
-                report_halt(args, halted)
-                return EXIT_RUN_HALTED
+                return _halt(args, halted)
             continue
 
         result = invoke(STAGE_PROGRAMS[name], args)
         if result == EXIT_RUN_HALTED:
-            halted = _entry_halt(args, name, hard_failure_policy)
-            report_halt(args, halted)
-            return EXIT_RUN_HALTED
+            return _halt(args, _entry_halt(args, name, hard_failure_policy))
         if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):
-            require_sealed_config(
-                run_sealed_config_digests(RunTree(Path(args.run_root), args.run_id).read_run()),
-                "hard-failure",
-                hard_failure_policy["config_sha256"],
-            )
+            _require_sealed_hard_failure_policy(_run_tree(args).read_run(), hard_failure_policy)
         # The cap and its exact-threshold warning take precedence over every
         # held exit, including an Attestatores hold whose outcome is not counted.
         halted = checkpoint(args, name, hard_failure_policy)
         if halted is not None:
-            report_halt(args, halted)
-            return EXIT_RUN_HALTED
+            return _halt(args, halted)
         # An Attestatores hold means its attempt tally is unestablished, so no
         # later member may advance even when the stage already sealed evidence.
         if name == ATTESTATORES and result == EXIT_HELD:
@@ -924,20 +837,12 @@ def run_sequence(
             print(f"run {args.run_id}: {mode} mode stopped at held {name}")
             return EXIT_HELD
 
-    # A staged selection that stops before the Armarium has produced no export to
-    # report on; every halt in the loop above has already reported itself and
-    # returned EXIT_RUN_HALTED, so reaching here means the selection ran out.
     if names[-1] != "armarium":
         return EXIT_COMPLETE
-    tree = RunTree(Path(args.run_root), args.run_id)
-    # Armarium has no stage successor, so the orchestrator consumes and proves its
-    # final boundary before it reads the export inside that boundary. The
-    # consumer-keyed predecessor helper would re-read Archetypus rather than
-    # Armarium's own seal, and `verify_final_seal` additionally returns the exact
-    # export bytes represented by the one manifest snapshot it checked -- reopening
-    # by path after verification would leave a check/use window at the last
-    # reporting boundary in the run.
-    export = verify_final_seal(tree)
+    # Armarium has no successor, so its own seal is proved here. The export comes
+    # from the one manifest snapshot `verify_final_seal` checked: reopening it by
+    # path afterwards would leave a check/use window at the last boundary.
+    export = verify_final_seal(_run_tree(args))
     status, lines = terminal_report(export)
     print(f"run {args.run_id}: {status}")
     for line in lines:
@@ -948,16 +853,10 @@ def run_sequence(
 def terminal_report(export: dict) -> tuple[str, list[str]]:
     """The run's verdict, taken from the Armarium's own terminal outcome.
 
-    Deriving it again from `payload["aggregate"]` was a second, weaker derivation of
-    a question the last stage had already answered: the Armarium reports its terminal
-    ledger's status, which subsumes the aggregate's and is partial in one case the
-    aggregate is not (7_armarium/CONTRACT.md). A run whose bundle said `partial` on its
-    own face would have printed `complete` and exited 0 here.
-
-    The reasons stay the aggregate's, because they are the ones an operator acts on
-    and every reachable run's two statuses agree. When they do not, the ledger's own
-    unresolved units are on the bundle's face and this says where to read them rather
-    than reporting a partial run with nothing named.
+    The terminal ledger's status subsumes the aggregate's and is partial in one
+    case the aggregate is not (7_armarium/CONTRACT.md). The reasons stay the
+    aggregate's, which are what an operator acts on; when it has none, this
+    says where the ledger names its unresolved units.
     """
     payload = export.get("payload")
     aggregate = payload.get("aggregate") if isinstance(payload, dict) else None
@@ -999,7 +898,7 @@ def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | 
     is the project lead's named "early warning" and stops nothing; more than two halts the
     run at this exact boundary.
     """
-    tree = RunTree(Path(args.run_root), args.run_id)
+    tree = _run_tree(args)
     tally = tally_hard_failures(tree, hard_failure_policy)
     if tally["instrument_count"]:
         print(
@@ -1043,22 +942,7 @@ def undispatchable_recovery_reason(
             f"for; only {FALLBACK_RECROP!r} (a Designator recrop) is implemented today, and "
             "the page-level reread belongs to the Perlector, which has not built it"
         )
-    if real_route and not (
-        isinstance(request_payload, dict)
-        and request_payload.get("origin") == "coverage-observation"
-        and isinstance(request_payload.get("recovery_bounds"), dict)
-        and set(request_payload["recovery_bounds"]) == {"x", "y", "w", "h"}
-        and all(
-            isinstance(request_payload["recovery_bounds"][name], int)
-            and not isinstance(request_payload["recovery_bounds"][name], bool)
-            and request_payload["recovery_bounds"][name] >= 0
-            for name in ("x", "y", "w", "h")
-        )
-        and request_payload["recovery_bounds"]["w"] > 0
-        and request_payload["recovery_bounds"]["h"] > 0
-        and isinstance(request_payload.get("coverage_observation"), dict)
-        and isinstance(request_payload.get("ink_map_ref"), dict)
-    ):
+    if real_route and not _is_measured_recrop_request(request_payload):
         return (
             "is a legacy fixture-only fallback recrop on a real submission: it lacks the "
             "measured recovery bounds, coverage observation, or Ink Map reference required "
@@ -1067,25 +951,34 @@ def undispatchable_recovery_reason(
     return None
 
 
+def _is_measured_recrop_request(payload: dict | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    bounds = payload.get("recovery_bounds")
+    return (
+        payload.get("origin") == "coverage-observation"
+        and isinstance(bounds, dict)
+        and set(bounds) == {"x", "y", "w", "h"}
+        and all(
+            isinstance(bounds[name], int)
+            and not isinstance(bounds[name], bool)
+            and bounds[name] >= 0
+            for name in ("x", "y", "w", "h")
+        )
+        and bounds["w"] > 0
+        and bounds["h"] > 0
+        and isinstance(payload.get("coverage_observation"), dict)
+        and isinstance(payload.get("ink_map_ref"), dict)
+    )
+
+
 def report_undispatchable_recoveries(args, refused: list[tuple[str, str, str, str]]) -> None:
-    """Say every refused dispatch out loud, by act, before the run stops.
+    """Say every refused dispatch out loud, by act, before the run stops (principle 2).
 
-    Principle 2, and the one place this refusal is recorded. The orchestrator
-    keeps no file of its own (the module docstring says why: resume is a property
-    of the artifacts, never of a checkpoint that could disagree with them), so its
-    record of a dispatch it would not make is the run's own output — and it names
-    every affected act, not only the one the raised exception happens to carry.
-    The durable evidence stays where it was published: each request artifact and
-    its `recovery-requested` Recensor review are immutable in the run tree, and
-    nothing here writes to or changes them.
-
-    Written to stderr, which is the half of this program's output the operator
-    surface keeps: it records a failed run's detail as
-    `completed.stderr or completed.stdout` (`operations/operator/surface.py`),
-    and the `ContractError` raised immediately after this is printed to stderr
-    by the entry point below — so stderr is never empty on this path and a
-    per-act listing on stdout would be dropped from the receipt and never seen.
-    A record the one consumer discards is principle 2 claimed, not met.
+    The only record of this refusal, since the orchestrator keeps no file. On
+    stderr because the operator surface keeps `completed.stderr or
+    completed.stdout` (`operations/operator/surface.py`), and the ContractError
+    that follows makes stderr non-empty: a listing on stdout would be dropped.
     """
     print(
         f"run {args.run_id}: recovery cannot be dispatched for {len(refused)} outstanding "
@@ -1102,48 +995,23 @@ def report_undispatchable_recoveries(args, refused: list[tuple[str, str, str, st
 def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     """Dispatch every outstanding recovery request, then re-read and re-review.
 
-    The Recensor decides an act needs a wider crop; the Designator is the only
-    stage that cuts one. Keeping that ownership is why recovery lives here and not
-    inside the Recensor, where it would be one short step from a stage recropping
-    its own evidence until it liked it.
+    Recovery lives here, not in the Recensor, so no stage recrops its own
+    evidence: only the Designator cuts. Each round screens the whole batch
+    before dispatching any of it, so no half-finished round is left behind.
 
-    Every round screens the whole outstanding batch before dispatching any of
-    it (`undispatchable_recovery_reason`), so a request nothing here can answer
-    refuses by its own cause and leaves no half-finished round behind it, and
-    every refused act is recorded before the refusal is raised.
-
-    Returns the hard-failure tally if the run-level cap trips partway through.
-    A recovery round is one completed Designator section followed by one
-    completed Perlector section followed by one Recensor pass, and the cap is
-    checked at each of those three boundaries — never between two acts of the
-    same batch. That is the project lead's own shape for the cap ("if errors happened in
-    chandra stage it finishes that section but pauses"): a section already in
-    flight finishes, and a second act whose recrop was already approved is not
-    left without its owning stage's answer.
+    Returns the hard-failure tally if the cap trips. A round is a Designator
+    section, a Perlector section and a Recensor pass, and the cap is read only
+    between sections, never between two acts: the project lead's shape for it.
     """
-    tree = RunTree(Path(args.run_root), args.run_id)
+    tree = _run_tree(args)
     recovery_policy = load_recovery_policy(args.recovery_config)
-    # One read of the run authority, used for both the sealed-policy proof below
-    # and the ingress route the dispatch screen consults. Read here rather than
-    # before the policy load, so the order in which those two can refuse is the
-    # order it always was.
     run = tree.read_run()
-    # The orchestrator is not a stage and holds no `StageContext`, so it proves the
-    # policy it dispatches under against the digests the run authority recorded for
-    # itself. Without this, the dispatcher bounded the whole recovery loop — the
-    # round ceiling and every request it checked — on whatever `config/recovery.toml`
-    # said at this moment, which need not be what the run sealed. Checked before
-    # the first round, so a swapped policy stops the loop rather than being
-    # discovered by the stage it dispatched.
+    # The orchestrator holds no `StageContext`, so it proves the policy bounding
+    # this loop against the run's sealed digests itself, before the first round
+    # and before `is_real_ingress` (which can refuse too) gets to speak first.
     require_sealed_config(
         run_sealed_config_digests(run), "recovery", recovery_policy["config_sha256"]
     )
-    # Read after the sealed-policy proof, not before it. `is_real_ingress` parses
-    # the run's ingress record and can refuse on a malformed one, so reading it
-    # first would let a run carrying both a bad ingress record and a swapped
-    # recovery policy report the former while the policy this loop is bounded by
-    # is still unproven. The proof that bounds the dispatch comes first; the
-    # route the dispatch screen consults comes after it.
     real_route = is_real_ingress(run)
     maximum_rounds = recovery_policy["absolute_cap"]
 
@@ -1156,64 +1024,74 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
                 f"recovery is still outstanding for {outstanding} after "
                 f"{maximum_rounds} rounds. The run-bound policy stops the loop"
             )
-        # Checked for the whole batch before any of it is dispatched, so an
-        # unanswerable request does not leave half a round behind it, and
-        # recorded act by act before the refusal is raised so the run says which
-        # requests it could not answer rather than only that one existed.
-        refused = []
-        for act_id, request_id, recovery_kind in outstanding:
-            payload = None
-            if real_route:
-                request = tree.read_artifact(RECENSOR, "recovery-request", request_id)
-                payload = request.get("payload")
-            reason = undispatchable_recovery_reason(
-                recovery_kind, real_route=real_route, request_payload=payload
-            )
-            if reason is not None:
-                refused.append((act_id, request_id, recovery_kind, reason))
+        refused = _refused_recoveries(tree, outstanding, real_route)
         if refused:
-            # A refusal, not a per-act hold, and that is a decision rather than
-            # an omission. Holding the refused acts and dispatching the rest
-            # would not give this run an export: `recovery-requested` maps to no
-            # terminal Armarium category (`common/contracts/outcomes.py`), so the
-            # Armarium refuses the act fatally whatever this function does, and
-            # skipping here would only move the same dead end a stage later while
-            # losing the named cause at the boundary that knows it. Turning it
-            # into an export instead would mean making `recovery-requested`
-            # terminal, which would also let a fixture run whose recovery was
-            # simply never driven deliver as a partial — a genuinely half-driven
-            # run reported as a finished one. So this run stops here and says so;
-            # what the tree keeps is the immutable request and its review.
+            # A refusal, not a per-act hold: `recovery-requested` maps to no
+            # terminal Armarium category (`common/contracts/outcomes.py`), so
+            # skipping would only move the same dead end a stage later and lose
+            # its named cause. Making it terminal instead would let a run whose
+            # recovery never ran report itself partial.
             report_undispatchable_recoveries(args, refused)
             first_act, _first_request, _first_kind, first_reason = refused[0]
             raise ContractError(f"act {first_act}'s outstanding recovery request {first_reason}")
-        for act_id, request_id, _recovery_kind in outstanding:
-            result = invoke(
-                STAGE_PROGRAMS[DESIGNATOR],
-                args,
-                operation="recover",
-                act=act_id,
-                recovery_request=request_id,
-            )
-            if result == EXIT_RUN_HALTED:
-                return _entry_halt(args, DESIGNATOR, hard_failure_policy)
-        tally = checkpoint(args, DESIGNATOR, hard_failure_policy)
-        if tally is not None:
-            return tally
-        for act_id, _request_id, _recovery_kind in outstanding:
-            result = invoke(STAGE_PROGRAMS["perlector"], args, act=act_id)
-            if result == EXIT_RUN_HALTED:
-                return _entry_halt(args, "perlector", hard_failure_policy)
-        tally = checkpoint(args, "perlector", hard_failure_policy)
-        if tally is not None:
-            return tally
-        result = invoke(STAGE_PROGRAMS[RECENSOR], args)
-        if result == EXIT_RUN_HALTED:
-            return _entry_halt(args, RECENSOR, hard_failure_policy)
-        tally = checkpoint(args, RECENSOR, hard_failure_policy)
-        if tally is not None:
-            return tally
+        sections = (
+            (
+                DESIGNATOR,
+                [
+                    {"operation": "recover", "act": act_id, "recovery_request": request_id}
+                    for act_id, request_id, _kind in outstanding
+                ],
+            ),
+            ("perlector", [{"act": act_id} for act_id, _request_id, _kind in outstanding]),
+            (RECENSOR, [{}]),
+        )
+        for stage, invocations in sections:
+            tally = _run_recovery_section(args, stage, invocations, hard_failure_policy)
+            if tally is not None:
+                return tally
     return None
+
+
+def _run_recovery_section(
+    args, stage: str, invocations: list[dict], hard_failure_policy: dict
+) -> dict | None:
+    """Invoke `stage` once per entry, then checkpoint: a section finishes before the cap is read."""
+    for extra in invocations:
+        if invoke(STAGE_PROGRAMS[stage], args, **extra) == EXIT_RUN_HALTED:
+            return _entry_halt(args, stage, hard_failure_policy)
+    return checkpoint(args, stage, hard_failure_policy)
+
+
+def _refused_recoveries(
+    tree: RunTree, outstanding: list[tuple[str, str, str]], real_route: bool
+) -> list[tuple[str, str, str, str]]:
+    refused = []
+    for act_id, request_id, recovery_kind in outstanding:
+        payload = None
+        if real_route:
+            request = tree.read_artifact(RECENSOR, "recovery-request", request_id)
+            payload = request.get("payload")
+        reason = undispatchable_recovery_reason(
+            recovery_kind, real_route=real_route, request_payload=payload
+        )
+        if reason is not None:
+            refused.append((act_id, request_id, recovery_kind, reason))
+    return refused
+
+
+def _run_tree(args) -> RunTree:
+    return RunTree(Path(args.run_root), args.run_id)
+
+
+def _halt(args, tally: dict) -> int:
+    report_halt(args, tally)
+    return EXIT_RUN_HALTED
+
+
+def _require_sealed_hard_failure_policy(run: dict, hard_failure_policy: dict) -> None:
+    require_sealed_config(
+        run_sealed_config_digests(run), "hard-failure", hard_failure_policy["config_sha256"]
+    )
 
 
 def _entry_halt(args, stage: str, hard_failure_policy: dict) -> dict:

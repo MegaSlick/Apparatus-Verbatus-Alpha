@@ -128,27 +128,16 @@ def _spend_refusal_state(assessment: SpendAssessment) -> LaunchState:
 def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> tuple[str, ...]:
     """Fold the launch token into every report path the launch seals.
 
-    A volume outlives any one pod, so an unbound report path lets a second
-    launch's durable evidence overwrite the first's (principle 4).  Binding
-    happens once, here, at sealing time -- the request's own validation then
-    refuses a report path that does not carry the sealed token.
+    A volume outlives any one pod, so an unbound path lets a second launch's
+    evidence overwrite the first's (principle 4). This binds the outer
+    ``--report-path`` and, inside ``--bootstrap-command-json``, every flag
+    ``models.NESTED_LAUNCH_BOUND_FLAGS`` names; ``bootstrap_main`` refuses an
+    unbound one only pod-side, after billing has begun. The ``--journal`` half
+    matters because every non-``--hold-only`` plan requires a journal.
 
-    This binds the outer timer's own ``--report-path`` and, inside the nested
-    bootstrap argv sealed in ``--bootstrap-command-json``, every flag
-    ``models.NESTED_LAUNCH_BOUND_FLAGS`` names -- its ``--report-path`` and its
-    ``--journal``. ``bootstrap_main.resolve_plan`` requires the same sealed
-    ``VERBATUS_LAUNCH_TOKEN`` in the name of both
-    (``_require_launch_token_named``), so an unbound one refuses at pod-side
-    plan time -- after the pod had already started billing. The journal half
-    matters because ``--journal`` is required for every non-``--hold-only``
-    plan.
-
-    ``PodCreateRequest.__post_init__`` already refuses a command that does not
-    carry exactly one ``--report-path`` with a value, so neither refusal below
-    is reachable through ``create``.  They are stated anyway because this
-    helper's contract would otherwise be enforced only at a distance, and
-    because ``tuple.index`` fails on a money path with a message that names
-    nothing.  ``create`` reports either as a request refusal, not a lease one.
+    ``PodCreateRequest`` already refuses a command without exactly one valued
+    ``--report-path``; the refusals below keep this helper's contract local and
+    name the flag rather than failing in ``tuple.index``.
     """
 
     if "--report-path" not in command:
@@ -194,12 +183,8 @@ _POD_RUN_MODULE: Final = "operations.pod.pod_run"
 def _runs_the_orchestrator(nested: list[str]) -> bool:
     """Whether this bootstrap child is ``pod_run`` rather than a hold-only boot.
 
-    Both spellings, because a request is a plain argv and nothing forces one:
-    ``-m operations.pod.pod_run`` is what the boot templates render, and a
-    path-spelled ``.../pod_run.py`` is the same program by another name. Getting
-    this wrong costs only accuracy in the derived key list -- a hold-only launch
-    would be asked for records it never wrote -- so it errs toward recognising
-    the program rather than toward a tidy single spelling.
+    Both the ``-m`` and the path spelling count: a wrong answer costs only
+    accuracy in the derived key list, so it errs toward recognising the program.
     """
 
     return any(part == _POD_RUN_MODULE or part.endswith("pod_run.py") for part in nested)
@@ -208,14 +193,7 @@ def _runs_the_orchestrator(nested: list[str]) -> bool:
 def _nested_bootstrap_argv(command: list[str]) -> list[str] | None:
     """The decoded ``--bootstrap-command-json`` argv, or ``None`` when there is none."""
 
-    for index, item in enumerate(command):
-        raw = None
-        if item == "--bootstrap-command-json" and index + 1 < len(command):
-            raw = command[index + 1]
-        elif item.startswith("--bootstrap-command-json="):
-            raw = item.split("=", 1)[1]
-        if raw is None:
-            continue
+    for raw in _outer_flag_values(command, "--bootstrap-command-json"):
         try:
             nested = json.loads(raw)
         except json.JSONDecodeError:
@@ -240,19 +218,10 @@ def bound_report_paths(
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Each launch-bound report path a sealed ``docker_start_cmd`` names, with its siblings.
 
-    The outer ``--report-path`` is the pod timer's; the nested one inside
-    ``--bootstrap-command-json`` is the bootstrap child's -- ``pod_run``'s for a
-    run launch, ``bootstrap_main --hold-only``'s for Boot A.  Both were bound to
-    this launch's token by ``_bind_report_path_to_launch`` at sealing time, and
-    ``models._required_timer_arguments`` has already refused a request carrying
-    anything but exactly one outer path and at most one nested one, so this
-    reads a shape that is already proven rather than re-validating it.
-
-    Which siblings go with which path is decided by *which program writes it*,
-    not by listing every sibling any program could write: a key that cannot
-    exist would come back as a per-object refusal in the fetch-run receipt, and
-    a receipt full of refusals for records nothing ever wrote is a worse record
-    than none.
+    The outer ``--report-path`` is the pod timer's; the nested one is the
+    bootstrap child's. Siblings follow the program that writes the path, not
+    every sibling any program could write: a key that cannot exist would come
+    back as a refusal in the fetch-run receipt.
     """
 
     command = list(docker_start_cmd)
@@ -273,37 +242,17 @@ def launch_evidence_keys(
 ) -> tuple[str, ...]:
     """Volume-relative object keys of every launch-scoped record, derived not guessed.
 
-    ``fetch-run`` brings ``runs/<id>/`` and ``preflight/`` home on its own and
-    refuses to *guess* at the launch-token-named reports, because guessing
-    would mean listing a whole volume that also holds the submission's page
-    images.  It does not have to guess: the launch receipt this operator's own
-    machine wrote already carries the sealed ``docker_start_cmd``, and the
-    bound paths are in it.  This is that derivation, in one place, so nobody is
-    asked to retype a 32-hex token out of a JSON receipt -- the step that gets
-    skipped on a phone.
-
-    A path outside the volume mount is dropped rather than returned: ``fetch-run``
-    could not fetch it anyway, and returning it would put a misleading name in
-    the receipt.
+    ``fetch-run`` will not list a whole volume to find launch-token-named
+    reports; the operator's own launch receipt already carries the sealed
+    command, so the keys come from it and nobody retypes a token on a phone.
+    Paths outside the mount are dropped: ``fetch-run`` could not fetch them.
     """
 
     mount = PurePosixPath(volume_mount_path)
     keys: list[str] = []
     for raw, siblings in bound_report_paths(docker_start_cmd):
-        path = PurePosixPath(raw)
-        # The mount itself is dropped with the rest: `relative_to` answers `.`
-        # for it, which has no name, and `with_name` on that raises
-        # `ValueError` -- so a receipt carrying a report path equal to the
-        # mount ended `fetch-run` in a traceback rather than in a key list.
-        # It is the same condition
-        # `models._required_timer_arguments` already refuses on the create
-        # path, applied here to a record this verb only reads.
-        if (
-            ".." in raw.split("/")
-            or not path.is_absolute()
-            or path == mount
-            or not path.is_relative_to(mount)
-        ):
+        path = _inside_mount(raw, mount)
+        if path is None:
             continue
         relative = path.relative_to(mount)
         keys.append(relative.as_posix())
@@ -316,31 +265,13 @@ def launch_evidence_keys(
 def launch_evidence_prefixes(
     docker_start_cmd: tuple[str, ...] | list[str], *, volume_mount_path: str
 ) -> tuple[str, ...]:
-    """The one volume-relative evidence prefix that scopes a fetch to this
-    launch's preflight directory.
+    """The volume-relative evidence prefix that scopes a fetch to this launch's
+    preflight directory, rather than the whole ``preflight/`` tree.
 
-    ``--evidence-key`` (`launch_evidence_keys`, above) names individual
-    objects, derived from every bound report path; ``--evidence-prefix``
-    names a whole directory to bring home under ``<into>/evidence/`` in bulk,
-    and its own default is the *entire* ``preflight/`` tree -- correct across
-    every launch a volume has ever seen, wrong for attributing one of them.
-
-    This is deliberately **not** built from `bound_report_paths`: every real
-    request (`boot_a_request.py`, `boot_b_request.py`) writes its report
-    paths at the *volume root*, not under ``preflight/`` -- only
-    ``bootstrap_main.PreflightRequest.preflight_root`` does, and it names
-    ``<mount>/preflight/<bootstrap_main's own --report-path stem>``, not the
-    pod timer's outer report and not (for a full run launch) ``pod_run``'s
-    own nested report. `bound_report_paths` deliberately does not
-    distinguish those two nested reports (both get the same run-report
-    siblings, by design, for `launch_evidence_keys`'s purpose), so reusing it
-    here would derive a prefix matching nothing on the volume.
-
-    A full run launch's nested ``--bootstrap-command-json`` argv is
-    ``pod_run``'s own argv with ``bootstrap_main``'s appended after the
-    first literal ``--`` (``pod_run.split_argv``); a hold-only launch has no
-    ``--`` and the nested argv *is* ``bootstrap_main``'s own. Either way,
-    `_nested_argv_halves` returns bootstrap_main's own half last.
+    Not built from `bound_report_paths`: only ``bootstrap_main``'s own
+    ``--report-path`` names a directory under ``preflight/``
+    (``PreflightRequest.preflight_root``), and `_nested_argv_halves` returns
+    bootstrap_main's half last whether or not ``pod_run`` precedes it.
     """
 
     nested = _nested_bootstrap_argv(docker_start_cmd)
@@ -352,33 +283,37 @@ def launch_evidence_prefixes(
     for raw in _nested_flag_values(bootstrap_half, "--report-path"):
         if raw is None:
             continue
-        path = PurePosixPath(raw)
-        if (
-            ".." in raw.split("/")
-            or not path.is_absolute()
-            or path == mount
-            or not path.is_relative_to(mount)
-        ):
+        path = _inside_mount(raw, mount)
+        if path is None:
             continue
         prefixes.append((PurePosixPath(PREFLIGHT_DIRECTORY) / path.stem).as_posix())
     return tuple(dict.fromkeys(prefixes))
+
+
+def _inside_mount(raw: str, mount: PurePosixPath) -> PurePosixPath | None:
+    """``raw`` as a path strictly below the volume mount, or ``None``.
+
+    The mount itself is excluded too: it has no name to derive a key from, the
+    same condition `models._required_timer_arguments` refuses on create.
+    """
+
+    path = PurePosixPath(raw)
+    if (
+        ".." in raw.split("/")
+        or not path.is_absolute()
+        or path == mount
+        or not path.is_relative_to(mount)
+    ):
+        return None
+    return path
 
 
 def launch_run_id(docker_start_cmd: tuple[str, ...] | list[str]) -> str | None:
     """The run id a full run launch's sealed ``docker_start_cmd`` actually
     started, or ``None`` for a hold-only launch, which starts no run.
 
-    ``--run-id`` is ``pod_run``'s own required flag (``pod_run.py``'s
-    parser), sealed inside the nested ``--bootstrap-command-json`` argv, not
-    a top-level field of the request the way ``volume_id`` is -- so, like
-    the derivations above, it can only be read out of the sealed command,
-    not carried separately where it could silently disagree with it. Read
-    from the argv's pod_run half specifically (`_nested_argv_halves`'s
-    first), not the whole nested list, the same way `launch_evidence_prefixes`
-    reads `--report-path` from the bootstrap half only: a hold-only launch's
-    appended ``bootstrap_main`` half has no ``--run-id`` flag of its own to
-    collide with, but reading the split half rather than the flat list is
-    what keeps that true rather than assumed.
+    Read from the sealed command, never carried beside it where it could
+    disagree, and from the ``pod_run`` half only (`_nested_argv_halves`).
     """
 
     nested = _nested_bootstrap_argv(docker_start_cmd)
@@ -398,35 +333,14 @@ def _bound_report_path(raw_path: str, launch_token: str) -> str:
 def _bind_nested_report_path(bootstrap_command_json: str, launch_token: str) -> str:
     """Bind the launch token into a nested bootstrap argv's own ``--report-path``.
 
-    ``--bootstrap-command-json`` carries a second, JSON-encoded argv that
-    ``pod_timer`` runs as the pod's mandatory bootstrap step
-    (``operations/pod/boot_a_request.py`` renders ``bootstrap_main --hold-only``
-    this way for Boot A). ``models._required_timer_arguments`` has already
-    proven this decodes to a non-empty JSON array of non-empty strings before
-    a request reaches this helper, so no further shape-checking is needed
-    here. A nested argv carrying no ``--report-path`` of its own -- the
-    library-module placeholder the tests use, which exits before ever
-    reading one -- is returned unchanged rather than treated as a refusal:
-    binding a path that was never asked for would be inventing one.
-
-    Binding is done through :func:`operations.pod.models.rebind_nested_flag`,
-    which reads the argv the same way
-    :func:`operations.pod.models._nested_flag_values` does -- both spellings
-    ``--report-path value`` and ``--report-path=value`` -- so the binder and
-    the money-path validator that re-checks its output cannot drift apart. An
-    equals-form path the binder failed to recognise would be left unbound and
-    then permanently refused downstream, since no launch token can be
-    pre-written by an operator: it is minted inside ``create``.
-
-    ``models._required_timer_arguments`` refuses a nested ``--report-path``
-    that carries more than one occurrence, or one that carries no value,
-    before this helper ever runs -- so a truncated or duplicated nested flag
-    is not reachable through ``create``. Those shapes are still passed
-    through unrebound here rather than made to raise, the same way
-    ``_bind_report_path_to_launch``'s own unreachable-through-``create``
-    refusals above are kept as a named contract rather than assumed: a
-    caller other than ``create`` should not have to trust that argv shape
-    by accident.
+    ``models._required_timer_arguments`` has already proven the JSON shape. A
+    nested argv with no such flag is returned unchanged: binding a path never
+    asked for would invent one. `models.rebind_nested_flag` reads both
+    spellings exactly as the money-path validator does, so an equals-form path
+    cannot slip through unbound and then be refused forever downstream. A
+    truncated or duplicated nested flag passes through unbound rather than
+    raising: `models._required_timer_arguments` already refuses both before
+    ``create`` gets here, and another caller should not rely on that by accident.
     """
 
     bound = json.loads(bootstrap_command_json)
@@ -457,35 +371,21 @@ without waiting out the delivery debounce, so a genuinely new drop is not lost.
 MAX_SPEND_ALERT_STATE_BYTES: Final = 4096
 """How much of a debounce stamp is read before it is called corrupt.
 
-The stamp this package writes is about sixty bytes.  It is read back from a
-directory a paid run writes to, so its size is untrusted input like its content:
-without a bound, one oversized file is read into memory at every spend gate, and
-one *long* file defeats the corrupt-reverts-to-sending rule outright, because
-``int`` refuses a decimal string past ``sys.int_max_str_digits`` with a
-``ValueError`` rather than a value.  A stamp that cannot be believed must send.
+The stamp (about sixty bytes) lives where a paid run writes, so its size is
+untrusted too; an overlong digit string would make ``int`` raise rather than
+revert to sending. A stamp that cannot be believed must send.
 """
 
 
 SPEND_LOCK_WAIT_SECONDS: Final = 30.0
 """How long either cross-process lock may be waited for before it is a failure.
 
-``operations/pod/`` forbids unbounded waits on the money path, and a blocking
-``flock`` is exactly that: one holder that never finishes -- a provider call
-hung inside the spend gate, or a crashed process on a filesystem that keeps the
-lock -- would leave the next operator with no output at all rather than a named
-refusal.
-
-What this bound is *not*: a duration chosen to let every ordinary overlap wait
-and win. ``create`` and ``adopt`` hold this lock around the whole of
-``_create_locked``/``_adopt_locked``, which includes the provider call,
-controller arming, and any ``_close_and_record`` -- and a close polls to
-``shutdown_deadline_seconds`` and then retries billing reconciliation, so a
-holder can legitimately keep it for well over thirty seconds during an entirely
-ordinary failed launch. A second caller that waits this long is refused by name
-*while an earlier launch is still unresolved*, and that is the intended outcome
-rather than an accident of the number: two paid actions overlapping on one
-account balance is the state this lock exists to prevent. Nothing is spent, and
-the refusal names the lock.
+A blocking ``flock`` is an unbounded wait on the money path: a hung holder
+would leave the next operator with no output at all. A holder can
+legitimately keep the lock longer than this during an ordinary failed launch
+(a close polls to its deadline, then reconciles billing); a second caller is
+then refused by name, which is intended: two paid actions overlapping on one
+balance is what this lock prevents.
 """
 
 SPEND_LOCK_POLL_SECONDS: Final = 0.05
@@ -635,10 +535,7 @@ class PodRuntime:
         self.provider_name = provider_name
         self.spend_policy = spend_policy
         self.lease_root = Path(lease_root)
-        # The reviewed card table this runtime holds a create to, or `None` for
-        # a caller that supplies none -- an offline drill, a test. `cli.py`
-        # passes `config/pod_placement.toml` by default, so the enforced path is
-        # the one an operator actually runs.
+        # `None` (an offline drill or a test) enforces no card table.
         self.placement_table = placement_table
         if shutdown is None:
             if spend_policy.configured:
@@ -666,10 +563,8 @@ class PodRuntime:
         self.notifier = notifier
         self.lock_sleeper = lock_sleeper
         self.lock_wait_seconds = lock_wait_seconds
-        # Outstanding preview challenges, keyed by (action, subject). In-memory
-        # and per-process on purpose: a challenge that outlived the run would be
-        # exactly the replayable credential this gate exists to refuse. The lock
-        # makes validation and consumption one operation for overlapping callers.
+        # In-memory and per-process on purpose: a challenge that outlived the run
+        # would be the replayable credential this gate exists to refuse.
         self._outstanding: dict[tuple[str, str], _OutstandingChallenge] = {}
         self._challenge_lock = threading.Lock()
 
@@ -689,32 +584,19 @@ class PodRuntime:
             # First, before anything else this method does: an unreviewed card
             # is refused with no provider call at all, not even an estimate.
             return LaunchResult(LaunchState.REFUSED_CARD, detail=card)
-        readiness = self.shutdown.prove_ready()
-        if not readiness.ready:
-            return LaunchResult(
-                LaunchState.REFUSED_SHUTDOWN_NOT_READY,
-                detail=f"shutdown path is not ready: {', '.join(readiness.missing_verbs)}",
-            )
-        controller_readiness = self._arming_preflight("create", request)
-        if not controller_readiness.ready:
-            return LaunchResult(
-                LaunchState.REFUSED_CONTROLLER_NOT_READY,
-                detail=f"controllers are not ready: {controller_readiness.detail}",
-                controller_readiness=controller_readiness,
-            )
+        not_ready = self._readiness_refusal("create", request)
+        if not_ready is not None:
+            return not_ready
         try:
             estimate = self.provider.estimate(request)
         except Exception as error:
             return LaunchResult(LaunchState.PROVIDER_FAILURE, detail=f"estimate failed: {error}")
         card = self._card_refusal(request, volume_hourly_usd=estimate.volume_hourly_usd)
         if card is not None:
-            # The same check again, now that the volume's own rate is known and
-            # the ceiling can be net of it. Still before `create`: `estimate` is
-            # a price read, and nothing is billing yet.
+            # Again, net of the volume's now-known rate; still nothing is billing.
             return LaunchResult(LaunchState.REFUSED_CARD, detail=card)
         try:
-            # A field with no reviewed digest form must refuse through the gate
-            # as a named result, never escape the paid path as a traceback.
+            # An unreviewable field refuses as a named result, never a traceback.
             reviewed = request.reviewed_digest()
         except ValueError as error:
             return LaunchResult(
@@ -733,17 +615,9 @@ class PodRuntime:
     def create(self, request: PodCreateRequest, *, confirmation: str | None) -> LaunchResult:
         """Serialize the shared lease-root assessment through durable reservation."""
 
-        try:
-            with self._spend_gate_lock():
-                return self._create_locked(request, confirmation=confirmation)
-        except _SpendGateLockFailure as error:
-            return LaunchResult(
-                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
-                detail=(
-                    "balance safety could not be established because the spend-reservation "
-                    f"lock failed: {error}; no paid action occurred"
-                ),
-            )
+        return self._under_spend_gate(
+            lambda: self._create_locked(request, confirmation=confirmation)
+        )
 
     def _create_locked(
         self, request: PodCreateRequest, *, confirmation: str | None
@@ -756,54 +630,11 @@ class PodRuntime:
         # Narrowing, not a check: `_preview` is the only producer of `PREVIEW` and it
         # always carries a `PaidActionPreview`, under `-O` as much as without it.
         assert preview_result.preview is not None
-        if not preview_result.preview.assessment.allowed:
-            # Same policy as the confirmation refusals: a refusal report never
-            # carries a phrase whose challenge is still spendable.
-            return LaunchResult(
-                _spend_refusal_state(preview_result.preview.assessment),
-                phraseless(preview_result.preview),
-                detail="; ".join(preview_result.preview.assessment.reasons),
-            )
-        # Check leases before consuming the challenge so closing the open pod leaves
-        # this preview available, while ceiling refusals retain precedence.
-        open_lease = self._open_lease_refusal()
-        if open_lease is not None:
-            return LaunchResult(
-                LaunchState.REFUSED_ACTIVE_LEASE,
-                phraseless(preview_result.preview),
-                detail=open_lease,
-            )
-        # This early branch only avoids constructing a phrase; `_claim_challenge`
-        # remains the atomic authority when an outstanding challenge was observed.
-        claimed = preview_result.preview.challenge is not None
-        if claimed:
-            try:
-                claimed = self._claim_challenge(
-                    "create",
-                    request.name,
-                    hard_deadline=request.hard_deadline,
-                    request_digest=request.reviewed_digest(),
-                    challenge=preview_result.preview.challenge or "",
-                    expected=preview_result.preview.confirmation_phrase,
-                    typed=confirmation,
-                )
-            except SpendRefusal as error:
-                return LaunchResult(
-                    LaunchState.REFUSED_CONFIRMATION,
-                    phraseless(preview_result.preview),
-                    detail=str(error),
-                )
-        if not claimed:
-            return LaunchResult(
-                LaunchState.REFUSED_CONFIRMATION,
-                phraseless(preview_result.preview),
-                detail=(
-                    "no preview in this run issued a challenge for this create at this "
-                    "hard deadline; run the preview and confirm the phrase it prints; "
-                    "no paid action occurred"
-                ),
-            )
-
+        refusal = self._confirmation_gate_refusal(
+            "create", request.name, preview_result.preview, request, confirmation
+        )
+        if refusal is not None:
+            return refusal
         try:
             lease_id = self._token("lease id")
             owner_token = self._token("lease owner token")
@@ -863,21 +694,14 @@ class PodRuntime:
         try:
             bound = store.bind_pod(owner_token=owner_token, record=record, now=self.now())
         except Exception as error:
-            close, detail = self._close_and_record(
+            return self._close_as(
+                LaunchState.CREATE_UNLEASED,
+                preview_result.preview,
                 record=record,
                 reason="create returned before lease binding failed",
                 store=store,
                 owner_token=owner_token,
                 situation=f"created pod could not be bound to its lease: {error}",
-            )
-            return LaunchResult(
-                LaunchState.CREATE_UNLEASED,
-                preview_result.preview,
-                record=record,
-                lease_path=store.path,
-                owner_token=owner_token,
-                detail=detail,
-                close_report=close,
             )
         if record.runtime_contract is None or not record.runtime_contract.matches(sealed):
             return self._contract_mismatch_close(
@@ -889,34 +713,18 @@ class PodRuntime:
             )
         state = record.state.upper()
         if state != "RUNNING" and state not in PRE_RUNNING_STATES:
-            # `adopt` refuses a non-RUNNING pod outright; a create response in
-            # EXITED, ERROR or TERMINATED is the same dead-but-billing shape
-            # and must end in a close, not a green launch.  Case-insensitive
-            # because `PodRecord.state` carries the provider's spelling
-            # verbatim.
-            #
-            # A pre-running word is let through, and so is RUNNING, but neither
-            # is evidence that the container exists: a provider may answer
-            # create before scheduling or pulling anything. That wait belongs
-            # to the armer, which bounds and records it separately from the
-            # channel bound (`controller_armer._await_container`), and a pod
-            # that never runs never writes the report arming waits for, so it
-            # is closed when those bounds expire.
-            close, detail = self._close_and_record(
+            # A dead-but-billing create response ends in a close, as `adopt`
+            # refuses it. Case-insensitive: the state is the provider's spelling.
+            # A pre-running word passes, but the container wait belongs to the
+            # armer (`controller_armer._await_container`), which closes on expiry.
+            return self._close_as(
+                LaunchState.REFUSED_RUNTIME_CONTRACT,
+                preview_result.preview,
                 record=record,
                 reason=f"created pod arrived in state {record.state!r}, not RUNNING",
                 store=store,
                 owner_token=owner_token,
                 situation=f"created pod reports state {record.state!r} rather than RUNNING",
-            )
-            return LaunchResult(
-                LaunchState.REFUSED_RUNTIME_CONTRACT,
-                preview_result.preview,
-                record=record,
-                lease_path=store.path,
-                owner_token=owner_token,
-                detail=detail,
-                close_report=close,
             )
         actual, actual_preview = self._reassess_actual_price(
             action="create",
@@ -952,19 +760,9 @@ class PodRuntime:
         """
 
         expected = self._policy_bound_request(expected)
-        readiness = self.shutdown.prove_ready()
-        if not readiness.ready:
-            return LaunchResult(
-                LaunchState.REFUSED_SHUTDOWN_NOT_READY,
-                detail=f"shutdown path is not ready: {', '.join(readiness.missing_verbs)}",
-            )
-        controller_readiness = self._arming_preflight("adopt", expected)
-        if not controller_readiness.ready:
-            return LaunchResult(
-                LaunchState.REFUSED_CONTROLLER_NOT_READY,
-                detail=f"controllers are not ready: {controller_readiness.detail}",
-                controller_readiness=controller_readiness,
-            )
+        not_ready = self._readiness_refusal("adopt", expected)
+        if not_ready is not None:
+            return not_ready
         try:
             record = self.provider.adopt(pod_id)
         except Exception as error:
@@ -982,8 +780,6 @@ class PodRuntime:
                 ),
             )
         try:
-            # The same gate-shaped refusal as preview_create: no traceback on
-            # the paid path for a request that cannot be reviewed.
             reviewed = expected.reviewed_digest()
         except ValueError as error:
             return LaunchResult(
@@ -1010,21 +806,9 @@ class PodRuntime:
     ) -> LaunchResult:
         """Serialize adoption with every other liability in the shared lease root."""
 
-        try:
-            with self._spend_gate_lock():
-                return self._adopt_locked(
-                    pod_id,
-                    expected=expected,
-                    confirmation=confirmation,
-                )
-        except _SpendGateLockFailure as error:
-            return LaunchResult(
-                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
-                detail=(
-                    "balance safety could not be established because the spend-reservation "
-                    f"lock failed: {error}; no paid action occurred"
-                ),
-            )
+        return self._under_spend_gate(
+            lambda: self._adopt_locked(pod_id, expected=expected, confirmation=confirmation)
+        )
 
     def _adopt_locked(
         self,
@@ -1042,56 +826,16 @@ class PodRuntime:
         # Narrowing, not a check: `preview_adopt` returns `PREVIEW` from one line, and it
         # passes `_preview`'s preview and a non-None record on it. Neither needs `-O` off.
         assert preview_result.preview is not None and preview_result.record is not None
-        if not preview_result.preview.assessment.allowed:
-            # Same policy as the confirmation refusals: no live phrase on a
-            # refusal report.
-            return LaunchResult(
-                _spend_refusal_state(preview_result.preview.assessment),
-                phraseless(preview_result.preview),
-                record=preview_result.record,
-                detail="; ".join(preview_result.preview.assessment.reasons),
-            )
-        # Adoption creates the same local billing liability and must share the
-        # pre-consumption lease refusal with create.
-        open_lease = self._open_lease_refusal()
-        if open_lease is not None:
-            return LaunchResult(
-                LaunchState.REFUSED_ACTIVE_LEASE,
-                phraseless(preview_result.preview),
-                record=preview_result.record,
-                detail=open_lease,
-            )
-        # `_claim_challenge` remains the atomic authority after this early branch.
-        claimed = preview_result.preview.challenge is not None
-        if claimed:
-            try:
-                claimed = self._claim_challenge(
-                    "adopt",
-                    preview_result.record.pod_id,
-                    hard_deadline=expected.hard_deadline,
-                    request_digest=expected.reviewed_digest(),
-                    challenge=preview_result.preview.challenge or "",
-                    expected=preview_result.preview.confirmation_phrase,
-                    typed=confirmation,
-                )
-            except SpendRefusal as error:
-                return LaunchResult(
-                    LaunchState.REFUSED_CONFIRMATION,
-                    phraseless(preview_result.preview),
-                    record=preview_result.record,
-                    detail=str(error),
-                )
-        if not claimed:
-            return LaunchResult(
-                LaunchState.REFUSED_CONFIRMATION,
-                phraseless(preview_result.preview),
-                record=preview_result.record,
-                detail=(
-                    "no preview in this run issued a challenge for this adoption at this "
-                    "hard deadline; run the preview and confirm the phrase it prints; "
-                    "no paid action occurred"
-                ),
-            )
+        refusal = self._confirmation_gate_refusal(
+            "adopt",
+            preview_result.record.pod_id,
+            preview_result.preview,
+            expected,
+            confirmation,
+            record=preview_result.record,
+        )
+        if refusal is not None:
+            return refusal
         try:
             lease_id = self._token("lease id")
             owner_token = self._token("lease owner token")
@@ -1147,28 +891,16 @@ class PodRuntime:
             )
         bound = store.load()
         if bound is None:
-            # Not an assert.  `assert` disappears under `python -O`, and a `None`
-            # lease would then reach controller arming and surface as an arming
-            # fault rather than the durable-store fault it is -- the objection
-            # controllers.py records about the same family, on the same money
-            # path.  This one is reachable: `load()` reads a file back off disk.
-            # An adopted pod that cannot be guarded does not keep billing, so
-            # this closes it exactly as a failed arming would.
-            close, detail = self._close_and_record(
+            # Not an assert, which `-O` strips: `load()` reads the file back off
+            # disk, and an adopted pod that cannot be guarded must not keep billing.
+            return self._close_as(
+                LaunchState.LEASE_FAILURE,
+                preview_result.preview,
                 record=preview_result.record,
                 reason="adoption lease could not be read back after it was written",
                 store=store,
                 owner_token=owner_token,
                 situation="adoption lease was written but could not be read back",
-            )
-            return LaunchResult(
-                LaunchState.LEASE_FAILURE,
-                preview_result.preview,
-                record=preview_result.record,
-                lease_path=store.path,
-                owner_token=owner_token,
-                detail=detail,
-                close_report=close,
             )
         return self._arm_or_close(
             action="adopt",
@@ -1181,6 +913,86 @@ class PodRuntime:
             success_state=LaunchState.ADOPTED_GUARDED,
         )
 
+    def _under_spend_gate(self, locked: Callable[[], LaunchResult]) -> LaunchResult:
+        try:
+            with self._spend_gate_lock():
+                return locked()
+        except _SpendGateLockFailure as error:
+            return LaunchResult(
+                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
+                detail=(
+                    "balance safety could not be established because the spend-reservation "
+                    f"lock failed: {error}; no paid action occurred"
+                ),
+            )
+
+    def _confirmation_gate_refusal(
+        self,
+        action: str,
+        subject: str,
+        preview: PaidActionPreview,
+        request: PodCreateRequest,
+        confirmation: str | None,
+        *,
+        record: PodRecord | None = None,
+    ) -> LaunchResult | None:
+        """The spend, open-lease and confirmation refusals create and adopt share.
+
+        No refusal report carries a phrase whose challenge is still spendable.
+        Leases are checked before the challenge is consumed, so closing the open
+        pod leaves this preview confirmable, while spend refusals keep precedence.
+        `_claim_challenge` stays the atomic authority; the early ``claimed``
+        branch only avoids building a phrase when no challenge was observed.
+        """
+
+        if not preview.assessment.allowed:
+            return LaunchResult(
+                _spend_refusal_state(preview.assessment),
+                phraseless(preview),
+                record=record,
+                detail="; ".join(preview.assessment.reasons),
+            )
+        open_lease = self._open_lease_refusal()
+        if open_lease is not None:
+            return LaunchResult(
+                LaunchState.REFUSED_ACTIVE_LEASE,
+                phraseless(preview),
+                record=record,
+                detail=open_lease,
+            )
+        claimed = preview.challenge is not None
+        if claimed:
+            try:
+                claimed = self._claim_challenge(
+                    action,
+                    subject,
+                    hard_deadline=request.hard_deadline,
+                    request_digest=request.reviewed_digest(),
+                    challenge=preview.challenge or "",
+                    expected=preview.confirmation_phrase,
+                    typed=confirmation,
+                )
+            except SpendRefusal as error:
+                return LaunchResult(
+                    LaunchState.REFUSED_CONFIRMATION,
+                    phraseless(preview),
+                    record=record,
+                    detail=str(error),
+                )
+        if claimed:
+            return None
+        noun = "adoption" if action == "adopt" else action
+        return LaunchResult(
+            LaunchState.REFUSED_CONFIRMATION,
+            phraseless(preview),
+            record=record,
+            detail=(
+                f"no preview in this run issued a challenge for this {noun} at this "
+                "hard deadline; run the preview and confirm the phrase it prints; "
+                "no paid action occurred"
+            ),
+        )
+
     @contextmanager
     def _spend_gate_lock(self) -> Iterator[None]:
         """Serialize assessment through durable lease reservation across processes.
@@ -1191,18 +1003,14 @@ class PodRuntime:
         the lock but leaves the pending lease as evidence.
         """
 
-        # The lock is a sibling of the lease directory.  That lets an invalid
-        # lease-root path proceed far enough to retain the existing, precise
-        # LEASE_FAILURE handling (including confirmed-adoption close) while still
-        # serializing every caller that names the same root.
+        # A sibling of the lease directory, so an invalid lease root still reaches
+        # its precise LEASE_FAILURE handling while every caller naming it serializes.
         handle = None
         try:
             lock_root = self.lease_root.resolve(strict=False)
             lock_root.parent.mkdir(parents=True, exist_ok=True)
             path = lock_root.parent / f".{lock_root.name}.spend-gate.lock"
             handle = path.open("a+b")
-            # Bounded, never blocking: a holder that never finishes must end as a
-            # named balance-safety refusal, not as a create with no output at all.
             _acquire_bounded(
                 handle,
                 deadline_seconds=self.lock_wait_seconds,
@@ -1215,9 +1023,7 @@ class PodRuntime:
         try:
             yield
         finally:
-            # Closing the descriptor releases flock. There is no separate
-            # unlock operation whose failure can overwrite a result after the
-            # provider has already created or adopted a billing pod.
+            # Closing releases flock; no separate unlock can fail after a pod exists.
             handle.close()
 
     def _reserved_liability(
@@ -1233,15 +1039,9 @@ class PodRuntime:
         for path in paths:
             if exclude is not None and path == exclude:
                 continue
-            # The link test is inside the same guard as the read, because
-            # `is_symlink` re-raises a permission error rather than answering
-            # False: whatever stops this file being read must refuse through
-            # the paid gate, not escape past it, and leaves the remaining
-            # liability unknown either way.
-            # Cause first here too, and for the two phase refusals below: the
-            # reason is truncated at 160 characters and a lease path can be as
-            # long as its root, so a path-first message can push the actual
-            # diagnosis off the end.
+            # `is_symlink` raises on a permission error, so it shares the read's
+            # guard: an unreadable lease refuses through the paid gate. Cause
+            # comes first because the reason is truncated at 160 characters.
             try:
                 if path.is_symlink():
                     return total, f"a lease is a symlink: {path}"
@@ -1249,10 +1049,7 @@ class PodRuntime:
             except Exception as error:
                 return total, f"a lease could not be read: {path}: {error}"
             if lease is None:
-                # `glob` listed this path, so it was accounted for a moment
-                # ago and is now gone. Excluding it would silently drop a
-                # liability that may still be billing, which this total may
-                # not do.
+                # Excluding a vanished lease would drop a liability that may still bill.
                 return total, f"a listed lease vanished before it could be read: {path}"
             if lease.phase == "closed-verified":
                 continue
@@ -1283,10 +1080,7 @@ class PodRuntime:
         except OSError as error:
             return _unproven_lease_root(f"the lease directory could not be listed: {error}")
         for path in paths:
-            # Inside the guard for the same reason as `_reserved_liability`:
-            # `is_symlink` re-raises a permission error rather than answering
-            # False, and an unreadable lease must refuse through the paid gate
-            # rather than escape past it.
+            # Inside the guard for the same reason as `_reserved_liability`.
             try:
                 if path.is_symlink():
                     return _unproven_lease_root(f"lease {path} is a symlink")
@@ -1294,8 +1088,7 @@ class PodRuntime:
             except Exception as error:
                 return _unproven_lease_root(f"lease {path} could not be read: {error}")
             if lease is None:
-                # `glob` listed it, so something was accounted for here a moment
-                # ago and may still be billing; an empty answer is not a clear one.
+                # A listed lease that vanished may still be billing; empty is not clear.
                 return _unproven_lease_root(
                     f"a listed lease vanished before it could be read: {path}"
                 )
@@ -1315,31 +1108,14 @@ class PodRuntime:
     ) -> str | None:
         """Hold a create to the reviewed card table, by name and by reviewed price.
 
-        `PodCreateRequest.gpu_type` is free text that goes straight to the
-        provider; the only other mechanical bound on *which card* gets
-        rented is `max_hourly_usd`, so a typo or a wrong tier that happens to
-        fit under the ceiling would otherwise launch.
+        `gpu_type` goes straight to the provider, and only `max_hourly_usd`
+        otherwise bounds which card is rented. The row is matched on
+        `gpu_type_id` alone, the only spelling ever sent to the API. Its
+        reviewed price must fit under the ceiling net of the volume rate once
+        known; the ceiling on the provider's quoted price still runs as well.
 
-        Two conditions, both refusing by name:
-
-        * the request's `gpu_type` must be a row of the reviewed table, matched
-          on `gpu_type_id` alone (`PlacementTable.profile_for_gpu_type_id`).
-          `gpu_type_id` is the only spelling that has ever gone to the API:
-          `boot_a_request.py` renders `"gpu_type": card.gpu_type_id`, and the
-          table's `name` column is prose for the operator. Accepting the name
-          too would allowlist a string no provider is known to take, so a create
-          could pass this gate and then fail at the API -- or rent something
-          else;
-        * that row's reviewed hourly price must fit under `max_hourly_usd`, net
-          of the volume's hourly rate when the estimate has supplied one. This
-          binds the *reviewed* price rather than the quoted one, which is the
-          part the existing ceiling cannot do: the ceiling re-applied to the
-          provider's returned price stays exactly as it was, and still runs.
-
-        `None` -- no table, or an unconfigured policy -- enforces nothing here.
-        An unconfigured policy refuses every paid path at the spend gate a few
-        lines later, and saying so twice, in different words, would only
-        obscure which refusal an operator is actually looking at.
+        No table, or an unconfigured policy, enforces nothing here: the spend
+        gate refuses an unconfigured policy anyway, in one set of words.
         """
 
         table = self.placement_table
@@ -1429,13 +1205,10 @@ class PodRuntime:
                     challenge, hard_deadline, request_digest
                 )
         else:
-            # The deadline is part of what was authorized, not merely part of what was
-            # displayed. The phrase names the action, subject and both hourly rates, none
-            # of which changes with lifetime -- so without this a ten-minute preview's
-            # phrase would confirm a create running to the configured ceiling. The
-            # ceiling still bounds the exposure; the operator's consent did not cover it.
-            # Request divergence is checked under the consumption lock so a refusal
-            # cannot burn the reviewed challenge.
+            # The deadline is part of what was authorized: the phrase names no
+            # lifetime, so without this a ten-minute preview would confirm a create
+            # running to the ceiling. The request digest is checked under the
+            # consumption lock, so that refusal cannot burn the reviewed challenge.
             with self._challenge_lock:
                 held = self._outstanding.get(key)
             challenge = (
@@ -1550,13 +1323,9 @@ class PodRuntime:
 
     @contextmanager
     def _alert_state_lock(self, path: Path) -> Iterator[None]:
-        # This creates the lease root, and `_record_nonalert_balance` deliberately
-        # does not -- an asymmetry worth stating, because the next reader will see
-        # one guard and remove the other. A delivered warning has to be remembered
-        # across processes or every later preview pages the phone again, so the
-        # alert path must be able to write its stamp. The safe path never reaches
-        # here: it checks the stamp already exists first, which is what keeps a
-        # preview that has nothing to warn about from creating anything at all.
+        # Creates the lease root: a delivered warning must be remembered across
+        # processes. `_record_nonalert_balance` never gets here without an
+        # existing stamp, so a preview with nothing to warn about creates nothing.
         self.lease_root.mkdir(parents=True, exist_ok=True)
         with path.with_suffix(path.suffix + ".lock").open("a+b") as handle:
             _acquire_bounded(
@@ -1564,10 +1333,7 @@ class PodRuntime:
                 deadline_seconds=min(ALERT_STATE_LOCK_WAIT_SECONDS, self.lock_wait_seconds),
                 sleep=self.lock_sleeper,
             )
-            # No explicit LOCK_UN: closing the last descriptor on this open file
-            # description releases the flock, and the `with` above closes it on
-            # every path out, so an explicit unlock call would only add a way
-            # to fail for nothing gained.
+            # No explicit LOCK_UN: the `with` closes the descriptor on every path.
             yield
 
     def _load_spend_alert_state(self, path: Path) -> dict[str, object] | None:
@@ -1591,9 +1357,7 @@ class PodRuntime:
             try:
                 legacy = int(text)
             except ValueError:
-                # `sys.int_max_str_digits` is an interpreter setting, not this
-                # module's to assume, so the bound above is not the only reason
-                # a digit string can refuse to become a number.
+                # `sys.int_max_str_digits` can refuse a digit string under the byte bound.
                 return None
             raw: object = {
                 "delivered_at": legacy,
@@ -1765,6 +1529,22 @@ class PodRuntime:
     def _store(self, lease_id: str) -> LeaseStore:
         return LeaseStore(self.lease_root / f"{lease_id}.json")
 
+    def _readiness_refusal(self, action: str, request: PodCreateRequest) -> LaunchResult | None:
+        readiness = self.shutdown.prove_ready()
+        if not readiness.ready:
+            return LaunchResult(
+                LaunchState.REFUSED_SHUTDOWN_NOT_READY,
+                detail=f"shutdown path is not ready: {', '.join(readiness.missing_verbs)}",
+            )
+        controller_readiness = self._arming_preflight(action, request)
+        if not controller_readiness.ready:
+            return LaunchResult(
+                LaunchState.REFUSED_CONTROLLER_NOT_READY,
+                detail=f"controllers are not ready: {controller_readiness.detail}",
+                controller_readiness=controller_readiness,
+            )
+        return None
+
     def _arming_preflight(self, action: str, request: PodCreateRequest) -> ControllerReadiness:
         try:
             return self.controller_armer.preflight(
@@ -1849,12 +1629,8 @@ class PodRuntime:
                     arming=arming, request=request, record=record, lease=lease
                 )
             except Exception as error:
-                arming = ControllerArming(
-                    False,
-                    arming.pod_timer_acknowledged,
-                    self.now(),
-                    f"controller acknowledgement is not bound to this launch: {error}",
-                    arming.receipt,
+                arming = self._unarmed(
+                    arming, f"controller acknowledgement is not bound to this launch: {error}"
                 )
         if arming.armed:
             try:
@@ -1864,12 +1640,8 @@ class PodRuntime:
                     now=self.now(),
                 )
             except Exception as error:
-                arming = ControllerArming(
-                    False,
-                    arming.pod_timer_acknowledged,
-                    self.now(),
-                    f"controller receipt could not be durably recorded: {error}",
-                    arming.receipt,
+                arming = self._unarmed(
+                    arming, f"controller receipt could not be durably recorded: {error}"
                 )
             else:
                 return LaunchResult(
@@ -1885,22 +1657,20 @@ class PodRuntime:
                     ),
                     controller_arming=arming,
                 )
-        close, close_detail = self._close_and_record(
+        return self._close_as(
+            LaunchState.CONTROLLERS_UNARMED,
+            preview,
             record=record,
             reason=f"{action} controller arming failed",
             store=store,
             owner_token=owner_token,
             situation="controller arming failed",
-        )
-        return LaunchResult(
-            LaunchState.CONTROLLERS_UNARMED,
-            preview,
-            record=record,
-            lease_path=store.path,
-            owner_token=owner_token,
-            detail=close_detail,
-            close_report=close,
             controller_arming=arming,
+        )
+
+    def _unarmed(self, arming: ControllerArming, detail: str) -> ControllerArming:
+        return ControllerArming(
+            False, arming.pod_timer_acknowledged, self.now(), detail, arming.receipt
         )
 
     @staticmethod
@@ -1927,6 +1697,38 @@ class PodRuntime:
         expected_path = command[report_flag + 1]
         if timer.get("report_path") != expected_path:
             raise ValueError("pod timer acknowledged a different durable report path")
+
+    def _close_as(
+        self,
+        state: LaunchState,
+        preview: PaidActionPreview,
+        *,
+        record: PodRecord,
+        reason: str,
+        store: LeaseStore,
+        owner_token: str,
+        situation: str,
+        controller_arming: ControllerArming | None = None,
+    ) -> LaunchResult:
+        """Close a pod that already exists and report it under ``state``, never green."""
+
+        close, detail = self._close_and_record(
+            record=record,
+            reason=reason,
+            store=store,
+            owner_token=owner_token,
+            situation=situation,
+        )
+        return LaunchResult(
+            state,
+            preview,
+            record=record,
+            lease_path=store.path,
+            owner_token=owner_token,
+            detail=detail,
+            close_report=close,
+            controller_arming=controller_arming,
+        )
 
     def _close_and_record(
         self,
@@ -1990,13 +1792,15 @@ class PodRuntime:
                 subject,
             )
         except Exception as error:
-            # Everything this assessment touches already fails closed with a
-            # named reason, so nothing here is expected to raise.  But a pod is
-            # billing by this line, and an escaping exception is the one outcome
-            # that leaves it running with no close attempted and no result to
-            # read.  An assessment that could not be completed is exactly the
-            # balance-safety fact that could not be established.
-            close, detail = self._close_and_record(
+            # Nothing here is expected to raise, but a pod is billing by this
+            # line and an escaping exception would leave it running unclosed.
+            # The pre-create assessment is carried, without its challenge, as
+            # the last one that actually ran. Nothing built before the close may raise,
+            # or the pod would be left billing.
+            unassessed = PaidActionPreview(preview.action, preview.subject, preview.assessment)
+            closed = self._close_as(
+                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
+                unassessed,
                 record=record,
                 reason=f"{action} post-create spend assessment could not be completed: {error}",
                 store=store,
@@ -2006,29 +1810,16 @@ class PodRuntime:
                     f"({type(error).__name__}: {error})"
                 ),
             )
-            # The pre-create assessment, carried without its challenge: it is the
-            # last one that actually ran, and the state and detail say plainly
-            # that the one after the pod existed did not.
-            unassessed = PaidActionPreview(preview.action, preview.subject, preview.assessment)
-            return (
-                LaunchResult(
-                    LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
-                    unassessed,
-                    record=record,
-                    lease_path=store.path,
-                    owner_token=owner_token,
-                    detail=detail,
-                    close_report=close,
-                ),
-                unassessed,
-            )
+            return closed, unassessed
         actual_preview = PaidActionPreview(preview.action, preview.subject, assessment)
         if assessment.allowed:
             return None, actual_preview
-        # No challenge: this preview reports why a created pod is being closed, and its
-        # challenge was consumed by the create that got here. A refusal report must not
-        # carry a phrase that would authorize anything.
-        close, detail = self._close_and_record(
+        # No challenge: the create that got here consumed it, and a refusal
+        # report must not carry a phrase that would authorize anything. The state and
+        # preview are built before the close and must never raise: a pod is billing.
+        closed = self._close_as(
+            _spend_refusal_state(assessment),
+            actual_preview,
             record=record,
             reason=(
                 f"{action} post-create spend assessment refused: " + "; ".join(assessment.reasons)
@@ -2041,18 +1832,7 @@ class PodRuntime:
                 + ")"
             ),
         )
-        return (
-            LaunchResult(
-                _spend_refusal_state(assessment),
-                actual_preview,
-                record=record,
-                lease_path=store.path,
-                owner_token=owner_token,
-                detail=detail,
-                close_report=close,
-            ),
-            actual_preview,
-        )
+        return closed, actual_preview
 
     def _contract_mismatch_close(
         self,
@@ -2068,21 +1848,14 @@ class PodRuntime:
         situation = "effective runtime contract was unproven"
         if record.contract_refusal is not None:
             situation = f"{situation}: {record.contract_refusal}"
-        close, detail = self._close_and_record(
+        return self._close_as(
+            LaunchState.REFUSED_RUNTIME_CONTRACT,
+            preview,
             record=record,
             reason=f"{action} effective runtime contract was unproven",
             store=store,
             owner_token=owner_token,
             situation=situation,
-        )
-        return LaunchResult(
-            LaunchState.REFUSED_RUNTIME_CONTRACT,
-            preview,
-            record=record,
-            lease_path=store.path,
-            owner_token=owner_token,
-            detail=detail,
-            close_report=close,
         )
 
     def _token(self, label: str) -> str:

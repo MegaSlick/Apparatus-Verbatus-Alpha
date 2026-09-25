@@ -30,7 +30,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Final
+from typing import Any, Callable, Final, NamedTuple
 from zipfile import ZIP_STORED, BadZipFile, LargeZipFile, ZipFile, ZipInfo
 
 from display import DISPLAY_CONVENTION, render_display, strip_display
@@ -184,6 +184,10 @@ _COMPLETED_CATEGORIES: Final = frozenset(
         ArmariumCategory.CONFIRMED_BLANK.value,
     }
 )
+_KNOWN_CATEGORIES: Final = frozenset(category.value for category in ArmariumCategory)
+_REVIEW_CATEGORIES: Final = frozenset(
+    {ArmariumCategory.HELD_FOR_REVIEW.value, ArmariumCategory.REFUSED_WITH_REASON.value}
+)
 # Any one of these marks a record as salvage-tier, so a salvage item cannot pass
 # as an act.
 _SALVAGE_DISCRIMINANT_FIELDS: Final = frozenset(
@@ -252,9 +256,25 @@ class ArmariumBundle:
     manifest: dict[str, Any]
 
 
+def _literal_formats_in(formats: tuple[str, ...] | list[str]) -> list[str]:
+    return sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
+
+
+def _canonical_text_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
+    literal_formats = _literal_formats_in(formats)
+    return {
+        "authority": "archetypus",
+        "field": CANONICAL_TEXT_FIELD,
+        "hash": "sha256-utf-8",
+        "derived_columns_are_marked": True,
+        # Empty when fewer than two literal formats leave nothing to compare.
+        "identity_verified_across": literal_formats if len(literal_formats) >= 2 else [],
+    }
+
+
 def _uncertainty_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
     """Measure which selected formats carry canonical uncertainty."""
-    carried_by = sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
+    carried_by = _literal_formats_in(formats)
     return {
         "status": _UNCERTAINTY_AVAILABLE if carried_by else _UNCERTAINTY_NOT_APPLICABLE,
         "offset_unit": "unicode-code-point",
@@ -268,7 +288,7 @@ def _transcription_annotations_claim(formats: tuple[str, ...] | list[str]) -> di
     The layer rides with the text in the literal-text formats, so the claim is
     measured from the selection rather than fixed.
     """
-    carried_by = sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
+    carried_by = _literal_formats_in(formats)
     return {
         "status": (
             _TRANSCRIPTION_ANNOTATIONS_CARRIED
@@ -370,8 +390,7 @@ def build_armarium_bundle(
     with tempfile.TemporaryDirectory(prefix="armarium-verify-") as directory:
         clean_root = Path(directory)
         manifest_report = verify_export_bundle(data, clean_root)
-        literal_formats = set(_LITERAL_TEXT_FORMATS) & set(formats.formats)
-        if len(literal_formats) >= 2:
+        if len(_literal_formats_in(formats.formats)) >= 2:
             _compare_literal_projections(clean_root, _manifest_formats(manifest_report))
     return ArmariumBundle(data=data, manifest=manifest)
 
@@ -439,7 +458,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
         name, sha256, byte_count = item["path"], item["sha256"], item["bytes"]
         if not isinstance(name, str) or not isinstance(sha256, str):
             raise SchemaRefusal("a manifest member inventory row lacks path or digest")
-        if not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count < 0:
+        if not _is_count(byte_count):
             raise SchemaRefusal("a manifest member inventory row lacks a non-negative byte count")
         _validate_member_name(name)
         if name == EXPORT_MANIFEST_NAME or name in listed_names:
@@ -657,8 +676,6 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
                     os.close(parent_fd)
 
 
-# --- What this run did not measure ------------------------------------------
-#
 # A run can be `DELIVERED` and `complete` over instruments that never measured.
 # Every bundle names them (principle 8), with each status derived from the run's
 # own records so a run that measured reads differently from one that did not.
@@ -847,8 +864,20 @@ def _require_exact_fields(value: object, expected: frozenset[str], *, subject: s
     return value
 
 
+def _is_nonempty_str(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _is_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_count(value: object) -> bool:
+    return _is_integer(value) and value >= 0
+
+
 def _require_non_negative_integer(value: object, *, subject: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+    if not _is_count(value):
         raise SchemaRefusal(f"{subject} is not a non-negative integer")
     return value
 
@@ -885,9 +914,7 @@ def _validate_not_measured_detail(
         pages = detail["pages_not_reconciled"]
         if (
             not isinstance(pages, list)
-            or any(
-                not isinstance(page, int) or isinstance(page, bool) or page <= 0 for page in pages
-            )
+            or any(not _is_integer(page) or page <= 0 for page in pages)
             or len(pages) != len(set(pages))
         ):
             raise SchemaRefusal(
@@ -991,39 +1018,7 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     against a recomputation are closed by that comparison.
     """
     _require_exact_fields(manifest, _MANIFEST_FIELDS, subject="EXPORT_MANIFEST.json")
-    raw_run = manifest.get("run")
-    if not isinstance(raw_run, dict):
-        raise SchemaRefusal("the manifest run binding is not an object")
-    has_fixture = "fixture_id" in raw_run
-    has_submission = "submission_id" in raw_run
-    if has_fixture and has_submission:
-        raise SchemaRefusal(
-            "the manifest run binding names both a fixture identifier and a submission "
-            "identifier; a run's export is identified by exactly one, never both"
-        )
-    if not has_fixture and not has_submission:
-        raise SchemaRefusal(
-            "the manifest run binding names neither a fixture identifier nor a submission "
-            "identifier; a run's export must be identified by exactly one"
-        )
-    identity_field = "fixture_id" if has_fixture else "submission_id"
-    run = _require_exact_fields(
-        raw_run,
-        _MANIFEST_RUN_FIELDS_FIXTURE if has_fixture else _MANIFEST_RUN_FIELDS_REAL,
-        subject="the manifest run binding",
-    )
-    if any(
-        not isinstance(run.get(field), str) or not run[field].strip()
-        for field in (identity_field, "scenario")
-    ):
-        subject = "fixture" if has_fixture else "submission"
-        raise SchemaRefusal(
-            f"the manifest run binding has no non-blank {subject} and scenario identities"
-        )
-    if has_submission:
-        # As strict as `_validate_projection`, so a resealed package cannot carry
-        # a hand-typed label where a ledger hash belongs.
-        _require_sha256(run["submission_id"], "the manifest run binding submission identity")
+    _verify_manifest_run_binding(manifest.get("run"))
     claims = _require_exact_fields(
         manifest["claims"], _MANIFEST_CLAIM_FIELDS, subject="the manifest claims block"
     )
@@ -1074,8 +1069,49 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
         )
     if claims["page_census"]["denominator"] != _PAGE_CENSUS_DENOMINATOR:
         raise SchemaRefusal("the manifest page denominator is not this build's fixed claim")
+    _verify_not_measured_block(claims["not_measured"])
+
+
+def _verify_manifest_run_binding(raw_run: object) -> None:
+    """Exactly one of the two closed run-identity shapes, with non-blank values."""
+    if not isinstance(raw_run, dict):
+        raise SchemaRefusal("the manifest run binding is not an object")
+    has_fixture = "fixture_id" in raw_run
+    has_submission = "submission_id" in raw_run
+    if has_fixture and has_submission:
+        raise SchemaRefusal(
+            "the manifest run binding names both a fixture identifier and a submission "
+            "identifier; a run's export is identified by exactly one, never both"
+        )
+    if not has_fixture and not has_submission:
+        raise SchemaRefusal(
+            "the manifest run binding names neither a fixture identifier nor a submission "
+            "identifier; a run's export must be identified by exactly one"
+        )
+    identity_field = "fixture_id" if has_fixture else "submission_id"
+    run = _require_exact_fields(
+        raw_run,
+        _MANIFEST_RUN_FIELDS_FIXTURE if has_fixture else _MANIFEST_RUN_FIELDS_REAL,
+        subject="the manifest run binding",
+    )
+    if any(
+        not isinstance(run.get(field), str) or not run[field].strip()
+        for field in (identity_field, "scenario")
+    ):
+        subject = "fixture" if has_fixture else "submission"
+        raise SchemaRefusal(
+            f"the manifest run binding has no non-blank {subject} and scenario identities"
+        )
+    if has_submission:
+        # As strict as `_validate_projection`, so a resealed package cannot carry
+        # a hand-typed label where a ledger hash belongs.
+        _require_sha256(run["submission_id"], "the manifest run binding submission identity")
+
+
+def _verify_not_measured_block(block: object) -> None:
+    """Every instrument once, in order, each status re-derived from its detail."""
     not_measured = _require_exact_fields(
-        claims["not_measured"], _NOT_MEASURED_FIELDS, subject="the manifest not_measured block"
+        block, _NOT_MEASURED_FIELDS, subject="the manifest not_measured block"
     )
     if not_measured["schema"] != NOT_MEASURED_SCHEMA:
         raise SchemaRefusal("the manifest not_measured block is not this build's schema")
@@ -1146,7 +1182,7 @@ def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
     """
     manifest = verify_export_bundle(data, clean_root)
     formats = _manifest_formats(manifest)
-    compared = sorted(set(_LITERAL_TEXT_FORMATS) & set(formats.formats))
+    compared = _literal_formats_in(formats.formats)
     if len(compared) >= 2:
         _compare_literal_projections(clean_root, formats)
         identity = {"status": "verified", "compared_formats": compared}
@@ -1243,7 +1279,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                 "Armarium v3 source graph."
             )
         ordinal, outcome, remeasured = row["ordinal"], row["initial_outcome"], row["remeasured"]
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal <= 0:
+        if not _is_integer(ordinal) or ordinal <= 0:
             raise SchemaRefusal(
                 f"{subject} has an ink-map row without a positive integer page ordinal. The "
                 "verifier cannot bind its measurement to a sealed page. Rebuild the export "
@@ -1270,8 +1306,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                     "Rebuild the export from the retained Ink Map and Designator evidence."
                 )
             if any(
-                not isinstance(remeasured[field], int)
-                or isinstance(remeasured[field], bool)
+                not _is_integer(remeasured[field])
                 or remeasured[field] < (1 if field in _INK_MAP_REMEASURE_GATES else 0)
                 for field in sorted(_INK_MAP_REMEASURE_FIELDS)
             ):
@@ -1441,10 +1476,7 @@ def _validate_logical_act_conservation(
             or keys != sorted(set(keys))
             or not isinstance(ordinals, list)
             or not ordinals
-            or any(
-                not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0
-                for ordinal in ordinals
-            )
+            or any(not _is_count(ordinal) for ordinal in ordinals)
             or ordinals != sorted(set(ordinals))
             or not isinstance(components, list)
             or not components
@@ -1483,7 +1515,7 @@ def _validate_logical_act_conservation(
         # The basis is not validated until `_aggregate_from_basis`, so check types
         # before `set()`: a string would dedupe into its characters.
         if not isinstance(attributed, list) or any(
-            not isinstance(ordinal, int) or isinstance(ordinal, bool) for ordinal in attributed
+            not _is_integer(ordinal) for ordinal in attributed
         ):
             raise SchemaRefusal(
                 f"logical act {act['act_id']} has a page attribution that is not a list of "
@@ -1498,7 +1530,7 @@ def _validate_logical_act_conservation(
                 "drop out of the run's page coverage check"
             )
     declared = projection.local_proposal_rows
-    if not isinstance(declared, int) or isinstance(declared, bool):
+    if not _is_integer(declared):
         raise SchemaRefusal(
             "an Armarium projection carries a logical act but does not say how many "
             "proposal-seal rows its act denominator stands for"
@@ -1608,8 +1640,8 @@ def _not_measured_claim(projection: ArmariumProjection) -> dict[str, Any]:
 
 
 def _validate_projection(projection: ArmariumProjection) -> None:
-    has_fixture = isinstance(projection.fixture_id, str) and bool(projection.fixture_id)
-    has_submission = isinstance(projection.submission_id, str) and bool(projection.submission_id)
+    has_fixture = _is_nonempty_str(projection.fixture_id)
+    has_submission = _is_nonempty_str(projection.submission_id)
     if not has_fixture and not has_submission:
         raise SchemaRefusal(
             "an Armarium projection has neither a fixture identifier nor a submission "
@@ -1624,10 +1656,10 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         # `common.stage.submission_identity` only produces a sha256; be as strict,
         # so a hand-typed corpus label cannot leave under this field.
         _require_sha256(projection.submission_id, "an Armarium projection submission identity")
-    if not isinstance(projection.scenario, str) or not projection.scenario:
+    if not _is_nonempty_str(projection.scenario):
         raise SchemaRefusal("an Armarium projection has no scenario")
     _require_sha256(projection.config_digest, "an Armarium projection sealed configuration digest")
-    if not isinstance(projection.expected_acts, int) or isinstance(projection.expected_acts, bool):
+    if not _is_integer(projection.expected_acts):
         raise SchemaRefusal("an Armarium projection expected-act count is not an integer")
     if len(projection.acts) != projection.expected_acts:
         raise SchemaRefusal(
@@ -1669,98 +1701,22 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         _require_sha256(digest, "an Armarium projection source-manifest digest")
         if "ledger_sha256" in source:
             _require_sha256(source["ledger_sha256"], "an Armarium projection ledger digest")
-    known_categories = {category.value for category in ArmariumCategory}
     act_ids: set[str] = set()
     act_keys: set[str] = set()
     for act in projection.acts:
         if not isinstance(act, dict):
             raise SchemaRefusal("an Armarium projection act is not an object")
-        act_id, act_key, category = act.get("act_id"), act.get("act_key"), act.get("category")
+        act_id, act_key = act.get("act_id"), act.get("act_key")
         if not _is_line_safe_identity(act_id) or not _is_line_safe_identity(act_key):
             raise SchemaRefusal("an Armarium projection act lacks a line-safe act identity")
         if act_id in act_ids or act_key in act_keys:
             raise SchemaRefusal("an Armarium projection repeats an act identity")
         act_ids.add(act_id)
         act_keys.add(act_key)
-        if category not in known_categories:
-            raise SchemaRefusal(f"an Armarium projection uses unknown category {category!r}")
-        if CANONICAL_TEXT_FIELD not in act:
-            raise SchemaRefusal("an Armarium projection act has no canonical-text field")
-        literal = act[CANONICAL_TEXT_FIELD]
-        regions = act.get("source_regions", [])
-        if not isinstance(regions, list):
-            raise SchemaRefusal("an Armarium projection act has malformed source-region provenance")
-        if act.get("reason") is not None and not isinstance(act.get("reason"), str):
-            raise SchemaRefusal("an Armarium projection act has an untyped reason")
-        if category == ArmariumCategory.DELIVERED.value:
-            if not isinstance(literal, str):
-                raise SchemaRefusal("a delivered act has no literal Archetypus clean text")
-            if not isinstance(act.get("provenance"), dict) or not act["provenance"]:
-                raise SchemaRefusal("a delivered act has no provenance")
-            if not regions:
-                raise SchemaRefusal("a delivered act has no source-region provenance")
-            # `utf8_round_trip` also runs `validate_uncertainty`.
-            utf8_round_trip(act.get("uncertainty"), literal)
-            _require_damage_record(
-                act.get("text_status"),
-                act.get("transcription_annotations"),
-                act.get("uncertainty"),
-                literal,
-                subject="Armarium projection act",
-            )
-        elif literal is not None:
-            raise SchemaRefusal("a non-delivered act may not carry purported clean text")
-        elif act.get("uncertainty") is not None:
-            # Offsets into a text the act does not have.
-            raise SchemaRefusal("a non-delivered act may not carry an uncertainty layer")
-        elif act.get("text_status") is not None or act.get("transcription_annotations") is not None:
-            # An act with no Archetypus record has no status or annotation layer.
-            raise SchemaRefusal(
-                "a non-delivered act may not carry an established-text status or a "
-                "transcription annotation layer"
-            )
-        if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
-            require_approval(ARMARIUM, category, act.get("approval_ref"))
-        _reject_act_salvage_namespace(act)
+        _validate_projection_act(act)
     perlector_basis = not_measured_basis[_PERLECTOR_UNCERTAIN_SPANS]
-    delivered_count = sum(
-        act["category"] == ArmariumCategory.DELIVERED.value for act in projection.acts
-    )
-    uncertain_count = sum(
-        act["category"] == ArmariumCategory.DELIVERED.value
-        and isinstance(act.get("uncertainty"), dict)
-        and bool(act["uncertainty"].get("uncertain_spans"))
-        for act in projection.acts
-    )
-    # Counted by state, never by subtraction, so a broken doubt report is not
-    # counted as "no doubt channel". Any other state (the Recensor's `malformed`,
-    # for one) is refused: the Recensor holds those, so a delivered one means the
-    # projection did not come from a run.
-    assessed_count = 0
-    not_assessed_count = 0
-    for act in projection.acts:
-        if act["category"] != ArmariumCategory.DELIVERED.value:
-            continue
-        uncertainty = act.get("uncertainty")
-        assessment = uncertainty.get("assessment") if isinstance(uncertainty, dict) else None
-        state = assessment.get("state") if isinstance(assessment, dict) else None
-        if state == "assessed":
-            assessed_count += 1
-        elif state == "not-assessed":
-            not_assessed_count += 1
-        else:
-            raise SchemaRefusal(
-                f"an Armarium projection delivers act {act.get('act_key')!r} whose sealed doubt "
-                f"assessment is {state!r}; only a reading that was assessed, or one whose reader "
-                "had no channel, is deliverable -- a doubt report that could not be anchored is "
-                "held for review, never counted"
-            )
-    if (
-        perlector_basis["acts_delivered"] != delivered_count
-        or perlector_basis["acts_with_uncertain_spans"] != uncertain_count
-        or perlector_basis["acts_assessed"] != assessed_count
-        or perlector_basis["acts_not_assessed"] != not_assessed_count
-    ):
+    delivered_counts = _delivered_doubt_counts(projection.acts)
+    if any(perlector_basis[field] != count for field, count in delivered_counts.items()):
         raise SchemaRefusal(
             "an Armarium projection's Perlector uncertainty basis does not exactly reconcile "
             "with its delivered act projection"
@@ -1787,6 +1743,85 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
+
+
+def _validate_projection_act(act: dict[str, Any]) -> None:
+    """One act's text, provenance and approval, as its category requires."""
+    category = act.get("category")
+    if category not in _KNOWN_CATEGORIES:
+        raise SchemaRefusal(f"an Armarium projection uses unknown category {category!r}")
+    if CANONICAL_TEXT_FIELD not in act:
+        raise SchemaRefusal("an Armarium projection act has no canonical-text field")
+    literal = act[CANONICAL_TEXT_FIELD]
+    regions = act.get("source_regions", [])
+    if not isinstance(regions, list):
+        raise SchemaRefusal("an Armarium projection act has malformed source-region provenance")
+    if act.get("reason") is not None and not isinstance(act.get("reason"), str):
+        raise SchemaRefusal("an Armarium projection act has an untyped reason")
+    if category == ArmariumCategory.DELIVERED.value:
+        if not isinstance(literal, str):
+            raise SchemaRefusal("a delivered act has no literal Archetypus clean text")
+        if not isinstance(act.get("provenance"), dict) or not act["provenance"]:
+            raise SchemaRefusal("a delivered act has no provenance")
+        if not regions:
+            raise SchemaRefusal("a delivered act has no source-region provenance")
+        # `utf8_round_trip` also runs `validate_uncertainty`.
+        utf8_round_trip(act.get("uncertainty"), literal)
+        _require_damage_record(
+            act.get("text_status"),
+            act.get("transcription_annotations"),
+            act.get("uncertainty"),
+            literal,
+            subject="Armarium projection act",
+        )
+    elif literal is not None:
+        raise SchemaRefusal("a non-delivered act may not carry purported clean text")
+    elif act.get("uncertainty") is not None:
+        # Offsets into a text the act does not have.
+        raise SchemaRefusal("a non-delivered act may not carry an uncertainty layer")
+    elif act.get("text_status") is not None or act.get("transcription_annotations") is not None:
+        # An act with no Archetypus record has no status or annotation layer.
+        raise SchemaRefusal(
+            "a non-delivered act may not carry an established-text status or a "
+            "transcription annotation layer"
+        )
+    if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
+        require_approval(ARMARIUM, category, act.get("approval_ref"))
+    _reject_act_salvage_namespace(act)
+
+
+def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
+    """The Perlector uncertainty basis's four counts, taken from the delivered acts.
+
+    Counted by state, never by subtraction, so a broken doubt report is not
+    counted as "no doubt channel". Any other state (the Recensor's `malformed`,
+    for one) is refused: the Recensor holds those, so a delivered one means the
+    projection did not come from a run.
+    """
+    counts = dict.fromkeys(
+        ("acts_delivered", "acts_with_uncertain_spans", "acts_assessed", "acts_not_assessed"), 0
+    )
+    for act in acts:
+        if act["category"] != ArmariumCategory.DELIVERED.value:
+            continue
+        counts["acts_delivered"] += 1
+        uncertainty = act.get("uncertainty")
+        if isinstance(uncertainty, dict) and uncertainty.get("uncertain_spans"):
+            counts["acts_with_uncertain_spans"] += 1
+        assessment = uncertainty.get("assessment") if isinstance(uncertainty, dict) else None
+        state = assessment.get("state") if isinstance(assessment, dict) else None
+        if state == "assessed":
+            counts["acts_assessed"] += 1
+        elif state == "not-assessed":
+            counts["acts_not_assessed"] += 1
+        else:
+            raise SchemaRefusal(
+                f"an Armarium projection delivers act {act.get('act_key')!r} whose sealed doubt "
+                f"assessment is {state!r}; only a reading that was assessed, or one whose reader "
+                "had no channel, is deliverable -- a doubt report that could not be anchored is "
+                "held for review, never counted"
+            )
+    return counts
 
 
 def _require_damage_record(
@@ -1843,16 +1878,11 @@ def _validate_witness_accounting(
     """Keep the exported roster, coverage counts, and per-act witnesses one fact."""
     if (
         not isinstance(witness_chairs, (list, tuple))
-        or any(not isinstance(chair, str) or not chair for chair in witness_chairs)
+        or any(not _is_nonempty_str(chair) for chair in witness_chairs)
         or len(set(witness_chairs)) != len(witness_chairs)
     ):
         raise SchemaRefusal("Armarium witness chairs are not a unique named roster")
-    if (
-        not isinstance(witness_floor, int)
-        or isinstance(witness_floor, bool)
-        or witness_floor < 0
-        or witness_floor > len(witness_chairs)
-    ):
+    if not _is_count(witness_floor) or witness_floor > len(witness_chairs):
         raise SchemaRefusal("Armarium witness floor does not fit its named roster")
     coverage = (
         aggregate_basis.get("coverage_records") if isinstance(aggregate_basis, dict) else None
@@ -1909,14 +1939,14 @@ def _aggregate_from_basis(
     if (
         not isinstance(coverage, dict)
         or not isinstance(chairs, list)
-        or not all(isinstance(chair, str) and chair for chair in chairs)
+        or not all(_is_nonempty_str(chair) for chair in chairs)
         or not isinstance(act_pages, dict)
         or not isinstance(act_text_status, dict)
     ):
         raise SchemaRefusal("an Armarium aggregate basis is malformed")
     normalized_categories: dict[str, ArmariumCategory] = {}
     for act_key, category in categories.items():
-        if not isinstance(act_key, str) or not act_key:
+        if not _is_nonempty_str(act_key):
             raise SchemaRefusal("an Armarium aggregate basis has no act key")
         try:
             normalized_categories[act_key] = ArmariumCategory(category)
@@ -2021,7 +2051,7 @@ def _validate_cited_region(region: object, *, subject: str) -> None:
     if "ledger_sha256" in region:
         _require_sha256(region["ledger_sha256"], f"a {subject} source region ledger digest")
     ordinal = region.get("source_page_ordinal")
-    if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+    if not _is_integer(ordinal):
         raise SchemaRefusal(f"a {subject} source region has no source-page ordinal")
     if not isinstance(region.get("source_page_id"), str) or not region["source_page_id"]:
         raise SchemaRefusal(f"a {subject} source region has no source-page identity")
@@ -2046,7 +2076,7 @@ def _pages_by_ordinal(
         if not isinstance(page, dict):
             raise SchemaRefusal("an export page census row is not an object")
         ordinal = page.get("ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal in indexed:
+        if not _is_integer(ordinal) or ordinal in indexed:
             raise SchemaRefusal("an export page census has no unique integer ordinal")
         indexed[ordinal] = page
     return indexed
@@ -2058,17 +2088,11 @@ def _manifest_run_binding(projection: ArmariumProjection) -> dict[str, str]:
     `_validate_projection` has already required exactly one identity, so the
     fallback needs no second check.
     """
-    if isinstance(projection.submission_id, str) and projection.submission_id:
-        return {
-            "submission_id": projection.submission_id,
-            "scenario": projection.scenario,
-            "config_digest": projection.config_digest,
-        }
-    return {
-        "fixture_id": projection.fixture_id,
-        "scenario": projection.scenario,
-        "config_digest": projection.config_digest,
-    }
+    if _is_nonempty_str(projection.submission_id):
+        identity = {"submission_id": projection.submission_id}
+    else:
+        identity = {"fixture_id": projection.fixture_id}
+    return {**identity, "scenario": projection.scenario, "config_digest": projection.config_digest}
 
 
 def _verify_region_page_binding(
@@ -2132,26 +2156,46 @@ def _source_rows(
             if not isinstance(image_path, str) or not isinstance(image_sha256, str):
                 raise SchemaRefusal("a sealed export page lacks its verified image reference")
             _require_sha256(image_sha256, "a sealed export page image digest")
-            if embed_pixels:
-                pixels = read_bytes(image_path)
-                if digest_bytes(pixels) != image_sha256:
-                    raise SchemaRefusal("a sealed page changed while its export was being built")
-                member = f"pixels/pages/{ordinal}.img"
-                embedded[member] = pixels
-                row["page_image"] = {
-                    "availability": _EMBEDDED,
-                    "member_path": member,
-                    "sha256": image_sha256,
-                }
-            else:
+            if not embed_pixels:
                 _validate_run_relative_path(image_path)
-                row["page_image"] = {
-                    "availability": _SOURCE_ACCESS_REQUIRED,
-                    "run_relative_path": image_path,
-                    "sha256": image_sha256,
-                }
+            row["page_image"] = _image_reference(
+                image_path,
+                image_sha256,
+                f"pixels/pages/{ordinal}.img",
+                embed_pixels,
+                read_bytes,
+                embedded,
+                changed="a sealed page changed while its export was being built",
+            )
         rows.append(row)
     return rows, embedded
+
+
+def _image_reference(
+    path: str,
+    sha256: str,
+    member: str,
+    embed_pixels: bool,
+    read_bytes: Callable[[str], bytes],
+    embedded: dict[str, bytes],
+    *,
+    changed: str,
+    collision: str | None = None,
+) -> dict[str, str]:
+    """Cite one image by its run path, or embed its re-verified bytes as ``member``."""
+    if not embed_pixels:
+        return {
+            "availability": _SOURCE_ACCESS_REQUIRED,
+            "run_relative_path": path,
+            "sha256": sha256,
+        }
+    pixels = read_bytes(path)
+    if digest_bytes(pixels) != sha256:
+        raise SchemaRefusal(changed)
+    if collision is not None and embedded.get(member, pixels) != pixels:
+        raise SchemaRefusal(collision)
+    embedded[member] = pixels
+    return {"availability": _EMBEDDED, "member_path": member, "sha256": sha256}
 
 
 def _text_bundle_members(
@@ -2235,31 +2279,16 @@ def _acts_with_source_references(
         for region in act.get("source_regions", []):
             _validate_cited_region(region, subject="exported act")
             copied = dict(region)
-            image_path, image_sha256, region_id = (
+            copied["crop_image"] = _image_reference(
                 copied["image_path"],
                 copied["image_sha256"],
-                copied["region_id"],
+                f"pixels/crops/{copied['region_id']}.img",
+                embed_pixels,
+                read_bytes,
+                embedded,
+                changed="a source crop changed while its export was being built",
+                collision="two source crops claimed one package member",
             )
-            if embed_pixels:
-                pixels = read_bytes(image_path)
-                if digest_bytes(pixels) != image_sha256:
-                    raise SchemaRefusal("a source crop changed while its export was being built")
-                member = f"pixels/crops/{region_id}.img"
-                previous = embedded.get(member)
-                if previous is not None and previous != pixels:
-                    raise SchemaRefusal("two source crops claimed one package member")
-                embedded[member] = pixels
-                copied["crop_image"] = {
-                    "availability": _EMBEDDED,
-                    "member_path": member,
-                    "sha256": image_sha256,
-                }
-            else:
-                copied["crop_image"] = {
-                    "availability": _SOURCE_ACCESS_REQUIRED,
-                    "run_relative_path": image_path,
-                    "sha256": image_sha256,
-                }
             regions.append(copied)
         record["source_regions"] = regions
         projected.append(record)
@@ -2288,27 +2317,16 @@ def _salvage_with_source_references(
             if region_id in seen_regions:
                 raise SchemaRefusal("a salvage-tier item repeats a source-region identity")
             seen_regions.add(region_id)
-            image_path, image_sha256 = copied["image_path"], copied["image_sha256"]
-            if embed_pixels:
-                pixels = read_bytes(image_path)
-                if digest_bytes(pixels) != image_sha256:
-                    raise SchemaRefusal("a salvage-tier source crop changed while export was built")
-                member = f"pixels/salvage/{salvage_id}/{region_id}.img"
-                previous = embedded.get(member)
-                if previous is not None and previous != pixels:
-                    raise SchemaRefusal("two salvage source crops claim one package member")
-                embedded[member] = pixels
-                copied["crop_image"] = {
-                    "availability": _EMBEDDED,
-                    "member_path": member,
-                    "sha256": image_sha256,
-                }
-            else:
-                copied["crop_image"] = {
-                    "availability": _SOURCE_ACCESS_REQUIRED,
-                    "run_relative_path": image_path,
-                    "sha256": image_sha256,
-                }
+            copied["crop_image"] = _image_reference(
+                copied["image_path"],
+                copied["image_sha256"],
+                f"pixels/salvage/{salvage_id}/{region_id}.img",
+                embed_pixels,
+                read_bytes,
+                embedded,
+                changed="a salvage-tier source crop changed while export was built",
+                collision="two salvage source crops claim one package member",
+            )
             regions.append(copied)
         copied_item["source_regions"] = regions
         projected.append(copied_item)
@@ -2324,14 +2342,14 @@ def _is_line_safe_identity(value: object) -> bool:
     Act ids and keys are written raw into the text bundle's headers, which the
     verifier parses line by line.
     """
-    if not isinstance(value, str) or not value:
+    if not _is_nonempty_str(value):
         return False
     return not any(ord(character) < 0x20 or character == "\x7f" for character in value)
 
 
 def _is_safe_path_segment(value: object) -> bool:
     """Whether an identity may be spliced into a member path as one whole component."""
-    if not isinstance(value, str) or not value or "/" in value or value in (".", ".."):
+    if not _is_nonempty_str(value) or "/" in value or value in (".", ".."):
         return False
     return not any(character in value for character in _UNSAFE_PATH_CHARACTERS)
 
@@ -2343,7 +2361,7 @@ def _reject_unsafe_relative_path(value: object, *, subject: str) -> PurePosixPat
     ``a/..\\..\\evil`` passes the ``..`` check, yet Windows tools treat a backslash
     in a ZIP entry name as a separator.
     """
-    if not isinstance(value, str) or not value:
+    if not _is_nonempty_str(value):
         raise SchemaRefusal(f"{subject} is unsafe")
     if any(character in value for character in _UNSAFE_PATH_CHARACTERS):
         raise SchemaRefusal(f"{subject} is unsafe")
@@ -2589,13 +2607,9 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 else None,
                 "semantic_annotations": [],
                 "semantic_annotation_status": _SEMANTIC_ANNOTATION_NOT_PRODUCED,
-                "witnesses": act.get("witnesses", []),
-                "perlectio_ref": act.get("perlectio_ref"),
-                "recensor_ref": act.get("recensor_ref"),
-                "dissent_ref": act.get("dissent_ref"),
+                **_act_evidence(act),
                 "approval_ref": act.get("approval_ref"),
                 "reason": _export_reason(act),
-                "evidence_refs": act.get("evidence_refs", []),
             }
         )
     return records
@@ -2617,19 +2631,12 @@ def _export_reason(act: dict[str, Any]) -> str | None:
 
     The fallback names the gap ("upstream recorded no reason"), not the outcome.
     """
-    if act["category"] in {
-        ArmariumCategory.HELD_FOR_REVIEW.value,
-        ArmariumCategory.REFUSED_WITH_REASON.value,
-    }:
+    if act["category"] in _REVIEW_CATEGORIES:
         return act.get("reason") or "upstream recorded no reason"
     return act.get("reason")
 
 
 def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
-    review_categories = {
-        ArmariumCategory.HELD_FOR_REVIEW.value,
-        ArmariumCategory.REFUSED_WITH_REASON.value,
-    }
     return [
         {
             "schema": "armarium-review-item.v1",
@@ -2640,7 +2647,7 @@ def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
             "evidence_refs": act.get("evidence_refs", []),
         }
         for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"]))
-        if act["category"] in review_categories
+        if act["category"] in _REVIEW_CATEGORIES
     ]
 
 
@@ -2675,12 +2682,33 @@ def _package_lines(path, subject: str) -> list[str]:
         raise SchemaRefusal(f"the {subject} cannot be read") from error
 
 
+def _decode_json(encoded: Any, refusal: str) -> Any:
+    try:
+        return json.loads(encoded)
+    except (TypeError, UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise SchemaRefusal(refusal) from error
+
+
+def _jsonl_rows(path, subject: str, row: str):
+    """Decode every non-blank line of one package JSONL member."""
+    for line in _package_lines(path, subject):
+        if line:
+            yield _decode_json(line, f"{row} is not JSON")
+
+
+class _TextBundleRecord(NamedTuple):
+    literal: str
+    digest: str
+    citations: tuple[tuple[str, str], ...]
+    uncertainty: dict[str, Any]
+    text_status: str
+    annotations: list[Any]
+    heading_key: str
+
+
 def _text_bundle_records(
     root, source_pages: list[dict[str, Any]] | None = None
-) -> dict[
-    str,
-    tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list[Any], str],
-]:
+) -> dict[str, _TextBundleRecord]:
     """Parse literal records and their page/hash citations from the readable bundle."""
     if source_pages is None:
         source_pages = _load_sources(root)["pages"]
@@ -2696,10 +2724,7 @@ def _text_bundle_records(
         known_pages.add((path, digest))
         source_folders.add(_source_folder_for_declared_path(path))
 
-    records: dict[
-        str,
-        tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list, str],
-    ] = {}
+    records: dict[str, _TextBundleRecord] = {}
     record_locations: set[tuple[str, str]] = set()
     # Enumerate the folders from the authenticated source graph, not an `rglob`
     # walk, which could silently skip a linked or unreadable subtree.
@@ -2730,10 +2755,7 @@ def _text_bundle_records(
                 if not heading_key:
                     raise SchemaRefusal("a text-bundle human heading has no act key")
                 citations = []
-                pending = None
-                pending_uncertainty = None
-                pending_text_status = None
-                pending_annotations = None
+                pending = pending_uncertainty = pending_text_status = pending_annotations = None
             elif line.startswith("source-page: "):
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal(
@@ -2746,7 +2768,7 @@ def _text_bundle_records(
                 digest = digest_line.removeprefix("source-sha256: ")
                 _require_sha256(digest, "a text-bundle source citation digest")
                 citation = (declared_path, digest)
-                if known_pages is not None and citation not in known_pages:
+                if citation not in known_pages:
                     raise SchemaRefusal("a text-bundle source citation names no packaged page")
                 citations.append(citation)
             elif line.startswith("source-sha256: "):
@@ -2760,10 +2782,7 @@ def _text_bundle_records(
                 # else would catch that.
                 if pending is not None:
                     raise SchemaRefusal("a text-bundle section carries more than one literal")
-                try:
-                    literal = json.loads(lines[index + 1])
-                except (UnicodeDecodeError, ValueError, RecursionError) as error:
-                    raise SchemaRefusal("a text-bundle canonical text is not JSON") from error
+                literal = _decode_json(lines[index + 1], "a text-bundle canonical text is not JSON")
                 if not isinstance(literal, str):
                     raise SchemaRefusal("a text-bundle canonical text is not a string")
                 digest_line = lines[index - 1] if index else ""
@@ -2782,10 +2801,9 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle section carries more than one uncertainty layer"
                     )
-                try:
-                    uncertainty = json.loads(lines[index + 1])
-                except (UnicodeDecodeError, ValueError, RecursionError) as error:
-                    raise SchemaRefusal("a text-bundle uncertainty layer is not JSON") from error
+                uncertainty = _decode_json(
+                    lines[index + 1], "a text-bundle uncertainty layer is not JSON"
+                )
                 try:
                     # The round trip, not just the shape: this is the one format
                     # whose layer arrives as decoded text, where offsets could shift.
@@ -2814,12 +2832,9 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle section carries more than one transcription annotation layer"
                     )
-                try:
-                    pending_annotations = json.loads(lines[index + 1])
-                except (UnicodeDecodeError, ValueError, RecursionError) as error:
-                    raise SchemaRefusal(
-                        "a text-bundle transcription annotation layer is not JSON"
-                    ) from error
+                pending_annotations = _decode_json(
+                    lines[index + 1], "a text-bundle transcription annotation layer is not JSON"
+                )
             elif line == "display:":
                 # Stripping the display must return the canonical text exactly, so
                 # display markup never enters the hashed text.
@@ -2846,10 +2861,7 @@ def _text_bundle_records(
                 convention_line = lines[index - 1] if index else ""
                 if convention_line != f"display_convention: {DISPLAY_CONVENTION}":
                     raise SchemaRefusal("a text-bundle display names no known convention")
-                try:
-                    rendered = json.loads(lines[index + 1])
-                except (UnicodeDecodeError, ValueError, RecursionError) as error:
-                    raise SchemaRefusal("a text-bundle display is not JSON") from error
+                rendered = _decode_json(lines[index + 1], "a text-bundle display is not JSON")
                 try:
                     stripped = strip_display(rendered) if isinstance(rendered, str) else None
                 except ValueError as error:
@@ -2865,7 +2877,7 @@ def _text_bundle_records(
                 )
                 if folder not in citation_folders:
                     raise SchemaRefusal("a text-bundle act is enclosed by the wrong source folder")
-                candidate = (
+                candidate = _TextBundleRecord(
                     *pending,
                     pending_uncertainty,
                     pending_text_status,
@@ -2896,16 +2908,14 @@ def _text_bundle_records(
 
 def _text_bundle_literals(root) -> dict[str, tuple]:
     return {
-        act_id: (literal, digest, uncertainty, text_status, annotations)
-        for act_id, (
-            literal,
-            digest,
-            _citations,
-            uncertainty,
-            text_status,
-            annotations,
-            _heading_key,
-        ) in _text_bundle_records(root).items()
+        act_id: (
+            record.literal,
+            record.digest,
+            record.uncertainty,
+            record.text_status,
+            record.annotations,
+        )
+        for act_id, record in _text_bundle_records(root).items()
     }
 
 
@@ -3021,6 +3031,15 @@ def _open_acts_database(path) -> sqlite3.Connection:
     except sqlite3.DatabaseError as error:
         raise SchemaRefusal("the acts database cannot be opened") from error
     try:
+        _verify_acts_database_identity(connection)
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
+def _verify_acts_database_identity(connection: sqlite3.Connection) -> None:
+    try:
         placeholders = ", ".join("?" for _name in _SQLITE_PRODUCT_TABLES)
         kinds = dict(
             connection.execute(
@@ -3033,44 +3052,42 @@ def _open_acts_database(path) -> sqlite3.Connection:
             "SELECT value FROM export_metadata WHERE key = 'schema'"
         ).fetchone()
     except sqlite3.DatabaseError as error:
-        connection.close()
         raise SchemaRefusal("the acts database has no readable schema") from error
     if any(kinds.get(name) != "table" for name in _STORED_ACTS_TABLES):
-        connection.close()
         raise SchemaRefusal("the acts database does not carry acts and act_search as stored tables")
     if (
         kinds.get("acts_fts") != "table"
         or user_version != (_SQLITE_USER_VERSION,)
         or schema != (_SQLITE_SCHEMA,)
     ):
-        connection.close()
         raise SchemaRefusal("the acts database has no recognized SQLite product identity")
-    try:
-        _verify_acts_schema(connection)
-    except BaseException:
-        connection.close()
-        raise
-    return connection
+    _verify_acts_schema(connection)
 
 
-def _database_literals(path) -> dict[str, tuple]:
+def _read_acts_database(path, query: str, refusal: str) -> list[tuple]:
     connection: sqlite3.Connection | None = None
     try:
         connection = _open_acts_database(path)
-        rows = connection.execute(
-            """
-            SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_json,
-                   text_status, transcription_annotations_json
-            FROM acts
-            WHERE canonical_clean_text IS NOT NULL
-            ORDER BY act_id
-            """
-        ).fetchall()
+        return connection.execute(query).fetchall()
     except sqlite3.DatabaseError as error:
-        raise SchemaRefusal("the acts database cannot be read for projection identity") from error
+        raise SchemaRefusal(refusal) from error
     finally:
         if connection is not None:
             connection.close()
+
+
+def _database_literals(path) -> dict[str, tuple]:
+    rows = _read_acts_database(
+        path,
+        """
+        SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_json,
+               text_status, transcription_annotations_json
+        FROM acts
+        WHERE canonical_clean_text IS NOT NULL
+        ORDER BY act_id
+        """,
+        "the acts database cannot be read for projection identity",
+    )
     records: dict[str, tuple] = {}
     for act_id, literal, digest, uncertainty_json, text_status, annotations_json in rows:
         if (
@@ -3083,10 +3100,7 @@ def _database_literals(path) -> dict[str, tuple]:
             raise SchemaRefusal("the acts database has an untyped literal row")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("the acts database literal identity or hash is invalid")
-        try:
-            uncertainty = json.loads(uncertainty_json)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
+        uncertainty = _database_json_layer(uncertainty_json, "uncertainty")
         annotations = _database_json_layer(annotations_json, "transcription annotation")
         _require_damage_record(
             text_status, annotations, uncertainty, literal, subject="acts database row"
@@ -3103,14 +3117,8 @@ def _database_literals(path) -> dict[str, tuple]:
 
 def _jsonl_literals(path) -> dict[str, tuple]:
     records: dict[str, tuple] = {}
-    for line in _package_lines(path, "acts JSONL"):
-        if not line:
-            continue
-        # Independently callable, so it cannot rely on earlier validation.
-        try:
-            record = json.loads(line)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("an acts JSONL row is not JSON") from error
+    # Independently callable, so it cannot rely on earlier validation.
+    for record in _jsonl_rows(path, "acts JSONL", "an acts JSONL row"):
         if not isinstance(record, dict):
             raise SchemaRefusal("an acts JSONL row is not an object")
         literal = record.get(CANONICAL_TEXT_FIELD)
@@ -3171,6 +3179,19 @@ def _page_ledger_category(
     )
 
 
+def _page_ledger_unit(
+    unit_type: str, page: dict[str, Any], category: str, reason: str | None
+) -> dict[str, Any]:
+    return {
+        "unit_type": unit_type,
+        "unit_id": f"{unit_type}:{page['ordinal']}",
+        "category": category,
+        "reason": reason,
+        "declared_path": page.get("declared_path"),
+        "declared_sha256": page.get("declared_sha256"),
+    }
+
+
 def _terminal_ledger(
     act_outcomes: list[dict[str, Any]],
     pages: list[dict[str, Any]],
@@ -3208,7 +3229,7 @@ def _terminal_ledger(
         if not isinstance(ordinals, (list, tuple)):
             raise SchemaRefusal("an Armarium terminal ledger act has no page ordinal list")
         for ordinal in ordinals:
-            if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            if not _is_integer(ordinal):
                 raise SchemaRefusal("an Armarium terminal ledger act names a non-integer page")
             acts_on_page.setdefault(ordinal, []).append(category)
 
@@ -3220,29 +3241,11 @@ def _terminal_ledger(
             category, reason = _page_ledger_category(
                 ordinal, acts_on_page.get(ordinal, []), edge_hold=ordinal in edge_hold_pages
             )
-            page_units.append(
-                {
-                    "unit_type": "page",
-                    "unit_id": f"page:{ordinal}",
-                    "category": category,
-                    "reason": reason,
-                    "declared_path": page.get("declared_path"),
-                    "declared_sha256": page.get("declared_sha256"),
-                }
-            )
+            page_units.append(_page_ledger_unit("page", page, category, reason))
         else:
             category = ArmariumCategory.REFUSED_WITH_REASON.value
             reason = page.get("reason") or "no reason was recorded"
-        source_units.append(
-            {
-                "unit_type": "source",
-                "unit_id": f"source:{ordinal}",
-                "category": category,
-                "reason": reason,
-                "declared_path": page.get("declared_path"),
-                "declared_sha256": page.get("declared_sha256"),
-            }
-        )
+        source_units.append(_page_ledger_unit("source", page, category, reason))
 
     act_units = [
         {
@@ -3256,12 +3259,11 @@ def _terminal_ledger(
     ]
 
     units = source_units + page_units + act_units
-    known = {category.value for category in ArmariumCategory}
-    by_category = {category: 0 for category in sorted(known)}
+    by_category = {category: 0 for category in sorted(_KNOWN_CATEGORIES)}
     by_unit_type = {"source": 0, "page": 0, "act": 0}
     seen: set[str] = set()
     for unit in units:
-        if unit["category"] not in known:
+        if unit["category"] not in _KNOWN_CATEGORIES:
             raise SchemaRefusal(
                 f"terminal ledger unit {unit['unit_id']} carries category "
                 f"{unit['category']!r}, which is not one of the five closed categories"
@@ -3320,22 +3322,14 @@ def _export_manifest(
         for row in projection.source_manifest
         if isinstance(row, dict) and isinstance(row.get("relative_path"), str)
     }
-    salvage_claim = (
-        {
-            "namespace": "salvage",
-            "status": "accounted",
-            "count": len(projection.salvage_items),
-            "promotion": _SALVAGE_PROMOTION_CLAIM,
-        }
-        if projection.salvage_items is not None
-        else {
-            "namespace": "salvage",
+    if projection.salvage_items is None:
+        salvage_status = {
             "status": "not-produced-no-sealed-salvage-inventory",
             "count": None,
             "reason": _SALVAGE_ABSENCE_REASON,
-            "promotion": _SALVAGE_PROMOTION_CLAIM,
         }
-    )
+    else:
+        salvage_status = {"status": "accounted", "count": len(projection.salvage_items)}
     ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     unmeasurable_ink_map_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
@@ -3354,16 +3348,7 @@ def _export_manifest(
             if any("logical_membership" in act for act in projection.acts)
             else EXPORT_MANIFEST_SCHEMA
         ),
-        "canonical_text": {
-            "authority": "archetypus",
-            "field": CANONICAL_TEXT_FIELD,
-            "hash": "sha256-utf-8",
-            "derived_columns_are_marked": True,
-            # Empty when fewer than two literal formats leave nothing to compare.
-            "identity_verified_across": sorted(set(_LITERAL_TEXT_FORMATS) & set(formats.formats))
-            if len(set(_LITERAL_TEXT_FORMATS) & set(formats.formats)) >= 2
-            else [],
-        },
+        "canonical_text": _canonical_text_claim(formats.formats),
         "run": _manifest_run_binding(projection),
         "formats": formats.to_record(),
         "claims": {
@@ -3415,7 +3400,11 @@ def _export_manifest(
                 "exercised_against_real_spans": False,
                 "reason": _DISPLAY_REASON,
             },
-            "salvage": salvage_claim,
+            "salvage": {
+                "namespace": "salvage",
+                **salvage_status,
+                "promotion": _SALVAGE_PROMOTION_CLAIM,
+            },
             "not_measured": _not_measured_claim(projection),
         },
         "aggregate": projection.aggregate,
@@ -3449,6 +3438,26 @@ def _zip_bytes(members: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
+_SOURCES_LIST_FIELDS: Final = (
+    "pages",
+    "regions",
+    "act_citations",
+    "act_outcomes",
+    "salvage_regions",
+)
+_SOURCES_FIELDS: Final = (
+    "pages",
+    "regions",
+    "act_citations",
+    "act_outcomes",
+    "aggregate_basis",
+    "ink_map_pages",
+    "witness_chairs",
+    "witness_floor",
+    "salvage_regions",
+)
+
+
 def _load_sources(root) -> dict[str, Any]:
     try:
         record = json.loads((root / "sources.json").read_text(encoding="utf-8"))
@@ -3460,63 +3469,28 @@ def _load_sources(root) -> dict[str, Any]:
         raise SchemaRefusal("the package sources citation is unreadable") from error
     if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
         raise SchemaRefusal("the package sources citation has no recognized schema")
-    fields = set(record) - {"logical_accounting"}
-    if fields != {
-        "schema",
-        "pages",
-        "regions",
-        "act_citations",
-        "act_outcomes",
-        "aggregate_basis",
-        "ink_map_pages",
-        "witness_chairs",
-        "witness_floor",
-        "salvage_regions",
-    }:
+    if set(record) - {"logical_accounting"} != {"schema", *_SOURCES_FIELDS}:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
-    (
-        pages,
-        regions,
-        act_citations,
-        act_outcomes,
-        aggregate_basis,
-        witness_chairs,
-        witness_floor,
-        salvage_regions,
-    ) = (
-        record.get("pages"),
-        record.get("regions"),
-        record.get("act_citations"),
-        record.get("act_outcomes"),
-        record.get("aggregate_basis"),
-        record.get("witness_chairs"),
-        record.get("witness_floor"),
-        record.get("salvage_regions"),
+    sources = {field: record[field] for field in _SOURCES_FIELDS}
+    sources["ink_map_pages"] = _validate_ink_map_pages(
+        sources["ink_map_pages"], "the package sources citation"
     )
-    ink_map_pages = _validate_ink_map_pages(
-        record.get("ink_map_pages"), "the package sources citation"
-    )
-    if (
-        not isinstance(pages, list)
-        or not isinstance(regions, list)
-        or not isinstance(act_citations, list)
-        or not isinstance(act_outcomes, list)
-        or not isinstance(aggregate_basis, dict)
-        or not isinstance(salvage_regions, list)
+    if not isinstance(sources["aggregate_basis"], dict) or any(
+        not isinstance(sources[field], list) for field in _SOURCES_LIST_FIELDS
     ):
         raise SchemaRefusal("the package sources citation has no page and region lists")
-    return {
-        "pages": pages,
-        "regions": regions,
-        "act_citations": act_citations,
-        "act_outcomes": act_outcomes,
-        "aggregate_basis": aggregate_basis,
-        "ink_map_pages": ink_map_pages,
-        "witness_chairs": witness_chairs,
-        "witness_floor": witness_floor,
-        "salvage_regions": salvage_regions,
-        "logical_accounting": record.get("logical_accounting"),
-    }
+    sources["logical_accounting"] = record.get("logical_accounting")
+    return sources
+
+
+def _manifest_claim(manifest: dict[str, Any], name: str) -> Any:
+    claims = manifest.get("claims")
+    return claims.get(name) if isinstance(claims, dict) else None
+
+
+def _manifest_format_names(manifest: dict[str, Any]) -> Any:
+    selected = manifest.get("formats")
+    return selected.get("formats") if isinstance(selected, dict) else None
 
 
 def _manifest_formats(manifest: dict[str, Any]) -> ArmariumFormats:
@@ -3605,19 +3579,14 @@ def _verify_exact_product_members(
 
 def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
     """Read the manifest's five-category act denominator without trusting it."""
-    claims = manifest.get("claims")
-    partition = claims.get("act_partition") if isinstance(claims, dict) else None
+    partition = _manifest_claim(manifest, "act_partition")
     if not isinstance(partition, dict):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no act partition claim")
     expected_count = partition.get("expected_count")
     counted = partition.get("counted")
     if (
-        not isinstance(expected_count, int)
-        or isinstance(expected_count, bool)
-        or expected_count < 0
-        or not isinstance(counted, int)
-        or isinstance(counted, bool)
-        or counted < 0
+        not _is_count(expected_count)
+        or not _is_count(counted)
         or partition.get("reconciles") is not True
     ):
         raise SchemaRefusal("EXPORT_MANIFEST.json has an unreconciled act partition claim")
@@ -3625,7 +3594,6 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
     if not isinstance(rows, list):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no category rows")
 
-    expected_categories = {category.value for category in ArmariumCategory}
     seen_categories: set[str] = set()
     result: dict[str, str] = {}
     for row in rows:
@@ -3634,22 +3602,20 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
         category, count, act_ids = row.get("category"), row.get("count"), row.get("act_ids")
         if (
             not isinstance(category, str)
-            or category not in expected_categories
+            or category not in _KNOWN_CATEGORIES
             or category in seen_categories
-            or not isinstance(count, int)
-            or isinstance(count, bool)
-            or count < 0
+            or not _is_count(count)
             or not isinstance(act_ids, list)
             or count != len(act_ids)
         ):
             raise SchemaRefusal("an act partition category row is malformed")
         seen_categories.add(category)
         for act_id in act_ids:
-            if not isinstance(act_id, str) or not act_id or act_id in result:
+            if not _is_nonempty_str(act_id) or act_id in result:
                 raise SchemaRefusal("an act partition repeats or omits an act identity")
             result[act_id] = category
     if (
-        seen_categories != expected_categories
+        seen_categories != _KNOWN_CATEGORIES
         or len(result) != expected_count
         or counted != expected_count
     ):
@@ -3666,12 +3632,11 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
 
 def _manifest_act_keys(manifest: dict[str, Any], categories: dict[str, str]) -> dict[str, str]:
     """Read the key-to-category accounting link needed to recompute the aggregate."""
-    claims = manifest.get("claims")
-    partition = claims.get("act_partition") if isinstance(claims, dict) else None
+    partition = _manifest_claim(manifest, "act_partition")
     keys = partition.get("act_keys") if isinstance(partition, dict) else None
     if not isinstance(keys, dict) or set(keys) != set(categories):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no complete act-key partition")
-    if any(not isinstance(act_key, str) or not act_key for act_key in keys.values()):
+    if any(not _is_nonempty_str(act_key) for act_key in keys.values()):
         raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid act key")
     if len(set(keys.values())) != len(keys):
         raise SchemaRefusal("EXPORT_MANIFEST.json repeats an act key")
@@ -3708,13 +3673,7 @@ def _verify_logical_partition_claim(
         )
     declared = accounting["local_proposal_rows"]
     memberships = accounting["memberships"]
-    if (
-        not isinstance(declared, int)
-        or isinstance(declared, bool)
-        or declared < 0
-        or not isinstance(memberships, dict)
-        or not memberships
-    ):
+    if not _is_count(declared) or not isinstance(memberships, dict) or not memberships:
         raise SchemaRefusal("the package logical accounting is malformed")
     member_ids_seen: set[str] = set()
     member_keys_seen: set[str] = set()
@@ -3735,18 +3694,15 @@ def _verify_logical_partition_claim(
         if (
             not isinstance(ids, list)
             or not ids
-            or not all(isinstance(member, str) and member for member in ids)
+            or not all(_is_nonempty_str(member) for member in ids)
             or ids != sorted(set(ids))
             or not isinstance(keys, list)
             or len(keys) != len(ids)
-            or not all(isinstance(member, str) and member for member in keys)
+            or not all(_is_nonempty_str(member) for member in keys)
             or keys != sorted(set(keys))
             or not isinstance(ordinals, list)
             or not ordinals
-            or not all(
-                isinstance(ordinal, int) and not isinstance(ordinal, bool) and ordinal >= 0
-                for ordinal in ordinals
-            )
+            or not all(_is_count(ordinal) for ordinal in ordinals)
             or ordinals != sorted(set(ordinals))
         ):
             raise SchemaRefusal("a package logical membership row is not canonical")
@@ -3769,9 +3725,7 @@ def _verify_logical_partition_claim(
         )
         if (
             not isinstance(attributed, list)
-            or not all(
-                isinstance(ordinal, int) and not isinstance(ordinal, bool) for ordinal in attributed
-            )
+            or not all(_is_integer(ordinal) for ordinal in attributed)
             or not set(ordinals) <= set(attributed)
         ):
             raise SchemaRefusal(
@@ -3829,55 +3783,14 @@ def _verify_honest_status_claims(
     if (
         status not in {"complete", "partial"}
         or not isinstance(reasons, list)
-        or not all(isinstance(reason, str) and reason for reason in reasons)
+        or not all(_is_nonempty_str(reason) for reason in reasons)
     ):
         raise SchemaRefusal("the exported aggregate has no valid measured status and reasons")
     must_be_partial = any(category not in _COMPLETED_CATEGORIES for category in categories.values())
     must_be_partial = must_be_partial or any(
         page.get("outcome") != "sealed" for page in sources["pages"] if isinstance(page, dict)
     )
-    # Derive the page-level incomplete cause from source rows, never from the
-    # manifest claim being verified; otherwise a false claim verifies itself.
-    ink_map_rows = _validate_ink_map_pages(
-        sources.get("ink_map_pages"), "the package sources citation"
-    )
-    derived_edge_holds = _edge_hold_pages_from_validated_rows(ink_map_rows)
-    derived_unmeasurable_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
-    sealed_ordinals = {
-        page["ordinal"]
-        for page in sources["pages"]
-        if isinstance(page, dict) and page.get("outcome") == "sealed"
-    }
-    if {row["ordinal"] for row in ink_map_rows} != sealed_ordinals:
-        raise SchemaRefusal(
-            "the package's ink-map denominator is not exactly its own sealed page census. At "
-            "least one page finding is missing or extra, so its terminal ledger cannot balance. "
-            "Discard this extraction and rebuild the package from the intact run tree."
-        )
-    ink_map_claim = claims.get("ink_map")
-    declared_unmeasurable_pages = (
-        ink_map_claim.get("unmeasurable_pages") if isinstance(ink_map_claim, dict) else None
-    )
-    if (
-        not isinstance(ink_map_claim, dict)
-        or set(ink_map_claim) != {"denominator", "held_pages", "unmeasurable_pages"}
-        or ink_map_claim["denominator"] != INK_MAP_DENOMINATOR
-        or ink_map_claim["held_pages"] != list(derived_edge_holds)
-        or not isinstance(declared_unmeasurable_pages, list)
-        or any(
-            not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal <= 0
-            for ordinal in declared_unmeasurable_pages
-        )
-        or declared_unmeasurable_pages != sorted(set(declared_unmeasurable_pages))
-        or canonical_text(declared_unmeasurable_pages)
-        != canonical_text(list(derived_unmeasurable_pages))
-    ):
-        raise SchemaRefusal(
-            "the exported ink-map claim does not match the held and unmeasurable pages in its "
-            "own source evidence. The manifest and source graph disagree about which pages need "
-            "review or had no audit measurement. Discard this extraction and rebuild the package "
-            "from the intact run tree."
-        )
+    derived_edge_holds = _verify_ink_map_claim(claims, sources)
     must_be_partial = must_be_partial or bool(derived_edge_holds)
     # A delivered act with a recorded gap also makes the run partial. The full
     # recomputation below covers it too; checking it here gives a specific refusal.
@@ -3943,6 +3856,52 @@ def _verify_honest_status_claims(
         raise SchemaRefusal("the export page census makes no terminal-ledger claim")
 
 
+def _verify_ink_map_claim(claims: dict[str, Any], sources: dict[str, Any]) -> tuple[int, ...]:
+    """Require the ink-map claim to state the held and unmeasurable pages its rows give.
+
+    Both sets are derived from source rows, never from the manifest claim being
+    verified; otherwise a false claim verifies itself. Returns the held pages.
+    """
+    ink_map_rows = _validate_ink_map_pages(
+        sources.get("ink_map_pages"), "the package sources citation"
+    )
+    derived_edge_holds = _edge_hold_pages_from_validated_rows(ink_map_rows)
+    derived_unmeasurable_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
+    sealed_ordinals = {
+        page["ordinal"]
+        for page in sources["pages"]
+        if isinstance(page, dict) and page.get("outcome") == "sealed"
+    }
+    if {row["ordinal"] for row in ink_map_rows} != sealed_ordinals:
+        raise SchemaRefusal(
+            "the package's ink-map denominator is not exactly its own sealed page census. At "
+            "least one page finding is missing or extra, so its terminal ledger cannot balance. "
+            "Discard this extraction and rebuild the package from the intact run tree."
+        )
+    ink_map_claim = claims.get("ink_map")
+    declared_unmeasurable_pages = (
+        ink_map_claim.get("unmeasurable_pages") if isinstance(ink_map_claim, dict) else None
+    )
+    if (
+        not isinstance(ink_map_claim, dict)
+        or set(ink_map_claim) != {"denominator", "held_pages", "unmeasurable_pages"}
+        or ink_map_claim["denominator"] != INK_MAP_DENOMINATOR
+        or ink_map_claim["held_pages"] != list(derived_edge_holds)
+        or not isinstance(declared_unmeasurable_pages, list)
+        or any(not _is_integer(ordinal) or ordinal <= 0 for ordinal in declared_unmeasurable_pages)
+        or declared_unmeasurable_pages != sorted(set(declared_unmeasurable_pages))
+        or canonical_text(declared_unmeasurable_pages)
+        != canonical_text(list(derived_unmeasurable_pages))
+    ):
+        raise SchemaRefusal(
+            "the exported ink-map claim does not match the held and unmeasurable pages in its "
+            "own source evidence. The manifest and source graph disagree about which pages need "
+            "review or had no audit measurement. Discard this extraction and rebuild the package "
+            "from the intact run tree."
+        )
+    return derived_edge_holds
+
+
 def _verify_delivered_product_provenance(
     provenance: Any,
     source_regions: Any,
@@ -3965,7 +3924,6 @@ def _verify_delivered_product_provenance(
 def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
     """Read all terminal categories and their explicit review reasons from the source graph."""
     records: dict[str, dict[str, Any]] = {}
-    known = {category.value for category in ArmariumCategory}
     for record in sources["act_outcomes"]:
         if not isinstance(record, dict) or set(record) != {
             "act_id",
@@ -3983,11 +3941,9 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             record.get("text_status"),
         )
         if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
-            or category not in known
+            not _is_nonempty_str(act_id)
+            or not _is_nonempty_str(act_key)
+            or category not in _KNOWN_CATEGORIES
             or not isinstance(reason, str | None)
             or act_id in records
         ):
@@ -4000,14 +3956,7 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
                 "a source act-outcome record's established-text status does not match whether "
                 "the act was delivered"
             )
-        if (
-            category
-            in {
-                ArmariumCategory.HELD_FOR_REVIEW.value,
-                ArmariumCategory.REFUSED_WITH_REASON.value,
-            }
-            and not reason
-        ):
+        if category in _REVIEW_CATEGORIES and not reason:
             raise SchemaRefusal("a source review outcome has no explicit reason")
         records[act_id] = record
     return records
@@ -4026,13 +3975,7 @@ def _act_citation_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str,
         }:
             raise SchemaRefusal("a source act-citation record has an unrecognized field set")
         act_id, act_key = record.get("act_id"), record.get("act_key")
-        if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
-            or act_id in records
-        ):
+        if not _is_nonempty_str(act_id) or not _is_nonempty_str(act_key) or act_id in records:
             raise SchemaRefusal("a source act-citation record has no unique act identity")
         _verify_delivered_product_provenance(
             record.get("provenance"),
@@ -4055,16 +3998,8 @@ def _jsonl_act_records(
     path: Path, source_graph_regions: list[dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
     """Validate JSONL's one-record-per-act projection and return its categories."""
-    lines = _package_lines(path, "acts JSONL")
     records: dict[str, dict[str, Any]] = {}
-    known = {category.value for category in ArmariumCategory}
-    for line in lines:
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("an acts JSONL row is not JSON") from error
+    for record in _jsonl_rows(path, "acts JSONL", "an acts JSONL row"):
         if not isinstance(record, dict) or record.get("schema") != ACT_RECORD_SCHEMA:
             raise SchemaRefusal("an acts JSONL row has no recognized schema")
         if set(record) != _ACT_RECORD_FIELDS:
@@ -4077,11 +4012,9 @@ def _jsonl_act_records(
             record.get("category"),
         )
         if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
-            or category not in known
+            not _is_nonempty_str(act_id)
+            or not _is_nonempty_str(act_key)
+            or category not in _KNOWN_CATEGORIES
             or act_id in records
         ):
             raise SchemaRefusal("an acts JSONL row has an invalid act identity or category")
@@ -4130,28 +4063,13 @@ def _jsonl_act_records(
     return records
 
 
-def _database_uncertainty(encoded: Any) -> Any:
-    """Decode the acts database's one uncertainty column, or refuse its bytes."""
-    if encoded is None:
-        return None
-    if not isinstance(encoded, str):
-        raise SchemaRefusal("the acts database has an untyped uncertainty column")
-    try:
-        return json.loads(encoded)
-    except (UnicodeDecodeError, ValueError, RecursionError) as error:
-        raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
-
-
 def _database_json_layer(encoded: Any, subject: str) -> Any:
-    """Decode one further JSON-encoded acts-database layer column, or refuse it."""
+    """Decode one JSON-encoded acts-database layer column, or refuse it."""
     if encoded is None:
         return None
     if not isinstance(encoded, str):
         raise SchemaRefusal(f"the acts database has an untyped {subject} column")
-    try:
-        return json.loads(encoded)
-    except (UnicodeDecodeError, ValueError, RecursionError) as error:
-        raise SchemaRefusal(f"the acts database {subject} layer is not JSON") from error
+    return _decode_json(encoded, f"the acts database {subject} layer is not JSON")
 
 
 def _verify_carried_uncertainty(
@@ -4216,24 +4134,17 @@ def _database_act_records(
     path: Path, source_graph_regions: list[dict[str, Any]]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, tuple[str, str]]]:
     """Validate the SQLite one-record-per-act projection and return categories."""
-    connection: sqlite3.Connection | None = None
-    try:
-        connection = _open_acts_database(path)
-        rows = connection.execute(
-            "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
-            "provenance_json, source_regions_json, evidence_json, reason, "
-            "uncertainty_json, uncertainty_status, text_status, "
-            "transcription_annotations_json, semantic_annotations_json, "
-            "semantic_annotation_status FROM acts"
-        ).fetchall()
-    except sqlite3.DatabaseError as error:
-        raise SchemaRefusal("the acts database cannot be read for product accounting") from error
-    finally:
-        if connection is not None:
-            connection.close()
+    rows = _read_acts_database(
+        path,
+        "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
+        "provenance_json, source_regions_json, evidence_json, reason, "
+        "uncertainty_json, uncertainty_status, text_status, "
+        "transcription_annotations_json, semantic_annotations_json, "
+        "semantic_annotation_status FROM acts",
+        "the acts database cannot be read for product accounting",
+    )
     records: dict[str, dict[str, Any]] = {}
     literals: dict[str, tuple[str, str]] = {}
-    known = {category.value for category in ArmariumCategory}
     for (
         act_id,
         act_key,
@@ -4252,11 +4163,9 @@ def _database_act_records(
         semantic_annotation_status,
     ) in rows:
         if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
-            or category not in known
+            not _is_nonempty_str(act_id)
+            or not _is_nonempty_str(act_key)
+            or category not in _KNOWN_CATEGORIES
             or act_id in records
         ):
             raise SchemaRefusal("the acts database has an invalid act identity or category")
@@ -4273,12 +4182,7 @@ def _database_act_records(
             if encoded is None:
                 decoded.append(None)
                 continue
-            try:
-                parsed = json.loads(encoded)
-            except (TypeError, UnicodeDecodeError, ValueError, RecursionError) as error:
-                raise SchemaRefusal(
-                    "the acts database has unreadable provenance evidence"
-                ) from error
+            parsed = _decode_json(encoded, "the acts database has unreadable provenance evidence")
             _verify_retained_references_bounded(parsed)
             decoded.append(parsed)
         evidence_refs = decoded[2].get("evidence_refs") if isinstance(decoded[2], dict) else None
@@ -4288,7 +4192,7 @@ def _database_act_records(
                 decoded[0], decoded[1], source_graph_regions, subject="acts database"
             )
         _verify_carried_uncertainty(
-            _database_uncertainty(uncertainty_json),
+            _database_json_layer(uncertainty_json, "uncertainty"),
             uncertainty_status,
             literal if category == ArmariumCategory.DELIVERED.value else None,
             subject="acts database",
@@ -4296,7 +4200,7 @@ def _database_act_records(
         _verify_carried_damage(
             text_status,
             _database_json_layer(transcription_annotations_json, "transcription annotation"),
-            _database_uncertainty(uncertainty_json),
+            _database_json_layer(uncertainty_json, "uncertainty"),
             literal if category == ArmariumCategory.DELIVERED.value else None,
             subject="acts database",
         )
@@ -4319,19 +4223,8 @@ def _database_act_records(
 
 def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
     """Validate the selected review projection's exact terminal population."""
-    lines = _package_lines(path, "review-items JSONL")
     records: dict[str, dict[str, str]] = {}
-    allowed = {
-        ArmariumCategory.HELD_FOR_REVIEW.value,
-        ArmariumCategory.REFUSED_WITH_REASON.value,
-    }
-    for line in lines:
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("a review-items JSONL row is not JSON") from error
+    for record in _jsonl_rows(path, "review-items JSONL", "a review-items JSONL row"):
         if not isinstance(record, dict):
             raise SchemaRefusal("a review-items JSONL row is not an object")
         _verify_retained_references_bounded(record)
@@ -4344,11 +4237,9 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
         if record.get("schema") != "armarium-review-item.v1" or set(record) != _REVIEW_ITEM_FIELDS:
             raise SchemaRefusal("a review-items JSONL row has an unrecognized field set")
         if (
-            not isinstance(act_id, str)
-            or not act_id
-            or not isinstance(act_key, str)
-            or not act_key
-            or category not in allowed
+            not _is_nonempty_str(act_id)
+            or not _is_nonempty_str(act_key)
+            or category not in _REVIEW_CATEGORIES
             or not isinstance(reason, str)
             or not reason
             or act_id in records
@@ -4367,15 +4258,8 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
 
 def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
     """Read the tier-only JSONL and reapply its no-acts firewall."""
-    lines = _package_lines(path, "salvage-tier JSONL")
     records: list[dict[str, Any]] = []
-    for line in lines:
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("a salvage-tier JSONL row is not JSON") from error
+    for record in _jsonl_rows(path, "salvage-tier JSONL", "a salvage-tier JSONL row"):
         if not isinstance(record, dict) or record.get("schema") != SALVAGE_RECORD_SCHEMA:
             raise SchemaRefusal("a salvage-tier JSONL row has no recognized schema")
         _verify_retained_references_bounded(record)
@@ -4398,15 +4282,14 @@ def _verify_salvage_claim(
     records: tuple[dict[str, Any], ...],
     sources: dict[str, list[dict[str, Any]]],
 ) -> None:
-    claims = manifest.get("claims")
-    salvage = claims.get("salvage") if isinstance(claims, dict) else None
+    salvage = _manifest_claim(manifest, "salvage")
     if not isinstance(salvage, dict) or salvage.get("namespace") != "salvage":
         raise SchemaRefusal("EXPORT_MANIFEST.json has no salvage-tier claim")
     status, count = salvage.get("status"), salvage.get("count")
     if salvage.get("promotion") != _SALVAGE_PROMOTION_CLAIM:
         raise SchemaRefusal("the salvage-tier promotion claim is not this build's fixed claim")
     if status == "accounted":
-        if not isinstance(count, int) or isinstance(count, bool) or count != len(records):
+        if not _is_integer(count) or count != len(records):
             raise SchemaRefusal("the salvage-tier count does not reconcile to its records")
     elif status == "not-produced-no-sealed-salvage-inventory":
         if (
@@ -4626,16 +4509,8 @@ def _verify_product_accounting(
             raise SchemaRefusal(
                 "the text bundle does not contain exactly the manifest's delivered acts"
             )
-        for act_id, (
-            _literal,
-            _digest,
-            text_citations,
-            _uncertainty,
-            _text_status,
-            _annotations,
-            heading_key,
-        ) in text_records.items():
-            if heading_key != act_keys[act_id]:
+        for act_id, record in text_records.items():
+            if record.heading_key != act_keys[act_id]:
                 raise SchemaRefusal(
                     "a text-bundle human heading does not authenticate its machine act identity"
                 )
@@ -4643,7 +4518,7 @@ def _verify_product_accounting(
                 (region["declared_path"], region["declared_sha256"])
                 for region in citations[act_id]["source_regions"]
             )
-            if text_citations != expected_citations:
+            if record.citations != expected_citations:
                 raise SchemaRefusal(
                     "the text bundle does not retain every delivered source citation"
                 )
@@ -4671,10 +4546,7 @@ def _verify_product_accounting(
         _verify_exact_delivered_citations(jsonl_records, citations, act_keys, subject="acts JSONL")
     if "review-items" in formats.formats:
         expected_review = {
-            act_id
-            for act_id, category in expected.items()
-            if category
-            in {ArmariumCategory.HELD_FOR_REVIEW.value, ArmariumCategory.REFUSED_WITH_REASON.value}
+            act_id for act_id, category in expected.items() if category in _REVIEW_CATEGORIES
         }
         review_records = _review_item_records(root / "review-items.jsonl")
         if set(review_records) != expected_review:
@@ -4699,8 +4571,7 @@ def _verify_pixel_claims(
     manifest: dict[str, Any], formats: ArmariumFormats, sources: dict[str, list[dict[str, Any]]]
 ) -> None:
     """Check that the manifest's clean-machine claim matches its citations."""
-    claims = manifest.get("claims")
-    pixels = claims.get("pixels") if isinstance(claims, dict) else None
+    pixels = _manifest_claim(manifest, "pixels")
     if not isinstance(pixels, dict) or pixels.get("embedded") is not formats.embed_pixels:
         raise SchemaRefusal("the package pixel claim disagrees with its selected format settings")
     expected_claim = _PIXEL_EMBEDDED_CLAIM if formats.embed_pixels else _PIXEL_REFERENCE_CLAIM
@@ -4720,8 +4591,7 @@ def _verify_pixel_claims(
 
 def _verify_display_claim(manifest: dict[str, Any]) -> None:
     """A rendering may be proposed; it may not be presented as settled or as text."""
-    claims = manifest.get("claims")
-    display = claims.get("display") if isinstance(claims, dict) else None
+    display = _manifest_claim(manifest, "display")
     if (
         not isinstance(display, dict)
         or display.get("convention") != DISPLAY_CONVENTION
@@ -4735,8 +4605,7 @@ def _verify_display_claim(manifest: dict[str, Any]) -> None:
 
 
 def _verify_retained_run_claim(manifest: dict[str, Any]) -> None:
-    claims = manifest.get("claims")
-    retained = claims.get("retained_run_references") if isinstance(claims, dict) else None
+    retained = _manifest_claim(manifest, "retained_run_references")
     if retained != {
         "availability": _RUN_ACCESS_REQUIRED,
         "resolution_claim": "artifact and receipt citations require retained-run access",
@@ -4754,19 +4623,10 @@ def _verify_canonical_text_claim(manifest: dict[str, Any]) -> None:
     canonical_text = manifest.get("canonical_text")
     if not isinstance(canonical_text, dict):
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
-    selected = manifest.get("formats")
-    selected_formats = selected.get("formats") if isinstance(selected, dict) else None
+    selected_formats = _manifest_format_names(manifest)
     if not isinstance(selected_formats, list):
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
-    literal_selected = set(_LITERAL_TEXT_FORMATS) & set(selected_formats)
-    expected_identity = sorted(literal_selected) if len(literal_selected) >= 2 else []
-    if canonical_text != {
-        "authority": "archetypus",
-        "field": CANONICAL_TEXT_FIELD,
-        "hash": "sha256-utf-8",
-        "derived_columns_are_marked": True,
-        "identity_verified_across": expected_identity,
-    }:
+    if canonical_text != _canonical_text_claim(selected_formats):
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
 
 
@@ -4776,16 +4636,13 @@ def _verify_annotations_claims(manifest: dict[str, Any]) -> None:
     The semantic claim is a fixed constant because no semantic annotator exists
     yet; the transcription claim is recomputed from the selected formats.
     """
-    claims = manifest.get("claims")
-    semantic = claims.get("semantic_annotations") if isinstance(claims, dict) else None
+    semantic = _manifest_claim(manifest, "semantic_annotations")
     if semantic != {"status": _SEMANTIC_ANNOTATIONS_CLAIM, "text_writable": False}:
         raise SchemaRefusal(
             "the package semantic-annotations claim is not this build's fixed claim"
         )
-    selected = manifest.get("formats")
-    format_rows = selected.get("formats") if isinstance(selected, dict) else None
-    transcription = claims.get("transcription_annotations") if isinstance(claims, dict) else None
-    if transcription != _transcription_annotations_claim(format_rows or []):
+    transcription = _manifest_claim(manifest, "transcription_annotations")
+    if transcription != _transcription_annotations_claim(_manifest_format_names(manifest) or []):
         raise SchemaRefusal(
             "the package transcription-annotations claim is not the measured carriage claim"
         )
@@ -4793,11 +4650,8 @@ def _verify_annotations_claims(manifest: dict[str, Any]) -> None:
 
 def _verify_uncertainty_claim(manifest: dict[str, Any]) -> None:
     """The carriage claim is recomputed from the selected literal-text formats."""
-    claims = manifest.get("claims")
-    selected = manifest.get("formats")
-    format_rows = selected.get("formats") if isinstance(selected, dict) else None
-    uncertainty = claims.get("uncertainty") if isinstance(claims, dict) else None
-    if uncertainty != _uncertainty_claim(format_rows or []):
+    uncertainty = _manifest_claim(manifest, "uncertainty")
+    if uncertainty != _uncertainty_claim(_manifest_format_names(manifest) or []):
         raise SchemaRefusal("the package uncertainty claim is not the canonical carriage claim")
 
 
@@ -4815,20 +4669,14 @@ def _verify_manifest_source_counts(
         if not isinstance(page, dict):
             raise SchemaRefusal("a package source row is not an object")
         ordinal, path = page.get("ordinal"), page.get("declared_path")
-        if (
-            not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or ordinal in ordinals
-            or not isinstance(path, str)
-        ):
+        if not _is_integer(ordinal) or ordinal in ordinals or not isinstance(path, str):
             raise SchemaRefusal(
                 "the package source census has duplicate or invalid page identities"
             )
         ordinals.add(ordinal)
         paths.add(path)
-    claims = manifest.get("claims")
-    page_census = claims.get("page_census") if isinstance(claims, dict) else None
-    submission = claims.get("submission_inventory") if isinstance(claims, dict) else None
+    page_census = _manifest_claim(manifest, "page_census")
+    submission = _manifest_claim(manifest, "submission_inventory")
     if (
         not isinstance(page_census, dict)
         or page_census.get("counted") != len(sources["pages"])
