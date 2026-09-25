@@ -40,7 +40,7 @@ RECENSOR_DIRECTORY = ROOT / "pipeline/5_recensor"
 # gate unguarded while `_recovery_request_publications`'s own docstring went on
 # claiming it found "every call site in the stage". A structural guard that scans
 # less than it says it scans is worse than none: it reports a pass for ground it
-# never covered. Discovered by the branch's own review and carried until now.
+# never covered.
 #
 # `rglob`, not `glob`: a guard that scans one directory while the stage has
 # grown a subpackage would repeat the exact same failure one level deeper.
@@ -293,9 +293,9 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     # this file exists to make impossible. `pty` reaches a shell the same way
     # `subprocess` does.
     #
-    # `asyncio` is here on the second look. It was left off on the reasoning
-    # that its subprocess routes all land on `subprocess` itself — true of what
-    # CPython executes, and irrelevant to what this test reads. This walks the
+    # `asyncio` is here even though its subprocess routes all land on
+    # `subprocess` itself — true of what CPython executes, and irrelevant to
+    # what this test reads. This walks the
     # stage's own `import` statements and never follows a transitive import, so
     # `import asyncio` followed by `asyncio.create_subprocess_exec(...)` puts
     # the word `subprocess` nowhere in this stage's source and passes. The

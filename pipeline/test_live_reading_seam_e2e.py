@@ -144,8 +144,8 @@ TAIL_FROM_RECENSOR = (
 # sealed proposal rectangles of `a1`, `a2` and a2's page-2 continuation; Churro
 # speaks its `<output>` envelope once per page; DAI is act-scoped and answers
 # plain text once per act. Churro answers its own closed contract on page 1 and
-# the retired `<output>` envelope on page 2, so both of its legal shapes cross
-# this seam.
+# the retired `<output>` envelope on page 2, so two of its three legal shapes
+# cross this seam.
 CHANDRA_PAGE_ONE = (
     '<div data-bbox="100 77 900 385" data-label="Text">'
     "SYNTHETIC ACT ONE alpha beta gamma</div>\n"
@@ -162,9 +162,9 @@ CHANDRA_PAGE_ONE = (
 # The geometry form on a continuation page is accepted:
 # `pipeline/4_perlector/run.py::act_attachment_view` requires a page witness's
 # `attached` to equal its geometric overlap with the act's sealed regions on
-# that page, and does not separately refuse an attached continuation entry
-# (run.py ~1239-1259). What a continuation page genuinely lacks is an ANCHOR,
-# and that is what this rule says.
+# that page, and does not separately refuse an attached continuation entry.
+# What a continuation page genuinely lacks is an ANCHOR, and that is what
+# this rule says.
 # `pipeline/4_perlector/test_live_perlector.py::test_a_page_witness_attached_by_geometry_on_a_continuation_page_is_readable`
 # pins the geometry form, and
 # `pipeline/3_attestatores/test_attestatores_live_pass.py` pins it at the
@@ -191,9 +191,9 @@ CHURRO_PAGE_ONE = (
 # module covers two of Churro's three legal shapes across its two pages,
 # exactly as it already does for Chandra's two forms.
 CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsilon zeta eta</output>"
-# The same chair answering with a page that is not this page. Fifty-five
-# characters with nothing in common with the ink, and the exact body the hostile
-# review of Unit 12 used. Aligned against this fixture's anchor it still shares
+# The same chair answering with a page that is not this page: fifty-five
+# characters with nothing in common with the ink. Aligned against this
+# fixture's anchor it still shares
 # characters with both acts: 'e' and 'm', one at a time, inside a1's
 # thirty-four-character anchor line, and eleven characters in runs of at most two
 # inside a2's. That was enough to attach it on `anchor-line`, call it comparable,

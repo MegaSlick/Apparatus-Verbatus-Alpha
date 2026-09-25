@@ -119,7 +119,7 @@ DEFAULT_DATA_GATE_POLICY_PATH = ROOT / "config" / "data_handling_policy.json"
 # `test_orchestrator_upload_credentials_are_the_transfers_own` reconciles this
 # copy with it. A credential added to one list alone would otherwise leave this
 # route carrying it into a stage that decodes caller-supplied material. Kept
-# even though `stage_environment` no longer loops over it directly (below): the
+# although `stage_environment` does not loop over it directly (below): the
 # reconciliation test still pins this exact set against the transfer's own.
 _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
 # The wall clock a timing receipt is stamped with, and the monotonic one its
@@ -484,8 +484,9 @@ def _record_stage_timing(
             # forward: a journal naming a different run, root or schema is left
             # exactly as it is and the conflict is reported, so two runs
             # pointed at one path can never attribute one run's stage timings
-            # to the other. The stopwatch never edits a record it cannot
-            # account for.
+            # to the other. This guard only covers a dict journal with a list
+            # `entries`; a non-dict journal is overwritten above and a
+            # non-list `entries` is dropped below.
             identity = (
                 existing.get("schema"),
                 existing.get("run_id"),
@@ -628,9 +629,9 @@ def main() -> int:
     # The roster's other half. `--models-config` selects which chairs exist and
     # this selects the vLLM profile each one is served under; both are sealed
     # into `config_digest`, so a run that forwarded one and not the other would
-    # let the real roster resolve against the fixture-only catalogue. Unit 17
-    # added the flag to `stage_parser` alone, which made the real catalogue
-    # unreachable through the only program that invokes the stages.
+    # let the real roster resolve against the fixture-only catalogue -- the flag
+    # must live here, on the only program that invokes the stages, not on
+    # `stage_parser` alone.
     parser.add_argument(
         "--serving-recipes-config",
         default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
@@ -790,7 +791,7 @@ def main() -> int:
     # And the journal is outside the run tree, as its own help text says. A
     # journal at `<run-root>/<run-id>/timings.json` would add mutable,
     # untracked bytes to an immutable tree once per stage invocation and change
-    # its byte identity; nothing refused it before.
+    # its byte identity.
     journal = getattr(args, "stage_timing_journal", None)
     if journal is not None:
         journal_path = Path(journal).resolve()
@@ -1129,9 +1130,9 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     # policy it dispatches under against the digests the run authority recorded for
     # itself. Without this, the dispatcher bounded the whole recovery loop — the
     # round ceiling and every request it checked — on whatever `config/recovery.toml`
-    # said at this moment, which need not be what the run sealed (audit S3 names
-    # this the third point of use). Checked before the first round, so a swapped
-    # policy stops the loop rather than being discovered by the stage it dispatched.
+    # said at this moment, which need not be what the run sealed. Checked before
+    # the first round, so a swapped policy stops the loop rather than being
+    # discovered by the stage it dispatched.
     require_sealed_config(
         run_sealed_config_digests(run), "recovery", recovery_policy["config_sha256"]
     )

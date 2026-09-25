@@ -45,8 +45,8 @@ from proof.synthetic_pages import PAGES, page_bytes  # noqa: E402
 def _policy(width: int, height: int):
     """This page's own resolved background policy, from the shipped sealed file.
 
-    Every measure here takes one since 2026-09-06: the ink predicate is taken
-    below the background `common.background` infers, under the same sealed
+    Every measure here takes one: the ink predicate is taken below the
+    background `common.background` infers, under the same sealed
     `[grouping.background]` block the Designator runs under, and no call site is
     allowed a default -- measuring under a policy nobody sealed is what the
     required keyword prevents.
@@ -58,9 +58,9 @@ def _coverage(width: int, height: int):
     """This page's own resolved coverage-audit policy, from the shipped file.
 
     The companion to `_policy`, and required at the same call sites for the same
-    reason: since 2026-09-06 the two outside-coverage gates and the perimeter
-    band are fractions of the page sealed in `[coverage_audit]`, and no call site
-    is allowed a default.
+    reason: the two outside-coverage gates and the perimeter band are fractions
+    of the page sealed in `[coverage_audit]`, and no call site is allowed a
+    default.
     """
     from common.residual_ink import load_coverage_audit_config, resolve_coverage_audit_policy
 
@@ -345,8 +345,8 @@ def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_wou
 def test_a_large_enough_fraction_outside_coverage_is_flagged_even_with_other_ink_covered():
     # A page large enough that neither block's bounding box covers half of it:
     # the audit withholds a page-spanning component the way the Designator's
-    # grouping does, and on a 20x20 canvas a 10x10 block IS a page-spanning
-    # component.
+    # grouping does. The 200/300/120 below are this test's original 10/15/6
+    # shapes, scaled by 20 onto a 600x600 canvas.
     rows = canvas(600, 600)
     paint(rows, 0, 0, 200, 200)  # 40,000 covered ink pixels
     # Clear of the covered block by more than `gap_tolerance_px`, so the two do

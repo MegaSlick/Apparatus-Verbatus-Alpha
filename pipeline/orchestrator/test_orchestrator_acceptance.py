@@ -656,12 +656,12 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
 def test_orchestrator_and_surface_strip_every_provider_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F016: a stage subprocess decodes attacker-supplied material and used to
-    keep every provider credential except the transfer's own two S3 keys --
-    RUNPOD_API_KEY (pod creation, i.e. money), HF_TOKEN, AWS_*, and anything
-    else shaped like a secret all survived. Both `stage_environment` builders
-    must now refuse the same broad shape `credential_free_environment` already
-    holds the operator's confined children to; the orchestrator duplicates that
+    """F016: a stage subprocess decodes attacker-supplied material, so both
+    `stage_environment` builders must refuse every provider credential except
+    the transfer's own two S3 keys -- RUNPOD_API_KEY (pod creation, i.e.
+    money), HF_TOKEN, AWS_*, and anything else shaped like a secret -- the
+    same broad shape `credential_free_environment` already holds the
+    operator's confined children to; the orchestrator duplicates that
     predicate rather than importing it (module docstring: "imports only
     common/"), so this is also where the copy is checked against the original,
     the way the transfer-credential duplicate above already is.
@@ -3913,7 +3913,7 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
     passes: the reading whose silence is in question stands in as proof of it,
     defeating CONTRACT.md's whole argument for the field ("An accepted review is
     evidence that the Recensor accepted a reading; it is not evidence that the
-    page was blank"). Reproduces audit-d finding F4's measurement.
+    page was blank").
     """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
@@ -5587,13 +5587,15 @@ def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_
     `structure-failure` cuts no Designator region at all. `edge_band_bp`
     resolves to 2 pixels on this scenario's 200-pixel pages, which carry zero
     ink in every band up to 20, so the Ink Map maps both pages and holds
-    neither.
+    neither. This was the repository's only end-to-end proof of an Ink Map
+    page hold reaching the export, and it went away because the retired
+    64-pixel band was body text.
 
     **What this test protects is that the loss stays visible.** The scenario
     still exits held and still exports partial -- for its own cause, which is
     that no region was cut -- and no page reason mentions edge ink any more.
-    If a future fixture page gains ink near its edge, this test fails and
-    recovers the edge path's end-to-end proof, a known gap recorded in
+    If a future fixture page gains ink near its edge, this test fails and the
+    edge path's end-to-end proof comes back with it, a known gap recorded in
     `pipeline/1_ink_map/CONTRACT.md`.
     """
     root = tmp_path / "runs"
@@ -5686,7 +5688,7 @@ def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_firs
     Page 2 (a2's continuation page) is sealed but, in this scenario, never has a
     region cut on it at all -- a2 is held entirely on page 1's loss before its
     continuation is ever attempted. Page 2's own real ink therefore reconciles
-    as 100% residual, and conservation now mints that residual its own held act
+    as 100% residual, and conservation mints that residual its own held act
     (`residual:2:0`) rather than leaving it inert inside the conservation
     artifact alone -- a third, independent account of the same underlying loss,
     which is why three holds and three review items are expected rather than two.
