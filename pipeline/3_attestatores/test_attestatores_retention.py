@@ -87,7 +87,6 @@ def invoke_stage(
 
 
 def test_page_testimonium_role_with_an_unhashable_value_is_a_named_refusal():
-    """Malformed JSON-shaped input must not escape as a set-membership TypeError."""
     payload = {field: None for field in attestatores.PAGE_TESTIMONIUM_FIELDS}
     payload.update(
         {
@@ -291,7 +290,6 @@ def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, mo
 
 
 def test_resume_does_not_ask_an_already_sealed_pair_to_decode_again(tmp_path, monkeypatch):
-    """A changed second answer cannot collide because the second call never happens."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     real_publish = attestatores.publish_attempt
     real_resolve = attestatores.resolve_attempt
@@ -734,7 +732,6 @@ def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
 
 
 def test_a_targeted_reread_names_both_the_act_and_the_chair_or_is_refused(tmp_path):
-    """Without both, it is a whole second pass wearing a narrower name."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
         invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
@@ -1311,7 +1308,6 @@ def test_an_actual_testimonium_identity_refuses_replacement_at_the_store_boundar
 
 
 def test_every_testimonium_outcome_uses_one_identity_bearing_writer():
-    """A second constructor can drift without changing either constructor's tests."""
     module = ast.parse(inspect.getsource(attestatores))
     publishers = []
     for node in ast.walk(module):
@@ -2169,7 +2165,6 @@ def test_an_accounting_imbalance_is_fatal_and_never_becomes_a_hold(tmp_path, mon
 def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hold(
     tmp_path, monkeypatch
 ):
-    """The tally's outer manifest read must preserve `FatalAccounting` too."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     result = invoke_stage(
         run_root,
@@ -2191,7 +2186,6 @@ def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hol
 
 
 def test_a_fatal_closing_tally_does_not_publish_a_completion_seal(tmp_path, monkeypatch):
-    """A fatal close cannot leave the checkpoint that only a closed pass earns."""
     run_root, tree = run_to_designator(tmp_path, "happy")
 
     def imbalanced(*_args, **_kwargs):
@@ -2306,7 +2300,6 @@ def test_an_act_scoped_testimonium_cannot_wear_page_scope_to_skip_the_tally(tmp_
 
 
 def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(tmp_path):
-    """One self-reported field may not remove an attempt from its own history."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
         invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode

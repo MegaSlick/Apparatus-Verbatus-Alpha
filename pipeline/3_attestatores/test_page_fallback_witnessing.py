@@ -88,7 +88,6 @@ def _resolve(context, act_key, declarations, *, reread=False):
 
 
 def test_an_undeclared_fallback_act_is_not_run_rather_than_empty():
-    """The exact record the audit found: no response declared for the minted act."""
     attempt = _resolve(_Context(), FALLBACK_KEY, _declarations())
 
     assert attempt.outcome == "not-run"
@@ -104,7 +103,6 @@ def test_an_undeclared_fallback_act_is_not_run_rather_than_empty():
 
 
 def test_a_declared_empty_response_makes_the_fallback_act_genuinely_empty():
-    """`ink-free-page`'s honest path: the chair was asked, and returned nothing."""
     attempt = _resolve(_Context(), FALLBACK_KEY, _declarations(empty={(FALLBACK_KEY, CHAIR)}))
 
     assert attempt.outcome == "genuinely-empty"
@@ -126,7 +124,6 @@ def test_a_declared_empty_testimony_response_reaches_the_same_outcome():
 
 
 def test_the_fallback_act_resolves_exactly_as_an_ordinary_act_does():
-    """No branch in this stage asks what kind of act it is reading."""
     declared = [{"act_key": FALLBACK_KEY, "chair": CHAIR, "payload": "tile text"}]
     fallback = _resolve(_Context(testimony=declared), FALLBACK_KEY, _declarations())
     ordinary = _resolve(

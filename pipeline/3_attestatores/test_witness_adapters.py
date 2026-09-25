@@ -192,7 +192,6 @@ class _DaiContext:
 
 
 def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty_tokens():
-    """The shown pixels come from the sealed page recipe, not an opaque resize blob."""
     page = encode_grayscale_png_deterministic(3_000, 2, [bytearray(3_000), bytearray(3_000)])
     context = _DaiContext(page)
     source = _dai_region(3_000, 2)
@@ -303,7 +302,6 @@ def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
 
 
 def test_the_registry_binds_the_native_intake_contract_seams():
-    """Every adapter exposes the closed native and derived intake seams."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
     # Quantization is data beside the five operations; `takes_page_size` says
@@ -436,7 +434,6 @@ def test_the_registry_binds_the_native_intake_contract_seams():
 
 
 def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(monkeypatch):
-    """A broken eager binding must propagate before a run opens, with no fallback."""
 
     exploding = ModuleType("feeding")
 
@@ -594,7 +591,6 @@ def _dai_region(width, height, x=0, y=0):
 def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
     width, height, mode, target, operation
 ):
-    """Recorded transforms, not derivation arithmetic, must reproduce boundary views."""
     page = _dai_page(width, height, mode)
     context = _DaiContext(page)
     adapters = _load_local_adapters()
@@ -638,7 +634,6 @@ def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
     ],
 )
 def test_a_proposal_box_past_the_page_edge_is_refused_by_name(width, height, x, y):
-    """Bounds failures must be schema refusals, with no adapter blob published."""
     page = _dai_page(2_000, 1_000)
     adapters = _load_local_adapters()
     context = _DaiContext(page)

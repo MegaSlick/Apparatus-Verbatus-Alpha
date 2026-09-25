@@ -455,7 +455,6 @@ def _real_context(**fields: Any) -> StageContext:
 
 
 def test_main_opens_through_the_shared_constructor_and_owns_no_opener(monkeypatch, tmp_path):
-    """The construction site Section A wired is the shared constructor now."""
     seen: dict[str, Any] = {}
 
     class _Opened(Exception):
@@ -513,7 +512,6 @@ def test_a_real_run_refuses_at_the_missing_designator_seal_with_its_context_open
 def test_a_real_run_under_the_fixture_catalogue_is_refused_before_any_chair_is_asked(
     fixture_catalogue_run, tmp_path
 ):
-    """No fixture answers for a witness on a real submission."""
     run_root = _copy(fixture_catalogue_run, tmp_path)
     _designate(run_root)
     before = _snapshot(run_root)
@@ -535,7 +533,6 @@ def test_require_every_witness_served_names_the_unserved_chair_and_an_empty_rost
 
 
 def test_the_shipped_real_catalogue_serves_every_witness_chair_at_every_tier():
-    """The mixed-posture guard may stay; on the shipped real catalogue it never fires."""
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models-real.toml"))
     recipes = load_serving_recipes(ROOT / "config" / "serving_recipes_real.toml")
     placement = tomllib.loads((ROOT / "config" / "pod_placement.toml").read_text(encoding="utf-8"))
@@ -613,7 +610,6 @@ def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp
 
 
 def test_a_real_continuation_claim_with_no_readable_region_is_refused_by_name():
-    """Reached only past `expected_acts`: the far-page region existed and was refused."""
     context = _real_context()
     act = {
         "act_id": "act-with-far-page",
@@ -631,7 +627,6 @@ def test_a_real_continuation_claim_with_no_readable_region_is_refused_by_name():
 
 
 def test_a_real_pass_declares_nothing_and_names_nothing_unread(capsys):
-    """Empty in every family, in the fixture reader's own shape, and silent on stderr."""
     declared = attestatores.real_declarations(2)
     assert declared == {
         "ordinal": 2,

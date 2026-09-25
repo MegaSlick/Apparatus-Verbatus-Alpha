@@ -163,29 +163,14 @@ attestatores = _load_attestatores()
 
 
 # What each chair's stand-in row states, per chair, as the shipped real
-# catalogue states it at its smallest tier.  Churro's is the long one here.
-# Every row was 2,048 while this chair's sealed prompt was the retired
-# `<output>` framing's 281 tokens and its dense-page answer 1,433 -- 1,715 with
-# the fixture page's single image token, which fitted.  The chair is now asked
-# in the vendor's own registry system string, measured at 27, and reserves
-# U14's re-measured dense-page answer over the vendor's own `HistoricalDocument`
-# grammar, 1,905 (not the retired 1,631 JSON contract): 1 + 27 + 1,905 = 1,933,
-# which still fits 2,048 with 115 tokens to spare -- the row does not move
-# because the arithmetic overran it.
-# **The row moves, never the arithmetic and never the pixels**
-# -- the disposition `TOKEN_COST_REPORT.md` section 10 already took, and the
-# one the Perlector's own row took here when the reader stopped admitting on a
-# floor.  The shipped catalogue states 8,192 for this chair at every tier
-# regardless of whether the smaller stand-in would still have fitted, so that
-# is what the stand-in states too: this fixture mirrors the real catalogue's
-# own row rather than deriving one from local arithmetic.
-# Chandra's row moves for the same reason and by the same disposition. Its
-# sealed prompt was this repository's own 256-token instruction; the chair is
-# now asked in the vendor's own `OCR_LAYOUT_PROMPT`, re-measured at 593, and
-# U14's re-measured answer (1,645, shared with `designator_structure`) plus the
-# fixture page's single image token is 2,239 against 2,048.
-# The shipped catalogue states 8,192 for this chair at every tier, so that is
-# what the stand-in states. The arithmetic and the pixels are untouched.
+# catalogue states it at its smallest tier. Churro's system string (27) plus
+# its dense-page answer against the vendor's `HistoricalDocument` grammar
+# (1,905) and one image token no longer fits a 2,048 context; Chandra's
+# `OCR_LAYOUT_PROMPT` (593) plus its dense-page answer (1,645) and one image
+# token overruns it too. The row moves to what the shipped catalogue states
+# for these chairs at every tier (8,192), never the arithmetic or the pixels:
+# this fixture mirrors the real catalogue's own row rather than deriving one
+# from local arithmetic.
 LIVE_ROW_CONTEXTS: dict[str, int] = {"attestator_1": 8192, "attestator_3": 8192}
 
 
@@ -336,11 +321,9 @@ def write_mixed_catalogue(path: Path, registry) -> Path:
 def committed_models_config() -> Path:
     """The committed roster, unedited: three configured witness chairs.
 
-    This used to rewrite `attestator_2` to `state = "absent"`, because a
-    `dai.v1` chair could not be served at all (see the module docstring). Both
-    defects are closed, so the live pass is exercised against exactly the
-    roster the repository ships -- the assertions below are what would notice
-    if that roster stopped describing the three scopes these tests exercise.
+    The live pass is exercised against exactly the roster the repository
+    ships; the assertions below are what would notice if that roster stopped
+    describing the three scopes these tests exercise.
     """
     path = ROOT / "config" / "models.toml"
     chairs = tomllib.loads(path.read_text(encoding="utf-8"))["chairs"]
@@ -425,14 +408,11 @@ def live_run(tmp_path_factory) -> SimpleNamespace:
 # which at the test row's `max_pixels = 1024` costs one prompt token; what
 # refuses is the prompt and the reserved answer, both measured constants
 # (`common/request_capacity.py`). DAI is act-scoped: 1 + 84 + 230 = 315 against
-# 256. Churro is page-scoped and reserves a dense page's answer: its vendor
-# system string is one sentence, and U14's answer budget is the vendor's own
-# `HistoricalDocument` grammar (1,905, not the retired 1,631 JSON contract),
-# so 1 + 27 + 1,905 = 1,933 against 512.
-# Attestator 1 keeps the module's own 8,192 and needs 1 + 593 + 1,645 = 2,239
-# under the carried vendor prompt and U14's re-measured answer (1,645, shared
-# with `designator_structure` -- both send the same prompt and are read by the
-# same grammar), so its testimony is what proves the refusals were per request.
+# 256. Churro is page-scoped and reserves a dense page's answer against the
+# vendor's `HistoricalDocument` grammar (1,905): 1 + 27 + 1,905 = 1,933 against
+# 512. Attestator 1 keeps the module's own 8,192 and needs 1 + 593 + 1,645 =
+# 2,239 under the carried vendor prompt and answer, so its testimony proves
+# the refusals were per request.
 REFUSING_CONTEXTS = {"attestator_2": 256, "attestator_3": 512}
 REFUSING_NEEDS = {"attestator_2": (315, 256), "attestator_3": (1933, 512)}
 
@@ -681,7 +661,6 @@ def attachment_entries(tree: RunTree) -> dict[str, dict[str, list[dict[str, Any]
 
 
 def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp_path):
-    """Chair-outer, one residency each, and a page chair asked once per page."""
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
 
@@ -1167,7 +1146,7 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
 
 
 def test_every_live_record_says_which_kind_of_bytes_it_retained(live_run, tmp_path):
-    """U8's sixth gap: `raw_response_ref` meant two things and said neither.
+    """`raw_response_ref` names which of two things it holds.
 
     On every branch where an adapter parsed, the retained blob is the model's
     own output; on the one branch where none could, it is the whole transport
@@ -1256,13 +1235,9 @@ def test_a_request_the_sealed_row_cannot_hold_costs_that_attempt_and_not_the_pas
 ):
     """The Attestatores hold per request, exactly as the Designator already did.
 
-    A pre-send capacity refusal used to leave `_serve_act_unit` and
-    `_serve_page_unit` as a `RequestCapacityRefusal`, and nothing between there
-    and `main` caught it: one oversized page killed the stage and every other
-    page's testimony went with it, while the Designator held the single page
-    and published the rest (`structure-request-too-large`). A missed act is
-    worse than a poorly read one (goal 2), so the refusal is now this attempt's
-    own failure and the pass carries on.
+    A pre-send capacity refusal becomes this attempt's own failure, and the
+    pass carries on: a missed act is worse than a poorly read one (goal 2), so
+    one oversized request must not cost every other page's testimony.
 
     Both scopes at once: DAI is act-scoped and Churro page-scoped, their rows
     cannot hold their own requests (`REFUSING_NEEDS`), and Attestator 1's row
@@ -1324,9 +1299,8 @@ def test_a_request_the_sealed_row_cannot_hold_costs_that_attempt_and_not_the_pas
 def test_capacity_refusal_attempt_declares_the_refused_chairs_own_format_capabilities():
     """A pre-send refusal never reaches the chair, but the chair still has a
     grammar, and `format_capabilities` is a fact about that grammar rather than
-    about whether this one request fit the row (hostile review, U5 round 2).
-    Exercised directly against `capacity_refusal_attempt` -- not through a full
-    live pass -- because the fact under test is local to that one function.
+    about whether this one request fit the row. Exercised directly against
+    `capacity_refusal_attempt` because the fact under test is local to it.
     """
 
     error = RequestCapacityRefusal("too many image tokens for this row")
@@ -1358,7 +1332,7 @@ def test_capacity_refusal_attempt_declares_the_refused_chairs_own_format_capabil
 def test_capacity_refusal_attempt_refuses_a_malformed_adapter_declaration():
     """A declaration that is not the two-key boolean object is this seam's own
     bug -- a broken adapter, not a broken response -- and is refused by name
-    rather than silently recorded (hostile review, U5 round 2)."""
+    rather than silently recorded."""
 
     error = RequestCapacityRefusal("too many image tokens for this row")
     receipt_ref = {"relative_path": "receipts/x", "sha256": "a" * 64}
@@ -1375,16 +1349,10 @@ def test_a_captured_pages_own_format_capabilities_reaches_its_testimonium(
 ):
     """The captured attempt's declared value must reach the sealed page record.
 
-    The registry now declares `format_capabilities` for Chandra, Churro, and
-    DAI, but this test still wants a value distinctive enough to prove the
-    write is not hardcoded: `True`/`True` differs from `run.py`'s
-    `DEFAULT_FORMAT_CAPABILITIES` (`False`/`False`), so `attempt_from_live` is
-    wrapped to hand back the same `Attempt` with that non-default value,
-    exactly as if `captured_page_attempt` had read it off a declaring adapter
-    (`live_witness._format_capabilities_for`). Before the fix this page write
-    hardcoded `DEFAULT_FORMAT_CAPABILITIES` regardless of what the captured
-    attempt carried (hostile review, U5 round 2); this proves the sealed page
-    Testimonium now carries the captured value instead.
+    `True`/`True` differs from `run.py`'s `DEFAULT_FORMAT_CAPABILITIES`
+    (`False`/`False`), so `attempt_from_live` is wrapped to hand back the same
+    `Attempt` with that non-default value, exactly as if `captured_page_attempt`
+    had read it off a declaring adapter -- proving the write is not hardcoded.
     """
 
     run_root = fresh_tree(live_run, tmp_path)
@@ -1515,7 +1483,6 @@ def test_a_prompt_too_long_400_at_the_page_unit_still_stops_the_stage(live_run, 
 def test_every_live_act_record_names_the_serving_moment_and_the_call_that_produced_it(
     live_run, tmp_path
 ):
-    """SPEC_A section 2.3: receipt, retained response, call record, capture."""
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
@@ -1555,7 +1522,6 @@ def test_every_live_act_record_names_the_serving_moment_and_the_call_that_produc
 def test_the_engine_stop_word_decides_the_truncation_a_live_record_publishes(
     live_run, tmp_path, finish_reason, truncated, basis
 ):
-    """`stop` and `length` are the two words this pipeline has a meaning for."""
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
     scripts["attestator_3"] = [
@@ -1648,7 +1614,6 @@ def test_a_served_chandra_publishes_a_real_page_testimonium_with_its_own_geometr
 def test_a_chandra_body_in_neither_declared_shape_is_retained_and_refused_by_name(
     live_run, tmp_path
 ):
-    """Transported, retained, and honestly unreadable: not the asked-for contract."""
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
     scripts["attestator_1"] = [
@@ -1693,7 +1658,6 @@ def test_a_chandra_body_in_neither_declared_shape_is_retained_and_refused_by_nam
 
 
 def test_a_resumed_live_pass_asks_no_chair_again(live_run, tmp_path):
-    """A pair sealed at this ordinal is reused, never re-requested."""
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
@@ -1787,7 +1751,6 @@ def test_a_resumed_churro_page_republishes_exactly_what_the_interrupted_pass_sea
 
 
 def test_an_engine_stop_word_this_pipeline_cannot_read_is_refused_not_defaulted(live_run, tmp_path):
-    """Principle 8: an unmeasured boundary is never recorded as a measured one."""
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
     scripts["attestator_1"] = [ScriptedAnswer(content=CHANDRA_BODY, finish_reason="abort")]
@@ -1803,14 +1766,12 @@ def test_an_engine_stop_word_this_pipeline_cannot_read_is_refused_not_defaulted(
 def test_a_churro_response_with_no_engine_stop_word_publishes_unknown_truncation(
     live_run, tmp_path
 ):
-    """U8's third gap: the third truncation state, published rather than refused.
+    """A wire response with no `finish_reason` carries as unknown truncation.
 
-    A live Churro page whose wire carried no `finish_reason` used to stop the
-    pass by name, because the shared page contract asked a two-valued question
-    of a three-state fact and could only have published `truncated: false` --
-    a completed boundary nobody observed. The third state is now measured on
-    both records, so the response is carried instead of refused, and it is
-    carried as unknown rather than as either measured answer.
+    Truncation is a three-state fact (true, false, unknown), and a completed
+    boundary nobody observed must not become a claimed `truncated: false`, so
+    the response is carried, on both records, as unknown rather than as either
+    measured answer.
     """
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
@@ -1844,7 +1805,6 @@ def test_a_churro_response_with_no_engine_stop_word_publishes_unknown_truncation
 
 
 def test_a_live_reread_is_refused_by_name(live_run, tmp_path):
-    """No live reread is built, and half-performing one would start a chair."""
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
@@ -1861,7 +1821,6 @@ def test_a_live_reread_is_refused_by_name(live_run, tmp_path):
 def test_the_pass_names_the_fixture_witness_rows_its_posture_does_not_read(
     live_run, tmp_path, capsys
 ):
-    """Ignoring a declaration silently is the loss principle 2 refuses."""
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
@@ -1874,7 +1833,6 @@ def test_the_pass_names_the_fixture_witness_rows_its_posture_does_not_read(
 def test_an_unresolved_attempt_stops_the_pass_rather_than_publishing_a_gap(
     live_run, tmp_path, monkeypatch
 ):
-    """Every configured chair answers for every expected act, or the record says why."""
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
     monkeypatch.setattr(attestatores, "_serve_page_unit", lambda *args, **kwargs: 0)
@@ -1887,7 +1845,6 @@ def test_an_unresolved_attempt_stops_the_pass_rather_than_publishing_a_gap(
 
 
 def test_witness_serving_modes_reads_the_sealed_row_kind_for_every_chair(live_run):
-    """The committed catalogue is fixture for every chair; the live one is not."""
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     context = SimpleNamespace(
         witness_chairs=list(CATALOGUE_CHAIRS),
@@ -1904,7 +1861,6 @@ def test_witness_serving_modes_reads_the_sealed_row_kind_for_every_chair(live_ru
 
 
 def test_witness_serving_modes_refuses_a_roster_that_mixes_postures(tmp_path):
-    """One run, one serving posture: never half a card and half a fixture."""
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     mixed = write_mixed_catalogue(tmp_path / "mixed.toml", registry)
     context = SimpleNamespace(witness_chairs=list(CATALOGUE_CHAIRS), registry=registry)
@@ -1913,7 +1869,6 @@ def test_witness_serving_modes_refuses_a_roster_that_mixes_postures(tmp_path):
 
 
 def test_witness_serving_modes_refuses_a_live_chair_with_no_measured_placement_tier(live_run):
-    """A live row is resolved by three names; the tier is one of them."""
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     context = SimpleNamespace(witness_chairs=list(CATALOGUE_CHAIRS), registry=registry)
     with pytest.raises(ContractError, match="placement-tier"):
@@ -1921,7 +1876,6 @@ def test_witness_serving_modes_refuses_a_live_chair_with_no_measured_placement_t
 
 
 def test_bound_serving_recipes_refuses_a_catalogue_it_cannot_read(tmp_path):
-    """The rows a posture is read from must be the rows the run sealed."""
     context = SimpleNamespace(
         args=SimpleNamespace(serving_recipes_config=str(tmp_path / "absent.toml")),
         serving_config_inputs={
@@ -1935,13 +1889,11 @@ def test_bound_serving_recipes_refuses_a_catalogue_it_cannot_read(tmp_path):
 
 
 def test_require_live_page_capture_refuses_a_page_nobody_was_asked_about():
-    """A live page record has exactly one source: the response for that page."""
     with pytest.raises(FatalAccounting, match="never requested"):
         attestatores.require_live_page_capture({}, 2, "attestator_3")
 
 
 def test_resumed_page_captures_refuses_a_sealed_act_record_no_chair_served():
-    """A live pass cannot resume over evidence the fixture posture wrote."""
     fixture_attempt = attestatores.Attempt(
         outcome="read",
         native_payload="declared text",
@@ -1965,7 +1917,6 @@ def test_resumed_page_captures_refuses_a_sealed_act_record_no_chair_served():
 
 
 def test_a_page_record_the_fixture_posture_wrote_is_not_resumed_into_a_live_pass():
-    """The receipt says who served it, and a `fixture://` endpoint says nobody did."""
     record = {
         "outcome": "read",
         "payload": {
@@ -1987,14 +1938,11 @@ def test_a_page_record_the_fixture_posture_wrote_is_not_resumed_into_a_live_pass
 def test_a_resumed_page_with_a_malformed_native_capture_is_refused_not_keyerror():
     """A malformed `native_capture` is refused by name, never by `KeyError`.
 
-    `_page_capture_from_record` used to read `capture["adapter"]` to resolve
-    the runnable binding before anything had checked that `native_capture`
-    held its own closed schema. A sealed record whose `native_capture` is
-    missing `adapter` -- corruption, or a schema this build no longer
-    writes -- raised a raw `KeyError` out of that read instead of the named
-    `SchemaRefusal` every other malformed-record path in this function uses.
-    Validating the capture against its own schema before resolving the
-    adapter closes the gap.
+    A sealed record whose `native_capture` is missing `adapter` -- corruption,
+    or a schema this build no longer writes -- must raise the named
+    `SchemaRefusal` every other malformed-record path in this function uses,
+    not a raw `KeyError` from resolving the adapter before validating the
+    capture's own closed schema.
     """
     record = {
         "outcome": "read",
@@ -2146,16 +2094,13 @@ def test_a_damaged_native_capture_is_a_named_refusal_not_a_keyerror():
 
 
 def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path):
-    """The defect that used to keep DAI out of the live roster, from the outside.
+    """DAI's shipped floats are recorded as the exact decimal text the wire carries.
 
-    `chair-call-record.v1` is canonical JSON and canonical JSON refuses a
-    float, so a request carrying DAI's shipped generation config could not be
-    recorded and was therefore never made. It is recorded now as the exact
-    decimal text the wire carries, which this test checks against the bytes the
-    endpoint actually received rather than against the client's own values --
-    a request recorded as something other than what was sent has no provenance
-    (principle 6), and rounding it would be the silent version of the same
-    problem.
+    `chair-call-record.v1` is canonical JSON, which refuses a float outright,
+    so this checks the recorded decimal against the bytes the endpoint
+    actually received rather than the client's own values: a request recorded
+    as something other than what was sent has no provenance (principle 6), and
+    rounding it would be the silent version of the same problem.
     """
     identity = ChairIdentity(
         role="attestator_2",
@@ -2309,12 +2254,8 @@ def test_a_stop_word_that_cannot_be_recorded_honestly_refuses_before_publication
 def test_an_unreported_stop_word_is_recorded_rather_than_refused():
     """The vocabulary admits the absence marker; only unmeasured words refuse.
 
-    A second refusal used to live here, for Churro alone, because the shared
-    page contract could not reconcile an unreported boundary against a
-    truncation state. `common/native_witness.py` measures that third state now,
-    so the guard is gone rather than merely narrowed -- what is left is the one
-    question it was always for: has this pipeline ever measured a meaning for
-    this word?
+    The one question this guard asks: has this pipeline ever measured a
+    meaning for this word?
     """
     attestatores.refuse_unpublishable_stop_word(
         attestatores.STOP_REASON_UNREPORTED, "the response for page 1"
@@ -2494,10 +2435,9 @@ def test_resumed_page_captures_skips_a_not_run_pair_instead_of_refusing():
 def test_resumed_page_captures_refuses_two_sealed_acts_that_disagree():
     """Two records claiming the same page response must actually agree.
 
-    `resumed_page_captures` used to take the first sealed act it found and
-    never check the rest; a page with two acts whose sealed records disagree
-    about which response produced them must be named, not silently resolved
-    by taking whichever act sorts first.
+    A page with two acts whose sealed records disagree about which response
+    produced them must be named, not silently resolved by taking whichever
+    act sorts first.
     """
     first = attestatores.Attempt(
         outcome="read",
@@ -2596,15 +2536,10 @@ def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payloa
 ):
     """The Chandra guard above, pinned for the second page-scoped chair.
 
-    Unit 12 gave Churro a live wire contract and made its bytes reach `observe`
-    as geometry, so the rule that guard states is now load-bearing for two
-    adapters rather than one: a body no parser recognized must never be
-    rehydrated as geometry, whichever page chair produced it. The branch is
-    adapter-agnostic already (`serving_call_ref` and `record["outcome"]` are
-    the only things it reads -- not `content_health.recordable`, whose own
-    ambiguity on this exact outcome is F131's fix, below), and this is what
-    says so -- without it the claim rests on one chair's record and reads as
-    Chandra's rule.
+    A body no parser recognized must never be rehydrated as geometry,
+    whichever page chair produced it: the branch is adapter-agnostic already
+    (only `serving_call_ref` and `record["outcome"]` decide it), and this
+    proves the rule holds for Churro too, not only Chandra's record.
 
     The blob is still read and digest-checked either way: the retained response
     has to be present and still itself before this record may stand in for a
@@ -2788,19 +2723,12 @@ def test_the_pass_names_chandra_anchors_among_what_it_does_not_read(live_run, tm
 def test_a_served_churro_reads_the_vendor_grammar_and_reports_no_geometry(live_run, tmp_path):
     """What this chair actually produces once it runs its vendor's own system.
 
-    Unit 12 asked Churro for a `box_1000` per block, in a modified carry of a
-    prompt the model was never trained on, so that a geometry-blind page witness
-    would have rectangles to attach acts by. Both halves of that are retired:
-    the vendor's registry answer is a single system instruction, and Churro-DS
-    carries no geometry, so a coordinate channel was a channel the weights were
-    never taught to fill.
-
-    So the reading is the grammar's flattened text and the only observation is
-    the `bounds_source="presented"` echo, which routing and coverage exclude --
-    an honest no-layout record rather than rectangles nobody reported.
-    Attachment for this chair is the `anchor-line` basis (U12), not geometry it
-    does not have: its page text aligns to the act's own anchor line, and that
-    alignment is what locates the act's slice inside the reading.
+    Churro-DS carries no geometry, so the reading is the grammar's flattened
+    text and the only observation is the `bounds_source="presented"` echo,
+    excluded from routing and coverage -- an honest no-layout record rather
+    than rectangles nobody reported. Attachment for this chair is instead the
+    `anchor-line` basis: its page text aligns to the act's own anchor line,
+    and that alignment locates the act's slice inside the reading.
     """
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
@@ -2881,13 +2809,11 @@ def test_the_retired_envelope_reads_and_attaches_on_its_anchor_line(live_run, tm
     shape nobody asked for is visible (principle 2). It still parses, still
     retains, and still aligns to the anchor -- throwing a page of ink away over
     an envelope would be the loss goal 2 refuses. It carries no coordinates, so
-    its only observation is the `presented` echo routing and coverage exclude,
-    asserted below as the counterfactual: there is no reported geometry here for
-    any derivation to read. It used to land unattached on exactly that, which put
-    every act one witness under a floor of three on a shortfall that had not
-    happened. It now attaches on the `anchor-line` basis -- its page text carries
-    this act's located anchor line -- and the record says which basis decided it,
-    because the two are not interchangeable.
+    its only observation is the `presented` echo routing and coverage exclude
+    (asserted below as the counterfactual: no reported geometry here for any
+    derivation to read), and it attaches instead on the `anchor-line` basis --
+    its page text carries this act's located anchor line -- with the record
+    naming which basis decided it, because the two are not interchangeable.
     """
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)

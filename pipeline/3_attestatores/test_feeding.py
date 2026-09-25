@@ -269,7 +269,6 @@ def test_the_vendor_pin_travels_on_every_churro_capture_beside_the_model_identit
 
 
 def test_the_paper_harness_framing_pins_its_own_file_and_commit():
-    """Two attested variants, two files, two commits; the record says which."""
     identity = churro.vendor_identity(churro.prompt("paper-harness-ed09bc7")["system"])
     assert identity["sha"] == "ed09bc7fd6475c333a25427f3d0b9227af46ce27"
     assert set(identity["carried_strings"]) == {"SYSTEM_MESSAGE"}
@@ -395,7 +394,6 @@ def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):
 
 
 def test_repetition_is_detected_in_a_COMPLETE_churro_response_and_reads_the_transcription():
-    """The grammar's markup must not hide repetition in an otherwise complete response."""
     tree = _Tree()
     clause = "the same clause repeated over and over. "
     raw = (
@@ -430,7 +428,6 @@ def test_repetition_is_detected_in_a_COMPLETE_churro_response_and_reads_the_tran
 
 
 def test_an_unparseable_capture_is_still_inspected_for_repetition_on_its_raw_bytes():
-    """Without parsed text, repetition remains an independent raw-byte finding."""
     tree = _Tree()
     clause = "the same clause repeated over and over. "
     raw = b"<HistoricalDocument><Page><Body><Line>" + (clause * 6).encode("utf-8")
@@ -452,7 +449,6 @@ def test_an_unparseable_capture_is_still_inspected_for_repetition_on_its_raw_byt
 
 
 def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation():
-    """The stage consumes one page response, never an act join or a retry."""
     attestatores = _load_attestatores()
     tree = _Tree()
     context = SimpleNamespace(
@@ -575,7 +571,6 @@ def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordabl
 
 
 def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
-    """Interruption cannot establish absence; partial characters remain evidence."""
     attestatores = _load_attestatores()
 
     def _capture(raw: str, stop: str):
@@ -624,7 +619,6 @@ def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
 
 
 def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
-    """Unreachable declarations refuse; absent occupants remain roster facts."""
     attestatores = _load_attestatores()
 
     def _context(chair: str, page_ordinal: int, chairs: dict):
@@ -677,7 +671,6 @@ def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
 
 
 def test_churro_declaration_preflight_allows_one_default_overridden_by_one_scenario_row():
-    """Validation must preserve the lookup precedence it documents."""
     attestatores = _load_attestatores()
     chair = _chair("attestator_1")
     rows = [
@@ -717,7 +710,6 @@ def test_churro_declaration_preflight_allows_one_default_overridden_by_one_scena
 def test_churro_declaration_preflight_names_malformed_transport_facts_even_for_an_absent_chair(
     mutate, message
 ):
-    """An absent occupant does not make its fixture declaration schema-free."""
     attestatores = _load_attestatores()
     row = {
         "page_ordinal": 1,
@@ -738,7 +730,6 @@ def test_churro_declaration_preflight_names_malformed_transport_facts_even_for_a
 
 
 def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
-    """A bad page row refuses before the caller can enter `attempt_pass`."""
     attestatores = _load_attestatores()
     chair = _chair("attestator_1", adapter="not-churro.v1")
     context = SimpleNamespace(
@@ -766,7 +757,6 @@ def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
 
 
 def test_one_scenarios_declared_response_is_not_another_scenarios_default():
-    """Only an unscoped row is a default; other scenario rows are inaccessible."""
     attestatores = _load_attestatores()
     rows = [
         {
@@ -990,7 +980,6 @@ def test_dai_declares_its_own_format_capabilities():
 
 
 def test_every_dai_ceiling_seals_where_it_came_from():
-    """A sealed ceiling states its source, and a chosen one says it was chosen."""
     view = dai_model_view(
         source_image_ref=_ref("designator/crops/a.png"),
         model_image_ref=_ref("attestatores/model-views/a.jpg", "b" * 64),
@@ -1248,7 +1237,6 @@ def test_schedule_is_stage_major_chair_outer_act_inner_and_refuses_duplicate_cha
 
 
 def test_schedule_refuses_a_repeated_act_for_the_same_reason_it_refuses_a_chair():
-    """One duplicate act row in becomes one duplicate serving per chair out."""
     with pytest.raises(SchemaRefusal, match="repeats an act"):
         stage_major_schedule(
             "parish-7",
@@ -1268,7 +1256,6 @@ def test_schedule_refuses_a_repeated_act_for_the_same_reason_it_refuses_a_chair(
     ],
 )
 def test_schedule_refuses_malformed_rows_instead_of_failing_inside_a_sort(acts, chairs, message):
-    """Each of these previously escaped as a bare TypeError or AttributeError."""
     with pytest.raises(SchemaRefusal, match=message):
         stage_major_schedule("parish-7", acts, chairs)
 

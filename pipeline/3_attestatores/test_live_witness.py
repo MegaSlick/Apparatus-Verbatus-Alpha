@@ -334,7 +334,6 @@ def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends()
 
 
 def test_the_old_flat_bound_is_refused_by_smaller_churro_rows_and_fits_80gb():
-    """The old flat ceiling remains visible beside the corrected 80 GB row."""
 
     rows = _sealed_churro_rows()
     over = [row.tier for row in rows if CHURRO_OUTPUT_TOKENS >= row.max_model_len]
@@ -603,7 +602,6 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
 
 
 def test_an_ordinary_act_crop_still_fits_the_smallest_row():
-    """DAI's ordinary act path is the one measured sound at 24 GB; it stays so."""
 
     context = SimpleNamespace(tree=_FakeTree())
     image_bytes = _png(1500, 353)

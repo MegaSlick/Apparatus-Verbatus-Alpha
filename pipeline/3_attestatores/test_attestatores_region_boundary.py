@@ -75,7 +75,6 @@ def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_regio
 
 
 def test_attestatores_names_a_designator_region_with_missing_provenance(real_region, monkeypatch):
-    """A resealed missing field is a schema refusal, not a raw KeyError traceback."""
     context, region = real_region
     missing = copy.deepcopy(region)
     del missing["payload"]["provenance"]

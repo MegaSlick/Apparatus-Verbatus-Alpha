@@ -239,7 +239,6 @@ def test_each_testimonium_writer_reconciles_adapter_evidence_before_publication(
 
 
 def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
-    """Uncertainty markers must survive every boundary, not only UTF-8 parsing."""
     adapter = attestatores.witness_adapters.resolve_runnable_adapter("dai.v1")
     raw = "[UNCERTAIN]  ſ [CROSSED_OUT]".encode("utf-8")
     parsed = adapter.parse(raw)
@@ -302,7 +301,6 @@ class _Context:
 
 
 def test_a_resealed_tally_record_cannot_retroactively_claim_a_recovery_crop(tmp_path):
-    """Writer and consumer seams both exclude recovery crops from witness basis."""
     result = subprocess.run(
         [
             sys.executable,
@@ -415,7 +413,6 @@ def _region_testimonium(tree):
 
 
 def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tmp_path):
-    """One page-space presentation must name a continuation crop it cannot describe."""
     tree = _happy_run(tmp_path, "continuation-scope")
     regions = [
         tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
@@ -479,7 +476,6 @@ def test_page_native_geometry_stays_with_page_witnesses_and_inside_witness_views
 
 
 def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_seam(tmp_path):
-    """A real digest-bound page blob cannot stand in for a different named page."""
     tree = _happy_run(tmp_path, "page-blob-forgery")
     context = _Context(tree)
     pages = [
@@ -600,7 +596,6 @@ def test_a_sealed_region_missing_its_presentation_fields_is_named_not_indexed(re
 
 
 def test_a_never_presented_page_witness_is_not_run_and_carries_no_receipt(tmp_path):
-    """The absence arm stays distinct from attempted failure at page scope."""
     result = subprocess.run(
         [
             sys.executable,
@@ -637,7 +632,6 @@ def test_a_never_presented_page_witness_is_not_run_and_carries_no_receipt(tmp_pa
 
 
 def test_a_region_ref_naming_no_sealed_designator_region_is_refused(tmp_path):
-    """Digest-bound pixels cannot supply a forged region identity."""
     tree = _happy_run(tmp_path, "unknown-region-ref")
     context = _Context(tree)
     testimony = _region_testimonium(tree)
@@ -649,7 +643,6 @@ def test_a_region_ref_naming_no_sealed_designator_region_is_refused(tmp_path):
 
 
 def test_a_region_ref_matching_two_manifest_rows_is_not_treated_as_unique(tmp_path, monkeypatch):
-    """A region identity must resolve to exactly one sealed manifest row."""
     tree = _happy_run(tmp_path, "duplicate-region-ref")
     context = _Context(tree)
     testimony = _region_testimonium(tree)
@@ -675,7 +668,6 @@ def test_a_region_ref_matching_two_manifest_rows_is_not_treated_as_unique(tmp_pa
 
 
 def test_a_declared_quantization_rule_has_nowhere_to_ride_in_this_contract():
-    """Quantization belongs beside native adapter data, never in derived facts."""
     for mutate in (
         lambda payload: payload.update({"quantization": "round-half-up"}),
         lambda payload: payload["presented"].update({"quantization": "round-half-up"}),
@@ -728,7 +720,6 @@ def test_a_live_act_record_may_name_its_retained_response_call_and_model_view():
 
 
 def test_a_serving_call_reference_without_a_retained_response_is_refused():
-    """A request with no retained answer is not evidence of a reading."""
     payload = _base()
     payload["serving_call_ref"] = _blob_ref("call record bytes")
     with pytest.raises(SchemaRefusal, match="retains no response"):
@@ -736,7 +727,6 @@ def test_a_serving_call_reference_without_a_retained_response_is_refused():
 
 
 def test_a_retained_model_view_naming_another_response_is_refused():
-    """One attempt reads one response, and both references must say the same one."""
     payload = _base()
     payload["raw_response_ref"] = _blob_ref("live response bytes")
     payload["raw_response_kind"] = "model-output"
@@ -796,7 +786,6 @@ def _identity(role: str = "attestator_1"):
 
 
 def test_a_live_provenance_record_names_the_receipt_the_chair_already_published():
-    """The live pass never writes a second, declared receipt over a real one."""
     context = _ProvenanceContext()
     live_receipt = {"relative_path": "receipts/" + "b" * 64 + ".json", "sha256": "b" * 64}
     provenance = attestatores.provenance_for(
