@@ -53,7 +53,6 @@ from common.chandra_layout import (
     layout_block_text,
     parse_bbox_attribute,
     parse_layout_html,
-    vendor_scaled_bbox,
 )
 from common.structure_answer import to_page_bounds
 
@@ -278,6 +277,18 @@ def test_our_rectangle_contains_the_box_the_model_actually_reported(box, page_si
     assert ours["y"] + ours["h"] <= page_h
 
 
+def _vendor_scaled_bbox(bbox_1000: list[int], *, page_size: tuple[int, int]) -> list[int]:
+    """`chandra/output.py::parse_layout`'s scaling, float division and all."""
+    page_w, page_h = page_size
+    x_scale, y_scale = page_w / BBOX_SCALE, page_h / BBOX_SCALE
+    return [
+        max(0, int(bbox_1000[0] * x_scale)),
+        max(0, int(bbox_1000[1] * y_scale)),
+        min(int(bbox_1000[2] * x_scale), page_w),
+        min(int(bbox_1000[3] * y_scale), page_h),
+    ]
+
+
 @pytest.mark.parametrize("page_size", _PAGE_SIZES)
 @pytest.mark.parametrize("box", _BOXES)
 def test_against_the_vendors_own_arithmetic_only_its_float_division_separates_us(box, page_size):
@@ -293,7 +304,7 @@ def test_against_the_vendors_own_arithmetic_only_its_float_division_separates_us
     """
     ours = block_page_bounds(_block(bbox_1000=box), page_size=page_size)
     assert ours is not None
-    vx0, vy0, vx1, vy1 = vendor_scaled_bbox(box, page_size=page_size)
+    vx0, vy0, vx1, vy1 = _vendor_scaled_bbox(box, page_size=page_size)
     assert 0 <= ours["x"] - vx0 <= 1
     assert 0 <= ours["y"] - vy0 <= 1
     assert ours["x"] + ours["w"] >= vx1
@@ -307,7 +318,7 @@ def test_the_vendors_float_division_really_does_lose_a_pixel():
     `100/1000 * 2550` is exactly 255; the vendor's `int(100 * (2550/1000))` is
     254.
     """
-    assert vendor_scaled_bbox([100, 77, 900, 385], page_size=(2550, 3300))[0] == 254
+    assert _vendor_scaled_bbox([100, 77, 900, 385], page_size=(2550, 3300))[0] == 254
     assert 100 * 2550 // BBOX_SCALE == 255
     ours = block_page_bounds(_block(bbox_1000=[100, 77, 900, 385]), page_size=(2550, 3300))
     assert ours is not None

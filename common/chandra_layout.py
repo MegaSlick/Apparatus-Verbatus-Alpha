@@ -68,27 +68,6 @@ page-pixel mapping. The sealed page is the right denominator because the vendor
 uses the same one: `InferenceManager` runs `parse_chunks` against the original
 image, not the resized one it sent.
 
-`vendor_scaled_bbox` re-expresses the vendor's own scaling arithmetic. It is on
-no live path and exists so the relationship between the two conversions is
-asserted by a test rather than described in a comment. That relationship is not
-"ours is the vendor's, ceiled", and the difference was found by running them
-against each other rather than by reading them:
-
-* Ours is the rule in exact integer arithmetic -- near edges floored, far edges
-  ceiled -- so our rectangle always contains the real-valued rectangle the
-  model's normalized box denotes. Nothing the model placed is cropped away.
-* The vendor computes `width / 1000` as a float first and multiplies. That
-  division is not exact in binary, so at coordinates where the true product is
-  a whole number the float lands a hair below it and `int()` truncates a pixel
-  off: on a 2550-pixel-wide page, `x0 = 100` is exactly 255, and the vendor's
-  arithmetic returns 254. Its near edge is then one pixel *outside* the box the
-  model reported, and its far edge one pixel inside.
-
-So against the vendor's own numbers ours can start one pixel further in on a
-near edge -- never because it crops the model's box, but because the vendor's
-does not land on it. The test states both halves separately; neither is folded
-into the other.
-
 ## The text view `chandra-layout-text.v1`
 
 The vendor's own text path is `parse_markdown`, which routes through
@@ -140,7 +119,6 @@ VENDOR_COMMIT: Final = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
 VENDOR_LICENCE: Final = "Apache-2.0"
 VENDOR_PROMPT_SOURCE: Final = "chandra/prompts.py"
 VENDOR_PARSER_SOURCE: Final = "chandra/output.py::parse_layout"
-VENDOR_SETTINGS_SOURCE: Final = "chandra/settings.py"
 
 # `chandra/prompts.py::ALLOWED_TAGS` and `ALLOWED_ATTRIBUTES`, in the vendor's
 # own order. Order is load-bearing, not cosmetic: both lists are interpolated
@@ -283,16 +261,6 @@ UNLABELLED_BLOCK_LABEL: Final = "block"
 # `common/test_vendor_parity.py`.
 PROMPT_ENDING_SHA256: Final = "f5d1ed0fb0ead54db6271c3e5dba9d581dcd8f9aa1709ab3b029761c00cb2233"
 OCR_LAYOUT_PROMPT_SHA256: Final = "025935f3e1de1acdfadd4c7d581ab17eb82e8caaffef7b64962621c80b7ca9a8"
-# SHA-256 of the whole vendor file at that commit, 2,820 bytes. The commit sha
-# already pins those bytes, so this is not a second pin -- it is what the
-# network-gated arm of `common/test_vendor_parity.py` checks *before* it
-# executes the fetched `prompts.py` in an isolated namespace to render the
-# prompt. Executing a file that arrived over the network and only then asking
-# what it was would be the wrong order.
-VENDOR_PROMPT_FILE_SHA256: Final = (
-    "53101d315a9923dac2fd65bf64047a73d396c69c409b3680c753315837b151eb"
-)
-
 # `chandra/settings.py::Settings.BBOX_SCALE`. The prompt states the same number
 # in prose; `_NORMALIZED_CLAIM` below is checked against the prompt text at
 # import, so the two can never drift apart silently -- a re-pin that changed
@@ -482,26 +450,6 @@ def block_page_bounds(block: LayoutBlock, *, page_size: tuple[int, int]) -> Boun
         return None
     page_w, page_h = page_size
     return to_page_bounds(block["bbox_1000"], page_w, page_h)
-
-
-def vendor_scaled_bbox(bbox_1000: list[int], *, page_size: tuple[int, int]) -> list[int]:
-    """`chandra/output.py::parse_layout`'s own scaling, re-expressed for comparison.
-
-    On no live path; see the module docstring's Geometry section for what it is
-    for and what the comparison actually shows. The float division is the
-    vendor's and is reproduced rather than corrected -- correcting it here would
-    hide the one-pixel difference this function exists to measure. Returns the
-    vendor's `[x0, y0, x1, y1]` in page pixels, far edges exclusive.
-    """
-    page_w, page_h = page_size
-    width_scaler = page_w / BBOX_SCALE
-    height_scaler = page_h / BBOX_SCALE
-    return [
-        max(0, int(bbox_1000[0] * width_scaler)),
-        max(0, int(bbox_1000[1] * height_scaler)),
-        min(int(bbox_1000[2] * width_scaler), page_w),
-        min(int(bbox_1000[3] * height_scaler), page_h),
-    ]
 
 
 # ---------------------------------------------------------------------------
