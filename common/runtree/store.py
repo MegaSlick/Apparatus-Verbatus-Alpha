@@ -925,10 +925,26 @@ class RunTree:
             os.close(directory_fd)
 
     def _bind_root_identity(self) -> None:
-        os.close(self._open_root_fd())
+        """Bind this object to the run directory it opened, by device and inode."""
+        try:
+            descriptor = os.open(self.root, _DIRECTORY_OPEN_FLAGS)
+        except OSError as error:
+            raise SchemaRefusal(
+                f"run root {self.root} could not be opened without links: {error}"
+            ) from error
+        try:
+            identity = _inode_identity(os.fstat(descriptor))
+        finally:
+            os.close(descriptor)
+        if self._root_identity is not None and identity != self._root_identity:
+            raise SchemaRefusal(
+                f"run root {self.root} is no longer the directory this RunTree opened; "
+                "its device or inode changed"
+            )
+        self._root_identity = identity
 
     def _open_root_fd(self) -> int:
-        """Open the run root without following links, binding its device and inode on first use."""
+        """Open the bound run root without following a replacement link."""
         try:
             descriptor = os.open(self.root, _DIRECTORY_OPEN_FLAGS)
         except OSError as error:
